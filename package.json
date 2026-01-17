@@ -1,0 +1,38 @@
+{
+  "name": "quicksave",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Remote git control PWA with E2E encryption",
+  "scripts": {
+    "dev:pwa": "pnpm --filter @quicksave/pwa dev",
+    "dev:agent": "pnpm --filter @quicksave/agent dev",
+    "dev:signaling": "pnpm --filter @quicksave/signaling dev",
+    "build": "pnpm -r build",
+    "build:pwa": "pnpm --filter @quicksave/pwa build",
+    "build:agent": "pnpm --filter @quicksave/agent build",
+    "build:signaling": "pnpm --filter @quicksave/signaling build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:unit": "pnpm -r test:unit",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts"
+  },
+  "keywords": [
+    "git",
+    "pwa",
+    "webrtc",
+    "e2e-encryption",
+    "remote-control"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10",
+    "vitest": "^1.2.0",
+    "ws": "^8.18.0"
+  }
+}

@@ -1,0 +1,244 @@
+import { useState } from 'react';
+import { useMachineStore } from '../stores/machineStore';
+import { useConnectionStore } from '../stores/connectionStore';
+
+interface AddMachineModalProps {
+  onClose: () => void;
+  onConnect: (agentId: string, publicKey: string) => void;
+}
+
+const MACHINE_ICONS = ['💻', '🖥️', '💼', '🏠', '🏢', '🔧', '⚡', '🚀'];
+
+export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
+  const [agentId, setAgentId] = useState('');
+  const [publicKey, setPublicKey] = useState('');
+  const [nickname, setNickname] = useState('');
+  const [icon, setIcon] = useState('💻');
+  const [mode, setMode] = useState<'scan' | 'manual'>('manual');
+  const [saveOnly, setSaveOnly] = useState(false);
+
+  const { addMachine, hasMachine } = useMachineStore();
+  const { state, error } = useConnectionStore();
+
+  const isConnecting = state === 'connecting' || state === 'signaling';
+  const isDuplicate = Boolean(agentId.trim() && hasMachine(agentId.trim()));
+  const isFormValid = Boolean(agentId.trim() && publicKey.trim());
+  const isDisabled = !isFormValid || isConnecting || isDuplicate;
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!agentId.trim() || !publicKey.trim()) return;
+    if (isDuplicate) return;
+
+    const machineName = nickname.trim() || `Machine ${agentId.slice(0, 8)}`;
+
+    // Always save the machine
+    addMachine({
+      agentId: agentId.trim(),
+      publicKey: publicKey.trim(),
+      nickname: machineName,
+      icon,
+    });
+
+    if (saveOnly) {
+      onClose();
+    } else {
+      // Connect to the new machine
+      onConnect(agentId.trim(), publicKey.trim());
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-black/60"
+        onClick={onClose}
+      />
+
+      {/* Modal */}
+      <div className="relative bg-slate-800 rounded-lg w-full max-w-md max-h-[90vh] overflow-y-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between p-4 border-b border-slate-700">
+          <h2 className="text-lg font-semibold">Add Machine</h2>
+          <button
+            onClick={onClose}
+            className="p-1 hover:bg-slate-700 rounded-md transition-colors"
+            aria-label="Close"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="p-4">
+          {/* Mode Toggle */}
+          <div className="flex mb-6 bg-slate-700 rounded-lg p-1">
+            <button
+              type="button"
+              className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${
+                mode === 'manual'
+                  ? 'bg-slate-600 text-white'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              onClick={() => setMode('manual')}
+            >
+              Manual Entry
+            </button>
+            <button
+              type="button"
+              className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${
+                mode === 'scan'
+                  ? 'bg-slate-600 text-white'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              onClick={() => setMode('scan')}
+            >
+              Scan QR
+            </button>
+          </div>
+
+          {mode === 'manual' ? (
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {/* Agent ID */}
+              <div>
+                <label htmlFor="agentId" className="block text-sm font-medium text-slate-300 mb-1">
+                  Agent ID
+                </label>
+                <input
+                  id="agentId"
+                  type="text"
+                  value={agentId}
+                  onChange={(e) => setAgentId(e.target.value)}
+                  placeholder="Enter agent ID"
+                  className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  disabled={isConnecting}
+                />
+                {isDuplicate && (
+                  <p className="text-sm text-yellow-400 mt-1">
+                    This machine is already in your list
+                  </p>
+                )}
+              </div>
+
+              {/* Public Key */}
+              <div>
+                <label htmlFor="publicKey" className="block text-sm font-medium text-slate-300 mb-1">
+                  Public Key
+                </label>
+                <textarea
+                  id="publicKey"
+                  value={publicKey}
+                  onChange={(e) => setPublicKey(e.target.value)}
+                  placeholder="Enter agent public key"
+                  rows={3}
+                  className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none font-mono text-sm"
+                  disabled={isConnecting}
+                />
+              </div>
+
+              {/* Nickname */}
+              <div>
+                <label htmlFor="nickname" className="block text-sm font-medium text-slate-300 mb-1">
+                  Nickname <span className="text-slate-500">(optional)</span>
+                </label>
+                <input
+                  id="nickname"
+                  type="text"
+                  value={nickname}
+                  onChange={(e) => setNickname(e.target.value)}
+                  placeholder="e.g., Work Laptop, Home Desktop"
+                  className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  disabled={isConnecting}
+                />
+              </div>
+
+              {/* Icon Selector */}
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-2">
+                  Icon
+                </label>
+                <div className="flex gap-2 flex-wrap">
+                  {MACHINE_ICONS.map((emoji) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => setIcon(emoji)}
+                      className={`w-10 h-10 rounded-md text-xl flex items-center justify-center transition-colors ${
+                        icon === emoji
+                          ? 'bg-blue-600'
+                          : 'bg-slate-700 hover:bg-slate-600'
+                      }`}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Error */}
+              {error && (
+                <div className="p-3 bg-red-500/20 border border-red-500/50 rounded-md">
+                  <p className="text-sm text-red-400">{error}</p>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={isDisabled}
+                  onClick={() => setSaveOnly(false)}
+                  className="flex-1 py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors"
+                >
+                  {isConnecting ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <span className="loading-dot w-2 h-2 bg-white rounded-full" />
+                      <span className="loading-dot w-2 h-2 bg-white rounded-full" />
+                      <span className="loading-dot w-2 h-2 bg-white rounded-full" />
+                    </span>
+                  ) : (
+                    'Add & Connect'
+                  )}
+                </button>
+                <button
+                  type="submit"
+                  disabled={isDisabled}
+                  onClick={() => setSaveOnly(true)}
+                  className="py-3 px-4 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors"
+                >
+                  Save
+                </button>
+              </div>
+            </form>
+          ) : (
+            <div className="text-center py-8">
+              <div className="w-48 h-48 mx-auto bg-slate-700 rounded-lg flex items-center justify-center mb-4">
+                <svg
+                  className="w-16 h-16 text-slate-500"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={1.5}
+                    d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z"
+                  />
+                </svg>
+              </div>
+              <p className="text-slate-400 text-sm">
+                QR scanning coming soon.
+                <br />
+                Use manual entry for now.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
