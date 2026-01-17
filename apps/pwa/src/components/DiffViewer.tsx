@@ -4,13 +4,14 @@ import type { FileDiff, DiffHunk } from '@quicksave/shared';
 interface DiffViewerProps {
   diff: FileDiff;
   onClose: () => void;
+  showHeader?: boolean;
 }
 
-export function DiffViewer({ diff, onClose }: DiffViewerProps) {
+export function DiffViewer({ diff, onClose, showHeader = true }: DiffViewerProps) {
   if (diff.isBinary) {
     return (
       <div className="bg-slate-800 rounded-lg overflow-hidden">
-        <Header path={diff.path} onClose={onClose} />
+        {showHeader && <Header path={diff.path} onClose={onClose} />}
         <div className="p-6 text-center text-slate-400">
           Binary file - cannot display diff
         </div>
@@ -21,7 +22,7 @@ export function DiffViewer({ diff, onClose }: DiffViewerProps) {
   if (diff.hunks.length === 0) {
     return (
       <div className="bg-slate-800 rounded-lg overflow-hidden">
-        <Header path={diff.path} onClose={onClose} />
+        {showHeader && <Header path={diff.path} onClose={onClose} />}
         <div className="p-6 text-center text-slate-400">No changes to display</div>
       </div>
     );
@@ -29,7 +30,7 @@ export function DiffViewer({ diff, onClose }: DiffViewerProps) {
 
   return (
     <div className="bg-slate-800 rounded-lg overflow-hidden">
-      <Header path={diff.path} onClose={onClose} />
+      {showHeader && <Header path={diff.path} onClose={onClose} />}
       <div className="overflow-x-auto">
         {diff.hunks.map((hunk, index) => (
           <HunkView key={index} hunk={hunk} />

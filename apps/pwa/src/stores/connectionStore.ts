@@ -25,7 +25,19 @@ interface ConnectionStore {
   reset: () => void;
 }
 
-const DEFAULT_SIGNALING_SERVER = import.meta.env.QUICKSAVE_SIGNALING_URL || 'wss://signal.quicksave.dev';
+// In dev mode, use the same host as the page (signaling is embedded in Vite dev server)
+const getDefaultSignalingServer = () => {
+  if (import.meta.env.QUICKSAVE_SIGNALING_URL) {
+    return import.meta.env.QUICKSAVE_SIGNALING_URL;
+  }
+  if (import.meta.env.DEV) {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}`;
+  }
+  return 'wss://signal.quicksave.dev';
+};
+
+const DEFAULT_SIGNALING_SERVER = getDefaultSignalingServer();
 
 export const useConnectionStore = create<ConnectionStore>((set) => ({
   // Initial state

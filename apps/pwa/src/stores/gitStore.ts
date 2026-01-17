@@ -4,8 +4,8 @@ import type { GitStatus, FileDiff, Commit, Branch, FileChange } from '@quicksave
 interface GitStore {
   // State
   status: GitStatus | null;
-  selectedFile: string | null;
-  selectedDiff: FileDiff | null;
+  expandedDiffs: Record<string, FileDiff>; // Map of path -> diff for expanded files
+  loadingDiffs: Set<string>; // Paths currently being fetched
   commits: Commit[];
   branches: Branch[];
   currentBranch: string | null;
@@ -18,8 +18,10 @@ interface GitStore {
 
   // Actions
   setStatus: (status: GitStatus) => void;
-  setSelectedFile: (path: string | null) => void;
-  setSelectedDiff: (diff: FileDiff | null) => void;
+  toggleFileExpanded: (path: string) => boolean; // Returns true if now expanded (needs fetch)
+  setFileDiff: (path: string, diff: FileDiff) => void;
+  setDiffLoading: (path: string, loading: boolean) => void;
+  collapseFile: (path: string) => void;
   setCommits: (commits: Commit[]) => void;
   setBranches: (branches: Branch[], current: string) => void;
   setLoading: (loading: boolean) => void;
@@ -30,11 +32,11 @@ interface GitStore {
   reset: () => void;
 }
 
-export const useGitStore = create<GitStore>((set) => ({
+export const useGitStore = create<GitStore>((set, get) => ({
   // Initial state
   status: null,
-  selectedFile: null,
-  selectedDiff: null,
+  expandedDiffs: {},
+  loadingDiffs: new Set(),
   commits: [],
   branches: [],
   currentBranch: null,
@@ -46,9 +48,46 @@ export const useGitStore = create<GitStore>((set) => ({
   // Actions
   setStatus: (status) => set({ status, error: null }),
 
-  setSelectedFile: (path) => set({ selectedFile: path }),
+  toggleFileExpanded: (path) => {
+    const { expandedDiffs } = get();
+    if (path in expandedDiffs) {
+      // Collapse - remove from expanded
+      const newExpanded = { ...expandedDiffs };
+      delete newExpanded[path];
+      set({ expandedDiffs: newExpanded });
+      return false;
+    }
+    // Expand - will need to fetch diff
+    return true;
+  },
 
-  setSelectedDiff: (diff) => set({ selectedDiff: diff }),
+  setFileDiff: (path, diff) => {
+    const { expandedDiffs, loadingDiffs } = get();
+    const newLoading = new Set(loadingDiffs);
+    newLoading.delete(path);
+    set({
+      expandedDiffs: { ...expandedDiffs, [path]: diff },
+      loadingDiffs: newLoading,
+    });
+  },
+
+  setDiffLoading: (path, loading) => {
+    const { loadingDiffs } = get();
+    const newLoading = new Set(loadingDiffs);
+    if (loading) {
+      newLoading.add(path);
+    } else {
+      newLoading.delete(path);
+    }
+    set({ loadingDiffs: newLoading });
+  },
+
+  collapseFile: (path) => {
+    const { expandedDiffs } = get();
+    const newExpanded = { ...expandedDiffs };
+    delete newExpanded[path];
+    set({ expandedDiffs: newExpanded });
+  },
 
   setCommits: (commits) => set({ commits }),
 
@@ -67,8 +106,8 @@ export const useGitStore = create<GitStore>((set) => ({
   reset: () =>
     set({
       status: null,
-      selectedFile: null,
-      selectedDiff: null,
+      expandedDiffs: {},
+      loadingDiffs: new Set(),
       commits: [],
       branches: [],
       currentBranch: null,

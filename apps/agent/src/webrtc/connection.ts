@@ -149,11 +149,14 @@ export class WebRTCConnection extends EventEmitter {
     };
   }
 
-  private handleDataChannelMessage(data: string): void {
+  private handleDataChannelMessage(data: string | Buffer): void {
     try {
+      // Convert Buffer to string if needed (werift delivers data as Buffer)
+      const strData = Buffer.isBuffer(data) ? data.toString('utf-8') : data;
+
       // First message should be the peer's public key for key exchange
       if (!this.peerPublicKey) {
-        const keyExchange = JSON.parse(data);
+        const keyExchange = JSON.parse(strData);
         if (keyExchange.type === 'key-exchange') {
           this.peerPublicKey = decodeBase64(keyExchange.publicKey);
           this.sharedSecret = deriveSharedSecret(this.peerPublicKey, this.keyPair.secretKey);
@@ -176,7 +179,7 @@ export class WebRTCConnection extends EventEmitter {
         return;
       }
 
-      const decrypted = decryptWithSharedSecret(data, this.sharedSecret);
+      const decrypted = decryptWithSharedSecret(strData, this.sharedSecret);
       const message = parseMessage(decrypted);
       this.emit('message', message);
     } catch (error) {

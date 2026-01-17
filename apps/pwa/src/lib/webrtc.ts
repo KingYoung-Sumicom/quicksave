@@ -236,7 +236,6 @@ export class WebRTCClient {
 
       const decrypted = decryptWithSharedSecret(data, this.sharedSecret);
       const message = parseMessage(decrypted);
-      console.log('[DEBUG] Received message:', message.type, message.id);
 
       // Handle handshake response
       if (message.type === 'handshake:ack') {
@@ -248,7 +247,6 @@ export class WebRTCClient {
         return;
       }
 
-      console.log('[DEBUG] Passing to onMessage:', message.type);
       this.eventHandlers.onMessage(message);
     } catch (error) {
       console.error('Failed to handle message:', error);

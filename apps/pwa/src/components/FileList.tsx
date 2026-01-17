@@ -9,9 +9,9 @@ interface FileListProps {
   onFileClick: (path: string) => void;
   onAction: (paths: string[]) => void;
   actionLabel: string;
-  selectedFile?: string | null;
-  selectedDiff?: FileDiff | null;
-  onCloseDiff?: () => void;
+  expandedDiffs: Record<string, FileDiff>;
+  loadingDiffs: Set<string>;
+  onCloseDiff: (path: string) => void;
 }
 
 export function FileList({
@@ -21,8 +21,8 @@ export function FileList({
   onFileClick,
   onAction,
   actionLabel,
-  selectedFile,
-  selectedDiff,
+  expandedDiffs,
+  loadingDiffs,
   onCloseDiff,
 }: FileListProps) {
   if (files.length === 0) return null;
@@ -85,8 +85,9 @@ export function FileList({
         {files.map((file) => {
           const path = isFileChange(file) ? file.path : file;
           const status = isFileChange(file) ? file.status : undefined;
-          const isSelected = selectedFile === path;
-          const showDiff = isSelected && selectedDiff && selectedDiff.path === path;
+          const isExpanded = path in expandedDiffs;
+          const isLoading = loadingDiffs.has(path);
+          const diff = expandedDiffs[path];
 
           return (
             <li key={path}>
@@ -94,16 +95,18 @@ export function FileList({
                 onClick={() => onFileClick(path)}
                 className={clsx(
                   'w-full flex items-center gap-3 px-4 py-2 text-left hover:bg-slate-700/50 transition-colors',
-                  isSelected && 'bg-slate-700'
+                  (isExpanded || isLoading) && 'bg-slate-700'
                 )}
               >
                 {/* Expand/Collapse Icon */}
-                <span className="text-slate-400 w-4">
-                  {isSelected ? '▼' : '▶'}
+                <span className="text-slate-400 w-4 flex-shrink-0">
+                  {isLoading ? (
+                    <span className="inline-block w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin" />
+                  ) : isExpanded ? '▼' : '▶'}
                 </span>
 
                 {/* Status Icon */}
-                <span className={clsx('font-mono text-sm w-4', getStatusColor(status))}>
+                <span className={clsx('font-mono text-sm w-4 flex-shrink-0', getStatusColor(status))}>
                   {type === 'untracked' ? '+' : getStatusIcon(status)}
                 </span>
 
@@ -116,16 +119,16 @@ export function FileList({
                     e.stopPropagation();
                     onAction([path]);
                   }}
-                  className="text-xs px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded opacity-0 group-hover:opacity-100 transition-all"
+                  className="text-xs px-2 py-1 bg-slate-600 hover:bg-slate-500 rounded opacity-0 group-hover:opacity-100 transition-all flex-shrink-0"
                 >
                   {actionLabel}
                 </button>
               </button>
 
               {/* Inline Diff */}
-              {showDiff && onCloseDiff && (
+              {isExpanded && diff && (
                 <div className="border-t border-slate-700 bg-slate-900">
-                  <DiffViewer diff={selectedDiff} onClose={onCloseDiff} />
+                  <DiffViewer diff={diff} onClose={() => onCloseDiff(path)} showHeader={false} />
                 </div>
               )}
             </li>

@@ -22,7 +22,7 @@ type PendingRequest = {
 
 export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>) {
   const pendingRequests = useRef<Map<string, PendingRequest>>(new Map());
-  const { setStatus, setSelectedDiff, setCommits, setBranches, setLoading, setError, clearCommitForm } =
+  const { setStatus, setFileDiff, setDiffLoading, setCommits, setBranches, setLoading, setError, clearCommitForm } =
     useGitStore();
 
   const sendRequest = useCallback(
@@ -51,10 +51,8 @@ export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>
   );
 
   const handleResponse = useCallback((message: Message) => {
-    console.log('[DEBUG] handleResponse called:', message.type, message.id);
     const pending = pendingRequests.current.get(message.id);
     if (pending) {
-      console.log('[DEBUG] Found pending request for:', message.id);
       clearTimeout(pending.timeout);
       pendingRequests.current.delete(message.id);
 
@@ -63,8 +61,6 @@ export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>
       } else {
         pending.resolve(message.payload);
       }
-    } else {
-      console.log('[DEBUG] No pending request for:', message.id, 'Pending IDs:', Array.from(pendingRequests.current.keys()));
     }
   }, []);
 
@@ -72,12 +68,9 @@ export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>
     setLoading(true);
     try {
       const message = createMessage('git:status', {});
-      console.log('[DEBUG] Sending status request:', message.id);
       const response = await sendRequest<StatusResponsePayload>(message);
-      console.log('[DEBUG] Status response received:', JSON.stringify(response, null, 2));
       setStatus(response);
     } catch (error) {
-      console.error('[DEBUG] Status fetch error:', error);
       setError(error instanceof Error ? error.message : 'Failed to fetch status');
     } finally {
       setLoading(false);
@@ -86,21 +79,17 @@ export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>
 
   const fetchDiff = useCallback(
     async (path: string, staged = false) => {
-      setLoading(true);
+      setDiffLoading(path, true);
       try {
         const message = createMessage('git:diff', { path, staged });
-        console.log('[DEBUG] Fetching diff for:', path, 'staged:', staged);
         const response = await sendRequest<DiffResponsePayload>(message);
-        console.log('[DEBUG] Diff response:', JSON.stringify(response, null, 2));
-        setSelectedDiff(response);
+        setFileDiff(path, response);
       } catch (error) {
-        console.error('[DEBUG] Diff fetch error:', error);
+        setDiffLoading(path, false);
         setError(error instanceof Error ? error.message : 'Failed to fetch diff');
-      } finally {
-        setLoading(false);
       }
     },
-    [sendRequest, setSelectedDiff, setLoading, setError]
+    [sendRequest, setFileDiff, setDiffLoading, setError]
   );
 
   const stageFiles = useCallback(

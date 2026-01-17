@@ -13,12 +13,23 @@ import type {
 
 export class GitOperations {
   private git: SimpleGit;
-  private repoPath: string;
   private gitRoot: string | null = null;
+  private initialized = false;
 
   constructor(repoPath: string) {
     this.git = simpleGit(repoPath);
-    this.repoPath = repoPath;
+  }
+
+  /**
+   * Initialize git to run from the git root directory
+   * This ensures relative paths work correctly
+   */
+  private async ensureInitialized(): Promise<void> {
+    if (this.initialized) return;
+
+    const gitRoot = await this.getGitRoot();
+    this.git = simpleGit(gitRoot);
+    this.initialized = true;
   }
 
   /**
@@ -28,7 +39,6 @@ export class GitOperations {
     if (this.gitRoot) {
       return this.gitRoot;
     }
-    // Get the actual git root directory
     this.gitRoot = (await this.git.revparse(['--show-toplevel'])).trim();
     return this.gitRoot;
   }
@@ -37,6 +47,7 @@ export class GitOperations {
    * Get the current git status
    */
   async getStatus(): Promise<GitStatus> {
+    await this.ensureInitialized();
     const status = await this.git.status();
     const branchInfo = await this.getBranchTracking();
 
@@ -54,95 +65,109 @@ export class GitOperations {
    * Get diff for a specific file
    */
   async getDiff(path: string, staged: boolean = false): Promise<FileDiff> {
+    await this.ensureInitialized();
+
     const status = await this.git.status();
     const isUntracked = status.not_added.includes(path);
     const isNewFile = status.created.includes(path);
 
-    console.log('[DEBUG] getDiff:', { path, staged, isUntracked, isNewFile });
-
     // For untracked files, show the full content as additions
     if (isUntracked) {
-      console.log('[DEBUG] File is untracked, showing full content');
       return this.getNewFileDiff(path);
     }
 
-    // Try normal diff first
-    const args = staged ? ['--cached', '--', path] : ['--', path];
-    const diffOutput = await this.git.diff(args);
-
-    console.log('[DEBUG] Diff output length:', diffOutput.length);
-
-    // If diff is empty and file is newly staged (no commits yet or new file)
-    if (!diffOutput.trim() && (staged || isNewFile)) {
-      // Check if there are any commits
-      try {
-        await this.git.log({ maxCount: 1 });
-      } catch {
-        // No commits yet, show full content for staged files
-        console.log('[DEBUG] No commits yet, showing full content for staged file');
-        return this.getNewFileDiff(path);
-      }
-
-      // If file is new and staged, show full content
-      if (isNewFile && staged) {
-        console.log('[DEBUG] New staged file, showing full content');
-        return this.getNewFileDiff(path);
-      }
+    // For new staged files, show the staged content from the index
+    if (staged && isNewFile) {
+      return this.getStagedNewFileDiff(path);
     }
 
-    return this.parseDiff(path, diffOutput);
-  }
+    // Normal diff
+    const args = staged
+      ? ['diff', '--cached', '--', path]
+      : ['diff', '--', path];
+    const diffOutput = await this.git.raw(args);
 
-  /**
-   * Get diff representation for a new/untracked file (shows all content as additions)
-   */
-  private async getNewFileDiff(path: string): Promise<FileDiff> {
-    try {
-      const gitRoot = await this.getGitRoot();
-      const fullPath = join(gitRoot, path);
-      const content = await readFile(fullPath, 'utf-8');
-      const lines = content.split('\n');
-
-      // Check if binary
-      const isBinary = this.isBinaryContent(content);
-      if (isBinary) {
-        return {
-          path,
-          hunks: [],
-          isBinary: true,
-        };
-      }
-
-      // Create a synthetic diff showing all lines as additions
-      const hunkContent = lines.map(line => `+${line}`).join('\n');
-      const hunk: DiffHunk = {
-        oldStart: 0,
-        oldLines: 0,
-        newStart: 1,
-        newLines: lines.length,
-        content: `@@ -0,0 +1,${lines.length} @@\n${hunkContent}`,
-      };
-
-      return {
-        path,
-        hunks: [hunk],
-        isBinary: false,
-      };
-    } catch (error) {
-      console.error('[DEBUG] Error reading new file:', error);
+    // If diff is empty, return empty diff
+    if (!diffOutput.trim()) {
       return {
         path,
         hunks: [],
         isBinary: false,
       };
     }
+
+    return this.parseDiff(path, diffOutput);
+  }
+
+  /**
+   * Get diff for a staged new file by reading content from the git index
+   */
+  private async getStagedNewFileDiff(path: string): Promise<FileDiff> {
+    try {
+      const content = await this.git.raw(['show', `:${path}`]);
+
+      if (this.isBinaryContent(content)) {
+        return { path, hunks: [], isBinary: true };
+      }
+
+      return this.createSyntheticDiff(path, content);
+    } catch {
+      // Fallback to reading from working tree
+      return this.getNewFileDiff(path);
+    }
+  }
+
+  /**
+   * Get diff representation for a new/untracked file (shows all content as additions)
+   */
+  private async getNewFileDiff(path: string): Promise<FileDiff> {
+    const gitRoot = await this.getGitRoot();
+    const fullPath = join(gitRoot, path);
+
+    try {
+      const content = await readFile(fullPath, 'utf-8');
+
+      if (this.isBinaryContent(content)) {
+        return { path, hunks: [], isBinary: true };
+      }
+
+      return this.createSyntheticDiff(path, content);
+    } catch {
+      return { path, hunks: [], isBinary: false };
+    }
+  }
+
+  /**
+   * Create a synthetic diff showing all content as additions
+   */
+  private createSyntheticDiff(path: string, content: string): FileDiff {
+    const lines = content.split(/\r?\n/);
+
+    // Remove trailing empty line if content ends with newline
+    if (lines.length > 0 && lines[lines.length - 1] === '') {
+      lines.pop();
+    }
+
+    if (lines.length === 0) {
+      return { path, hunks: [], isBinary: false };
+    }
+
+    const hunkContent = lines.map(line => `+${line}`).join('\n');
+    const hunk: DiffHunk = {
+      oldStart: 0,
+      oldLines: 0,
+      newStart: 1,
+      newLines: lines.length,
+      content: `@@ -0,0 +1,${lines.length} @@\n${hunkContent}`,
+    };
+
+    return { path, hunks: [hunk], isBinary: false };
   }
 
   /**
    * Simple binary content detection
    */
   private isBinaryContent(content: string): boolean {
-    // Check for null bytes which indicate binary content
     return content.includes('\0');
   }
 
@@ -150,6 +175,7 @@ export class GitOperations {
    * Stage files
    */
   async stage(paths: string[]): Promise<void> {
+    await this.ensureInitialized();
     await this.git.add(paths);
   }
 
@@ -157,6 +183,7 @@ export class GitOperations {
    * Unstage files
    */
   async unstage(paths: string[]): Promise<void> {
+    await this.ensureInitialized();
     await this.git.reset(['HEAD', '--', ...paths]);
   }
 
@@ -220,6 +247,7 @@ export class GitOperations {
    * Discard changes in files
    */
   async discard(paths: string[]): Promise<void> {
+    await this.ensureInitialized();
     await this.git.checkout(['--', ...paths]);
   }
 
@@ -258,30 +286,21 @@ export class GitOperations {
     const changes: FileChange[] = [];
 
     if (type === 'staged') {
-      // Staged files
       for (const file of status.staged) {
         changes.push({
           path: file,
-          status: this.getFileStatus(status, file, 'staged'),
+          status: this.getFileStatus(status, file),
         });
       }
     } else {
-      // Unstaged (modified) files
-      for (const file of status.modified) {
-        if (!status.staged.includes(file)) {
-          changes.push({
-            path: file,
-            status: 'modified',
-          });
-        }
-      }
-      // Deleted but not staged
-      for (const file of status.deleted) {
-        if (!status.staged.includes(file)) {
-          changes.push({
-            path: file,
-            status: 'deleted',
-          });
+      // Use files array for accurate unstaged detection
+      // working_dir indicates the status in the working directory (unstaged changes)
+      for (const file of status.files) {
+        const wd = file.working_dir;
+        if (wd === 'M') {
+          changes.push({ path: file.path, status: 'modified' });
+        } else if (wd === 'D') {
+          changes.push({ path: file.path, status: 'deleted' });
         }
       }
     }
@@ -289,11 +308,7 @@ export class GitOperations {
     return changes;
   }
 
-  private getFileStatus(
-    status: StatusResult,
-    file: string,
-    _type: 'staged' | 'unstaged'
-  ): FileStatus {
+  private getFileStatus(status: StatusResult, file: string): FileStatus {
     if (status.created.includes(file)) return 'added';
     if (status.deleted.includes(file)) return 'deleted';
     if (status.renamed.some((r) => r.to === file)) return 'renamed';
@@ -302,17 +317,15 @@ export class GitOperations {
 
   private parseDiff(path: string, diffOutput: string): FileDiff {
     const hunks: DiffHunk[] = [];
-    const lines = diffOutput.split('\n');
+    const lines = diffOutput.split(/\r?\n/);
 
     let currentHunk: DiffHunk | null = null;
     let hunkContent: string[] = [];
 
     for (const line of lines) {
-      // Parse hunk header: @@ -start,count +start,count @@
-      const hunkMatch = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+      const hunkMatch = line.match(/^@@\s*-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s*@@/);
 
       if (hunkMatch) {
-        // Save previous hunk
         if (currentHunk) {
           currentHunk.content = hunkContent.join('\n');
           hunks.push(currentHunk);
@@ -331,19 +344,13 @@ export class GitOperations {
       }
     }
 
-    // Save last hunk
     if (currentHunk) {
       currentHunk.content = hunkContent.join('\n');
       hunks.push(currentHunk);
     }
 
-    // Check if binary
     const isBinary = diffOutput.includes('Binary files') || diffOutput.includes('GIT binary patch');
 
-    return {
-      path,
-      hunks,
-      isBinary,
-    };
+    return { path, hunks, isBinary };
   }
 }

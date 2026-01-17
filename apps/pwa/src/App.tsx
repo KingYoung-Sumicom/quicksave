@@ -93,9 +93,7 @@ function App() {
 
   // Fetch status when connected
   useEffect(() => {
-    console.log('[DEBUG] Connection state changed:', state, 'clientRef:', !!clientRef.current);
     if (state === 'connected') {
-      console.log('[DEBUG] Calling fetchStatus...');
       fetchStatus();
     }
   }, [state, fetchStatus]);

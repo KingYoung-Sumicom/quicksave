@@ -22,7 +22,7 @@ export function RepoView({
 }: RepoViewProps) {
   // TODO: Add discard UI (onDiscard will be used in future)
   void _onDiscard;
-  const { selectedFile, selectedDiff, setSelectedFile, setSelectedDiff, isLoading, error } = useGitStore();
+  const { expandedDiffs, loadingDiffs, toggleFileExpanded, collapseFile, isLoading, error } = useGitStore();
   const staged = useGitStore(selectStagedFiles);
   const unstaged = useGitStore(selectUnstagedFiles);
   const untracked = useGitStore(selectUntrackedFiles);
@@ -33,19 +33,14 @@ export function RepoView({
   }, [onRefresh]);
 
   const handleFileClick = (path: string, isStaged: boolean) => {
-    if (selectedFile === path) {
-      // Toggle off
-      setSelectedFile(null);
-      setSelectedDiff(null);
-    } else {
-      setSelectedFile(path);
+    const needsFetch = toggleFileExpanded(path);
+    if (needsFetch) {
       onFetchDiff(path, isStaged);
     }
   };
 
-  const handleCloseDiff = () => {
-    setSelectedFile(null);
-    setSelectedDiff(null);
+  const handleCloseDiff = (path: string) => {
+    collapseFile(path);
   };
 
   const totalChanges = staged.length + unstaged.length + untracked.length;
@@ -106,8 +101,8 @@ export function RepoView({
           onFileClick={(path) => handleFileClick(path, true)}
           onAction={onUnstage}
           actionLabel="Unstage"
-          selectedFile={selectedFile}
-          selectedDiff={selectedDiff}
+          expandedDiffs={expandedDiffs}
+          loadingDiffs={loadingDiffs}
           onCloseDiff={handleCloseDiff}
         />
 
@@ -119,8 +114,8 @@ export function RepoView({
           onFileClick={(path) => handleFileClick(path, false)}
           onAction={onStage}
           actionLabel="Stage"
-          selectedFile={selectedFile}
-          selectedDiff={selectedDiff}
+          expandedDiffs={expandedDiffs}
+          loadingDiffs={loadingDiffs}
           onCloseDiff={handleCloseDiff}
         />
 
@@ -132,8 +127,8 @@ export function RepoView({
           onFileClick={(path) => handleFileClick(path, false)}
           onAction={onStage}
           actionLabel="Stage"
-          selectedFile={selectedFile}
-          selectedDiff={selectedDiff}
+          expandedDiffs={expandedDiffs}
+          loadingDiffs={loadingDiffs}
           onCloseDiff={handleCloseDiff}
         />
 

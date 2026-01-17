@@ -82,7 +82,6 @@ export class MessageHandler {
 
   private async handleStatus(message: Message<StatusRequestPayload>): Promise<Message<StatusResponsePayload>> {
     const status = await this.git.getStatus();
-    console.log('[DEBUG] Git status:', JSON.stringify(status, null, 2));
     const response = createMessage<StatusResponsePayload>('git:status:response', status);
     response.id = message.id;
     return response;

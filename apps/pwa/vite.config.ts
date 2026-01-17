@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+import { signalingServerPlugin } from './vite-plugin-signaling';
 
 export default defineConfig({
   envPrefix: ['VITE_', 'QUICKSAVE_'],
@@ -10,6 +11,7 @@ export default defineConfig({
     allowedHosts: ['.ngrok-free.app', '.ngrok.io'],
   },
   plugins: [
+    signalingServerPlugin(),
     react(),
     VitePWA({
       registerType: 'autoUpdate',
