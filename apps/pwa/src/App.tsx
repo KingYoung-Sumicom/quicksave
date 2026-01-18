@@ -32,7 +32,7 @@ function AppContent() {
     reset,
   } = useConnectionStore();
 
-  const { status, reset: resetGit } = useGitStore();
+  const { status, reset: resetGit, setCurrentRepoPath } = useGitStore();
   const { machines, recordConnection } = useMachineStore();
   const agentIdRef = useRef<string | null>(null);
 
@@ -71,6 +71,8 @@ function AppContent() {
       const client = new WebRTCClient(signalingServer, newAgentId, publicKey, {
         onConnected: (path, pro) => {
           setConnected(path, pro);
+          // Set repo path in git store to load persisted commit draft
+          setCurrentRepoPath(path);
           // Record connection in machine store
           recordConnection(newAgentId, path, pro);
           // Navigate to repo view
@@ -99,7 +101,7 @@ function AppContent() {
         setError(error instanceof Error ? error.message : 'Connection failed');
       }
     },
-    [signalingServer, navigate, setConnecting, setSignaling, setConnected, setDisconnected, setReconnecting, setError, handleResponse, recordConnection]
+    [signalingServer, navigate, setConnecting, setSignaling, setConnected, setCurrentRepoPath, setDisconnected, setReconnecting, setError, handleResponse, recordConnection]
   );
 
   const handleDisconnect = useCallback(() => {

@@ -1,6 +1,59 @@
 import { create } from 'zustand';
 import type { GitStatus, FileDiff, Commit, Branch, FileChange, ClaudeModel, TokenUsage } from '@quicksave/shared';
 
+// localStorage helpers for commit message persistence
+const COMMIT_DRAFT_PREFIX = 'quicksave:commit-draft:';
+
+interface CommitDraft {
+  message: string;
+  description: string;
+  updatedAt: number;
+}
+
+function getCommitDraftKey(repoPath: string): string {
+  // Use encodeURIComponent for safe key generation (handles all unicode)
+  return `${COMMIT_DRAFT_PREFIX}${encodeURIComponent(repoPath)}`;
+}
+
+function saveCommitDraft(repoPath: string, message: string, description: string): void {
+  if (!repoPath) return;
+  // Don't save empty drafts
+  if (!message && !description) return;
+  const draft: CommitDraft = { message, description, updatedAt: Date.now() };
+  try {
+    const key = getCommitDraftKey(repoPath);
+    localStorage.setItem(key, JSON.stringify(draft));
+  } catch {
+    // Ignore localStorage errors
+  }
+}
+
+function loadCommitDraft(repoPath: string): CommitDraft | null {
+  if (!repoPath) return null;
+  try {
+    const key = getCommitDraftKey(repoPath);
+    const data = localStorage.getItem(key);
+    if (!data) return null;
+    const draft = JSON.parse(data) as CommitDraft;
+    // Only return if there's actual content
+    if (draft.message || draft.description) {
+      return draft;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function clearCommitDraft(repoPath: string): void {
+  if (!repoPath) return;
+  try {
+    localStorage.removeItem(getCommitDraftKey(repoPath));
+  } catch {
+    // Ignore localStorage errors
+  }
+}
+
 export type SelectionSource = 'staged' | 'unstaged' | 'untracked';
 
 export interface LineSelection {
@@ -35,6 +88,7 @@ interface GitStore {
   currentBranch: string | null;
   isLoading: boolean;
   error: string | null;
+  currentRepoPath: string | null; // Track current repo for commit draft persistence
 
   // Commit form
   commitMessage: string;
@@ -69,6 +123,7 @@ interface GitStore {
   setCommitMessage: (message: string) => void;
   setCommitDescription: (description: string) => void;
   clearCommitForm: () => void;
+  setCurrentRepoPath: (repoPath: string | null) => void;
   reset: () => void;
 
   // AI Summary actions
@@ -98,6 +153,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
   currentBranch: null,
   isLoading: false,
   error: null,
+  currentRepoPath: null,
   commitMessage: '',
   commitDescription: '',
 
@@ -172,21 +228,79 @@ export const useGitStore = create<GitStore>((set, get) => ({
 
   setError: (error) => set({ error }),
 
-  setCommitMessage: (message) => set({ commitMessage: message }),
+  setCommitMessage: (message) => {
+    const { currentRepoPath, commitDescription } = get();
+    set({ commitMessage: message });
+    if (currentRepoPath) {
+      if (!message && !commitDescription) {
+        clearCommitDraft(currentRepoPath);
+      } else {
+        saveCommitDraft(currentRepoPath, message, commitDescription);
+      }
+    }
+  },
 
-  setCommitDescription: (description) => set({ commitDescription: description }),
+  setCommitDescription: (description) => {
+    const { currentRepoPath, commitMessage } = get();
+    set({ commitDescription: description });
+    if (currentRepoPath) {
+      if (!commitMessage && !description) {
+        clearCommitDraft(currentRepoPath);
+      } else {
+        saveCommitDraft(currentRepoPath, commitMessage, description);
+      }
+    }
+  },
 
-  clearCommitForm: () => set({ commitMessage: '', commitDescription: '' }),
+  clearCommitForm: () => {
+    const { currentRepoPath } = get();
+    set({ commitMessage: '', commitDescription: '' });
+    if (currentRepoPath) {
+      clearCommitDraft(currentRepoPath);
+    }
+  },
+
+  setCurrentRepoPath: (repoPath) => {
+    set({ currentRepoPath: repoPath });
+    if (repoPath) {
+      // Load persisted commit draft for this repo
+      const draft = loadCommitDraft(repoPath);
+      if (draft) {
+        set({ commitMessage: draft.message, commitDescription: draft.description });
+      }
+    }
+  },
 
   // AI Summary actions
-  setAiSummary: (summary, description, tokenUsage, cached) =>
-    set({
-      aiSummary: summary,
-      aiDescription: description ?? null,
-      aiSummaryError: null,
-      aiTokenUsage: tokenUsage ?? null,
-      aiResultCached: cached ?? false,
-    }),
+  setAiSummary: (summary, description, tokenUsage, cached) => {
+    const { commitMessage, currentRepoPath } = get();
+
+    // If commit message is empty, auto-apply the AI summary directly
+    if (!commitMessage.trim() && summary) {
+      set({
+        commitMessage: summary,
+        commitDescription: description ?? '',
+        aiSummary: null,
+        aiDescription: null,
+        aiSummaryError: null,
+        aiTokenUsage: tokenUsage ?? null,
+        aiResultCached: cached ?? false,
+      });
+      // Save to localStorage
+      if (currentRepoPath) {
+        saveCommitDraft(currentRepoPath, summary, description ?? '');
+      }
+    } else {
+      // Otherwise, store as suggestion for user to review
+      set({
+        aiSummary: summary,
+        aiDescription: description ?? null,
+        aiSummaryError: null,
+        aiTokenUsage: tokenUsage ?? null,
+        aiResultCached: cached ?? false,
+      });
+    }
+  },
 
   setGeneratingAiSummary: (loading) => set({ isGeneratingAiSummary: loading }),
 
@@ -199,7 +313,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
   clearAiSummary: () => set({ aiSummary: null, aiDescription: null, aiSummaryError: null, aiTokenUsage: null, aiResultCached: false }),
 
   applyAiSummary: () => {
-    const { aiSummary, aiDescription } = get();
+    const { aiSummary, aiDescription, currentRepoPath } = get();
     if (aiSummary) {
       set({
         commitMessage: aiSummary,
@@ -209,6 +323,10 @@ export const useGitStore = create<GitStore>((set, get) => ({
         aiTokenUsage: null,
         aiResultCached: false,
       });
+      // Save to localStorage
+      if (currentRepoPath) {
+        saveCommitDraft(currentRepoPath, aiSummary, aiDescription ?? '');
+      }
     }
   },
 
@@ -333,6 +451,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
       currentBranch: null,
       isLoading: false,
       error: null,
+      currentRepoPath: null,
       commitMessage: '',
       commitDescription: '',
       aiSummary: null,

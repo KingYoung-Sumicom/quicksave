@@ -16,7 +16,8 @@
       "Bash(stat:*)",
       "Bash(source ~/.zshrc)",
       "Bash(source ~/.bashrc)",
-      "Bash(npx tsc --noEmit)"
+      "Bash(npx tsc --noEmit)",
+      "Bash(pnpm --filter @quicksave/pwa exec tsc:*)"
     ]
   }
 }

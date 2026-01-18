@@ -32,6 +32,14 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
   const canCommit = useGitStore(selectCanCommit);
   const [showDescription, setShowDescription] = useState(false);
 
+  // Auto-show description field when commitDescription has content
+  // (e.g., from AI auto-fill or localStorage restoration)
+  useEffect(() => {
+    if (commitDescription && !showDescription) {
+      setShowDescription(true);
+    }
+  }, [commitDescription, showDescription]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canCommit) return;
