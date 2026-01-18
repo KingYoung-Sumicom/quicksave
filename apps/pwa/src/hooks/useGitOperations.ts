@@ -291,7 +291,7 @@ export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>
           throw new Error(response.error || 'Failed to generate summary');
         }
 
-        setAiSummary(response.summary ?? null, response.description);
+        setAiSummary(response.summary ?? null, response.description, response.tokenUsage, response.cached);
       } catch (error) {
         setAiSummaryError(error instanceof Error ? error.message : 'Failed to generate summary');
       } finally {

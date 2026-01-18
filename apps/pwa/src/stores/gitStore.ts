@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { GitStatus, FileDiff, Commit, Branch, FileChange, ClaudeModel } from '@quicksave/shared';
+import type { GitStatus, FileDiff, Commit, Branch, FileChange, ClaudeModel, TokenUsage } from '@quicksave/shared';
 
 export type SelectionSource = 'staged' | 'unstaged' | 'untracked';
 
@@ -32,6 +32,8 @@ interface GitStore {
   aiSummaryError: string | null;
   selectedModel: ClaudeModel;
   apiKeyConfigured: boolean;
+  aiTokenUsage: TokenUsage | null;
+  aiResultCached: boolean;
 
   // Selection state
   selectedFiles: Set<string>;
@@ -55,7 +57,7 @@ interface GitStore {
   reset: () => void;
 
   // AI Summary actions
-  setAiSummary: (summary: string | null, description?: string | null) => void;
+  setAiSummary: (summary: string | null, description?: string | null, tokenUsage?: TokenUsage | null, cached?: boolean) => void;
   setGeneratingAiSummary: (loading: boolean) => void;
   setAiSummaryError: (error: string | null) => void;
   clearAiSummary: () => void;
@@ -91,6 +93,8 @@ export const useGitStore = create<GitStore>((set, get) => ({
   aiSummaryError: null,
   selectedModel: 'claude-sonnet-4-20250514',
   apiKeyConfigured: false,
+  aiTokenUsage: null,
+  aiResultCached: false,
 
   // Selection state
   selectedFiles: new Set(),
@@ -160,14 +164,20 @@ export const useGitStore = create<GitStore>((set, get) => ({
   clearCommitForm: () => set({ commitMessage: '', commitDescription: '' }),
 
   // AI Summary actions
-  setAiSummary: (summary, description) =>
-    set({ aiSummary: summary, aiDescription: description ?? null, aiSummaryError: null }),
+  setAiSummary: (summary, description, tokenUsage, cached) =>
+    set({
+      aiSummary: summary,
+      aiDescription: description ?? null,
+      aiSummaryError: null,
+      aiTokenUsage: tokenUsage ?? null,
+      aiResultCached: cached ?? false,
+    }),
 
   setGeneratingAiSummary: (loading) => set({ isGeneratingAiSummary: loading }),
 
   setAiSummaryError: (error) => set({ aiSummaryError: error, isGeneratingAiSummary: false }),
 
-  clearAiSummary: () => set({ aiSummary: null, aiDescription: null, aiSummaryError: null }),
+  clearAiSummary: () => set({ aiSummary: null, aiDescription: null, aiSummaryError: null, aiTokenUsage: null, aiResultCached: false }),
 
   applyAiSummary: () => {
     const { aiSummary, aiDescription } = get();
@@ -177,6 +187,8 @@ export const useGitStore = create<GitStore>((set, get) => ({
         commitDescription: aiDescription ?? '',
         aiSummary: null,
         aiDescription: null,
+        aiTokenUsage: null,
+        aiResultCached: false,
       });
     }
   },
@@ -309,6 +321,8 @@ export const useGitStore = create<GitStore>((set, get) => ({
       isGeneratingAiSummary: false,
       aiSummaryError: null,
       selectedModel: 'claude-sonnet-4-20250514',
+      aiTokenUsage: null,
+      aiResultCached: false,
       // Note: apiKeyConfigured is not reset as it's a global setting
       selectedFiles: new Set(),
       selectedLines: new Map(),

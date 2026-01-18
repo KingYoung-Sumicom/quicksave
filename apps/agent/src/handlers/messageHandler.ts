@@ -40,11 +40,23 @@ export class MessageHandler {
   private git: GitOperations;
   private agentVersion = '0.1.0';
   private repoPath: string;
+  private aiService: CommitSummaryService | null = null;
 
   constructor(repoPath: string, _license?: License) {
     this.repoPath = repoPath;
     this.git = new GitOperations(repoPath);
     // License handling will be implemented later
+  }
+
+  private getAiService(): CommitSummaryService | null {
+    const apiKey = getAnthropicApiKey();
+    if (!apiKey) return null;
+
+    // Create service lazily and reuse for caching
+    if (!this.aiService) {
+      this.aiService = new CommitSummaryService(apiKey);
+    }
+    return this.aiService;
   }
 
   async handleMessage(message: Message): Promise<Message> {
@@ -252,9 +264,9 @@ export class MessageHandler {
   private async handleGenerateCommitSummary(
     message: Message<GenerateCommitSummaryRequestPayload>
   ): Promise<Message<GenerateCommitSummaryResponsePayload>> {
-    const apiKey = getAnthropicApiKey();
+    const aiService = this.getAiService();
 
-    if (!apiKey) {
+    if (!aiService) {
       const response = createMessage<GenerateCommitSummaryResponsePayload>(
         'ai:generate-commit-summary:response',
         {
@@ -285,8 +297,7 @@ export class MessageHandler {
       // Collect diffs for all staged files
       const diffs = await Promise.all(status.staged.map((file) => this.git.getDiff(file.path, true)));
 
-      // Generate summary
-      const aiService = new CommitSummaryService(apiKey);
+      // Generate summary (uses internal queue and cache)
       const result = await aiService.generateSummary({
         diffs,
         context: message.payload.context,
@@ -299,6 +310,8 @@ export class MessageHandler {
           success: true,
           summary: result.summary,
           description: result.description,
+          tokenUsage: result.tokenUsage,
+          cached: result.cached,
         }
       );
       response.id = message.id;

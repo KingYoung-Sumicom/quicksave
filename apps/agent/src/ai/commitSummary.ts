@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { FileDiff, ClaudeModel } from '@quicksave/shared';
+import { createHash } from 'crypto';
+import type { FileDiff, ClaudeModel, TokenUsage } from '@quicksave/shared';
 
 export interface GenerateSummaryOptions {
   diffs: FileDiff[];
@@ -10,6 +11,13 @@ export interface GenerateSummaryOptions {
 export interface GenerateSummaryResult {
   summary: string;
   description?: string;
+  tokenUsage?: TokenUsage;
+  cached?: boolean;
+}
+
+interface CacheEntry {
+  result: GenerateSummaryResult;
+  timestamp: number;
 }
 
 const DEFAULT_MODEL: ClaudeModel = 'claude-sonnet-4-20250514';
@@ -17,9 +25,13 @@ const DEFAULT_MODEL: ClaudeModel = 'claude-sonnet-4-20250514';
 const MAX_DIFF_CHARS_PER_FILE = 1000;
 // Max total characters for all diffs combined
 const MAX_TOTAL_DIFF_CHARS = 8000;
+// Cache TTL: 5 minutes
+const CACHE_TTL_MS = 5 * 60 * 1000;
 
 export class CommitSummaryService {
   private client: Anthropic;
+  private cache = new Map<string, CacheEntry>();
+  private pendingRequests = new Map<string, Promise<GenerateSummaryResult>>();
 
   constructor(apiKey: string) {
     this.client = new Anthropic({ apiKey });
@@ -34,6 +46,39 @@ export class CommitSummaryService {
       return { summary: 'Update files' };
     }
 
+    // Generate cache key from diff content and model
+    const cacheKey = this.getCacheKey(diffText, context, model);
+
+    // Check cache first
+    const cached = this.getFromCache(cacheKey);
+    if (cached) {
+      return { ...cached, cached: true };
+    }
+
+    // Check if there's already a pending request for this exact content
+    const pending = this.pendingRequests.get(cacheKey);
+    if (pending) {
+      const result = await pending;
+      return { ...result, cached: true };
+    }
+
+    // Create the request promise and store it
+    const requestPromise = this.executeGeneration(diffText, context, model, cacheKey);
+    this.pendingRequests.set(cacheKey, requestPromise);
+
+    try {
+      return await requestPromise;
+    } finally {
+      this.pendingRequests.delete(cacheKey);
+    }
+  }
+
+  private async executeGeneration(
+    diffText: string,
+    context: string | undefined,
+    model: ClaudeModel,
+    cacheKey: string
+  ): Promise<GenerateSummaryResult> {
     const prompt = this.buildPrompt(diffText, context);
 
     const response = await this.client.messages.create({
@@ -42,7 +87,33 @@ export class CommitSummaryService {
       messages: [{ role: 'user', content: prompt }],
     });
 
-    return this.parseResponse(response);
+    const result = this.parseResponse(response);
+
+    // Store in cache
+    this.cache.set(cacheKey, {
+      result,
+      timestamp: Date.now(),
+    });
+
+    return result;
+  }
+
+  private getCacheKey(diffText: string, context: string | undefined, model: ClaudeModel): string {
+    const content = `${model}:${context || ''}:${diffText}`;
+    return createHash('sha256').update(content).digest('hex').slice(0, 16);
+  }
+
+  private getFromCache(key: string): GenerateSummaryResult | null {
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+
+    // Check if cache is still valid
+    if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
+      this.cache.delete(key);
+      return null;
+    }
+
+    return entry.result;
   }
 
   private formatDiffsForPrompt(diffs: FileDiff[]): string {
@@ -106,17 +177,23 @@ Respond in this exact JSON format:
       throw new Error('Unexpected response format');
     }
 
+    const tokenUsage: TokenUsage = {
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+    };
+
     // Parse JSON from response
     const jsonMatch = content.text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       // Fallback: use the raw text as summary
-      return { summary: content.text.trim().slice(0, 72) };
+      return { summary: content.text.trim().slice(0, 72), tokenUsage };
     }
 
     const parsed = JSON.parse(jsonMatch[0]);
     return {
       summary: parsed.summary || 'Update code',
       description: parsed.description,
+      tokenUsage,
     };
   }
 }

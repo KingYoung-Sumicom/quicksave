@@ -283,12 +283,19 @@ export interface GenerateCommitSummaryRequestPayload {
   model?: ClaudeModel;
 }
 
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface GenerateCommitSummaryResponsePayload {
   success: boolean;
   summary?: string;
   description?: string;
   error?: string;
   errorCode?: 'NO_API_KEY' | 'NO_STAGED_CHANGES' | 'API_ERROR' | 'RATE_LIMITED';
+  tokenUsage?: TokenUsage;
+  cached?: boolean;
 }
 
 // API Key Management

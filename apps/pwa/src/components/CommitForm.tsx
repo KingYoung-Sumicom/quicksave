@@ -26,6 +26,8 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
     apiKeyConfigured,
     applyAiSummary,
     clearAiSummary,
+    aiTokenUsage,
+    aiResultCached,
   } = useGitStore();
   const canCommit = useGitStore(selectCanCommit);
   const [showDescription, setShowDescription] = useState(false);
@@ -133,13 +135,24 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
             {aiDescription && (
               <p className="text-xs text-slate-400 mb-2 whitespace-pre-wrap">{aiDescription}</p>
             )}
-            <button
-              type="button"
-              onClick={handleApplySuggestion}
-              className="text-sm text-purple-400 hover:text-purple-300 font-medium transition-colors"
-            >
-              Use this message
-            </button>
+            <div className="flex items-center justify-between">
+              <button
+                type="button"
+                onClick={handleApplySuggestion}
+                className="text-sm text-purple-400 hover:text-purple-300 font-medium transition-colors"
+              >
+                Use this message
+              </button>
+              {(aiTokenUsage || aiResultCached) && (
+                <span className="text-xs text-slate-500">
+                  {aiResultCached ? (
+                    'cached'
+                  ) : aiTokenUsage ? (
+                    `${aiTokenUsage.inputTokens + aiTokenUsage.outputTokens} tokens`
+                  ) : null}
+                </span>
+              )}
+            </div>
           </div>
         )}
 
