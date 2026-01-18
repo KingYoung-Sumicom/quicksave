@@ -1,6 +1,8 @@
 import { simpleGit, SimpleGit, StatusResult } from 'simple-git';
-import { readFile } from 'fs/promises';
+import { readFile, writeFile, unlink } from 'fs/promises';
 import { join } from 'path';
+import { tmpdir } from 'os';
+import { randomBytes } from 'crypto';
 import type {
   GitStatus,
   FileChange,
@@ -185,6 +187,53 @@ export class GitOperations {
   async unstage(paths: string[]): Promise<void> {
     await this.ensureInitialized();
     await this.git.reset(['HEAD', '--', ...paths]);
+  }
+
+  /**
+   * Stage a patch (for line-level staging)
+   */
+  async stagePatch(patch: string): Promise<void> {
+    await this.ensureInitialized();
+    const tempFile = await this.writeTempPatch(patch);
+    try {
+      await this.git.raw(['apply', '--cached', tempFile]);
+    } finally {
+      await this.cleanupTempFile(tempFile);
+    }
+  }
+
+  /**
+   * Unstage a patch (for line-level unstaging)
+   */
+  async unstagePatch(patch: string): Promise<void> {
+    await this.ensureInitialized();
+    const tempFile = await this.writeTempPatch(patch);
+    try {
+      await this.git.raw(['apply', '--cached', '-R', tempFile]);
+    } finally {
+      await this.cleanupTempFile(tempFile);
+    }
+  }
+
+  /**
+   * Write a patch to a temporary file
+   */
+  private async writeTempPatch(patch: string): Promise<string> {
+    const id = randomBytes(8).toString('hex');
+    const tempPath = join(tmpdir(), `quicksave-patch-${id}.patch`);
+    await writeFile(tempPath, patch, 'utf-8');
+    return tempPath;
+  }
+
+  /**
+   * Clean up a temporary file
+   */
+  private async cleanupTempFile(path: string): Promise<void> {
+    try {
+      await unlink(path);
+    } catch {
+      // Ignore cleanup errors
+    }
   }
 
   /**

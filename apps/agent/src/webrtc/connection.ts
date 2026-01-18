@@ -20,7 +20,7 @@ export interface ConnectionConfig {
   signalingServer: string;
   agentId: string;
   keyPair: { publicKey: string; secretKey: string };
-  iceServers?: Array<{ urls: string | string[] }>;
+  iceServers?: Array<{ urls: string }>;
 }
 
 export interface WebRTCConnectionEvents {

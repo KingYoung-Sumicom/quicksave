@@ -1,15 +1,99 @@
-import { useEffect } from 'react';
-import { useGitStore, selectStagedFiles, selectUnstagedFiles, selectUntrackedFiles } from '../stores/gitStore';
+import { useEffect, useCallback } from 'react';
+import {
+  useGitStore,
+  selectStagedFiles,
+  selectUnstagedFiles,
+  selectUntrackedFiles,
+  selectHasSelection,
+  selectSelectionSummary,
+  type LineSelection,
+} from '../stores/gitStore';
+import type { FileDiff } from '@quicksave/shared';
 import { FileList } from './FileList';
 import { CommitForm } from './CommitForm';
+import { FloatingActionButton } from './FloatingActionButton';
 
 interface RepoViewProps {
   onRefresh: () => void;
   onFetchDiff: (path: string, staged: boolean) => void;
   onStage: (paths: string[]) => void;
   onUnstage: (paths: string[]) => void;
+  onStagePatch: (patch: string) => void;
+  onUnstagePatch: (patch: string) => void;
   onDiscard: (paths: string[]) => void;
   onCommit: (message: string, description?: string) => Promise<void>;
+}
+
+// Helper to generate a patch from selected lines
+function generatePatch(
+  path: string,
+  diff: FileDiff,
+  selectedLines: LineSelection[]
+): string {
+  if (selectedLines.length === 0) return '';
+
+  const lines: string[] = [];
+  lines.push(`diff --git a/${path} b/${path}`);
+  lines.push(`--- a/${path}`);
+  lines.push(`+++ b/${path}`);
+
+  // Group selected lines by hunk
+  const linesByHunk = new Map<number, LineSelection[]>();
+  for (const line of selectedLines) {
+    const existing = linesByHunk.get(line.hunkIndex) || [];
+    existing.push(line);
+    linesByHunk.set(line.hunkIndex, existing);
+  }
+
+  // Process each hunk that has selected lines
+  for (const [hunkIndex, hunkSelectedLines] of linesByHunk.entries()) {
+    const hunk = diff.hunks[hunkIndex];
+    if (!hunk) continue;
+
+    const hunkLines = hunk.content.split('\n');
+    const selectedLineIndices = new Set(hunkSelectedLines.map(l => l.lineIndex));
+
+    // Build the new hunk with only selected changes + context
+    const newHunkLines: string[] = [];
+    let oldLineCount = 0;
+    let newLineCount = 0;
+
+    for (let i = 0; i < hunkLines.length; i++) {
+      const line = hunkLines[i];
+      if (line.startsWith('@@')) continue;
+
+      const lineType = line.charAt(0);
+
+      if (lineType === '+') {
+        if (selectedLineIndices.has(i)) {
+          newHunkLines.push(line);
+          newLineCount++;
+        }
+      } else if (lineType === '-') {
+        if (selectedLineIndices.has(i)) {
+          newHunkLines.push(line);
+          oldLineCount++;
+        } else {
+          // Convert unselected removals to context
+          newHunkLines.push(' ' + line.slice(1));
+          oldLineCount++;
+          newLineCount++;
+        }
+      } else {
+        // Context line
+        newHunkLines.push(line);
+        oldLineCount++;
+        newLineCount++;
+      }
+    }
+
+    if (newHunkLines.length > 0) {
+      lines.push(`@@ -${hunk.oldStart},${oldLineCount} +${hunk.newStart},${newLineCount} @@`);
+      lines.push(...newHunkLines);
+    }
+  }
+
+  return lines.join('\n') + '\n';
 }
 
 export function RepoView({
@@ -17,15 +101,35 @@ export function RepoView({
   onFetchDiff,
   onStage,
   onUnstage,
+  onStagePatch,
+  onUnstagePatch,
   onDiscard: _onDiscard,
   onCommit,
 }: RepoViewProps) {
   // TODO: Add discard UI (onDiscard will be used in future)
   void _onDiscard;
-  const { expandedDiffs, loadingDiffs, toggleFileExpanded, collapseFile, isLoading, error } = useGitStore();
+  const {
+    expandedDiffs,
+    loadingDiffs,
+    toggleFileExpanded,
+    collapseFile,
+    isLoading,
+    error,
+    selectedFiles,
+    selectedLines,
+    selectionSource,
+    isSelectionOperationPending,
+    toggleFileSelection,
+    toggleLineSelection,
+    selectAllFiles,
+    clearSelection,
+    setSelectionOperationPending,
+  } = useGitStore();
   const staged = useGitStore(selectStagedFiles);
   const unstaged = useGitStore(selectUnstagedFiles);
   const untracked = useGitStore(selectUntrackedFiles);
+  const hasSelection = useGitStore(selectHasSelection);
+  const selectionSummary = useGitStore(selectSelectionSummary);
 
   // Refresh on mount
   useEffect(() => {
@@ -42,6 +146,56 @@ export function RepoView({
   const handleCloseDiff = (path: string) => {
     collapseFile(path);
   };
+
+  // Handle selection action (stage/unstage)
+  const handleSelectionAction = useCallback(async () => {
+    if (!selectionSource) return;
+
+    setSelectionOperationPending(true);
+    try {
+      // If there are selected files, stage/unstage them
+      if (selectedFiles.size > 0) {
+        const paths = Array.from(selectedFiles);
+        if (selectionSource === 'staged') {
+          await onUnstage(paths);
+        } else {
+          await onStage(paths);
+        }
+      }
+
+      // If there are selected lines, generate and apply patches
+      if (selectedLines.size > 0) {
+        for (const [path, lines] of selectedLines.entries()) {
+          const diff = expandedDiffs[path];
+          if (!diff) continue;
+
+          const patch = generatePatch(path, diff, lines);
+          if (patch) {
+            if (selectionSource === 'staged') {
+              await onUnstagePatch(patch);
+            } else {
+              await onStagePatch(patch);
+            }
+          }
+        }
+      }
+
+      clearSelection();
+    } finally {
+      setSelectionOperationPending(false);
+    }
+  }, [
+    selectionSource,
+    selectedFiles,
+    selectedLines,
+    expandedDiffs,
+    onStage,
+    onUnstage,
+    onStagePatch,
+    onUnstagePatch,
+    clearSelection,
+    setSelectionOperationPending,
+  ]);
 
   const totalChanges = staged.length + unstaged.length + untracked.length;
 
@@ -104,6 +258,11 @@ export function RepoView({
           expandedDiffs={expandedDiffs}
           loadingDiffs={loadingDiffs}
           onCloseDiff={handleCloseDiff}
+          selectedFiles={selectedFiles}
+          selectedLines={selectedLines}
+          onToggleFileSelection={toggleFileSelection}
+          onToggleLineSelection={toggleLineSelection}
+          onSelectAllFiles={selectAllFiles}
         />
 
         {/* Unstaged Files */}
@@ -117,6 +276,11 @@ export function RepoView({
           expandedDiffs={expandedDiffs}
           loadingDiffs={loadingDiffs}
           onCloseDiff={handleCloseDiff}
+          selectedFiles={selectedFiles}
+          selectedLines={selectedLines}
+          onToggleFileSelection={toggleFileSelection}
+          onToggleLineSelection={toggleLineSelection}
+          onSelectAllFiles={selectAllFiles}
         />
 
         {/* Untracked Files */}
@@ -130,6 +294,11 @@ export function RepoView({
           expandedDiffs={expandedDiffs}
           loadingDiffs={loadingDiffs}
           onCloseDiff={handleCloseDiff}
+          selectedFiles={selectedFiles}
+          selectedLines={selectedLines}
+          onToggleFileSelection={toggleFileSelection}
+          onToggleLineSelection={toggleLineSelection}
+          onSelectAllFiles={selectAllFiles}
         />
 
         {/* Commit Form */}
@@ -148,6 +317,16 @@ export function RepoView({
           </div>
         )}
       </div>
+
+      {/* Floating Action Button for Selection */}
+      <FloatingActionButton
+        hasSelection={hasSelection}
+        selectionSummary={selectionSummary}
+        selectionSource={selectionSource}
+        isLoading={isSelectionOperationPending}
+        onAction={handleSelectionAction}
+        onClear={clearSelection}
+      />
     </div>
   );
 }

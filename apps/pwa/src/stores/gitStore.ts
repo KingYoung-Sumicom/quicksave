@@ -1,6 +1,15 @@
 import { create } from 'zustand';
 import type { GitStatus, FileDiff, Commit, Branch, FileChange } from '@quicksave/shared';
 
+export type SelectionSource = 'staged' | 'unstaged' | 'untracked';
+
+export interface LineSelection {
+  hunkIndex: number;
+  lineIndex: number; // Index within the hunk content
+  type: 'add' | 'remove';
+  content: string;
+}
+
 interface GitStore {
   // State
   status: GitStatus | null;
@@ -16,6 +25,12 @@ interface GitStore {
   commitMessage: string;
   commitDescription: string;
 
+  // Selection state
+  selectedFiles: Set<string>;
+  selectedLines: Map<string, LineSelection[]>; // path -> selected lines
+  selectionSource: SelectionSource | null;
+  isSelectionOperationPending: boolean;
+
   // Actions
   setStatus: (status: GitStatus) => void;
   toggleFileExpanded: (path: string) => boolean; // Returns true if now expanded (needs fetch)
@@ -30,6 +45,13 @@ interface GitStore {
   setCommitDescription: (description: string) => void;
   clearCommitForm: () => void;
   reset: () => void;
+
+  // Selection actions
+  toggleFileSelection: (path: string, source: SelectionSource) => void;
+  toggleLineSelection: (path: string, line: LineSelection, source: SelectionSource) => void;
+  selectAllFiles: (paths: string[], source: SelectionSource) => void;
+  clearSelection: () => void;
+  setSelectionOperationPending: (pending: boolean) => void;
 }
 
 export const useGitStore = create<GitStore>((set, get) => ({
@@ -45,8 +67,17 @@ export const useGitStore = create<GitStore>((set, get) => ({
   commitMessage: '',
   commitDescription: '',
 
+  // Selection state
+  selectedFiles: new Set(),
+  selectedLines: new Map(),
+  selectionSource: null,
+  isSelectionOperationPending: false,
+
   // Actions
-  setStatus: (status) => set({ status, error: null }),
+  setStatus: (status) => {
+    // Clear selection when status changes to avoid stale selections
+    set({ status, error: null, selectedFiles: new Set(), selectedLines: new Map(), selectionSource: null });
+  },
 
   toggleFileExpanded: (path) => {
     const { expandedDiffs } = get();
@@ -103,6 +134,113 @@ export const useGitStore = create<GitStore>((set, get) => ({
 
   clearCommitForm: () => set({ commitMessage: '', commitDescription: '' }),
 
+  // Selection actions
+  toggleFileSelection: (path, source) => {
+    const { selectedFiles, selectionSource } = get();
+
+    // If selecting from a different source, clear existing selection
+    if (selectionSource !== null && selectionSource !== source) {
+      set({
+        selectedFiles: new Set([path]),
+        selectedLines: new Map(),
+        selectionSource: source,
+      });
+      return;
+    }
+
+    const newSelectedFiles = new Set(selectedFiles);
+    if (newSelectedFiles.has(path)) {
+      newSelectedFiles.delete(path);
+    } else {
+      newSelectedFiles.add(path);
+    }
+
+    // Clear selection source if no files selected
+    const newSource = newSelectedFiles.size === 0 ? null : source;
+    set({ selectedFiles: newSelectedFiles, selectionSource: newSource });
+  },
+
+  toggleLineSelection: (path, line, source) => {
+    const { selectedLines, selectionSource, selectedFiles } = get();
+
+    // If selecting from a different source, clear existing selection
+    if (selectionSource !== null && selectionSource !== source) {
+      const newLines = new Map<string, LineSelection[]>();
+      newLines.set(path, [line]);
+      set({
+        selectedFiles: new Set(),
+        selectedLines: newLines,
+        selectionSource: source,
+      });
+      return;
+    }
+
+    const newSelectedLines = new Map(selectedLines);
+    const pathLines = newSelectedLines.get(path) || [];
+
+    // Check if this line is already selected
+    const existingIndex = pathLines.findIndex(
+      l => l.hunkIndex === line.hunkIndex && l.lineIndex === line.lineIndex
+    );
+
+    if (existingIndex >= 0) {
+      // Remove the line
+      const newPathLines = [...pathLines];
+      newPathLines.splice(existingIndex, 1);
+      if (newPathLines.length === 0) {
+        newSelectedLines.delete(path);
+      } else {
+        newSelectedLines.set(path, newPathLines);
+      }
+    } else {
+      // Add the line
+      newSelectedLines.set(path, [...pathLines, line]);
+    }
+
+    // Clear selection source if no lines and no files selected
+    const hasSelection = newSelectedLines.size > 0 || selectedFiles.size > 0;
+    const newSource = hasSelection ? source : null;
+    set({ selectedLines: newSelectedLines, selectionSource: newSource });
+  },
+
+  selectAllFiles: (paths, source) => {
+    const { selectedFiles, selectionSource } = get();
+
+    // If selecting from a different source, just select the new files
+    if (selectionSource !== null && selectionSource !== source) {
+      set({
+        selectedFiles: new Set(paths),
+        selectedLines: new Map(),
+        selectionSource: source,
+      });
+      return;
+    }
+
+    // Check if all files are already selected
+    const allSelected = paths.every(p => selectedFiles.has(p));
+
+    if (allSelected) {
+      // Deselect all from this source
+      const newSelectedFiles = new Set(selectedFiles);
+      paths.forEach(p => newSelectedFiles.delete(p));
+      const newSource = newSelectedFiles.size === 0 ? null : source;
+      set({ selectedFiles: newSelectedFiles, selectionSource: newSource });
+    } else {
+      // Select all
+      const newSelectedFiles = new Set(selectedFiles);
+      paths.forEach(p => newSelectedFiles.add(p));
+      set({ selectedFiles: newSelectedFiles, selectionSource: source });
+    }
+  },
+
+  clearSelection: () => set({
+    selectedFiles: new Set(),
+    selectedLines: new Map(),
+    selectionSource: null,
+  }),
+
+  setSelectionOperationPending: (pending) => set({ isSelectionOperationPending: pending }),
+
   reset: () =>
     set({
       status: null,
@@ -115,6 +253,10 @@ export const useGitStore = create<GitStore>((set, get) => ({
       error: null,
       commitMessage: '',
       commitDescription: '',
+      selectedFiles: new Set(),
+      selectedLines: new Map(),
+      selectionSource: null,
+      isSelectionOperationPending: false,
     }),
 }));
 
@@ -143,4 +285,35 @@ export const selectCanCommit = (state: GitStore): boolean => {
     state.status.staged.length > 0 &&
     state.commitMessage.trim().length > 0
   );
+};
+
+// Selection selectors
+export const selectHasSelection = (state: GitStore): boolean => {
+  return state.selectedFiles.size > 0 || state.selectedLines.size > 0;
+};
+
+export const selectTotalSelectedCount = (state: GitStore): number => {
+  let count = state.selectedFiles.size;
+  state.selectedLines.forEach((lines) => {
+    count += lines.length;
+  });
+  return count;
+};
+
+export const selectSelectionSummary = (state: GitStore): string => {
+  const fileCount = state.selectedFiles.size;
+  let lineCount = 0;
+  state.selectedLines.forEach((lines) => {
+    lineCount += lines.length;
+  });
+
+  const parts: string[] = [];
+  if (fileCount > 0) {
+    parts.push(`${fileCount} file${fileCount !== 1 ? 's' : ''}`);
+  }
+  if (lineCount > 0) {
+    parts.push(`${lineCount} line${lineCount !== 1 ? 's' : ''}`);
+  }
+
+  return parts.join(', ');
 };

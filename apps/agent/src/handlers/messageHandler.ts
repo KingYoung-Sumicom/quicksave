@@ -9,6 +9,10 @@ import {
   StageResponsePayload,
   UnstageRequestPayload,
   UnstageResponsePayload,
+  StagePatchRequestPayload,
+  StagePatchResponsePayload,
+  UnstagePatchRequestPayload,
+  UnstagePatchResponsePayload,
   CommitRequestPayload,
   CommitResponsePayload,
   LogRequestPayload,
@@ -51,6 +55,10 @@ export class MessageHandler {
           return this.handleStage(message as Message<StageRequestPayload>);
         case 'git:unstage':
           return this.handleUnstage(message as Message<UnstageRequestPayload>);
+        case 'git:stage-patch':
+          return this.handleStagePatch(message as Message<StagePatchRequestPayload>);
+        case 'git:unstage-patch':
+          return this.handleUnstagePatch(message as Message<UnstagePatchRequestPayload>);
         case 'git:commit':
           return this.handleCommit(message as Message<CommitRequestPayload>);
         case 'git:log':
@@ -121,6 +129,38 @@ export class MessageHandler {
       const response = createMessage<UnstageResponsePayload>('git:unstage:response', {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to unstage files',
+      });
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleStagePatch(message: Message<StagePatchRequestPayload>): Promise<Message<StagePatchResponsePayload>> {
+    try {
+      await this.git.stagePatch(message.payload.patch);
+      const response = createMessage<StagePatchResponsePayload>('git:stage-patch:response', { success: true });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<StagePatchResponsePayload>('git:stage-patch:response', {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to stage patch',
+      });
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleUnstagePatch(message: Message<UnstagePatchRequestPayload>): Promise<Message<UnstagePatchResponsePayload>> {
+    try {
+      await this.git.unstagePatch(message.payload.patch);
+      const response = createMessage<UnstagePatchResponsePayload>('git:unstage-patch:response', { success: true });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<UnstagePatchResponsePayload>('git:unstage-patch:response', {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to unstage patch',
       });
       response.id = message.id;
       return response;

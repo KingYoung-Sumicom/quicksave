@@ -5,6 +5,7 @@ import {
   type StatusResponsePayload,
   type DiffResponsePayload,
   type StageResponsePayload,
+  type StagePatchResponsePayload,
   type CommitResponsePayload,
   type LogResponsePayload,
   type BranchesResponsePayload,
@@ -130,6 +131,44 @@ export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>
     [sendRequest, fetchStatus, setLoading, setError]
   );
 
+  const stagePatch = useCallback(
+    async (patch: string) => {
+      setLoading(true);
+      try {
+        const message = createMessage('git:stage-patch', { patch });
+        const response = await sendRequest<StagePatchResponsePayload>(message);
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to stage patch');
+        }
+        await fetchStatus();
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Failed to stage patch');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [sendRequest, fetchStatus, setLoading, setError]
+  );
+
+  const unstagePatch = useCallback(
+    async (patch: string) => {
+      setLoading(true);
+      try {
+        const message = createMessage('git:unstage-patch', { patch });
+        const response = await sendRequest<StagePatchResponsePayload>(message);
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to unstage patch');
+        }
+        await fetchStatus();
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Failed to unstage patch');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [sendRequest, fetchStatus, setLoading, setError]
+  );
+
   const commit = useCallback(
     async (commitMessage: string, description?: string) => {
       setLoading(true);
@@ -226,6 +265,8 @@ export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>
     fetchDiff,
     stageFiles,
     unstageFiles,
+    stagePatch,
+    unstagePatch,
     commit,
     fetchLog,
     fetchBranches,

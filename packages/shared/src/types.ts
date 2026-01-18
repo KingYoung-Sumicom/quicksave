@@ -22,6 +22,10 @@ export type MessageType =
   | 'git:stage:response'
   | 'git:unstage'
   | 'git:unstage:response'
+  | 'git:stage-patch'
+  | 'git:stage-patch:response'
+  | 'git:unstage-patch'
+  | 'git:unstage-patch:response'
   | 'git:commit'
   | 'git:commit:response'
   | 'git:log'
@@ -128,6 +132,19 @@ export interface StageResponsePayload {
 
 export type UnstageRequestPayload = StageRequestPayload;
 export type UnstageResponsePayload = StageResponsePayload;
+
+// Stage/Unstage Patch (for line-level staging)
+export interface StagePatchRequestPayload {
+  patch: string; // Unified diff format
+}
+
+export interface StagePatchResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+export type UnstagePatchRequestPayload = StagePatchRequestPayload;
+export type UnstagePatchResponsePayload = StagePatchResponsePayload;
 
 // Commit
 export interface CommitRequestPayload {

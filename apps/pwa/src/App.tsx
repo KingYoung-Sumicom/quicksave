@@ -36,6 +36,8 @@ function App() {
     fetchDiff,
     stageFiles,
     unstageFiles,
+    stagePatch,
+    unstagePatch,
     commit,
     discardChanges,
   } = useGitOperations(clientRef);
@@ -144,6 +146,8 @@ function App() {
             onFetchDiff={fetchDiff}
             onStage={stageFiles}
             onUnstage={unstageFiles}
+            onStagePatch={stagePatch}
+            onUnstagePatch={unstagePatch}
             onDiscard={discardChanges}
             onCommit={async (msg, desc) => { await commit(msg, desc); }}
           />
