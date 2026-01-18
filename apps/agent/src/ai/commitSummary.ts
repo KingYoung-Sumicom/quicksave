@@ -20,7 +20,7 @@ interface CacheEntry {
   timestamp: number;
 }
 
-const DEFAULT_MODEL: ClaudeModel = 'claude-sonnet-4-20250514';
+const DEFAULT_MODEL: ClaudeModel = 'claude-haiku-4-5';
 // Max characters per file diff for AI generation (roughly 1KB)
 const MAX_DIFF_CHARS_PER_FILE = 1000;
 // Max total characters for all diffs combined

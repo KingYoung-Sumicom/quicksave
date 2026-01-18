@@ -267,13 +267,13 @@ export interface ConnectionInfo {
 // ============================================================================
 
 export type ClaudeModel =
-  | 'claude-sonnet-4-5'
   | 'claude-haiku-4-5'
+  | 'claude-sonnet-4-5'
   | 'claude-opus-4-5';
 
 export const CLAUDE_MODELS: { id: ClaudeModel; name: string; description: string }[] = [
-  { id: 'claude-sonnet-4-5', name: 'Sonnet', description: 'Balanced speed & quality' },
   { id: 'claude-haiku-4-5', name: 'Haiku', description: 'Fast & affordable' },
+  { id: 'claude-sonnet-4-5', name: 'Sonnet', description: 'Balanced speed & quality' },
   { id: 'claude-opus-4-5', name: 'Opus', description: 'Highest quality' },
 ];
 

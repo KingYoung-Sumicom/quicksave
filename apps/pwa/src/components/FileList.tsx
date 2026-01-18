@@ -118,6 +118,7 @@ export function FileList({
   onSelectAllFiles,
 }: FileListProps) {
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
+  const [isCollapsed, setIsCollapsed] = useState(false);
 
   const isFileChange = (item: FileChange | string): item is FileChange => {
     return typeof item === 'object' && 'path' in item;
@@ -377,8 +378,18 @@ export function FileList({
   return (
     <div className="bg-slate-800 rounded-lg overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
+      <div
+        className={clsx(
+          'flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-slate-700/50 transition-colors',
+          !isCollapsed && 'border-b border-slate-700'
+        )}
+        onClick={() => setIsCollapsed(!isCollapsed)}
+      >
         <div className="flex items-center gap-3">
+          {/* Collapse/Expand Icon */}
+          <span className="text-slate-400 w-4 flex-shrink-0 text-xs">
+            {isCollapsed ? '▶' : '▼'}
+          </span>
           {/* Select All Checkbox */}
           <button
             onClick={handleSelectAllClick}
@@ -411,7 +422,10 @@ export function FileList({
           </h3>
         </div>
         <button
-          onClick={() => onAction(allPaths)}
+          onClick={(e) => {
+            e.stopPropagation();
+            onAction(allPaths);
+          }}
           className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded transition-colors"
         >
           {actionLabel} All
@@ -419,14 +433,16 @@ export function FileList({
       </div>
 
       {/* File Tree */}
-      <ul>
-        {[...fileTree.children.values()]
-          .sort((a, b) => {
-            if (a.isFile !== b.isFile) return a.isFile ? 1 : -1;
-            return a.name.localeCompare(b.name);
-          })
-          .map((child) => renderNode(child, 0))}
-      </ul>
+      {!isCollapsed && (
+        <ul>
+          {[...fileTree.children.values()]
+            .sort((a, b) => {
+              if (a.isFile !== b.isFile) return a.isFile ? 1 : -1;
+              return a.name.localeCompare(b.name);
+            })
+            .map((child) => renderNode(child, 0))}
+        </ul>
+      )}
     </div>
   );
 }
