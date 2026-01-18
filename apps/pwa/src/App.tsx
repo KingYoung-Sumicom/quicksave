@@ -1,4 +1,5 @@
-import { useCallback, useRef, useEffect } from 'react';
+import { useCallback, useRef, useEffect, useMemo } from 'react';
+import { HashRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { useConnectionStore } from './stores/connectionStore';
 import { useGitStore } from './stores/gitStore';
 import { useMachineStore } from './stores/machineStore';
@@ -6,11 +7,15 @@ import { useGitOperations } from './hooks/useGitOperations';
 import { WebRTCClient } from './lib/webrtc';
 import { ConnectionSetup } from './components/ConnectionSetup';
 import { FleetDashboard } from './components/FleetDashboard';
+import { ConnectingPage } from './components/ConnectingPage';
 import { StatusBar } from './components/StatusBar';
 import { RepoView } from './components/RepoView';
 
-function App() {
+function AppContent() {
   const clientRef = useRef<WebRTCClient | null>(null);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const intentionalDisconnectRef = useRef(false);
   const {
     state,
     repoPath,
@@ -29,6 +34,7 @@ function App() {
 
   const { status, reset: resetGit } = useGitStore();
   const { machines, recordConnection } = useMachineStore();
+  const agentIdRef = useRef<string | null>(null);
 
   const {
     handleResponse,
@@ -47,12 +53,19 @@ function App() {
 
   const handleConnect = useCallback(
     async (newAgentId: string, publicKey: string) => {
+      // Skip if already connecting to this agent
+      if (agentIdRef.current === newAgentId && clientRef.current) {
+        return;
+      }
+
       // Clean up existing connection
       if (clientRef.current) {
         clientRef.current.disconnect();
         clientRef.current = null;
       }
 
+      // Track the current agent ID
+      agentIdRef.current = newAgentId;
       setConnecting(newAgentId, publicKey);
 
       const client = new WebRTCClient(signalingServer, newAgentId, publicKey, {
@@ -60,6 +73,8 @@ function App() {
           setConnected(path, pro);
           // Record connection in machine store
           recordConnection(newAgentId, path, pro);
+          // Navigate to repo view
+          navigate(`/repo/${newAgentId}`, { replace: true });
         },
         onDisconnected: () => {
           setDisconnected();
@@ -84,17 +99,22 @@ function App() {
         setError(error instanceof Error ? error.message : 'Connection failed');
       }
     },
-    [signalingServer, setConnecting, setSignaling, setConnected, setDisconnected, setReconnecting, setError, handleResponse, recordConnection]
+    [signalingServer, navigate, setConnecting, setSignaling, setConnected, setDisconnected, setReconnecting, setError, handleResponse, recordConnection]
   );
 
   const handleDisconnect = useCallback(() => {
+    // Mark as intentional disconnect to prevent auto-reconnect
+    intentionalDisconnectRef.current = true;
     if (clientRef.current) {
       clientRef.current.disconnect();
       clientRef.current = null;
     }
+    agentIdRef.current = null;
     reset();
     resetGit();
-  }, [reset, resetGit]);
+    // Navigate to home
+    navigate('/', { replace: true });
+  }, [reset, resetGit, navigate]);
 
   // Fetch status and check API key status when connected
   useEffect(() => {
@@ -109,61 +129,133 @@ function App() {
     return () => {
       if (clientRef.current) {
         clientRef.current.disconnect();
+        clientRef.current = null;
       }
+      agentIdRef.current = null;
     };
   }, []);
 
   const isConnected = state === 'connected';
   const isReconnecting = state === 'reconnecting';
 
+  // Home page - redirect to repo if connected
+  const homeElement = useMemo(() => {
+    if (isConnected && agentIdRef.current) {
+      // Already connected, will redirect via effect
+    }
+    return machines.length > 0 ? (
+      <FleetDashboard onConnect={handleConnect} />
+    ) : (
+      <ConnectionSetup onConnect={handleConnect} />
+    );
+  }, [machines.length, handleConnect, isConnected]);
+
+  // Redirect to repo if connected on home page
+  // Note: We check clientRef.current to ensure we have an active connection,
+  // not just state that might be stale during disconnect
+  useEffect(() => {
+    // Don't redirect if user intentionally disconnected
+    if (intentionalDisconnectRef.current) {
+      return;
+    }
+    if (location.pathname === '/' && isConnected && agentIdRef.current && clientRef.current) {
+      navigate(`/repo/${agentIdRef.current}`, { replace: true });
+    }
+  }, [location.pathname, isConnected, navigate]);
+
+  // Redirect to connect page if on repo page but not connected
+  const repoRedirectRef = useRef(false);
+  useEffect(() => {
+    // Don't redirect if user intentionally disconnected
+    if (intentionalDisconnectRef.current) return;
+    if (repoRedirectRef.current) return;
+    if (location.pathname.startsWith('/repo/') && !isConnected && !isReconnecting && state !== 'connecting' && state !== 'signaling') {
+      repoRedirectRef.current = true;
+      const match = location.pathname.match(/\/repo\/([^/]+)/);
+      if (match) {
+        navigate(`/connect/${match[1]}`, { replace: true });
+      } else {
+        navigate('/', { replace: true });
+      }
+    }
+  }, [location.pathname, isConnected, isReconnecting, state, navigate]);
+
+  // Reset redirect ref and intentional disconnect flag when navigating away from repo
+  useEffect(() => {
+    if (!location.pathname.startsWith('/repo/')) {
+      repoRedirectRef.current = false;
+    }
+    // Reset intentional disconnect flag when user starts a new connection
+    if (location.pathname.startsWith('/connect/')) {
+      intentionalDisconnectRef.current = false;
+    }
+  }, [location.pathname]);
+
+  // Repo page content
+  const repoElement = useMemo(() => {
+    if (!isConnected && !isReconnecting) {
+      return null; // Will redirect
+    }
+
+    return (
+      <>
+        {/* Reconnecting Overlay */}
+        {isReconnecting && (
+          <div className="fixed inset-0 bg-slate-900/80 flex items-center justify-center z-50">
+            <div className="bg-slate-800 rounded-lg p-6 text-center max-w-sm mx-4">
+              <div className="flex justify-center mb-4">
+                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500"></div>
+              </div>
+              <h3 className="text-lg font-medium mb-2">Reconnecting...</h3>
+              <p className="text-sm text-slate-400">
+                Attempt {reconnectAttempt} of {maxReconnectAttempts}
+              </p>
+            </div>
+          </div>
+        )}
+
+        <StatusBar
+          connectionState={state}
+          branch={status?.branch}
+          ahead={status?.ahead}
+          behind={status?.behind}
+          repoPath={repoPath}
+          isPro={isPro}
+          onDisconnect={handleDisconnect}
+          onSwitchMachine={handleDisconnect}
+        />
+        <RepoView
+          onRefresh={fetchStatus}
+          onFetchDiff={fetchDiff}
+          onStage={stageFiles}
+          onUnstage={unstageFiles}
+          onStagePatch={stagePatch}
+          onUnstagePatch={unstagePatch}
+          onDiscard={discardChanges}
+          onCommit={async (msg, desc) => { await commit(msg, desc); }}
+          onGenerateAiSummary={generateCommitSummary}
+          onSetApiKey={setApiKey}
+        />
+      </>
+    );
+  }, [isConnected, isReconnecting, reconnectAttempt, maxReconnectAttempts, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, commit, generateCommitSummary, setApiKey]);
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-900 text-slate-100">
-      {/* Reconnecting Overlay */}
-      {isReconnecting && (
-        <div className="fixed inset-0 bg-slate-900/80 flex items-center justify-center z-50">
-          <div className="bg-slate-800 rounded-lg p-6 text-center max-w-sm mx-4">
-            <div className="flex justify-center mb-4">
-              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500"></div>
-            </div>
-            <h3 className="text-lg font-medium mb-2">Reconnecting...</h3>
-            <p className="text-sm text-slate-400">
-              Attempt {reconnectAttempt} of {maxReconnectAttempts}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {isConnected || isReconnecting ? (
-        <>
-          <StatusBar
-            connectionState={state}
-            branch={status?.branch}
-            ahead={status?.ahead}
-            behind={status?.behind}
-            repoPath={repoPath}
-            isPro={isPro}
-            onDisconnect={handleDisconnect}
-            onSwitchMachine={handleDisconnect}
-          />
-          <RepoView
-            onRefresh={fetchStatus}
-            onFetchDiff={fetchDiff}
-            onStage={stageFiles}
-            onUnstage={unstageFiles}
-            onStagePatch={stagePatch}
-            onUnstagePatch={unstagePatch}
-            onDiscard={discardChanges}
-            onCommit={async (msg, desc) => { await commit(msg, desc); }}
-            onGenerateAiSummary={generateCommitSummary}
-            onSetApiKey={setApiKey}
-          />
-        </>
-      ) : machines.length > 0 ? (
-        <FleetDashboard onConnect={handleConnect} />
-      ) : (
-        <ConnectionSetup onConnect={handleConnect} />
-      )}
+      <Routes>
+        <Route path="/" element={homeElement} />
+        <Route path="/connect/:agentId" element={<ConnectingPage onConnect={handleConnect} />} />
+        <Route path="/repo/:agentId" element={repoElement} />
+      </Routes>
     </div>
+  );
+}
+
+function App() {
+  return (
+    <HashRouter>
+      <AppContent />
+    </HashRouter>
   );
 }
 

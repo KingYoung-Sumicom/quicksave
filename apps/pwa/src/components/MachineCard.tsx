@@ -36,8 +36,23 @@ export function MachineCard({
     return new Date(timestamp).toLocaleDateString();
   };
 
+  const handleCardClick = (e: React.MouseEvent) => {
+    // Don't trigger if clicking on menu or its children
+    if ((e.target as HTMLElement).closest('[data-menu]')) {
+      return;
+    }
+    if (!isConnecting) {
+      onConnect();
+    }
+  };
+
   return (
-    <div className="bg-slate-800 rounded-lg p-4 flex items-center gap-4 relative">
+    <div
+      onClick={handleCardClick}
+      className={`bg-slate-800 rounded-lg p-4 flex items-center gap-4 relative transition-colors ${
+        isConnecting ? 'opacity-70 cursor-wait' : 'hover:bg-slate-700 cursor-pointer'
+      }`}
+    >
       {/* Machine Icon */}
       <div className="w-10 h-10 bg-slate-700 rounded-lg flex items-center justify-center text-xl flex-shrink-0">
         {machine.icon}
@@ -63,65 +78,79 @@ export function MachineCard({
         )}
       </div>
 
-      {/* Actions */}
-      <div className="flex items-center gap-2 flex-shrink-0">
-        <button
-          onClick={onConnect}
-          disabled={isConnecting}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md text-sm font-medium transition-colors"
-        >
-          {isConnecting ? '...' : 'Connect'}
-        </button>
+      {/* Connecting indicator */}
+      {isConnecting && (
+        <div className="flex-shrink-0">
+          <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
 
-        {variant === 'full' && (onEdit || onRemove) && (
-          <div className="relative">
-            <button
-              onClick={() => setShowMenu(!showMenu)}
-              className="p-2 hover:bg-slate-700 rounded-md transition-colors"
-              aria-label="More options"
-            >
-              <svg className="w-5 h-5 text-slate-400" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
-              </svg>
-            </button>
+      {/* Chevron for navigation hint */}
+      {!isConnecting && variant === 'compact' && (
+        <div className="flex-shrink-0 text-slate-500">
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </div>
+      )}
 
-            {showMenu && (
-              <>
-                {/* Backdrop to close menu */}
-                <div
-                  className="fixed inset-0 z-10"
-                  onClick={() => setShowMenu(false)}
-                />
-                {/* Menu */}
-                <div className="absolute right-0 top-full mt-1 bg-slate-700 rounded-md shadow-lg py-1 z-20 min-w-[120px]">
-                  {onEdit && (
-                    <button
-                      onClick={() => {
-                        setShowMenu(false);
-                        onEdit();
-                      }}
-                      className="w-full px-4 py-2 text-left text-sm hover:bg-slate-600 transition-colors"
-                    >
-                      Edit
-                    </button>
-                  )}
-                  {onRemove && (
-                    <button
-                      onClick={() => {
-                        setShowMenu(false);
-                        onRemove();
-                      }}
-                      className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-slate-600 transition-colors"
-                    >
-                      Remove
-                    </button>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-      </div>
+      {/* Menu for full variant */}
+      {variant === 'full' && (onEdit || onRemove) && !isConnecting && (
+        <div className="relative flex-shrink-0" data-menu>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowMenu(!showMenu);
+            }}
+            className="p-2 hover:bg-slate-600 rounded-md transition-colors"
+            aria-label="More options"
+          >
+            <svg className="w-5 h-5 text-slate-400" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
+            </svg>
+          </button>
+
+          {showMenu && (
+            <>
+              {/* Backdrop to close menu */}
+              <div
+                className="fixed inset-0 z-10"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowMenu(false);
+                }}
+              />
+              {/* Menu */}
+              <div className="absolute right-0 top-full mt-1 bg-slate-700 rounded-md shadow-lg py-1 z-20 min-w-[120px]">
+                {onEdit && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowMenu(false);
+                      onEdit();
+                    }}
+                    className="w-full px-4 py-2 text-left text-sm hover:bg-slate-600 transition-colors"
+                  >
+                    Edit
+                  </button>
+                )}
+                {onRemove && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowMenu(false);
+                      onRemove();
+                    }}
+                    className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-slate-600 transition-colors"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

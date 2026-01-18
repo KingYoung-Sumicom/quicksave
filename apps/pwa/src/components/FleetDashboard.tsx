@@ -1,6 +1,6 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useMachineStore, selectSortedMachines, selectRecentMachines } from '../stores/machineStore';
-import { useConnectionStore } from '../stores/connectionStore';
 import { MachineCard } from './MachineCard';
 import { AddMachineModal } from './AddMachineModal';
 import { EditMachineModal } from './EditMachineModal';
@@ -11,20 +11,17 @@ interface FleetDashboardProps {
 }
 
 export function FleetDashboard({ onConnect }: FleetDashboardProps) {
+  const navigate = useNavigate();
   const machines = useMachineStore(selectSortedMachines);
   const recentMachines = useMachineStore(selectRecentMachines(3));
   const { removeMachine } = useMachineStore();
-  const { state } = useConnectionStore();
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingMachine, setEditingMachine] = useState<Machine | null>(null);
-  const [connectingAgentId, setConnectingAgentId] = useState<string | null>(null);
-
-  const isConnecting = state === 'connecting' || state === 'signaling';
 
   const handleConnect = (machine: Machine) => {
-    setConnectingAgentId(machine.agentId);
-    onConnect(machine.agentId, machine.publicKey);
+    // Navigate to connecting page immediately - connection will be initiated there
+    navigate(`/connect/${machine.agentId}`);
   };
 
   const handleRemove = (machine: Machine) => {
@@ -58,7 +55,6 @@ export function FleetDashboard({ onConnect }: FleetDashboardProps) {
                 machine={machine}
                 onConnect={() => handleConnect(machine)}
                 variant="compact"
-                isConnecting={isConnecting && connectingAgentId === machine.agentId}
               />
             ))}
           </div>
@@ -95,7 +91,6 @@ export function FleetDashboard({ onConnect }: FleetDashboardProps) {
                 onEdit={() => setEditingMachine(machine)}
                 onRemove={() => handleRemove(machine)}
                 variant="full"
-                isConnecting={isConnecting && connectingAgentId === machine.agentId}
               />
             ))}
           </div>

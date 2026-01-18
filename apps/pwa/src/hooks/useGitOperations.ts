@@ -16,7 +16,7 @@ import {
   type GetApiKeyStatusResponsePayload,
   type ClaudeModel,
 } from '@quicksave/shared';
-import { useGitStore } from '../stores/gitStore';
+import { useGitStore, makeSelectionKey } from '../stores/gitStore';
 import { WebRTCClient } from '../lib/webrtc';
 
 type PendingRequest = {
@@ -97,13 +97,14 @@ export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>
 
   const fetchDiff = useCallback(
     async (path: string, staged = false) => {
-      setDiffLoading(path, true);
+      const key = makeSelectionKey(path, staged ? 'staged' : 'unstaged');
+      setDiffLoading(key, true);
       try {
         const message = createMessage('git:diff', { path, staged });
         const response = await sendRequest<DiffResponsePayload>(message);
-        setFileDiff(path, response);
+        setFileDiff(key, response);
       } catch (error) {
-        setDiffLoading(path, false);
+        setDiffLoading(key, false);
         setError(error instanceof Error ? error.message : 'Failed to fetch diff');
       }
     },

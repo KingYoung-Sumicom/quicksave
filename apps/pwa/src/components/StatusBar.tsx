@@ -36,12 +36,25 @@ export function StatusBar({
   return (
     <header className="bg-slate-800 border-b border-slate-700 safe-area-top">
       <div className="flex items-center justify-between px-4 py-3">
-        {/* Left: Machine name & Status */}
-        <div className="flex items-center gap-3">
+        {/* Left: Back button, Machine name */}
+        <div className="flex items-center gap-2">
+          {/* Back button */}
+          {isConnected && (
+            <button
+              onClick={onDisconnect}
+              className="p-2 -ml-2 hover:bg-slate-700 rounded-md transition-colors"
+              aria-label="Back"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+          )}
+
           {hasMultipleMachines ? (
             <button
               onClick={() => setShowSwitcher(!showSwitcher)}
-              className="flex items-center gap-2 hover:bg-slate-700 rounded-md px-2 py-1 -ml-2 transition-colors"
+              className="flex items-center gap-2 hover:bg-slate-700 rounded-md px-2 py-1 transition-colors"
             >
               <span className="text-lg">{currentMachine?.icon || '💻'}</span>
               <span className="text-lg font-bold truncate max-w-[150px]">
@@ -64,27 +77,11 @@ export function StatusBar({
               </h1>
             </div>
           )}
-          <ConnectionIndicator state={connectionState} />
         </div>
 
-        {/* Right: Actions */}
+        {/* Right: Connection indicator */}
         <div className="flex items-center gap-2">
-          {isConnected && (
-            <button
-              onClick={onDisconnect}
-              className="p-2 hover:bg-slate-700 rounded-md transition-colors"
-              aria-label="Disconnect"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
-                />
-              </svg>
-            </button>
-          )}
+          <ConnectionIndicator state={connectionState} />
         </div>
       </div>
 
@@ -188,36 +185,51 @@ function ConnectionIndicator({ state }: { state: ConnectionState }) {
   const getColor = () => {
     switch (state) {
       case 'connected':
-        return 'bg-green-500';
+        return 'text-green-500';
       case 'connecting':
       case 'signaling':
-        return 'bg-yellow-500 animate-pulse';
+        return 'text-yellow-500';
       case 'error':
-        return 'bg-red-500';
+        return 'text-red-500';
       default:
-        return 'bg-slate-500';
+        return 'text-slate-500';
     }
   };
 
-  const getLabel = () => {
-    switch (state) {
-      case 'connected':
-        return 'Connected';
-      case 'connecting':
-        return 'Connecting...';
-      case 'signaling':
-        return 'Establishing...';
-      case 'error':
-        return 'Error';
-      default:
-        return 'Disconnected';
-    }
-  };
+  const isAnimating = state === 'connecting' || state === 'signaling';
 
+  // Connected: solid signal icon
+  // Connecting/Signaling: animated signal icon
+  // Error: X icon
+  // Disconnected: signal with slash
   return (
-    <div className="flex items-center gap-1.5">
-      <span className={clsx('w-2 h-2 rounded-full', getColor())} />
-      <span className="text-xs text-slate-400">{getLabel()}</span>
+    <div className={clsx('w-5 h-5', getColor(), isAnimating && 'animate-pulse')}>
+      {state === 'connected' && (
+        // Two connected nodes icon
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-5 h-5">
+          <circle cx="6" cy="12" r="3" strokeWidth={2} />
+          <circle cx="18" cy="12" r="3" strokeWidth={2} />
+          <path strokeLinecap="round" strokeWidth={2} d="M9 12h6" />
+        </svg>
+      )}
+      {(state === 'connecting' || state === 'signaling') && (
+        // Connecting animation - signal waves
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-5 h-5">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
+        </svg>
+      )}
+      {state === 'error' && (
+        // Error X icon
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-5 h-5">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+        </svg>
+      )}
+      {(state === 'disconnected' || !state) && (
+        // Disconnected - broken link
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-5 h-5">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+        </svg>
+      )}
     </div>
   );
 }

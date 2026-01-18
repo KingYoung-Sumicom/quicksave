@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useMachineStore } from '../stores/machineStore';
 import { QRScanner } from './QRScanner';
@@ -13,28 +13,6 @@ export function ConnectionSetup({ onConnect }: Props) {
   const [mode, setMode] = useState<'scan' | 'manual'>('scan');
   const { state, error } = useConnectionStore();
   const { addMachine } = useMachineStore();
-
-  // Parse URL parameters on mount
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const id = params.get('id');
-    const pk = params.get('pk');
-
-    if (id && pk) {
-      setAgentId(id);
-      setPublicKey(pk);
-      // Save machine and auto-connect
-      addMachine({
-        agentId: id,
-        publicKey: pk,
-        nickname: `Machine ${id.slice(0, 8)}`,
-        icon: '💻',
-      });
-      onConnect(id, pk);
-      // Clear URL params
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-  }, [onConnect, addMachine]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

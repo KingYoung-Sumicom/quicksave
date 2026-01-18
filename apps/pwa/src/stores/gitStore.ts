@@ -10,11 +10,26 @@ export interface LineSelection {
   content: string;
 }
 
+// Composite key for file selection that includes source to handle partially staged files
+export type SelectionKey = `${string}:${SelectionSource}`;
+
+export function makeSelectionKey(path: string, source: SelectionSource): SelectionKey {
+  return `${path}:${source}`;
+}
+
+export function parseSelectionKey(key: SelectionKey): { path: string; source: SelectionSource } {
+  const lastColonIndex = key.lastIndexOf(':');
+  return {
+    path: key.slice(0, lastColonIndex),
+    source: key.slice(lastColonIndex + 1) as SelectionSource,
+  };
+}
+
 interface GitStore {
   // State
   status: GitStatus | null;
-  expandedDiffs: Record<string, FileDiff>; // Map of path -> diff for expanded files
-  loadingDiffs: Set<string>; // Paths currently being fetched
+  expandedDiffs: Record<SelectionKey, FileDiff>; // Map of key (path:source) -> diff for expanded files
+  loadingDiffs: Set<SelectionKey>; // Keys currently being fetched
   commits: Commit[];
   branches: Branch[];
   currentBranch: string | null;
@@ -35,18 +50,18 @@ interface GitStore {
   aiTokenUsage: TokenUsage | null;
   aiResultCached: boolean;
 
-  // Selection state
-  selectedFiles: Set<string>;
-  selectedLines: Map<string, LineSelection[]>; // path -> selected lines
+  // Selection state - keys are composite (path:source) to handle partially staged files
+  selectedFiles: Set<SelectionKey>;
+  selectedLines: Map<SelectionKey, LineSelection[]>; // key -> selected lines
   selectionSource: SelectionSource | null;
   isSelectionOperationPending: boolean;
 
   // Actions
   setStatus: (status: GitStatus) => void;
-  toggleFileExpanded: (path: string) => boolean; // Returns true if now expanded (needs fetch)
-  setFileDiff: (path: string, diff: FileDiff) => void;
-  setDiffLoading: (path: string, loading: boolean) => void;
-  collapseFile: (path: string) => void;
+  toggleFileExpanded: (key: SelectionKey) => boolean; // Returns true if now expanded (needs fetch)
+  setFileDiff: (key: SelectionKey, diff: FileDiff) => void;
+  setDiffLoading: (key: SelectionKey, loading: boolean) => void;
+  collapseFile: (key: SelectionKey) => void;
   setCommits: (commits: Commit[]) => void;
   setBranches: (branches: Branch[], current: string) => void;
   setLoading: (loading: boolean) => void;
@@ -65,10 +80,10 @@ interface GitStore {
   setSelectedModel: (model: ClaudeModel) => void;
   setApiKeyConfigured: (configured: boolean) => void;
 
-  // Selection actions
-  toggleFileSelection: (path: string, source: SelectionSource) => void;
-  toggleLineSelection: (path: string, line: LineSelection, source: SelectionSource) => void;
-  selectAllFiles: (paths: string[], source: SelectionSource) => void;
+  // Selection actions - use composite keys internally
+  toggleFileSelection: (key: SelectionKey, source: SelectionSource) => void;
+  toggleLineSelection: (key: SelectionKey, line: LineSelection, source: SelectionSource) => void;
+  selectAllFiles: (keys: SelectionKey[], source: SelectionSource) => void;
   clearSelection: () => void;
   setSelectionOperationPending: (pending: boolean) => void;
 }
@@ -91,7 +106,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
   aiDescription: null,
   isGeneratingAiSummary: false,
   aiSummaryError: null,
-  selectedModel: 'claude-sonnet-4-20250514',
+  selectedModel: 'claude-haiku-4-5',
   apiKeyConfigured: false,
   aiTokenUsage: null,
   aiResultCached: false,
@@ -108,12 +123,12 @@ export const useGitStore = create<GitStore>((set, get) => ({
     set({ status, error: null, selectedFiles: new Set(), selectedLines: new Map(), selectionSource: null });
   },
 
-  toggleFileExpanded: (path) => {
+  toggleFileExpanded: (key) => {
     const { expandedDiffs } = get();
-    if (path in expandedDiffs) {
+    if (key in expandedDiffs) {
       // Collapse - remove from expanded
       const newExpanded = { ...expandedDiffs };
-      delete newExpanded[path];
+      delete newExpanded[key];
       set({ expandedDiffs: newExpanded });
       return false;
     }
@@ -121,31 +136,31 @@ export const useGitStore = create<GitStore>((set, get) => ({
     return true;
   },
 
-  setFileDiff: (path, diff) => {
+  setFileDiff: (key, diff) => {
     const { expandedDiffs, loadingDiffs } = get();
     const newLoading = new Set(loadingDiffs);
-    newLoading.delete(path);
+    newLoading.delete(key);
     set({
-      expandedDiffs: { ...expandedDiffs, [path]: diff },
+      expandedDiffs: { ...expandedDiffs, [key]: diff },
       loadingDiffs: newLoading,
     });
   },
 
-  setDiffLoading: (path, loading) => {
+  setDiffLoading: (key, loading) => {
     const { loadingDiffs } = get();
     const newLoading = new Set(loadingDiffs);
     if (loading) {
-      newLoading.add(path);
+      newLoading.add(key);
     } else {
-      newLoading.delete(path);
+      newLoading.delete(key);
     }
     set({ loadingDiffs: newLoading });
   },
 
-  collapseFile: (path) => {
+  collapseFile: (key) => {
     const { expandedDiffs } = get();
     const newExpanded = { ...expandedDiffs };
-    delete newExpanded[path];
+    delete newExpanded[key];
     set({ expandedDiffs: newExpanded });
   },
 
@@ -175,7 +190,11 @@ export const useGitStore = create<GitStore>((set, get) => ({
 
   setGeneratingAiSummary: (loading) => set({ isGeneratingAiSummary: loading }),
 
-  setAiSummaryError: (error) => set({ aiSummaryError: error, isGeneratingAiSummary: false }),
+  setAiSummaryError: (error) => set({
+    aiSummaryError: error,
+    // Only stop generating if there's an actual error
+    ...(error !== null && { isGeneratingAiSummary: false })
+  }),
 
   clearAiSummary: () => set({ aiSummary: null, aiDescription: null, aiSummaryError: null, aiTokenUsage: null, aiResultCached: false }),
 
@@ -197,14 +216,14 @@ export const useGitStore = create<GitStore>((set, get) => ({
 
   setApiKeyConfigured: (configured) => set({ apiKeyConfigured: configured }),
 
-  // Selection actions
-  toggleFileSelection: (path, source) => {
+  // Selection actions - now use composite keys (path:source)
+  toggleFileSelection: (key, source) => {
     const { selectedFiles, selectionSource } = get();
 
     // If selecting from a different source, clear existing selection
     if (selectionSource !== null && selectionSource !== source) {
       set({
-        selectedFiles: new Set([path]),
+        selectedFiles: new Set([key]),
         selectedLines: new Map(),
         selectionSource: source,
       });
@@ -212,10 +231,10 @@ export const useGitStore = create<GitStore>((set, get) => ({
     }
 
     const newSelectedFiles = new Set(selectedFiles);
-    if (newSelectedFiles.has(path)) {
-      newSelectedFiles.delete(path);
+    if (newSelectedFiles.has(key)) {
+      newSelectedFiles.delete(key);
     } else {
-      newSelectedFiles.add(path);
+      newSelectedFiles.add(key);
     }
 
     // Clear selection source if no files selected
@@ -223,13 +242,13 @@ export const useGitStore = create<GitStore>((set, get) => ({
     set({ selectedFiles: newSelectedFiles, selectionSource: newSource });
   },
 
-  toggleLineSelection: (path, line, source) => {
+  toggleLineSelection: (key, line, source) => {
     const { selectedLines, selectionSource, selectedFiles } = get();
 
     // If selecting from a different source, clear existing selection
     if (selectionSource !== null && selectionSource !== source) {
-      const newLines = new Map<string, LineSelection[]>();
-      newLines.set(path, [line]);
+      const newLines = new Map<SelectionKey, LineSelection[]>();
+      newLines.set(key, [line]);
       set({
         selectedFiles: new Set(),
         selectedLines: newLines,
@@ -239,25 +258,25 @@ export const useGitStore = create<GitStore>((set, get) => ({
     }
 
     const newSelectedLines = new Map(selectedLines);
-    const pathLines = newSelectedLines.get(path) || [];
+    const keyLines = newSelectedLines.get(key) || [];
 
     // Check if this line is already selected
-    const existingIndex = pathLines.findIndex(
+    const existingIndex = keyLines.findIndex(
       l => l.hunkIndex === line.hunkIndex && l.lineIndex === line.lineIndex
     );
 
     if (existingIndex >= 0) {
       // Remove the line
-      const newPathLines = [...pathLines];
-      newPathLines.splice(existingIndex, 1);
-      if (newPathLines.length === 0) {
-        newSelectedLines.delete(path);
+      const newKeyLines = [...keyLines];
+      newKeyLines.splice(existingIndex, 1);
+      if (newKeyLines.length === 0) {
+        newSelectedLines.delete(key);
       } else {
-        newSelectedLines.set(path, newPathLines);
+        newSelectedLines.set(key, newKeyLines);
       }
     } else {
       // Add the line
-      newSelectedLines.set(path, [...pathLines, line]);
+      newSelectedLines.set(key, [...keyLines, line]);
     }
 
     // Clear selection source if no lines and no files selected
@@ -266,13 +285,13 @@ export const useGitStore = create<GitStore>((set, get) => ({
     set({ selectedLines: newSelectedLines, selectionSource: newSource });
   },
 
-  selectAllFiles: (paths, source) => {
+  selectAllFiles: (keys, source) => {
     const { selectedFiles, selectionSource } = get();
 
     // If selecting from a different source, just select the new files
     if (selectionSource !== null && selectionSource !== source) {
       set({
-        selectedFiles: new Set(paths),
+        selectedFiles: new Set(keys),
         selectedLines: new Map(),
         selectionSource: source,
       });
@@ -280,18 +299,18 @@ export const useGitStore = create<GitStore>((set, get) => ({
     }
 
     // Check if all files are already selected
-    const allSelected = paths.every(p => selectedFiles.has(p));
+    const allSelected = keys.every(k => selectedFiles.has(k));
 
     if (allSelected) {
       // Deselect all from this source
       const newSelectedFiles = new Set(selectedFiles);
-      paths.forEach(p => newSelectedFiles.delete(p));
+      keys.forEach(k => newSelectedFiles.delete(k));
       const newSource = newSelectedFiles.size === 0 ? null : source;
       set({ selectedFiles: newSelectedFiles, selectionSource: newSource });
     } else {
       // Select all
       const newSelectedFiles = new Set(selectedFiles);
-      paths.forEach(p => newSelectedFiles.add(p));
+      keys.forEach(k => newSelectedFiles.add(k));
       set({ selectedFiles: newSelectedFiles, selectionSource: source });
     }
   },
@@ -320,7 +339,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
       aiDescription: null,
       isGeneratingAiSummary: false,
       aiSummaryError: null,
-      selectedModel: 'claude-sonnet-4-20250514',
+      selectedModel: 'claude-haiku-4-5',
       aiTokenUsage: null,
       aiResultCached: false,
       // Note: apiKeyConfigured is not reset as it's a global setting

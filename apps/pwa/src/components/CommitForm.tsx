@@ -19,7 +19,6 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
     isLoading,
     aiSummary,
     aiDescription,
-    isGeneratingAiSummary,
     aiSummaryError,
     selectedModel,
     setSelectedModel,
@@ -28,6 +27,7 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
     clearAiSummary,
     aiTokenUsage,
     aiResultCached,
+    isGeneratingAiSummary,
   } = useGitStore();
   const canCommit = useGitStore(selectCanCommit);
   const [showDescription, setShowDescription] = useState(false);
@@ -61,46 +61,48 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
   return (
     <div className="bg-slate-800 rounded-lg p-4">
       <form onSubmit={handleSubmit} className="space-y-3">
-        {/* AI Generate Section */}
-        {!commitMessage && (
+        {/* Loading indicator - always visible when generating and no suggestion yet */}
+        {isGeneratingAiSummary && !aiSummary && (
+          <div className="flex items-center justify-center gap-3 py-4 bg-purple-900/20 border border-purple-500/30 rounded-lg">
+            <svg className="w-6 h-6 animate-spin text-purple-400" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+            </svg>
+            <span className="text-sm font-medium text-purple-400">Generating commit message...</span>
+          </div>
+        )}
+
+        {/* AI Generate Section - only show when not generating */}
+        {!commitMessage && !aiSummary && !isGeneratingAiSummary && (
           <div className="space-y-2">
             {/* Model Selector + Generate Button Row */}
             <div className="flex gap-2">
               <ModelDropdown
                 value={selectedModel}
                 onChange={setSelectedModel}
-                disabled={isGeneratingAiSummary || isLoading || !apiKeyConfigured}
+                disabled={isLoading || !apiKeyConfigured}
               />
 
               <button
                 type="button"
                 onClick={apiKeyConfigured ? handleGenerateClick : onOpenSettings}
-                disabled={isGeneratingAiSummary || isLoading}
-                className="flex-1 py-2 px-4 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors flex items-center justify-center gap-2"
+                disabled={isLoading}
+                className="flex-1 py-2 px-4 rounded-md font-medium text-white transition-colors flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed"
               >
-                {isGeneratingAiSummary ? (
-                  <>
-                    <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <svg
-                      className="w-4 h-4"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
-                      />
-                    </svg>
-                    Generate
-                  </>
-                )}
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
+                  />
+                </svg>
+                Generate
               </button>
             </div>
           </div>
@@ -108,7 +110,22 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
 
         {/* AI Suggestion Display */}
         {aiSummary && (
-          <div className="p-3 bg-purple-900/30 border border-purple-500/50 rounded-lg">
+          <div className={clsx(
+            'p-3 bg-purple-900/30 border border-purple-500/50 rounded-lg relative',
+            isGeneratingAiSummary && 'opacity-60'
+          )}>
+            {/* Loading overlay for regeneration */}
+            {isGeneratingAiSummary && (
+              <div className="absolute inset-0 flex items-center justify-center bg-slate-900/70 rounded-lg z-10">
+                <div className="flex items-center gap-3 text-purple-400">
+                  <svg className="w-6 h-6 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  <span className="text-sm font-medium">Regenerating...</span>
+                </div>
+              </div>
+            )}
             <div className="flex items-start justify-between gap-2 mb-2">
               <span className="text-xs text-purple-400 font-medium">AI Suggestion</span>
               <div className="flex gap-1">
@@ -116,15 +133,20 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
                   type="button"
                   onClick={handleGenerateClick}
                   disabled={isGeneratingAiSummary}
-                  className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded transition-colors"
+                  className="text-xs text-slate-400 hover:text-white disabled:text-slate-600 disabled:cursor-not-allowed px-2 py-1 rounded transition-colors"
                   title="Regenerate"
                 >
-                  ↻
+                  {isGeneratingAiSummary ? (
+                    <span className="inline-block w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    '↻'
+                  )}
                 </button>
                 <button
                   type="button"
                   onClick={clearAiSummary}
-                  className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded transition-colors"
+                  disabled={isGeneratingAiSummary}
+                  className="text-xs text-slate-400 hover:text-white disabled:text-slate-600 disabled:cursor-not-allowed px-2 py-1 rounded transition-colors"
                   title="Dismiss"
                 >
                   ✕
@@ -139,7 +161,8 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
               <button
                 type="button"
                 onClick={handleApplySuggestion}
-                className="text-sm text-purple-400 hover:text-purple-300 font-medium transition-colors"
+                disabled={isGeneratingAiSummary}
+                className="text-sm text-purple-400 hover:text-purple-300 disabled:text-slate-600 disabled:cursor-not-allowed font-medium transition-colors"
               >
                 Use this message
               </button>

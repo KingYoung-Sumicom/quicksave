@@ -69,17 +69,19 @@ export function DiffViewer({
     <div className="bg-slate-800 rounded-lg overflow-hidden">
       {showHeader && <Header path={diff.path} onClose={onClose} />}
       <div className="overflow-x-auto">
-        {diff.hunks.map((hunk, hunkIndex) => (
-          <HunkView
-            key={hunkIndex}
-            hunk={hunk}
-            hunkIndex={hunkIndex}
-            selectable={selectable}
-            selectedLines={selectedLines}
-            onToggleLineSelection={onToggleLineSelection}
-            fileSelected={fileSelected}
-          />
-        ))}
+        <div className="min-w-fit">
+          {diff.hunks.map((hunk, hunkIndex) => (
+            <HunkView
+              key={hunkIndex}
+              hunk={hunk}
+              hunkIndex={hunkIndex}
+              selectable={selectable}
+              selectedLines={selectedLines}
+              onToggleLineSelection={onToggleLineSelection}
+              fileSelected={fileSelected}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );

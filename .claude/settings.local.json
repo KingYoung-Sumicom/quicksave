@@ -15,7 +15,8 @@
       "Bash(file:*)",
       "Bash(stat:*)",
       "Bash(source ~/.zshrc)",
-      "Bash(source ~/.bashrc)"
+      "Bash(source ~/.bashrc)",
+      "Bash(npx tsc --noEmit)"
     ]
   }
 }

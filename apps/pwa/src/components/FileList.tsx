@@ -2,7 +2,10 @@ import { clsx } from 'clsx';
 import { useState, useMemo } from 'react';
 import type { FileChange, FileStatus, FileDiff } from '@quicksave/shared';
 import { DiffViewer } from './DiffViewer';
-import type { SelectionSource, LineSelection } from '../stores/gitStore';
+import type { SelectionSource, LineSelection, SelectionKey } from '../stores/gitStore';
+import { makeSelectionKey } from '../stores/gitStore';
+
+type DiffKey = SelectionKey;
 
 interface FileListProps {
   title: string;
@@ -11,15 +14,15 @@ interface FileListProps {
   onFileClick: (path: string) => void;
   onAction: (paths: string[]) => void;
   actionLabel: string;
-  expandedDiffs: Record<string, FileDiff>;
-  loadingDiffs: Set<string>;
-  onCloseDiff: (path: string) => void;
-  // Selection props
-  selectedFiles: Set<string>;
-  selectedLines: Map<string, LineSelection[]>;
-  onToggleFileSelection: (path: string, source: SelectionSource) => void;
-  onToggleLineSelection: (path: string, line: LineSelection, source: SelectionSource) => void;
-  onSelectAllFiles: (paths: string[], source: SelectionSource) => void;
+  expandedDiffs: Record<DiffKey, FileDiff>;
+  loadingDiffs: Set<DiffKey>;
+  onCloseDiff: (key: DiffKey) => void;
+  // Selection props - use composite keys (path:source)
+  selectedFiles: Set<SelectionKey>;
+  selectedLines: Map<SelectionKey, LineSelection[]>;
+  onToggleFileSelection: (key: SelectionKey, source: SelectionSource) => void;
+  onToggleLineSelection: (key: SelectionKey, line: LineSelection, source: SelectionSource) => void;
+  onSelectAllFiles: (keys: SelectionKey[], source: SelectionSource) => void;
 }
 
 // Tree node structure
@@ -166,12 +169,13 @@ export function FileList({
   };
 
   const allPaths = getPaths();
-  const allSelected = allPaths.length > 0 && allPaths.every((p) => selectedFiles.has(p));
-  const someSelected = allPaths.some((p) => selectedFiles.has(p));
+  const allKeys = allPaths.map((p) => makeSelectionKey(p, type));
+  const allSelected = allKeys.length > 0 && allKeys.every((k) => selectedFiles.has(k));
+  const someSelected = allKeys.some((k) => selectedFiles.has(k));
 
   const handleSelectAllClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    onSelectAllFiles(allPaths, type);
+    onSelectAllFiles(allKeys, type);
   };
 
   const toggleDirCollapse = (path: string) => {
@@ -190,16 +194,18 @@ export function FileList({
   const renderNode = (node: TreeNode, depth: number = 0): React.ReactNode => {
     if (node.isFile) {
       const path = node.path;
+      const selectionKey = makeSelectionKey(path, type);
+      const diffKey = selectionKey; // Use same composite key for diffs
       const status = node.status;
-      const isExpanded = path in expandedDiffs;
-      const isLoading = loadingDiffs.has(path);
-      const diff = expandedDiffs[path];
-      const isSelected = selectedFiles.has(path);
-      const fileSelectedLines = selectedLines.get(path) || [];
+      const isExpanded = diffKey in expandedDiffs;
+      const isLoading = loadingDiffs.has(diffKey);
+      const diff = expandedDiffs[diffKey];
+      const isSelected = selectedFiles.has(selectionKey);
+      const fileSelectedLines = selectedLines.get(selectionKey) || [];
 
       const handleCheckboxClick = (e: React.MouseEvent) => {
         e.stopPropagation();
-        onToggleFileSelection(path, type);
+        onToggleFileSelection(selectionKey, type);
       };
 
       return (
@@ -267,10 +273,10 @@ export function FileList({
             <div className="border-t border-slate-700 bg-slate-900">
               <DiffViewer
                 diff={diff}
-                onClose={() => onCloseDiff(path)}
+                onClose={() => onCloseDiff(diffKey)}
                 showHeader={false}
                 selectedLines={fileSelectedLines}
-                onToggleLineSelection={(line) => onToggleLineSelection(path, line, type)}
+                onToggleLineSelection={(line) => onToggleLineSelection(selectionKey, line, type)}
                 selectable
                 fileSelected={isSelected}
               />
@@ -283,24 +289,25 @@ export function FileList({
     // Directory node
     const isCollapsed = collapsedDirs.has(node.path);
     const dirPaths = getFilePaths(node);
-    const dirAllSelected = dirPaths.length > 0 && dirPaths.every((p) => selectedFiles.has(p));
-    const dirSomeSelected = dirPaths.some((p) => selectedFiles.has(p));
+    const dirKeys = dirPaths.map((p) => makeSelectionKey(p, type));
+    const dirAllSelected = dirKeys.length > 0 && dirKeys.every((k) => selectedFiles.has(k));
+    const dirSomeSelected = dirKeys.some((k) => selectedFiles.has(k));
 
     const handleDirCheckboxClick = (e: React.MouseEvent) => {
       e.stopPropagation();
       // Select/deselect all files in this directory
       if (dirAllSelected) {
         // Deselect all
-        dirPaths.forEach((p) => {
-          if (selectedFiles.has(p)) {
-            onToggleFileSelection(p, type);
+        dirKeys.forEach((k) => {
+          if (selectedFiles.has(k)) {
+            onToggleFileSelection(k, type);
           }
         });
       } else {
         // Select all
-        dirPaths.forEach((p) => {
-          if (!selectedFiles.has(p)) {
-            onToggleFileSelection(p, type);
+        dirKeys.forEach((k) => {
+          if (!selectedFiles.has(k)) {
+            onToggleFileSelection(k, type);
           }
         });
       }

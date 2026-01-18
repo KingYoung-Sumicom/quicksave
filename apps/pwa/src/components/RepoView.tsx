@@ -6,7 +6,10 @@ import {
   selectUntrackedFiles,
   selectHasSelection,
   selectSelectionSummary,
+  parseSelectionKey,
+  makeSelectionKey,
   type LineSelection,
+  type SelectionKey,
 } from '../stores/gitStore';
 import type { FileDiff } from '@quicksave/shared';
 import { FileList } from './FileList';
@@ -142,15 +145,16 @@ export function RepoView({
     onRefresh();
   }, [onRefresh]);
 
-  const handleFileClick = (path: string, isStaged: boolean) => {
-    const needsFetch = toggleFileExpanded(path);
+  const handleFileClick = (path: string, source: 'staged' | 'unstaged' | 'untracked') => {
+    const key = makeSelectionKey(path, source);
+    const needsFetch = toggleFileExpanded(key);
     if (needsFetch) {
-      onFetchDiff(path, isStaged);
+      onFetchDiff(path, source === 'staged');
     }
   };
 
-  const handleCloseDiff = (path: string) => {
-    collapseFile(path);
+  const handleCloseDiff = (key: SelectionKey) => {
+    collapseFile(key);
   };
 
   // Handle selection action (stage/unstage)
@@ -158,10 +162,16 @@ export function RepoView({
     if (!selectionSource) return;
 
     setSelectionOperationPending(true);
+
+    // Track affected paths for diff refresh
+    const affectedPaths = new Set<string>();
+
     try {
       // If there are selected files, stage/unstage them
       if (selectedFiles.size > 0) {
-        const paths = Array.from(selectedFiles);
+        // Parse composite keys to get the actual paths
+        const paths = Array.from(selectedFiles).map((key) => parseSelectionKey(key).path);
+        paths.forEach((p) => affectedPaths.add(p));
         if (selectionSource === 'staged') {
           await onUnstage(paths);
         } else {
@@ -171,8 +181,10 @@ export function RepoView({
 
       // If there are selected lines, generate and apply patches
       if (selectedLines.size > 0) {
-        for (const [path, lines] of selectedLines.entries()) {
-          const diff = expandedDiffs[path];
+        for (const [key, lines] of selectedLines.entries()) {
+          const { path } = parseSelectionKey(key);
+          affectedPaths.add(path);
+          const diff = expandedDiffs[key]; // Use composite key to get the correct diff
           if (!diff) continue;
 
           const patch = generatePatch(path, diff, lines);
@@ -187,6 +199,34 @@ export function RepoView({
       }
 
       clearSelection();
+
+      // Refresh diffs for affected files (both staged and unstaged versions)
+      // After staging lines from unstaged, both staged and unstaged diffs change
+      // After unstaging lines from staged, both staged and unstaged diffs change
+      for (const path of affectedPaths) {
+        const stagedKey = makeSelectionKey(path, 'staged');
+        const unstagedKey = makeSelectionKey(path, 'unstaged');
+
+        // Check which diffs were expanded before collapsing
+        const hadStagedDiff = stagedKey in expandedDiffs;
+        const hadUnstagedDiff = unstagedKey in expandedDiffs;
+
+        // Collapse old diffs
+        if (hadStagedDiff) {
+          collapseFile(stagedKey);
+        }
+        if (hadUnstagedDiff) {
+          collapseFile(unstagedKey);
+        }
+
+        // Re-fetch diffs that were expanded
+        if (hadStagedDiff) {
+          onFetchDiff(path, true);
+        }
+        if (hadUnstagedDiff) {
+          onFetchDiff(path, false);
+        }
+      }
     } finally {
       setSelectionOperationPending(false);
     }
@@ -201,6 +241,8 @@ export function RepoView({
     onUnstagePatch,
     clearSelection,
     setSelectionOperationPending,
+    collapseFile,
+    onFetchDiff,
   ]);
 
   const totalChanges = staged.length + unstaged.length + untracked.length;
@@ -258,7 +300,7 @@ export function RepoView({
           title="Staged"
           files={staged}
           type="staged"
-          onFileClick={(path) => handleFileClick(path, true)}
+          onFileClick={(path) => handleFileClick(path, 'staged')}
           onAction={onUnstage}
           actionLabel="Unstage"
           expandedDiffs={expandedDiffs}
@@ -276,7 +318,7 @@ export function RepoView({
           title="Changed"
           files={unstaged}
           type="unstaged"
-          onFileClick={(path) => handleFileClick(path, false)}
+          onFileClick={(path) => handleFileClick(path, 'unstaged')}
           onAction={onStage}
           actionLabel="Stage"
           expandedDiffs={expandedDiffs}
@@ -294,7 +336,7 @@ export function RepoView({
           title="Untracked"
           files={untracked.map((path) => ({ path, status: 'added' as const }))}
           type="untracked"
-          onFileClick={(path) => handleFileClick(path, false)}
+          onFileClick={(path) => handleFileClick(path, 'untracked')}
           onAction={onStage}
           actionLabel="Stage"
           expandedDiffs={expandedDiffs}
