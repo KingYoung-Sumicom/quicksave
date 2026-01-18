@@ -1,4 +1,4 @@
-import { useEffect, useCallback } from 'react';
+import { useEffect, useCallback, useState } from 'react';
 import {
   useGitStore,
   selectStagedFiles,
@@ -12,6 +12,7 @@ import type { FileDiff } from '@quicksave/shared';
 import { FileList } from './FileList';
 import { CommitForm } from './CommitForm';
 import { FloatingActionButton } from './FloatingActionButton';
+import { Settings } from './Settings';
 
 interface RepoViewProps {
   onRefresh: () => void;
@@ -22,6 +23,8 @@ interface RepoViewProps {
   onUnstagePatch: (patch: string) => void;
   onDiscard: (paths: string[]) => void;
   onCommit: (message: string, description?: string) => Promise<void>;
+  onGenerateAiSummary: () => Promise<void>;
+  onSetApiKey: (apiKey: string) => Promise<boolean>;
 }
 
 // Helper to generate a patch from selected lines
@@ -105,9 +108,12 @@ export function RepoView({
   onUnstagePatch,
   onDiscard: _onDiscard,
   onCommit,
+  onGenerateAiSummary,
+  onSetApiKey,
 }: RepoViewProps) {
   // TODO: Add discard UI (onDiscard will be used in future)
   void _onDiscard;
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const {
     expandedDiffs,
     loadingDiffs,
@@ -302,7 +308,12 @@ export function RepoView({
         />
 
         {/* Commit Form */}
-        <CommitForm onCommit={onCommit} stagedCount={staged.length} />
+        <CommitForm
+          onCommit={onCommit}
+          onGenerateAiSummary={onGenerateAiSummary}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          stagedCount={staged.length}
+        />
 
         {/* Refresh Button */}
         {totalChanges > 0 && (
@@ -326,6 +337,13 @@ export function RepoView({
         isLoading={isSelectionOperationPending}
         onAction={handleSelectionAction}
         onClear={clearSelection}
+      />
+
+      {/* Settings Modal */}
+      <Settings
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        onSaveApiKey={onSetApiKey}
       />
     </div>
   );

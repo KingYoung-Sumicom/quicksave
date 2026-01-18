@@ -1,6 +1,11 @@
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
+import { gzip, gunzip } from 'zlib';
+import { promisify } from 'util';
 import type { SignalingMessage } from '@quicksave/shared';
+
+const gzipAsync = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
 
 // WebRTC types (simplified for Node.js wrtc module)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -14,6 +19,8 @@ export interface SignalingEvents {
   offer: (sdp: SDPInit) => void;
   answer: (sdp: SDPInit) => void;
   'ice-candidate': (candidate: ICECandidateInit) => void;
+  'relay-mode': () => void;
+  'relay-data': (data: string) => void;
   connected: () => void;
   disconnected: () => void;
   error: (error: Error) => void;
@@ -46,9 +53,13 @@ export class SignalingClient extends EventEmitter {
           resolve();
         });
 
-        this.ws.on('message', (data) => {
+        this.ws.on('message', async (data) => {
           try {
-            const message = JSON.parse(data.toString()) as SignalingMessage;
+            const parsed = JSON.parse(data.toString());
+            // Handle compressed messages (z = zipped)
+            const message: SignalingMessage = parsed.z
+              ? JSON.parse(await this.decompress(parsed.z))
+              : parsed;
             this.handleMessage(message);
           } catch (error) {
             console.error('Failed to parse signaling message:', error);
@@ -90,6 +101,14 @@ export class SignalingClient extends EventEmitter {
       case 'ice-candidate':
         this.emit('ice-candidate', message.payload);
         break;
+      case 'relay-mode':
+        this.emit('relay-mode');
+        break;
+      case 'relay-data':
+        if (typeof message.payload === 'string') {
+          this.emit('relay-data', message.payload);
+        }
+        break;
       case 'bye':
         this.emit('peer-disconnected');
         break;
@@ -112,9 +131,28 @@ export class SignalingClient extends EventEmitter {
     this.send({ type: 'bye' });
   }
 
+  sendRelayData(data: string): void {
+    this.send({ type: 'relay-data', payload: data });
+  }
+
+  // Gzip compression helpers
+  private async compress(data: string): Promise<string> {
+    const buffer = await gzipAsync(Buffer.from(data));
+    return buffer.toString('base64');
+  }
+
+  private async decompress(base64: string): Promise<string> {
+    const buffer = Buffer.from(base64, 'base64');
+    const decompressed = await gunzipAsync(buffer);
+    return decompressed.toString('utf-8');
+  }
+
   private send(message: SignalingMessage): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message));
+      // Send compressed
+      this.compress(JSON.stringify(message)).then((compressed) => {
+        this.ws?.send(JSON.stringify({ z: compressed }));
+      });
     }
   }
 

@@ -11,6 +11,10 @@ import {
   type BranchesResponsePayload,
   type CheckoutResponsePayload,
   type DiscardResponsePayload,
+  type GenerateCommitSummaryResponsePayload,
+  type SetApiKeyResponsePayload,
+  type GetApiKeyStatusResponsePayload,
+  type ClaudeModel,
 } from '@quicksave/shared';
 import { useGitStore } from '../stores/gitStore';
 import { WebRTCClient } from '../lib/webrtc';
@@ -23,8 +27,21 @@ type PendingRequest = {
 
 export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>) {
   const pendingRequests = useRef<Map<string, PendingRequest>>(new Map());
-  const { setStatus, setFileDiff, setDiffLoading, setCommits, setBranches, setLoading, setError, clearCommitForm } =
-    useGitStore();
+  const {
+    setStatus,
+    setFileDiff,
+    setDiffLoading,
+    setCommits,
+    setBranches,
+    setLoading,
+    setError,
+    clearCommitForm,
+    setAiSummary,
+    setGeneratingAiSummary,
+    setAiSummaryError,
+    setApiKeyConfigured,
+    selectedModel,
+  } = useGitStore();
 
   const sendRequest = useCallback(
     <T>(message: Message, timeoutMs = 30000): Promise<T> => {
@@ -259,6 +276,62 @@ export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>
     [sendRequest, fetchStatus, setLoading, setError]
   );
 
+  const generateCommitSummary = useCallback(
+    async (context?: string, model?: ClaudeModel) => {
+      setGeneratingAiSummary(true);
+      setAiSummaryError(null);
+      try {
+        const message = createMessage('ai:generate-commit-summary', {
+          context,
+          model: model ?? selectedModel,
+        });
+        const response = await sendRequest<GenerateCommitSummaryResponsePayload>(message, 60000);
+
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to generate summary');
+        }
+
+        setAiSummary(response.summary ?? null, response.description);
+      } catch (error) {
+        setAiSummaryError(error instanceof Error ? error.message : 'Failed to generate summary');
+      } finally {
+        setGeneratingAiSummary(false);
+      }
+    },
+    [sendRequest, selectedModel, setAiSummary, setGeneratingAiSummary, setAiSummaryError]
+  );
+
+  const setApiKey = useCallback(
+    async (apiKey: string) => {
+      try {
+        const message = createMessage('ai:set-api-key', { apiKey });
+        const response = await sendRequest<SetApiKeyResponsePayload>(message);
+
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to save API key');
+        }
+
+        setApiKeyConfigured(true);
+        return true;
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Failed to save API key');
+        return false;
+      }
+    },
+    [sendRequest, setApiKeyConfigured, setError]
+  );
+
+  const checkApiKeyStatus = useCallback(async () => {
+    try {
+      const message = createMessage('ai:get-api-key-status', {});
+      const response = await sendRequest<GetApiKeyStatusResponsePayload>(message);
+      setApiKeyConfigured(response.configured);
+    } catch {
+      // Silently fail - API key status check is not critical
+      setApiKeyConfigured(false);
+    }
+  }, [sendRequest, setApiKeyConfigured]);
+
   return {
     handleResponse,
     fetchStatus,
@@ -272,5 +345,8 @@ export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>
     fetchBranches,
     checkout,
     discardChanges,
+    generateCommitSummary,
+    setApiKey,
+    checkApiKeyStatus,
   };
 }

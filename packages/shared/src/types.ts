@@ -36,6 +36,12 @@ export type MessageType =
   | 'git:checkout:response'
   | 'git:discard'
   | 'git:discard:response'
+  | 'ai:generate-commit-summary'
+  | 'ai:generate-commit-summary:response'
+  | 'ai:set-api-key'
+  | 'ai:set-api-key:response'
+  | 'ai:get-api-key-status'
+  | 'ai:get-api-key-status:response'
   | 'error';
 
 // ============================================================================
@@ -72,6 +78,8 @@ export interface FileDiff {
   oldPath?: string;
   hunks: DiffHunk[];
   isBinary: boolean;
+  truncated?: boolean;
+  truncatedReason?: string;
 }
 
 export interface Commit {
@@ -225,6 +233,8 @@ export type SignalingMessageType =
   | 'ice-candidate'
   | 'peer-connected'
   | 'peer-offline'
+  | 'relay-mode'
+  | 'relay-data'
   | 'bye';
 
 export interface SignalingMessage {
@@ -250,4 +260,47 @@ export interface ConnectionInfo {
   signalingServer: string;
   connectedAt?: number;
   error?: string;
+}
+
+// ============================================================================
+// AI Types
+// ============================================================================
+
+export type ClaudeModel =
+  | 'claude-sonnet-4-20250514'
+  | 'claude-3-5-haiku-20241022'
+  | 'claude-opus-4-5-20250101';
+
+export const CLAUDE_MODELS: { id: ClaudeModel; name: string; description: string }[] = [
+  { id: 'claude-sonnet-4-20250514', name: 'Sonnet', description: 'Balanced speed & quality' },
+  { id: 'claude-3-5-haiku-20241022', name: 'Haiku', description: 'Fast & affordable' },
+  { id: 'claude-opus-4-5-20250101', name: 'Opus', description: 'Highest quality' },
+];
+
+// Generate Commit Summary
+export interface GenerateCommitSummaryRequestPayload {
+  context?: string;
+  model?: ClaudeModel;
+}
+
+export interface GenerateCommitSummaryResponsePayload {
+  success: boolean;
+  summary?: string;
+  description?: string;
+  error?: string;
+  errorCode?: 'NO_API_KEY' | 'NO_STAGED_CHANGES' | 'API_ERROR' | 'RATE_LIMITED';
+}
+
+// API Key Management
+export interface SetApiKeyRequestPayload {
+  apiKey: string;
+}
+
+export interface SetApiKeyResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+export interface GetApiKeyStatusResponsePayload {
+  configured: boolean;
 }

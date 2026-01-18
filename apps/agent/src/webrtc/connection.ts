@@ -1,5 +1,7 @@
 import { EventEmitter } from 'events';
 import { RTCPeerConnection, RTCSessionDescription, RTCIceCandidate } from 'werift';
+import { gzip, gunzip } from 'zlib';
+import { promisify } from 'util';
 import {
   generateKeyPair,
   encodeKeyPair,
@@ -15,6 +17,9 @@ import {
   type KeyPair,
 } from '@quicksave/shared';
 import { SignalingClient } from './signaling.js';
+
+const gzipAsync = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
 
 export interface ConnectionConfig {
   signalingServer: string;
@@ -39,6 +44,7 @@ export class WebRTCConnection extends EventEmitter {
   private peerPublicKey: Uint8Array | null = null;
   private sharedSecret: Uint8Array | null = null;
   private isConnected = false;
+  private relayMode = false;
 
   constructor(config: ConnectionConfig) {
     super();
@@ -65,9 +71,38 @@ export class WebRTCConnection extends EventEmitter {
       this.handlePeerDisconnected();
     });
 
+    this.signaling.on('relay-mode', () => {
+      console.log('Switching to WebSocket relay mode');
+      this.enableRelayMode();
+    });
+
+    this.signaling.on('relay-data', (data: string) => {
+      if (this.relayMode) {
+        this.handleDataChannelMessage(data);
+      }
+    });
+
     this.signaling.on('error', (error: Error) => {
       this.emit('error', error);
     });
+  }
+
+  private enableRelayMode(): void {
+    if (this.relayMode) return;
+
+    this.relayMode = true;
+
+    // Close P2P connection if it exists
+    if (this.dataChannel) {
+      this.dataChannel.close();
+      this.dataChannel = null;
+    }
+    if (this.peerConnection) {
+      this.peerConnection.close();
+      this.peerConnection = null;
+    }
+
+    console.log('Relay mode enabled, waiting for key exchange...');
   }
 
   async start(): Promise<void> {
@@ -149,18 +184,23 @@ export class WebRTCConnection extends EventEmitter {
     };
   }
 
-  private handleDataChannelMessage(data: string | Buffer): void {
+  private async handleDataChannelMessage(data: string | Buffer): Promise<void> {
     try {
-      // Convert Buffer to string if needed (werift delivers data as Buffer)
-      const strData = Buffer.isBuffer(data) ? data.toString('utf-8') : data;
-
-      // First message should be the peer's public key for key exchange
+      // Handle key exchange (uncompressed) vs encrypted messages (compressed)
       if (!this.peerPublicKey) {
+        // Key exchange messages are uncompressed strings/buffers
+        const strData = Buffer.isBuffer(data) ? data.toString('utf-8') : data;
         const keyExchange = JSON.parse(strData);
         if (keyExchange.type === 'key-exchange') {
           this.peerPublicKey = decodeBase64(keyExchange.publicKey);
           this.sharedSecret = deriveSharedSecret(this.peerPublicKey, this.keyPair.secretKey);
           console.log('Key exchange complete, connection encrypted');
+
+          // Mark as connected in relay mode (P2P sets this in onconnectionstatechange)
+          if (this.relayMode && !this.isConnected) {
+            this.isConnected = true;
+            this.emit('connected');
+          }
 
           // Send our public key back
           this.sendRaw(
@@ -171,6 +211,26 @@ export class WebRTCConnection extends EventEmitter {
           );
           return;
         }
+      }
+
+      // Post key-exchange: all messages are compressed
+      let strData: string;
+
+      if (Buffer.isBuffer(data)) {
+        // Binary data from data channel - decompress
+        const decompressed = await gunzipAsync(data);
+        strData = decompressed.toString('utf-8');
+      } else if (this.relayMode) {
+        // Base64 string from relay - decode and decompress
+        const buffer = Buffer.from(data, 'base64');
+        const decompressed = await gunzipAsync(buffer);
+        strData = decompressed.toString('utf-8');
+      } else {
+        // P2P mode: werift may deliver binary as a string with binary encoding
+        // Convert string to buffer using latin1 (preserves byte values) and decompress
+        const buffer = Buffer.from(data, 'latin1');
+        const decompressed = await gunzipAsync(buffer);
+        strData = decompressed.toString('utf-8');
       }
 
       // Decrypt and parse message
@@ -188,11 +248,6 @@ export class WebRTCConnection extends EventEmitter {
   }
 
   send(message: Message): void {
-    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
-      console.error('Data channel not open');
-      return;
-    }
-
     if (!this.sharedSecret) {
       console.error('No shared secret, cannot encrypt message');
       return;
@@ -200,11 +255,27 @@ export class WebRTCConnection extends EventEmitter {
 
     const serialized = serializeMessage(message);
     const encrypted = encryptWithSharedSecret(serialized, this.sharedSecret);
-    this.dataChannel.send(encrypted);
+
+    // Compress the encrypted payload before sending
+    gzipAsync(Buffer.from(encrypted)).then((compressed) => {
+      if (this.relayMode) {
+        // Send through WebSocket relay - base64 encode for JSON transport
+        this.signaling.sendRelayData(compressed.toString('base64'));
+      } else {
+        // Send through WebRTC data channel as binary
+        if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+          console.error('Data channel not open');
+          return;
+        }
+        this.dataChannel.send(compressed);
+      }
+    });
   }
 
   private sendRaw(data: string): void {
-    if (this.dataChannel && this.dataChannel.readyState === 'open') {
+    if (this.relayMode) {
+      this.signaling.sendRelayData(data);
+    } else if (this.dataChannel && this.dataChannel.readyState === 'open') {
       this.dataChannel.send(data);
     }
   }
@@ -219,6 +290,7 @@ export class WebRTCConnection extends EventEmitter {
     this.dataChannel = null;
     this.peerPublicKey = null;
     this.sharedSecret = null;
+    this.relayMode = false;
 
     if (this.peerConnection) {
       this.peerConnection.close();

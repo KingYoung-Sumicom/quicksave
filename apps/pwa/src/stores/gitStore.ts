@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { GitStatus, FileDiff, Commit, Branch, FileChange } from '@quicksave/shared';
+import type { GitStatus, FileDiff, Commit, Branch, FileChange, ClaudeModel } from '@quicksave/shared';
 
 export type SelectionSource = 'staged' | 'unstaged' | 'untracked';
 
@@ -25,6 +25,14 @@ interface GitStore {
   commitMessage: string;
   commitDescription: string;
 
+  // AI Summary state
+  aiSummary: string | null;
+  aiDescription: string | null;
+  isGeneratingAiSummary: boolean;
+  aiSummaryError: string | null;
+  selectedModel: ClaudeModel;
+  apiKeyConfigured: boolean;
+
   // Selection state
   selectedFiles: Set<string>;
   selectedLines: Map<string, LineSelection[]>; // path -> selected lines
@@ -46,6 +54,15 @@ interface GitStore {
   clearCommitForm: () => void;
   reset: () => void;
 
+  // AI Summary actions
+  setAiSummary: (summary: string | null, description?: string | null) => void;
+  setGeneratingAiSummary: (loading: boolean) => void;
+  setAiSummaryError: (error: string | null) => void;
+  clearAiSummary: () => void;
+  applyAiSummary: () => void;
+  setSelectedModel: (model: ClaudeModel) => void;
+  setApiKeyConfigured: (configured: boolean) => void;
+
   // Selection actions
   toggleFileSelection: (path: string, source: SelectionSource) => void;
   toggleLineSelection: (path: string, line: LineSelection, source: SelectionSource) => void;
@@ -66,6 +83,14 @@ export const useGitStore = create<GitStore>((set, get) => ({
   error: null,
   commitMessage: '',
   commitDescription: '',
+
+  // AI Summary state
+  aiSummary: null,
+  aiDescription: null,
+  isGeneratingAiSummary: false,
+  aiSummaryError: null,
+  selectedModel: 'claude-sonnet-4-20250514',
+  apiKeyConfigured: false,
 
   // Selection state
   selectedFiles: new Set(),
@@ -133,6 +158,32 @@ export const useGitStore = create<GitStore>((set, get) => ({
   setCommitDescription: (description) => set({ commitDescription: description }),
 
   clearCommitForm: () => set({ commitMessage: '', commitDescription: '' }),
+
+  // AI Summary actions
+  setAiSummary: (summary, description) =>
+    set({ aiSummary: summary, aiDescription: description ?? null, aiSummaryError: null }),
+
+  setGeneratingAiSummary: (loading) => set({ isGeneratingAiSummary: loading }),
+
+  setAiSummaryError: (error) => set({ aiSummaryError: error, isGeneratingAiSummary: false }),
+
+  clearAiSummary: () => set({ aiSummary: null, aiDescription: null, aiSummaryError: null }),
+
+  applyAiSummary: () => {
+    const { aiSummary, aiDescription } = get();
+    if (aiSummary) {
+      set({
+        commitMessage: aiSummary,
+        commitDescription: aiDescription ?? '',
+        aiSummary: null,
+        aiDescription: null,
+      });
+    }
+  },
+
+  setSelectedModel: (model) => set({ selectedModel: model }),
+
+  setApiKeyConfigured: (configured) => set({ apiKeyConfigured: configured }),
 
   // Selection actions
   toggleFileSelection: (path, source) => {
@@ -253,6 +304,12 @@ export const useGitStore = create<GitStore>((set, get) => ({
       error: null,
       commitMessage: '',
       commitDescription: '',
+      aiSummary: null,
+      aiDescription: null,
+      isGeneratingAiSummary: false,
+      aiSummaryError: null,
+      selectedModel: 'claude-sonnet-4-20250514',
+      // Note: apiKeyConfigured is not reset as it's a global setting
       selectedFiles: new Set(),
       selectedLines: new Map(),
       selectionSource: null,

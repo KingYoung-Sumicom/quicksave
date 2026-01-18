@@ -45,6 +45,11 @@ export class WebRTCClient {
   private isManualDisconnect = false;
   private wasConnected = false;
 
+  // Relay mode state (fallback when P2P fails)
+  private relayMode = false;
+  private iceTimeout: ReturnType<typeof setTimeout> | null = null;
+  private readonly ICE_TIMEOUT_MS = 10000;
+
   constructor(
     signalingServer: string,
     agentId: string,
@@ -56,6 +61,41 @@ export class WebRTCClient {
     this.agentPublicKey = decodeBase64(agentPublicKey);
     this.keyPair = generateKeyPair();
     this.eventHandlers = handlers;
+  }
+
+  // Gzip compression helpers for signaling (base64 string output)
+  private async compress(data: string): Promise<string> {
+    const encoder = new TextEncoder();
+    const stream = new Blob([encoder.encode(data)])
+      .stream()
+      .pipeThrough(new CompressionStream('gzip'));
+    const compressed = await new Response(stream).arrayBuffer();
+    return btoa(String.fromCharCode(...new Uint8Array(compressed)));
+  }
+
+  private async decompress(base64: string): Promise<string> {
+    const binary = atob(base64);
+    const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    const stream = new Blob([bytes])
+      .stream()
+      .pipeThrough(new DecompressionStream('gzip'));
+    return new Response(stream).text();
+  }
+
+  // Binary compression helpers for data channel (ArrayBuffer output - more efficient)
+  private async compressForDataChannel(data: string): Promise<ArrayBuffer> {
+    const encoder = new TextEncoder();
+    const stream = new Blob([encoder.encode(data)])
+      .stream()
+      .pipeThrough(new CompressionStream('gzip'));
+    return new Response(stream).arrayBuffer();
+  }
+
+  private async decompressFromDataChannel(data: ArrayBuffer): Promise<string> {
+    const stream = new Blob([data])
+      .stream()
+      .pipeThrough(new DecompressionStream('gzip'));
+    return new Response(stream).text();
   }
 
   async connect(): Promise<void> {
@@ -73,8 +113,12 @@ export class WebRTCClient {
       };
 
       this.ws.onmessage = async (event) => {
-        const data = event.data instanceof Blob ? await event.data.text() : event.data;
-        const message = JSON.parse(data);
+        const rawData = event.data instanceof Blob ? await event.data.text() : event.data;
+        const parsed = JSON.parse(rawData);
+        // Handle compressed messages (z = zipped)
+        const message = parsed.z
+          ? JSON.parse(await this.decompress(parsed.z))
+          : parsed;
         this.handleSignalingMessage(message);
       };
 
@@ -114,6 +158,23 @@ export class WebRTCClient {
       }
     };
 
+    // Handle ICE connection state for relay fallback
+    this.peerConnection.oniceconnectionstatechange = () => {
+      const state = this.peerConnection?.iceConnectionState;
+      console.log('ICE connection state:', state);
+
+      if (state === 'connected' || state === 'completed') {
+        // P2P connection established, clear ICE timeout
+        if (this.iceTimeout) {
+          clearTimeout(this.iceTimeout);
+          this.iceTimeout = null;
+        }
+      } else if (state === 'failed') {
+        // ICE failed, switch to relay mode
+        this.enableRelayMode();
+      }
+    };
+
     // Handle connection state
     this.peerConnection.onconnectionstatechange = () => {
       console.log('Connection state:', this.peerConnection?.connectionState);
@@ -125,8 +186,59 @@ export class WebRTCClient {
       }
     };
 
+    // Set ICE timeout - if P2P doesn't connect in time, fall back to relay
+    this.iceTimeout = setTimeout(() => {
+      if (
+        this.peerConnection?.iceConnectionState === 'checking' ||
+        this.peerConnection?.iceConnectionState === 'new'
+      ) {
+        console.log('ICE timeout - switching to relay mode');
+        this.enableRelayMode();
+      }
+    }, this.ICE_TIMEOUT_MS);
+
     // Create and send offer
     this.createOffer();
+  }
+
+  private enableRelayMode(): void {
+    if (this.relayMode) return;
+
+    console.log('Enabling WebSocket relay mode');
+    this.relayMode = true;
+
+    // Clear ICE timeout
+    if (this.iceTimeout) {
+      clearTimeout(this.iceTimeout);
+      this.iceTimeout = null;
+    }
+
+    // Close P2P connection
+    if (this.dataChannel) {
+      this.dataChannel.close();
+      this.dataChannel = null;
+    }
+    if (this.peerConnection) {
+      this.peerConnection.close();
+      this.peerConnection = null;
+    }
+
+    // Send relay mode activation to agent via signaling
+    this.sendSignaling({ type: 'relay-mode' });
+
+    // Initiate key exchange over WebSocket
+    this.initiateRelayKeyExchange();
+  }
+
+  private initiateRelayKeyExchange(): void {
+    // Send our public key for key exchange via relay
+    this.sendSignaling({
+      type: 'relay-data',
+      payload: JSON.stringify({
+        type: 'key-exchange',
+        publicKey: encodeBase64(this.keyPair.publicKey),
+      }),
+    });
   }
 
   private async createOffer(): Promise<void> {
@@ -173,6 +285,13 @@ export class WebRTCClient {
           }
         }
         break;
+
+      case 'relay-data':
+        // Handle data relayed through WebSocket (when P2P fails)
+        if (this.relayMode && typeof message.payload === 'string') {
+          this.handleDataChannelMessage(message.payload);
+        }
+        break;
     }
   }
 
@@ -203,11 +322,24 @@ export class WebRTCClient {
     };
   }
 
-  private handleDataChannelMessage(data: string): void {
+  private async handleDataChannelMessage(data: string | ArrayBuffer): Promise<void> {
     try {
-      // Handle key exchange response
+      let strData: string;
+
+      // Handle key exchange (uncompressed string) vs encrypted messages (compressed)
       if (!this.keyExchangeComplete) {
-        const keyExchange = JSON.parse(data);
+        // Key exchange messages are uncompressed strings
+        if (typeof data === 'string') {
+          strData = data;
+        } else if (this.relayMode) {
+          // Relay mode: base64 string from WebSocket
+          strData = data as unknown as string;
+        } else {
+          // Shouldn't happen during key exchange, but handle gracefully
+          strData = new TextDecoder().decode(data);
+        }
+
+        const keyExchange = JSON.parse(strData);
         if (keyExchange.type === 'key-exchange') {
           // Verify the public key matches what we expected
           const receivedKey = decodeBase64(keyExchange.publicKey);
@@ -228,13 +360,27 @@ export class WebRTCClient {
         }
       }
 
+      // Post key-exchange: all messages are compressed
+      if (data instanceof ArrayBuffer) {
+        // Binary data from data channel - decompress
+        strData = await this.decompressFromDataChannel(data);
+      } else if (this.relayMode) {
+        // Base64 string from relay - decode and decompress
+        const binary = atob(data);
+        const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+        strData = await this.decompressFromDataChannel(bytes.buffer);
+      } else {
+        // Fallback for uncompressed string (shouldn't happen after key exchange)
+        strData = data;
+      }
+
       // Decrypt message
       if (!this.sharedSecret) {
         console.error('No shared secret');
         return;
       }
 
-      const decrypted = decryptWithSharedSecret(data, this.sharedSecret);
+      const decrypted = decryptWithSharedSecret(strData, this.sharedSecret);
       const message = parseMessage(decrypted);
 
       // Handle handshake response
@@ -265,11 +411,6 @@ export class WebRTCClient {
   }
 
   send(message: Message): void {
-    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
-      console.error('Data channel not open');
-      return;
-    }
-
     if (!this.sharedSecret) {
       console.error('No shared secret');
       return;
@@ -277,12 +418,32 @@ export class WebRTCClient {
 
     const serialized = serializeMessage(message);
     const encrypted = encryptWithSharedSecret(serialized, this.sharedSecret);
-    this.dataChannel.send(encrypted);
+
+    // Compress the encrypted payload before sending
+    this.compressForDataChannel(encrypted).then((compressed) => {
+      if (this.relayMode) {
+        // Send through WebSocket relay - convert to base64 since WebSocket needs string
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(compressed)));
+        this.sendSignaling({
+          type: 'relay-data',
+          payload: base64,
+        });
+      } else {
+        // Send through WebRTC data channel as binary
+        if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+          console.error('Data channel not open');
+          return;
+        }
+        this.dataChannel.send(compressed);
+      }
+    });
   }
 
-  private sendSignaling(message: { type: string; payload?: unknown }): void {
+  private async sendSignaling(message: { type: string; payload?: unknown }): Promise<void> {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(message));
+      const json = JSON.stringify(message);
+      const compressed = await this.compress(json);
+      this.ws.send(JSON.stringify({ z: compressed }));
     }
   }
 
@@ -342,6 +503,11 @@ export class WebRTCClient {
   }
 
   private cleanupConnection(): void {
+    if (this.iceTimeout) {
+      clearTimeout(this.iceTimeout);
+      this.iceTimeout = null;
+    }
+
     if (this.dataChannel) {
       this.dataChannel.close();
       this.dataChannel = null;
@@ -361,6 +527,7 @@ export class WebRTCClient {
     this.keyExchangeComplete = false;
     this.pendingIceCandidates = [];
     this.remoteDescriptionSet = false;
+    this.relayMode = false;
   }
 
   disconnect(): void {

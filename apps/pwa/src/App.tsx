@@ -40,6 +40,9 @@ function App() {
     unstagePatch,
     commit,
     discardChanges,
+    generateCommitSummary,
+    setApiKey,
+    checkApiKeyStatus,
   } = useGitOperations(clientRef);
 
   const handleConnect = useCallback(
@@ -93,12 +96,13 @@ function App() {
     resetGit();
   }, [reset, resetGit]);
 
-  // Fetch status when connected
+  // Fetch status and check API key status when connected
   useEffect(() => {
     if (state === 'connected') {
       fetchStatus();
+      checkApiKeyStatus();
     }
-  }, [state, fetchStatus]);
+  }, [state, fetchStatus, checkApiKeyStatus]);
 
   // Clean up on unmount
   useEffect(() => {
@@ -150,6 +154,8 @@ function App() {
             onUnstagePatch={unstagePatch}
             onDiscard={discardChanges}
             onCommit={async (msg, desc) => { await commit(msg, desc); }}
+            onGenerateAiSummary={generateCommitSummary}
+            onSetApiKey={setApiKey}
           />
         </>
       ) : machines.length > 0 ? (

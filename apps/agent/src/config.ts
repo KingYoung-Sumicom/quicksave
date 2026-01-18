@@ -12,6 +12,7 @@ export interface AgentConfig {
   };
   license?: License;
   signalingServer: string;
+  anthropicApiKey?: string;
 }
 
 const CONFIG_DIR = join(homedir(), '.quicksave');
@@ -76,4 +77,21 @@ export function addLicense(license: License): void {
 
 export function getConfigPath(): string {
   return CONFIG_FILE;
+}
+
+// Anthropic API Key helpers
+export function getAnthropicApiKey(): string | undefined {
+  return loadConfig()?.anthropicApiKey;
+}
+
+export function setAnthropicApiKey(apiKey: string): void {
+  const config = loadConfig();
+  if (config) {
+    config.anthropicApiKey = apiKey;
+    saveConfig(config);
+  }
+}
+
+export function hasAnthropicApiKey(): boolean {
+  return !!loadConfig()?.anthropicApiKey;
 }

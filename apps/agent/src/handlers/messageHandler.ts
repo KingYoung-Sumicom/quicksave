@@ -26,8 +26,15 @@ import {
   HandshakePayload,
   HandshakeAckPayload,
   License,
+  GenerateCommitSummaryRequestPayload,
+  GenerateCommitSummaryResponsePayload,
+  SetApiKeyRequestPayload,
+  SetApiKeyResponsePayload,
+  GetApiKeyStatusResponsePayload,
 } from '@quicksave/shared';
 import { GitOperations } from '../git/operations.js';
+import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey } from '../config.js';
+import { CommitSummaryService } from '../ai/commitSummary.js';
 
 export class MessageHandler {
   private git: GitOperations;
@@ -69,6 +76,12 @@ export class MessageHandler {
           return this.handleCheckout(message as Message<CheckoutRequestPayload>);
         case 'git:discard':
           return this.handleDiscard(message as Message<DiscardRequestPayload>);
+        case 'ai:generate-commit-summary':
+          return this.handleGenerateCommitSummary(message as Message<GenerateCommitSummaryRequestPayload>);
+        case 'ai:set-api-key':
+          return this.handleSetApiKey(message as Message<SetApiKeyRequestPayload>);
+        case 'ai:get-api-key-status':
+          return this.handleGetApiKeyStatus(message);
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
       }
@@ -234,6 +247,103 @@ export class MessageHandler {
       response.id = message.id;
       return response;
     }
+  }
+
+  private async handleGenerateCommitSummary(
+    message: Message<GenerateCommitSummaryRequestPayload>
+  ): Promise<Message<GenerateCommitSummaryResponsePayload>> {
+    const apiKey = getAnthropicApiKey();
+
+    if (!apiKey) {
+      const response = createMessage<GenerateCommitSummaryResponsePayload>(
+        'ai:generate-commit-summary:response',
+        {
+          success: false,
+          error: 'Configure your API key in Settings',
+          errorCode: 'NO_API_KEY',
+        }
+      );
+      response.id = message.id;
+      return response;
+    }
+
+    try {
+      const status = await this.git.getStatus();
+      if (status.staged.length === 0) {
+        const response = createMessage<GenerateCommitSummaryResponsePayload>(
+          'ai:generate-commit-summary:response',
+          {
+            success: false,
+            error: 'No staged changes to summarize',
+            errorCode: 'NO_STAGED_CHANGES',
+          }
+        );
+        response.id = message.id;
+        return response;
+      }
+
+      // Collect diffs for all staged files
+      const diffs = await Promise.all(status.staged.map((file) => this.git.getDiff(file.path, true)));
+
+      // Generate summary
+      const aiService = new CommitSummaryService(apiKey);
+      const result = await aiService.generateSummary({
+        diffs,
+        context: message.payload.context,
+        model: message.payload.model,
+      });
+
+      const response = createMessage<GenerateCommitSummaryResponsePayload>(
+        'ai:generate-commit-summary:response',
+        {
+          success: true,
+          summary: result.summary,
+          description: result.description,
+        }
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to generate summary';
+      const isRateLimit = errorMessage.includes('rate_limit');
+
+      const response = createMessage<GenerateCommitSummaryResponsePayload>(
+        'ai:generate-commit-summary:response',
+        {
+          success: false,
+          error: errorMessage,
+          errorCode: isRateLimit ? 'RATE_LIMITED' : 'API_ERROR',
+        }
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private handleSetApiKey(message: Message<SetApiKeyRequestPayload>): Message<SetApiKeyResponsePayload> {
+    try {
+      setAnthropicApiKey(message.payload.apiKey);
+      const response = createMessage<SetApiKeyResponsePayload>('ai:set-api-key:response', {
+        success: true,
+      });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<SetApiKeyResponsePayload>('ai:set-api-key:response', {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to save API key',
+      });
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private handleGetApiKeyStatus(message: Message): Message<GetApiKeyStatusResponsePayload> {
+    const response = createMessage<GetApiKeyStatusResponsePayload>('ai:get-api-key-status:response', {
+      configured: hasAnthropicApiKey(),
+    });
+    response.id = message.id;
+    return response;
   }
 
   private createErrorResponse(id: string, code: string, message: string): Message<ErrorPayload> {

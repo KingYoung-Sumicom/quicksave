@@ -1,5 +1,5 @@
 import { simpleGit, SimpleGit, StatusResult } from 'simple-git';
-import { readFile, writeFile, unlink } from 'fs/promises';
+import { readFile, writeFile, unlink, stat } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { randomBytes } from 'crypto';
@@ -13,13 +13,21 @@ import type {
   FileStatus,
 } from '@quicksave/shared';
 
+export interface GitOperationsOptions {
+  maxDiffFileSizeKB?: number;
+}
+
 export class GitOperations {
   private git: SimpleGit;
   private gitRoot: string | null = null;
   private initialized = false;
+  private maxDiffFileSizeKB: number;
 
-  constructor(repoPath: string) {
+  constructor(repoPath: string, options?: GitOperationsOptions) {
     this.git = simpleGit(repoPath);
+    this.maxDiffFileSizeKB =
+      options?.maxDiffFileSizeKB ??
+      parseInt(process.env.QUICKSAVE_MAX_DIFF_SIZE_KB || '100', 10);
   }
 
   /**
@@ -69,6 +77,18 @@ export class GitOperations {
   async getDiff(path: string, staged: boolean = false): Promise<FileDiff> {
     await this.ensureInitialized();
 
+    // Check file size before generating diff
+    const fileSizeKB = await this.getFileSizeKB(path);
+    if (fileSizeKB > this.maxDiffFileSizeKB) {
+      return {
+        path,
+        hunks: [],
+        isBinary: false,
+        truncated: true,
+        truncatedReason: `File exceeds ${this.maxDiffFileSizeKB}KB limit (${fileSizeKB}KB)`,
+      };
+    }
+
     const status = await this.git.status();
     const isUntracked = status.not_added.includes(path);
     const isNewFile = status.created.includes(path);
@@ -99,6 +119,20 @@ export class GitOperations {
     }
 
     return this.parseDiff(path, diffOutput);
+  }
+
+  /**
+   * Get file size in KB
+   */
+  private async getFileSizeKB(path: string): Promise<number> {
+    try {
+      const gitRoot = await this.getGitRoot();
+      const fullPath = join(gitRoot, path);
+      const stats = await stat(fullPath);
+      return Math.ceil(stats.size / 1024);
+    } catch {
+      return 0; // File doesn't exist or can't be read
+    }
   }
 
   /**
