@@ -31,7 +31,7 @@ describe('MessageHandler', () => {
     const status = await git.status();
     defaultBranch = status.current || 'main';
 
-    handler = new MessageHandler(testRepoPath);
+    handler = new MessageHandler([{ path: testRepoPath, name: 'test-repo' }]);
   });
 
   afterEach(async () => {

@@ -14,8 +14,14 @@ import {
   type GenerateCommitSummaryResponsePayload,
   type SetApiKeyResponsePayload,
   type GetApiKeyStatusResponsePayload,
+  type ListReposResponsePayload,
+  type SwitchRepoResponsePayload,
+  type BrowseDirectoryResponsePayload,
+  type AddRepoResponsePayload,
+  type Repository,
   type ClaudeModel,
 } from '@quicksave/shared';
+import { useConnectionStore } from '../stores/connectionStore';
 import { useGitStore, makeSelectionKey } from '../stores/gitStore';
 import { WebRTCClient } from '../lib/webrtc';
 
@@ -40,8 +46,11 @@ export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>
     setGeneratingAiSummary,
     setAiSummaryError,
     setApiKeyConfigured,
+    setCurrentRepoPath,
+    clearSelection,
     selectedModel,
   } = useGitStore();
+  const { setRepoPath, setAvailableRepos } = useConnectionStore();
 
   const sendRequest = useCallback(
     <T>(message: Message, timeoutMs = 30000): Promise<T> => {
@@ -333,6 +342,75 @@ export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>
     }
   }, [sendRequest, setApiKeyConfigured]);
 
+  const listRepos = useCallback(async () => {
+    try {
+      const message = createMessage('agent:list-repos', {});
+      const response = await sendRequest<ListReposResponsePayload>(message, 5000);
+      setAvailableRepos(response.repos);
+      return response;
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Failed to list repos');
+      return null;
+    }
+  }, [sendRequest, setAvailableRepos, setError]);
+
+  const switchRepo = useCallback(
+    async (path: string) => {
+      setLoading(true);
+      try {
+        const message = createMessage('agent:switch-repo', { path });
+        const response = await sendRequest<SwitchRepoResponsePayload>(message, 10000);
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to switch repository');
+        }
+        setRepoPath(response.newPath);
+        setCurrentRepoPath(response.newPath);
+        clearSelection();
+        await fetchStatus();
+        return true;
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Failed to switch repository');
+        return false;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [sendRequest, setRepoPath, setCurrentRepoPath, clearSelection, fetchStatus, setLoading, setError]
+  );
+
+  const browseDirectory = useCallback(
+    async (path?: string) => {
+      try {
+        const message = createMessage('agent:browse-directory', { path: path || '' });
+        const response = await sendRequest<BrowseDirectoryResponsePayload>(message, 10000);
+        return response;
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Failed to browse directory');
+        return null;
+      }
+    },
+    [sendRequest, setError]
+  );
+
+  const addRepo = useCallback(
+    async (path: string): Promise<Repository | null> => {
+      try {
+        const message = createMessage('agent:add-repo', { path });
+        const response = await sendRequest<AddRepoResponsePayload>(message, 10000);
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to add repository');
+        }
+        // Refresh the available repos list
+        await listRepos();
+        return response.repo ?? null;
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Failed to add repository');
+        return null;
+      }
+    },
+    [sendRequest, listRepos, setError]
+  );
+
   return {
     handleResponse,
     fetchStatus,
@@ -349,5 +427,9 @@ export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>
     generateCommitSummary,
     setApiKey,
     checkApiKeyStatus,
+    listRepos,
+    switchRepo,
+    browseDirectory,
+    addRepo,
   };
 }

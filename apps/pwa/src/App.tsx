@@ -1,18 +1,19 @@
-import { useCallback, useRef, useEffect, useMemo } from 'react';
+import { useCallback, useRef, useEffect, useMemo, useState } from 'react';
 import { HashRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { useConnectionStore } from './stores/connectionStore';
 import { useGitStore } from './stores/gitStore';
 import { useMachineStore } from './stores/machineStore';
 import { useGitOperations } from './hooks/useGitOperations';
-import { WebRTCClient } from './lib/webrtc';
+import { WebSocketClient } from './lib/websocket';
 import { ConnectionSetup } from './components/ConnectionSetup';
 import { FleetDashboard } from './components/FleetDashboard';
 import { ConnectingPage } from './components/ConnectingPage';
 import { StatusBar } from './components/StatusBar';
 import { RepoView } from './components/RepoView';
+import { RepoSwitcher } from './components/RepoSwitcher';
 
 function AppContent() {
-  const clientRef = useRef<WebRTCClient | null>(null);
+  const clientRef = useRef<WebSocketClient | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const intentionalDisconnectRef = useRef(false);
@@ -23,12 +24,14 @@ function AppContent() {
     signalingServer,
     reconnectAttempt,
     maxReconnectAttempts,
+    pendingRepoPath,
     setConnecting,
     setSignaling,
     setConnected,
     setDisconnected,
     setReconnecting,
     setError,
+    setPendingRepoPath,
     reset,
   } = useConnectionStore();
 
@@ -49,7 +52,13 @@ function AppContent() {
     generateCommitSummary,
     setApiKey,
     checkApiKeyStatus,
+    listRepos,
+    switchRepo,
+    browseDirectory,
+    addRepo,
   } = useGitOperations(clientRef);
+
+  const [showRepoSwitcher, setShowRepoSwitcher] = useState(false);
 
   const handleConnect = useCallback(
     async (newAgentId: string, publicKey: string) => {
@@ -68,13 +77,14 @@ function AppContent() {
       agentIdRef.current = newAgentId;
       setConnecting(newAgentId, publicKey);
 
-      const client = new WebRTCClient(signalingServer, newAgentId, publicKey, {
-        onConnected: (path, pro) => {
-          setConnected(path, pro);
+      const client = new WebSocketClient(signalingServer, newAgentId, publicKey, {
+        onConnected: (path, pro, availableRepos) => {
+          setConnected(path, pro, availableRepos);
           // Set repo path in git store to load persisted commit draft
           setCurrentRepoPath(path);
-          // Record connection in machine store
-          recordConnection(newAgentId, path, pro);
+          // Record connection in machine store with all available repos
+          const repoPaths = availableRepos?.map((r) => r.path);
+          recordConnection(newAgentId, path, pro, repoPaths);
           // Navigate to repo view
           navigate(`/repo/${newAgentId}`, { replace: true });
         },
@@ -126,6 +136,16 @@ function AppContent() {
     }
   }, [state, fetchStatus, checkApiKeyStatus]);
 
+  // Switch to pending repo after connection if different from current
+  useEffect(() => {
+    if (state === 'connected' && pendingRepoPath && pendingRepoPath !== repoPath) {
+      // Clear pending first to prevent re-triggering
+      setPendingRepoPath(null);
+      // Switch to the requested repo
+      switchRepo(pendingRepoPath);
+    }
+  }, [state, pendingRepoPath, repoPath, setPendingRepoPath, switchRepo]);
+
   // Clean up on unmount
   useEffect(() => {
     return () => {
@@ -171,7 +191,7 @@ function AppContent() {
     // Don't redirect if user intentionally disconnected
     if (intentionalDisconnectRef.current) return;
     if (repoRedirectRef.current) return;
-    if (location.pathname.startsWith('/repo/') && !isConnected && !isReconnecting && state !== 'connecting' && state !== 'signaling') {
+    if (location.pathname.startsWith('/repo/') && !isConnected && !isReconnecting && state !== 'connecting') {
       repoRedirectRef.current = true;
       const match = location.pathname.match(/\/repo\/([^/]+)/);
       if (match) {
@@ -225,6 +245,15 @@ function AppContent() {
           isPro={isPro}
           onDisconnect={handleDisconnect}
           onSwitchMachine={handleDisconnect}
+          onSwitchRepo={() => setShowRepoSwitcher(true)}
+        />
+        <RepoSwitcher
+          isOpen={showRepoSwitcher}
+          onClose={() => setShowRepoSwitcher(false)}
+          onListRepos={listRepos}
+          onSwitchRepo={switchRepo}
+          onBrowseDirectory={browseDirectory}
+          onAddRepo={addRepo}
         />
         <RepoView
           onRefresh={fetchStatus}
@@ -240,7 +269,7 @@ function AppContent() {
         />
       </>
     );
-  }, [isConnected, isReconnecting, reconnectAttempt, maxReconnectAttempts, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, commit, generateCommitSummary, setApiKey]);
+  }, [isConnected, isReconnecting, reconnectAttempt, maxReconnectAttempts, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, commit, generateCommitSummary, setApiKey, showRepoSwitcher, listRepos, switchRepo]);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-900 text-slate-100">

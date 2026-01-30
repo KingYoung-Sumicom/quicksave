@@ -30,3 +30,6 @@ coverage/
 
 # Quicksave config (contains secrets)
 .quicksave/
+
+# Claude Code (keep shared settings, ignore local)
+.claude/settings.local.json

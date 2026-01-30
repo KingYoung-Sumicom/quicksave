@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ConnectionState } from '@quicksave/shared';
+import type { ConnectionState, Repository } from '@quicksave/shared';
 
 interface ConnectionStore {
   // State
@@ -8,6 +8,8 @@ interface ConnectionStore {
   agentPublicKey: string | null;
   signalingServer: string;
   repoPath: string | null;
+  pendingRepoPath: string | null; // Repo to switch to after connecting
+  availableRepos: Repository[];
   connectedAt: number | null;
   error: string | null;
   isPro: boolean;
@@ -17,7 +19,10 @@ interface ConnectionStore {
   // Actions
   setConnecting: (agentId: string, publicKey: string) => void;
   setSignaling: () => void;
-  setConnected: (repoPath: string, isPro: boolean) => void;
+  setConnected: (repoPath: string, isPro: boolean, availableRepos?: Repository[]) => void;
+  setRepoPath: (repoPath: string) => void;
+  setPendingRepoPath: (repoPath: string | null) => void;
+  setAvailableRepos: (repos: Repository[]) => void;
   setDisconnected: () => void;
   setReconnecting: (attempt: number, maxAttempts: number) => void;
   setError: (error: string) => void;
@@ -46,6 +51,8 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
   agentPublicKey: null,
   signalingServer: DEFAULT_SIGNALING_SERVER,
   repoPath: null,
+  pendingRepoPath: null,
+  availableRepos: [],
   connectedAt: null,
   error: null,
   isPro: false,
@@ -61,18 +68,35 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
       error: null,
     }),
 
+  // Note: 'signaling' state was removed - this now just keeps state as 'connecting'
   setSignaling: () =>
     set({
-      state: 'signaling',
+      state: 'connecting',
     }),
 
-  setConnected: (repoPath, isPro) =>
+  setConnected: (repoPath, isPro, availableRepos) =>
     set({
       state: 'connected',
       repoPath,
+      availableRepos: availableRepos || [],
       connectedAt: Date.now(),
       isPro,
       error: null,
+    }),
+
+  setRepoPath: (repoPath) =>
+    set({
+      repoPath,
+    }),
+
+  setPendingRepoPath: (repoPath) =>
+    set({
+      pendingRepoPath: repoPath,
+    }),
+
+  setAvailableRepos: (repos) =>
+    set({
+      availableRepos: repos,
     }),
 
   setDisconnected: () =>
@@ -107,6 +131,8 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
       agentId: null,
       agentPublicKey: null,
       repoPath: null,
+      pendingRepoPath: null,
+      availableRepos: [],
       connectedAt: null,
       error: null,
       isPro: false,

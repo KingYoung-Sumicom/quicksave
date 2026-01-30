@@ -11,10 +11,11 @@ import {
   type Message,
   type KeyPair,
   type License,
+  type Repository,
 } from '@quicksave/shared';
 
 export type ConnectionEventHandler = {
-  onConnected: (repoPath: string, isPro: boolean) => void;
+  onConnected: (repoPath: string, isPro: boolean, availableRepos?: Repository[]) => void;
   onDisconnected: () => void;
   onReconnecting: (attempt: number, maxAttempts: number) => void;
   onMessage: (message: Message) => void;
@@ -385,11 +386,11 @@ export class WebRTCClient {
 
       // Handle handshake response
       if (message.type === 'handshake:ack') {
-        const payload = message.payload as { repoPath: string; license?: License };
+        const payload = message.payload as { repoPath: string; license?: License; availableRepos?: Repository[] };
         const isPro = payload.license ? verifyLicense(payload.license) : false;
         this.wasConnected = true;
         this.reconnectAttempts = 0;
-        this.eventHandlers.onConnected(payload.repoPath, isPro);
+        this.eventHandlers.onConnected(payload.repoPath, isPro, payload.availableRepos);
         return;
       }
 

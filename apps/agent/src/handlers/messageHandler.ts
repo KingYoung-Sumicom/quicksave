@@ -31,21 +31,42 @@ import {
   SetApiKeyRequestPayload,
   SetApiKeyResponsePayload,
   GetApiKeyStatusResponsePayload,
+  Repository,
+  ListReposResponsePayload,
+  SwitchRepoRequestPayload,
+  SwitchRepoResponsePayload,
+  BrowseDirectoryRequestPayload,
+  BrowseDirectoryResponsePayload,
+  DirectoryEntry,
+  AddRepoRequestPayload,
+  AddRepoResponsePayload,
 } from '@quicksave/shared';
 import { GitOperations } from '../git/operations.js';
 import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey } from '../config.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';
+import { readdir, stat } from 'fs/promises';
+import { join, dirname, basename } from 'path';
+import { homedir } from 'os';
 
 export class MessageHandler {
-  private git: GitOperations;
+  private repos: Map<string, GitOperations>;
   private agentVersion = '0.1.0';
-  private repoPath: string;
+  private currentRepoPath: string;
+  private availableRepos: Repository[];
   private aiService: CommitSummaryService | null = null;
 
-  constructor(repoPath: string, _license?: License) {
-    this.repoPath = repoPath;
-    this.git = new GitOperations(repoPath);
+  constructor(repos: Repository[], _license?: License) {
+    this.repos = new Map();
+    for (const repo of repos) {
+      this.repos.set(repo.path, new GitOperations(repo.path));
+    }
+    this.availableRepos = repos;
+    this.currentRepoPath = repos[0].path;
     // License handling will be implemented later
+  }
+
+  private get git(): GitOperations {
+    return this.repos.get(this.currentRepoPath)!;
   }
 
   private getAiService(): CommitSummaryService | null {
@@ -94,6 +115,14 @@ export class MessageHandler {
           return this.handleSetApiKey(message as Message<SetApiKeyRequestPayload>);
         case 'ai:get-api-key-status':
           return this.handleGetApiKeyStatus(message);
+        case 'agent:list-repos':
+          return this.handleListRepos(message);
+        case 'agent:switch-repo':
+          return this.handleSwitchRepo(message as Message<SwitchRepoRequestPayload>);
+        case 'agent:browse-directory':
+          return this.handleBrowseDirectory(message as Message<BrowseDirectoryRequestPayload>);
+        case 'agent:add-repo':
+          return this.handleAddRepo(message as Message<AddRepoRequestPayload>);
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
       }
@@ -107,7 +136,8 @@ export class MessageHandler {
     const response = createMessage<HandshakeAckPayload>('handshake:ack', {
       success: true,
       agentVersion: this.agentVersion,
-      repoPath: this.repoPath,
+      repoPath: this.currentRepoPath,
+      availableRepos: this.availableRepos,
     });
     response.id = message.id;
     return response;
@@ -357,6 +387,159 @@ export class MessageHandler {
     });
     response.id = message.id;
     return response;
+  }
+
+  private async handleListRepos(message: Message): Promise<Message<ListReposResponsePayload>> {
+    // Refresh branch info for all repos
+    const repos: Repository[] = [];
+    for (const repo of this.availableRepos) {
+      const git = this.repos.get(repo.path)!;
+      try {
+        const { current } = await git.getBranches();
+        repos.push({ ...repo, currentBranch: current });
+      } catch {
+        repos.push(repo);
+      }
+    }
+    const response = createMessage<ListReposResponsePayload>('agent:list-repos:response', {
+      repos,
+      current: this.currentRepoPath,
+    });
+    response.id = message.id;
+    return response;
+  }
+
+  private handleSwitchRepo(message: Message<SwitchRepoRequestPayload>): Message<SwitchRepoResponsePayload> {
+    const { path } = message.payload;
+
+    // Check if the requested repo is in our available repos
+    if (!this.repos.has(path)) {
+      const response = createMessage<SwitchRepoResponsePayload>('agent:switch-repo:response', {
+        success: false,
+        newPath: this.currentRepoPath,
+        error: `Repository not available: ${path}`,
+      });
+      response.id = message.id;
+      return response;
+    }
+
+    this.currentRepoPath = path;
+    const response = createMessage<SwitchRepoResponsePayload>('agent:switch-repo:response', {
+      success: true,
+      newPath: path,
+    });
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleBrowseDirectory(
+    message: Message<BrowseDirectoryRequestPayload>
+  ): Promise<Message<BrowseDirectoryResponsePayload>> {
+    const requestedPath = message.payload.path || homedir();
+
+    try {
+      const entries: DirectoryEntry[] = [];
+      const dirEntries = await readdir(requestedPath, { withFileTypes: true });
+
+      for (const entry of dirEntries) {
+        // Skip hidden files/folders (starting with .)
+        if (entry.name.startsWith('.')) continue;
+
+        const fullPath = join(requestedPath, entry.name);
+        const isDirectory = entry.isDirectory();
+
+        // Check if it's a git repo (has .git folder)
+        let isGitRepo = false;
+        if (isDirectory) {
+          try {
+            const gitPath = join(fullPath, '.git');
+            const gitStat = await stat(gitPath);
+            isGitRepo = gitStat.isDirectory();
+          } catch {
+            // Not a git repo
+          }
+        }
+
+        entries.push({
+          name: entry.name,
+          path: fullPath,
+          isDirectory,
+          isGitRepo,
+        });
+      }
+
+      // Sort: directories first, then alphabetically
+      entries.sort((a, b) => {
+        if (a.isDirectory && !b.isDirectory) return -1;
+        if (!a.isDirectory && b.isDirectory) return 1;
+        return a.name.localeCompare(b.name);
+      });
+
+      // Calculate parent path
+      const parentPath = requestedPath === '/' ? null : dirname(requestedPath);
+
+      const response = createMessage<BrowseDirectoryResponsePayload>('agent:browse-directory:response', {
+        path: requestedPath,
+        parentPath,
+        entries,
+      });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<BrowseDirectoryResponsePayload>('agent:browse-directory:response', {
+        path: requestedPath,
+        parentPath: dirname(requestedPath),
+        entries: [],
+        error: error instanceof Error ? error.message : 'Failed to read directory',
+      });
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleAddRepo(
+    message: Message<AddRepoRequestPayload>
+  ): Promise<Message<AddRepoResponsePayload>> {
+    const { path: repoPath } = message.payload;
+
+    // Check if already added
+    if (this.repos.has(repoPath)) {
+      const response = createMessage<AddRepoResponsePayload>('agent:add-repo:response', {
+        success: false,
+        error: 'Repository already added',
+      });
+      response.id = message.id;
+      return response;
+    }
+
+    try {
+      // Verify it's a git repo by trying to get branches
+      const git = new GitOperations(repoPath);
+      const { current } = await git.getBranches();
+
+      // Add to our maps
+      this.repos.set(repoPath, git);
+      const newRepo: Repository = {
+        path: repoPath,
+        name: basename(repoPath),
+        currentBranch: current,
+      };
+      this.availableRepos.push(newRepo);
+
+      const response = createMessage<AddRepoResponsePayload>('agent:add-repo:response', {
+        success: true,
+        repo: newRepo,
+      });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<AddRepoResponsePayload>('agent:add-repo:response', {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to add repository',
+      });
+      response.id = message.id;
+      return response;
+    }
   }
 
   private createErrorResponse(id: string, code: string, message: string): Message<ErrorPayload> {

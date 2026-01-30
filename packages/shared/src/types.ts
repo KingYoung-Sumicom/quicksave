@@ -42,6 +42,14 @@ export type MessageType =
   | 'ai:set-api-key:response'
   | 'ai:get-api-key-status'
   | 'ai:get-api-key-status:response'
+  | 'agent:list-repos'
+  | 'agent:list-repos:response'
+  | 'agent:switch-repo'
+  | 'agent:switch-repo:response'
+  | 'agent:browse-directory'
+  | 'agent:browse-directory:response'
+  | 'agent:add-repo'
+  | 'agent:add-repo:response'
   | 'error';
 
 // ============================================================================
@@ -97,6 +105,12 @@ export interface Branch {
   remote?: string;
 }
 
+export interface Repository {
+  path: string;
+  name: string;
+  currentBranch?: string;
+}
+
 // ============================================================================
 // Request/Response Payloads
 // ============================================================================
@@ -111,6 +125,7 @@ export interface HandshakeAckPayload {
   success: boolean;
   agentVersion: string;
   repoPath: string;
+  availableRepos?: Repository[];
 }
 
 // Status
@@ -211,6 +226,55 @@ export interface ErrorPayload {
   details?: unknown;
 }
 
+// List Repos
+export type ListReposRequestPayload = Record<string, never>;
+
+export interface ListReposResponsePayload {
+  repos: Repository[];
+  current: string;
+}
+
+// Switch Repo
+export interface SwitchRepoRequestPayload {
+  path: string;
+}
+
+export interface SwitchRepoResponsePayload {
+  success: boolean;
+  newPath: string;
+  error?: string;
+}
+
+// Browse Directory
+export interface BrowseDirectoryRequestPayload {
+  path: string;
+}
+
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  isGitRepo: boolean;
+}
+
+export interface BrowseDirectoryResponsePayload {
+  path: string;
+  parentPath: string | null;
+  entries: DirectoryEntry[];
+  error?: string;
+}
+
+// Add Repo
+export interface AddRepoRequestPayload {
+  path: string;
+}
+
+export interface AddRepoResponsePayload {
+  success: boolean;
+  repo?: Repository;
+  error?: string;
+}
+
 // ============================================================================
 // License Types
 // ============================================================================
@@ -228,13 +292,9 @@ export interface License {
 // ============================================================================
 
 export type SignalingMessageType =
-  | 'offer'
-  | 'answer'
-  | 'ice-candidate'
   | 'peer-connected'
   | 'peer-offline'
-  | 'relay-mode'
-  | 'relay-data'
+  | 'data'
   | 'bye';
 
 export interface SignalingMessage {
@@ -249,7 +309,6 @@ export interface SignalingMessage {
 export type ConnectionState =
   | 'disconnected'
   | 'connecting'
-  | 'signaling'
   | 'connected'
   | 'reconnecting'
   | 'error';

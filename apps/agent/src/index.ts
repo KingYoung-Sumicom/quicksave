@@ -3,39 +3,63 @@
 import { Command } from 'commander';
 // @ts-ignore - no types for qrcode-terminal
 import qrcode from 'qrcode-terminal';
-import { resolve } from 'path';
+import { resolve, basename } from 'path';
 import { WebRTCConnection } from './webrtc/connection.js';
 import { MessageHandler } from './handlers/messageHandler.js';
 import { GitOperations } from './git/operations.js';
 import { getOrCreateConfig, getConfigPath } from './config.js';
-import type { Message } from '@quicksave/shared';
+import type { Message, Repository } from '@quicksave/shared';
 
 const DEFAULT_SIGNALING_SERVER = process.env.QUICKSAVE_SIGNALING_URL || 'wss://signal.quicksave.dev';
 
 const program = new Command();
 
+function collectRepos(value: string, previous: string[]): string[] {
+  return previous.concat([value]);
+}
+
 program
   .name('quicksave-agent')
   .description('Quicksave desktop agent for remote git control')
   .version('0.1.0')
-  .option('-r, --repo <path>', 'Path to git repository', '.')
+  .option('-r, --repo <path>', 'Path to git repository (can specify multiple)', collectRepos, [])
   .option('-s, --signaling <url>', 'Signaling server URL', DEFAULT_SIGNALING_SERVER)
   .option('--no-qr', 'Disable QR code display')
   .action(async (options) => {
-    const repoPath = resolve(options.repo);
+    // Default to current directory if no repos specified
+    const repoPaths: string[] = options.repo.length > 0 ? options.repo : ['.'];
+    const resolvedPaths = repoPaths.map((p: string) => resolve(p));
     const signalingServer = options.signaling;
 
     console.log('Quicksave Agent v0.1.0');
     console.log('='.repeat(50));
 
-    // Verify git repository
-    const git = new GitOperations(repoPath);
-    const isValid = await git.isValidRepo();
-    if (!isValid) {
-      console.error(`Error: ${repoPath} is not a valid git repository`);
+    // Verify all git repositories
+    const validRepos: Repository[] = [];
+    for (const repoPath of resolvedPaths) {
+      const git = new GitOperations(repoPath);
+      const isValid = await git.isValidRepo();
+      if (!isValid) {
+        console.error(`Warning: ${repoPath} is not a valid git repository, skipping`);
+        continue;
+      }
+      const { current: currentBranch } = await git.getBranches();
+      validRepos.push({
+        path: repoPath,
+        name: basename(repoPath),
+        currentBranch,
+      });
+    }
+
+    if (validRepos.length === 0) {
+      console.error('Error: No valid git repositories found');
       process.exit(1);
     }
-    console.log(`Repository: ${repoPath}`);
+
+    console.log(`Repositories (${validRepos.length}):`);
+    for (const repo of validRepos) {
+      console.log(`  - ${repo.name} (${repo.path}) [${repo.currentBranch}]`);
+    }
 
     // Load or create config
     const config = getOrCreateConfig(signalingServer);
@@ -50,8 +74,8 @@ program
       keyPair: config.keyPair,
     });
 
-    // Create message handler
-    const messageHandler = new MessageHandler(repoPath, config.license);
+    // Create message handler with all valid repos
+    const messageHandler = new MessageHandler(validRepos, config.license);
 
     // Handle incoming messages
     connection.on('message', async (message: Message) => {

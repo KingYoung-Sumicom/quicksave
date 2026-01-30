@@ -14,6 +14,7 @@ export interface Machine {
   addedAt: number;
   lastConnectedAt: number | null;
   lastRepoPath: string | null;
+  knownRepos: string[];
   isPro: boolean;
 }
 
@@ -25,7 +26,9 @@ interface MachineStore {
   addMachine: (machine: Pick<Machine, 'agentId' | 'publicKey' | 'nickname' | 'icon'>) => void;
   updateMachine: (agentId: string, updates: Partial<Omit<Machine, 'agentId'>>) => void;
   removeMachine: (agentId: string) => void;
-  recordConnection: (agentId: string, repoPath: string, isPro: boolean) => void;
+  recordConnection: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: string[]) => void;
+  addKnownRepo: (agentId: string, repoPath: string) => void;
+  syncKnownRepos: (agentId: string, repoPaths: string[]) => void;
   getMachine: (agentId: string) => Machine | undefined;
   hasMachine: (agentId: string) => boolean;
 }
@@ -49,6 +52,7 @@ export const useMachineStore = create<MachineStore>()(
                 addedAt: Date.now(),
                 lastConnectedAt: null,
                 lastRepoPath: null,
+                knownRepos: [],
                 isPro: false,
               },
             ],
@@ -67,13 +71,43 @@ export const useMachineStore = create<MachineStore>()(
           machines: state.machines.filter((m) => m.agentId !== agentId),
         })),
 
-      recordConnection: (agentId, repoPath, isPro) =>
+      recordConnection: (agentId, repoPath, isPro, availableRepos) =>
+        set((state) => ({
+          machines: state.machines.map((m) => {
+            if (m.agentId !== agentId) return m;
+
+            // Merge available repos with existing known repos
+            const existingRepos = m.knownRepos || [];
+            const newRepos = availableRepos || [];
+            const allRepos = [...new Set([...existingRepos, ...newRepos, repoPath])];
+
+            return {
+              ...m,
+              lastConnectedAt: Date.now(),
+              lastRepoPath: repoPath,
+              knownRepos: allRepos,
+              isPro,
+            };
+          }),
+        })),
+
+      addKnownRepo: (agentId, repoPath) =>
         set((state) => ({
           machines: state.machines.map((m) =>
-            m.agentId === agentId
-              ? { ...m, lastConnectedAt: Date.now(), lastRepoPath: repoPath, isPro }
+            m.agentId === agentId && !m.knownRepos?.includes(repoPath)
+              ? { ...m, knownRepos: [...(m.knownRepos || []), repoPath] }
               : m
           ),
+        })),
+
+      syncKnownRepos: (agentId, repoPaths) =>
+        set((state) => ({
+          machines: state.machines.map((m) => {
+            if (m.agentId !== agentId) return m;
+            const existingRepos = m.knownRepos || [];
+            const allRepos = [...new Set([...existingRepos, ...repoPaths])];
+            return { ...m, knownRepos: allRepos };
+          }),
         })),
 
       getMachine: (agentId) => get().machines.find((m) => m.agentId === agentId),
