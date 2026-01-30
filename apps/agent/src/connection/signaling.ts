@@ -7,20 +7,10 @@ import type { SignalingMessage } from '@quicksave/shared';
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
 
-// WebRTC types (simplified for Node.js wrtc module)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type SDPInit = any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type ICECandidateInit = any;
-
 export interface SignalingEvents {
   'peer-connected': () => void;
   'peer-disconnected': () => void;
-  offer: (sdp: SDPInit) => void;
-  answer: (sdp: SDPInit) => void;
-  'ice-candidate': (candidate: ICECandidateInit) => void;
-  'relay-mode': () => void;
-  'relay-data': (data: string) => void;
+  data: (data: string) => void;
   connected: () => void;
   disconnected: () => void;
   error: (error: Error) => void;
@@ -56,13 +46,23 @@ export class SignalingClient extends EventEmitter {
         this.ws.on('message', async (data) => {
           try {
             const parsed = JSON.parse(data.toString());
-            // Handle compressed messages (z = zipped)
-            const message: SignalingMessage = parsed.z
-              ? JSON.parse(await this.decompress(parsed.z))
-              : parsed;
-            this.handleMessage(message);
-          } catch (error) {
-            console.error('Failed to parse signaling message:', error);
+            // Handle compressed signaling messages (z = zipped)
+            if (parsed.z) {
+              const message: SignalingMessage = JSON.parse(await this.decompress(parsed.z));
+              this.handleMessage(message);
+              return;
+            }
+            // Handle signaling messages (only specific types from signaling server)
+            const signalingTypes = ['peer-connected', 'peer-offline', 'data', 'bye', 'error'];
+            if (parsed.type && signalingTypes.includes(parsed.type)) {
+              this.handleMessage(parsed as SignalingMessage);
+              return;
+            }
+            // Other JSON messages (like key-exchange) are data messages
+            this.emit('data', data.toString());
+          } catch {
+            // Not JSON, treat as raw data message
+            this.emit('data', data.toString());
           }
         });
 
@@ -92,21 +92,9 @@ export class SignalingClient extends EventEmitter {
       case 'peer-offline':
         this.emit('peer-disconnected');
         break;
-      case 'offer':
-        this.emit('offer', message.payload);
-        break;
-      case 'answer':
-        this.emit('answer', message.payload);
-        break;
-      case 'ice-candidate':
-        this.emit('ice-candidate', message.payload);
-        break;
-      case 'relay-mode':
-        this.emit('relay-mode');
-        break;
-      case 'relay-data':
+      case 'data':
         if (typeof message.payload === 'string') {
-          this.emit('relay-data', message.payload);
+          this.emit('data', message.payload);
         }
         break;
       case 'bye':
@@ -115,24 +103,15 @@ export class SignalingClient extends EventEmitter {
     }
   }
 
-  sendOffer(sdp: SDPInit): void {
-    this.send({ type: 'offer', payload: sdp });
-  }
-
-  sendAnswer(sdp: SDPInit): void {
-    this.send({ type: 'answer', payload: sdp });
-  }
-
-  sendIceCandidate(candidate: ICECandidateInit): void {
-    this.send({ type: 'ice-candidate', payload: candidate });
-  }
-
   sendBye(): void {
     this.send({ type: 'bye' });
   }
 
-  sendRelayData(data: string): void {
-    this.send({ type: 'relay-data', payload: data });
+  sendData(data: string): void {
+    // Send raw data to peer through signaling server
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(data);
+    }
   }
 
   // Gzip compression helpers

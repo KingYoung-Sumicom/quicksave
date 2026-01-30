@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
-import { generateAgentKeyPair } from './webrtc/connection.js';
+import { generateAgentKeyPair } from './connection/connection.js';
 import { generateAgentId, type License } from '@quicksave/shared';
 
 export interface AgentConfig {

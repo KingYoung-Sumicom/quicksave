@@ -20,7 +20,7 @@ export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
   const { addMachine, hasMachine } = useMachineStore();
   const { state, error } = useConnectionStore();
 
-  const isConnecting = state === 'connecting' || state === 'signaling';
+  const isConnecting = state === 'connecting';
   const isDuplicate = Boolean(agentId.trim() && hasMachine(agentId.trim()));
   const isFormValid = Boolean(agentId.trim() && publicKey.trim());
   const isDisabled = !isFormValid || isConnecting || isDuplicate;

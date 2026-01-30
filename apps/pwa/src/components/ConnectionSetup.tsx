@@ -28,7 +28,7 @@ export function ConnectionSetup({ onConnect }: Props) {
     }
   };
 
-  const isConnecting = state === 'connecting' || state === 'signaling';
+  const isConnecting = state === 'connecting';
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6 safe-area-top safe-area-bottom">

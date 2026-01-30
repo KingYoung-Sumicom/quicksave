@@ -11,7 +11,7 @@ export function ConnectingPage({ onConnect }: ConnectingPageProps) {
   const { agentId } = useParams<{ agentId: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { state, error } = useConnectionStore();
+  const { state, error, setPendingRepoPath } = useConnectionStore();
   const { getMachine, addMachine } = useMachineStore();
   const hasInitiated = useRef(false);
 
@@ -31,13 +31,19 @@ export function ConnectingPage({ onConnect }: ConnectingPageProps) {
     // Mark as initiated immediately to prevent re-runs
     hasInitiated.current = true;
 
-    // If already in a connection state, don't start a new connection
-    if (state === 'connecting' || state === 'signaling' || state === 'connected') {
-      return;
-    }
-
     // Check if we have connection params in URL (for QR code / link sharing)
     const publicKeyParam = searchParams.get('pk');
+    const repoParam = searchParams.get('repo');
+
+    // Set pending repo path if specified in URL (do this before checking connection state)
+    if (repoParam) {
+      setPendingRepoPath(repoParam);
+    }
+
+    // If already in a connection state, don't start a new connection
+    if (state === 'connecting' || state === 'connected') {
+      return;
+    }
 
     if (publicKeyParam) {
       // New connection via URL params - save machine if not exists
@@ -141,22 +147,19 @@ export function ConnectingPage({ onConnect }: ConnectingPageProps) {
 
           <h1 className="text-xl font-semibold text-white mb-2">
             {state === 'connecting' && 'Connecting...'}
-            {state === 'signaling' && 'Establishing secure connection...'}
             {state === 'reconnecting' && 'Reconnecting...'}
             {(state === 'disconnected' || !state) && 'Connecting...'}
           </h1>
 
           <p className="text-slate-400 text-sm">
-            {state === 'connecting' && 'Reaching out to signaling server'}
-            {state === 'signaling' && 'Setting up encrypted P2P channel'}
+            {state === 'connecting' && 'Establishing secure connection'}
             {state === 'reconnecting' && 'Connection lost, attempting to reconnect'}
             {(state === 'disconnected' || !state) && 'Preparing connection'}
           </p>
 
           {/* Connection steps indicator */}
           <div className="mt-8 flex justify-center gap-2">
-            <StepDot active={true} completed={state === 'signaling' || state === 'connected'} label="Connect" />
-            <StepDot active={state === 'signaling' || state === 'connected'} completed={state === 'connected'} label="Secure" />
+            <StepDot active={true} completed={state === 'connected'} label="Connect" />
             <StepDot active={state === 'connected'} completed={false} label="Ready" />
           </div>
         </div>

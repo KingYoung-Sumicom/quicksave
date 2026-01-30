@@ -23,7 +23,7 @@ import {
 } from '@quicksave/shared';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useGitStore, makeSelectionKey } from '../stores/gitStore';
-import { WebRTCClient } from '../lib/webrtc';
+import { WebSocketClient } from '../lib/websocket';
 
 type PendingRequest = {
   resolve: (value: unknown) => void;
@@ -31,7 +31,7 @@ type PendingRequest = {
   timeout: ReturnType<typeof setTimeout>;
 };
 
-export function useGitOperations(clientRef: React.RefObject<WebRTCClient | null>) {
+export function useGitOperations(clientRef: React.RefObject<WebSocketClient | null>) {
   const pendingRequests = useRef<Map<string, PendingRequest>>(new Map());
   const {
     setStatus,

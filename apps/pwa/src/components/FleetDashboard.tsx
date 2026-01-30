@@ -19,9 +19,13 @@ export function FleetDashboard({ onConnect }: FleetDashboardProps) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingMachine, setEditingMachine] = useState<Machine | null>(null);
 
-  const handleConnect = (machine: Machine) => {
+  const handleConnect = (machine: Machine, repoPath?: string) => {
     // Navigate to connecting page immediately - connection will be initiated there
-    navigate(`/connect/${machine.agentId}`);
+    // Include repo path in URL if specified
+    const url = repoPath
+      ? `/connect/${machine.agentId}?repo=${encodeURIComponent(repoPath)}`
+      : `/connect/${machine.agentId}`;
+    navigate(url);
   };
 
   const handleRemove = (machine: Machine) => {
@@ -53,7 +57,7 @@ export function FleetDashboard({ onConnect }: FleetDashboardProps) {
               <MachineCard
                 key={machine.agentId}
                 machine={machine}
-                onConnect={() => handleConnect(machine)}
+                onConnect={(repoPath) => handleConnect(machine, repoPath)}
                 variant="compact"
               />
             ))}
@@ -87,7 +91,7 @@ export function FleetDashboard({ onConnect }: FleetDashboardProps) {
               <MachineCard
                 key={machine.agentId}
                 machine={machine}
-                onConnect={() => handleConnect(machine)}
+                onConnect={(repoPath) => handleConnect(machine, repoPath)}
                 onEdit={() => setEditingMachine(machine)}
                 onRemove={() => handleRemove(machine)}
                 variant="full"

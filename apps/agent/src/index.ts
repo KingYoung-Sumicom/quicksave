@@ -4,7 +4,7 @@ import { Command } from 'commander';
 // @ts-ignore - no types for qrcode-terminal
 import qrcode from 'qrcode-terminal';
 import { resolve, basename } from 'path';
-import { WebRTCConnection } from './webrtc/connection.js';
+import { WebRTCConnection } from './connection/connection.js';
 import { MessageHandler } from './handlers/messageHandler.js';
 import { GitOperations } from './git/operations.js';
 import { getOrCreateConfig, getConfigPath } from './config.js';
