@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMachineStore } from '../stores/machineStore';
 import { useConnectionStore } from '../stores/connectionStore';
+import { QRScanner } from './QRScanner';
 
 interface AddMachineModalProps {
   onClose: () => void;
@@ -19,6 +20,12 @@ export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
 
   const { addMachine, hasMachine } = useMachineStore();
   const { state, error } = useConnectionStore();
+
+  const handleQRScan = (scannedAgentId: string, scannedPublicKey: string) => {
+    setAgentId(scannedAgentId);
+    setPublicKey(scannedPublicKey);
+    setMode('manual');
+  };
 
   const isConnecting = state === 'connecting';
   const isDuplicate = Boolean(agentId.trim() && hasMachine(agentId.trim()));
@@ -214,27 +221,8 @@ export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
               </div>
             </form>
           ) : (
-            <div className="text-center py-8">
-              <div className="w-48 h-48 mx-auto bg-slate-700 rounded-lg flex items-center justify-center mb-4">
-                <svg
-                  className="w-16 h-16 text-slate-500"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={1.5}
-                    d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z"
-                  />
-                </svg>
-              </div>
-              <p className="text-slate-400 text-sm">
-                QR scanning coming soon.
-                <br />
-                Use manual entry for now.
-              </p>
+            <div className="py-4">
+              <QRScanner onScan={handleQRScan} />
             </div>
           )}
         </div>
