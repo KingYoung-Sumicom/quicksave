@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "license": "MIT",
   "type": "module",
+  "publishConfig": {
+    "branch": "stable"
+  },
   "bin": {
     "quicksave": "./dist/index.js"
   },
