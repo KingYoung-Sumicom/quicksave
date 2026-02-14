@@ -7,6 +7,9 @@ import {
   deriveSharedSecret,
   encryptWithSharedSecret,
   decryptWithSharedSecret,
+  generateSessionDEK,
+  encryptDEK,
+  decryptDEK,
   sign,
   verify,
   encodeKeyPair,
@@ -151,6 +154,89 @@ describe('Shared Secret Encryption', () => {
     expect(() => {
       decryptWithSharedSecret(encrypted, eveShared);
     }).toThrow('Decryption failed');
+  });
+});
+
+describe('Session DEK (V2 Protocol)', () => {
+  it('should generate 32-byte session DEK', () => {
+    const dek = generateSessionDEK();
+    expect(dek).toBeInstanceOf(Uint8Array);
+    expect(dek.length).toBe(32);
+  });
+
+  it('should generate unique DEKs each time', () => {
+    const dek1 = generateSessionDEK();
+    const dek2 = generateSessionDEK();
+    expect(encodeBase64(dek1)).not.toBe(encodeBase64(dek2));
+  });
+
+  it('should encrypt and decrypt DEK correctly', () => {
+    const agent = generateKeyPair();
+    const dek = generateSessionDEK();
+
+    const encryptedDEK = encryptDEK(dek, agent.publicKey);
+    expect(typeof encryptedDEK).toBe('string');
+
+    const decryptedDEK = decryptDEK(encryptedDEK, agent.secretKey);
+    expect(encodeBase64(decryptedDEK)).toBe(encodeBase64(dek));
+  });
+
+  it('should produce different ciphertext for same DEK (due to ephemeral key)', () => {
+    const agent = generateKeyPair();
+    const dek = generateSessionDEK();
+
+    const encrypted1 = encryptDEK(dek, agent.publicKey);
+    const encrypted2 = encryptDEK(dek, agent.publicKey);
+
+    expect(encrypted1).not.toBe(encrypted2);
+  });
+
+  it('should fail to decrypt DEK with wrong key', () => {
+    const agent = generateKeyPair();
+    const eve = generateKeyPair();
+    const dek = generateSessionDEK();
+
+    const encryptedDEK = encryptDEK(dek, agent.publicKey);
+
+    expect(() => {
+      decryptDEK(encryptedDEK, eve.secretKey);
+    }).toThrow('DEK decryption failed');
+  });
+
+  it('should throw if DEK is not 32 bytes', () => {
+    const agent = generateKeyPair();
+    const invalidDEK = new Uint8Array(16); // Too short
+
+    expect(() => {
+      encryptDEK(invalidDEK, agent.publicKey);
+    }).toThrow('DEK must be 32 bytes');
+  });
+
+  it('should work end-to-end: PWA generates DEK, Agent decrypts, both use for encryption', () => {
+    // Simulate V2 key exchange
+    const agentKeyPair = generateKeyPair();
+
+    // PWA generates session DEK and encrypts it for Agent
+    const sessionDEK = generateSessionDEK();
+    const encryptedDEK = encryptDEK(sessionDEK, agentKeyPair.publicKey);
+
+    // Agent decrypts the DEK
+    const agentDEK = decryptDEK(encryptedDEK, agentKeyPair.secretKey);
+
+    // Both should have the same DEK
+    expect(encodeBase64(agentDEK)).toBe(encodeBase64(sessionDEK));
+
+    // Both can now encrypt/decrypt messages using the DEK as shared secret
+    const message = 'Hello from PWA!';
+    const encrypted = encryptWithSharedSecret(message, sessionDEK);
+    const decrypted = decryptWithSharedSecret(encrypted, agentDEK);
+    expect(decrypted).toBe(message);
+
+    // Agent can respond
+    const response = 'Hello from Agent!';
+    const encryptedResponse = encryptWithSharedSecret(response, agentDEK);
+    const decryptedResponse = decryptWithSharedSecret(encryptedResponse, sessionDEK);
+    expect(decryptedResponse).toBe(response);
   });
 });
 

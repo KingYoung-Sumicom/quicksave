@@ -4,6 +4,7 @@
   "private": true,
   "description": "Remote git control PWA with E2E encryption",
   "scripts": {
+    "dev": "pnpm dev:pwa",
     "dev:pwa": "pnpm --filter @quicksave/pwa dev",
     "dev:agent": "pnpm --filter @quicksave/agent dev",
     "dev:signaling": "pnpm --filter @quicksave/signaling dev",

@@ -1,9 +1,10 @@
 import {
   generateKeyPair,
   decodeBase64,
-  deriveSharedSecret,
   encryptWithSharedSecret,
   decryptWithSharedSecret,
+  generateSessionDEK,
+  encryptDEK,
   encodeBase64,
   parseMessage,
   serializeMessage,
@@ -27,7 +28,8 @@ export class WebSocketClient {
   private agentId: string;
   private agentPublicKey: Uint8Array;
   private keyPair: KeyPair;
-  private sharedSecret: Uint8Array | null = null;
+  // Session DEK for encryption
+  private sessionDEK: Uint8Array | null = null;
   private ws: WebSocket | null = null;
   private eventHandlers: ConnectionEventHandler;
   private keyExchangeComplete = false;
@@ -152,11 +154,16 @@ export class WebSocketClient {
   }
 
   private initiateKeyExchange(): void {
-    // Send our public key for key exchange
+    // V2 protocol: generate session DEK and encrypt it for the Agent
+    this.sessionDEK = generateSessionDEK();
+    const encryptedDEK = encryptDEK(this.sessionDEK, this.agentPublicKey);
+
     this.sendRaw(
       JSON.stringify({
         type: 'key-exchange',
-        publicKey: encodeBase64(this.keyPair.publicKey),
+        version: 2,
+        encryptedDEK,
+        timestamp: Date.now(),
       })
     );
   }
@@ -166,22 +173,12 @@ export class WebSocketClient {
       // Handle key exchange (uncompressed JSON)
       if (!this.keyExchangeComplete) {
         try {
-          const keyExchange = JSON.parse(data);
-          if (keyExchange.type === 'key-exchange') {
-            // Verify the public key matches what we expected
-            const receivedKey = decodeBase64(keyExchange.publicKey);
-            if (encodeBase64(receivedKey) !== encodeBase64(this.agentPublicKey)) {
-              this.eventHandlers.onError(new Error('Public key mismatch - possible MITM attack'));
-              this.disconnect();
-              return;
-            }
+          const response = JSON.parse(data);
 
-            // Derive shared secret
-            this.sharedSecret = deriveSharedSecret(this.agentPublicKey, this.keyPair.secretKey);
+          // Agent acknowledges with key-exchange-ack
+          if (response.type === 'key-exchange-ack' && response.version === 2) {
             this.keyExchangeComplete = true;
             console.log('Key exchange complete, connection encrypted');
-
-            // Request initial status and check for license
             this.requestHandshake();
             return;
           }
@@ -194,12 +191,13 @@ export class WebSocketClient {
 
       // Post key-exchange: messages are encrypted, then the plaintext was compressed before encryption
       // Decrypt first, then decompress
-      if (!this.sharedSecret) {
-        console.error('No shared secret');
+      const encryptionKey = this.getEncryptionKey();
+      if (!encryptionKey) {
+        console.error('No encryption key available');
         return;
       }
 
-      const decrypted = decryptWithSharedSecret(data, this.sharedSecret);
+      const decrypted = decryptWithSharedSecret(data, encryptionKey);
       const decompressed = await this.decompress(decrypted);
       const message = parseMessage(decompressed);
 
@@ -219,6 +217,13 @@ export class WebSocketClient {
     }
   }
 
+  /**
+   * Get the encryption key (session DEK)
+   */
+  private getEncryptionKey(): Uint8Array | null {
+    return this.sessionDEK;
+  }
+
   private requestHandshake(): void {
     this.send({
       id: `handshake-${Date.now()}`,
@@ -231,15 +236,16 @@ export class WebSocketClient {
   }
 
   send(message: Message): void {
-    if (!this.sharedSecret) {
-      console.error('No shared secret');
+    const encryptionKey = this.getEncryptionKey();
+    if (!encryptionKey) {
+      console.error('No encryption key available');
       return;
     }
 
     // Compress before encryption for better compression ratio
     const serialized = serializeMessage(message);
     this.compress(serialized).then((compressed) => {
-      const encrypted = encryptWithSharedSecret(compressed, this.sharedSecret!);
+      const encrypted = encryptWithSharedSecret(compressed, encryptionKey);
       this.sendRaw(encrypted);
     });
   }
@@ -311,7 +317,7 @@ export class WebSocketClient {
       this.ws = null;
     }
 
-    this.sharedSecret = null;
+    this.sessionDEK = null;
     this.keyExchangeComplete = false;
   }
 

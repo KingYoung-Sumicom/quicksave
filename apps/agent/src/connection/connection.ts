@@ -5,15 +5,14 @@ import {
   generateKeyPair,
   encodeKeyPair,
   decodeKeyPair,
-  deriveSharedSecret,
   encryptWithSharedSecret,
   decryptWithSharedSecret,
-  encodeBase64,
-  decodeBase64,
+  decryptDEK,
   parseMessage,
   serializeMessage,
   type Message,
   type KeyPair,
+  type KeyExchangeV2,
 } from '@quicksave/shared';
 import { SignalingClient } from './signaling.js';
 
@@ -37,9 +36,12 @@ export class WebRTCConnection extends EventEmitter {
   private config: ConnectionConfig;
   private signaling: SignalingClient;
   private keyPair: KeyPair;
-  private peerPublicKey: Uint8Array | null = null;
-  private sharedSecret: Uint8Array | null = null;
+  // Session DEK for encryption (received encrypted from PWA)
+  private sessionDEK: Uint8Array | null = null;
   private isConnected = false;
+
+  // Key exchange replay protection
+  private static readonly KEY_EXCHANGE_MAX_AGE_MS = 60000; // 60 seconds
 
   constructor(config: ConnectionConfig) {
     super();
@@ -78,28 +80,12 @@ export class WebRTCConnection extends EventEmitter {
   private async handleDataMessage(data: string): Promise<void> {
     try {
       // Handle key exchange (uncompressed JSON) vs encrypted messages (base64 compressed)
-      if (!this.peerPublicKey) {
+      if (!this.isKeyExchangeComplete()) {
         // Try to parse as key exchange message
         try {
           const keyExchange = JSON.parse(data);
           if (keyExchange.type === 'key-exchange') {
-            this.peerPublicKey = decodeBase64(keyExchange.publicKey);
-            this.sharedSecret = deriveSharedSecret(this.peerPublicKey, this.keyPair.secretKey);
-            console.log('Key exchange complete, connection encrypted');
-
-            // Mark as connected
-            if (!this.isConnected) {
-              this.isConnected = true;
-              this.emit('connected');
-            }
-
-            // Send our public key back
-            this.sendRaw(
-              JSON.stringify({
-                type: 'key-exchange',
-                publicKey: encodeBase64(this.keyPair.publicKey),
-              })
-            );
+            await this.handleKeyExchange(keyExchange);
             return;
           }
         } catch {
@@ -111,12 +97,13 @@ export class WebRTCConnection extends EventEmitter {
 
       // Post key-exchange: messages are encrypted, then the plaintext was compressed before encryption
       // Decrypt first, then decompress
-      if (!this.sharedSecret) {
-        console.error('No shared secret, cannot decrypt message');
+      const encryptionKey = this.getEncryptionKey();
+      if (!encryptionKey) {
+        console.error('No encryption key, cannot decrypt message');
         return;
       }
 
-      const decrypted = decryptWithSharedSecret(data, this.sharedSecret);
+      const decrypted = decryptWithSharedSecret(data, encryptionKey);
       const buffer = Buffer.from(decrypted, 'base64');
       const decompressed = await gunzipAsync(buffer);
       const message = parseMessage(decompressed.toString('utf-8'));
@@ -126,9 +113,67 @@ export class WebRTCConnection extends EventEmitter {
     }
   }
 
+  /**
+   * Check if key exchange has completed
+   */
+  private isKeyExchangeComplete(): boolean {
+    return this.sessionDEK !== null;
+  }
+
+  /**
+   * Get the encryption key
+   */
+  private getEncryptionKey(): Uint8Array | null {
+    return this.sessionDEK;
+  }
+
+  /**
+   * Handle key exchange message
+   */
+  private async handleKeyExchange(message: KeyExchangeV2): Promise<void> {
+    // Verify timestamp for replay protection
+    const age = Date.now() - message.timestamp;
+    if (age > WebRTCConnection.KEY_EXCHANGE_MAX_AGE_MS) {
+      console.error(`Key exchange expired (age: ${age}ms)`);
+      this.emit('error', new Error('Key exchange expired'));
+      return;
+    }
+
+    if (age < -5000) {
+      // Allow 5 second clock skew into the future
+      console.error(`Key exchange timestamp in future (age: ${age}ms)`);
+      this.emit('error', new Error('Key exchange timestamp invalid'));
+      return;
+    }
+
+    // Decrypt the session DEK
+    try {
+      this.sessionDEK = decryptDEK(message.encryptedDEK, this.keyPair.secretKey);
+      console.log('Key exchange complete, connection encrypted');
+
+      // Mark as connected
+      if (!this.isConnected) {
+        this.isConnected = true;
+        this.emit('connected');
+      }
+
+      // V2: Send acknowledgment
+      this.sendRaw(
+        JSON.stringify({
+          type: 'key-exchange-ack',
+          version: 2,
+        })
+      );
+    } catch (error) {
+      console.error('Failed to decrypt session DEK:', error);
+      this.emit('error', new Error('Failed to decrypt session DEK'));
+    }
+  }
+
   send(message: Message): void {
-    if (!this.sharedSecret) {
-      console.error('No shared secret, cannot encrypt message');
+    const encryptionKey = this.getEncryptionKey();
+    if (!encryptionKey) {
+      console.error('No encryption key, cannot encrypt message');
       return;
     }
 
@@ -136,7 +181,7 @@ export class WebRTCConnection extends EventEmitter {
     const serialized = serializeMessage(message);
     gzipAsync(Buffer.from(serialized)).then((compressed) => {
       const compressedBase64 = compressed.toString('base64');
-      const encrypted = encryptWithSharedSecret(compressedBase64, this.sharedSecret!);
+      const encrypted = encryptWithSharedSecret(compressedBase64, encryptionKey);
       this.signaling.sendData(encrypted);
     });
   }
@@ -152,8 +197,7 @@ export class WebRTCConnection extends EventEmitter {
     }
 
     // Clean up encryption state for next connection
-    this.peerPublicKey = null;
-    this.sharedSecret = null;
+    this.sessionDEK = null;
 
     console.log('Peer disconnected, waiting for new connection...');
   }

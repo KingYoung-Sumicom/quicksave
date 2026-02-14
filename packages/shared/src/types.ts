@@ -303,6 +303,34 @@ export interface SignalingMessage {
 }
 
 // ============================================================================
+// Key Exchange Types (V2 Protocol)
+// ============================================================================
+
+/**
+ * Key exchange message - PWA sends encrypted session DEK to Agent
+ * This provides forward secrecy: if Agent is compromised, only current session is exposed
+ */
+export interface KeyExchangeV2 {
+  type: 'key-exchange';
+  version: 2;
+  encryptedDEK: string; // Session DEK encrypted with Agent's public key (base64)
+  timestamp: number; // Unix timestamp for replay protection
+}
+
+/**
+ * V2 key exchange acknowledgment from Agent
+ */
+export interface KeyExchangeV2Ack {
+  type: 'key-exchange-ack';
+  version: 2;
+}
+
+/**
+ * Key exchange message type
+ */
+export type KeyExchangeMessage = KeyExchangeV2;
+
+// ============================================================================
 // Connection Types
 // ============================================================================
 

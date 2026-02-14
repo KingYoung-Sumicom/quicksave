@@ -145,6 +145,88 @@ export function decryptWithSharedSecret(
 }
 
 // ============================================================================
+// Session DEK (Data Encryption Key) - V2 Protocol
+// ============================================================================
+
+/**
+ * Generate a random 32-byte session DEK for symmetric encryption.
+ * Used in V2 key exchange where PWA generates the DEK and sends it encrypted to Agent.
+ */
+export function generateSessionDEK(): Uint8Array {
+  return nacl.randomBytes(32);
+}
+
+/**
+ * Encrypt a DEK for a specific recipient using sealed box pattern.
+ * Uses an ephemeral keypair so the sender's identity is not revealed.
+ *
+ * Format: ephemeralPublicKey (32) + nonce (24) + ciphertext
+ *
+ * @param dek - The 32-byte DEK to encrypt
+ * @param recipientPublicKey - Recipient's X25519 public key
+ * @returns Base64 encoded encrypted DEK
+ */
+export function encryptDEK(
+  dek: Uint8Array,
+  recipientPublicKey: Uint8Array
+): string {
+  if (dek.length !== 32) {
+    throw new Error('DEK must be 32 bytes');
+  }
+
+  // Generate ephemeral keypair for this encryption
+  const ephemeral = nacl.box.keyPair();
+  const nonce = nacl.randomBytes(nacl.box.nonceLength);
+
+  const encrypted = nacl.box(dek, nonce, recipientPublicKey, ephemeral.secretKey);
+
+  if (!encrypted) {
+    throw new Error('DEK encryption failed');
+  }
+
+  // Combine: ephemeralPublicKey + nonce + ciphertext
+  const combined = new Uint8Array(
+    ephemeral.publicKey.length + nonce.length + encrypted.length
+  );
+  combined.set(ephemeral.publicKey);
+  combined.set(nonce, ephemeral.publicKey.length);
+  combined.set(encrypted, ephemeral.publicKey.length + nonce.length);
+
+  return encodeBase64(combined);
+}
+
+/**
+ * Decrypt a DEK that was encrypted for us.
+ *
+ * @param encryptedDEK - Base64 encoded encrypted DEK (ephemeralPubKey + nonce + ciphertext)
+ * @param mySecretKey - Our X25519 secret key
+ * @returns The decrypted 32-byte DEK
+ */
+export function decryptDEK(
+  encryptedDEK: string,
+  mySecretKey: Uint8Array
+): Uint8Array {
+  const combined = decodeBase64(encryptedDEK);
+
+  // Extract components
+  const ephemeralPublicKey = combined.slice(0, 32);
+  const nonce = combined.slice(32, 32 + nacl.box.nonceLength);
+  const ciphertext = combined.slice(32 + nacl.box.nonceLength);
+
+  const decrypted = nacl.box.open(ciphertext, nonce, ephemeralPublicKey, mySecretKey);
+
+  if (!decrypted) {
+    throw new Error('DEK decryption failed - invalid message or wrong key');
+  }
+
+  if (decrypted.length !== 32) {
+    throw new Error('Decrypted DEK has invalid length');
+  }
+
+  return decrypted;
+}
+
+// ============================================================================
 // Signing / Verification
 // ============================================================================
 

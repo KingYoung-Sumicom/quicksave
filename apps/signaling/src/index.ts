@@ -205,7 +205,7 @@ server.listen(PORT, () => {
   console.log(`Listening on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log('');
-  console.log('Endpoints:');
+  console.log('WebSocket Endpoints:');
   console.log(`  ws://localhost:${PORT}/agent/{agentId}  - Desktop Agent`);
   console.log(`  ws://localhost:${PORT}/pwa/{agentId}    - PWA Client`);
   console.log('');

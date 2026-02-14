@@ -37,21 +37,28 @@ pnpm install
 
 # Build shared package
 pnpm --filter @quicksave/shared build
+
+# Start dev server (PWA + signaling on same port)
+pnpm dev
 ```
 
-### Running the Signaling Server
+This runs Vite with an embedded signaling server on port 5173. Access the PWA at `http://localhost:5173/` with full HMR support.
 
-The signaling server coordinates WebRTC connections between the agent and PWA.
+### Running Components Separately
+
+#### Signaling Server (standalone)
+
+For production or testing the standalone signaling server:
 
 ```bash
-# Start signaling server (runs on port 8080 by default)
+# Start signaling server only (port 8080)
 pnpm dev:signaling
 
-# Or specify a custom port
+# Custom port
 PORT=3001 pnpm dev:signaling
 ```
 
-### Running the Agent
+#### Agent
 
 ```bash
 # Start agent pointing to local signaling server
@@ -61,7 +68,7 @@ QUICKSAVE_SIGNALING_URL=ws://localhost:8080 pnpm dev:agent -- --repo /path/to/re
 pnpm dev:agent -- --repo /path/to/repo -s ws://localhost:8080
 ```
 
-### Running the PWA
+#### PWA
 
 ```bash
 # Start PWA dev server (uses production signaling by default)
