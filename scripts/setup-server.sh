@@ -42,32 +42,37 @@ mkdir -p /opt/quicksave/scripts
 mkdir -p /opt/webhook
 
 echo "==> Setting up webhook..."
+# Separate hooks for each environment - token determines environment, not headers
 cat > /opt/webhook/hooks.json << EOF
 [
   {
-    "id": "deploy",
+    "id": "deploy-staging",
     "execute-command": "/opt/quicksave/scripts/deploy.sh",
     "command-working-directory": "/opt/quicksave",
     "pass-environment-to-command": [
-      { "envname": "DEPLOY_ENV", "source": "header", "name": "X-Environment" }
+      { "envname": "DEPLOY_ENV", "source": "string", "name": "staging" }
     ],
     "trigger-rule": {
-      "or": [
-        {
-          "match": {
-            "type": "value",
-            "value": "${DEPLOY_TOKEN_PROD}",
-            "parameter": { "source": "header", "name": "X-Deploy-Token" }
-          }
-        },
-        {
-          "match": {
-            "type": "value",
-            "value": "${DEPLOY_TOKEN_STAGING}",
-            "parameter": { "source": "header", "name": "X-Deploy-Token" }
-          }
-        }
-      ]
+      "match": {
+        "type": "value",
+        "value": "${DEPLOY_TOKEN_STAGING}",
+        "parameter": { "source": "header", "name": "X-Deploy-Token" }
+      }
+    }
+  },
+  {
+    "id": "deploy-production",
+    "execute-command": "/opt/quicksave/scripts/deploy.sh",
+    "command-working-directory": "/opt/quicksave",
+    "pass-environment-to-command": [
+      { "envname": "DEPLOY_ENV", "source": "string", "name": "production" }
+    ],
+    "trigger-rule": {
+      "match": {
+        "type": "value",
+        "value": "${DEPLOY_TOKEN_PROD}",
+        "parameter": { "source": "header", "name": "X-Deploy-Token" }
+      }
     }
   }
 ]
@@ -228,11 +233,11 @@ echo ""
 echo "==> GitHub Environments to create:"
 echo ""
 echo "   Environment: production"
-echo "     Variable: DEPLOY_URL = https://${SIGNAL_DOMAIN}/hooks/deploy"
+echo "     Variable: DEPLOY_URL = https://${SIGNAL_DOMAIN}/hooks/deploy-production"
 echo "     Secret:   DEPLOY_TOKEN = ${DEPLOY_TOKEN_PROD}"
 echo ""
 echo "   Environment: staging"
-echo "     Variable: DEPLOY_URL = https://${SIGNAL_STAGING_DOMAIN}/hooks/deploy"
+echo "     Variable: DEPLOY_URL = https://${SIGNAL_STAGING_DOMAIN}/hooks/deploy-staging"
 echo "     Secret:   DEPLOY_TOKEN = ${DEPLOY_TOKEN_STAGING}"
 echo ""
 echo "==> Next steps:"
