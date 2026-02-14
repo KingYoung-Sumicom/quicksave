@@ -79,12 +79,21 @@ Description=Webhook listener
 After=network.target
 
 [Service]
+EnvironmentFile=/opt/quicksave/.env
 ExecStart=/usr/bin/webhook -hooks /opt/webhook/hooks.json -port 9000 -verbose
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Create placeholder env file
+cat > /opt/quicksave/.env << 'EOF'
+# GitHub token with repo scope - required for deploy script
+# Get one at: https://github.com/settings/tokens
+GH_TOKEN=your_github_token_here
+EOF
+chmod 600 /opt/quicksave/.env
 
 echo "==> Setting up signaling services..."
 
@@ -98,7 +107,7 @@ After=network.target
 Type=simple
 User=nobody
 WorkingDirectory=/opt/quicksave/production
-ExecStart=/usr/bin/node apps/signaling/dist/bundle.js
+ExecStart=/usr/bin/node apps/signaling/dist/bundle.cjs
 Restart=always
 Environment=NODE_ENV=production
 Environment=PORT=8080
@@ -117,7 +126,7 @@ After=network.target
 Type=simple
 User=nobody
 WorkingDirectory=/opt/quicksave/staging
-ExecStart=/usr/bin/node apps/signaling/dist/bundle.js
+ExecStart=/usr/bin/node apps/signaling/dist/bundle.cjs
 Restart=always
 Environment=NODE_ENV=staging
 Environment=PORT=8081
@@ -229,7 +238,7 @@ echo ""
 echo "==> Next steps:"
 echo "   1. Point DNS records to this server"
 echo "   2. Run: ./scripts/setup-nginx.sh   OR   ./scripts/setup-caddy.sh"
-echo "   3. Authenticate GitHub CLI: gh auth login"
-echo "   4. Update GITHUB_REPO in /opt/quicksave/scripts/deploy.sh"
-echo "   5. Create GitHub environments with secrets above"
+echo "   3. Edit /opt/quicksave/.env and add your GitHub token (repo scope)"
+echo "   4. Create GitHub environments with secrets above"
+echo "   5. Restart webhook: systemctl restart webhook"
 echo ""
