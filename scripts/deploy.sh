@@ -5,12 +5,12 @@
 #
 # This file is copied to /opt/quicksave/scripts/deploy.sh during setup
 # Environment variables:
-#   GITHUB_REPO - GitHub repo (default: your-username/quicksave)
+#   GITHUB_REPO - GitHub repo (default: KingYoung-Sumicom/quicksave)
 #   DEPLOY_ENV  - Environment to deploy (staging|production, passed via webhook header)
 #
 set -e
 
-REPO="${GITHUB_REPO:-your-username/quicksave}"
+REPO="${GITHUB_REPO:-KingYoung-Sumicom/quicksave}"
 ENV="${DEPLOY_ENV:-staging}"
 LOG="/var/log/quicksave-deploy.log"
 

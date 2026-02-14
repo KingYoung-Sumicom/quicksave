@@ -98,7 +98,7 @@ After=network.target
 Type=simple
 User=nobody
 WorkingDirectory=/opt/quicksave/production
-ExecStart=/usr/bin/node apps/signaling/dist/index.js
+ExecStart=/usr/bin/node apps/signaling/dist/bundle.js
 Restart=always
 Environment=NODE_ENV=production
 Environment=PORT=8080
@@ -117,7 +117,7 @@ After=network.target
 Type=simple
 User=nobody
 WorkingDirectory=/opt/quicksave/staging
-ExecStart=/usr/bin/node apps/signaling/dist/index.js
+ExecStart=/usr/bin/node apps/signaling/dist/bundle.js
 Restart=always
 Environment=NODE_ENV=staging
 Environment=PORT=8081
@@ -131,7 +131,7 @@ cat > /opt/quicksave/scripts/deploy.sh << 'DEPLOY_SCRIPT'
 #!/bin/bash
 set -e
 
-REPO="${GITHUB_REPO:-your-username/quicksave}"
+REPO="${GITHUB_REPO:-KingYoung-Sumicom/quicksave}"
 ENV="${DEPLOY_ENV:-staging}"
 LOG="/var/log/quicksave-deploy.log"
 
