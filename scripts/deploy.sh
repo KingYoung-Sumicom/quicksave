@@ -54,21 +54,21 @@ log "Downloading artifacts from run $RUN_ID (branch: $BRANCH)"
 rm -rf /tmp/quicksave-deploy
 gh run download "$RUN_ID" --repo "$REPO" --name dist --dir /tmp/quicksave-deploy
 
-# Verify download
-if [ ! -d "/tmp/quicksave-deploy/apps/pwa/dist" ]; then
+# Verify download (artifact paths are pwa/dist and signaling/dist, not apps/...)
+if [ ! -d "/tmp/quicksave-deploy/pwa/dist" ]; then
     log "ERROR - PWA dist not found in artifacts"
     exit 1
 fi
 
-if [ ! -d "/tmp/quicksave-deploy/apps/signaling/dist" ]; then
+if [ ! -d "/tmp/quicksave-deploy/signaling/dist" ]; then
     log "ERROR - Signaling dist not found in artifacts"
     exit 1
 fi
 
 # Copy to environment directory
 log "Syncing files to $DEPLOY_DIR..."
-rsync -av --delete /tmp/quicksave-deploy/apps/pwa/dist/ "${DEPLOY_DIR}/apps/pwa/dist/"
-rsync -av --delete /tmp/quicksave-deploy/apps/signaling/dist/ "${DEPLOY_DIR}/apps/signaling/dist/"
+rsync -av --delete /tmp/quicksave-deploy/pwa/dist/ "${DEPLOY_DIR}/apps/pwa/dist/"
+rsync -av --delete /tmp/quicksave-deploy/signaling/dist/ "${DEPLOY_DIR}/apps/signaling/dist/"
 
 # Cleanup
 rm -rf /tmp/quicksave-deploy
