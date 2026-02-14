@@ -6,11 +6,11 @@
   "scripts": {
     "dev": "pnpm dev:pwa",
     "dev:pwa": "pnpm --filter quicksave-pwa dev",
-    "dev:agent": "pnpm --filter quicksave dev",
+    "dev:agent": "pnpm --filter @sumicom/quicksave dev",
     "dev:signaling": "pnpm --filter quicksave-signaling dev",
     "build": "pnpm -r build",
     "build:pwa": "pnpm --filter quicksave-pwa build",
-    "build:agent": "pnpm --filter quicksave build",
+    "build:agent": "pnpm --filter @sumicom/quicksave build",
     "build:signaling": "pnpm --filter quicksave-signaling build",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",

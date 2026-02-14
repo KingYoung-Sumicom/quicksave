@@ -16,7 +16,7 @@ Remote git control PWA with end-to-end encryption. Control your computer's git w
 
 ```bash
 # Install globally
-npm install -g quicksave
+npm install -g @sumicom/quicksave
 
 # Run in your git repository
 cd /path/to/your/repo
@@ -36,7 +36,7 @@ quicksave
 pnpm install
 
 # Build shared package
-pnpm --filter quicksave-shared build
+pnpm --filter @sumicom/quicksave-shared build
 
 # Start dev server (PWA + signaling on same port)
 pnpm dev

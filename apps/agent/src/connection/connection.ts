@@ -13,7 +13,7 @@ import {
   type Message,
   type KeyPair,
   type KeyExchangeV2,
-} from 'quicksave-shared';
+} from '@sumicom/quicksave-shared';
 import { SignalingClient } from './signaling.js';
 
 const gzipAsync = promisify(gzip);

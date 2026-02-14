@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ConnectionState, Repository } from 'quicksave-shared';
+import type { ConnectionState, Repository } from '@sumicom/quicksave-shared';
 
 interface ConnectionStore {
   // State

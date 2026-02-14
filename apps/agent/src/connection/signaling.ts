@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 import { gzip, gunzip } from 'zlib';
 import { promisify } from 'util';
-import type { SignalingMessage } from 'quicksave-shared';
+import type { SignalingMessage } from '@sumicom/quicksave-shared';
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);

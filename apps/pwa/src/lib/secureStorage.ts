@@ -11,7 +11,7 @@
  * - If Agent is compromised, only current session is exposed
  */
 
-import { encodeBase64, decodeBase64, generateSessionDEK } from 'quicksave-shared';
+import { encodeBase64, decodeBase64, generateSessionDEK } from '@sumicom/quicksave-shared';
 
 const DB_NAME = 'quicksave-secure';
 const DB_VERSION = 1;

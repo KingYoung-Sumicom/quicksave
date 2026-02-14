@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { MessageHandler } from './messageHandler.js';
-import { createMessage } from 'quicksave-shared';
+import { createMessage } from '@sumicom/quicksave-shared';
 import { mkdir, writeFile, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';

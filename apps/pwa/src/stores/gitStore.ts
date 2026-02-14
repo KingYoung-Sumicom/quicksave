@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { GitStatus, FileDiff, Commit, Branch, FileChange, ClaudeModel, TokenUsage } from 'quicksave-shared';
+import type { GitStatus, FileDiff, Commit, Branch, FileChange, ClaudeModel, TokenUsage } from '@sumicom/quicksave-shared';
 
 // localStorage helpers for commit message persistence
 const COMMIT_DRAFT_PREFIX = 'quicksave:commit-draft:';

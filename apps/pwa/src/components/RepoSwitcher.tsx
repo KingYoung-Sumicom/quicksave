@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { clsx } from 'clsx';
-import type { Repository, ListReposResponsePayload, BrowseDirectoryResponsePayload, DirectoryEntry } from 'quicksave-shared';
+import type { Repository, ListReposResponsePayload, BrowseDirectoryResponsePayload, DirectoryEntry } from '@sumicom/quicksave-shared';
 import { useConnectionStore } from '../stores/connectionStore';
 
 interface RepoSwitcherProps {

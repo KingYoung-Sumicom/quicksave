@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "quicksave-shared": "workspace:*",
+    "@sumicom/quicksave-shared": "workspace:*",
     "clsx": "^2.1.0",
     "html5-qrcode": "^2.3.8",
     "react": "^18.2.0",
