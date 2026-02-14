@@ -9,7 +9,7 @@ set -e
 
 # Configuration - update these
 DOMAIN="quicksave.dev"
-GITHUB_REPO="your-username/quicksave"
+GITHUB_REPO="KingYoung-Sumicom/quicksave"
 
 # Derived domains
 STAGING_DOMAIN="staging.${DOMAIN}"
