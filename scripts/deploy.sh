@@ -25,7 +25,7 @@ SERVICE_NAME="quicksave-signaling"
 [[ "$ENV" == "staging" ]] && SERVICE_NAME="quicksave-signaling-staging"
 
 # Determine which branch to pull from
-BRANCH="main"
+BRANCH="stable"
 [[ "$ENV" == "staging" ]] && BRANCH="staging"
 
 log() {
@@ -50,9 +50,9 @@ fi
 
 log "Downloading artifacts from run $RUN_ID (branch: $BRANCH)"
 
-# Download artifacts to temp directory
+# Download artifacts to temp directory (artifact name matches environment)
 rm -rf /tmp/quicksave-deploy
-gh run download "$RUN_ID" --repo "$REPO" --name dist --dir /tmp/quicksave-deploy
+gh run download "$RUN_ID" --repo "$REPO" --name "dist-${ENV}" --dir /tmp/quicksave-deploy
 
 # Verify download (artifact paths are pwa/dist and signaling/dist, not apps/...)
 if [ ! -d "/tmp/quicksave-deploy/pwa/dist" ]; then
