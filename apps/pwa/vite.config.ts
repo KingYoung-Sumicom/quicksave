@@ -54,6 +54,6 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    include: ['@quicksave/shared'],
+    include: ['quicksave-shared'],
   },
 });

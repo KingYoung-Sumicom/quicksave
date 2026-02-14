@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { clsx } from 'clsx';
-import type { ConnectionState } from '@quicksave/shared';
+import type { ConnectionState } from 'quicksave-shared';
 import { useMachineStore, selectSortedMachines } from '../stores/machineStore';
 import { useConnectionStore } from '../stores/connectionStore';
 

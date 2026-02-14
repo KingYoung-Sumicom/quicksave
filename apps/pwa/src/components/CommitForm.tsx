@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useGitStore, selectCanCommit } from '../stores/gitStore';
-import { CLAUDE_MODELS, type ClaudeModel } from '@quicksave/shared';
+import { CLAUDE_MODELS, type ClaudeModel } from 'quicksave-shared';
 import { clsx } from 'clsx';
 
 interface CommitFormProps {

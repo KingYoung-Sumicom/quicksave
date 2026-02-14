@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
-    "@quicksave/shared": "workspace:*",
+    "quicksave-shared": "workspace:*",
     "commander": "^12.0.0",
     "qrcode-terminal": "^0.12.0",
     "simple-git": "^3.22.0",

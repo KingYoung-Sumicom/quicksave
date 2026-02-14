@@ -20,7 +20,7 @@ import {
   type AddRepoResponsePayload,
   type Repository,
   type ClaudeModel,
-} from '@quicksave/shared';
+} from 'quicksave-shared';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useGitStore, makeSelectionKey } from '../stores/gitStore';
 import { WebSocketClient } from '../lib/websocket';

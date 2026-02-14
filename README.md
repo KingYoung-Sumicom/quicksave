@@ -36,7 +36,7 @@ quicksave
 pnpm install
 
 # Build shared package
-pnpm --filter @quicksave/shared build
+pnpm --filter quicksave-shared build
 
 # Start dev server (PWA + signaling on same port)
 pnpm dev

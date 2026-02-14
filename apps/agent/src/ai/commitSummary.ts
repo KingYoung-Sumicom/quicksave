@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { createHash } from 'crypto';
-import type { FileDiff, ClaudeModel, TokenUsage } from '@quicksave/shared';
+import type { FileDiff, ClaudeModel, TokenUsage } from 'quicksave-shared';
 
 export interface GenerateSummaryOptions {
   diffs: FileDiff[];

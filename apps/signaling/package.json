@@ -1,5 +1,5 @@
 {
-  "name": "@quicksave/signaling",
+  "name": "quicksave-signaling",
   "version": "0.1.0",
   "description": "Quicksave signaling server for WebRTC connection establishment",
   "type": "module",

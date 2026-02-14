@@ -11,7 +11,7 @@ import type {
   Commit,
   Branch,
   FileStatus,
-} from '@quicksave/shared';
+} from 'quicksave-shared';
 
 export interface GitOperationsOptions {
   maxDiffFileSizeKB?: number;

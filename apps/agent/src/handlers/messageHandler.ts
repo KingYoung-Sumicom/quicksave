@@ -40,7 +40,7 @@ import {
   DirectoryEntry,
   AddRepoRequestPayload,
   AddRepoResponsePayload,
-} from '@quicksave/shared';
+} from 'quicksave-shared';
 import { GitOperations } from '../git/operations.js';
 import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey } from '../config.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';

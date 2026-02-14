@@ -8,7 +8,7 @@ import { WebRTCConnection } from './connection/connection.js';
 import { MessageHandler } from './handlers/messageHandler.js';
 import { GitOperations } from './git/operations.js';
 import { getOrCreateConfig, getConfigPath } from './config.js';
-import type { Message, Repository } from '@quicksave/shared';
+import type { Message, Repository } from 'quicksave-shared';
 
 const DEFAULT_SIGNALING_SERVER = process.env.QUICKSAVE_SIGNALING_URL || 'wss://signal.quicksave.dev';
 

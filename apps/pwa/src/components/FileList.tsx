@@ -1,6 +1,6 @@
 import { clsx } from 'clsx';
 import { useState, useMemo } from 'react';
-import type { FileChange, FileStatus, FileDiff } from '@quicksave/shared';
+import type { FileChange, FileStatus, FileDiff } from 'quicksave-shared';
 import { DiffViewer } from './DiffViewer';
 import type { SelectionSource, LineSelection, SelectionKey } from '../stores/gitStore';
 import { makeSelectionKey } from '../stores/gitStore';

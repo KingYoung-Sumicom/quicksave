@@ -1,5 +1,5 @@
 import { clsx } from 'clsx';
-import type { FileDiff, DiffHunk } from '@quicksave/shared';
+import type { FileDiff, DiffHunk } from 'quicksave-shared';
 import type { LineSelection } from '../stores/gitStore';
 
 interface DiffViewerProps {

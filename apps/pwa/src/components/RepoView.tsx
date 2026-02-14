@@ -11,7 +11,7 @@ import {
   type LineSelection,
   type SelectionKey,
 } from '../stores/gitStore';
-import type { FileDiff } from '@quicksave/shared';
+import type { FileDiff } from 'quicksave-shared';
 import { FileList } from './FileList';
 import { CommitForm } from './CommitForm';
 import { FloatingActionButton } from './FloatingActionButton';

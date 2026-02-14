@@ -13,7 +13,7 @@ import {
   type KeyPair,
   type License,
   type Repository,
-} from '@quicksave/shared';
+} from 'quicksave-shared';
 
 export type ConnectionEventHandler = {
   onConnected: (repoPath: string, isPro: boolean, availableRepos?: Repository[]) => void;

@@ -1,5 +1,5 @@
 {
-  "name": "@quicksave/pwa",
+  "name": "quicksave-pwa",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@quicksave/shared": "workspace:*",
+    "quicksave-shared": "workspace:*",
     "clsx": "^2.1.0",
     "html5-qrcode": "^2.3.8",
     "react": "^18.2.0",
