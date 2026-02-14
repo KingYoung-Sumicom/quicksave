@@ -1,5 +1,5 @@
 {
-  "name": "quicksave",
+  "name": "quicksave-monorepo",
   "version": "0.1.0",
   "private": true,
   "description": "Remote git control PWA with E2E encryption",

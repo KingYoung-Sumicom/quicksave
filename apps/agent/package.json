@@ -1,9 +1,9 @@
 {
-  "name": "@quicksave/agent",
+  "name": "quicksave",
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "quicksave-agent": "./dist/index.js"
+    "quicksave": "./dist/index.js"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",

@@ -16,11 +16,11 @@ Remote git control PWA with end-to-end encryption. Control your computer's git w
 
 ```bash
 # Install globally
-npm install -g @quicksave/agent
+npm install -g quicksave
 
 # Run in your git repository
 cd /path/to/your/repo
-quicksave-agent
+quicksave
 ```
 
 ### 2. Connect from PWA
