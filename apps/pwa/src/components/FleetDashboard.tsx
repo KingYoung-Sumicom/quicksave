@@ -71,6 +71,8 @@ export function FleetDashboard({ onConnect, onSendApiKeyToAgent }: FleetDashboar
                 key={machine.agentId}
                 machine={machine}
                 onConnect={(repoPath) => handleConnect(machine, repoPath)}
+                onEdit={() => setEditingMachine(machine)}
+                onRemove={() => handleRemove(machine)}
                 variant="compact"
               />
             ))}

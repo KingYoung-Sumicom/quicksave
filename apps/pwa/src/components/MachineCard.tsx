@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { clsx } from 'clsx';
 import type { Machine } from '../stores/machineStore';
 
@@ -11,6 +11,8 @@ interface MachineCardProps {
   isConnecting?: boolean;
 }
 
+const LONG_PRESS_MS = 500;
+
 export function MachineCard({
   machine,
   onConnect,
@@ -21,8 +23,11 @@ export function MachineCard({
 }: MachineCardProps) {
   const [showMenu, setShowMenu] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const didLongPress = useRef(false);
 
   const hasRepos = machine.knownRepos && machine.knownRepos.length > 0;
+  const hasMenu = (onEdit || onRemove) && !isConnecting;
 
   const formatLastConnected = (timestamp: number | null): string => {
     if (!timestamp) return 'Never connected';
@@ -42,9 +47,40 @@ export function MachineCard({
 
   const repoName = (path: string) => path.split('/').pop() || path;
 
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }, []);
+
+  const handleTouchStart = useCallback(() => {
+    if (!hasMenu) return;
+    didLongPress.current = false;
+    longPressTimer.current = setTimeout(() => {
+      didLongPress.current = true;
+      setShowMenu(true);
+    }, LONG_PRESS_MS);
+  }, [hasMenu]);
+
+  const handleTouchEnd = useCallback(() => {
+    cancelLongPress();
+  }, [cancelLongPress]);
+
+  const handleTouchMove = useCallback(() => {
+    cancelLongPress();
+  }, [cancelLongPress]);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    if (!hasMenu) return;
+    e.preventDefault();
+    setShowMenu(true);
+  }, [hasMenu]);
+
   const handleCardClick = (e: React.MouseEvent) => {
-    // Don't trigger if clicking on menu or its children
-    if ((e.target as HTMLElement).closest('[data-menu]')) {
+    // Don't trigger if long press just fired
+    if (didLongPress.current) {
+      didLongPress.current = false;
       return;
     }
     // Don't trigger if clicking expand button
@@ -73,8 +109,12 @@ export function MachineCard({
       {/* Main card row */}
       <div
         onClick={handleCardClick}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+        onTouchMove={handleTouchMove}
+        onContextMenu={handleContextMenu}
         className={clsx(
-          'p-4 flex items-center gap-4 relative transition-colors',
+          'p-4 flex items-center gap-4 relative transition-colors select-none',
           isConnecting ? 'opacity-70 cursor-wait' : 'hover:bg-slate-700 cursor-pointer'
         )}
       >
@@ -134,70 +174,12 @@ export function MachineCard({
           </button>
         )}
 
-        {/* Chevron for navigation hint (compact variant without repos) */}
+        {/* Chevron for navigation hint (compact variant) */}
         {!isConnecting && variant === 'compact' && (
           <div className="flex-shrink-0 text-slate-500">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
-          </div>
-        )}
-
-        {/* Menu for full variant */}
-        {variant === 'full' && (onEdit || onRemove) && !isConnecting && (
-          <div className="relative flex-shrink-0" data-menu>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowMenu(!showMenu);
-              }}
-              className="p-2 hover:bg-slate-600 rounded-md transition-colors"
-              aria-label="More options"
-            >
-              <svg className="w-5 h-5 text-slate-400" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
-              </svg>
-            </button>
-
-            {showMenu && (
-              <>
-                {/* Backdrop to close menu */}
-                <div
-                  className="fixed inset-0 z-10"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowMenu(false);
-                  }}
-                />
-                {/* Menu */}
-                <div className="absolute right-0 top-full mt-1 bg-slate-700 rounded-md shadow-lg py-1 z-20 min-w-[120px]">
-                  {onEdit && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowMenu(false);
-                        onEdit();
-                      }}
-                      className="w-full px-4 py-2 text-left text-sm hover:bg-slate-600 transition-colors"
-                    >
-                      Edit
-                    </button>
-                  )}
-                  {onRemove && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowMenu(false);
-                        onRemove();
-                      }}
-                      className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-slate-600 transition-colors"
-                    >
-                      Remove
-                    </button>
-                  )}
-                </div>
-              </>
-            )}
           </div>
         )}
       </div>
@@ -252,6 +234,52 @@ export function MachineCard({
             );
           })}
         </div>
+      )}
+
+      {/* Long-press popup menu */}
+      {showMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-black/50"
+            onClick={() => setShowMenu(false)}
+          />
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
+            <div className="bg-slate-700 rounded-lg shadow-xl overflow-hidden pointer-events-auto min-w-[200px]">
+              {/* Machine name header */}
+              <div className="px-4 py-3 border-b border-slate-600">
+                <p className="text-sm font-medium text-slate-300 truncate">{machine.nickname}</p>
+              </div>
+              {onEdit && (
+                <button
+                  onClick={() => {
+                    setShowMenu(false);
+                    onEdit();
+                  }}
+                  className="w-full px-4 py-3 text-left text-sm hover:bg-slate-600 transition-colors flex items-center gap-3"
+                >
+                  <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                  </svg>
+                  Rename
+                </button>
+              )}
+              {onRemove && (
+                <button
+                  onClick={() => {
+                    setShowMenu(false);
+                    onRemove();
+                  }}
+                  className="w-full px-4 py-3 text-left text-sm text-red-400 hover:bg-slate-600 transition-colors flex items-center gap-3"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  Delete
+                </button>
+              )}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
