@@ -132,8 +132,9 @@ export function Settings({ isOpen, onClose, onSaveApiKey }: SettingsProps) {
           <div className="p-3 bg-slate-700/50 rounded-lg text-sm text-slate-300 space-y-2">
             <p className="font-medium">Why is an API key required?</p>
             <p className="text-slate-400">
-              Claude Pro/Max subscriptions only work with the official Claude Code app.
-              Third-party tools like quicksave require an API key with usage-based billing.
+              Quicksave uses Claude AI to generate commit message summaries from your diffs.
+              Claude Pro/Max subscriptions only work with the official Claude apps.
+              Third-party tools like quicksave require a separate API key with usage-based billing.
             </p>
           </div>
 
@@ -157,9 +158,6 @@ export function Settings({ isOpen, onClose, onSaveApiKey }: SettingsProps) {
               <li>Copy the key (starts with sk-ant-...)</li>
               <li>Paste it above and click Save</li>
             </ol>
-            <p className="text-xs text-slate-500">
-              New accounts get $5 free credits. After that, pay only for what you use.
-            </p>
           </div>
         </div>
       </div>
