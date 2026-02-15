@@ -36,7 +36,7 @@ export function StatusBar({
   const hasMultipleMachines = machines.length > 1;
 
   return (
-    <header className="bg-slate-800 border-b border-slate-700 safe-area-top">
+    <header className="sticky top-0 z-30 bg-slate-800 border-b border-slate-700 safe-area-top">
       <div className="flex items-center justify-between px-4 py-3">
         {/* Left: Back button, Machine name */}
         <div className="flex items-center gap-2">
