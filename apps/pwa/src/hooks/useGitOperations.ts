@@ -22,7 +22,7 @@ import {
   type ClaudeModel,
 } from '@sumicom/quicksave-shared';
 import { useConnectionStore } from '../stores/connectionStore';
-import { useGitStore, makeSelectionKey } from '../stores/gitStore';
+import { useGitStore, makeSelectionKey, type SelectionSource } from '../stores/gitStore';
 import { WebSocketClient } from '../lib/websocket';
 
 type PendingRequest = {
@@ -105,8 +105,8 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
   }, [sendRequest, setStatus, setLoading, setError]);
 
   const fetchDiff = useCallback(
-    async (path: string, staged = false) => {
-      const key = makeSelectionKey(path, staged ? 'staged' : 'unstaged');
+    async (path: string, staged = false, source?: SelectionSource) => {
+      const key = makeSelectionKey(path, source ?? (staged ? 'staged' : 'unstaged'));
       setDiffLoading(key, true);
       try {
         const message = createMessage('git:diff', { path, staged });

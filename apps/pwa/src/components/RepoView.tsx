@@ -19,7 +19,7 @@ import { Settings } from './Settings';
 
 interface RepoViewProps {
   onRefresh: () => void;
-  onFetchDiff: (path: string, staged: boolean) => void;
+  onFetchDiff: (path: string, staged: boolean, source?: 'staged' | 'unstaged' | 'untracked') => void;
   onStage: (paths: string[]) => void;
   onUnstage: (paths: string[]) => void;
   onStagePatch: (patch: string) => void;
@@ -149,7 +149,7 @@ export function RepoView({
     const key = makeSelectionKey(path, source);
     const needsFetch = toggleFileExpanded(key);
     if (needsFetch) {
-      onFetchDiff(path, source === 'staged');
+      onFetchDiff(path, source === 'staged', source);
     }
   };
 

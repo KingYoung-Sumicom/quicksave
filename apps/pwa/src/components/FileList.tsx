@@ -276,9 +276,9 @@ export function FileList({
                 diff={diff}
                 onClose={() => onCloseDiff(diffKey)}
                 showHeader={false}
-                selectedLines={fileSelectedLines}
-                onToggleLineSelection={(line) => onToggleLineSelection(selectionKey, line, type)}
-                selectable
+                selectedLines={type !== 'untracked' ? fileSelectedLines : undefined}
+                onToggleLineSelection={type !== 'untracked' ? (line) => onToggleLineSelection(selectionKey, line, type) : undefined}
+                selectable={type !== 'untracked'}
                 fileSelected={isSelected}
               />
             </div>
