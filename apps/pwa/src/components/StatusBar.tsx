@@ -38,9 +38,8 @@ export function StatusBar({
   return (
     <header className="sticky top-0 z-30 bg-slate-800 border-b border-slate-700 safe-area-top">
       <div className="flex items-center justify-between px-4 py-3">
-        {/* Left: Back button, Machine name */}
-        <div className="flex items-center gap-2">
-          {/* Back button */}
+        {/* Left: Back button */}
+        <div className="flex items-center w-10">
           {isConnected && (
             <button
               onClick={onDisconnect}
@@ -52,11 +51,17 @@ export function StatusBar({
               </svg>
             </button>
           )}
+        </div>
 
+        {/* Center: Machine switcher */}
+        <div className="flex items-center justify-center flex-1 max-w-xs">
           {hasMultipleMachines ? (
             <button
               onClick={() => setShowSwitcher(!showSwitcher)}
-              className="flex items-center gap-2 hover:bg-slate-700 rounded-md px-2 py-1 transition-colors"
+              className={clsx(
+                'flex items-center gap-2 hover:bg-slate-700 rounded-md px-2 py-1 transition-colors',
+                showSwitcher && 'bg-slate-700'
+              )}
             >
               <span className="text-lg">{currentMachine?.icon || '💻'}</span>
               <span className="text-lg font-bold truncate max-w-[150px]">
@@ -82,7 +87,7 @@ export function StatusBar({
         </div>
 
         {/* Right: Connection indicator */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center justify-end w-10">
           <ConnectionIndicator state={connectionState} />
         </div>
       </div>
@@ -96,7 +101,7 @@ export function StatusBar({
             onClick={() => setShowSwitcher(false)}
           />
           {/* Dropdown */}
-          <div className="absolute left-4 right-4 top-14 bg-slate-700 rounded-lg shadow-lg z-20 overflow-hidden">
+          <div className="absolute left-1/2 -translate-x-1/2 top-14 w-full max-w-md bg-slate-700 rounded-lg shadow-lg z-20 overflow-hidden">
             <div className="p-2 border-b border-slate-600">
               <p className="text-xs text-slate-400 px-2">Switch Machine</p>
             </div>
