@@ -11,6 +11,7 @@ import { ConnectingPage } from './components/ConnectingPage';
 import { StatusBar } from './components/StatusBar';
 import { RepoView } from './components/RepoView';
 import { RepoSwitcher } from './components/RepoSwitcher';
+import { getApiKey } from './lib/secureStorage';
 
 function AppContent() {
   const clientRef = useRef<WebSocketClient | null>(null);
@@ -128,13 +129,19 @@ function AppContent() {
     navigate('/', { replace: true });
   }, [reset, resetGit, navigate]);
 
-  // Fetch status and check API key status when connected
+  // Fetch status and sync API key when connected
   useEffect(() => {
     if (state === 'connected') {
       fetchStatus();
+      // Send locally stored API key to agent if available
+      getApiKey().then((storedKey) => {
+        if (storedKey) {
+          setApiKey(storedKey);
+        }
+      });
       checkApiKeyStatus();
     }
-  }, [state, fetchStatus, checkApiKeyStatus]);
+  }, [state, fetchStatus, checkApiKeyStatus, setApiKey]);
 
   // Switch to pending repo after connection if different from current
   useEffect(() => {
@@ -165,12 +172,13 @@ function AppContent() {
     if (isConnected && agentIdRef.current) {
       // Already connected, will redirect via effect
     }
+    const saveApiKey = isConnected ? setApiKey : undefined;
     return machines.length > 0 ? (
-      <FleetDashboard onConnect={handleConnect} />
+      <FleetDashboard onConnect={handleConnect} onSendApiKeyToAgent={saveApiKey} />
     ) : (
-      <ConnectionSetup onConnect={handleConnect} />
+      <ConnectionSetup onConnect={handleConnect} onSendApiKeyToAgent={saveApiKey} />
     );
-  }, [machines.length, handleConnect, isConnected]);
+  }, [machines.length, handleConnect, isConnected, setApiKey]);
 
   // Redirect to repo if connected on home page
   // Note: We check clientRef.current to ensure we have an active connection,

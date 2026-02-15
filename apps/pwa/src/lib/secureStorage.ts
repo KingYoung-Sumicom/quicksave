@@ -17,6 +17,7 @@ const DB_NAME = 'quicksave-secure';
 const DB_VERSION = 1;
 const STORE_NAME = 'secrets';
 const MASTER_SECRET_KEY = 'master-secret';
+const API_KEY_KEY = 'anthropic-api-key';
 
 /**
  * Open or create the IndexedDB database
@@ -158,6 +159,64 @@ export async function exportMasterSecret(): Promise<string> {
   const secret = await getMasterSecret();
   // Use base64 for export (could use base32 for more user-friendly display)
   return encodeBase64(secret);
+}
+
+/**
+ * Save API key locally in IndexedDB
+ */
+export async function saveApiKey(apiKey: string): Promise<void> {
+  const db = await openDatabase();
+
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.put(apiKey, API_KEY_KEY);
+
+    request.onerror = () => {
+      reject(new Error('Failed to save API key'));
+    };
+
+    request.onsuccess = () => {
+      resolve();
+    };
+  });
+
+  db.close();
+}
+
+/**
+ * Get locally stored API key, or null if not set
+ */
+export async function getApiKey(): Promise<string | null> {
+  try {
+    const db = await openDatabase();
+    const result = await new Promise<string | undefined>((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readonly');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.get(API_KEY_KEY);
+
+      request.onerror = () => {
+        reject(new Error('Failed to get API key'));
+      };
+
+      request.onsuccess = () => {
+        resolve(request.result);
+      };
+    });
+
+    db.close();
+    return result || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check if API key is stored locally
+ */
+export async function hasApiKey(): Promise<boolean> {
+  const key = await getApiKey();
+  return key !== null;
 }
 
 /**

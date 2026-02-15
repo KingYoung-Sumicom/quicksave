@@ -45,6 +45,29 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        runtimeCaching: [
+          {
+            urlPattern: /\.(?:js|css|woff2?)$/i,
+            handler: 'StaleWhileRevalidate',
+            options: {
+              cacheName: 'static-assets',
+              expiration: {
+                maxAgeSeconds: 60 * 60, // 1 hour
+              },
+            },
+          },
+          {
+            urlPattern: /\.(?:png|jpg|jpeg|svg|gif|ico|webp)$/i,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'images',
+              expiration: {
+                maxAgeSeconds: 60 * 60, // 1 hour
+                maxEntries: 50,
+              },
+            },
+          },
+        ],
       },
     }),
   ],
