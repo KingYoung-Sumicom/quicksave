@@ -1,5 +1,5 @@
 import { useCallback, useRef, useEffect, useMemo, useState } from 'react';
-import { HashRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
+import { HashRouter, Routes, Route, useNavigate, useLocation, useParams } from 'react-router-dom';
 import { useConnectionStore } from './stores/connectionStore';
 import { useGitStore } from './stores/gitStore';
 import { useMachineStore } from './stores/machineStore';
@@ -129,6 +129,20 @@ function AppContent() {
     navigate('/', { replace: true });
   }, [reset, resetGit, navigate]);
 
+  const switchingMachineRef = useRef(false);
+  const handleSwitchMachine = useCallback((targetAgentId: string) => {
+    // Set flag to prevent the repo redirect effect from overriding our navigation
+    switchingMachineRef.current = true;
+    if (clientRef.current) {
+      clientRef.current.disconnect();
+      clientRef.current = null;
+    }
+    agentIdRef.current = null;
+    reset();
+    resetGit();
+    navigate(`/connect/${targetAgentId}`, { replace: true });
+  }, [reset, resetGit, navigate]);
+
   // Fetch status and sync API key when connected
   useEffect(() => {
     if (state === 'connected') {
@@ -199,6 +213,8 @@ function AppContent() {
     // Don't redirect if user intentionally disconnected
     if (intentionalDisconnectRef.current) return;
     if (repoRedirectRef.current) return;
+    // Don't redirect if switching machines (handleSwitchMachine already navigated)
+    if (switchingMachineRef.current) return;
     if (location.pathname.startsWith('/repo/') && !isConnected && !isReconnecting && state !== 'connecting') {
       repoRedirectRef.current = true;
       const match = location.pathname.match(/\/repo\/([^/]+)/);
@@ -215,9 +231,10 @@ function AppContent() {
     if (!location.pathname.startsWith('/repo/')) {
       repoRedirectRef.current = false;
     }
-    // Reset intentional disconnect flag when user starts a new connection
+    // Reset flags when user starts a new connection
     if (location.pathname.startsWith('/connect/')) {
       intentionalDisconnectRef.current = false;
+      switchingMachineRef.current = false;
     }
   }, [location.pathname]);
 
@@ -252,7 +269,7 @@ function AppContent() {
           repoPath={repoPath}
           isPro={isPro}
           onDisconnect={handleDisconnect}
-          onSwitchMachine={handleDisconnect}
+          onSwitchMachine={handleSwitchMachine}
           onSwitchRepo={() => setShowRepoSwitcher(true)}
         />
         <RepoSwitcher
@@ -277,17 +294,23 @@ function AppContent() {
         />
       </>
     );
-  }, [isConnected, isReconnecting, reconnectAttempt, maxReconnectAttempts, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, commit, generateCommitSummary, setApiKey, showRepoSwitcher, listRepos, switchRepo]);
+  }, [isConnected, isReconnecting, reconnectAttempt, maxReconnectAttempts, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, commit, generateCommitSummary, setApiKey, showRepoSwitcher, listRepos, switchRepo]);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-900 text-slate-100">
       <Routes>
         <Route path="/" element={homeElement} />
-        <Route path="/connect/:agentId" element={<ConnectingPage onConnect={handleConnect} />} />
+        <Route path="/connect/:agentId" element={<ConnectingPageWrapper onConnect={handleConnect} />} />
         <Route path="/repo/:agentId" element={repoElement} />
       </Routes>
     </div>
   );
+}
+
+// Wrapper to force ConnectingPage remount when agentId changes
+function ConnectingPageWrapper({ onConnect }: { onConnect: (agentId: string, publicKey: string) => void }) {
+  const { agentId } = useParams<{ agentId: string }>();
+  return <ConnectingPage key={agentId} onConnect={onConnect} />;
 }
 
 function App() {

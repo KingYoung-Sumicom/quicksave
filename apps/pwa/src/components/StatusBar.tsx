@@ -12,7 +12,7 @@ interface StatusBarProps {
   repoPath?: string | null;
   isPro: boolean;
   onDisconnect: () => void;
-  onSwitchMachine?: () => void;
+  onSwitchMachine?: (agentId: string) => void;
   onSwitchRepo?: () => void;
 }
 
@@ -107,7 +107,7 @@ export function StatusBar({
                   onClick={() => {
                     setShowSwitcher(false);
                     if (machine.agentId !== agentId && onSwitchMachine) {
-                      onSwitchMachine();
+                      onSwitchMachine(machine.agentId);
                     }
                   }}
                   className={clsx(
@@ -132,7 +132,7 @@ export function StatusBar({
               <button
                 onClick={() => {
                   setShowSwitcher(false);
-                  if (onSwitchMachine) onSwitchMachine();
+                  onDisconnect();
                 }}
                 className="w-full px-4 py-2 text-sm text-blue-400 hover:bg-slate-600 rounded-md transition-colors text-left"
               >
@@ -192,8 +192,8 @@ export function StatusBar({
         </div>
       )}
 
-      {/* Ad Banner (Free Tier) */}
-      {isConnected && !isPro && <AdBanner />}
+      {/* Ad Banner (Free Tier) - disabled for now */}
+      {/* {isConnected && !isPro && <AdBanner />} */}
     </header>
   );
 }
