@@ -8,7 +8,7 @@ export default defineConfig({
   server: {
     host: true, // Allow external access (needed for ngrok)
     port: 5173,
-    allowedHosts: ['.ngrok-free.app', '.ngrok.io'],
+    allowedHosts: ['.ngrok-free.app', '.ngrok.io', '.quicksave.dev'],
   },
   plugins: [
     signalingServerPlugin(),
