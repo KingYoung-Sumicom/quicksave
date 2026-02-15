@@ -28,13 +28,13 @@ export function FloatingActionButton({
   };
 
   return (
-    <div className="floating-action-button fixed bottom-20 right-4 flex flex-col gap-2 z-50 animate-slide-up">
+    <div className="floating-action-button fixed bottom-20 right-4 flex flex-col gap-2 z-50 animate-slide-up bg-slate-600/70 backdrop-blur-md rounded-2xl p-2 shadow-xl">
       {/* Clear button */}
       <button
         onClick={onClear}
         disabled={isLoading}
         className={clsx(
-          'px-3 py-2 rounded-full bg-slate-700 hover:bg-slate-600 text-sm font-medium',
+          'px-3 py-2 rounded-full bg-rose-600/70 hover:bg-rose-500/80 backdrop-blur-sm text-sm font-medium',
           'shadow-lg transition-all duration-200',
           'flex items-center justify-center gap-2',
           isLoading && 'opacity-50 cursor-not-allowed'
@@ -52,12 +52,12 @@ export function FloatingActionButton({
         onClick={onAction}
         disabled={isLoading}
         className={clsx(
-          'px-4 py-3 rounded-full font-medium text-white',
+          'px-4 py-3 rounded-full font-medium text-white backdrop-blur-sm',
           'shadow-lg transition-all duration-200',
           'flex items-center justify-center gap-2',
           selectionSource === 'staged'
-            ? 'bg-amber-600 hover:bg-amber-500'
-            : 'bg-blue-600 hover:bg-blue-500',
+            ? 'bg-amber-600/70 hover:bg-amber-500/80'
+            : 'bg-blue-600/70 hover:bg-blue-500/80',
           isLoading && 'opacity-50 cursor-not-allowed'
         )}
       >

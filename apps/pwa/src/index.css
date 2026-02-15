@@ -111,7 +111,7 @@ html {
 
 /* Floating action button positioning for mobile */
 .floating-action-button {
-  padding-bottom: env(safe-area-inset-bottom);
+  padding-bottom: 0.5rem;
 }
 
 /* Settings panel slide-in */
