@@ -6,7 +6,7 @@ describe('parseUrl', () => {
     const result = parseUrl('/agent/abc123def');
     expect(result).toEqual({
       role: 'agent',
-      agentId: 'abc123def',
+      id: 'abc123def',
     });
   });
 
@@ -14,7 +14,7 @@ describe('parseUrl', () => {
     const result = parseUrl('/pwa/abc123def');
     expect(result).toEqual({
       role: 'pwa',
-      agentId: 'abc123def',
+      id: 'abc123def',
     });
   });
 
@@ -22,7 +22,7 @@ describe('parseUrl', () => {
     const result = parseUrl('/agent/abc-123_DEF');
     expect(result).toEqual({
       role: 'agent',
-      agentId: 'abc-123_DEF',
+      id: 'abc-123_DEF',
     });
   });
 
@@ -50,7 +50,7 @@ describe('parseUrl', () => {
     const result = parseUrl('/agent/12345678');
     expect(result).toEqual({
       role: 'agent',
-      agentId: '12345678',
+      id: '12345678',
     });
   });
 
@@ -64,7 +64,7 @@ describe('parseUrl', () => {
     const result = parseUrl(`/agent/${maxId}`);
     expect(result).toEqual({
       role: 'agent',
-      agentId: maxId,
+      id: maxId,
     });
   });
 
@@ -81,5 +81,99 @@ describe('parseUrl', () => {
     expect(parseUrl('/agent/abc.123')).toBeNull();
     expect(parseUrl('/agent/abc@123')).toBeNull();
     expect(parseUrl('/agent/abc 123')).toBeNull();
+  });
+
+  describe('/pwa/key/{publicKey} path', () => {
+    it('should parse valid pwa key URL', () => {
+      const result = parseUrl('/pwa/key/abc123defghi');
+      expect(result).toEqual({
+        role: 'pwa',
+        id: 'abc123defghi',
+        isPwaKey: true,
+      });
+    });
+
+    it('should accept base64 characters including +, /, =', () => {
+      const key = 'abc+def/ghi=jkl';
+      const result = parseUrl(`/pwa/key/${key}`);
+      expect(result).toEqual({
+        role: 'pwa',
+        id: key,
+        isPwaKey: true,
+      });
+    });
+
+    it('should accept standard base64 encoded public key', () => {
+      // Simulating a base64-encoded 32-byte key
+      const key = 'dGVzdGtleWRhdGExMjM0NTY3ODkwYWJjZGVm';
+      const result = parseUrl(`/pwa/key/${key}`);
+      expect(result).toEqual({
+        role: 'pwa',
+        id: key,
+        isPwaKey: true,
+      });
+    });
+
+    it('should accept base64 key with padding', () => {
+      const key = 'SGVsbG9Xb3JsZA==';
+      const result = parseUrl(`/pwa/key/${key}`);
+      expect(result).toEqual({
+        role: 'pwa',
+        id: key,
+        isPwaKey: true,
+      });
+    });
+
+    it('should reject key that is too short', () => {
+      expect(parseUrl('/pwa/key/abc')).toBeNull();
+      expect(parseUrl('/pwa/key/1234567')).toBeNull(); // 7 chars
+    });
+
+    it('should accept minimum key length (8 chars)', () => {
+      const result = parseUrl('/pwa/key/12345678');
+      expect(result).toEqual({
+        role: 'pwa',
+        id: '12345678',
+        isPwaKey: true,
+      });
+    });
+
+    it('should reject key that is too long', () => {
+      const longKey = 'a'.repeat(513);
+      expect(parseUrl(`/pwa/key/${longKey}`)).toBeNull();
+    });
+
+    it('should accept maximum key length (512 chars)', () => {
+      const maxKey = 'a'.repeat(512);
+      const result = parseUrl(`/pwa/key/${maxKey}`);
+      expect(result).toEqual({
+        role: 'pwa',
+        id: maxKey,
+        isPwaKey: true,
+      });
+    });
+
+    it('should reject empty key', () => {
+      expect(parseUrl('/pwa/key/')).toBeNull();
+      expect(parseUrl('/pwa/key')).toBeNull();
+    });
+
+    it('should not set isPwaKey for legacy pwa URLs', () => {
+      const result = parseUrl('/pwa/abc123def');
+      expect(result).toEqual({
+        role: 'pwa',
+        id: 'abc123def',
+      });
+      expect(result?.isPwaKey).toBeUndefined();
+    });
+
+    it('should not set isPwaKey for agent URLs', () => {
+      const result = parseUrl('/agent/abc123def');
+      expect(result?.isPwaKey).toBeUndefined();
+    });
+
+    it('should reject /agent/key/ paths', () => {
+      expect(parseUrl('/agent/key/abc123defghi')).toBeNull();
+    });
   });
 });

@@ -1,6 +1,6 @@
 import nacl from 'tweetnacl';
 import naclUtil from 'tweetnacl-util';
-import type { License } from './types.js';
+import type { License, Tombstone } from './types.js';
 
 const { encodeBase64, decodeBase64, encodeUTF8, decodeUTF8 } = naclUtil;
 
@@ -294,6 +294,99 @@ export function createLicense(
     ...license,
     signature,
   };
+}
+
+// ============================================================================
+// Tombstone Signing
+// ============================================================================
+
+/**
+ * Create a tombstone proving key rotation.
+ * Signs the message "rotated:{oldPublicKey}" with an Ed25519 signing key.
+ */
+export function createTombstone(
+  oldPublicKeyB64: string,
+  signingSecretKey: Uint8Array
+): Tombstone {
+  const message = `rotated:${oldPublicKeyB64}`;
+  const signature = sign(message, signingSecretKey);
+  return {
+    type: 'rotated',
+    oldPublicKey: oldPublicKeyB64,
+    signature,
+  };
+}
+
+/**
+ * Verify a tombstone's signature.
+ */
+export function verifyTombstone(
+  tombstone: Tombstone,
+  signingPublicKey: Uint8Array
+): boolean {
+  const message = `rotated:${tombstone.oldPublicKey}`;
+  return verify(message, tombstone.signature, signingPublicKey);
+}
+
+// ============================================================================
+// Sync Blob Encryption
+// ============================================================================
+
+/**
+ * Encrypt a sync blob for a recipient using sealed-box pattern.
+ * Uses the same ephemeral-key scheme as encryptDEK but without the
+ * 32-byte length restriction, so arbitrary-length plaintext is supported.
+ *
+ * Format: ephemeralPublicKey (32) + nonce (24) + ciphertext
+ */
+export function encryptSyncBlob(
+  plaintext: string,
+  recipientPublicKey: Uint8Array
+): string {
+  const data = decodeUTF8(plaintext);
+
+  const ephemeral = nacl.box.keyPair();
+  const nonce = nacl.randomBytes(nacl.box.nonceLength);
+
+  const encrypted = nacl.box(data, nonce, recipientPublicKey, ephemeral.secretKey);
+
+  if (!encrypted) {
+    throw new Error('Sync blob encryption failed');
+  }
+
+  const combined = new Uint8Array(
+    ephemeral.publicKey.length + nonce.length + encrypted.length
+  );
+  combined.set(ephemeral.publicKey);
+  combined.set(nonce, ephemeral.publicKey.length);
+  combined.set(encrypted, ephemeral.publicKey.length + nonce.length);
+
+  return encodeBase64(combined);
+}
+
+/**
+ * Decrypt a sync blob using the recipient's secret key.
+ *
+ * Expects the same format produced by encryptSyncBlob:
+ * ephemeralPublicKey (32) + nonce (24) + ciphertext
+ */
+export function decryptSyncBlob(
+  encrypted: string,
+  mySecretKey: Uint8Array
+): string {
+  const combined = decodeBase64(encrypted);
+
+  const ephemeralPublicKey = combined.slice(0, 32);
+  const nonce = combined.slice(32, 32 + nacl.box.nonceLength);
+  const ciphertext = combined.slice(32 + nacl.box.nonceLength);
+
+  const decrypted = nacl.box.open(ciphertext, nonce, ephemeralPublicKey, mySecretKey);
+
+  if (!decrypted) {
+    throw new Error('Sync blob decryption failed - invalid message or wrong key');
+  }
+
+  return encodeUTF8(decrypted);
 }
 
 // ============================================================================

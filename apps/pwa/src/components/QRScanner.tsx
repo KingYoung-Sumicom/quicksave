@@ -3,10 +3,11 @@ import { Html5Qrcode } from 'html5-qrcode';
 
 interface QRScannerProps {
   onScan: (agentId: string, publicKey: string) => void;
+  onPairingScan?: (publicKey: string) => void;
   onError?: (error: string) => void;
 }
 
-export function QRScanner({ onScan, onError }: QRScannerProps) {
+export function QRScanner({ onScan, onPairingScan, onError }: QRScannerProps) {
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const [shouldStart, setShouldStart] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
@@ -32,6 +33,18 @@ export function QRScanner({ onScan, onError }: QRScannerProps) {
         return;
       }
 
+      // Check for pairing URL format: ?pair=PUBLIC_KEY
+      const pairKey = url.searchParams.get('pair');
+      if (pairKey && onPairingScan) {
+        if (scannerRef.current?.isScanning) {
+          scannerRef.current.stop().catch(console.error);
+        }
+        setIsScanning(false);
+        setShouldStart(false);
+        onPairingScan(pairKey);
+        return;
+      }
+
       // Try to parse as JSON (alternative format)
       try {
         const data = JSON.parse(decodedText);
@@ -54,7 +67,7 @@ export function QRScanner({ onScan, onError }: QRScannerProps) {
       // Not a URL, try other formats
       setError('Invalid QR code format.');
     }
-  }, [onScan]);
+  }, [onScan, onPairingScan]);
 
   // Start scanner when shouldStart becomes true and element is mounted
   useEffect(() => {

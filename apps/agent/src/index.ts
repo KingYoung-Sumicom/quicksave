@@ -7,7 +7,7 @@ import { resolve, basename } from 'path';
 import { WebRTCConnection } from './connection/connection.js';
 import { MessageHandler } from './handlers/messageHandler.js';
 import { GitOperations } from './git/operations.js';
-import { getOrCreateConfig, getConfigPath } from './config.js';
+import { getOrCreateConfig, getConfigPath, rotateKeyPair } from './config.js';
 import type { Message, Repository } from '@sumicom/quicksave-shared';
 
 const DEFAULT_SIGNALING_SERVER = process.env.QUICKSAVE_SIGNALING_URL || 'wss://signal.quicksave.dev';
@@ -147,5 +147,23 @@ function displayConnectionInfo(agentId: string, publicKey: string, showQr: boole
   console.log('');
   console.log('Waiting for PWA connection...');
 }
+
+program
+  .command('rotate-keys')
+  .description('Generate a new keypair (invalidates all existing PWA connections)')
+  .action(() => {
+    try {
+      const config = rotateKeyPair();
+      console.log('\nKey pair rotated successfully.\n');
+      console.log(`  Agent ID:    ${config.agentId} (unchanged)`);
+      console.log(`  Public Key:  ${config.keyPair.publicKey} (NEW)\n`);
+      console.log('All existing PWA connections are now invalid.');
+      console.log('Re-scan the QR code on your trusted devices to reconnect.\n');
+      displayConnectionInfo(config.agentId, config.keyPair.publicKey, true);
+    } catch (err) {
+      console.error('Failed to rotate keys:', (err as Error).message);
+      process.exit(1);
+    }
+  });
 
 program.parse();

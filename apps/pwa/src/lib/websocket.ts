@@ -1,5 +1,4 @@
 import {
-  generateKeyPair,
   decodeBase64,
   encryptWithSharedSecret,
   decryptWithSharedSecret,
@@ -9,6 +8,7 @@ import {
   parseMessage,
   serializeMessage,
   verifyLicense,
+  generateKeyPair,
   type Message,
   type KeyPair,
   type License,
@@ -16,25 +16,46 @@ import {
 } from '@sumicom/quicksave-shared';
 
 export type ConnectionEventHandler = {
-  onConnected: (repoPath: string, isPro: boolean, availableRepos?: Repository[]) => void;
-  onDisconnected: () => void;
+  onConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[]) => void;
+  onDisconnected: (agentId?: string) => void;
   onReconnecting: (attempt: number, maxAttempts: number) => void;
   onMessage: (message: Message) => void;
   onError: (error: Error) => void;
 };
 
+/**
+ * Per-agent session state tracking key exchange, encryption, etc.
+ */
+interface AgentSession {
+  agentId: string;
+  agentPublicKey: Uint8Array;
+  sessionDEK: Uint8Array | null;
+  keyExchangeComplete: boolean;
+  keyPair: KeyPair; // ephemeral per session
+  keyExchangeRetries: number;
+  keyExchangeTimeout: ReturnType<typeof setTimeout> | null;
+}
+
+/**
+ * Routing envelope for messages sent through the signaling server.
+ */
+interface RoutedEnvelope {
+  from: string;
+  to: string;
+  payload: string;
+}
+
 export class WebSocketClient {
   private signalingServer: string;
-  private agentId: string;
-  private agentPublicKey: Uint8Array;
-  private keyPair: KeyPair;
-  // Session DEK for encryption
-  private sessionDEK: Uint8Array | null = null;
+  private identityPublicKey: string;
   private ws: WebSocket | null = null;
   private eventHandlers: ConnectionEventHandler;
-  private keyExchangeComplete = false;
 
-  // Auto-reconnect state
+  // Multi-agent session tracking
+  private sessions: Map<string, AgentSession> = new Map();
+  private activeAgentId: string | null = null;
+
+  // Auto-reconnect state (for the WebSocket connection itself)
   private autoReconnect = true;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
@@ -44,16 +65,17 @@ export class WebSocketClient {
   private isManualDisconnect = false;
   private wasConnected = false;
 
+  // Key exchange retry config
+  private static readonly MAX_KEY_EXCHANGE_RETRIES = 5;
+  private static readonly KEY_EXCHANGE_BASE_DELAY = 2000;
+
   constructor(
     signalingServer: string,
-    agentId: string,
-    agentPublicKey: string,
+    identityPublicKey: string,
     handlers: ConnectionEventHandler
   ) {
     this.signalingServer = signalingServer;
-    this.agentId = agentId;
-    this.agentPublicKey = decodeBase64(agentPublicKey);
-    this.keyPair = generateKeyPair();
+    this.identityPublicKey = identityPublicKey;
     this.eventHandlers = handlers;
   }
 
@@ -76,16 +98,20 @@ export class WebSocketClient {
     return new Response(stream).text();
   }
 
+  /**
+   * Connect the single persistent WebSocket to /pwa/key/{identityPublicKey}
+   */
   async connect(): Promise<void> {
-    // Connect to signaling server
-    const wsUrl = `${this.signalingServer}/pwa/${this.agentId}`;
+    const wsUrl = `${this.signalingServer}/pwa/key/${this.identityPublicKey}`;
     this.ws = new WebSocket(wsUrl);
 
     return new Promise((resolve, reject) => {
       if (!this.ws) return reject(new Error('WebSocket not initialized'));
 
       this.ws.onopen = () => {
-        console.log('Connected to signaling server');
+        console.log('Connected to signaling server (key-based)');
+        this.wasConnected = true;
+        this.reconnectAttempts = 0;
         resolve();
       };
 
@@ -106,10 +132,71 @@ export class WebSocketClient {
     });
   }
 
+  /**
+   * Start a new agent session. Creates the session state and initiates key exchange.
+   */
+  connectToAgent(agentId: string, publicKey: string): void {
+    // Clean up existing session for this agent if any
+    this.cleanupAgentSession(agentId);
+
+    const session: AgentSession = {
+      agentId,
+      agentPublicKey: decodeBase64(publicKey),
+      sessionDEK: null,
+      keyExchangeComplete: false,
+      keyPair: generateKeyPair(),
+      keyExchangeRetries: 0,
+      keyExchangeTimeout: null,
+    };
+
+    this.sessions.set(agentId, session);
+    this.activeAgentId = agentId;
+
+    // Immediately initiate key exchange with the agent
+    this.initiateKeyExchange(session);
+  }
+
+  /**
+   * Disconnect from a specific agent, cleaning up its session.
+   */
+  disconnectFromAgent(agentId: string): void {
+    this.cleanupAgentSession(agentId);
+    if (this.activeAgentId === agentId) {
+      this.activeAgentId = null;
+    }
+  }
+
+  /**
+   * Set the active agent that send() targets.
+   */
+  setActiveAgent(agentId: string): void {
+    if (this.sessions.has(agentId)) {
+      this.activeAgentId = agentId;
+    } else {
+      console.error(`No session for agent ${agentId}`);
+    }
+  }
+
+  /**
+   * Get the currently active agent ID.
+   */
+  getActiveAgentId(): string | null {
+    return this.activeAgentId;
+  }
+
+  // =========================================================================
+  // Message handling
+  // =========================================================================
+
   private async handleMessage(rawData: string): Promise<void> {
     try {
-      // Try to parse as JSON (signaling message or key exchange)
       const parsed = JSON.parse(rawData);
+
+      // Check if this is a routed message (has from/to/payload)
+      if (parsed.from && parsed.to && 'payload' in parsed) {
+        await this.handleRoutedMessage(parsed as RoutedEnvelope);
+        return;
+      }
 
       // Handle compressed signaling messages (z = zipped)
       if (parsed.z) {
@@ -125,22 +212,45 @@ export class WebSocketClient {
         return;
       }
 
-      // Handle key exchange or other JSON messages as data
-      await this.handleDataMessage(rawData);
-      return;
+      // Unrecognized JSON message - log and ignore
+      console.warn('Received unrecognized message:', parsed);
     } catch {
-      // Not JSON, treat as raw data (encrypted message)
+      // Not valid JSON - should not happen with routing, but log it
+      console.warn('Received non-JSON message on key-based connection');
+    }
+  }
+
+  /**
+   * Handle a routed message: extract the sender agent and process the payload.
+   */
+  private async handleRoutedMessage(envelope: RoutedEnvelope): Promise<void> {
+    // Extract sender agentId from "agent:{agentId}" format
+    const fromMatch = envelope.from.match(/^agent:(.+)$/);
+    if (!fromMatch) {
+      console.warn('Received routed message from unknown sender format:', envelope.from);
+      return;
     }
 
-    // Handle raw data message (encrypted data)
-    await this.handleDataMessage(rawData);
+    const agentId = fromMatch[1];
+    const session = this.sessions.get(agentId);
+
+    if (!session) {
+      console.warn(`Received message from unknown agent: ${agentId}`);
+      return;
+    }
+
+    // The payload is the actual data to process (key-exchange-ack, encrypted message, etc.)
+    await this.handleDataMessage(envelope.payload, session);
   }
 
   private async handleSignalingMessage(message: { type: string; payload?: unknown }): Promise<void> {
     switch (message.type) {
       case 'peer-connected':
-        console.log('Agent is online, initiating key exchange');
-        this.initiateKeyExchange();
+        // With key-based connections, we don't auto-initiate key exchange on peer-connected.
+        // Key exchange is initiated by connectToAgent(). However, if we have a session
+        // that hasn't completed key exchange yet, the agent may have just come online,
+        // so we can retry.
+        console.log('Peer connected signal received');
         break;
 
       case 'peer-offline':
@@ -153,33 +263,90 @@ export class WebSocketClient {
     }
   }
 
-  private initiateKeyExchange(): void {
-    // V2 protocol: generate session DEK and encrypt it for the Agent
-    this.sessionDEK = generateSessionDEK();
-    const encryptedDEK = encryptDEK(this.sessionDEK, this.agentPublicKey);
+  // =========================================================================
+  // Key exchange
+  // =========================================================================
 
-    this.sendRaw(
-      JSON.stringify({
-        type: 'key-exchange',
-        version: 2,
-        encryptedDEK,
-        timestamp: Date.now(),
-      })
-    );
+  private initiateKeyExchange(session: AgentSession): void {
+    // Clear any existing retry timeout
+    if (session.keyExchangeTimeout) {
+      clearTimeout(session.keyExchangeTimeout);
+      session.keyExchangeTimeout = null;
+    }
+
+    // V2 protocol: generate session DEK and encrypt it for the Agent
+    session.sessionDEK = generateSessionDEK();
+    const encryptedDEK = encryptDEK(session.sessionDEK, session.agentPublicKey);
+
+    const keyExchangePayload = JSON.stringify({
+      type: 'key-exchange',
+      version: 2,
+      encryptedDEK,
+      timestamp: Date.now(),
+    });
+
+    // Wrap in routing envelope
+    this.sendRouted(session.agentId, keyExchangePayload);
+
+    // Schedule retry with exponential backoff
+    this.scheduleKeyExchangeRetry(session);
   }
 
-  private async handleDataMessage(data: string): Promise<void> {
+  private scheduleKeyExchangeRetry(session: AgentSession): void {
+    if (session.keyExchangeComplete) return;
+    if (session.keyExchangeRetries >= WebSocketClient.MAX_KEY_EXCHANGE_RETRIES) {
+      this.eventHandlers.onError(
+        new Error(`Key exchange failed after ${WebSocketClient.MAX_KEY_EXCHANGE_RETRIES} attempts for agent ${session.agentId}`)
+      );
+      return;
+    }
+
+    const delay = WebSocketClient.KEY_EXCHANGE_BASE_DELAY * Math.pow(2, session.keyExchangeRetries);
+    session.keyExchangeRetries++;
+
+    session.keyExchangeTimeout = setTimeout(() => {
+      if (!session.keyExchangeComplete && this.sessions.has(session.agentId)) {
+        console.log(`Retrying key exchange for agent ${session.agentId} (attempt ${session.keyExchangeRetries})`);
+        // Regenerate DEK for retry
+        session.sessionDEK = generateSessionDEK();
+        const encryptedDEK = encryptDEK(session.sessionDEK, session.agentPublicKey);
+
+        const keyExchangePayload = JSON.stringify({
+          type: 'key-exchange',
+          version: 2,
+          encryptedDEK,
+          timestamp: Date.now(),
+        });
+
+        this.sendRouted(session.agentId, keyExchangePayload);
+        this.scheduleKeyExchangeRetry(session);
+      }
+    }, delay);
+  }
+
+  // =========================================================================
+  // Data message handling (per-session)
+  // =========================================================================
+
+  private async handleDataMessage(data: string, session: AgentSession): Promise<void> {
     try {
       // Handle key exchange (uncompressed JSON)
-      if (!this.keyExchangeComplete) {
+      if (!session.keyExchangeComplete) {
         try {
           const response = JSON.parse(data);
 
           // Agent acknowledges with key-exchange-ack
           if (response.type === 'key-exchange-ack' && response.version === 2) {
-            this.keyExchangeComplete = true;
-            console.log('Key exchange complete, connection encrypted');
-            this.requestHandshake();
+            session.keyExchangeComplete = true;
+
+            // Cancel any pending retry
+            if (session.keyExchangeTimeout) {
+              clearTimeout(session.keyExchangeTimeout);
+              session.keyExchangeTimeout = null;
+            }
+
+            console.log(`Key exchange complete with agent ${session.agentId}`);
+            this.requestHandshake(session);
             return;
           }
         } catch {
@@ -191,13 +358,12 @@ export class WebSocketClient {
 
       // Post key-exchange: messages are encrypted, then the plaintext was compressed before encryption
       // Decrypt first, then decompress
-      const encryptionKey = this.getEncryptionKey();
-      if (!encryptionKey) {
-        console.error('No encryption key available');
+      if (!session.sessionDEK) {
+        console.error('No encryption key available for session');
         return;
       }
 
-      const decrypted = decryptWithSharedSecret(data, encryptionKey);
+      const decrypted = decryptWithSharedSecret(data, session.sessionDEK);
       const decompressed = await this.decompress(decrypted);
       const message = parseMessage(decompressed);
 
@@ -205,9 +371,7 @@ export class WebSocketClient {
       if (message.type === 'handshake:ack') {
         const payload = message.payload as { repoPath: string; license?: License; availableRepos?: Repository[] };
         const isPro = payload.license ? verifyLicense(payload.license) : false;
-        this.wasConnected = true;
-        this.reconnectAttempts = 0;
-        this.eventHandlers.onConnected(payload.repoPath, isPro, payload.availableRepos);
+        this.eventHandlers.onConnected(session.agentId, payload.repoPath, isPro, payload.availableRepos);
         return;
       }
 
@@ -217,27 +381,44 @@ export class WebSocketClient {
     }
   }
 
-  /**
-   * Get the encryption key (session DEK)
-   */
-  private getEncryptionKey(): Uint8Array | null {
-    return this.sessionDEK;
-  }
+  // =========================================================================
+  // Sending messages
+  // =========================================================================
 
-  private requestHandshake(): void {
-    this.send({
+  private requestHandshake(session: AgentSession): void {
+    this.sendToAgent(session.agentId, {
       id: `handshake-${Date.now()}`,
       type: 'handshake',
       payload: {
-        publicKey: encodeBase64(this.keyPair.publicKey),
+        publicKey: encodeBase64(session.keyPair.publicKey),
       },
       timestamp: Date.now(),
     });
   }
 
+  /**
+   * Send a Message to the active agent. Encrypts with the active session's DEK
+   * and wraps in a routing envelope.
+   */
   send(message: Message): void {
-    const encryptionKey = this.getEncryptionKey();
-    if (!encryptionKey) {
+    if (!this.activeAgentId) {
+      console.error('No active agent set');
+      return;
+    }
+    this.sendToAgent(this.activeAgentId, message);
+  }
+
+  /**
+   * Send a Message to a specific agent by ID.
+   */
+  private sendToAgent(agentId: string, message: Message): void {
+    const session = this.sessions.get(agentId);
+    if (!session) {
+      console.error(`No session for agent ${agentId}`);
+      return;
+    }
+
+    if (!session.sessionDEK) {
       console.error('No encryption key available');
       return;
     }
@@ -245,9 +426,21 @@ export class WebSocketClient {
     // Compress before encryption for better compression ratio
     const serialized = serializeMessage(message);
     this.compress(serialized).then((compressed) => {
-      const encrypted = encryptWithSharedSecret(compressed, encryptionKey);
-      this.sendRaw(encrypted);
+      const encrypted = encryptWithSharedSecret(compressed, session.sessionDEK!);
+      this.sendRouted(agentId, encrypted);
     });
+  }
+
+  /**
+   * Send a raw payload wrapped in a routing envelope.
+   */
+  private sendRouted(agentId: string, payload: string): void {
+    const envelope: RoutedEnvelope = {
+      from: `pwa:${this.identityPublicKey}`,
+      to: `agent:${agentId}`,
+      payload,
+    };
+    this.sendRaw(JSON.stringify(envelope));
   }
 
   private sendRaw(data: string): void {
@@ -256,12 +449,14 @@ export class WebSocketClient {
     }
   }
 
-  private handleDisconnection(): void {
-    // Clean up current connection
-    this.cleanupConnection();
+  // =========================================================================
+  // Connection lifecycle
+  // =========================================================================
 
+  private handleDisconnection(): void {
     // Don't reconnect if this was a manual disconnect
     if (this.isManualDisconnect) {
+      this.cleanupAllSessions();
       this.eventHandlers.onDisconnected();
       return;
     }
@@ -270,6 +465,7 @@ export class WebSocketClient {
     if (this.wasConnected && this.autoReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
       this.scheduleReconnect();
     } else {
+      this.cleanupAllSessions();
       this.eventHandlers.onDisconnected();
     }
   }
@@ -295,10 +491,25 @@ export class WebSocketClient {
 
   private async attemptReconnect(): Promise<void> {
     try {
-      // Generate new key pair for fresh connection
-      this.keyPair = generateKeyPair();
+      // Reset session key exchange state — we need to re-exchange after reconnect
+      for (const session of this.sessions.values()) {
+        session.keyExchangeComplete = false;
+        session.sessionDEK = null;
+        session.keyExchangeRetries = 0;
+        session.keyPair = generateKeyPair();
+        if (session.keyExchangeTimeout) {
+          clearTimeout(session.keyExchangeTimeout);
+          session.keyExchangeTimeout = null;
+        }
+      }
+
       await this.connect();
-      // Reset reconnect state on successful connection
+
+      // Re-initiate key exchange for all active sessions
+      for (const session of this.sessions.values()) {
+        this.initiateKeyExchange(session);
+      }
+
       this.reconnectAttempts = 0;
     } catch (error) {
       console.error('Reconnection failed:', error);
@@ -306,21 +517,35 @@ export class WebSocketClient {
         this.scheduleReconnect();
       } else {
         this.eventHandlers.onError(new Error('Failed to reconnect after multiple attempts'));
+        this.cleanupAllSessions();
         this.eventHandlers.onDisconnected();
       }
     }
   }
 
-  private cleanupConnection(): void {
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+  private cleanupAgentSession(agentId: string): void {
+    const session = this.sessions.get(agentId);
+    if (session) {
+      if (session.keyExchangeTimeout) {
+        clearTimeout(session.keyExchangeTimeout);
+        session.keyExchangeTimeout = null;
+      }
+      session.sessionDEK = null;
+      session.keyExchangeComplete = false;
+      this.sessions.delete(agentId);
     }
-
-    this.sessionDEK = null;
-    this.keyExchangeComplete = false;
   }
 
+  private cleanupAllSessions(): void {
+    for (const agentId of this.sessions.keys()) {
+      this.cleanupAgentSession(agentId);
+    }
+    this.activeAgentId = null;
+  }
+
+  /**
+   * Close the WebSocket and clean up everything.
+   */
   disconnect(): void {
     this.isManualDisconnect = true;
     this.autoReconnect = false;
@@ -330,7 +555,13 @@ export class WebSocketClient {
       this.reconnectTimeout = null;
     }
 
-    this.cleanupConnection();
+    this.cleanupAllSessions();
+
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+
     this.eventHandlers.onDisconnected();
   }
 }

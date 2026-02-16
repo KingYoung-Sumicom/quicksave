@@ -2,6 +2,7 @@ import { createServer, IncomingMessage } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { RateLimiter } from './rateLimiter.js';
 import { ConnectionManager } from './connections.js';
+import { SyncStore } from './syncStore.js';
 import { parseUrl, sendMessage } from './utils.js';
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
@@ -14,6 +15,7 @@ const RATE_LIMIT_MAX_MESSAGES = 100; // Max messages per connection per minute
 
 const connections = new ConnectionManager();
 const rateLimiter = new RateLimiter(RATE_LIMIT_WINDOW, RATE_LIMIT_MAX_CONNECTIONS);
+const syncStore = new SyncStore();
 
 const server = createServer((req, res) => {
   // Health check endpoint
@@ -33,8 +35,84 @@ const server = createServer((req, res) => {
   // Stats endpoint (protected in production)
   if (req.url === '/stats') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(connections.getStats()));
+    res.end(JSON.stringify({
+      ...connections.getStats(),
+      syncStore: syncStore.stats,
+    }));
     return;
+  }
+
+  // Sync endpoints
+  const syncMatch = req.url?.match(/^\/sync\/([a-zA-Z0-9_-]{8,64})(\/tombstone)?$/);
+  if (syncMatch) {
+    const keyHash = syncMatch[1];
+    const isTombstoneRoute = !!syncMatch[2];
+
+    // GET /sync/:keyHash
+    if (req.method === 'GET' && !isTombstoneRoute) {
+      const entry = syncStore.get(keyHash);
+      if (!entry) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found' }));
+        return;
+      }
+      if (entry.type === 'tombstone') {
+        res.writeHead(410, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ type: 'tombstone', data: entry.data }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ type: 'blob', data: entry.data }));
+      return;
+    }
+
+    // PUT /sync/:keyHash or PUT /sync/:keyHash/tombstone
+    if (req.method === 'PUT') {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf-8');
+
+        if (isTombstoneRoute) {
+          // PUT /sync/:keyHash/tombstone
+          try {
+            syncStore.putTombstone(keyHash, body);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : 'Unknown error';
+            if (message.includes('tombstone')) {
+              res.writeHead(409, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Tombstone already exists' }));
+            } else {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: message }));
+            }
+          }
+        } else {
+          // PUT /sync/:keyHash
+          try {
+            syncStore.put(keyHash, body);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : 'Unknown error';
+            if (message.includes('tombstone')) {
+              const entry = syncStore.get(keyHash);
+              res.writeHead(410, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Tombstone exists', type: 'tombstone', data: entry?.data }));
+            } else if (message.includes('exceeds max size')) {
+              res.writeHead(413, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: message }));
+            } else {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: message }));
+            }
+          }
+        }
+      });
+      return;
+    }
   }
 
   res.writeHead(404);
@@ -47,7 +125,8 @@ const wss = new WebSocketServer({ server });
 interface ExtendedWebSocket extends WebSocket {
   isAlive: boolean;
   role?: 'agent' | 'pwa';
-  agentId?: string;
+  agentId?: string;   // for agents and legacy PWAs
+  pwaKey?: string;     // for new PWA connections by public key
   messageCount: number;
   lastMessageReset: number;
   ip: string;
@@ -79,50 +158,58 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     return;
   }
 
-  const { role, agentId } = parsed;
+  const { role, id } = parsed;
   extWs.role = role;
-  extWs.agentId = agentId;
   extWs.isAlive = true;
   extWs.messageCount = 0;
   extWs.lastMessageReset = Date.now();
 
-  console.log(`[CONNECT] ${role} connected for agent ${agentId} from ${ip}`);
+  if (parsed.isPwaKey) {
+    // New: PWA connecting by public key
+    extWs.pwaKey = id;
+    connections.addPwaByKey(id, extWs);
+    console.log(`[CONNECT] pwa (key) connected with key ${id} from ${ip}`);
+    // Key-based PWAs use routed messages, no implicit agent matching
+  } else if (role === 'agent') {
+    extWs.agentId = id;
+    console.log(`[CONNECT] ${role} connected for agent ${id} from ${ip}`);
 
-  if (role === 'agent') {
     // Check if agent ID is already in use
-    if (connections.hasAgent(agentId)) {
-      console.log(`[ERROR] Agent ID ${agentId} already in use`);
+    if (connections.hasAgent(id)) {
+      console.log(`[ERROR] Agent ID ${id} already in use`);
       sendMessage(extWs, { type: 'error', payload: { code: 'AGENT_ID_IN_USE', message: 'Agent ID already connected' } });
       ws.close(1008, 'Agent ID in use');
       return;
     }
 
-    connections.addAgent(agentId, extWs);
+    connections.addAgent(id, extWs);
 
     // Check if there's a waiting PWA
-    const waitingPwa = connections.getPwa(agentId);
+    const waitingPwa = connections.getPwa(id);
     if (waitingPwa) {
-      console.log(`[MATCH] Agent ${agentId} matched with waiting PWA`);
+      console.log(`[MATCH] Agent ${id} matched with waiting PWA`);
       sendMessage(extWs, { type: 'peer-connected' });
       sendMessage(waitingPwa, { type: 'peer-connected' });
     }
   } else {
-    // PWA connecting
-    connections.addPwa(agentId, extWs);
+    // Legacy PWA connecting
+    extWs.agentId = id;
+    connections.addPwa(id, extWs);
+    console.log(`[CONNECT] ${role} connected for agent ${id} from ${ip}`);
 
     // Check if agent is online
-    const agent = connections.getAgent(agentId);
+    const agent = connections.getAgent(id);
     if (agent) {
-      console.log(`[MATCH] PWA matched with agent ${agentId}`);
+      console.log(`[MATCH] PWA matched with agent ${id}`);
       sendMessage(agent, { type: 'peer-connected' });
       sendMessage(extWs, { type: 'peer-connected' });
     } else {
-      console.log(`[OFFLINE] Agent ${agentId} is offline`);
+      console.log(`[OFFLINE] Agent ${id} is offline`);
       sendMessage(extWs, { type: 'peer-offline' });
     }
   }
 
-  // Handle incoming messages - just relay to peer
+  // Handle incoming messages - routed or legacy relay
   ws.on('message', (data: Buffer) => {
     // Rate limit messages
     const now = Date.now();
@@ -133,18 +220,53 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     extWs.messageCount++;
 
     if (extWs.messageCount > RATE_LIMIT_MAX_MESSAGES) {
-      console.log(`[RATE_LIMIT] Message rate exceeded for ${role} ${agentId}`);
+      console.log(`[RATE_LIMIT] Message rate exceeded for ${extWs.role} ${extWs.agentId || extWs.pwaKey}`);
       sendMessage(extWs, { type: 'error', payload: { code: 'RATE_LIMITED', message: 'Too many messages' } });
       return;
     }
 
-    // Forward to peer without inspection
-    const peer = role === 'agent'
-      ? connections.getPwa(agentId)
-      : connections.getAgent(agentId);
+    // Try routed message handling first
+    try {
+      const msgStr = data.toString();
+      const msg = JSON.parse(msgStr);
 
-    if (peer && peer.readyState === WebSocket.OPEN) {
-      peer.send(data);
+      if (msg.from && msg.to) {
+        // Validate `from` matches sender identity
+        let expectedFrom: string | undefined;
+        if (extWs.role === 'agent' && extWs.agentId) {
+          expectedFrom = `agent:${extWs.agentId}`;
+        } else if (extWs.pwaKey) {
+          expectedFrom = `pwa:${extWs.pwaKey}`;
+        } else if (extWs.role === 'pwa' && extWs.agentId) {
+          expectedFrom = `pwa:${extWs.agentId}`;
+        }
+
+        if (expectedFrom && msg.from !== expectedFrom) {
+          sendMessage(extWs, { type: 'error', payload: { code: 'INVALID_FROM', message: 'From field does not match sender identity' } });
+          return;
+        }
+
+        // Route to target
+        const target = connections.getByAddress(msg.to);
+        if (target && target.readyState === WebSocket.OPEN) {
+          target.send(data);
+          connections.incrementMessagesRelayed();
+        }
+        return; // Don't fall through to legacy relay
+      }
+    } catch {
+      // Not valid JSON or no routing fields — fall through to legacy relay
+    }
+
+    // Legacy relay: forward to peer without inspection
+    if (extWs.agentId) {
+      const peer = extWs.role === 'agent'
+        ? connections.getPwa(extWs.agentId)
+        : connections.getAgent(extWs.agentId);
+
+      if (peer && peer.readyState === WebSocket.OPEN) {
+        peer.send(data);
+      }
     }
   });
 
@@ -155,19 +277,22 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
   // Handle close
   ws.on('close', () => {
-    console.log(`[DISCONNECT] ${role} disconnected for agent ${agentId}`);
-
-    if (role === 'agent') {
-      connections.removeAgent(agentId);
+    if (extWs.pwaKey) {
+      console.log(`[DISCONNECT] pwa (key) disconnected with key ${extWs.pwaKey}`);
+      connections.removePwaByKey(extWs.pwaKey);
+    } else if (extWs.role === 'agent' && extWs.agentId) {
+      console.log(`[DISCONNECT] ${extWs.role} disconnected for agent ${extWs.agentId}`);
+      connections.removeAgent(extWs.agentId);
       // Notify PWA that agent went offline
-      const pwa = connections.getPwa(agentId);
+      const pwa = connections.getPwa(extWs.agentId);
       if (pwa) {
         sendMessage(pwa, { type: 'peer-offline' });
       }
-    } else {
-      connections.removePwa(agentId);
+    } else if (extWs.role === 'pwa' && extWs.agentId) {
+      console.log(`[DISCONNECT] ${extWs.role} disconnected for agent ${extWs.agentId}`);
+      connections.removePwa(extWs.agentId);
       // Optionally notify agent that PWA disconnected
-      const agent = connections.getAgent(agentId);
+      const agent = connections.getAgent(extWs.agentId);
       if (agent) {
         sendMessage(agent, { type: 'bye' });
       }
@@ -176,7 +301,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
   // Handle errors
   ws.on('error', (error) => {
-    console.error(`[ERROR] WebSocket error for ${role} ${agentId}:`, error.message);
+    console.error(`[ERROR] WebSocket error for ${extWs.role} ${extWs.agentId || extWs.pwaKey}:`, error.message);
   });
 });
 
@@ -185,7 +310,7 @@ const heartbeatInterval = setInterval(() => {
   wss.clients.forEach((ws) => {
     const extWs = ws as ExtendedWebSocket;
     if (!extWs.isAlive) {
-      console.log(`[HEARTBEAT] Terminating dead connection: ${extWs.role} ${extWs.agentId}`);
+      console.log(`[HEARTBEAT] Terminating dead connection: ${extWs.role} ${extWs.agentId || extWs.pwaKey}`);
       return ws.terminate();
     }
     extWs.isAlive = false;
@@ -206,8 +331,9 @@ server.listen(PORT, () => {
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log('');
   console.log('WebSocket Endpoints:');
-  console.log(`  ws://localhost:${PORT}/agent/{agentId}  - Desktop Agent`);
-  console.log(`  ws://localhost:${PORT}/pwa/{agentId}    - PWA Client`);
+  console.log(`  ws://localhost:${PORT}/agent/{agentId}       - Desktop Agent`);
+  console.log(`  ws://localhost:${PORT}/pwa/{agentId}         - PWA Client (legacy)`);
+  console.log(`  ws://localhost:${PORT}/pwa/key/{publicKey}   - PWA Client (key-based)`);
   console.log('');
 });
 

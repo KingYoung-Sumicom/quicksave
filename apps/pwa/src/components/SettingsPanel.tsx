@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { exportMasterSecret, importMasterSecret, saveApiKey as saveApiKeyToStorage, hasApiKey, getApiKey } from '../lib/secureStorage';
 import { useMachineStore } from '../stores/machineStore';
 import type { Machine } from '../stores/machineStore';
+import { DevicePairingSection } from './DevicePairingSection';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -103,7 +104,7 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent }: Settings
         backup.apiKey = apiKeyValue;
       }
       if (machines.length > 0) {
-        backup.machines = machines;
+        backup.machines = machines.map(({ isPro: _, ...rest }) => rest);
       }
       const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -419,6 +420,12 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent }: Settings
               </div>
             )}
           </div>
+
+          {/* Divider */}
+          <div className="border-t border-slate-700" />
+
+          {/* Section 3: Device Sync */}
+          <DevicePairingSection />
         </div>
       </div>
 

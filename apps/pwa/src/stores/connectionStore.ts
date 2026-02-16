@@ -5,7 +5,6 @@ interface ConnectionStore {
   // State
   state: ConnectionState;
   agentId: string | null;
-  agentPublicKey: string | null;
   signalingServer: string;
   repoPath: string | null;
   pendingRepoPath: string | null; // Repo to switch to after connecting
@@ -17,7 +16,7 @@ interface ConnectionStore {
   maxReconnectAttempts: number | null;
 
   // Actions
-  setConnecting: (agentId: string, publicKey: string) => void;
+  setConnecting: (agentId: string) => void;
   setSignaling: () => void;
   setConnected: (repoPath: string, isPro: boolean, availableRepos?: Repository[]) => void;
   setRepoPath: (repoPath: string) => void;
@@ -48,7 +47,6 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
   // Initial state
   state: 'disconnected',
   agentId: null,
-  agentPublicKey: null,
   signalingServer: DEFAULT_SIGNALING_SERVER,
   repoPath: null,
   pendingRepoPath: null,
@@ -60,11 +58,10 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
   maxReconnectAttempts: null,
 
   // Actions
-  setConnecting: (agentId, publicKey) =>
+  setConnecting: (agentId) =>
     set({
       state: 'connecting',
       agentId,
-      agentPublicKey: publicKey,
       error: null,
     }),
 
@@ -129,7 +126,6 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
     set({
       state: 'disconnected',
       agentId: null,
-      agentPublicKey: null,
       repoPath: null,
       pendingRepoPath: null,
       availableRepos: [],

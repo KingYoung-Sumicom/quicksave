@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import nacl from 'tweetnacl';
 import {
   generateKeyPair,
   generateSigningKeyPair,
@@ -17,6 +18,10 @@ import {
   generateAgentId,
   encodeBase64,
   decodeBase64,
+  createTombstone,
+  verifyTombstone,
+  encryptSyncBlob,
+  decryptSyncBlob,
 } from './crypto.js';
 
 describe('Key Generation', () => {
@@ -333,5 +338,56 @@ describe('Base64 Encoding Utilities', () => {
     const decoded = decodeBase64(encoded);
 
     expect(decoded).toEqual(original);
+  });
+});
+
+describe('tombstone signing', () => {
+  it('should create and verify a valid tombstone', () => {
+    const signingKeyPair = generateSigningKeyPair();
+    const identityKeyPair = generateKeyPair();
+    const publicKeyB64 = encodeBase64(identityKeyPair.publicKey);
+
+    const tombstone = createTombstone(publicKeyB64, signingKeyPair.secretKey);
+
+    expect(tombstone.type).toBe('rotated');
+    expect(tombstone.oldPublicKey).toBe(publicKeyB64);
+    expect(verifyTombstone(tombstone, signingKeyPair.publicKey)).toBe(true);
+  });
+
+  it('should reject a tombstone with wrong signing key', () => {
+    const signingKeyPair = generateSigningKeyPair();
+    const otherKeyPair = generateSigningKeyPair();
+    const publicKeyB64 = encodeBase64(generateKeyPair().publicKey);
+
+    const tombstone = createTombstone(publicKeyB64, signingKeyPair.secretKey);
+
+    expect(verifyTombstone(tombstone, otherKeyPair.publicKey)).toBe(false);
+  });
+});
+
+describe('sync blob encryption', () => {
+  it('should encrypt and decrypt a sync blob', () => {
+    const recipientKeyPair = generateKeyPair();
+    const plaintext = JSON.stringify({
+      version: 2,
+      masterSecret: encodeBase64(nacl.randomBytes(32)),
+      machines: [],
+      exportedAt: new Date().toISOString(),
+    });
+
+    const encrypted = encryptSyncBlob(plaintext, recipientKeyPair.publicKey);
+    const decrypted = decryptSyncBlob(encrypted, recipientKeyPair.secretKey);
+
+    expect(decrypted).toBe(plaintext);
+  });
+
+  it('should fail to decrypt with wrong key', () => {
+    const recipientKeyPair = generateKeyPair();
+    const otherKeyPair = generateKeyPair();
+    const plaintext = 'secret data';
+
+    const encrypted = encryptSyncBlob(plaintext, recipientKeyPair.publicKey);
+
+    expect(() => decryptSyncBlob(encrypted, otherKeyPair.secretKey)).toThrow();
   });
 });

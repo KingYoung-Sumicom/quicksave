@@ -1,8 +1,9 @@
 import { WebSocket } from 'ws';
 
-interface ParsedUrl {
+export interface ParsedUrl {
   role: 'agent' | 'pwa';
-  agentId: string;
+  id: string; // agentId for agents, publicKey for new-style PWAs
+  isPwaKey?: boolean; // true if connected as /pwa/key/{publicKey}
 }
 
 interface SignalingMessage {
@@ -12,9 +13,28 @@ interface SignalingMessage {
 
 /**
  * Parse WebSocket connection URL
- * Expected format: /agent/{agentId} or /pwa/{agentId}
+ * Expected formats:
+ *   /agent/{agentId}        - Agent connection (legacy)
+ *   /pwa/{agentId}          - PWA connection (legacy)
+ *   /pwa/key/{publicKey}    - PWA connection by public key (new)
  */
 export function parseUrl(url: string): ParsedUrl | null {
+  // Try new /pwa/key/{publicKey} format first
+  // publicKey can contain alphanumeric, _, -, +, /, =
+  const keyMatch = url.match(/^\/pwa\/key\/([a-zA-Z0-9_\-+/=]+)$/);
+  if (keyMatch) {
+    const publicKey = keyMatch[1];
+    if (publicKey.length < 8 || publicKey.length > 512) {
+      return null;
+    }
+    return {
+      role: 'pwa',
+      id: publicKey,
+      isPwaKey: true,
+    };
+  }
+
+  // Legacy /agent/{id} or /pwa/{id} format
   const match = url.match(/^\/(agent|pwa)\/([a-zA-Z0-9_-]+)$/);
   if (!match) {
     return null;
@@ -29,7 +49,7 @@ export function parseUrl(url: string): ParsedUrl | null {
 
   return {
     role: role as 'agent' | 'pwa',
-    agentId,
+    id: agentId,
   };
 }
 

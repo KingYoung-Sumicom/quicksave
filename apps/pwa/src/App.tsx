@@ -3,6 +3,7 @@ import { HashRouter, Routes, Route, useNavigate, useLocation, useParams } from '
 import { useConnectionStore } from './stores/connectionStore';
 import { useGitStore } from './stores/gitStore';
 import { useMachineStore } from './stores/machineStore';
+import { useIdentityStore } from './stores/identityStore';
 import { useGitOperations } from './hooks/useGitOperations';
 import { WebSocketClient } from './lib/websocket';
 import { ConnectionSetup } from './components/ConnectionSetup';
@@ -11,7 +12,8 @@ import { ConnectingPage } from './components/ConnectingPage';
 import { StatusBar } from './components/StatusBar';
 import { RepoView } from './components/RepoView';
 import { RepoSwitcher } from './components/RepoSwitcher';
-import { getApiKey } from './lib/secureStorage';
+import { getApiKey, saveApiKey as saveApiKeyToStorage, exportMasterSecret, importMasterSecret } from './lib/secureStorage';
+import { SyncClient } from './lib/syncClient';
 
 function AppContent() {
   const clientRef = useRef<WebSocketClient | null>(null);
@@ -37,7 +39,8 @@ function AppContent() {
   } = useConnectionStore();
 
   const { status, reset: resetGit, setCurrentRepoPath } = useGitStore();
-  const { machines, recordConnection } = useMachineStore();
+  const { machines, recordConnection, overwriteMachines } = useMachineStore();
+  const { initialize: initIdentity, publicKey: identityPublicKey, pairedDevices, isSource, getSecretKey, clearAll: clearIdentity, removePairedDevice, initialized: identityInitialized } = useIdentityStore();
   const agentIdRef = useRef<string | null>(null);
 
   const {
@@ -61,66 +64,176 @@ function AppContent() {
 
   const [showRepoSwitcher, setShowRepoSwitcher] = useState(false);
 
+  // Initialize identity store (persistent X25519 keypair) on startup
+  useEffect(() => {
+    initIdentity();
+  }, [initIdentity]);
+
+  const syncClient = useMemo(() => new SyncClient(signalingServer), [signalingServer]);
+
+  // Check mailbox on startup
+  useEffect(() => {
+    if (!identityPublicKey || !identityInitialized) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const secretKey = await getSecretKey();
+        if (!secretKey || cancelled) return;
+
+        const result = await syncClient.fetchMyMailbox(identityPublicKey, secretKey);
+        if (cancelled) return;
+
+        if (result?.type === 'blob') {
+          overwriteMachines(result.payload.machines);
+          if (result.payload.masterSecret) {
+            await importMasterSecret(result.payload.masterSecret);
+          }
+          if (result.payload.apiKey) {
+            await saveApiKeyToStorage(result.payload.apiKey);
+          }
+        } else if (result?.type === 'tombstone') {
+          // Key has been rotated - wipe everything
+          console.warn('Tombstone detected - wiping local data');
+          await clearIdentity();
+        }
+      } catch (error) {
+        console.error('Failed to check sync mailbox:', error);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [identityPublicKey, identityInitialized]);
+
+  // Push to paired devices when machines change (if source)
+  useEffect(() => {
+    if (!isSource || pairedDevices.length === 0 || !identityPublicKey) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const masterSecret = await exportMasterSecret();
+        const apiKey = await getApiKey();
+        const payload = {
+          version: 2 as const,
+          masterSecret,
+          apiKey: apiKey || undefined,
+          machines,
+          exportedAt: new Date().toISOString(),
+        };
+
+        for (const device of pairedDevices) {
+          if (cancelled) return;
+          try {
+            const result = await syncClient.pushToDevice(payload, device.publicKey);
+            if (result === 'tombstone') {
+              removePairedDevice(device.publicKey);
+            }
+          } catch (error) {
+            console.error(`Failed to sync to device ${device.publicKey.slice(0, 8)}:`, error);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to push sync:', error);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [machines, isSource, pairedDevices, identityPublicKey]);
+
+  // Stable callback refs to avoid recreating the client on every render
+  const handlersRef = useRef({
+    setConnected,
+    setCurrentRepoPath,
+    recordConnection,
+    navigate,
+    setDisconnected,
+    setReconnecting,
+    handleResponse,
+    setError,
+  });
+  useEffect(() => {
+    handlersRef.current = {
+      setConnected,
+      setCurrentRepoPath,
+      recordConnection,
+      navigate,
+      setDisconnected,
+      setReconnecting,
+      handleResponse,
+      setError,
+    };
+  });
+
+  // Create WebSocketClient once when identity is ready
+  useEffect(() => {
+    if (!identityPublicKey || clientRef.current) return;
+
+    const client = new WebSocketClient(signalingServer, identityPublicKey, {
+      onConnected: (agentId, path, pro, availableRepos) => {
+        agentIdRef.current = agentId;
+        handlersRef.current.setConnected(path, pro, availableRepos);
+        // Set repo path in git store to load persisted commit draft
+        handlersRef.current.setCurrentRepoPath(path);
+        // Record connection in machine store with all available repos
+        const repoPaths = availableRepos?.map((r) => r.path);
+        handlersRef.current.recordConnection(agentId, path, pro, repoPaths);
+        // Navigate to repo view
+        handlersRef.current.navigate(`/repo/${agentId}`, { replace: true });
+      },
+      onDisconnected: () => {
+        handlersRef.current.setDisconnected();
+      },
+      onReconnecting: (attempt, maxAttempts) => {
+        handlersRef.current.setReconnecting(attempt, maxAttempts);
+      },
+      onMessage: (message) => {
+        handlersRef.current.handleResponse(message);
+      },
+      onError: (error) => {
+        handlersRef.current.setError(error.message);
+      },
+    });
+
+    clientRef.current = client;
+
+    client.connect().catch((error) => {
+      console.error('Failed to connect WebSocket:', error);
+    });
+
+    return () => {
+      client.disconnect();
+      clientRef.current = null;
+    };
+  }, [identityPublicKey, signalingServer]);
+
   const handleConnect = useCallback(
     async (newAgentId: string, publicKey: string) => {
       // Skip if already connecting to this agent
-      if (agentIdRef.current === newAgentId && clientRef.current) {
+      if (agentIdRef.current === newAgentId && clientRef.current?.getActiveAgentId() === newAgentId) {
         return;
-      }
-
-      // Clean up existing connection
-      if (clientRef.current) {
-        clientRef.current.disconnect();
-        clientRef.current = null;
       }
 
       // Track the current agent ID
       agentIdRef.current = newAgentId;
-      setConnecting(newAgentId, publicKey);
+      setConnecting(newAgentId);
 
-      const client = new WebSocketClient(signalingServer, newAgentId, publicKey, {
-        onConnected: (path, pro, availableRepos) => {
-          setConnected(path, pro, availableRepos);
-          // Set repo path in git store to load persisted commit draft
-          setCurrentRepoPath(path);
-          // Record connection in machine store with all available repos
-          const repoPaths = availableRepos?.map((r) => r.path);
-          recordConnection(newAgentId, path, pro, repoPaths);
-          // Navigate to repo view
-          navigate(`/repo/${newAgentId}`, { replace: true });
-        },
-        onDisconnected: () => {
-          setDisconnected();
-        },
-        onReconnecting: (attempt, maxAttempts) => {
-          setReconnecting(attempt, maxAttempts);
-        },
-        onMessage: (message) => {
-          handleResponse(message);
-        },
-        onError: (error) => {
-          setError(error.message);
-        },
-      });
-
-      clientRef.current = client;
-
-      try {
-        setSignaling();
-        await client.connect();
-      } catch (error) {
-        setError(error instanceof Error ? error.message : 'Connection failed');
+      if (!clientRef.current) {
+        setError('WebSocket not connected yet');
+        return;
       }
+
+      setSignaling();
+      clientRef.current.connectToAgent(newAgentId, publicKey);
     },
-    [signalingServer, navigate, setConnecting, setSignaling, setConnected, setCurrentRepoPath, setDisconnected, setReconnecting, setError, handleResponse, recordConnection]
+    [setConnecting, setSignaling, setError]
   );
 
   const handleDisconnect = useCallback(() => {
     // Mark as intentional disconnect to prevent auto-reconnect
     intentionalDisconnectRef.current = true;
-    if (clientRef.current) {
-      clientRef.current.disconnect();
-      clientRef.current = null;
+    if (clientRef.current && agentIdRef.current) {
+      clientRef.current.disconnectFromAgent(agentIdRef.current);
     }
     agentIdRef.current = null;
     reset();
@@ -133,9 +246,8 @@ function AppContent() {
   const handleSwitchMachine = useCallback((targetAgentId: string) => {
     // Set flag to prevent the repo redirect effect from overriding our navigation
     switchingMachineRef.current = true;
-    if (clientRef.current) {
-      clientRef.current.disconnect();
-      clientRef.current = null;
+    if (clientRef.current && agentIdRef.current) {
+      clientRef.current.disconnectFromAgent(agentIdRef.current);
     }
     agentIdRef.current = null;
     reset();

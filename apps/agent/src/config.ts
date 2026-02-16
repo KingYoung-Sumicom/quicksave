@@ -95,3 +95,17 @@ export function setAnthropicApiKey(apiKey: string): void {
 export function hasAnthropicApiKey(): boolean {
   return !!loadConfig()?.anthropicApiKey;
 }
+
+/**
+ * Rotate the agent's key pair (keeps the same agentId).
+ * This invalidates all existing PWA connections.
+ */
+export function rotateKeyPair(): AgentConfig {
+  const config = loadConfig();
+  if (!config) {
+    throw new Error('No config found. Run the agent first to generate a config.');
+  }
+  config.keyPair = generateAgentKeyPair();
+  saveConfig(config);
+  return config;
+}

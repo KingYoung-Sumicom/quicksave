@@ -29,6 +29,7 @@ interface MachineStore {
   recordConnection: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: string[]) => void;
   addKnownRepo: (agentId: string, repoPath: string) => void;
   syncKnownRepos: (agentId: string, repoPaths: string[]) => void;
+  overwriteMachines: (machines: Machine[]) => void;
   getMachine: (agentId: string) => Machine | undefined;
   hasMachine: (agentId: string) => boolean;
 }
@@ -109,6 +110,8 @@ export const useMachineStore = create<MachineStore>()(
             return { ...m, knownRepos: allRepos };
           }),
         })),
+
+      overwriteMachines: (machines) => set({ machines }),
 
       getMachine: (agentId) => get().machines.find((m) => m.agentId === agentId),
 

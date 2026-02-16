@@ -295,7 +295,9 @@ export type SignalingMessageType =
   | 'peer-connected'
   | 'peer-offline'
   | 'data'
-  | 'bye';
+  | 'bye'
+  | 'sync-updated'
+  | 'error';
 
 export interface SignalingMessage {
   type: SignalingMessageType;
@@ -329,6 +331,37 @@ export interface KeyExchangeV2Ack {
  * Key exchange message type
  */
 export type KeyExchangeMessage = KeyExchangeV2;
+
+// ============================================================================
+// Routed Message Envelope
+// ============================================================================
+
+export interface RoutedMessage {
+  from: string;   // "pwa:{publicKey}" or "agent:{agentId}"
+  to: string;     // "pwa:{publicKey}" or "agent:{agentId}"
+  payload: string; // opaque string (encrypted or JSON)
+}
+
+// ============================================================================
+// Sync Types
+// ============================================================================
+
+export interface SyncBlob {
+  encryptedData: string; // sealed-box encrypted backup v2 JSON
+  timestamp: number;
+}
+
+export interface Tombstone {
+  type: 'rotated';
+  oldPublicKey: string;  // base64 X25519 public key
+  signature: string;     // Ed25519 sign("rotated:{oldPublicKey}", oldSigningSecretKey)
+}
+
+export interface PairedDevice {
+  publicKey: string;
+  label: string;
+  pairedAt: number;
+}
 
 // ============================================================================
 // Connection Types

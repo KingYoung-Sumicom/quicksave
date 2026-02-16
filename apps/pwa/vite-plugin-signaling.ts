@@ -55,13 +55,14 @@ class RateLimiter {
 class ConnectionManager {
   private agents: Map<string, WebSocket> = new Map();
   private pwas: Map<string, WebSocket> = new Map();
+  private pwasByKey: Map<string, WebSocket> = new Map();
 
   get agentCount(): number {
     return this.agents.size;
   }
 
   get pwaCount(): number {
-    return this.pwas.size;
+    return this.pwas.size + this.pwasByKey.size;
   }
 
   hasAgent(agentId: string): boolean {
@@ -91,17 +92,59 @@ class ConnectionManager {
   removePwa(agentId: string): void {
     this.pwas.delete(agentId);
   }
+
+  addPwaByKey(publicKey: string, ws: WebSocket): void {
+    this.pwasByKey.set(publicKey, ws);
+  }
+
+  removePwaByKey(publicKey: string): void {
+    this.pwasByKey.delete(publicKey);
+  }
+
+  getPwaByKey(publicKey: string): WebSocket | undefined {
+    return this.pwasByKey.get(publicKey);
+  }
+
+  /**
+   * Look up a WebSocket by address string.
+   * Address format: "agent:{id}" or "pwa:{id}"
+   * For "pwa:{id}", checks pwasByKey first, then legacy pwas map.
+   */
+  getByAddress(address: string): WebSocket | undefined {
+    const colonIdx = address.indexOf(':');
+    if (colonIdx === -1) return undefined;
+    const role = address.slice(0, colonIdx);
+    const id = address.slice(colonIdx + 1);
+    if (role === 'agent') return this.getAgent(id);
+    if (role === 'pwa') return this.getPwaByKey(id) || this.getPwa(id);
+    return undefined;
+  }
 }
 
 // Utils
-function parseUrl(url: string): { role: 'agent' | 'pwa'; agentId: string } | null {
+interface ParsedUrl {
+  role: 'agent' | 'pwa';
+  id: string;
+  isPwaKey?: boolean;
+}
+
+function parseUrl(url: string): ParsedUrl | null {
+  // New: /pwa/key/{publicKey} - base64 public key (may contain +, /, =, _, -)
+  const pwaKeyMatch = url.match(/^\/pwa\/key\/([a-zA-Z0-9+/=_-]+)$/);
+  if (pwaKeyMatch) {
+    const publicKey = pwaKeyMatch[1];
+    if (publicKey.length < 8 || publicKey.length > 512) return null;
+    return { role: 'pwa', id: publicKey, isPwaKey: true };
+  }
+
+  // Legacy: /agent/{agentId} or /pwa/{agentId}
   const match = url.match(/^\/(agent|pwa)\/([a-zA-Z0-9_-]+)$/);
   if (!match) return null;
 
   const [, role, agentId] = match;
   if (agentId.length < 8 || agentId.length > 64) return null;
 
-  return { role: role as 'agent' | 'pwa', agentId };
+  return { role: role as 'agent' | 'pwa', id: agentId };
 }
 
 function sendMessage(ws: WebSocket, message: { type: string; payload?: unknown }): void {
@@ -114,9 +157,34 @@ interface ExtendedWebSocket extends WebSocket {
   isAlive: boolean;
   role?: 'agent' | 'pwa';
   agentId?: string;
+  pwaKey?: string;  // for key-based PWA connections (/pwa/key/{publicKey})
   messageCount: number;
   lastMessageReset: number;
   ip: string;
+}
+
+// In-memory sync store for dev
+class SyncStore {
+  private entries = new Map<string, { data: string; isTombstone: boolean }>();
+
+  get(keyHash: string): { type: 'blob' | 'tombstone'; data: string } | null {
+    const entry = this.entries.get(keyHash);
+    if (!entry) return null;
+    return { type: entry.isTombstone ? 'tombstone' : 'blob', data: entry.data };
+  }
+
+  put(keyHash: string, data: string): void {
+    const existing = this.entries.get(keyHash);
+    if (existing?.isTombstone) throw new Error('Cannot write to key with tombstone');
+    if (data.length > 8192) throw new Error('Blob exceeds max size (8192 bytes)');
+    this.entries.set(keyHash, { data, isTombstone: false });
+  }
+
+  putTombstone(keyHash: string, data: string): void {
+    const existing = this.entries.get(keyHash);
+    if (existing?.isTombstone) throw new Error('Tombstone already exists for this key');
+    this.entries.set(keyHash, { data, isTombstone: true });
+  }
 }
 
 export function signalingServerPlugin(): Plugin {
@@ -124,6 +192,7 @@ export function signalingServerPlugin(): Plugin {
   let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   let connections: ConnectionManager | null = null;
   let rateLimiter: RateLimiter | null = null;
+  let syncStore: SyncStore | null = null;
 
   return {
     name: 'vite-plugin-signaling',
@@ -132,6 +201,77 @@ export function signalingServerPlugin(): Plugin {
     configureServer(viteServer: ViteDevServer) {
       connections = new ConnectionManager();
       rateLimiter = new RateLimiter(RATE_LIMIT_WINDOW, RATE_LIMIT_MAX_CONNECTIONS);
+      syncStore = new SyncStore();
+
+      // Add sync HTTP endpoints as Vite middleware
+      viteServer.middlewares.use((req, res, next) => {
+        const syncMatch = req.url?.match(/^\/sync\/([a-zA-Z0-9_-]{8,64})(\/tombstone)?$/);
+        if (!syncMatch) return next();
+
+        const keyHash = syncMatch[1];
+        const isTombstoneRoute = !!syncMatch[2];
+
+        // GET /sync/:keyHash
+        if (req.method === 'GET' && !isTombstoneRoute) {
+          const entry = syncStore!.get(keyHash);
+          if (!entry) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Not found' }));
+            return;
+          }
+          if (entry.type === 'tombstone') {
+            res.writeHead(410, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ type: 'tombstone', data: entry.data }));
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ type: 'blob', data: entry.data }));
+          return;
+        }
+
+        // PUT /sync/:keyHash or PUT /sync/:keyHash/tombstone
+        if (req.method === 'PUT') {
+          const chunks: Buffer[] = [];
+          req.on('data', (chunk: Buffer) => chunks.push(chunk));
+          req.on('end', () => {
+            const body = Buffer.concat(chunks).toString('utf-8');
+
+            if (isTombstoneRoute) {
+              try {
+                syncStore!.putTombstone(keyHash, body);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true }));
+              } catch (err: unknown) {
+                const message = err instanceof Error ? err.message : 'Unknown error';
+                res.writeHead(409, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: message }));
+              }
+            } else {
+              try {
+                syncStore!.put(keyHash, body);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true }));
+              } catch (err: unknown) {
+                const message = err instanceof Error ? err.message : 'Unknown error';
+                if (message.includes('tombstone')) {
+                  const entry = syncStore!.get(keyHash);
+                  res.writeHead(410, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ error: 'Tombstone exists', type: 'tombstone', data: entry?.data }));
+                } else if (message.includes('max size')) {
+                  res.writeHead(413, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ error: message }));
+                } else {
+                  res.writeHead(500, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ error: message }));
+                }
+              }
+            }
+          });
+          return;
+        }
+
+        next();
+      });
 
       // Wait for httpServer to be available
       viteServer.httpServer?.once('listening', () => {
@@ -172,44 +312,54 @@ export function signalingServerPlugin(): Plugin {
             return;
           }
 
-          const { role, agentId } = parsed;
+          const { role, id } = parsed;
           extWs.role = role;
-          extWs.agentId = agentId;
           extWs.isAlive = true;
           extWs.messageCount = 0;
           extWs.lastMessageReset = Date.now();
 
-          console.log(`[signaling] ${role} connected for agent ${agentId}`);
+          if (parsed.isPwaKey) {
+            // New: PWA connecting by public key
+            extWs.pwaKey = id;
+            connections!.addPwaByKey(id, extWs);
+            console.log(`[signaling] pwa (key) connected with key ${id}`);
+            // Key-based PWAs use routed messages, no implicit agent matching
+          } else if (role === 'agent') {
+            extWs.agentId = id;
+            console.log(`[signaling] ${role} connected for agent ${id}`);
 
-          if (role === 'agent') {
-            if (connections!.hasAgent(agentId)) {
+            if (connections!.hasAgent(id)) {
               sendMessage(extWs, { type: 'error', payload: { code: 'AGENT_ID_IN_USE', message: 'Agent ID already connected' } });
               ws.close(1008, 'Agent ID in use');
               return;
             }
 
-            connections!.addAgent(agentId, extWs);
+            connections!.addAgent(id, extWs);
 
-            const waitingPwa = connections!.getPwa(agentId);
+            const waitingPwa = connections!.getPwa(id);
             if (waitingPwa) {
-              console.log(`[signaling] Agent ${agentId} matched with waiting PWA`);
+              console.log(`[signaling] Agent ${id} matched with waiting PWA`);
               sendMessage(extWs, { type: 'peer-connected' });
               sendMessage(waitingPwa, { type: 'peer-connected' });
             }
           } else {
-            connections!.addPwa(agentId, extWs);
+            // Legacy PWA connecting by agentId
+            extWs.agentId = id;
+            connections!.addPwa(id, extWs);
+            console.log(`[signaling] ${role} connected for agent ${id}`);
 
-            const agent = connections!.getAgent(agentId);
+            const agent = connections!.getAgent(id);
             if (agent) {
-              console.log(`[signaling] PWA matched with agent ${agentId}`);
+              console.log(`[signaling] PWA matched with agent ${id}`);
               sendMessage(agent, { type: 'peer-connected' });
               sendMessage(extWs, { type: 'peer-connected' });
             } else {
-              console.log(`[signaling] Agent ${agentId} is offline`);
+              console.log(`[signaling] Agent ${id} is offline`);
               sendMessage(extWs, { type: 'peer-offline' });
             }
           }
 
+          // Handle incoming messages - routed or legacy relay
           ws.on('message', (data: Buffer) => {
             const now = Date.now();
             if (now - extWs.lastMessageReset > RATE_LIMIT_WINDOW) {
@@ -223,12 +373,47 @@ export function signalingServerPlugin(): Plugin {
               return;
             }
 
-            const peer = role === 'agent'
-              ? connections!.getPwa(agentId)
-              : connections!.getAgent(agentId);
+            // Try routed message handling first
+            try {
+              const msgStr = data.toString();
+              const msg = JSON.parse(msgStr);
 
-            if (peer && peer.readyState === WebSocket.OPEN) {
-              peer.send(data);
+              if (msg.from && msg.to) {
+                // Validate `from` matches sender identity
+                let expectedFrom: string | undefined;
+                if (extWs.role === 'agent' && extWs.agentId) {
+                  expectedFrom = `agent:${extWs.agentId}`;
+                } else if (extWs.pwaKey) {
+                  expectedFrom = `pwa:${extWs.pwaKey}`;
+                } else if (extWs.role === 'pwa' && extWs.agentId) {
+                  expectedFrom = `pwa:${extWs.agentId}`;
+                }
+
+                if (expectedFrom && msg.from !== expectedFrom) {
+                  sendMessage(extWs, { type: 'error', payload: { code: 'INVALID_FROM', message: 'From field does not match sender identity' } });
+                  return;
+                }
+
+                // Route to target
+                const target = connections!.getByAddress(msg.to);
+                if (target && target.readyState === WebSocket.OPEN) {
+                  target.send(data);
+                }
+                return; // Don't fall through to legacy relay
+              }
+            } catch {
+              // Not valid JSON or no routing fields - fall through to legacy relay
+            }
+
+            // Legacy relay: forward to peer without inspection
+            if (extWs.agentId) {
+              const peer = extWs.role === 'agent'
+                ? connections!.getPwa(extWs.agentId)
+                : connections!.getAgent(extWs.agentId);
+
+              if (peer && peer.readyState === WebSocket.OPEN) {
+                peer.send(data);
+              }
             }
           });
 
@@ -237,17 +422,20 @@ export function signalingServerPlugin(): Plugin {
           });
 
           ws.on('close', () => {
-            console.log(`[signaling] ${role} disconnected for agent ${agentId}`);
-
-            if (role === 'agent') {
-              connections!.removeAgent(agentId);
-              const pwa = connections!.getPwa(agentId);
+            if (extWs.pwaKey) {
+              console.log(`[signaling] pwa (key) disconnected with key ${extWs.pwaKey}`);
+              connections!.removePwaByKey(extWs.pwaKey);
+            } else if (extWs.role === 'agent' && extWs.agentId) {
+              console.log(`[signaling] ${extWs.role} disconnected for agent ${extWs.agentId}`);
+              connections!.removeAgent(extWs.agentId);
+              const pwa = connections!.getPwa(extWs.agentId);
               if (pwa) {
                 sendMessage(pwa, { type: 'peer-offline' });
               }
-            } else {
-              connections!.removePwa(agentId);
-              const agent = connections!.getAgent(agentId);
+            } else if (extWs.role === 'pwa' && extWs.agentId) {
+              console.log(`[signaling] ${extWs.role} disconnected for agent ${extWs.agentId}`);
+              connections!.removePwa(extWs.agentId);
+              const agent = connections!.getAgent(extWs.agentId);
               if (agent) {
                 sendMessage(agent, { type: 'bye' });
               }
@@ -255,7 +443,7 @@ export function signalingServerPlugin(): Plugin {
           });
 
           ws.on('error', (error) => {
-            console.error(`[signaling] WebSocket error for ${role} ${agentId}:`, error.message);
+            console.error(`[signaling] WebSocket error for ${extWs.role} ${extWs.agentId || extWs.pwaKey}:`, error.message);
           });
         });
 
@@ -263,7 +451,7 @@ export function signalingServerPlugin(): Plugin {
           wss!.clients.forEach((ws) => {
             const extWs = ws as ExtendedWebSocket;
             if (!extWs.isAlive) {
-              console.log(`[signaling] Terminating dead connection: ${extWs.role} ${extWs.agentId}`);
+              console.log(`[signaling] Terminating dead connection: ${extWs.role} ${extWs.agentId || extWs.pwaKey}`);
               return ws.terminate();
             }
             extWs.isAlive = false;

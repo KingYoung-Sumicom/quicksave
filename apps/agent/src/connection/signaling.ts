@@ -58,6 +58,11 @@ export class SignalingClient extends EventEmitter {
               this.handleMessage(parsed as SignalingMessage);
               return;
             }
+            // Check for routed message envelope (from key-based PWA connections)
+            if (parsed.from && parsed.to && 'payload' in parsed) {
+              this.emit('data', parsed.payload);
+              return;
+            }
             // Other JSON messages (like key-exchange) are data messages
             this.emit('data', data.toString());
           } catch {
