@@ -37,9 +37,10 @@ jobs:
         run: pnpm test
 
       - name: Publish @sumicom/quicksave-shared
-        run: npm publish --provenance --access public
-        working-directory: packages/shared
+        run: pnpm --filter @sumicom/quicksave-shared publish --provenance --access public --no-git-checks
+
+      - name: Wait for npm registry propagation
+        run: sleep 30
 
       - name: Publish @sumicom/quicksave
-        run: npm publish --provenance --access public
-        working-directory: apps/agent
+        run: pnpm --filter @sumicom/quicksave publish --provenance --access public --no-git-checks
