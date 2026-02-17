@@ -17,7 +17,24 @@ const connections = new ConnectionManager();
 const rateLimiter = new RateLimiter(RATE_LIMIT_WINDOW, RATE_LIMIT_MAX_CONNECTIONS);
 const syncStore = new SyncStore();
 
+// CORS headers for cross-origin requests from PWA
+const setCorsHeaders = (res: import('http').ServerResponse) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+};
+
 const server = createServer((req, res) => {
+  // Set CORS headers on all responses
+  setCorsHeaders(res);
+
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   // Health check endpoint
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
