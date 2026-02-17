@@ -1,6 +1,6 @@
 {
   "name": "quicksave-signaling",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "description": "Quicksave signaling server for WebRTC connection establishment",
   "type": "module",
   "main": "dist/index.js",
