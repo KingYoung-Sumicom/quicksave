@@ -102,7 +102,7 @@ export class WebSocketClient {
    * Connect the single persistent WebSocket to /pwa/key/{identityPublicKey}
    */
   async connect(): Promise<void> {
-    const wsUrl = `${this.signalingServer}/pwa/key/${this.identityPublicKey}`;
+    const wsUrl = `${this.signalingServer}/pwa/key/${encodeURIComponent(this.identityPublicKey)}`;
     this.ws = new WebSocket(wsUrl);
 
     return new Promise((resolve, reject) => {

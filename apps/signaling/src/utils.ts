@@ -20,10 +20,10 @@ interface SignalingMessage {
  */
 export function parseUrl(url: string): ParsedUrl | null {
   // Try new /pwa/key/{publicKey} format first
-  // publicKey can contain alphanumeric, _, -, +, /, =
-  const keyMatch = url.match(/^\/pwa\/key\/([a-zA-Z0-9_\-+/=]+)$/);
+  // publicKey is URL-encoded; raw base64 chars (+, /, =) become %XX
+  const keyMatch = url.match(/^\/pwa\/key\/([a-zA-Z0-9_\-%.]+)$/);
   if (keyMatch) {
-    const publicKey = keyMatch[1];
+    const publicKey = decodeURIComponent(keyMatch[1]);
     if (publicKey.length < 8 || publicKey.length > 512) {
       return null;
     }

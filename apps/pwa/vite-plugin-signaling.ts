@@ -129,10 +129,10 @@ interface ParsedUrl {
 }
 
 function parseUrl(url: string): ParsedUrl | null {
-  // New: /pwa/key/{publicKey} - base64 public key (may contain +, /, =, _, -)
-  const pwaKeyMatch = url.match(/^\/pwa\/key\/([a-zA-Z0-9+/=_-]+)$/);
+  // New: /pwa/key/{publicKey} - URL-encoded base64 public key
+  const pwaKeyMatch = url.match(/^\/pwa\/key\/([a-zA-Z0-9_\-%.]+)$/);
   if (pwaKeyMatch) {
-    const publicKey = pwaKeyMatch[1];
+    const publicKey = decodeURIComponent(pwaKeyMatch[1]);
     if (publicKey.length < 8 || publicKey.length > 512) return null;
     return { role: 'pwa', id: publicKey, isPwaKey: true };
   }

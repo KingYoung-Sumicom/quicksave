@@ -93,9 +93,10 @@ describe('parseUrl', () => {
       });
     });
 
-    it('should accept base64 characters including +, /, =', () => {
+    it('should accept URL-encoded base64 characters including +, /, =', () => {
       const key = 'abc+def/ghi=jkl';
-      const result = parseUrl(`/pwa/key/${key}`);
+      const encodedKey = encodeURIComponent(key); // abc%2Bdef%2Fghi%3Djkl
+      const result = parseUrl(`/pwa/key/${encodedKey}`);
       expect(result).toEqual({
         role: 'pwa',
         id: key,
@@ -114,9 +115,10 @@ describe('parseUrl', () => {
       });
     });
 
-    it('should accept base64 key with padding', () => {
+    it('should accept URL-encoded base64 key with padding', () => {
       const key = 'SGVsbG9Xb3JsZA==';
-      const result = parseUrl(`/pwa/key/${key}`);
+      const encodedKey = encodeURIComponent(key); // SGVsbG9Xb3JsZA%3D%3D
+      const result = parseUrl(`/pwa/key/${encodedKey}`);
       expect(result).toEqual({
         role: 'pwa',
         id: key,
