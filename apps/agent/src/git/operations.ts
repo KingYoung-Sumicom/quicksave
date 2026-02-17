@@ -93,9 +93,6 @@ export class GitOperations {
     const isUntracked = status.not_added.includes(path);
     const isNewFile = status.created.includes(path);
 
-    console.log(`getDiff: path="${path}", isUntracked=${isUntracked}, isNewFile=${isNewFile}`);
-    console.log(`getDiff: not_added=[${status.not_added.join(', ')}]`);
-
     // For untracked files, show the full content as additions
     if (isUntracked) {
       return this.getNewFileDiff(path);
