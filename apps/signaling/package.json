@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc && esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=dist/bundle.cjs --format=cjs",
+    "build": "tsc && node build.mjs",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/bundle.cjs",
     "typecheck": "tsc --noEmit",

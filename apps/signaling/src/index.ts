@@ -5,6 +5,9 @@ import { ConnectionManager } from './connections.js';
 import { SyncStore } from './syncStore.js';
 import { parseUrl, sendMessage } from './utils.js';
 
+// Injected by esbuild at build time from package.json
+declare const VERSION: string;
+
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 
@@ -342,7 +345,7 @@ wss.on('close', () => {
 
 // Start server
 server.listen(PORT, () => {
-  console.log('Quicksave Signaling Server v0.1.0');
+  console.log(`Quicksave Signaling Server v${VERSION}`);
   console.log('='.repeat(50));
   console.log(`Listening on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
