@@ -17,6 +17,7 @@ import { SyncClient } from './lib/syncClient';
 
 function AppContent() {
   const clientRef = useRef<WebSocketClient | null>(null);
+  const [clientReady, setClientReady] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const intentionalDisconnectRef = useRef(false);
@@ -173,12 +174,9 @@ function AppContent() {
       onConnected: (agentId, path, pro, availableRepos) => {
         agentIdRef.current = agentId;
         handlersRef.current.setConnected(path, pro, availableRepos);
-        // Set repo path in git store to load persisted commit draft
         handlersRef.current.setCurrentRepoPath(path);
-        // Record connection in machine store with all available repos
         const repoPaths = availableRepos?.map((r) => r.path);
         handlersRef.current.recordConnection(agentId, path, pro, repoPaths);
-        // Navigate to repo view
         handlersRef.current.navigate(`/repo/${agentId}`, { replace: true });
       },
       onDisconnected: () => {
@@ -196,14 +194,17 @@ function AppContent() {
     });
 
     clientRef.current = client;
+    setClientReady(true);
 
     client.connect().catch((error) => {
       console.error('Failed to connect WebSocket:', error);
+      handlersRef.current.setError('Failed to connect to signaling server');
     });
 
     return () => {
       client.disconnect();
       clientRef.current = null;
+      setClientReady(false);
     };
   }, [identityPublicKey, signalingServer]);
 
@@ -214,7 +215,6 @@ function AppContent() {
         return;
       }
 
-      // Track the current agent ID
       agentIdRef.current = newAgentId;
       setConnecting(newAgentId);
 
@@ -230,7 +230,6 @@ function AppContent() {
   );
 
   const handleDisconnect = useCallback(() => {
-    // Mark as intentional disconnect to prevent auto-reconnect
     intentionalDisconnectRef.current = true;
     if (clientRef.current && agentIdRef.current) {
       clientRef.current.disconnectFromAgent(agentIdRef.current);
@@ -238,13 +237,11 @@ function AppContent() {
     agentIdRef.current = null;
     reset();
     resetGit();
-    // Navigate to home
     navigate('/', { replace: true });
   }, [reset, resetGit, navigate]);
 
   const switchingMachineRef = useRef(false);
   const handleSwitchMachine = useCallback((targetAgentId: string) => {
-    // Set flag to prevent the repo redirect effect from overriding our navigation
     switchingMachineRef.current = true;
     if (clientRef.current && agentIdRef.current) {
       clientRef.current.disconnectFromAgent(agentIdRef.current);
@@ -411,7 +408,7 @@ function AppContent() {
     <div className="min-h-screen flex flex-col bg-slate-900 text-slate-100">
       <Routes>
         <Route path="/" element={homeElement} />
-        <Route path="/connect/:agentId" element={<ConnectingPageWrapper onConnect={handleConnect} />} />
+        <Route path="/connect/:agentId" element={<ConnectingPageWrapper onConnect={handleConnect} clientReady={clientReady} />} />
         <Route path="/repo/:agentId" element={repoElement} />
       </Routes>
     </div>
@@ -419,9 +416,9 @@ function AppContent() {
 }
 
 // Wrapper to force ConnectingPage remount when agentId changes
-function ConnectingPageWrapper({ onConnect }: { onConnect: (agentId: string, publicKey: string) => void }) {
+function ConnectingPageWrapper({ onConnect, clientReady }: { onConnect: (agentId: string, publicKey: string) => void; clientReady: boolean }) {
   const { agentId } = useParams<{ agentId: string }>();
-  return <ConnectingPage key={agentId} onConnect={onConnect} />;
+  return <ConnectingPage key={agentId} onConnect={onConnect} clientReady={clientReady} />;
 }
 
 function App() {

@@ -2,21 +2,29 @@ import { useEffect, useRef } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useMachineStore } from '../stores/machineStore';
+import { useIdentityStore } from '../stores/identityStore';
 
 interface ConnectingPageProps {
   onConnect: (agentId: string, publicKey: string) => void;
+  clientReady: boolean;
 }
 
-export function ConnectingPage({ onConnect }: ConnectingPageProps) {
+export function ConnectingPage({ onConnect, clientReady }: ConnectingPageProps) {
   const { agentId } = useParams<{ agentId: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { state, error, setPendingRepoPath } = useConnectionStore();
   const { getMachine, addMachine } = useMachineStore();
+  const { initialized: identityInitialized } = useIdentityStore();
   const hasInitiated = useRef(false);
 
-  // Handle connection on mount - only run once
+  // Handle connection on mount - only run once identity and client are ready
   useEffect(() => {
+    // Wait for identity to be initialized and WebSocket client to be created
+    if (!identityInitialized || !clientReady) {
+      return;
+    }
+
     // Skip if already initiated
     if (hasInitiated.current) {
       return;
@@ -72,7 +80,7 @@ export function ConnectingPage({ onConnect }: ConnectingPageProps) {
       hasInitiated.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only run on mount
+  }, [identityInitialized, clientReady]); // Re-run when identity and client become ready
 
   const handleBack = () => {
     navigate('/', { replace: true });

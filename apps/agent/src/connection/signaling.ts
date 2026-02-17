@@ -24,6 +24,8 @@ export class SignalingClient extends EventEmitter {
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
   private isConnected = false;
+  // Address of the current peer (e.g. "pwa:BASE64_KEY") for routed replies
+  private peerAddress: string | null = null;
 
   constructor(signalingServer: string, agentId: string) {
     super();
@@ -60,6 +62,8 @@ export class SignalingClient extends EventEmitter {
             }
             // Check for routed message envelope (from key-based PWA connections)
             if (parsed.from && parsed.to && 'payload' in parsed) {
+              // Track the sender so replies are routed back
+              this.peerAddress = parsed.from;
               this.emit('data', parsed.payload);
               return;
             }
@@ -73,6 +77,7 @@ export class SignalingClient extends EventEmitter {
 
         this.ws.on('close', () => {
           this.isConnected = false;
+          this.peerAddress = null;
           this.emit('disconnected');
           this.attemptReconnect();
         });
@@ -95,6 +100,7 @@ export class SignalingClient extends EventEmitter {
         this.emit('peer-connected');
         break;
       case 'peer-offline':
+        this.peerAddress = null;
         this.emit('peer-disconnected');
         break;
       case 'data':
@@ -103,6 +109,7 @@ export class SignalingClient extends EventEmitter {
         }
         break;
       case 'bye':
+        this.peerAddress = null;
         this.emit('peer-disconnected');
         break;
     }
@@ -113,9 +120,19 @@ export class SignalingClient extends EventEmitter {
   }
 
   sendData(data: string): void {
-    // Send raw data to peer through signaling server
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(data);
+      if (this.peerAddress) {
+        // Wrap in routing envelope for key-based PWA connections
+        const envelope = JSON.stringify({
+          from: `agent:${this.agentId}`,
+          to: this.peerAddress,
+          payload: data,
+        });
+        this.ws.send(envelope);
+      } else {
+        // Legacy: send raw data to peer through signaling server
+        this.ws.send(data);
+      }
     }
   }
 
@@ -173,5 +190,9 @@ export class SignalingClient extends EventEmitter {
 
   getConnectionUrl(): string {
     return this.url;
+  }
+
+  getPeerAddress(): string | null {
+    return this.peerAddress;
   }
 }

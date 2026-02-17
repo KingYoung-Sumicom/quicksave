@@ -64,6 +64,11 @@ export class WebRTCConnection extends EventEmitter {
       this.handlePeerDisconnected();
     });
 
+    // Reset encryption state when WebSocket reconnects (before peer-disconnected)
+    this.signaling.on('disconnected', () => {
+      this.sessionDEK = null;
+    });
+
     this.signaling.on('error', (error: Error) => {
       this.emit('error', error);
     });
@@ -79,20 +84,22 @@ export class WebRTCConnection extends EventEmitter {
 
   private async handleDataMessage(data: string): Promise<void> {
     try {
-      // Handle key exchange (uncompressed JSON) vs encrypted messages (base64 compressed)
-      if (!this.isKeyExchangeComplete()) {
-        // Try to parse as key exchange message
-        try {
-          const keyExchange = JSON.parse(data);
-          if (keyExchange.type === 'key-exchange') {
-            await this.handleKeyExchange(keyExchange);
-            return;
-          }
-        } catch {
-          // Not a key exchange message, ignore until key exchange completes
-          console.error('Received message before key exchange');
+      // Always check for key-exchange messages first
+      // Always accept new key-exchange (PWA may have refreshed with new DEK)
+      try {
+        const parsed = JSON.parse(data);
+        if (parsed.type === 'key-exchange') {
+          await this.handleKeyExchange(parsed);
           return;
         }
+      } catch {
+        // Not JSON - continue to encrypted message handling
+      }
+
+      // If key exchange hasn't completed, we can't decrypt yet
+      if (!this.isKeyExchangeComplete()) {
+        console.error('Received non-key-exchange message before key exchange');
+        return;
       }
 
       // Post key-exchange: messages are encrypted, then the plaintext was compressed before encryption
@@ -149,7 +156,8 @@ export class WebRTCConnection extends EventEmitter {
     // Decrypt the session DEK
     try {
       this.sessionDEK = decryptDEK(message.encryptedDEK, this.keyPair.secretKey);
-      console.log('Key exchange complete, connection encrypted');
+      const peerKey = this.signaling.getPeerAddress()?.replace('pwa:', '') || 'unknown';
+      console.log(`Key exchange complete with ${peerKey.slice(0, 12)}..., connection encrypted`);
 
       // Mark as connected
       if (!this.isConnected) {
@@ -158,12 +166,11 @@ export class WebRTCConnection extends EventEmitter {
       }
 
       // V2: Send acknowledgment
-      this.sendRaw(
-        JSON.stringify({
-          type: 'key-exchange-ack',
-          version: 2,
-        })
-      );
+      const ack = JSON.stringify({
+        type: 'key-exchange-ack',
+        version: 2,
+      });
+      this.sendRaw(ack);
     } catch (error) {
       console.error('Failed to decrypt session DEK:', error);
       this.emit('error', new Error('Failed to decrypt session DEK'));

@@ -54,6 +54,7 @@ export class WebSocketClient {
   // Multi-agent session tracking
   private sessions: Map<string, AgentSession> = new Map();
   private activeAgentId: string | null = null;
+  private connectPromise: Promise<void> | null = null;
 
   // Auto-reconnect state (for the WebSocket connection itself)
   private autoReconnect = true;
@@ -105,7 +106,7 @@ export class WebSocketClient {
     const wsUrl = `${this.signalingServer}/pwa/key/${encodeURIComponent(this.identityPublicKey)}`;
     this.ws = new WebSocket(wsUrl);
 
-    return new Promise((resolve, reject) => {
+    this.connectPromise = new Promise((resolve, reject) => {
       if (!this.ws) return reject(new Error('WebSocket not initialized'));
 
       this.ws.onopen = () => {
@@ -130,6 +131,8 @@ export class WebSocketClient {
         this.handleDisconnection();
       };
     });
+
+    return this.connectPromise;
   }
 
   /**
@@ -152,8 +155,15 @@ export class WebSocketClient {
     this.sessions.set(agentId, session);
     this.activeAgentId = agentId;
 
-    // Immediately initiate key exchange with the agent
-    this.initiateKeyExchange(session);
+    // Wait for WebSocket to be open before initiating key exchange
+    const startKeyExchange = () => this.initiateKeyExchange(session);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      startKeyExchange();
+    } else if (this.connectPromise) {
+      this.connectPromise.then(startKeyExchange).catch(() => {
+        // WebSocket failed to connect — error already handled by connect()
+      });
+    }
   }
 
   /**
