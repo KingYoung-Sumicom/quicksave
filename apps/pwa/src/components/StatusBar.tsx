@@ -10,7 +10,6 @@ interface StatusBarProps {
   ahead?: number;
   behind?: number;
   repoPath?: string | null;
-  isPro: boolean;
   onDisconnect: () => void;
   onSwitchMachine?: (agentId: string) => void;
   onSwitchRepo?: () => void;
@@ -22,7 +21,6 @@ export function StatusBar({
   ahead = 0,
   behind = 0,
   repoPath,
-  isPro,
   onDisconnect,
   onSwitchMachine,
   onSwitchRepo,
@@ -251,19 +249,6 @@ function ConnectionIndicator({ state }: { state: ConnectionState }) {
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
         </svg>
       )}
-    </div>
-  );
-}
-
-function AdBanner() {
-  return (
-    <div className="px-4 py-2 bg-slate-700/30 border-t border-slate-700">
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-slate-400">
-          Support Quicksave - <a href="/upgrade" className="text-blue-400 hover:underline">Remove ads for $15</a>
-        </span>
-        <span className="text-xs text-slate-500">Ad</span>
-      </div>
     </div>
   );
 }

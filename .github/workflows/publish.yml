@@ -20,9 +20,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Upgrade npm for OIDC support
+        run: npm install -g npm@latest
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -34,7 +37,9 @@ jobs:
         run: pnpm test
 
       - name: Publish @sumicom/quicksave-shared
-        run: pnpm --filter @sumicom/quicksave-shared publish --provenance --access public --no-git-checks
+        run: npm publish --provenance --access public
+        working-directory: packages/shared
 
       - name: Publish @sumicom/quicksave
-        run: pnpm --filter @sumicom/quicksave publish --provenance --access public --no-git-checks
+        run: npm publish --provenance --access public
+        working-directory: apps/agent

@@ -379,7 +379,6 @@ function AppContent() {
           ahead={status?.ahead}
           behind={status?.behind}
           repoPath={repoPath}
-          isPro={isPro}
           onDisconnect={handleDisconnect}
           onSwitchMachine={handleSwitchMachine}
           onSwitchRepo={() => setShowRepoSwitcher(true)}
