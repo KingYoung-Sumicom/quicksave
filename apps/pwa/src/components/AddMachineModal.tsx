@@ -21,9 +21,12 @@ export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
   const { addMachine, hasMachine } = useMachineStore();
   const { state, error } = useConnectionStore();
 
-  const handleQRScan = (scannedAgentId: string, scannedPublicKey: string) => {
+  const handleQRScan = (scannedAgentId: string, scannedPublicKey: string, name?: string) => {
     setAgentId(scannedAgentId);
     setPublicKey(scannedPublicKey);
+    if (name && !nickname) {
+      setNickname(name);
+    }
     setMode('manual');
   };
 

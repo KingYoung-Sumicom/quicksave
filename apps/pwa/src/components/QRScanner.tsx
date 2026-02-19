@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
 
 interface QRScannerProps {
-  onScan: (agentId: string, publicKey: string) => void;
+  onScan: (agentId: string, publicKey: string, name?: string) => void;
   onPairingScan?: (publicKey: string) => void;
   onError?: (error: string) => void;
 }
@@ -23,13 +23,14 @@ export function QRScanner({ onScan, onPairingScan, onError }: QRScannerProps) {
       const pk = url.searchParams.get('pk');
 
       if (id && pk) {
+        const name = url.searchParams.get('name') || undefined;
         // Stop scanning before calling callback
         if (scannerRef.current?.isScanning) {
           scannerRef.current.stop().catch(console.error);
         }
         setIsScanning(false);
         setShouldStart(false);
-        onScan(id, pk);
+        onScan(id, pk, name);
         return;
       }
 

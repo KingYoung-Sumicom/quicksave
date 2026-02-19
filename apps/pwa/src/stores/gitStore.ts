@@ -338,8 +338,10 @@ export const useGitStore = create<GitStore>((set, get) => ({
   toggleFileSelection: (key, source) => {
     const { selectedFiles, selectionSource } = get();
 
-    // If selecting from a different source, clear existing selection
-    if (selectionSource !== null && selectionSource !== source) {
+    // Only clear selection when mixing staged with non-staged (different actions)
+    // Allow mixing unstaged + untracked (both stage)
+    const isMixingStaged = (selectionSource === 'staged') !== (source === 'staged');
+    if (selectionSource !== null && isMixingStaged) {
       set({
         selectedFiles: new Set([key]),
         selectedLines: new Map(),
@@ -363,8 +365,9 @@ export const useGitStore = create<GitStore>((set, get) => ({
   toggleLineSelection: (key, line, source) => {
     const { selectedLines, selectionSource, selectedFiles } = get();
 
-    // If selecting from a different source, clear existing selection
-    if (selectionSource !== null && selectionSource !== source) {
+    // Only clear selection when mixing staged with non-staged (different actions)
+    const isMixingStaged = (selectionSource === 'staged') !== (source === 'staged');
+    if (selectionSource !== null && isMixingStaged) {
       const newLines = new Map<SelectionKey, LineSelection[]>();
       newLines.set(key, [line]);
       set({
@@ -406,8 +409,9 @@ export const useGitStore = create<GitStore>((set, get) => ({
   selectAllFiles: (keys, source) => {
     const { selectedFiles, selectionSource } = get();
 
-    // If selecting from a different source, just select the new files
-    if (selectionSource !== null && selectionSource !== source) {
+    // Only clear selection when mixing staged with non-staged (different actions)
+    const isMixingStaged = (selectionSource === 'staged') !== (source === 'staged');
+    if (selectionSource !== null && isMixingStaged) {
       set({
         selectedFiles: new Set(keys),
         selectedLines: new Map(),

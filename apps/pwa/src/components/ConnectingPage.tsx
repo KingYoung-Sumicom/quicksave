@@ -6,10 +6,11 @@ import { useIdentityStore } from '../stores/identityStore';
 
 interface ConnectingPageProps {
   onConnect: (agentId: string, publicKey: string) => void;
+  onAbort: () => void;
   clientReady: boolean;
 }
 
-export function ConnectingPage({ onConnect, clientReady }: ConnectingPageProps) {
+export function ConnectingPage({ onConnect, onAbort, clientReady }: ConnectingPageProps) {
   const { agentId } = useParams<{ agentId: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -41,6 +42,7 @@ export function ConnectingPage({ onConnect, clientReady }: ConnectingPageProps) 
 
     // Check if we have connection params in URL (for QR code / link sharing)
     const publicKeyParam = searchParams.get('pk');
+    const nameParam = searchParams.get('name');
     const repoParam = searchParams.get('repo');
 
     // Set pending repo path if specified in URL (do this before checking connection state)
@@ -59,7 +61,7 @@ export function ConnectingPage({ onConnect, clientReady }: ConnectingPageProps) 
         addMachine({
           agentId,
           publicKey: publicKeyParam,
-          nickname: `Machine ${agentId.slice(0, 8)}`,
+          nickname: nameParam || `Machine ${agentId.slice(0, 8)}`,
           icon: '💻',
         });
       }
@@ -83,6 +85,7 @@ export function ConnectingPage({ onConnect, clientReady }: ConnectingPageProps) 
   }, [identityInitialized, clientReady]); // Re-run when identity and client become ready
 
   const handleBack = () => {
+    onAbort();
     navigate('/', { replace: true });
   };
 

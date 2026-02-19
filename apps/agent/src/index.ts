@@ -4,6 +4,7 @@ import { Command } from 'commander';
 // @ts-ignore - no types for qrcode-terminal
 import qrcode from 'qrcode-terminal';
 import { resolve, basename } from 'path';
+import { hostname } from 'os';
 import { WebRTCConnection } from './connection/connection.js';
 import { MessageHandler } from './handlers/messageHandler.js';
 import { GitOperations } from './git/operations.js';
@@ -132,7 +133,7 @@ function displayConnectionInfo(agentId: string, publicKey: string, showQr: boole
   console.log('');
 
   // Create connection URL for PWA
-  const connectionUrl = `https://quicksave.dev/connect?id=${agentId}&pk=${encodeURIComponent(publicKey)}`;
+  const connectionUrl = `https://quicksave.dev/connect?id=${agentId}&pk=${encodeURIComponent(publicKey)}&name=${encodeURIComponent(hostname())}`;
 
   console.log('Connection URL:');
   console.log(`  ${connectionUrl}`);

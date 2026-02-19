@@ -229,16 +229,20 @@ function AppContent() {
     [setConnecting, setSignaling, setError]
   );
 
-  const handleDisconnect = useCallback(() => {
-    intentionalDisconnectRef.current = true;
+  const handleAbortConnection = useCallback(() => {
     if (clientRef.current && agentIdRef.current) {
       clientRef.current.disconnectFromAgent(agentIdRef.current);
     }
     agentIdRef.current = null;
     reset();
     resetGit();
+  }, [reset, resetGit]);
+
+  const handleDisconnect = useCallback(() => {
+    intentionalDisconnectRef.current = true;
+    handleAbortConnection();
     navigate('/', { replace: true });
-  }, [reset, resetGit, navigate]);
+  }, [handleAbortConnection, navigate]);
 
   const switchingMachineRef = useRef(false);
   const handleSwitchMachine = useCallback((targetAgentId: string) => {
@@ -408,7 +412,7 @@ function AppContent() {
     <div className="min-h-screen flex flex-col bg-slate-900 text-slate-100">
       <Routes>
         <Route path="/" element={homeElement} />
-        <Route path="/connect/:agentId" element={<ConnectingPageWrapper onConnect={handleConnect} clientReady={clientReady} />} />
+        <Route path="/connect/:agentId" element={<ConnectingPageWrapper onConnect={handleConnect} onAbort={handleAbortConnection} clientReady={clientReady} />} />
         <Route path="/repo/:agentId" element={repoElement} />
       </Routes>
     </div>
@@ -416,9 +420,9 @@ function AppContent() {
 }
 
 // Wrapper to force ConnectingPage remount when agentId changes
-function ConnectingPageWrapper({ onConnect, clientReady }: { onConnect: (agentId: string, publicKey: string) => void; clientReady: boolean }) {
+function ConnectingPageWrapper({ onConnect, onAbort, clientReady }: { onConnect: (agentId: string, publicKey: string) => void; onAbort: () => void; clientReady: boolean }) {
   const { agentId } = useParams<{ agentId: string }>();
-  return <ConnectingPage key={agentId} onConnect={onConnect} clientReady={clientReady} />;
+  return <ConnectingPage key={agentId} onConnect={onConnect} onAbort={onAbort} clientReady={clientReady} />;
 }
 
 function App() {
