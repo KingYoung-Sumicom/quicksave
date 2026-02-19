@@ -56,6 +56,7 @@ class ConnectionManager {
   private agents: Map<string, WebSocket> = new Map();
   private pwas: Map<string, WebSocket> = new Map();
   private pwasByKey: Map<string, WebSocket> = new Map();
+  private agentWatchers: Map<string, Set<string>> = new Map();
 
   get agentCount(): number {
     return this.agents.size;
@@ -103,6 +104,25 @@ class ConnectionManager {
 
   getPwaByKey(publicKey: string): WebSocket | undefined {
     return this.pwasByKey.get(publicKey);
+  }
+
+  addAgentWatcher(agentId: string, pwaKey: string): void {
+    let watchers = this.agentWatchers.get(agentId);
+    if (!watchers) {
+      watchers = new Set();
+      this.agentWatchers.set(agentId, watchers);
+    }
+    watchers.add(pwaKey);
+  }
+
+  getAgentWatchers(agentId: string): Set<string> {
+    return this.agentWatchers.get(agentId) || new Set();
+  }
+
+  removeAllWatchersForPwa(pwaKey: string): void {
+    for (const [, watchers] of this.agentWatchers) {
+      watchers.delete(pwaKey);
+    }
   }
 
   /**
@@ -336,6 +356,15 @@ export function signalingServerPlugin(): Plugin {
 
             connections!.addAgent(id, extWs);
 
+            // Notify key-based PWAs watching this agent
+            const watchers = connections!.getAgentWatchers(id);
+            for (const pwaKey of watchers) {
+              const pwa = connections!.getPwaByKey(pwaKey);
+              if (pwa && pwa.readyState === WebSocket.OPEN) {
+                sendMessage(pwa, { type: 'agent-status', payload: { agentId: id, online: true } });
+              }
+            }
+
             const waitingPwa = connections!.getPwa(id);
             if (waitingPwa) {
               console.log(`[signaling] Agent ${id} matched with waiting PWA`);
@@ -377,6 +406,14 @@ export function signalingServerPlugin(): Plugin {
             try {
               const msgStr = data.toString();
               const msg = JSON.parse(msgStr);
+
+              // Handle watch-agent requests from key-based PWAs
+              if (msg.type === 'watch-agent' && msg.agentId && extWs.pwaKey) {
+                connections!.addAgentWatcher(msg.agentId, extWs.pwaKey);
+                const isOnline = connections!.hasAgent(msg.agentId);
+                sendMessage(extWs, { type: 'agent-status', payload: { agentId: msg.agentId, online: isOnline } });
+                return;
+              }
 
               if (msg.from && msg.to) {
                 // Validate `from` matches sender identity
@@ -424,9 +461,18 @@ export function signalingServerPlugin(): Plugin {
           ws.on('close', () => {
             if (extWs.pwaKey) {
               console.log(`[signaling] pwa (key) disconnected with key ${extWs.pwaKey}`);
+              connections!.removeAllWatchersForPwa(extWs.pwaKey);
               connections!.removePwaByKey(extWs.pwaKey);
             } else if (extWs.role === 'agent' && extWs.agentId) {
               console.log(`[signaling] ${extWs.role} disconnected for agent ${extWs.agentId}`);
+              // Notify key-based PWA watchers that agent went offline
+              const agentWatchers = connections!.getAgentWatchers(extWs.agentId);
+              for (const pwaKey of agentWatchers) {
+                const watcherPwa = connections!.getPwaByKey(pwaKey);
+                if (watcherPwa && watcherPwa.readyState === WebSocket.OPEN) {
+                  sendMessage(watcherPwa, { type: 'agent-status', payload: { agentId: extWs.agentId, online: false } });
+                }
+              }
               connections!.removeAgent(extWs.agentId);
               const pwa = connections!.getPwa(extWs.agentId);
               if (pwa) {
