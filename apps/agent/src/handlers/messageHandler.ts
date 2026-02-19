@@ -51,7 +51,9 @@ import { homedir } from 'os';
 export class MessageHandler {
   private repos: Map<string, GitOperations>;
   private agentVersion = '0.1.0';
-  private currentRepoPath: string;
+  private defaultRepoPath: string;
+  private clientRepos: Map<string, string> = new Map(); // peerAddress -> repoPath
+  private repoLocks: Map<string, string> = new Map(); // repoPath -> peerAddress holding lock
   private availableRepos: Repository[];
   private aiService: CommitSummaryService | null = null;
 
@@ -61,12 +63,40 @@ export class MessageHandler {
       this.repos.set(repo.path, new GitOperations(repo.path));
     }
     this.availableRepos = repos;
-    this.currentRepoPath = repos[0].path;
-    // License handling will be implemented later
+    this.defaultRepoPath = repos[0].path;
   }
 
-  private get git(): GitOperations {
-    return this.repos.get(this.currentRepoPath)!;
+  private getClientRepoPath(peerAddress: string): string {
+    return this.clientRepos.get(peerAddress) || this.defaultRepoPath;
+  }
+
+  private getGit(peerAddress: string): GitOperations {
+    const repoPath = this.getClientRepoPath(peerAddress);
+    return this.repos.get(repoPath)!;
+  }
+
+  private acquireRepoLock(repoPath: string, peerAddress: string): boolean {
+    const holder = this.repoLocks.get(repoPath);
+    if (holder && holder !== peerAddress) {
+      return false;
+    }
+    this.repoLocks.set(repoPath, peerAddress);
+    return true;
+  }
+
+  private releaseRepoLock(repoPath: string, peerAddress: string): void {
+    if (this.repoLocks.get(repoPath) === peerAddress) {
+      this.repoLocks.delete(repoPath);
+    }
+  }
+
+  removeClient(peerAddress: string): void {
+    this.clientRepos.delete(peerAddress);
+    for (const [repoPath, holder] of this.repoLocks) {
+      if (holder === peerAddress) {
+        this.repoLocks.delete(repoPath);
+      }
+    }
   }
 
   private getAiService(): CommitSummaryService | null {
@@ -80,45 +110,45 @@ export class MessageHandler {
     return this.aiService;
   }
 
-  async handleMessage(message: Message): Promise<Message> {
+  async handleMessage(message: Message, peerAddress: string = 'default'): Promise<Message> {
     try {
       switch (message.type) {
         case 'handshake':
-          return this.handleHandshake(message as Message<HandshakePayload>);
+          return this.handleHandshake(message as Message<HandshakePayload>, peerAddress);
         case 'ping':
           return createMessage('pong', { timestamp: Date.now() });
         case 'git:status':
-          return this.handleStatus(message as Message<StatusRequestPayload>);
+          return this.handleStatus(message as Message<StatusRequestPayload>, peerAddress);
         case 'git:diff':
-          return this.handleDiff(message as Message<DiffRequestPayload>);
+          return this.handleDiff(message as Message<DiffRequestPayload>, peerAddress);
         case 'git:stage':
-          return this.handleStage(message as Message<StageRequestPayload>);
+          return this.handleStage(message as Message<StageRequestPayload>, peerAddress);
         case 'git:unstage':
-          return this.handleUnstage(message as Message<UnstageRequestPayload>);
+          return this.handleUnstage(message as Message<UnstageRequestPayload>, peerAddress);
         case 'git:stage-patch':
-          return this.handleStagePatch(message as Message<StagePatchRequestPayload>);
+          return this.handleStagePatch(message as Message<StagePatchRequestPayload>, peerAddress);
         case 'git:unstage-patch':
-          return this.handleUnstagePatch(message as Message<UnstagePatchRequestPayload>);
+          return this.handleUnstagePatch(message as Message<UnstagePatchRequestPayload>, peerAddress);
         case 'git:commit':
-          return this.handleCommit(message as Message<CommitRequestPayload>);
+          return this.handleCommit(message as Message<CommitRequestPayload>, peerAddress);
         case 'git:log':
-          return this.handleLog(message as Message<LogRequestPayload>);
+          return this.handleLog(message as Message<LogRequestPayload>, peerAddress);
         case 'git:branches':
-          return this.handleBranches();
+          return this.handleBranches(peerAddress);
         case 'git:checkout':
-          return this.handleCheckout(message as Message<CheckoutRequestPayload>);
+          return this.handleCheckout(message as Message<CheckoutRequestPayload>, peerAddress);
         case 'git:discard':
-          return this.handleDiscard(message as Message<DiscardRequestPayload>);
+          return this.handleDiscard(message as Message<DiscardRequestPayload>, peerAddress);
         case 'ai:generate-commit-summary':
-          return this.handleGenerateCommitSummary(message as Message<GenerateCommitSummaryRequestPayload>);
+          return this.handleGenerateCommitSummary(message as Message<GenerateCommitSummaryRequestPayload>, peerAddress);
         case 'ai:set-api-key':
           return this.handleSetApiKey(message as Message<SetApiKeyRequestPayload>);
         case 'ai:get-api-key-status':
           return this.handleGetApiKeyStatus(message);
         case 'agent:list-repos':
-          return this.handleListRepos(message);
+          return this.handleListRepos(message, peerAddress);
         case 'agent:switch-repo':
-          return this.handleSwitchRepo(message as Message<SwitchRepoRequestPayload>);
+          return this.handleSwitchRepo(message as Message<SwitchRepoRequestPayload>, peerAddress);
         case 'agent:browse-directory':
           return this.handleBrowseDirectory(message as Message<BrowseDirectoryRequestPayload>);
         case 'agent:add-repo':
@@ -132,35 +162,44 @@ export class MessageHandler {
     }
   }
 
-  private handleHandshake(message: Message<HandshakePayload>): Message<HandshakeAckPayload> {
+  private handleHandshake(message: Message<HandshakePayload>, peerAddress: string): Message<HandshakeAckPayload> {
     const response = createMessage<HandshakeAckPayload>('handshake:ack', {
       success: true,
       agentVersion: this.agentVersion,
-      repoPath: this.currentRepoPath,
+      repoPath: this.getClientRepoPath(peerAddress),
       availableRepos: this.availableRepos,
     });
     response.id = message.id;
     return response;
   }
 
-  private async handleStatus(message: Message<StatusRequestPayload>): Promise<Message<StatusResponsePayload>> {
-    const status = await this.git.getStatus();
+  private async handleStatus(message: Message<StatusRequestPayload>, peerAddress: string): Promise<Message<StatusResponsePayload>> {
+    const status = await this.getGit(peerAddress).getStatus();
     const response = createMessage<StatusResponsePayload>('git:status:response', status);
     response.id = message.id;
     return response;
   }
 
-  private async handleDiff(message: Message<DiffRequestPayload>): Promise<Message<DiffResponsePayload>> {
+  private async handleDiff(message: Message<DiffRequestPayload>, peerAddress: string): Promise<Message<DiffResponsePayload>> {
     const { path, staged } = message.payload;
-    const diff = await this.git.getDiff(path, staged);
+    const diff = await this.getGit(peerAddress).getDiff(path, staged);
     const response = createMessage<DiffResponsePayload>('git:diff:response', diff);
     response.id = message.id;
     return response;
   }
 
-  private async handleStage(message: Message<StageRequestPayload>): Promise<Message<StageResponsePayload>> {
+  private async handleStage(message: Message<StageRequestPayload>, peerAddress: string): Promise<Message<StageResponsePayload>> {
+    const repoPath = this.getClientRepoPath(peerAddress);
+    if (!this.acquireRepoLock(repoPath, peerAddress)) {
+      const response = createMessage<StageResponsePayload>('git:stage:response', {
+        success: false,
+        error: 'Repository is busy — another device is performing an operation',
+      });
+      response.id = message.id;
+      return response;
+    }
     try {
-      await this.git.stage(message.payload.paths);
+      await this.getGit(peerAddress).stage(message.payload.paths);
       const response = createMessage<StageResponsePayload>('git:stage:response', { success: true });
       response.id = message.id;
       return response;
@@ -171,12 +210,23 @@ export class MessageHandler {
       });
       response.id = message.id;
       return response;
+    } finally {
+      this.releaseRepoLock(repoPath, peerAddress);
     }
   }
 
-  private async handleUnstage(message: Message<UnstageRequestPayload>): Promise<Message<UnstageResponsePayload>> {
+  private async handleUnstage(message: Message<UnstageRequestPayload>, peerAddress: string): Promise<Message<UnstageResponsePayload>> {
+    const repoPath = this.getClientRepoPath(peerAddress);
+    if (!this.acquireRepoLock(repoPath, peerAddress)) {
+      const response = createMessage<UnstageResponsePayload>('git:unstage:response', {
+        success: false,
+        error: 'Repository is busy — another device is performing an operation',
+      });
+      response.id = message.id;
+      return response;
+    }
     try {
-      await this.git.unstage(message.payload.paths);
+      await this.getGit(peerAddress).unstage(message.payload.paths);
       const response = createMessage<UnstageResponsePayload>('git:unstage:response', { success: true });
       response.id = message.id;
       return response;
@@ -187,12 +237,23 @@ export class MessageHandler {
       });
       response.id = message.id;
       return response;
+    } finally {
+      this.releaseRepoLock(repoPath, peerAddress);
     }
   }
 
-  private async handleStagePatch(message: Message<StagePatchRequestPayload>): Promise<Message<StagePatchResponsePayload>> {
+  private async handleStagePatch(message: Message<StagePatchRequestPayload>, peerAddress: string): Promise<Message<StagePatchResponsePayload>> {
+    const repoPath = this.getClientRepoPath(peerAddress);
+    if (!this.acquireRepoLock(repoPath, peerAddress)) {
+      const response = createMessage<StagePatchResponsePayload>('git:stage-patch:response', {
+        success: false,
+        error: 'Repository is busy — another device is performing an operation',
+      });
+      response.id = message.id;
+      return response;
+    }
     try {
-      await this.git.stagePatch(message.payload.patch);
+      await this.getGit(peerAddress).stagePatch(message.payload.patch);
       const response = createMessage<StagePatchResponsePayload>('git:stage-patch:response', { success: true });
       response.id = message.id;
       return response;
@@ -203,12 +264,23 @@ export class MessageHandler {
       });
       response.id = message.id;
       return response;
+    } finally {
+      this.releaseRepoLock(repoPath, peerAddress);
     }
   }
 
-  private async handleUnstagePatch(message: Message<UnstagePatchRequestPayload>): Promise<Message<UnstagePatchResponsePayload>> {
+  private async handleUnstagePatch(message: Message<UnstagePatchRequestPayload>, peerAddress: string): Promise<Message<UnstagePatchResponsePayload>> {
+    const repoPath = this.getClientRepoPath(peerAddress);
+    if (!this.acquireRepoLock(repoPath, peerAddress)) {
+      const response = createMessage<UnstagePatchResponsePayload>('git:unstage-patch:response', {
+        success: false,
+        error: 'Repository is busy — another device is performing an operation',
+      });
+      response.id = message.id;
+      return response;
+    }
     try {
-      await this.git.unstagePatch(message.payload.patch);
+      await this.getGit(peerAddress).unstagePatch(message.payload.patch);
       const response = createMessage<UnstagePatchResponsePayload>('git:unstage-patch:response', { success: true });
       response.id = message.id;
       return response;
@@ -219,13 +291,24 @@ export class MessageHandler {
       });
       response.id = message.id;
       return response;
+    } finally {
+      this.releaseRepoLock(repoPath, peerAddress);
     }
   }
 
-  private async handleCommit(message: Message<CommitRequestPayload>): Promise<Message<CommitResponsePayload>> {
+  private async handleCommit(message: Message<CommitRequestPayload>, peerAddress: string): Promise<Message<CommitResponsePayload>> {
+    const repoPath = this.getClientRepoPath(peerAddress);
+    if (!this.acquireRepoLock(repoPath, peerAddress)) {
+      const response = createMessage<CommitResponsePayload>('git:commit:response', {
+        success: false,
+        error: 'Repository is busy — another device is performing an operation',
+      });
+      response.id = message.id;
+      return response;
+    }
     try {
       const { message: commitMessage, description } = message.payload;
-      const hash = await this.git.commit(commitMessage, description);
+      const hash = await this.getGit(peerAddress).commit(commitMessage, description);
       const response = createMessage<CommitResponsePayload>('git:commit:response', {
         success: true,
         hash,
@@ -239,29 +322,40 @@ export class MessageHandler {
       });
       response.id = message.id;
       return response;
+    } finally {
+      this.releaseRepoLock(repoPath, peerAddress);
     }
   }
 
-  private async handleLog(message: Message<LogRequestPayload>): Promise<Message<LogResponsePayload>> {
+  private async handleLog(message: Message<LogRequestPayload>, peerAddress: string): Promise<Message<LogResponsePayload>> {
     const limit = message.payload.limit || 50;
-    const commits = await this.git.getLog(limit);
+    const commits = await this.getGit(peerAddress).getLog(limit);
     const response = createMessage<LogResponsePayload>('git:log:response', { commits });
     response.id = message.id;
     return response;
   }
 
-  private async handleBranches(): Promise<Message<BranchesResponsePayload>> {
-    const { branches, current } = await this.git.getBranches();
+  private async handleBranches(peerAddress: string): Promise<Message<BranchesResponsePayload>> {
+    const { branches, current } = await this.getGit(peerAddress).getBranches();
     return createMessage<BranchesResponsePayload>('git:branches:response', {
       branches,
       current,
     });
   }
 
-  private async handleCheckout(message: Message<CheckoutRequestPayload>): Promise<Message<CheckoutResponsePayload>> {
+  private async handleCheckout(message: Message<CheckoutRequestPayload>, peerAddress: string): Promise<Message<CheckoutResponsePayload>> {
+    const repoPath = this.getClientRepoPath(peerAddress);
+    if (!this.acquireRepoLock(repoPath, peerAddress)) {
+      const response = createMessage<CheckoutResponsePayload>('git:checkout:response', {
+        success: false,
+        error: 'Repository is busy — another device is performing an operation',
+      });
+      response.id = message.id;
+      return response;
+    }
     try {
       const { branch, create } = message.payload;
-      await this.git.checkout(branch, create);
+      await this.getGit(peerAddress).checkout(branch, create);
       const response = createMessage<CheckoutResponsePayload>('git:checkout:response', { success: true });
       response.id = message.id;
       return response;
@@ -272,12 +366,23 @@ export class MessageHandler {
       });
       response.id = message.id;
       return response;
+    } finally {
+      this.releaseRepoLock(repoPath, peerAddress);
     }
   }
 
-  private async handleDiscard(message: Message<DiscardRequestPayload>): Promise<Message<DiscardResponsePayload>> {
+  private async handleDiscard(message: Message<DiscardRequestPayload>, peerAddress: string): Promise<Message<DiscardResponsePayload>> {
+    const repoPath = this.getClientRepoPath(peerAddress);
+    if (!this.acquireRepoLock(repoPath, peerAddress)) {
+      const response = createMessage<DiscardResponsePayload>('git:discard:response', {
+        success: false,
+        error: 'Repository is busy — another device is performing an operation',
+      });
+      response.id = message.id;
+      return response;
+    }
     try {
-      await this.git.discard(message.payload.paths);
+      await this.getGit(peerAddress).discard(message.payload.paths);
       const response = createMessage<DiscardResponsePayload>('git:discard:response', { success: true });
       response.id = message.id;
       return response;
@@ -288,11 +393,14 @@ export class MessageHandler {
       });
       response.id = message.id;
       return response;
+    } finally {
+      this.releaseRepoLock(repoPath, peerAddress);
     }
   }
 
   private async handleGenerateCommitSummary(
-    message: Message<GenerateCommitSummaryRequestPayload>
+    message: Message<GenerateCommitSummaryRequestPayload>,
+    peerAddress: string
   ): Promise<Message<GenerateCommitSummaryResponsePayload>> {
     const aiService = this.getAiService();
 
@@ -310,7 +418,8 @@ export class MessageHandler {
     }
 
     try {
-      const status = await this.git.getStatus();
+      const git = this.getGit(peerAddress);
+      const status = await git.getStatus();
       if (status.staged.length === 0) {
         const response = createMessage<GenerateCommitSummaryResponsePayload>(
           'ai:generate-commit-summary:response',
@@ -325,7 +434,7 @@ export class MessageHandler {
       }
 
       // Collect diffs for all staged files
-      const diffs = await Promise.all(status.staged.map((file) => this.git.getDiff(file.path, true)));
+      const diffs = await Promise.all(status.staged.map((file) => git.getDiff(file.path, true)));
 
       // Generate summary (uses internal queue and cache)
       const result = await aiService.generateSummary({
@@ -389,7 +498,7 @@ export class MessageHandler {
     return response;
   }
 
-  private async handleListRepos(message: Message): Promise<Message<ListReposResponsePayload>> {
+  private async handleListRepos(message: Message, peerAddress: string): Promise<Message<ListReposResponsePayload>> {
     // Refresh branch info for all repos
     const repos: Repository[] = [];
     for (const repo of this.availableRepos) {
@@ -403,27 +512,27 @@ export class MessageHandler {
     }
     const response = createMessage<ListReposResponsePayload>('agent:list-repos:response', {
       repos,
-      current: this.currentRepoPath,
+      current: this.getClientRepoPath(peerAddress),
     });
     response.id = message.id;
     return response;
   }
 
-  private handleSwitchRepo(message: Message<SwitchRepoRequestPayload>): Message<SwitchRepoResponsePayload> {
+  private handleSwitchRepo(message: Message<SwitchRepoRequestPayload>, peerAddress: string): Message<SwitchRepoResponsePayload> {
     const { path } = message.payload;
 
     // Check if the requested repo is in our available repos
     if (!this.repos.has(path)) {
       const response = createMessage<SwitchRepoResponsePayload>('agent:switch-repo:response', {
         success: false,
-        newPath: this.currentRepoPath,
+        newPath: this.getClientRepoPath(peerAddress),
         error: `Repository not available: ${path}`,
       });
       response.id = message.id;
       return response;
     }
 
-    this.currentRepoPath = path;
+    this.clientRepos.set(peerAddress, path);
     const response = createMessage<SwitchRepoResponsePayload>('agent:switch-repo:response', {
       success: true,
       newPath: path,

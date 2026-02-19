@@ -291,4 +291,104 @@ describe('MessageHandler', () => {
       expect(response).toBeDefined();
     });
   });
+
+  describe('multi-client support', () => {
+    const clientA = 'pwa:clientA';
+    const clientB = 'pwa:clientB';
+
+    let secondRepoPath: string;
+
+    beforeEach(async () => {
+      // Create a second repo for multi-repo tests
+      secondRepoPath = join(tmpdir(), `quicksave-handler-test2-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      await mkdir(secondRepoPath, { recursive: true });
+      const git2 = simpleGit(secondRepoPath);
+      await git2.init();
+      await git2.addConfig('user.email', 'test@test.com');
+      await git2.addConfig('user.name', 'Test User');
+      await writeFile(join(secondRepoPath, 'README.md'), '# Second Repo\n');
+      await git2.add('README.md');
+      await git2.commit('Initial commit');
+
+      // Recreate handler with two repos
+      handler = new MessageHandler([
+        { path: testRepoPath, name: 'test-repo' },
+        { path: secondRepoPath, name: 'second-repo' },
+      ]);
+    });
+
+    afterEach(async () => {
+      try {
+        await rm(secondRepoPath, { recursive: true, force: true });
+      } catch {
+        // Ignore
+      }
+    });
+
+    it('should isolate repo context per client', async () => {
+      // Client A switches to second repo
+      const switchMsg = createMessage('agent:switch-repo', { path: secondRepoPath });
+      const switchResp = await handler.handleMessage(switchMsg, clientA);
+      expect((switchResp.payload as any).success).toBe(true);
+
+      // Client B should still be on default repo
+      const listMsgB = createMessage('agent:list-repos', {});
+      const listRespB = await handler.handleMessage(listMsgB, clientB);
+      expect((listRespB.payload as any).current).toBe(testRepoPath);
+    });
+
+    it('should return per-client current repo in list-repos', async () => {
+      // Client A switches to second repo
+      const switchMsg = createMessage('agent:switch-repo', { path: secondRepoPath });
+      await handler.handleMessage(switchMsg, clientA);
+
+      // Client A's list-repos should show second repo as current
+      const listMsgA = createMessage('agent:list-repos', {});
+      const listRespA = await handler.handleMessage(listMsgA, clientA);
+      expect((listRespA.payload as any).current).toBe(secondRepoPath);
+
+      // Client B's list-repos should show first repo as current
+      const listMsgB = createMessage('agent:list-repos', {});
+      const listRespB = await handler.handleMessage(listMsgB, clientB);
+      expect((listRespB.payload as any).current).toBe(testRepoPath);
+    });
+
+    it('should return per-client repo path in handshake', async () => {
+      // Client A switches repo
+      const switchMsg = createMessage('agent:switch-repo', { path: secondRepoPath });
+      await handler.handleMessage(switchMsg, clientA);
+
+      // Client B handshake should return default repo
+      const handshakeMsg = createMessage('handshake', { publicKey: 'test-key' });
+      const handshakeResp = await handler.handleMessage(handshakeMsg, clientB);
+      expect((handshakeResp.payload as any).repoPath).toBe(testRepoPath);
+    });
+
+    it('should clean up client state on removeClient', async () => {
+      // Client A switches repo
+      const switchMsg = createMessage('agent:switch-repo', { path: secondRepoPath });
+      await handler.handleMessage(switchMsg, clientA);
+
+      // Remove client A
+      handler.removeClient(clientA);
+
+      // Client A reconnecting should get default repo again
+      const listMsg = createMessage('agent:list-repos', {});
+      const listResp = await handler.handleMessage(listMsg, clientA);
+      expect((listResp.payload as any).current).toBe(testRepoPath);
+    });
+
+    it('should allow sequential mutating ops from different clients', async () => {
+      await writeFile(join(testRepoPath, 'file1.txt'), 'content1');
+      await writeFile(join(testRepoPath, 'file2.txt'), 'content2');
+
+      const stageMsg1 = createMessage('git:stage', { paths: ['file1.txt'] });
+      const resp1 = await handler.handleMessage(stageMsg1, clientA);
+      expect((resp1.payload as any).success).toBe(true);
+
+      const stageMsg2 = createMessage('git:stage', { paths: ['file2.txt'] });
+      const resp2 = await handler.handleMessage(stageMsg2, clientB);
+      expect((resp2.payload as any).success).toBe(true);
+    });
+  });
 });

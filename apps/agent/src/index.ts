@@ -5,7 +5,7 @@ import { Command } from 'commander';
 import qrcode from 'qrcode-terminal';
 import { resolve, basename } from 'path';
 import { hostname } from 'os';
-import { WebRTCConnection } from './connection/connection.js';
+import { AgentConnection } from './connection/connection.js';
 import { MessageHandler } from './handlers/messageHandler.js';
 import { GitOperations } from './git/operations.js';
 import { getOrCreateConfig, getConfigPath, rotateKeyPair } from './config.js';
@@ -69,7 +69,7 @@ program
     console.log('');
 
     // Create connection
-    const connection = new WebRTCConnection({
+    const connection = new AgentConnection({
       signalingServer,
       agentId: config.agentId,
       keyPair: config.keyPair,
@@ -79,18 +79,23 @@ program
     const messageHandler = new MessageHandler(validRepos, config.license);
 
     // Handle incoming messages
-    connection.on('message', async (message: Message) => {
-      const response = await messageHandler.handleMessage(message);
-      connection.send(response);
+    connection.on('message', async (message: Message, peerAddress: string) => {
+      const response = await messageHandler.handleMessage(message, peerAddress);
+      connection.send(response, peerAddress);
     });
 
-    connection.on('connected', () => {
-      console.log('\n✓ PWA connected! Ready for git operations.');
+    connection.on('connected', (peerAddress: string) => {
+      const peerKey = peerAddress.replace('pwa:', '');
+      console.log(`\n+ PWA connected: ${peerKey.slice(0, 12)}... (${connection.getPeerCount()} client${connection.getPeerCount() !== 1 ? 's' : ''})`);
     });
 
-    connection.on('disconnected', () => {
-      console.log('\n✗ PWA disconnected. Waiting for reconnection...');
-      displayConnectionInfo(config.agentId, config.keyPair.publicKey, options.qr);
+    connection.on('disconnected', (peerAddress: string) => {
+      const peerKey = peerAddress.replace('pwa:', '');
+      messageHandler.removeClient(peerAddress);
+      console.log(`\n- PWA disconnected: ${peerKey.slice(0, 12)}... (${connection.getPeerCount()} client${connection.getPeerCount() !== 1 ? 's' : ''})`);
+      if (!connection.hasPeers()) {
+        displayConnectionInfo(config.agentId, config.keyPair.publicKey, options.qr);
+      }
     });
 
     connection.on('error', (error) => {

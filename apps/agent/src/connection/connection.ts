@@ -25,20 +25,24 @@ export interface ConnectionConfig {
   keyPair: { publicKey: string; secretKey: string };
 }
 
-export interface WebRTCConnectionEvents {
-  connected: () => void;
-  disconnected: () => void;
-  message: (message: Message) => void;
+export interface PeerSession {
+  address: string;
+  sessionDEK: Uint8Array;
+  connectedAt: number;
+}
+
+export interface AgentConnectionEvents {
+  connected: (peerAddress: string) => void;
+  disconnected: (peerAddress: string) => void;
+  message: (message: Message, peerAddress: string) => void;
   error: (error: Error) => void;
 }
 
-export class WebRTCConnection extends EventEmitter {
+export class AgentConnection extends EventEmitter {
   private config: ConnectionConfig;
   private signaling: SignalingClient;
   private keyPair: KeyPair;
-  // Session DEK for encryption (received encrypted from PWA)
-  private sessionDEK: Uint8Array | null = null;
-  private isConnected = false;
+  private peers: Map<string, PeerSession> = new Map();
 
   // Key exchange replay protection
   private static readonly KEY_EXCHANGE_MAX_AGE_MS = 60000; // 60 seconds
@@ -56,17 +60,24 @@ export class WebRTCConnection extends EventEmitter {
       console.log('PWA peer connected, waiting for key exchange...');
     });
 
-    this.signaling.on('data', (data: string) => {
-      this.handleDataMessage(data);
+    this.signaling.on('data', (data: string, from: string | null) => {
+      this.handleDataMessage(data, from);
     });
 
     this.signaling.on('peer-disconnected', () => {
-      this.handlePeerDisconnected();
+      // Legacy compatibility: disconnect all peers
+      for (const [address] of this.peers) {
+        this.handlePeerDisconnected(address);
+      }
     });
 
     // Reset encryption state when WebSocket reconnects (before peer-disconnected)
     this.signaling.on('disconnected', () => {
-      this.sessionDEK = null;
+      // Clear all peers, emit disconnected for each
+      for (const [address] of this.peers) {
+        this.emit('disconnected', address);
+      }
+      this.peers.clear();
     });
 
     this.signaling.on('error', (error: Error) => {
@@ -82,65 +93,51 @@ export class WebRTCConnection extends EventEmitter {
     console.log(`Public Key: ${this.config.keyPair.publicKey}`);
   }
 
-  private async handleDataMessage(data: string): Promise<void> {
+  private async handleDataMessage(data: string, from: string | null): Promise<void> {
     try {
       // Always check for key-exchange messages first
       // Always accept new key-exchange (PWA may have refreshed with new DEK)
       try {
         const parsed = JSON.parse(data);
         if (parsed.type === 'key-exchange') {
-          await this.handleKeyExchange(parsed);
+          await this.handleKeyExchange(parsed, from);
           return;
         }
       } catch {
         // Not JSON - continue to encrypted message handling
       }
 
-      // If key exchange hasn't completed, we can't decrypt yet
-      if (!this.isKeyExchangeComplete()) {
-        console.error('Received non-key-exchange message before key exchange');
+      // Look up peer by from address to get correct DEK
+      if (!from) {
+        console.error('Received encrypted message with no sender address');
+        return;
+      }
+
+      const peer = this.peers.get(from);
+      if (!peer) {
+        console.error(`No peer session found for ${from}`);
         return;
       }
 
       // Post key-exchange: messages are encrypted, then the plaintext was compressed before encryption
       // Decrypt first, then decompress
-      const encryptionKey = this.getEncryptionKey();
-      if (!encryptionKey) {
-        console.error('No encryption key, cannot decrypt message');
-        return;
-      }
-
-      const decrypted = decryptWithSharedSecret(data, encryptionKey);
+      const decrypted = decryptWithSharedSecret(data, peer.sessionDEK);
       const buffer = Buffer.from(decrypted, 'base64');
       const decompressed = await gunzipAsync(buffer);
       const message = parseMessage(decompressed.toString('utf-8'));
-      this.emit('message', message);
+      this.emit('message', message, from);
     } catch (error) {
       console.error('Failed to handle message:', error);
     }
   }
 
   /**
-   * Check if key exchange has completed
-   */
-  private isKeyExchangeComplete(): boolean {
-    return this.sessionDEK !== null;
-  }
-
-  /**
-   * Get the encryption key
-   */
-  private getEncryptionKey(): Uint8Array | null {
-    return this.sessionDEK;
-  }
-
-  /**
    * Handle key exchange message
    */
-  private async handleKeyExchange(message: KeyExchangeV2): Promise<void> {
+  private async handleKeyExchange(message: KeyExchangeV2, from: string | null): Promise<void> {
     // Verify timestamp for replay protection
     const age = Date.now() - message.timestamp;
-    if (age > WebRTCConnection.KEY_EXCHANGE_MAX_AGE_MS) {
+    if (age > AgentConnection.KEY_EXCHANGE_MAX_AGE_MS) {
       console.error(`Key exchange expired (age: ${age}ms)`);
       this.emit('error', new Error('Key exchange expired'));
       return;
@@ -155,14 +152,23 @@ export class WebRTCConnection extends EventEmitter {
 
     // Decrypt the session DEK
     try {
-      this.sessionDEK = decryptDEK(message.encryptedDEK, this.keyPair.secretKey);
-      const peerKey = this.signaling.getPeerAddress()?.replace('pwa:', '') || 'unknown';
+      const sessionDEK = decryptDEK(message.encryptedDEK, this.keyPair.secretKey);
+      const peerAddress = from || 'unknown';
+      const peerKey = peerAddress.replace('pwa:', '');
       console.log(`Key exchange complete with ${peerKey.slice(0, 12)}..., connection encrypted`);
 
-      // Mark as connected
-      if (!this.isConnected) {
-        this.isConnected = true;
-        this.emit('connected');
+      // Emit 'connected' only for new peers
+      const isNewPeer = !this.peers.has(peerAddress);
+
+      // Create/update PeerSession for that address
+      this.peers.set(peerAddress, {
+        address: peerAddress,
+        sessionDEK,
+        connectedAt: Date.now(),
+      });
+
+      if (isNewPeer) {
+        this.emit('connected', peerAddress);
       }
 
       // V2: Send acknowledgment
@@ -170,17 +176,17 @@ export class WebRTCConnection extends EventEmitter {
         type: 'key-exchange-ack',
         version: 2,
       });
-      this.sendRaw(ack);
+      this.signaling.sendData(ack, peerAddress);
     } catch (error) {
       console.error('Failed to decrypt session DEK:', error);
       this.emit('error', new Error('Failed to decrypt session DEK'));
     }
   }
 
-  send(message: Message): void {
-    const encryptionKey = this.getEncryptionKey();
-    if (!encryptionKey) {
-      console.error('No encryption key, cannot encrypt message');
+  send(message: Message, targetAddress: string): void {
+    const peer = this.peers.get(targetAddress);
+    if (!peer) {
+      console.error(`No peer session for ${targetAddress}, cannot encrypt message`);
       return;
     }
 
@@ -188,23 +194,16 @@ export class WebRTCConnection extends EventEmitter {
     const serialized = serializeMessage(message);
     gzipAsync(Buffer.from(serialized)).then((compressed) => {
       const compressedBase64 = compressed.toString('base64');
-      const encrypted = encryptWithSharedSecret(compressedBase64, encryptionKey);
-      this.signaling.sendData(encrypted);
+      const encrypted = encryptWithSharedSecret(compressedBase64, peer.sessionDEK);
+      this.signaling.sendData(encrypted, targetAddress);
     });
   }
 
-  private sendRaw(data: string): void {
-    this.signaling.sendData(data);
-  }
-
-  private handlePeerDisconnected(): void {
-    if (this.isConnected) {
-      this.isConnected = false;
-      this.emit('disconnected');
+  private handlePeerDisconnected(peerAddress: string): void {
+    if (this.peers.has(peerAddress)) {
+      this.peers.delete(peerAddress);
+      this.emit('disconnected', peerAddress);
     }
-
-    // Clean up encryption state for next connection
-    this.sessionDEK = null;
 
     console.log('Peer disconnected, waiting for new connection...');
   }
@@ -219,6 +218,14 @@ export class WebRTCConnection extends EventEmitter {
 
   getAgentId(): string {
     return this.config.agentId;
+  }
+
+  getPeerCount(): number {
+    return this.peers.size;
+  }
+
+  hasPeers(): boolean {
+    return this.peers.size > 0;
   }
 }
 

@@ -10,7 +10,7 @@ const gunzipAsync = promisify(gunzip);
 export interface SignalingEvents {
   'peer-connected': () => void;
   'peer-disconnected': () => void;
-  data: (data: string) => void;
+  data: (data: string, from: string | null) => void;
   connected: () => void;
   disconnected: () => void;
   error: (error: Error) => void;
@@ -24,8 +24,6 @@ export class SignalingClient extends EventEmitter {
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
   private isConnected = false;
-  // Address of the current peer (e.g. "pwa:BASE64_KEY") for routed replies
-  private peerAddress: string | null = null;
 
   constructor(signalingServer: string, agentId: string) {
     super();
@@ -62,22 +60,19 @@ export class SignalingClient extends EventEmitter {
             }
             // Check for routed message envelope (from key-based PWA connections)
             if (parsed.from && parsed.to && 'payload' in parsed) {
-              // Track the sender so replies are routed back
-              this.peerAddress = parsed.from;
-              this.emit('data', parsed.payload);
+              this.emit('data', parsed.payload, parsed.from);
               return;
             }
             // Other JSON messages (like key-exchange) are data messages
-            this.emit('data', data.toString());
+            this.emit('data', data.toString(), null);
           } catch {
             // Not JSON, treat as raw data message
-            this.emit('data', data.toString());
+            this.emit('data', data.toString(), null);
           }
         });
 
         this.ws.on('close', () => {
           this.isConnected = false;
-          this.peerAddress = null;
           this.emit('disconnected');
           this.attemptReconnect();
         });
@@ -100,16 +95,14 @@ export class SignalingClient extends EventEmitter {
         this.emit('peer-connected');
         break;
       case 'peer-offline':
-        this.peerAddress = null;
         this.emit('peer-disconnected');
         break;
       case 'data':
         if (typeof message.payload === 'string') {
-          this.emit('data', message.payload);
+          this.emit('data', message.payload, null);
         }
         break;
       case 'bye':
-        this.peerAddress = null;
         this.emit('peer-disconnected');
         break;
     }
@@ -119,13 +112,13 @@ export class SignalingClient extends EventEmitter {
     this.send({ type: 'bye' });
   }
 
-  sendData(data: string): void {
+  sendData(data: string, targetAddress: string | null): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      if (this.peerAddress) {
+      if (targetAddress) {
         // Wrap in routing envelope for key-based PWA connections
         const envelope = JSON.stringify({
           from: `agent:${this.agentId}`,
-          to: this.peerAddress,
+          to: targetAddress,
           payload: data,
         });
         this.ws.send(envelope);
@@ -190,9 +183,5 @@ export class SignalingClient extends EventEmitter {
 
   getConnectionUrl(): string {
     return this.url;
-  }
-
-  getPeerAddress(): string | null {
-    return this.peerAddress;
   }
 }
