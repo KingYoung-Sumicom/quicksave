@@ -15,12 +15,16 @@ import {
   type Repository,
 } from '@sumicom/quicksave-shared';
 
+export type ConnectionStep = 'signaling' | 'waiting-for-agent' | 'key-exchange' | 'handshake';
+
 export type ConnectionEventHandler = {
   onConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[]) => void;
   onDisconnected: (agentId?: string) => void;
   onReconnecting: (attempt: number, maxAttempts: number) => void;
   onMessage: (message: Message) => void;
   onError: (error: Error) => void;
+  onConnectionStep: (step: ConnectionStep, attempt?: number) => void;
+  onAgentStatus: (agentId: string, online: boolean) => void;
 };
 
 /**
@@ -155,12 +159,17 @@ export class WebSocketClient {
     this.sessions.set(agentId, session);
     this.activeAgentId = agentId;
 
-    // Wait for WebSocket to be open before initiating key exchange
-    const startKeyExchange = () => this.initiateKeyExchange(session);
+    // Send watch-agent to check if agent is online before starting key exchange
+    this.eventHandlers.onConnectionStep('signaling');
+    const watchAgent = () => {
+      this.sendRaw(JSON.stringify({ type: 'watch-agent', agentId }));
+      this.eventHandlers.onConnectionStep('waiting-for-agent');
+    };
+
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      startKeyExchange();
+      watchAgent();
     } else if (this.connectPromise) {
-      this.connectPromise.then(startKeyExchange).catch(() => {
+      this.connectPromise.then(watchAgent).catch(() => {
         // WebSocket failed to connect — error already handled by connect()
       });
     }
@@ -216,7 +225,7 @@ export class WebSocketClient {
       }
 
       // Handle signaling messages (only specific types from signaling server)
-      const signalingTypes = ['peer-connected', 'peer-offline', 'bye', 'error'];
+      const signalingTypes = ['peer-connected', 'peer-offline', 'bye', 'error', 'agent-status'];
       if (parsed.type && signalingTypes.includes(parsed.type)) {
         await this.handleSignalingMessage(parsed);
         return;
@@ -255,11 +264,19 @@ export class WebSocketClient {
 
   private async handleSignalingMessage(message: { type: string; payload?: unknown }): Promise<void> {
     switch (message.type) {
+      case 'agent-status': {
+        const { agentId, online } = message.payload as { agentId: string; online: boolean };
+        this.eventHandlers.onAgentStatus(agentId, online);
+        if (online) {
+          const session = this.sessions.get(agentId);
+          if (session && !session.keyExchangeComplete) {
+            this.initiateKeyExchange(session);
+          }
+        }
+        break;
+      }
+
       case 'peer-connected':
-        // With key-based connections, we don't auto-initiate key exchange on peer-connected.
-        // Key exchange is initiated by connectToAgent(). However, if we have a session
-        // that hasn't completed key exchange yet, the agent may have just come online,
-        // so we can retry.
         console.log('Peer connected signal received');
         break;
 
@@ -283,6 +300,8 @@ export class WebSocketClient {
       clearTimeout(session.keyExchangeTimeout);
       session.keyExchangeTimeout = null;
     }
+
+    this.eventHandlers.onConnectionStep('key-exchange', 1);
 
     // V2 protocol: generate session DEK and encrypt it for the Agent
     session.sessionDEK = generateSessionDEK();
@@ -316,6 +335,7 @@ export class WebSocketClient {
 
     session.keyExchangeTimeout = setTimeout(() => {
       if (!session.keyExchangeComplete && this.sessions.has(session.agentId)) {
+        this.eventHandlers.onConnectionStep('key-exchange', session.keyExchangeRetries + 1);
         console.log(`Retrying key exchange for agent ${session.agentId} (attempt ${session.keyExchangeRetries})`);
         // Regenerate DEK for retry
         session.sessionDEK = generateSessionDEK();
@@ -356,6 +376,7 @@ export class WebSocketClient {
             }
 
             console.log(`Key exchange complete with agent ${session.agentId}`);
+            this.eventHandlers.onConnectionStep('handshake');
             this.requestHandshake(session);
             return;
           }
@@ -515,9 +536,10 @@ export class WebSocketClient {
 
       await this.connect();
 
-      // Re-initiate key exchange for all active sessions
+      // Re-watch agents and let agent-status trigger key exchange
       for (const session of this.sessions.values()) {
-        this.initiateKeyExchange(session);
+        this.sendRaw(JSON.stringify({ type: 'watch-agent', agentId: session.agentId }));
+        this.eventHandlers.onConnectionStep('waiting-for-agent');
       }
 
       this.reconnectAttempts = 0;

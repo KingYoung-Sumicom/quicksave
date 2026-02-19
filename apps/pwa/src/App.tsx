@@ -36,6 +36,8 @@ function AppContent() {
     setReconnecting,
     setError,
     setPendingRepoPath,
+    setConnectionStep,
+    setAgentOnline,
     reset,
   } = useConnectionStore();
 
@@ -152,6 +154,8 @@ function AppContent() {
     setReconnecting,
     handleResponse,
     setError,
+    setConnectionStep,
+    setAgentOnline,
   });
   useEffect(() => {
     handlersRef.current = {
@@ -163,6 +167,8 @@ function AppContent() {
       setReconnecting,
       handleResponse,
       setError,
+      setConnectionStep,
+      setAgentOnline,
     };
   });
 
@@ -190,6 +196,12 @@ function AppContent() {
       },
       onError: (error) => {
         handlersRef.current.setError(error.message);
+      },
+      onConnectionStep: (step, attempt) => {
+        handlersRef.current.setConnectionStep(step, attempt);
+      },
+      onAgentStatus: (_agentId, online) => {
+        handlersRef.current.setAgentOnline(online);
       },
     });
 

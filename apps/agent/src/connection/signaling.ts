@@ -53,7 +53,7 @@ export class SignalingClient extends EventEmitter {
               return;
             }
             // Handle signaling messages (only specific types from signaling server)
-            const signalingTypes = ['peer-connected', 'peer-offline', 'data', 'bye', 'error'];
+            const signalingTypes = ['peer-connected', 'peer-offline', 'data', 'bye', 'error', 'pwa-bye'];
             if (parsed.type && signalingTypes.includes(parsed.type)) {
               this.handleMessage(parsed as SignalingMessage);
               return;
@@ -105,6 +105,13 @@ export class SignalingClient extends EventEmitter {
       case 'bye':
         this.emit('peer-disconnected');
         break;
+      case 'pwa-bye': {
+        const payload = message.payload as { pwaAddress?: string } | undefined;
+        if (payload?.pwaAddress) {
+          this.emit('pwa-bye', payload.pwaAddress);
+        }
+        break;
+      }
     }
   }
 

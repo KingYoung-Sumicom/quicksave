@@ -65,10 +65,16 @@ export class AgentConnection extends EventEmitter {
     });
 
     this.signaling.on('peer-disconnected', () => {
-      // Legacy compatibility: disconnect all peers
+      // Legacy compatibility: only affects legacy (non-key-based) peers
+      // Key-based peers use 'pwa-bye' for targeted disconnect
       for (const [address] of this.peers) {
         this.handlePeerDisconnected(address);
       }
+    });
+
+    // Targeted disconnect for key-based PWAs
+    this.signaling.on('pwa-bye', (pwaAddress: string) => {
+      this.handlePeerDisconnected(pwaAddress);
     });
 
     // Reset encryption state when WebSocket reconnects (before peer-disconnected)

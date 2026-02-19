@@ -14,7 +14,7 @@ export function ConnectingPage({ onConnect, onAbort, clientReady }: ConnectingPa
   const { agentId } = useParams<{ agentId: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { state, error, setPendingRepoPath } = useConnectionStore();
+  const { state, error, connectionStep, keyExchangeAttempt, agentOnline, setPendingRepoPath } = useConnectionStore();
   const { getMachine, addMachine } = useMachineStore();
   const { initialized: identityInitialized } = useIdentityStore();
   const hasInitiated = useRef(false);
@@ -128,6 +128,33 @@ export function ConnectingPage({ onConnect, onAbort, clientReady }: ConnectingPa
     );
   }
 
+  // Derive step progress
+  const isAgentOffline = connectionStep === 'waiting-for-agent' && agentOnline === false;
+  const stepIndex = connectionStep === 'signaling' ? 0
+    : connectionStep === 'waiting-for-agent' ? 1
+    : connectionStep === 'key-exchange' ? 2
+    : connectionStep === 'handshake' ? 3
+    : 0;
+
+  const getTitle = () => {
+    if (state === 'reconnecting') return 'Reconnecting...';
+    if (isAgentOffline) return 'Agent Offline';
+    if (connectionStep === 'signaling') return 'Connecting to server...';
+    if (connectionStep === 'waiting-for-agent') return 'Checking agent...';
+    if (connectionStep === 'key-exchange') return 'Exchanging keys...';
+    if (connectionStep === 'handshake') return 'Securing connection...';
+    return 'Connecting...';
+  };
+
+  const getSubtitle = () => {
+    if (state === 'reconnecting') return 'Connection lost, attempting to reconnect';
+    if (isAgentOffline) return 'Waiting for agent to come online...';
+    if (connectionStep === 'waiting-for-agent' && agentOnline === null) return 'Checking if agent is available';
+    if (connectionStep === 'key-exchange' && keyExchangeAttempt) return `Key exchange attempt ${keyExchangeAttempt} of 5`;
+    if (connectionStep === 'handshake') return 'Verifying identity';
+    return 'Preparing connection';
+  };
+
   // Show connecting animation
   return (
     <div className="min-h-screen flex flex-col p-6 bg-slate-900">
@@ -146,32 +173,35 @@ export function ConnectingPage({ onConnect, onAbort, clientReady }: ConnectingPa
         <div className="w-full max-w-sm text-center">
           {/* Animated connecting indicator */}
           <div className="relative w-20 h-20 mx-auto mb-8">
-            {/* Outer rotating ring */}
-            <div className="absolute inset-0 rounded-full border-4 border-slate-700" />
-            <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-blue-500 animate-spin" />
-
-            {/* Inner pulsing dot */}
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="w-4 h-4 bg-blue-500 rounded-full animate-pulse" />
-            </div>
+            {isAgentOffline ? (
+              <>
+                <div className="absolute inset-0 rounded-full border-4 border-amber-500/30" />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-4 h-4 bg-amber-500 rounded-full animate-pulse" />
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Outer rotating ring */}
+                <div className="absolute inset-0 rounded-full border-4 border-slate-700" />
+                <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-blue-500 animate-spin" />
+                {/* Inner pulsing dot */}
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-4 h-4 bg-blue-500 rounded-full animate-pulse" />
+                </div>
+              </>
+            )}
           </div>
 
-          <h1 className="text-xl font-semibold text-white mb-2">
-            {state === 'connecting' && 'Connecting...'}
-            {state === 'reconnecting' && 'Reconnecting...'}
-            {(state === 'disconnected' || !state) && 'Connecting...'}
-          </h1>
-
-          <p className="text-slate-400 text-sm">
-            {state === 'connecting' && 'Establishing secure connection'}
-            {state === 'reconnecting' && 'Connection lost, attempting to reconnect'}
-            {(state === 'disconnected' || !state) && 'Preparing connection'}
-          </p>
+          <h1 className="text-xl font-semibold text-white mb-2">{getTitle()}</h1>
+          <p className="text-slate-400 text-sm">{getSubtitle()}</p>
 
           {/* Connection steps indicator */}
-          <div className="mt-8 flex justify-center gap-2">
-            <StepDot active={true} completed={state === 'connected'} label="Connect" />
-            <StepDot active={state === 'connected'} completed={false} label="Ready" />
+          <div className="mt-8 flex justify-center gap-3">
+            <StepDot active={stepIndex >= 0} completed={stepIndex > 0} label="Server" />
+            <StepDot active={stepIndex >= 1} completed={stepIndex > 1} warn={isAgentOffline} label="Agent" />
+            <StepDot active={stepIndex >= 2} completed={stepIndex > 2} label="Key" />
+            <StepDot active={stepIndex >= 3} completed={false} label="Secure" />
           </div>
         </div>
       </div>
@@ -179,19 +209,21 @@ export function ConnectingPage({ onConnect, onAbort, clientReady }: ConnectingPa
   );
 }
 
-function StepDot({ active, completed, label }: { active: boolean; completed: boolean; label: string }) {
+function StepDot({ active, completed, warn, label }: { active: boolean; completed: boolean; warn?: boolean; label: string }) {
   return (
     <div className="flex flex-col items-center gap-1">
       <div
         className={`w-2.5 h-2.5 rounded-full transition-all duration-300 ${
           completed
             ? 'bg-green-500'
+            : warn
+            ? 'bg-amber-500 animate-pulse'
             : active
             ? 'bg-blue-500 animate-pulse'
             : 'bg-slate-600'
         }`}
       />
-      <span className={`text-xs ${active || completed ? 'text-slate-300' : 'text-slate-600'}`}>
+      <span className={`text-xs ${warn ? 'text-amber-400' : active || completed ? 'text-slate-300' : 'text-slate-600'}`}>
         {label}
       </span>
     </div>

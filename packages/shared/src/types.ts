@@ -296,6 +296,7 @@ export type SignalingMessageType =
   | 'peer-offline'
   | 'data'
   | 'bye'
+  | 'pwa-bye'
   | 'sync-updated'
   | 'error';
 

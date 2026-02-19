@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import type { ConnectionState, Repository } from '@sumicom/quicksave-shared';
 
+export type ConnectionStep = 'signaling' | 'waiting-for-agent' | 'key-exchange' | 'handshake';
+
 interface ConnectionStore {
   // State
   state: ConnectionState;
@@ -14,6 +16,9 @@ interface ConnectionStore {
   isPro: boolean;
   reconnectAttempt: number | null;
   maxReconnectAttempts: number | null;
+  connectionStep: ConnectionStep | null;
+  keyExchangeAttempt: number | null;
+  agentOnline: boolean | null;
 
   // Actions
   setConnecting: (agentId: string) => void;
@@ -26,6 +31,8 @@ interface ConnectionStore {
   setReconnecting: (attempt: number, maxAttempts: number) => void;
   setError: (error: string) => void;
   setSignalingServer: (server: string) => void;
+  setConnectionStep: (step: ConnectionStep, attempt?: number) => void;
+  setAgentOnline: (online: boolean) => void;
   reset: () => void;
 }
 
@@ -56,6 +63,9 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
   isPro: false,
   reconnectAttempt: null,
   maxReconnectAttempts: null,
+  connectionStep: null,
+  keyExchangeAttempt: null,
+  agentOnline: null,
 
   // Actions
   setConnecting: (agentId) =>
@@ -79,6 +89,8 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
       connectedAt: Date.now(),
       isPro,
       error: null,
+      connectionStep: null,
+      keyExchangeAttempt: null,
     }),
 
   setRepoPath: (repoPath) =>
@@ -102,6 +114,9 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
       connectedAt: null,
       reconnectAttempt: null,
       maxReconnectAttempts: null,
+      connectionStep: null,
+      keyExchangeAttempt: null,
+      agentOnline: null,
     }),
 
   setReconnecting: (attempt, maxAttempts) =>
@@ -122,6 +137,17 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
       signalingServer: server,
     }),
 
+  setConnectionStep: (step, attempt) =>
+    set({
+      connectionStep: step,
+      ...(attempt !== undefined ? { keyExchangeAttempt: attempt } : {}),
+    }),
+
+  setAgentOnline: (online) =>
+    set({
+      agentOnline: online,
+    }),
+
   reset: () =>
     set({
       state: 'disconnected',
@@ -134,5 +160,8 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
       isPro: false,
       reconnectAttempt: null,
       maxReconnectAttempts: null,
+      connectionStep: null,
+      keyExchangeAttempt: null,
+      agentOnline: null,
     }),
 }));

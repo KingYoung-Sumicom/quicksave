@@ -186,6 +186,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
 
   if (parsed.isPwaKey) {
     // New: PWA connecting by public key
+    // Close existing connection with the same key (e.g., duplicate tab)
+    const existing = connections.getPwaByKey(id);
+    if (existing && existing.readyState === WebSocket.OPEN) {
+      console.log(`[REPLACE] Closing old pwa (key) connection for key ${id}`);
+      sendMessage(existing, { type: 'error', payload: { code: 'REPLACED', message: 'Connected from another tab or device' } });
+      existing.close(1000, 'Replaced by new connection');
+    }
+
     extWs.pwaKey = id;
     connections.addPwaByKey(id, extWs);
     console.log(`[CONNECT] pwa (key) connected with key ${id} from ${ip}`);
@@ -203,6 +211,15 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     }
 
     connections.addAgent(id, extWs);
+
+    // Notify key-based PWAs watching this agent
+    const watchers = connections.getAgentWatchers(id);
+    for (const pwaKey of watchers) {
+      const pwa = connections.getPwaByKey(pwaKey);
+      if (pwa && pwa.readyState === WebSocket.OPEN) {
+        sendMessage(pwa, { type: 'agent-status', payload: { agentId: id, online: true } });
+      }
+    }
 
     // Check if there's a waiting PWA
     const waitingPwa = connections.getPwa(id);
@@ -249,6 +266,14 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     try {
       const msgStr = data.toString();
       const msg = JSON.parse(msgStr);
+
+      // Handle watch-agent requests from key-based PWAs
+      if (msg.type === 'watch-agent' && msg.agentId && extWs.pwaKey) {
+        connections.addAgentWatcher(msg.agentId, extWs.pwaKey);
+        const isOnline = connections.hasAgent(msg.agentId);
+        sendMessage(extWs, { type: 'agent-status', payload: { agentId: msg.agentId, online: isOnline } });
+        return;
+      }
 
       if (msg.from && msg.to) {
         // Validate `from` matches sender identity
@@ -299,11 +324,28 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   ws.on('close', () => {
     if (extWs.pwaKey) {
       console.log(`[DISCONNECT] pwa (key) disconnected with key ${extWs.pwaKey}`);
+      // Notify agents that this PWA was communicating with
+      const watchedAgents = connections.getWatchedAgents(extWs.pwaKey);
+      for (const agentId of watchedAgents) {
+        const agent = connections.getAgent(agentId);
+        if (agent && agent.readyState === WebSocket.OPEN) {
+          sendMessage(agent, { type: 'pwa-bye', payload: { pwaAddress: `pwa:${extWs.pwaKey}` } });
+        }
+      }
+      connections.removeAllWatchersForPwa(extWs.pwaKey);
       connections.removePwaByKey(extWs.pwaKey);
     } else if (extWs.role === 'agent' && extWs.agentId) {
       console.log(`[DISCONNECT] ${extWs.role} disconnected for agent ${extWs.agentId}`);
+      // Notify key-based PWA watchers that agent went offline
+      const agentWatchers = connections.getAgentWatchers(extWs.agentId);
+      for (const pwaKey of agentWatchers) {
+        const watcherPwa = connections.getPwaByKey(pwaKey);
+        if (watcherPwa && watcherPwa.readyState === WebSocket.OPEN) {
+          sendMessage(watcherPwa, { type: 'agent-status', payload: { agentId: extWs.agentId, online: false } });
+        }
+      }
       connections.removeAgent(extWs.agentId);
-      // Notify PWA that agent went offline
+      // Notify legacy PWA that agent went offline
       const pwa = connections.getPwa(extWs.agentId);
       if (pwa) {
         sendMessage(pwa, { type: 'peer-offline' });

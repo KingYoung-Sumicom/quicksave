@@ -16,6 +16,8 @@ export class ConnectionManager {
   private agents: Map<string, WebSocket> = new Map();
   private pwas: Map<string, WebSocket> = new Map();
   private pwasByKey: Map<string, WebSocket> = new Map();
+  // Maps agentId → set of pwaKeys watching that agent's online/offline status
+  private agentWatchers: Map<string, Set<string>> = new Map();
   private stats: ConnectionStats = {
     totalConnections: 0,
     activeAgents: 0,
@@ -112,6 +114,52 @@ export class ConnectionManager {
     if (role === 'agent') return this.getAgent(id);
     if (role === 'pwa') return this.getPwaByKey(id) || this.getPwa(id);
     return undefined;
+  }
+
+  // Agent watcher methods — key-based PWAs subscribe to agent online/offline status
+  addAgentWatcher(agentId: string, pwaKey: string): void {
+    let watchers = this.agentWatchers.get(agentId);
+    if (!watchers) {
+      watchers = new Set();
+      this.agentWatchers.set(agentId, watchers);
+    }
+    watchers.add(pwaKey);
+  }
+
+  removeAgentWatcher(agentId: string, pwaKey: string): void {
+    const watchers = this.agentWatchers.get(agentId);
+    if (watchers) {
+      watchers.delete(pwaKey);
+      if (watchers.size === 0) {
+        this.agentWatchers.delete(agentId);
+      }
+    }
+  }
+
+  /**
+   * Get all agentIds that a given PWA key is watching.
+   */
+  getWatchedAgents(pwaKey: string): string[] {
+    const agents: string[] = [];
+    for (const [agentId, watchers] of this.agentWatchers) {
+      if (watchers.has(pwaKey)) {
+        agents.push(agentId);
+      }
+    }
+    return agents;
+  }
+
+  removeAllWatchersForPwa(pwaKey: string): void {
+    for (const [agentId, watchers] of this.agentWatchers) {
+      watchers.delete(pwaKey);
+      if (watchers.size === 0) {
+        this.agentWatchers.delete(agentId);
+      }
+    }
+  }
+
+  getAgentWatchers(agentId: string): Set<string> {
+    return this.agentWatchers.get(agentId) || new Set();
   }
 
   incrementMessagesRelayed(): void {
