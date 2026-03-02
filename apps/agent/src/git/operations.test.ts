@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { GitOperations } from './operations.js';
-import { mkdir, writeFile, rm } from 'fs/promises';
+import { mkdir, writeFile, rm, readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { simpleGit } from 'simple-git';
@@ -256,6 +256,84 @@ describe('GitOperations', () => {
 
       status = await gitOps.getStatus();
       expect(status.unstaged).toHaveLength(0);
+    });
+  });
+
+  describe('untrack', () => {
+    it('should remove a tracked file from the index but keep it on disk', async () => {
+      await gitOps.untrack(['README.md']);
+      const status = await gitOps.getStatus();
+      expect(status.untracked).toContain('README.md');
+      expect(status.staged.some(f => f.path === 'README.md' && f.status === 'deleted')).toBe(true);
+    });
+
+    it('should untrack multiple files', async () => {
+      await writeFile(join(testRepoPath, 'tracked.txt'), 'content');
+      await simpleGit(testRepoPath).add('tracked.txt');
+      await simpleGit(testRepoPath).commit('Add tracked.txt');
+      await gitOps.untrack(['README.md', 'tracked.txt']);
+      const status = await gitOps.getStatus();
+      expect(status.untracked).toContain('README.md');
+      expect(status.untracked).toContain('tracked.txt');
+    });
+  });
+
+  describe('readGitignore', () => {
+    it('should return empty string and exists=false when .gitignore does not exist', async () => {
+      const result = await gitOps.readGitignore();
+      expect(result.content).toBe('');
+      expect(result.exists).toBe(false);
+    });
+
+    it('should return content and exists=true when .gitignore exists', async () => {
+      await writeFile(join(testRepoPath, '.gitignore'), 'node_modules/\n*.log\n');
+      const result = await gitOps.readGitignore();
+      expect(result.content).toBe('node_modules/\n*.log\n');
+      expect(result.exists).toBe(true);
+    });
+  });
+
+  describe('writeGitignore', () => {
+    it('should create .gitignore if it does not exist', async () => {
+      await gitOps.writeGitignore('node_modules/\n');
+      const content = await readFile(join(testRepoPath, '.gitignore'), 'utf-8');
+      expect(content).toBe('node_modules/\n');
+    });
+
+    it('should overwrite existing .gitignore content', async () => {
+      await writeFile(join(testRepoPath, '.gitignore'), 'old\n');
+      await gitOps.writeGitignore('new\n');
+      const content = await readFile(join(testRepoPath, '.gitignore'), 'utf-8');
+      expect(content).toBe('new\n');
+    });
+  });
+
+  describe('addToGitignore', () => {
+    it('should create .gitignore and add pattern if file does not exist', async () => {
+      await gitOps.addToGitignore('node_modules/');
+      const content = await readFile(join(testRepoPath, '.gitignore'), 'utf-8');
+      expect(content).toBe('node_modules/\n');
+    });
+
+    it('should append pattern to existing .gitignore', async () => {
+      await writeFile(join(testRepoPath, '.gitignore'), 'node_modules/\n');
+      await gitOps.addToGitignore('*.log');
+      const content = await readFile(join(testRepoPath, '.gitignore'), 'utf-8');
+      expect(content).toBe('node_modules/\n*.log\n');
+    });
+
+    it('should ensure newline before appending if missing', async () => {
+      await writeFile(join(testRepoPath, '.gitignore'), 'node_modules/');
+      await gitOps.addToGitignore('*.log');
+      const content = await readFile(join(testRepoPath, '.gitignore'), 'utf-8');
+      expect(content).toBe('node_modules/\n*.log\n');
+    });
+
+    it('should not duplicate an existing pattern', async () => {
+      await writeFile(join(testRepoPath, '.gitignore'), 'node_modules/\n');
+      await gitOps.addToGitignore('node_modules/');
+      const content = await readFile(join(testRepoPath, '.gitignore'), 'utf-8');
+      expect(content).toBe('node_modules/\n');
     });
   });
 

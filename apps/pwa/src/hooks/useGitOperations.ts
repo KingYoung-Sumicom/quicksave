@@ -11,6 +11,10 @@ import {
   type BranchesResponsePayload,
   type CheckoutResponsePayload,
   type DiscardResponsePayload,
+  type UntrackResponsePayload,
+  type GitignoreAddResponsePayload,
+  type GitignoreReadResponsePayload,
+  type GitignoreWriteResponsePayload,
   type GenerateCommitSummaryResponsePayload,
   type SetApiKeyResponsePayload,
   type GetApiKeyStatusResponsePayload,
@@ -286,6 +290,73 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     [sendRequest, fetchStatus, setLoading, setError]
   );
 
+  const untrackFiles = useCallback(
+    async (paths: string[]) => {
+      setLoading(true);
+      try {
+        const message = createMessage('git:untrack', { paths });
+        const response = await sendRequest<UntrackResponsePayload>(message);
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to untrack files');
+        }
+        await fetchStatus();
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Failed to untrack files');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [sendRequest, fetchStatus, setLoading, setError]
+  );
+
+  const addToGitignore = useCallback(
+    async (pattern: string) => {
+      setLoading(true);
+      try {
+        const message = createMessage('git:gitignore-add', { pattern });
+        const response = await sendRequest<GitignoreAddResponsePayload>(message);
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to add to .gitignore');
+        }
+        await fetchStatus();
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Failed to add to .gitignore');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [sendRequest, fetchStatus, setLoading, setError]
+  );
+
+  const readGitignore = useCallback(async () => {
+    try {
+      const message = createMessage('git:gitignore-read', {});
+      const response = await sendRequest<GitignoreReadResponsePayload>(message);
+      return response;
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Failed to read .gitignore');
+      return null;
+    }
+  }, [sendRequest, setError]);
+
+  const writeGitignore = useCallback(
+    async (content: string) => {
+      try {
+        const message = createMessage('git:gitignore-write', { content });
+        const response = await sendRequest<GitignoreWriteResponsePayload>(message);
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to write .gitignore');
+        }
+        await fetchStatus();
+        return true;
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Failed to write .gitignore');
+        return false;
+      }
+    },
+    [sendRequest, fetchStatus, setError]
+  );
+
   const generateCommitSummary = useCallback(
     async (context?: string, model?: ClaudeModel) => {
       setGeneratingAiSummary(true);
@@ -424,6 +495,10 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     fetchBranches,
     checkout,
     discardChanges,
+    untrackFiles,
+    addToGitignore,
+    readGitignore,
+    writeGitignore,
     generateCommitSummary,
     setApiKey,
     checkApiKeyStatus,

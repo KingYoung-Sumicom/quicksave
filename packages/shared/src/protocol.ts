@@ -87,6 +87,10 @@ export const REQUEST_RESPONSE_MAP: Record<string, string> = {
   'git:branches': 'git:branches:response',
   'git:checkout': 'git:checkout:response',
   'git:discard': 'git:discard:response',
+  'git:untrack': 'git:untrack:response',
+  'git:gitignore-add': 'git:gitignore-add:response',
+  'git:gitignore-read': 'git:gitignore-read:response',
+  'git:gitignore-write': 'git:gitignore-write:response',
   handshake: 'handshake:ack',
   ping: 'pong',
 };

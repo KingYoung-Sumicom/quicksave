@@ -36,6 +36,14 @@ export type MessageType =
   | 'git:checkout:response'
   | 'git:discard'
   | 'git:discard:response'
+  | 'git:untrack'
+  | 'git:untrack:response'
+  | 'git:gitignore-add'
+  | 'git:gitignore-add:response'
+  | 'git:gitignore-read'
+  | 'git:gitignore-read:response'
+  | 'git:gitignore-write'
+  | 'git:gitignore-write:response'
   | 'ai:generate-commit-summary'
   | 'ai:generate-commit-summary:response'
   | 'ai:set-api-key'
@@ -215,6 +223,44 @@ export interface DiscardRequestPayload {
 }
 
 export interface DiscardResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+// Untrack (git rm --cached)
+export interface UntrackRequestPayload {
+  paths: string[];
+}
+
+export interface UntrackResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+// Gitignore - Add pattern
+export interface GitignoreAddRequestPayload {
+  pattern: string;
+}
+
+export interface GitignoreAddResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+// Gitignore - Read
+export type GitignoreReadRequestPayload = Record<string, never>;
+
+export interface GitignoreReadResponsePayload {
+  content: string;
+  exists: boolean;
+}
+
+// Gitignore - Write
+export interface GitignoreWriteRequestPayload {
+  content: string;
+}
+
+export interface GitignoreWriteResponsePayload {
   success: boolean;
   error?: string;
 }

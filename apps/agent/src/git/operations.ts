@@ -336,6 +336,51 @@ export class GitOperations {
   }
 
   /**
+   * Untrack files (git rm --cached) — removes from index, keeps on disk
+   */
+  async untrack(paths: string[]): Promise<void> {
+    await this.ensureInitialized();
+    await this.git.rm(['--cached', ...paths]);
+  }
+
+  /**
+   * Read .gitignore content
+   */
+  async readGitignore(): Promise<{ content: string; exists: boolean }> {
+    const gitRoot = await this.getGitRoot();
+    const gitignorePath = join(gitRoot, '.gitignore');
+    try {
+      const content = await readFile(gitignorePath, 'utf-8');
+      return { content, exists: true };
+    } catch {
+      return { content: '', exists: false };
+    }
+  }
+
+  /**
+   * Write .gitignore content
+   */
+  async writeGitignore(content: string): Promise<void> {
+    const gitRoot = await this.getGitRoot();
+    const gitignorePath = join(gitRoot, '.gitignore');
+    await writeFile(gitignorePath, content, 'utf-8');
+  }
+
+  /**
+   * Add a pattern to .gitignore (appends, avoids duplicates)
+   */
+  async addToGitignore(pattern: string): Promise<void> {
+    const { content } = await this.readGitignore();
+    const lines = content.split('\n');
+    if (lines.some(line => line === pattern)) {
+      return;
+    }
+    const prefix = content.length > 0 && !content.endsWith('\n') ? '\n' : '';
+    const newContent = content + prefix + pattern + '\n';
+    await this.writeGitignore(newContent);
+  }
+
+  /**
    * Check if path is a valid git repository
    */
   async isValidRepo(): Promise<boolean> {

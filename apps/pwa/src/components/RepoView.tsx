@@ -25,6 +25,8 @@ interface RepoViewProps {
   onStagePatch: (patch: string) => void;
   onUnstagePatch: (patch: string) => void;
   onDiscard: (paths: string[]) => void;
+  onUntrack: (paths: string[]) => void;
+  onAddToGitignore: (pattern: string) => void;
   onCommit: (message: string, description?: string) => Promise<void>;
   onGenerateAiSummary: () => Promise<void>;
   onSetApiKey: (apiKey: string) => Promise<boolean>;
@@ -110,12 +112,13 @@ export function RepoView({
   onStagePatch,
   onUnstagePatch,
   onDiscard: _onDiscard,
+  onUntrack,
+  onAddToGitignore,
   onCommit,
   onGenerateAiSummary,
   onSetApiKey,
 }: RepoViewProps) {
-  // TODO: Add discard UI (onDiscard will be used in future)
-  void _onDiscard;
+  void _onDiscard; // Will be used in future discard UI
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const {
     expandedDiffs,
@@ -301,8 +304,10 @@ export function RepoView({
           files={staged}
           type="staged"
           onFileClick={(path) => handleFileClick(path, 'staged')}
-          onAction={onUnstage}
-          actionLabel="Unstage"
+          actions={[
+            { label: 'Unstage', onAction: onUnstage, primary: true },
+            { label: 'Untrack', onAction: onUntrack },
+          ]}
           expandedDiffs={expandedDiffs}
           loadingDiffs={loadingDiffs}
           onCloseDiff={handleCloseDiff}
@@ -319,8 +324,10 @@ export function RepoView({
           files={unstaged}
           type="unstaged"
           onFileClick={(path) => handleFileClick(path, 'unstaged')}
-          onAction={onStage}
-          actionLabel="Stage"
+          actions={[
+            { label: 'Stage', onAction: onStage, primary: true },
+            { label: 'Untrack', onAction: onUntrack },
+          ]}
           expandedDiffs={expandedDiffs}
           loadingDiffs={loadingDiffs}
           onCloseDiff={handleCloseDiff}
@@ -337,8 +344,10 @@ export function RepoView({
           files={untracked.map((path) => ({ path, status: 'added' as const }))}
           type="untracked"
           onFileClick={(path) => handleFileClick(path, 'untracked')}
-          onAction={onStage}
-          actionLabel="Stage"
+          actions={[
+            { label: 'Stage', onAction: onStage, primary: true },
+            { label: 'Ignore', onAction: (paths) => paths.forEach(p => onAddToGitignore(p)) },
+          ]}
           expandedDiffs={expandedDiffs}
           loadingDiffs={loadingDiffs}
           onCloseDiff={handleCloseDiff}

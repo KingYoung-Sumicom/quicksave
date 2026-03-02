@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { MessageHandler } from './messageHandler.js';
 import { createMessage } from '@sumicom/quicksave-shared';
-import { mkdir, writeFile, rm } from 'fs/promises';
+import { mkdir, writeFile, rm, readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { simpleGit } from 'simple-git';
@@ -266,6 +266,56 @@ describe('MessageHandler', () => {
       const statusMsg = createMessage('git:status', {});
       const statusResp = await handler.handleMessage(statusMsg);
       expect((statusResp.payload as any).unstaged).toHaveLength(0);
+    });
+  });
+
+  describe('handleMessage - git:untrack', () => {
+    it('should untrack a tracked file', async () => {
+      const message = createMessage('git:untrack', { paths: ['README.md'] });
+      const response = await handler.handleMessage(message);
+      expect(response.type).toBe('git:untrack:response');
+      expect(response.id).toBe(message.id);
+      expect((response.payload as any).success).toBe(true);
+    });
+  });
+
+  describe('handleMessage - git:gitignore-add', () => {
+    it('should add a pattern to .gitignore', async () => {
+      const message = createMessage('git:gitignore-add', { pattern: 'node_modules/' });
+      const response = await handler.handleMessage(message);
+      expect(response.type).toBe('git:gitignore-add:response');
+      expect((response.payload as any).success).toBe(true);
+      const content = await readFile(join(testRepoPath, '.gitignore'), 'utf-8');
+      expect(content).toContain('node_modules/');
+    });
+  });
+
+  describe('handleMessage - git:gitignore-read', () => {
+    it('should read .gitignore content', async () => {
+      await writeFile(join(testRepoPath, '.gitignore'), '*.log\n');
+      const message = createMessage('git:gitignore-read', {});
+      const response = await handler.handleMessage(message);
+      expect(response.type).toBe('git:gitignore-read:response');
+      expect((response.payload as any).content).toBe('*.log\n');
+      expect((response.payload as any).exists).toBe(true);
+    });
+
+    it('should return empty when .gitignore does not exist', async () => {
+      const message = createMessage('git:gitignore-read', {});
+      const response = await handler.handleMessage(message);
+      expect((response.payload as any).content).toBe('');
+      expect((response.payload as any).exists).toBe(false);
+    });
+  });
+
+  describe('handleMessage - git:gitignore-write', () => {
+    it('should write .gitignore content', async () => {
+      const message = createMessage('git:gitignore-write', { content: 'dist/\n*.log\n' });
+      const response = await handler.handleMessage(message);
+      expect(response.type).toBe('git:gitignore-write:response');
+      expect((response.payload as any).success).toBe(true);
+      const content = await readFile(join(testRepoPath, '.gitignore'), 'utf-8');
+      expect(content).toBe('dist/\n*.log\n');
     });
   });
 

@@ -13,6 +13,7 @@ interface StatusBarProps {
   onDisconnect: () => void;
   onSwitchMachine?: (agentId: string) => void;
   onSwitchRepo?: () => void;
+  onOpenGitignore?: () => void;
 }
 
 export function StatusBar({
@@ -24,6 +25,7 @@ export function StatusBar({
   onDisconnect,
   onSwitchMachine,
   onSwitchRepo,
+  onOpenGitignore,
 }: StatusBarProps) {
   const [showSwitcher, setShowSwitcher] = useState(false);
   const machines = useMachineStore(selectSortedMachines);
@@ -168,6 +170,17 @@ export function StatusBar({
                 {ahead > 0 && behind > 0 && ' '}
                 {behind > 0 && <span className="text-red-400">↓{behind}</span>}
               </span>
+            )}
+
+            {/* Gitignore Editor */}
+            {onOpenGitignore && (
+              <button
+                onClick={onOpenGitignore}
+                className="text-xs px-1.5 py-0.5 text-slate-500 hover:text-slate-300 hover:bg-slate-600 rounded transition-colors font-mono"
+                title="Edit .gitignore"
+              >
+                .gitignore
+              </button>
             )}
           </div>
 

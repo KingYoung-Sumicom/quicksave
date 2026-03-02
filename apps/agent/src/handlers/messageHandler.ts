@@ -22,6 +22,13 @@ import {
   CheckoutResponsePayload,
   DiscardRequestPayload,
   DiscardResponsePayload,
+  UntrackRequestPayload,
+  UntrackResponsePayload,
+  GitignoreAddRequestPayload,
+  GitignoreAddResponsePayload,
+  GitignoreReadResponsePayload,
+  GitignoreWriteRequestPayload,
+  GitignoreWriteResponsePayload,
   ErrorPayload,
   HandshakePayload,
   HandshakeAckPayload,
@@ -139,6 +146,14 @@ export class MessageHandler {
           return this.handleCheckout(message as Message<CheckoutRequestPayload>, peerAddress);
         case 'git:discard':
           return this.handleDiscard(message as Message<DiscardRequestPayload>, peerAddress);
+        case 'git:untrack':
+          return this.handleUntrack(message as Message<UntrackRequestPayload>, peerAddress);
+        case 'git:gitignore-add':
+          return this.handleGitignoreAdd(message as Message<GitignoreAddRequestPayload>, peerAddress);
+        case 'git:gitignore-read':
+          return this.handleGitignoreRead(message, peerAddress);
+        case 'git:gitignore-write':
+          return this.handleGitignoreWrite(message as Message<GitignoreWriteRequestPayload>, peerAddress);
         case 'ai:generate-commit-summary':
           return this.handleGenerateCommitSummary(message as Message<GenerateCommitSummaryRequestPayload>, peerAddress);
         case 'ai:set-api-key':
@@ -390,6 +405,94 @@ export class MessageHandler {
       const response = createMessage<DiscardResponsePayload>('git:discard:response', {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to discard changes',
+      });
+      response.id = message.id;
+      return response;
+    } finally {
+      this.releaseRepoLock(repoPath, peerAddress);
+    }
+  }
+
+  private async handleUntrack(message: Message<UntrackRequestPayload>, peerAddress: string): Promise<Message<UntrackResponsePayload>> {
+    const repoPath = this.getClientRepoPath(peerAddress);
+    if (!this.acquireRepoLock(repoPath, peerAddress)) {
+      const response = createMessage<UntrackResponsePayload>('git:untrack:response', {
+        success: false,
+        error: 'Repository is busy — another device is performing an operation',
+      });
+      response.id = message.id;
+      return response;
+    }
+    try {
+      await this.getGit(peerAddress).untrack(message.payload.paths);
+      const response = createMessage<UntrackResponsePayload>('git:untrack:response', { success: true });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<UntrackResponsePayload>('git:untrack:response', {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to untrack files',
+      });
+      response.id = message.id;
+      return response;
+    } finally {
+      this.releaseRepoLock(repoPath, peerAddress);
+    }
+  }
+
+  private async handleGitignoreAdd(message: Message<GitignoreAddRequestPayload>, peerAddress: string): Promise<Message<GitignoreAddResponsePayload>> {
+    const repoPath = this.getClientRepoPath(peerAddress);
+    if (!this.acquireRepoLock(repoPath, peerAddress)) {
+      const response = createMessage<GitignoreAddResponsePayload>('git:gitignore-add:response', {
+        success: false,
+        error: 'Repository is busy — another device is performing an operation',
+      });
+      response.id = message.id;
+      return response;
+    }
+    try {
+      await this.getGit(peerAddress).addToGitignore(message.payload.pattern);
+      const response = createMessage<GitignoreAddResponsePayload>('git:gitignore-add:response', { success: true });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<GitignoreAddResponsePayload>('git:gitignore-add:response', {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to add to .gitignore',
+      });
+      response.id = message.id;
+      return response;
+    } finally {
+      this.releaseRepoLock(repoPath, peerAddress);
+    }
+  }
+
+  private async handleGitignoreRead(message: Message, peerAddress: string): Promise<Message<GitignoreReadResponsePayload>> {
+    const { content, exists } = await this.getGit(peerAddress).readGitignore();
+    const response = createMessage<GitignoreReadResponsePayload>('git:gitignore-read:response', { content, exists });
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleGitignoreWrite(message: Message<GitignoreWriteRequestPayload>, peerAddress: string): Promise<Message<GitignoreWriteResponsePayload>> {
+    const repoPath = this.getClientRepoPath(peerAddress);
+    if (!this.acquireRepoLock(repoPath, peerAddress)) {
+      const response = createMessage<GitignoreWriteResponsePayload>('git:gitignore-write:response', {
+        success: false,
+        error: 'Repository is busy — another device is performing an operation',
+      });
+      response.id = message.id;
+      return response;
+    }
+    try {
+      await this.getGit(peerAddress).writeGitignore(message.payload.content);
+      const response = createMessage<GitignoreWriteResponsePayload>('git:gitignore-write:response', { success: true });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<GitignoreWriteResponsePayload>('git:gitignore-write:response', {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to write .gitignore',
       });
       response.id = message.id;
       return response;

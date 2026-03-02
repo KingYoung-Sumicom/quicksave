@@ -7,13 +7,18 @@ import { makeSelectionKey } from '../stores/gitStore';
 
 type DiffKey = SelectionKey;
 
+export interface FileAction {
+  label: string;
+  onAction: (paths: string[]) => void;
+  primary?: boolean;
+}
+
 interface FileListProps {
   title: string;
   files: FileChange[] | string[];
   type: SelectionSource;
   onFileClick: (path: string) => void;
-  onAction: (paths: string[]) => void;
-  actionLabel: string;
+  actions: FileAction[];
   expandedDiffs: Record<DiffKey, FileDiff>;
   loadingDiffs: Set<DiffKey>;
   onCloseDiff: (key: DiffKey) => void;
@@ -106,8 +111,7 @@ export function FileList({
   files,
   type,
   onFileClick,
-  onAction,
-  actionLabel,
+  actions,
   expandedDiffs,
   loadingDiffs,
   onCloseDiff,
@@ -117,6 +121,8 @@ export function FileList({
   onToggleLineSelection,
   onSelectAllFiles,
 }: FileListProps) {
+  const primaryAction = actions.find(a => a.primary) || actions[0];
+  const secondaryActions = actions.filter(a => a !== primaryAction);
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
   const [isCollapsed, setIsCollapsed] = useState(false);
 
@@ -257,16 +263,31 @@ export function FileList({
             {/* File Name (just the filename, not full path) */}
             <span className="flex-1 text-sm truncate font-mono">{node.name}</span>
 
-            {/* Quick Action */}
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onAction([path]);
-              }}
-              className="text-xs px-2 py-0.5 bg-slate-600 hover:bg-slate-500 rounded opacity-0 group-hover:opacity-100 transition-all flex-shrink-0"
-            >
-              {actionLabel}
-            </button>
+            {/* Quick Actions */}
+            <div className="flex items-center gap-1 flex-shrink-0">
+              {secondaryActions.map((action) => (
+                <button
+                  key={action.label}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    action.onAction([path]);
+                  }}
+                  className="text-xs px-1.5 py-0.5 text-slate-400 hover:text-white hover:bg-slate-600 rounded opacity-0 group-hover:opacity-100 transition-all"
+                  title={action.label}
+                >
+                  {action.label}
+                </button>
+              ))}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  primaryAction.onAction([path]);
+                }}
+                className="text-xs px-2 py-0.5 bg-slate-600 hover:bg-slate-500 rounded opacity-0 group-hover:opacity-100 transition-all"
+              >
+                {primaryAction.label}
+              </button>
+            </div>
           </div>
 
           {/* Inline Diff */}
@@ -424,11 +445,11 @@ export function FileList({
         <button
           onClick={(e) => {
             e.stopPropagation();
-            onAction(allPaths);
+            primaryAction.onAction(allPaths);
           }}
           className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded transition-colors"
         >
-          {actionLabel} All
+          {primaryAction.label} All
         </button>
       </div>
 

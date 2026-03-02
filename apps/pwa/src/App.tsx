@@ -12,6 +12,7 @@ import { ConnectingPage } from './components/ConnectingPage';
 import { StatusBar } from './components/StatusBar';
 import { RepoView } from './components/RepoView';
 import { RepoSwitcher } from './components/RepoSwitcher';
+import { GitignoreEditor } from './components/GitignoreEditor';
 import { getApiKey, saveApiKey as saveApiKeyToStorage, exportMasterSecret, importMasterSecret } from './lib/secureStorage';
 import { SyncClient } from './lib/syncClient';
 
@@ -56,6 +57,10 @@ function AppContent() {
     unstagePatch,
     commit,
     discardChanges,
+    untrackFiles,
+    addToGitignore,
+    readGitignore,
+    writeGitignore,
     generateCommitSummary,
     setApiKey,
     checkApiKeyStatus,
@@ -66,6 +71,7 @@ function AppContent() {
   } = useGitOperations(clientRef);
 
   const [showRepoSwitcher, setShowRepoSwitcher] = useState(false);
+  const [showGitignoreEditor, setShowGitignoreEditor] = useState(false);
 
   // Initialize identity store (persistent X25519 keypair) on startup
   useEffect(() => {
@@ -395,6 +401,7 @@ function AppContent() {
           onDisconnect={handleDisconnect}
           onSwitchMachine={handleSwitchMachine}
           onSwitchRepo={() => setShowRepoSwitcher(true)}
+          onOpenGitignore={() => setShowGitignoreEditor(true)}
         />
         <RepoSwitcher
           isOpen={showRepoSwitcher}
@@ -412,13 +419,21 @@ function AppContent() {
           onStagePatch={stagePatch}
           onUnstagePatch={unstagePatch}
           onDiscard={discardChanges}
+          onUntrack={untrackFiles}
+          onAddToGitignore={addToGitignore}
           onCommit={async (msg, desc) => { await commit(msg, desc); }}
           onGenerateAiSummary={generateCommitSummary}
           onSetApiKey={setApiKey}
         />
+        <GitignoreEditor
+          isOpen={showGitignoreEditor}
+          onClose={() => setShowGitignoreEditor(false)}
+          onRead={readGitignore}
+          onWrite={writeGitignore}
+        />
       </>
     );
-  }, [isConnected, isReconnecting, reconnectAttempt, maxReconnectAttempts, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, commit, generateCommitSummary, setApiKey, showRepoSwitcher, listRepos, switchRepo]);
+  }, [isConnected, isReconnecting, reconnectAttempt, maxReconnectAttempts, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, readGitignore, writeGitignore, commit, generateCommitSummary, setApiKey, showRepoSwitcher, showGitignoreEditor, listRepos, switchRepo]);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-900 text-slate-100">
