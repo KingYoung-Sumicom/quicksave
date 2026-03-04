@@ -33,4 +33,4 @@ coverage/
 
 # Claude Code (keep shared settings, ignore local)
 .claude/settings.local.json
-CLAUDE.md
+**/CLAUDE.md
