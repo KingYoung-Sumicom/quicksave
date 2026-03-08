@@ -149,16 +149,16 @@ interface ParsedUrl {
 }
 
 function parseUrl(url: string): ParsedUrl | null {
-  // New: /pwa/key/{publicKey} - URL-encoded base64 public key
-  const pwaKeyMatch = url.match(/^\/pwa\/key\/([a-zA-Z0-9_\-%.]+)$/);
+  // /pwa/{publicKey} - URL-encoded base64 public key
+  const pwaKeyMatch = url.match(/^\/pwa\/([a-zA-Z0-9_\-%.]+)$/);
   if (pwaKeyMatch) {
     const publicKey = decodeURIComponent(pwaKeyMatch[1]);
-    if (publicKey.length < 8 || publicKey.length > 512) return null;
-    return { role: 'pwa', id: publicKey, isPwaKey: true };
+    if (publicKey.length >= 8) return { role: 'pwa', id: publicKey, isPwaKey: true };
+    return null;
   }
 
-  // Legacy: /agent/{agentId} or /pwa/{agentId}
-  const match = url.match(/^\/(agent|pwa)\/([a-zA-Z0-9_-]+)$/);
+  // /agent/{agentId}
+  const match = url.match(/^\/(agent)\/([a-zA-Z0-9_-]+)$/);
   if (!match) return null;
 
   const [, role, agentId] = match;

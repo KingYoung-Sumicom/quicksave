@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
-import { signalingServerPlugin } from './vite-plugin-signaling';
+import { signalingServerPlugin } from './vite-plugin-relay';
 
 export default defineConfig({
   envPrefix: ['VITE_', 'QUICKSAVE_'],

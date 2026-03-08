@@ -35,7 +35,7 @@ Two independent layers protect the server:
 ## Build
 
 ```bash
-cd apps/signaling
+cd apps/relay
 
 # Development (watch mode)
 npm run dev

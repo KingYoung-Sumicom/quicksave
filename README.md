@@ -42,26 +42,26 @@ pnpm --filter @sumicom/quicksave-shared build
 pnpm dev
 ```
 
-This runs Vite with an embedded signaling server on port 5173. Access the PWA at `http://localhost:5173/` with full HMR support.
+This runs Vite with an embedded relay server on port 5173. Access the PWA at `http://localhost:5173/` with full HMR support.
 
 ### Running Components Separately
 
-#### Signaling Server (standalone)
+#### Relay Server (standalone)
 
-For production or testing the standalone signaling server:
+For production or testing the standalone relay server:
 
 ```bash
-# Start signaling server only (port 8080)
-pnpm dev:signaling
+# Start relay server only (port 8080)
+pnpm dev:relay
 
 # Custom port
-PORT=3001 pnpm dev:signaling
+PORT=3001 pnpm dev:relay
 ```
 
 #### Agent
 
 ```bash
-# Start agent pointing to local signaling server
+# Start agent pointing to local relay server
 QUICKSAVE_SIGNALING_URL=ws://localhost:8080 pnpm dev:agent -- --repo /path/to/repo
 
 # Or use the -s flag
@@ -74,7 +74,7 @@ pnpm dev:agent -- --repo /path/to/repo -s ws://localhost:8080
 # Start PWA dev server (uses production signaling by default)
 pnpm dev:pwa
 
-# Or point to local signaling server
+# Or point to local relay server
 QUICKSAVE_SIGNALING_URL=ws://localhost:8080 pnpm dev:pwa
 ```
 
@@ -84,11 +84,28 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed technical documentation.
 
 ## Self-Hosting
 
-Quicksave is open source. You can:
+Quicksave is fully self-hostable. You need two things: a relay server and a PWA build pointed at it.
 
-1. Fork this repo
-2. Build and deploy the PWA to any static host
-3. Implement your own signaling server (protocol documented in ARCHITECTURE.md)
+### 1. Deploy the Relay Server
+
+The relay server is a stateless Node.js process. Run it with Docker:
+
+```bash
+docker build -f apps/relay/Dockerfile -t quicksave-relay .
+docker run -p 8080:8080 quicksave-relay
+```
+
+Put it behind a reverse proxy (nginx, Caddy, Cloudflare) that terminates TLS — the relay itself only speaks plain HTTP/WebSocket.
+
+### 2. Build and Deploy the PWA
+
+Point the PWA at your relay server at build time:
+
+```bash
+QUICKSAVE_SIGNALING_URL=wss://your-relay.example.com pnpm build:pwa
+```
+
+Then deploy `apps/pwa/dist/` to any static host (Cloudflare Pages, Netlify, S3, etc.).
 
 ## License
 

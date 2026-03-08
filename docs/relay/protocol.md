@@ -2,18 +2,17 @@
 
 ## WebSocket URL Patterns
 
-Three URL patterns are supported for WebSocket connections:
+Two URL patterns are supported for WebSocket connections:
 
 | URL | Role | Description |
 |-----|------|-------------|
 | `/agent/{agentId}` | agent | Desktop agent connecting |
-| `/pwa/{agentId}` | pwa | PWA client connecting to a specific agent (legacy) |
-| `/pwa/key/{publicKey}` | pwa (key-based) | PWA connecting by its own public key |
+| `/pwa/{publicKey}` | pwa | PWA client connecting by its own public key |
 
 ### ID Validation
 
 - **agentId**: 8–64 characters, alphanumeric plus `-` and `_`
-- **publicKey**: 8–512 characters after URL-decoding. Allows base64 characters including `+`, `/`, `=` (URL-encoded as `%2B`, `%2F`, `%3D`)
+- **publicKey**: 8+ characters after URL-decoding. Allows base64 characters including `+`, `/`, `=` (URL-encoded as `%2B`, `%2F`, `%3D`)
 
 Extra path segments, query parameters, and fragments are rejected.
 
@@ -21,17 +20,14 @@ Extra path segments, query parameters, and fragments are rejected.
 
 ### Control Messages (server-originated)
 
-These are messages the signaling server itself sends or processes:
+These are messages the relay server itself sends or processes:
 
 | Type | Direction | Description |
 |------|-----------|-------------|
-| `peer-connected` | server → both | Sent to agent and PWA when both sides of a legacy pair are connected |
-| `peer-offline` | server → PWA | Agent is not connected when legacy PWA connects |
-| `agent-status` | server → key-based PWA | Agent online/offline status (response to `watch-agent`, and on connect/disconnect) |
-| `pwa-bye` | server → agent | Key-based PWA disconnected. Payload: `{pwaAddress}` |
-| `bye` | server → agent | Legacy PWA disconnected |
+| `agent-status` | server → PWA | Agent online/offline status (response to `watch-agent`, and on agent connect/disconnect) |
+| `pwa-bye` | server → agent | PWA disconnected. Payload: `{pwaAddress}` |
 | `error` | server → client | Error with a code (see below) |
-| `watch-agent` | key-based PWA → server | Subscribe to an agent's online/offline status. Payload: `{agentId}` |
+| `watch-agent` | PWA → server | Subscribe to an agent's online/offline status. Payload: `{agentId}` |
 
 ### Error Codes
 
@@ -39,8 +35,8 @@ These are messages the signaling server itself sends or processes:
 |------|---------|
 | `RATE_LIMITED` | Connection or message rate exceeded |
 | `INVALID_URL` | URL doesn't match any known pattern |
-| `AGENT_ID_IN_USE` | Agent tried to connect with an already-registered agentId |
-| `REPLACED` | Duplicate key-based PWA connection displaced existing one |
+| `ID_IN_USE` | Agent tried to connect with an already-registered agentId |
+| `REPLACED` | Duplicate PWA connection displaced existing one |
 | `INVALID_FROM` | Routed message `from` field doesn't match sender's identity |
 
 ### Routed Messages (relayed opaquely)
@@ -59,8 +55,7 @@ interface RoutedMessage {
 
 **From-field validation**:
 - Agents: `from` must equal `agent:{agentId}`
-- Key-based PWAs: `from` must equal `pwa:{pwaKey}`
-- Legacy PWAs: `from` must equal `pwa:{agentId}`
+- PWAs: `from` must equal `pwa:{publicKey}`
 
 ### Application Messages (relayed through signaling)
 
@@ -73,28 +68,15 @@ These flow between agent and PWA as encrypted payloads inside routed messages. T
 - `agent:*` — agent control operations
 - `error` — application-level errors
 
-## Message Flow Examples
+## Message Flow
 
-### Legacy Pairing
-
-```
-Agent                    Server                    PWA
-  │                        │                        │
-  ├──ws://.../agent/abc──►│                        │
-  │                        │◄──ws://.../pwa/abc────┤
-  │◄──peer-connected──────│──peer-connected───────►│
-  │                        │                        │
-  │◄═══════════════════════╪════════════════════════╡
-  │    (routed messages with from/to/payload)       │
-```
-
-### Key-Based Connection
+### PWA Connection and Agent Watching
 
 ```
 Agent                    Server                    PWA
   │                        │                        │
   ├──ws://.../agent/abc──►│                        │
-  │                        │◄──ws://.../pwa/key/K──┤
+  │                        │◄──ws://.../pwa/K──────┤
   │                        │◄──watch-agent(abc)────┤
   │                        │──agent-status(online)─►│
   │                        │                        │

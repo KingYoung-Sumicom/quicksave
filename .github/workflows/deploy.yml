@@ -46,7 +46,7 @@ jobs:
           name: dist-${{ github.ref == 'refs/heads/stable' && 'production' || 'staging' }}
           path: |
             apps/pwa/dist/
-            apps/signaling/dist/
+            apps/relay/dist/
           retention-days: 7
 
   deploy-staging:

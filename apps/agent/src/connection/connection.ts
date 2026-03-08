@@ -14,7 +14,7 @@ import {
   type KeyPair,
   type KeyExchangeV2,
 } from '@sumicom/quicksave-shared';
-import { SignalingClient } from './signaling.js';
+import { SignalingClient } from './relay.js';
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);

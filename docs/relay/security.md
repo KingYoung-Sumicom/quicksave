@@ -2,7 +2,7 @@
 
 ## Overview
 
-The signaling server performs **no authentication or encryption**. All security is end-to-end between agent and PWA using NaCl cryptographic primitives (via `tweetnacl`).
+The relay server performs **no authentication or encryption**. All security is end-to-end between agent and PWA using NaCl cryptographic primitives (via `tweetnacl`).
 
 The server's only security-related validation is checking that the `from` field on routed messages matches the sender's registered identity — preventing connection impersonation.
 
@@ -55,7 +55,7 @@ interface KeyExchangeV2 {
 ```
 
 **Properties:**
-- The sealed-box pattern means the signaling server cannot derive the DEK even if it wanted to
+- The sealed-box pattern means the relay server cannot derive the DEK even if it wanted to
 - The sender's identity is not revealed in the ciphertext (ephemeral key pair used)
 - The `timestamp` provides replay protection
 - After exchange, all application messages use symmetric encryption with the shared DEK
@@ -72,7 +72,7 @@ The sync store holds encrypted pairing backups so PWAs can restore state across 
 
 ## Licensing
 
-Licenses are verified at the agent layer, not by the signaling server:
+Licenses are verified at the agent layer, not by the relay server:
 
 ```typescript
 interface License {
