@@ -51,7 +51,6 @@ interface RoutedEnvelope {
 
 export class WebSocketClient {
   private signalingServer: string;
-  private identityPublicKey: string;
   private connectionId: string; // Unique per window to allow multiple tabs
   private ws: WebSocket | null = null;
   private eventHandlers: ConnectionEventHandler;
@@ -81,8 +80,8 @@ export class WebSocketClient {
     handlers: ConnectionEventHandler
   ) {
     this.signalingServer = signalingServer;
-    this.identityPublicKey = identityPublicKey;
-    this.connectionId = `${identityPublicKey}.${crypto.randomUUID().slice(0, 8)}`;
+    const suffix = Math.random().toString(36).slice(2, 10);
+    this.connectionId = `${identityPublicKey}.${suffix}`;
     this.eventHandlers = handlers;
   }
 
