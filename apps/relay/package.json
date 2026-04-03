@@ -14,7 +14,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@sumicom/ws-relay": "^0.1.0",
+    "@sumicom/ws-relay": "^0.1.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {

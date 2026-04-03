@@ -119,8 +119,8 @@ importers:
   apps/relay:
     dependencies:
       '@sumicom/ws-relay':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.1.1
+        version: 0.1.1
       ws:
         specifier: ^8.18.0
         version: 8.19.0
@@ -1335,8 +1335,8 @@ packages:
   '@sinclair/typebox@0.27.8':
     resolution: {integrity: sha512-+Fj43pSMwJs4KRrH/938Uf+uAELIgVBmQzg/q1YG10djyfA3TnrU8N8XzqCh/okZdszqBQTZf96idMfE5lnwTA==}
 
-  '@sumicom/ws-relay@0.1.0':
-    resolution: {integrity: sha512-MqtQhSUntN8b6G7OgROCaI7zaS/VKa0/lFfldiazZkSwNWx1EyHwN7C+I9a3wydmehXzd+ivC/apr+E1KOTWSQ==}
+  '@sumicom/ws-relay@0.1.1':
+    resolution: {integrity: sha512-9rn5dOwixN1PT7GDnGA3Ajf5kf4eAsJDgOvvTx7MmmBx+MLddWEfL5lJIQGHIpM51tqzhTUWjlgBpBHLtCAyfg==}
     engines: {node: '>=18'}
 
   '@surma/rollup-plugin-off-main-thread@2.2.3':
@@ -4277,7 +4277,7 @@ snapshots:
 
   '@sinclair/typebox@0.27.8': {}
 
-  '@sumicom/ws-relay@0.1.0':
+  '@sumicom/ws-relay@0.1.1':
     dependencies:
       ws: 8.19.0
     transitivePeerDependencies:
