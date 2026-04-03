@@ -177,6 +177,14 @@ relay = createRelay({
     },
 
     onHttpRequest(req: IncomingMessage, res: ServerResponse, next: () => void) {
+      // Override /health to report app version instead of ws-relay package version
+      if (req.url === '/health') {
+        const appVersion = typeof VERSION !== 'undefined' ? VERSION : 'dev';
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', version: appVersion }));
+        return;
+      }
+
       // Override /stats to include syncStore stats
       if (req.url === '/stats') {
         const stats = relay.registry.getStats();

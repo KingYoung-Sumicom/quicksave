@@ -93,4 +93,10 @@ export const REQUEST_RESPONSE_MAP: Record<string, string> = {
   'git:gitignore-write': 'git:gitignore-write:response',
   handshake: 'handshake:ack',
   ping: 'pong',
+  // Claude Code SDK
+  'claude:list-sessions': 'claude:list-sessions:response',
+  'claude:start': 'claude:start:response',
+  'claude:resume': 'claude:resume:response',
+  'claude:cancel': 'claude:cancel:response',
+  'claude:get-messages': 'claude:get-messages:response',
 };

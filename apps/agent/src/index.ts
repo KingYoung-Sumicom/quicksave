@@ -80,7 +80,11 @@ program
 
     // Handle incoming messages
     connection.on('message', async (message: Message, peerAddress: string) => {
-      const response = await messageHandler.handleMessage(message, peerAddress);
+      const response = await messageHandler.handleMessage(
+        message,
+        peerAddress,
+        (msg: Message) => connection.send(msg, peerAddress)
+      );
       connection.send(response, peerAddress);
     });
 
@@ -114,11 +118,13 @@ program
     // Handle shutdown
     process.on('SIGINT', () => {
       console.log('\nShutting down...');
+      messageHandler.cleanup();
       connection.disconnect();
       process.exit(0);
     });
 
     process.on('SIGTERM', () => {
+      messageHandler.cleanup();
       connection.disconnect();
       process.exit(0);
     });

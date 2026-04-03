@@ -47,10 +47,23 @@ import {
   DirectoryEntry,
   AddRepoRequestPayload,
   AddRepoResponsePayload,
+  ClaudeListSessionsResponsePayload,
+  ClaudeStartRequestPayload,
+  ClaudeStartResponsePayload,
+  ClaudeResumeRequestPayload,
+  ClaudeResumeResponsePayload,
+  ClaudeCancelRequestPayload,
+  ClaudeCancelResponsePayload,
+  ClaudeGetMessagesRequestPayload,
+  ClaudeGetMessagesResponsePayload,
+  ClaudeStreamPayload,
+  ClaudeStreamEndPayload,
+  generateMessageId,
 } from '@sumicom/quicksave-shared';
 import { GitOperations } from '../git/operations.js';
 import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey } from '../config.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';
+import { ClaudeCodeService } from '../ai/claudeCodeService.js';
 import { readdir, stat } from 'fs/promises';
 import { join, dirname, basename } from 'path';
 import { homedir } from 'os';
@@ -63,6 +76,7 @@ export class MessageHandler {
   private repoLocks: Map<string, string> = new Map(); // repoPath -> peerAddress holding lock
   private availableRepos: Repository[];
   private aiService: CommitSummaryService | null = null;
+  private claudeService: ClaudeCodeService = new ClaudeCodeService();
 
   constructor(repos: Repository[], _license?: License) {
     this.repos = new Map();
@@ -106,6 +120,10 @@ export class MessageHandler {
     }
   }
 
+  cleanup(): void {
+    this.claudeService.cleanup();
+  }
+
   private getAiService(): CommitSummaryService | null {
     const apiKey = getAnthropicApiKey();
     if (!apiKey) return null;
@@ -117,7 +135,11 @@ export class MessageHandler {
     return this.aiService;
   }
 
-  async handleMessage(message: Message, peerAddress: string = 'default'): Promise<Message> {
+  async handleMessage(
+    message: Message,
+    peerAddress: string = 'default',
+    sendCallback?: (msg: Message) => void
+  ): Promise<Message> {
     try {
       switch (message.type) {
         case 'handshake':
@@ -168,6 +190,17 @@ export class MessageHandler {
           return this.handleBrowseDirectory(message as Message<BrowseDirectoryRequestPayload>);
         case 'agent:add-repo':
           return this.handleAddRepo(message as Message<AddRepoRequestPayload>);
+        // Claude Code SDK
+        case 'claude:list-sessions':
+          return this.handleClaudeListSessions(message, peerAddress);
+        case 'claude:start':
+          return this.handleClaudeStart(message as Message<ClaudeStartRequestPayload>, peerAddress, sendCallback);
+        case 'claude:resume':
+          return this.handleClaudeResume(message as Message<ClaudeResumeRequestPayload>, peerAddress, sendCallback);
+        case 'claude:cancel':
+          return this.handleClaudeCancel(message as Message<ClaudeCancelRequestPayload>);
+        case 'claude:get-messages':
+          return this.handleClaudeGetMessages(message as Message<ClaudeGetMessagesRequestPayload>, peerAddress);
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
       }
@@ -749,6 +782,200 @@ export class MessageHandler {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to add repository',
       });
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  // ============================================================================
+  // Claude Code SDK Handlers
+  // ============================================================================
+
+  private async handleClaudeListSessions(
+    message: Message,
+    peerAddress: string
+  ): Promise<Message<ClaudeListSessionsResponsePayload>> {
+    try {
+      const cwd = this.getClientRepoPath(peerAddress);
+      const sessions = await this.claudeService.listAvailableSessions(cwd);
+      const response = createMessage<ClaudeListSessionsResponsePayload>(
+        'claude:list-sessions:response',
+        { sessions }
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<ClaudeListSessionsResponsePayload>(
+        'claude:list-sessions:response',
+        { sessions: [], error: error instanceof Error ? error.message : 'Failed to list sessions' }
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleClaudeStart(
+    message: Message<ClaudeStartRequestPayload>,
+    peerAddress: string,
+    sendCallback?: (msg: Message) => void
+  ): Promise<Message<ClaudeStartResponsePayload>> {
+    const { prompt, allowedTools, systemPrompt, model } = message.payload;
+    const cwd = this.getClientRepoPath(peerAddress);
+    const streamId = generateMessageId();
+
+    try {
+      const sessionId = await this.claudeService.startSession({
+        prompt,
+        cwd,
+        allowedTools,
+        systemPrompt,
+        model,
+        onStream: (event) => {
+          if (sendCallback) {
+            sendCallback(
+              createMessage<ClaudeStreamPayload>('claude:stream', {
+                streamId,
+                sessionId,
+                eventType: event.eventType,
+                content: event.content,
+                toolName: event.toolName,
+                toolInput: event.toolInput,
+                isPartial: event.isPartial,
+              })
+            );
+          }
+        },
+        onEnd: (result) => {
+          if (sendCallback) {
+            sendCallback(
+              createMessage<ClaudeStreamEndPayload>('claude:stream:end', {
+                streamId,
+                sessionId,
+                success: result.success,
+                error: result.error,
+                totalCostUsd: result.totalCostUsd,
+                tokenUsage: result.tokenUsage,
+              })
+            );
+          }
+        },
+      });
+
+      const response = createMessage<ClaudeStartResponsePayload>(
+        'claude:start:response',
+        { success: true, sessionId, streamId }
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<ClaudeStartResponsePayload>(
+        'claude:start:response',
+        { success: false, error: error instanceof Error ? error.message : 'Failed to start session' }
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleClaudeResume(
+    message: Message<ClaudeResumeRequestPayload>,
+    peerAddress: string,
+    sendCallback?: (msg: Message) => void
+  ): Promise<Message<ClaudeResumeResponsePayload>> {
+    const { sessionId: requestedId, prompt } = message.payload;
+    const cwd = this.getClientRepoPath(peerAddress);
+    const streamId = generateMessageId();
+
+    try {
+      const actualSessionId = await this.claudeService.resumeSession({
+        sessionId: requestedId,
+        prompt,
+        cwd,
+        onStream: (event) => {
+          if (sendCallback) {
+            sendCallback(
+              createMessage<ClaudeStreamPayload>('claude:stream', {
+                streamId,
+                sessionId: requestedId,
+                eventType: event.eventType,
+                content: event.content,
+                toolName: event.toolName,
+                toolInput: event.toolInput,
+                isPartial: event.isPartial,
+              })
+            );
+          }
+        },
+        onEnd: (result) => {
+          if (sendCallback) {
+            sendCallback(
+              createMessage<ClaudeStreamEndPayload>('claude:stream:end', {
+                streamId,
+                sessionId: actualSessionId,
+                success: result.success,
+                error: result.error,
+                totalCostUsd: result.totalCostUsd,
+                tokenUsage: result.tokenUsage,
+              })
+            );
+          }
+        },
+      });
+
+      const response = createMessage<ClaudeResumeResponsePayload>(
+        'claude:resume:response',
+        { success: true, sessionId: actualSessionId, streamId }
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<ClaudeResumeResponsePayload>(
+        'claude:resume:response',
+        { success: false, error: error instanceof Error ? error.message : 'Failed to resume session' }
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private handleClaudeCancel(
+    message: Message<ClaudeCancelRequestPayload>
+  ): Message<ClaudeCancelResponsePayload> {
+    const { sessionId } = message.payload;
+    const success = this.claudeService.cancelSession(sessionId);
+    const response = createMessage<ClaudeCancelResponsePayload>(
+      'claude:cancel:response',
+      { success, error: success ? undefined : 'Session not found or already ended' }
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleClaudeGetMessages(
+    message: Message<ClaudeGetMessagesRequestPayload>,
+    peerAddress: string
+  ): Promise<Message<ClaudeGetMessagesResponsePayload>> {
+    const { sessionId, offset = 0, limit = 50 } = message.payload;
+    const cwd = this.getClientRepoPath(peerAddress);
+
+    try {
+      const result = await this.claudeService.getMessages(sessionId, cwd, offset, limit);
+      const response = createMessage<ClaudeGetMessagesResponsePayload>(
+        'claude:get-messages:response',
+        result
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<ClaudeGetMessagesResponsePayload>(
+        'claude:get-messages:response',
+        {
+          messages: [],
+          total: 0,
+          hasMore: false,
+          error: error instanceof Error ? error.message : 'Failed to get messages',
+        }
+      );
       response.id = message.id;
       return response;
     }

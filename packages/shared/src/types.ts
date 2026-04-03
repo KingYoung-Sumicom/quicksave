@@ -58,6 +58,19 @@ export type MessageType =
   | 'agent:browse-directory:response'
   | 'agent:add-repo'
   | 'agent:add-repo:response'
+  // Claude Code SDK Remote Control
+  | 'claude:list-sessions'
+  | 'claude:list-sessions:response'
+  | 'claude:start'
+  | 'claude:start:response'
+  | 'claude:resume'
+  | 'claude:resume:response'
+  | 'claude:cancel'
+  | 'claude:cancel:response'
+  | 'claude:get-messages'
+  | 'claude:get-messages:response'
+  | 'claude:stream'       // agent-push: streaming content
+  | 'claude:stream:end'   // agent-push: session turn complete
   | 'error';
 
 // ============================================================================
@@ -477,4 +490,116 @@ export interface SetApiKeyResponsePayload {
 
 export interface GetApiKeyStatusResponsePayload {
   configured: boolean;
+}
+
+// ============================================================================
+// Claude Code SDK Remote Control Types
+// ============================================================================
+
+// Session summary (from listSessions)
+export interface ClaudeSessionSummary {
+  sessionId: string;
+  summary: string;
+  lastModified: number;
+  createdAt?: number;
+  cwd?: string;
+  gitBranch?: string;
+  messageCount?: number;
+}
+
+// List Sessions
+export type ClaudeListSessionsRequestPayload = Record<string, never>;
+
+export interface ClaudeListSessionsResponsePayload {
+  sessions: ClaudeSessionSummary[];
+  error?: string;
+}
+
+// Start Session
+export interface ClaudeStartRequestPayload {
+  prompt: string;
+  allowedTools?: string[];
+  systemPrompt?: string;
+  model?: string;
+}
+
+export interface ClaudeStartResponsePayload {
+  success: boolean;
+  sessionId?: string;
+  streamId?: string;
+  error?: string;
+}
+
+// Resume Session
+export interface ClaudeResumeRequestPayload {
+  sessionId: string;
+  prompt: string;
+}
+
+export interface ClaudeResumeResponsePayload {
+  success: boolean;
+  sessionId?: string;
+  streamId?: string;
+  error?: string;
+}
+
+// Cancel Session
+export interface ClaudeCancelRequestPayload {
+  sessionId: string;
+}
+
+export interface ClaudeCancelResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+// Get Messages (paginated)
+export interface ClaudeGetMessagesRequestPayload {
+  sessionId: string;
+  offset?: number;  // defaults to 0
+  limit?: number;   // defaults to 50
+}
+
+export interface ClaudeHistoryMessage {
+  index: number;
+  role: 'user' | 'assistant';
+  content: string;
+  toolName?: string;
+  toolInput?: string;
+  toolResult?: string;
+  truncated?: boolean;
+}
+
+export interface ClaudeGetMessagesResponsePayload {
+  messages: ClaudeHistoryMessage[];
+  total: number;
+  hasMore: boolean;
+  error?: string;
+}
+
+// Stream event types (agent-push)
+export type ClaudeStreamEventType =
+  | 'assistant_text'
+  | 'tool_use'
+  | 'tool_result'
+  | 'system'
+  | 'error';
+
+export interface ClaudeStreamPayload {
+  streamId: string;
+  sessionId: string;
+  eventType: ClaudeStreamEventType;
+  content: string;
+  toolName?: string;
+  toolInput?: string;
+  isPartial?: boolean;
+}
+
+export interface ClaudeStreamEndPayload {
+  streamId: string;
+  sessionId: string;
+  success: boolean;
+  error?: string;
+  totalCostUsd?: number;
+  tokenUsage?: { input: number; output: number };
 }

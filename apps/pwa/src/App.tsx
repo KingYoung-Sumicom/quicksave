@@ -5,6 +5,7 @@ import { useGitStore } from './stores/gitStore';
 import { useMachineStore } from './stores/machineStore';
 import { useIdentityStore } from './stores/identityStore';
 import { useGitOperations } from './hooks/useGitOperations';
+import { useClaudeOperations } from './hooks/useClaudeOperations';
 import { WebSocketClient } from './lib/websocket';
 import { ConnectionSetup } from './components/ConnectionSetup';
 import { FleetDashboard } from './components/FleetDashboard';
@@ -13,6 +14,7 @@ import { StatusBar } from './components/StatusBar';
 import { RepoView } from './components/RepoView';
 import { RepoSwitcher } from './components/RepoSwitcher';
 import { GitignoreEditor } from './components/GitignoreEditor';
+import { ClaudePanel } from './components/ClaudePanel';
 import { getApiKey, saveApiKey as saveApiKeyToStorage, exportMasterSecret, importMasterSecret } from './lib/secureStorage';
 import { SyncClient } from './lib/syncClient';
 
@@ -70,8 +72,18 @@ function AppContent() {
     addRepo,
   } = useGitOperations(clientRef);
 
+  const {
+    handleMessage: handleClaudeMessage,
+    listSessions,
+    getSessionMessages,
+    startSession,
+    resumeSession,
+    cancelSession,
+  } = useClaudeOperations(clientRef);
+
   const [showRepoSwitcher, setShowRepoSwitcher] = useState(false);
   const [showGitignoreEditor, setShowGitignoreEditor] = useState(false);
+  const [showClaudePanel, setShowClaudePanel] = useState(false);
 
   // Initialize identity store (persistent X25519 keypair) on startup
   useEffect(() => {
@@ -159,6 +171,7 @@ function AppContent() {
     setDisconnected,
     setReconnecting,
     handleResponse,
+    handleClaudeMessage,
     setError,
     setConnectionStep,
     setAgentOnline,
@@ -172,6 +185,7 @@ function AppContent() {
       setDisconnected,
       setReconnecting,
       handleResponse,
+      handleClaudeMessage,
       setError,
       setConnectionStep,
       setAgentOnline,
@@ -198,7 +212,10 @@ function AppContent() {
         handlersRef.current.setReconnecting(attempt, maxAttempts);
       },
       onMessage: (message) => {
-        handlersRef.current.handleResponse(message);
+        // Try Claude push/response messages first, then git responses
+        if (!handlersRef.current.handleClaudeMessage(message)) {
+          handlersRef.current.handleResponse(message);
+        }
       },
       onError: (error) => {
         handlersRef.current.setError(error.message);
@@ -402,6 +419,7 @@ function AppContent() {
           onSwitchMachine={handleSwitchMachine}
           onSwitchRepo={() => setShowRepoSwitcher(true)}
           onOpenGitignore={() => setShowGitignoreEditor(true)}
+          onOpenClaude={() => setShowClaudePanel(true)}
         />
         <RepoSwitcher
           isOpen={showRepoSwitcher}
@@ -431,9 +449,18 @@ function AppContent() {
           onRead={readGitignore}
           onWrite={writeGitignore}
         />
+        <ClaudePanel
+          isOpen={showClaudePanel}
+          onClose={() => setShowClaudePanel(false)}
+          onListSessions={listSessions}
+          onGetSessionMessages={getSessionMessages}
+          onStartSession={startSession}
+          onResumeSession={resumeSession}
+          onCancelSession={cancelSession}
+        />
       </>
     );
-  }, [isConnected, isReconnecting, reconnectAttempt, maxReconnectAttempts, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, readGitignore, writeGitignore, commit, generateCommitSummary, setApiKey, showRepoSwitcher, showGitignoreEditor, listRepos, switchRepo]);
+  }, [isConnected, isReconnecting, reconnectAttempt, maxReconnectAttempts, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, readGitignore, writeGitignore, commit, generateCommitSummary, setApiKey, showRepoSwitcher, showGitignoreEditor, showClaudePanel, listRepos, switchRepo, listSessions, getSessionMessages, startSession, resumeSession, cancelSession]);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-900 text-slate-100">
