@@ -3,53 +3,6 @@ import { IncomingMessage } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const HEARTBEAT_INTERVAL = 30000;
-const RATE_LIMIT_WINDOW = 60000;
-const RATE_LIMIT_MAX_CONNECTIONS = 10;
-const RATE_LIMIT_MAX_MESSAGES = 100;
-
-// Rate limiter
-class RateLimiter {
-  private connections: Map<string, { count: number; windowStart: number }> = new Map();
-  private windowMs: number;
-  private maxConnections: number;
-  private cleanupInterval: ReturnType<typeof setInterval>;
-
-  constructor(windowMs: number, maxConnections: number) {
-    this.windowMs = windowMs;
-    this.maxConnections = maxConnections;
-    this.cleanupInterval = setInterval(() => this.cleanup(), windowMs);
-  }
-
-  checkConnection(ip: string): boolean {
-    const now = Date.now();
-    const entry = this.connections.get(ip);
-
-    if (!entry || now - entry.windowStart > this.windowMs) {
-      this.connections.set(ip, { count: 1, windowStart: now });
-      return true;
-    }
-
-    if (entry.count >= this.maxConnections) {
-      return false;
-    }
-
-    entry.count++;
-    return true;
-  }
-
-  private cleanup(): void {
-    const now = Date.now();
-    for (const [ip, entry] of this.connections) {
-      if (now - entry.windowStart > this.windowMs) {
-        this.connections.delete(ip);
-      }
-    }
-  }
-
-  destroy(): void {
-    clearInterval(this.cleanupInterval);
-  }
-}
 
 // Connection manager
 class ConnectionManager {
@@ -178,8 +131,6 @@ interface ExtendedWebSocket extends WebSocket {
   role?: 'agent' | 'pwa';
   agentId?: string;
   pwaKey?: string;  // for key-based PWA connections (/pwa/key/{publicKey})
-  messageCount: number;
-  lastMessageReset: number;
   ip: string;
 }
 
@@ -211,7 +162,6 @@ export function signalingServerPlugin(): Plugin {
   let wss: WebSocketServer | null = null;
   let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   let connections: ConnectionManager | null = null;
-  let rateLimiter: RateLimiter | null = null;
   let syncStore: SyncStore | null = null;
 
   return {
@@ -220,7 +170,6 @@ export function signalingServerPlugin(): Plugin {
 
     configureServer(viteServer: ViteDevServer) {
       connections = new ConnectionManager();
-      rateLimiter = new RateLimiter(RATE_LIMIT_WINDOW, RATE_LIMIT_MAX_CONNECTIONS);
       syncStore = new SyncStore();
 
       // Add sync HTTP endpoints as Vite middleware
@@ -319,11 +268,7 @@ export function signalingServerPlugin(): Plugin {
             || 'unknown';
           extWs.ip = ip;
 
-          if (!rateLimiter!.checkConnection(ip)) {
-            sendMessage(extWs, { type: 'error', payload: { code: 'RATE_LIMITED', message: 'Too many connections' } });
-            ws.close(1008, 'Rate limited');
-            return;
-          }
+          // No connection rate limiting — this plugin only runs in local dev
 
           const parsed = parseUrl(req.url || '');
           if (!parsed) {
@@ -335,8 +280,6 @@ export function signalingServerPlugin(): Plugin {
           const { role, id } = parsed;
           extWs.role = role;
           extWs.isAlive = true;
-          extWs.messageCount = 0;
-          extWs.lastMessageReset = Date.now();
 
           if (parsed.isPwaKey) {
             // New: PWA connecting by public key
@@ -390,18 +333,6 @@ export function signalingServerPlugin(): Plugin {
 
           // Handle incoming messages - routed or legacy relay
           ws.on('message', (data: Buffer) => {
-            const now = Date.now();
-            if (now - extWs.lastMessageReset > RATE_LIMIT_WINDOW) {
-              extWs.messageCount = 0;
-              extWs.lastMessageReset = now;
-            }
-            extWs.messageCount++;
-
-            if (extWs.messageCount > RATE_LIMIT_MAX_MESSAGES) {
-              sendMessage(extWs, { type: 'error', payload: { code: 'RATE_LIMITED', message: 'Too many messages' } });
-              return;
-            }
-
             // Try routed message handling first
             try {
               const msgStr = data.toString();
@@ -517,10 +448,6 @@ export function signalingServerPlugin(): Plugin {
       if (wss) {
         wss.close();
         wss = null;
-      }
-      if (rateLimiter) {
-        rateLimiter.destroy();
-        rateLimiter = null;
       }
     },
   };

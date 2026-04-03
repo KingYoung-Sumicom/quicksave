@@ -52,6 +52,7 @@ interface RoutedEnvelope {
 export class WebSocketClient {
   private signalingServer: string;
   private identityPublicKey: string;
+  private connectionId: string; // Unique per window to allow multiple tabs
   private ws: WebSocket | null = null;
   private eventHandlers: ConnectionEventHandler;
 
@@ -81,6 +82,7 @@ export class WebSocketClient {
   ) {
     this.signalingServer = signalingServer;
     this.identityPublicKey = identityPublicKey;
+    this.connectionId = `${identityPublicKey}.${crypto.randomUUID().slice(0, 8)}`;
     this.eventHandlers = handlers;
   }
 
@@ -107,7 +109,7 @@ export class WebSocketClient {
    * Connect the single persistent WebSocket to /pwa/key/{identityPublicKey}
    */
   async connect(): Promise<void> {
-    const wsUrl = `${this.signalingServer}/pwa/${encodeURIComponent(this.identityPublicKey)}`;
+    const wsUrl = `${this.signalingServer}/pwa/${encodeURIComponent(this.connectionId)}`;
     this.ws = new WebSocket(wsUrl);
 
     this.connectPromise = new Promise((resolve, reject) => {
@@ -467,7 +469,7 @@ export class WebSocketClient {
    */
   private sendRouted(agentId: string, payload: string): void {
     const envelope: RoutedEnvelope = {
-      from: `pwa:${this.identityPublicKey}`,
+      from: `pwa:${this.connectionId}`,
       to: `agent:${agentId}`,
       payload,
     };
