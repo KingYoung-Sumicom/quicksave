@@ -37,7 +37,7 @@ apt update && apt install -y gh
 apt install -y webhook
 
 echo "==> Creating directory structure..."
-mkdir -p /opt/quicksave/{production,staging}/apps/{pwa,signaling}/dist
+mkdir -p /opt/quicksave/{production,staging}/apps/{pwa,relay}/dist
 mkdir -p /opt/quicksave/scripts
 mkdir -p /opt/webhook
 
@@ -112,7 +112,7 @@ After=network.target
 Type=simple
 User=nobody
 WorkingDirectory=/opt/quicksave/production
-ExecStart=/usr/bin/node apps/signaling/dist/bundle.cjs
+ExecStart=/usr/bin/node apps/relay/dist/bundle.cjs
 Restart=always
 Environment=NODE_ENV=production
 Environment=PORT=8080
@@ -131,7 +131,7 @@ After=network.target
 Type=simple
 User=nobody
 WorkingDirectory=/opt/quicksave/staging
-ExecStart=/usr/bin/node apps/signaling/dist/bundle.cjs
+ExecStart=/usr/bin/node apps/relay/dist/bundle.cjs
 Restart=always
 Environment=NODE_ENV=staging
 Environment=PORT=8081
@@ -189,16 +189,21 @@ log "Downloading artifacts from run $RUN_ID (branch: $BRANCH)"
 rm -rf /tmp/quicksave-deploy
 gh run download "$RUN_ID" --repo "$REPO" --name "dist-${ENV}" --dir /tmp/quicksave-deploy
 
-# Verify download (artifact paths are pwa/dist and signaling/dist, not apps/...)
+# Verify download
 if [ ! -d "/tmp/quicksave-deploy/pwa/dist" ]; then
     log "ERROR - PWA dist not found in artifacts"
+    exit 1
+fi
+
+if [ ! -d "/tmp/quicksave-deploy/relay/dist" ]; then
+    log "ERROR - Relay dist not found in artifacts"
     exit 1
 fi
 
 # Copy to environment directory
 log "Syncing files to $DEPLOY_DIR..."
 rsync -av --delete /tmp/quicksave-deploy/pwa/dist/ "${DEPLOY_DIR}/apps/pwa/dist/"
-rsync -av --delete /tmp/quicksave-deploy/signaling/dist/ "${DEPLOY_DIR}/apps/signaling/dist/"
+rsync -av --delete /tmp/quicksave-deploy/relay/dist/ "${DEPLOY_DIR}/apps/relay/dist/"
 
 # Cleanup
 rm -rf /tmp/quicksave-deploy
