@@ -102,6 +102,11 @@ export interface DiffHunk {
   content: string;
 }
 
+export interface ImageData {
+  old?: string; // data URI for previous version
+  new?: string; // data URI for current version
+}
+
 export interface FileDiff {
   path: string;
   oldPath?: string;
@@ -109,6 +114,7 @@ export interface FileDiff {
   isBinary: boolean;
   truncated?: boolean;
   truncatedReason?: string;
+  imageData?: ImageData;
 }
 
 export interface Commit {

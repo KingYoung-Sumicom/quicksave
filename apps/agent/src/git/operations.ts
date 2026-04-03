@@ -1,17 +1,28 @@
 import { simpleGit, SimpleGit, StatusResult } from 'simple-git';
 import { readFile, writeFile, unlink, stat } from 'fs/promises';
-import { join } from 'path';
+import { join, extname } from 'path';
 import { tmpdir } from 'os';
 import { randomBytes } from 'crypto';
 import type {
   GitStatus,
   FileChange,
   FileDiff,
+  ImageData,
   DiffHunk,
   Commit,
   Branch,
   FileStatus,
 } from '@sumicom/quicksave-shared';
+
+const IMAGE_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico', '.avif',
+]);
+
+const MIME_TYPES: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+  '.bmp': 'image/bmp', '.ico': 'image/x-icon', '.avif': 'image/avif',
+};
 
 export interface GitOperationsOptions {
   maxDiffFileSizeKB?: number;
@@ -80,6 +91,13 @@ export class GitOperations {
     // Check file size before generating diff
     const fileSizeKB = await this.getFileSizeKB(path);
     if (fileSizeKB > this.maxDiffFileSizeKB) {
+      // Still try to provide image preview for oversized images
+      if (this.isImageFile(path)) {
+        const imageData = await this.getImageData(path, staged);
+        if (imageData) {
+          return { path, hunks: [], isBinary: true, imageData };
+        }
+      }
       return {
         path,
         hunks: [],
@@ -118,7 +136,11 @@ export class GitOperations {
       };
     }
 
-    return this.parseDiff(path, diffOutput);
+    const diff = this.parseDiff(path, diffOutput);
+    if (diff.isBinary) {
+      diff.imageData = await this.getImageData(path, staged);
+    }
+    return diff;
   }
 
   /**
@@ -143,7 +165,8 @@ export class GitOperations {
       const content = await this.git.raw(['show', `:${path}`]);
 
       if (this.isBinaryContent(content)) {
-        return { path, hunks: [], isBinary: true };
+        const imageData = await this.getImageData(path, true);
+        return { path, hunks: [], isBinary: true, imageData };
       }
 
       return this.createSyntheticDiff(path, content);
@@ -164,7 +187,8 @@ export class GitOperations {
       const content = await readFile(fullPath, 'utf-8');
 
       if (this.isBinaryContent(content)) {
-        return { path, hunks: [], isBinary: true };
+        const imageData = await this.getImageData(path, false);
+        return { path, hunks: [], isBinary: true, imageData };
       }
 
       return this.createSyntheticDiff(path, content);
@@ -206,6 +230,55 @@ export class GitOperations {
    */
   private isBinaryContent(content: string): boolean {
     return content.includes('\0');
+  }
+
+  private isImageFile(path: string): boolean {
+    return IMAGE_EXTENSIONS.has(extname(path).toLowerCase());
+  }
+
+  private toDataUri(buffer: Buffer, path: string): string {
+    const mime = MIME_TYPES[extname(path).toLowerCase()] || 'application/octet-stream';
+    return `data:${mime};base64,${buffer.toString('base64')}`;
+  }
+
+  /**
+   * Build ImageData for an image file, reading old (HEAD) and new versions.
+   * Returns undefined if the file is not an image or exceeds size limit.
+   */
+  private async getImageData(path: string, staged: boolean): Promise<ImageData | undefined> {
+    if (!this.isImageFile(path)) return undefined;
+
+    const gitRoot = await this.getGitRoot();
+    const status = await this.git.status();
+    const isNew = status.not_added.includes(path) || status.created.includes(path);
+    const isDeleted = status.deleted.includes(path);
+
+    let newImage: string | undefined;
+    let oldImage: string | undefined;
+
+    // Read new version
+    if (!isDeleted) {
+      try {
+        if (staged) {
+          const buf = Buffer.from(await this.git.raw(['show', `:${path}`]), 'binary');
+          newImage = this.toDataUri(buf, path);
+        } else {
+          const buf = await readFile(join(gitRoot, path));
+          newImage = this.toDataUri(buf, path);
+        }
+      } catch { /* file may not exist */ }
+    }
+
+    // Read old version from HEAD
+    if (!isNew) {
+      try {
+        const buf = Buffer.from(await this.git.raw(['show', `HEAD:${path}`]), 'binary');
+        oldImage = this.toDataUri(buf, path);
+      } catch { /* no previous version */ }
+    }
+
+    if (!newImage && !oldImage) return undefined;
+    return { old: oldImage, new: newImage };
   }
 
   /**

@@ -1,5 +1,5 @@
 import { clsx } from 'clsx';
-import type { FileDiff, DiffHunk } from '@sumicom/quicksave-shared';
+import type { FileDiff, DiffHunk, ImageData } from '@sumicom/quicksave-shared';
 import type { LineSelection } from '../stores/gitStore';
 
 interface DiffViewerProps {
@@ -25,9 +25,13 @@ export function DiffViewer({
     return (
       <div className="bg-slate-800 rounded-lg overflow-hidden">
         {showHeader && <Header path={diff.path} onClose={onClose} />}
-        <div className="p-6 text-center text-slate-400">
-          Binary file - cannot display diff
-        </div>
+        {diff.imageData ? (
+          <ImageDiff imageData={diff.imageData} />
+        ) : (
+          <div className="p-6 text-center text-slate-400">
+            Binary file - cannot display diff
+          </div>
+        )}
       </div>
     );
   }
@@ -83,6 +87,47 @@ export function DiffViewer({
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ImageDiff({ imageData }: { imageData: ImageData }) {
+  const hasOld = !!imageData.old;
+  const hasNew = !!imageData.new;
+  const sideBySide = hasOld && hasNew;
+
+  return (
+    <div className={clsx('p-4', sideBySide && 'grid grid-cols-2 gap-4')}>
+      {hasOld && (
+        <div className="flex flex-col items-center gap-2">
+          {sideBySide && (
+            <span className="text-xs font-medium text-red-400">Before</span>
+          )}
+          {!hasNew && (
+            <span className="text-xs font-medium text-red-400">Deleted</span>
+          )}
+          <img
+            src={imageData.old}
+            alt="Previous version"
+            className="max-w-full max-h-64 rounded border border-slate-600 object-contain"
+          />
+        </div>
+      )}
+      {hasNew && (
+        <div className="flex flex-col items-center gap-2">
+          {sideBySide && (
+            <span className="text-xs font-medium text-green-400">After</span>
+          )}
+          {!hasOld && (
+            <span className="text-xs font-medium text-green-400">Added</span>
+          )}
+          <img
+            src={imageData.new}
+            alt="Current version"
+            className="max-w-full max-h-64 rounded border border-slate-600 object-contain"
+          />
+        </div>
+      )}
     </div>
   );
 }
