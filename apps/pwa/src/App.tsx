@@ -83,7 +83,6 @@ function AppContent() {
 
   const [showRepoSwitcher, setShowRepoSwitcher] = useState(false);
   const [showGitignoreEditor, setShowGitignoreEditor] = useState(false);
-  const [showClaudePanel, setShowClaudePanel] = useState(false);
 
   // Initialize identity store (persistent X25519 keypair) on startup
   useEffect(() => {
@@ -162,6 +161,10 @@ function AppContent() {
     return () => { cancelled = true; };
   }, [machines, isSource, pairedDevices, identityPublicKey]);
 
+  // Track current location for reconnect-safe navigation
+  const locationRef = useRef(location);
+  useEffect(() => { locationRef.current = location; });
+
   // Stable callback refs to avoid recreating the client on every render
   const handlersRef = useRef({
     setConnected,
@@ -203,7 +206,17 @@ function AppContent() {
         handlersRef.current.setCurrentRepoPath(path);
         const repoPaths = availableRepos?.map((r) => r.path);
         handlersRef.current.recordConnection(agentId, path, pro, repoPaths);
-        handlersRef.current.navigate(`/repo/${agentId}`, { replace: true });
+        // Only navigate on initial connection, not reconnect
+        if (!locationRef.current.pathname.startsWith(`/agent/${agentId}`)) {
+          // Check for a saved returnPath (e.g. from memory recovery or disconnect redirect)
+          const returnPath = sessionStorage.getItem('quicksave:returnPath');
+          sessionStorage.removeItem('quicksave:returnPath');
+          if (returnPath && returnPath.startsWith(`/agent/${agentId}`)) {
+            handlersRef.current.navigate(returnPath, { replace: true });
+          } else {
+            handlersRef.current.navigate(`/agent/${agentId}/repo`, { replace: true });
+          }
+        }
       },
       onDisconnected: () => {
         handlersRef.current.setDisconnected();
@@ -358,7 +371,7 @@ function AppContent() {
       return;
     }
     if (location.pathname === '/' && isConnected && agentIdRef.current && clientRef.current) {
-      navigate(`/repo/${agentIdRef.current}`, { replace: true });
+      navigate(`/agent/${agentIdRef.current}/repo`, { replace: true });
     }
   }, [location.pathname, isConnected, navigate]);
 
@@ -370,10 +383,12 @@ function AppContent() {
     if (repoRedirectRef.current) return;
     // Don't redirect if switching machines (handleSwitchMachine already navigated)
     if (switchingMachineRef.current) return;
-    if (location.pathname.startsWith('/repo/') && !isConnected && !isReconnecting && state !== 'connecting') {
+    if (location.pathname.startsWith('/agent/') && !isConnected && !isReconnecting && state !== 'connecting') {
       repoRedirectRef.current = true;
-      const match = location.pathname.match(/\/repo\/([^/]+)/);
+      const match = location.pathname.match(/\/agent\/([^/]+)/);
       if (match) {
+        // Save current path so we can restore it after reconnect
+        sessionStorage.setItem('quicksave:returnPath', location.pathname);
         navigate(`/connect/${match[1]}`, { replace: true });
       } else {
         navigate('/', { replace: true });
@@ -383,7 +398,7 @@ function AppContent() {
 
   // Reset redirect ref and intentional disconnect flag when navigating away from repo
   useEffect(() => {
-    if (!location.pathname.startsWith('/repo/')) {
+    if (!location.pathname.startsWith('/agent/')) {
       repoRedirectRef.current = false;
     }
     // Reset flags when user starts a new connection
@@ -400,7 +415,7 @@ function AppContent() {
     }
 
     return (
-      <>
+      <div className="flex flex-col h-[100dvh] min-h-0">
         {/* Reconnecting Overlay */}
         {isReconnecting && (
           <div className="fixed inset-0 bg-slate-900/80 flex items-center justify-center z-50">
@@ -426,7 +441,7 @@ function AppContent() {
           onSwitchMachine={handleSwitchMachine}
           onSwitchRepo={() => setShowRepoSwitcher(true)}
           onOpenGitignore={() => setShowGitignoreEditor(true)}
-          onOpenClaude={() => setShowClaudePanel(true)}
+          onOpenClaude={() => navigate(`/agent/${agentIdRef.current}/coding`)}
         />
         <RepoSwitcher
           isOpen={showRepoSwitcher}
@@ -436,48 +451,71 @@ function AppContent() {
           onBrowseDirectory={browseDirectory}
           onAddRepo={addRepo}
         />
-        <RepoView
-          onRefresh={fetchStatus}
-          onFetchDiff={fetchDiff}
-          onStage={stageFiles}
-          onUnstage={unstageFiles}
-          onStagePatch={stagePatch}
-          onUnstagePatch={unstagePatch}
-          onDiscard={discardChanges}
-          onUntrack={untrackFiles}
-          onAddToGitignore={addToGitignore}
-          onCommit={async (msg, desc) => { await commit(msg, desc); }}
-          onGenerateAiSummary={generateCommitSummary}
-          onSetApiKey={setApiKey}
-        />
         <GitignoreEditor
           isOpen={showGitignoreEditor}
           onClose={() => setShowGitignoreEditor(false)}
           onRead={readGitignore}
           onWrite={writeGitignore}
         />
-        <ClaudePanel
-          isOpen={showClaudePanel}
-          onClose={() => setShowClaudePanel(false)}
-          onListSessions={listSessions}
-          onGetSessionMessages={getSessionMessages}
-          onStartSession={startSession}
-          onResumeSession={resumeSession}
-          onCancelSession={cancelSession}
-        />
-      </>
+        <Routes>
+          <Route path="/repo" element={
+            <RepoView
+              onRefresh={fetchStatus}
+              onFetchDiff={fetchDiff}
+              onStage={stageFiles}
+              onUnstage={unstageFiles}
+              onStagePatch={stagePatch}
+              onUnstagePatch={unstagePatch}
+              onDiscard={discardChanges}
+              onUntrack={untrackFiles}
+              onAddToGitignore={addToGitignore}
+              onCommit={async (msg, desc) => { await commit(msg, desc); }}
+              onGenerateAiSummary={generateCommitSummary}
+              onSetApiKey={setApiKey}
+            />
+          } />
+          <Route path="/coding" element={
+            <ClaudePanel
+              onBack={() => navigate(`/agent/${agentIdRef.current}/repo`)}
+              onSelectSession={(sid) => navigate(`/agent/${agentIdRef.current}/coding/${sid}`)}
+              onListSessions={listSessions}
+              onGetSessionMessages={getSessionMessages}
+              onStartSession={startSession}
+              onResumeSession={resumeSession}
+              onCancelSession={cancelSession}
+            />
+          } />
+          <Route path="/coding/:sessionId" element={
+            <ClaudePanelWithSession
+              onBack={() => navigate(`/agent/${agentIdRef.current}/coding`)}
+              onSelectSession={(sid) => navigate(`/agent/${agentIdRef.current}/coding/${sid}`)}
+              onListSessions={listSessions}
+              onGetSessionMessages={getSessionMessages}
+              onStartSession={startSession}
+              onResumeSession={resumeSession}
+              onCancelSession={cancelSession}
+            />
+          } />
+        </Routes>
+      </div>
     );
-  }, [isConnected, isReconnecting, reconnectAttempt, maxReconnectAttempts, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, readGitignore, writeGitignore, commit, generateCommitSummary, setApiKey, showRepoSwitcher, showGitignoreEditor, showClaudePanel, listRepos, switchRepo, listSessions, getSessionMessages, startSession, resumeSession, cancelSession]);
+  }, [isConnected, isReconnecting, reconnectAttempt, maxReconnectAttempts, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, readGitignore, writeGitignore, commit, generateCommitSummary, setApiKey, showRepoSwitcher, showGitignoreEditor, listRepos, switchRepo, listSessions, getSessionMessages, startSession, resumeSession, cancelSession, navigate]);
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-900 text-slate-100">
+    <div className="h-[100dvh] flex flex-col bg-slate-900 text-slate-100 overflow-auto">
       <Routes>
         <Route path="/" element={homeElement} />
         <Route path="/connect/:agentId" element={<ConnectingPageWrapper onConnect={handleConnect} onAbort={handleAbortConnection} clientReady={clientReady} />} />
-        <Route path="/repo/:agentId" element={repoElement} />
+        <Route path="/agent/:agentId/*" element={repoElement} />
       </Routes>
     </div>
   );
+}
+
+// Wrapper to extract :sessionId param and pass to ClaudePanel
+function ClaudePanelWithSession(props: Omit<React.ComponentProps<typeof ClaudePanel>, 'sessionId'>) {
+  const { sessionId } = useParams<{ sessionId: string }>();
+  return <ClaudePanel key={sessionId} {...props} sessionId={sessionId} />;
 }
 
 // Wrapper to force ConnectingPage remount when agentId changes

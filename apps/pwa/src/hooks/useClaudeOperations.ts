@@ -10,7 +10,7 @@ import {
   type ClaudeStreamPayload,
   type ClaudeStreamEndPayload,
 } from '@sumicom/quicksave-shared';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useClaudeStore, type ChatMessage } from '../stores/claudeStore';
 import { WebSocketClient } from '../lib/websocket';
 
 type PendingRequest = {
@@ -146,13 +146,33 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
           throw new Error(response.error);
         }
         // Convert history messages to chat messages
-        const chatMessages = response.messages.map((m) => ({
-          role: m.role as 'user' | 'assistant',
-          content: m.content || (m.toolName ? `[${m.toolName}]` : ''),
-          toolName: m.toolName,
-          toolInput: m.toolInput,
-          timestamp: Date.now(),
-        }));
+        const chatMessages = response.messages
+          .map((m): ChatMessage | null => {
+            // Tool use (assistant message with toolName) → show as tool bubble
+            if (m.toolName) {
+              return {
+                role: 'tool',
+                content: m.toolInput || '',
+                toolName: m.toolName,
+                toolInput: m.toolInput,
+                timestamp: Date.now(),
+              };
+            }
+            // Tool result with no text content → skip (noise)
+            if (!m.content && m.toolResult) {
+              return null;
+            }
+            // Empty message → skip
+            if (!m.content) {
+              return null;
+            }
+            return {
+              role: m.role as 'user' | 'assistant',
+              content: m.content,
+              timestamp: Date.now(),
+            };
+          })
+          .filter((m): m is ChatMessage => m !== null);
 
         if (offset === 0) {
           setMessages(chatMessages);

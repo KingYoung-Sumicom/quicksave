@@ -4,8 +4,9 @@ import { useClaudeStore, type ChatMessage } from '../stores/claudeStore';
 import type { ClaudeSessionSummary } from '@sumicom/quicksave-shared';
 
 interface ClaudePanelProps {
-  isOpen: boolean;
-  onClose: () => void;
+  onBack: () => void;
+  onSelectSession?: (sessionId: string) => void;
+  sessionId?: string;
   onListSessions: () => Promise<void>;
   onGetSessionMessages: (sessionId: string, offset?: number, limit?: number) => Promise<void>;
   onStartSession: (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string }) => Promise<void>;
@@ -14,8 +15,9 @@ interface ClaudePanelProps {
 }
 
 export function ClaudePanel({
-  isOpen,
-  onClose,
+  onBack,
+  onSelectSession,
+  sessionId: urlSessionId,
   onListSessions,
   onGetSessionMessages,
   onStartSession,
@@ -37,22 +39,38 @@ export function ClaudePanel({
     clearMessages,
   } = useClaudeStore();
 
-  const [view, setView] = useState<'sessions' | 'chat'>('sessions');
+  const [view, setView] = useState<'sessions' | 'chat'>(urlSessionId ? 'chat' : 'sessions');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Load sessions when panel opens
+  // Auto-load session from URL param on mount
   useEffect(() => {
-    if (isOpen && view === 'sessions') {
+    if (urlSessionId && urlSessionId !== activeSessionId) {
+      setActiveSession(urlSessionId);
+      clearMessages();
+      setView('chat');
+      onGetSessionMessages(urlSessionId);
+    }
+  }, [urlSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load sessions on mount and when returning to sessions view
+  useEffect(() => {
+    if (view === 'sessions') {
       onListSessions();
     }
-  }, [isOpen, view, onListSessions]);
+  }, [view, onListSessions]);
 
-  // Auto-scroll to bottom when new messages arrive
+  // Auto-scroll to bottom when new messages arrive or on initial load
+  const hasScrolledRef = useRef(false);
   useEffect(() => {
-    if (messagesEndRef.current && isStreaming) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    const container = chatContainerRef.current;
+    if (!container) return;
+    if (isStreaming) {
+      container.scrollTop = container.scrollHeight;
+    } else if (messages.length > 0 && !hasScrolledRef.current) {
+      hasScrolledRef.current = true;
+      container.scrollTop = container.scrollHeight;
     }
   }, [messages, isStreaming]);
 
@@ -64,11 +82,16 @@ export function ClaudePanel({
   }, [view, isStreaming]);
 
   const handleSelectSession = useCallback(async (session: ClaudeSessionSummary) => {
-    setActiveSession(session.sessionId);
-    clearMessages();
-    setView('chat');
-    await onGetSessionMessages(session.sessionId);
-  }, [setActiveSession, clearMessages, onGetSessionMessages]);
+    if (onSelectSession) {
+      // Navigate to /coding/:sessionId — the URL change will trigger auto-load
+      onSelectSession(session.sessionId);
+    } else {
+      setActiveSession(session.sessionId);
+      clearMessages();
+      setView('chat');
+      await onGetSessionMessages(session.sessionId);
+    }
+  }, [onSelectSession, setActiveSession, clearMessages, onGetSessionMessages]);
 
   const handleNewSession = useCallback(() => {
     setActiveSession(null);
@@ -111,126 +134,121 @@ export function ClaudePanel({
     }
   }, [handleSend]);
 
-  if (!isOpen) return null;
+  // Auto-resize textarea to fit content
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setPromptInput(e.target.value);
+    const el = e.target;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
+  }, [setPromptInput]);
 
   return (
-    <>
-      {/* Backdrop */}
-      <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
-
-      {/* Panel */}
-      <div className="fixed inset-x-0 bottom-0 z-50 bg-slate-800 rounded-t-xl max-h-[85vh] flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700 flex-shrink-0">
-          <div className="flex items-center gap-2">
-            {view === 'chat' && (
-              <button onClick={handleBack} className="p-1 hover:bg-slate-700 rounded">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                </svg>
-              </button>
-            )}
-            <h2 className="text-lg font-semibold">Claude Code</h2>
-            {isStreaming && (
-              <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full animate-pulse">
-                streaming
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {view === 'sessions' && (
-              <button
-                onClick={handleNewSession}
-                className="text-sm px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded-md transition-colors"
-              >
-                New
-              </button>
-            )}
-            <button onClick={onClose} className="p-1 hover:bg-slate-700 rounded">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
+    <div className="flex flex-col flex-1 min-h-0">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700 flex-shrink-0 bg-slate-800">
+        <div className="flex items-center gap-2">
+          <button onClick={view === 'chat' ? handleBack : onBack} className="p-1 hover:bg-slate-700 rounded">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <h2 className="text-lg font-semibold">
+            {view === 'chat' ? 'Claude Code' : 'Sessions'}
+          </h2>
+          {isStreaming && (
+            <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full animate-pulse">
+              streaming
+            </span>
+          )}
         </div>
+        <div className="flex items-center gap-2">
+          {view === 'sessions' && (
+            <button
+              onClick={handleNewSession}
+              className="text-sm px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded-md transition-colors"
+            >
+              New
+            </button>
+          )}
+        </div>
+      </div>
 
-        {/* Content */}
-        {view === 'sessions' ? (
-          <SessionList
-            sessions={sessions}
-            isLoading={isLoadingSessions}
-            onSelect={handleSelectSession}
-          />
-        ) : (
-          <div className="flex flex-col flex-1 min-h-0">
-            {/* Messages */}
-            <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-              {historyHasMore && (
+      {/* Content */}
+      {view === 'sessions' ? (
+        <SessionList
+          sessions={sessions}
+          isLoading={isLoadingSessions}
+          onSelect={handleSelectSession}
+        />
+      ) : (
+        <div className="flex flex-col flex-1 min-h-0">
+          {/* Messages */}
+          <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+            {historyHasMore && (
+              <button
+                onClick={handleLoadMore}
+                disabled={isLoadingHistory}
+                className="w-full text-sm text-slate-400 hover:text-slate-300 py-2"
+              >
+                {isLoadingHistory ? 'Loading...' : 'Load older messages'}
+              </button>
+            )}
+            {messages.map((msg, i) => (
+              <MessageBubble key={i} message={msg} />
+            ))}
+            {streamError && (
+              <div className="text-sm text-red-400 bg-red-500/10 rounded-lg px-3 py-2">
+                {streamError}
+              </div>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Input */}
+          <div className="border-t border-slate-700 px-4 py-3 flex-shrink-0 safe-area-bottom bg-slate-900">
+            <div className="flex items-end gap-2">
+              <textarea
+                ref={inputRef}
+                value={promptInput}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyDown}
+                placeholder={activeSessionId ? 'Continue session...' : 'Start a new session...'}
+                className="flex-1 bg-slate-700 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-blue-500"
+                rows={1}
+                disabled={isStreaming}
+              />
+              {isStreaming ? (
                 <button
-                  onClick={handleLoadMore}
-                  disabled={isLoadingHistory}
-                  className="w-full text-sm text-slate-400 hover:text-slate-300 py-2"
+                  onClick={handleCancel}
+                  className="p-2 bg-red-600 hover:bg-red-500 rounded-lg transition-colors flex-shrink-0"
+                  title="Cancel"
                 >
-                  {isLoadingHistory ? 'Loading...' : 'Load older messages'}
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              ) : (
+                <button
+                  onClick={handleSend}
+                  disabled={!promptInput.trim()}
+                  className={clsx(
+                    'p-2 rounded-lg transition-colors flex-shrink-0',
+                    promptInput.trim()
+                      ? 'bg-blue-600 hover:bg-blue-500'
+                      : 'bg-slate-600 text-slate-400'
+                  )}
+                  title="Send"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />
+                  </svg>
                 </button>
               )}
-              {messages.map((msg, i) => (
-                <MessageBubble key={i} message={msg} />
-              ))}
-              {streamError && (
-                <div className="text-sm text-red-400 bg-red-500/10 rounded-lg px-3 py-2">
-                  {streamError}
-                </div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-
-            {/* Input */}
-            <div className="border-t border-slate-700 px-4 py-3 flex-shrink-0">
-              <div className="flex items-end gap-2">
-                <textarea
-                  ref={inputRef}
-                  value={promptInput}
-                  onChange={(e) => setPromptInput(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder={activeSessionId ? 'Continue session...' : 'Start a new session...'}
-                  className="flex-1 bg-slate-700 rounded-lg px-3 py-2 text-sm resize-none max-h-32 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  rows={1}
-                  disabled={isStreaming}
-                />
-                {isStreaming ? (
-                  <button
-                    onClick={handleCancel}
-                    className="p-2 bg-red-600 hover:bg-red-500 rounded-lg transition-colors flex-shrink-0"
-                    title="Cancel"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleSend}
-                    disabled={!promptInput.trim()}
-                    className={clsx(
-                      'p-2 rounded-lg transition-colors flex-shrink-0',
-                      promptInput.trim()
-                        ? 'bg-blue-600 hover:bg-blue-500'
-                        : 'bg-slate-600 text-slate-400'
-                    )}
-                    title="Send"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />
-                    </svg>
-                  </button>
-                )}
-              </div>
             </div>
           </div>
-        )}
-      </div>
-    </>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -260,7 +278,7 @@ function SessionList({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div className="flex-1 overflow-y-auto safe-area-bottom">
       {sessions.map((session) => (
         <button
           key={session.sessionId}
