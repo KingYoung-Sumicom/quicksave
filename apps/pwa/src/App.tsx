@@ -305,6 +305,13 @@ function AppContent() {
     }
   }, [state, fetchStatus, checkApiKeyStatus, setApiKey]);
 
+  // Auto-open repo browser when connected with no repo
+  useEffect(() => {
+    if (state === 'connected' && !repoPath) {
+      setShowRepoSwitcher(true);
+    }
+  }, [state, repoPath]);
+
   // Switch to pending repo after connection if different from current
   useEffect(() => {
     if (state === 'connected' && pendingRepoPath && pendingRepoPath !== repoPath) {

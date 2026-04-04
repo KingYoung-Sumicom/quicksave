@@ -56,7 +56,7 @@ export class GitOperations {
   /**
    * Get the actual git repository root path
    */
-  private async getGitRoot(): Promise<string> {
+  async getGitRoot(): Promise<string> {
     if (this.gitRoot) {
       return this.gitRoot;
     }

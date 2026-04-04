@@ -84,7 +84,7 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
   setConnected: (repoPath, isPro, availableRepos) =>
     set({
       state: 'connected',
-      repoPath,
+      repoPath: repoPath || null,
       availableRepos: availableRepos || [],
       connectedAt: Date.now(),
       isPro,

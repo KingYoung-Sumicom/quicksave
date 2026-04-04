@@ -44,22 +44,22 @@ program
         console.error(`Warning: ${repoPath} is not a valid git repository, skipping`);
         continue;
       }
+      const rootPath = await git.getGitRoot();
       const { current: currentBranch } = await git.getBranches();
       validRepos.push({
-        path: repoPath,
-        name: basename(repoPath),
+        path: rootPath,
+        name: basename(rootPath),
         currentBranch,
       });
     }
 
     if (validRepos.length === 0) {
-      console.error('Error: No valid git repositories found');
-      process.exit(1);
-    }
-
-    console.log(`Repositories (${validRepos.length}):`);
-    for (const repo of validRepos) {
-      console.log(`  - ${repo.name} (${repo.path}) [${repo.currentBranch}]`);
+      console.warn('Warning: No valid git repositories found. Use the PWA to browse and add a repository.');
+    } else {
+      console.log(`Repositories (${validRepos.length}):`);
+      for (const repo of validRepos) {
+        console.log(`  - ${repo.name} (${repo.path}) [${repo.currentBranch}]`);
+      }
     }
 
     // Load or create config

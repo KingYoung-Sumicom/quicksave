@@ -81,7 +81,7 @@ export class WebSocketClient {
   ) {
     this.signalingServer = signalingServer;
     const suffix = Math.random().toString(36).slice(2, 10);
-    this.connectionId = `${identityPublicKey}.${suffix}`;
+    this.connectionId = `${identityPublicKey}-${suffix}`;
     this.eventHandlers = handlers;
   }
 

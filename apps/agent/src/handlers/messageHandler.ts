@@ -84,7 +84,7 @@ export class MessageHandler {
       this.repos.set(repo.path, new GitOperations(repo.path));
     }
     this.availableRepos = repos;
-    this.defaultRepoPath = repos[0].path;
+    this.defaultRepoPath = repos.length > 0 ? repos[0].path : '';
   }
 
   private getClientRepoPath(peerAddress: string): string {
@@ -93,7 +93,11 @@ export class MessageHandler {
 
   private getGit(peerAddress: string): GitOperations {
     const repoPath = this.getClientRepoPath(peerAddress);
-    return this.repos.get(repoPath)!;
+    const git = this.repos.get(repoPath);
+    if (!git) {
+      throw new Error('No repository selected. Please add a repository first.');
+    }
+    return git;
   }
 
   private acquireRepoLock(repoPath: string, peerAddress: string): boolean {
@@ -758,15 +762,26 @@ export class MessageHandler {
     }
 
     try {
-      // Verify it's a git repo by trying to get branches
+      // Verify it's a git repo and resolve to actual root
       const git = new GitOperations(repoPath);
       const { current } = await git.getBranches();
+      const rootPath = await git.getGitRoot();
 
-      // Add to our maps
-      this.repos.set(repoPath, git);
+      // Check if already added (by resolved root path)
+      if (this.repos.has(rootPath)) {
+        const response = createMessage<AddRepoResponsePayload>('agent:add-repo:response', {
+          success: false,
+          error: 'Repository already added',
+        });
+        response.id = message.id;
+        return response;
+      }
+
+      // Add to our maps using the actual git root
+      this.repos.set(rootPath, git);
       const newRepo: Repository = {
-        path: repoPath,
-        name: basename(repoPath),
+        path: rootPath,
+        name: basename(rootPath),
         currentBranch: current,
       };
       this.availableRepos.push(newRepo);

@@ -293,7 +293,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
-        <div className="bg-blue-600 rounded-lg rounded-br-sm px-3 py-2 max-w-[85%] text-sm whitespace-pre-wrap">
+        <div className="bg-blue-600 rounded-lg rounded-br-sm px-3 py-2 max-w-[85%] text-sm whitespace-pre-wrap break-words">
           {message.content}
         </div>
       </div>
@@ -303,7 +303,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === 'assistant') {
     return (
       <div className="flex justify-start">
-        <div className="bg-slate-700 rounded-lg rounded-bl-sm px-3 py-2 max-w-[85%] text-sm whitespace-pre-wrap">
+        <div className="bg-slate-700 rounded-lg rounded-bl-sm px-3 py-2 max-w-[85%] text-sm whitespace-pre-wrap break-words">
           {message.content || <span className="text-slate-400 animate-pulse">...</span>}
         </div>
       </div>
@@ -315,7 +315,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       <div className="flex justify-start">
         <button
           onClick={() => setExpanded(!expanded)}
-          className="bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-1.5 max-w-[85%] text-xs text-slate-300 text-left"
+          className="bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-1.5 max-w-[85%] text-xs text-slate-300 text-left overflow-hidden"
         >
           <div className="flex items-center gap-1.5">
             <svg className="w-3 h-3 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -36,13 +36,15 @@ export function RepoSwitcher({
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [browseLoading, setBrowseLoading] = useState(false);
 
-  // Reset view when drawer closes
+  // Reset view when drawer opens/closes
   useEffect(() => {
-    if (!isOpen) {
-      setView('repos');
+    if (isOpen) {
+      // Go directly to browse view if no repos are available
+      setView(repos.length === 0 && availableRepos.length === 0 ? 'browse' : 'repos');
+    } else {
       setError(null);
     }
-  }, [isOpen]);
+  }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Refresh repo list when drawer opens
   useEffect(() => {
@@ -126,8 +128,8 @@ export function RepoSwitcher({
 
     const repo = await onAddRepo(path);
     if (repo) {
-      // Switch to the newly added repo
-      const success = await onSwitchRepo(path);
+      // Switch to the newly added repo (use resolved root path)
+      const success = await onSwitchRepo(repo.path);
       if (success) {
         onClose();
       } else {
