@@ -47,6 +47,11 @@ import {
   DirectoryEntry,
   AddRepoRequestPayload,
   AddRepoResponsePayload,
+  CodingPath,
+  ListCodingPathsResponsePayload,
+  AddCodingPathRequestPayload,
+  AddCodingPathResponsePayload,
+  ClaudeListSessionsRequestPayload,
   ClaudeListSessionsResponsePayload,
   ClaudeStartRequestPayload,
   ClaudeStartResponsePayload,
@@ -75,16 +80,30 @@ export class MessageHandler {
   private clientRepos: Map<string, string> = new Map(); // peerAddress -> repoPath
   private repoLocks: Map<string, string> = new Map(); // repoPath -> peerAddress holding lock
   private availableRepos: Repository[];
+  private codingPaths: Map<string, CodingPath> = new Map(); // path -> CodingPath
   private aiService: CommitSummaryService | null = null;
   private claudeService: ClaudeCodeService = new ClaudeCodeService();
 
-  constructor(repos: Repository[], _license?: License) {
+  constructor(repos: Repository[], _license?: License, codingPaths?: string[]) {
     this.repos = new Map();
     for (const repo of repos) {
       this.repos.set(repo.path, new GitOperations(repo.path));
     }
     this.availableRepos = repos;
     this.defaultRepoPath = repos.length > 0 ? repos[0].path : '';
+
+    // Git repos are also coding paths
+    for (const repo of repos) {
+      this.codingPaths.set(repo.path, { path: repo.path, name: repo.name });
+    }
+    // Add explicit coding paths (non-git dirs)
+    if (codingPaths) {
+      for (const p of codingPaths) {
+        if (!this.codingPaths.has(p)) {
+          this.codingPaths.set(p, { path: p, name: basename(p) });
+        }
+      }
+    }
   }
 
   private getClientRepoPath(peerAddress: string): string {
@@ -194,9 +213,13 @@ export class MessageHandler {
           return this.handleBrowseDirectory(message as Message<BrowseDirectoryRequestPayload>);
         case 'agent:add-repo':
           return this.handleAddRepo(message as Message<AddRepoRequestPayload>);
+        case 'agent:list-coding-paths':
+          return this.handleListCodingPaths(message);
+        case 'agent:add-coding-path':
+          return this.handleAddCodingPath(message as Message<AddCodingPathRequestPayload>);
         // Claude Code SDK
         case 'claude:list-sessions':
-          return this.handleClaudeListSessions(message, peerAddress);
+          return this.handleClaudeListSessions(message as Message<ClaudeListSessionsRequestPayload>, peerAddress);
         case 'claude:start':
           return this.handleClaudeStart(message as Message<ClaudeStartRequestPayload>, peerAddress, sendCallback);
         case 'claude:resume':
@@ -220,6 +243,7 @@ export class MessageHandler {
       agentVersion: this.agentVersion,
       repoPath: this.getClientRepoPath(peerAddress),
       availableRepos: this.availableRepos,
+      availableCodingPaths: [...this.codingPaths.values()],
     });
     response.id = message.id;
     return response;
@@ -803,15 +827,73 @@ export class MessageHandler {
   }
 
   // ============================================================================
+  // Coding Path Handlers
+  // ============================================================================
+
+  private handleListCodingPaths(message: Message): Message<ListCodingPathsResponsePayload> {
+    const response = createMessage<ListCodingPathsResponsePayload>(
+      'agent:list-coding-paths:response',
+      { paths: [...this.codingPaths.values()] }
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleAddCodingPath(
+    message: Message<AddCodingPathRequestPayload>
+  ): Promise<Message<AddCodingPathResponsePayload>> {
+    const { path: codingPath } = message.payload;
+
+    if (this.codingPaths.has(codingPath)) {
+      const response = createMessage<AddCodingPathResponsePayload>(
+        'agent:add-coding-path:response',
+        { success: false, error: 'Coding path already added' }
+      );
+      response.id = message.id;
+      return response;
+    }
+
+    try {
+      // Verify directory exists
+      const dirStat = await stat(codingPath);
+      if (!dirStat.isDirectory()) {
+        const response = createMessage<AddCodingPathResponsePayload>(
+          'agent:add-coding-path:response',
+          { success: false, error: 'Path is not a directory' }
+        );
+        response.id = message.id;
+        return response;
+      }
+
+      const newPath: CodingPath = { path: codingPath, name: basename(codingPath) };
+      this.codingPaths.set(codingPath, newPath);
+
+      const response = createMessage<AddCodingPathResponsePayload>(
+        'agent:add-coding-path:response',
+        { success: true, path: newPath }
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<AddCodingPathResponsePayload>(
+        'agent:add-coding-path:response',
+        { success: false, error: error instanceof Error ? error.message : 'Failed to add coding path' }
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  // ============================================================================
   // Claude Code SDK Handlers
   // ============================================================================
 
   private async handleClaudeListSessions(
-    message: Message,
+    message: Message<ClaudeListSessionsRequestPayload>,
     peerAddress: string
   ): Promise<Message<ClaudeListSessionsResponsePayload>> {
     try {
-      const cwd = this.getClientRepoPath(peerAddress);
+      const cwd = message.payload.cwd || this.getClientRepoPath(peerAddress);
       const sessions = await this.claudeService.listAvailableSessions(cwd);
       const response = createMessage<ClaudeListSessionsResponsePayload>(
         'claude:list-sessions:response',
@@ -834,8 +916,8 @@ export class MessageHandler {
     peerAddress: string,
     sendCallback?: (msg: Message) => void
   ): Promise<Message<ClaudeStartResponsePayload>> {
-    const { prompt, allowedTools, systemPrompt, model } = message.payload;
-    const cwd = this.getClientRepoPath(peerAddress);
+    const { prompt, cwd: payloadCwd, allowedTools, systemPrompt, model } = message.payload;
+    const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const streamId = generateMessageId();
 
     try {
@@ -897,8 +979,8 @@ export class MessageHandler {
     peerAddress: string,
     sendCallback?: (msg: Message) => void
   ): Promise<Message<ClaudeResumeResponsePayload>> {
-    const { sessionId: requestedId, prompt } = message.payload;
-    const cwd = this.getClientRepoPath(peerAddress);
+    const { sessionId: requestedId, prompt, cwd: payloadCwd } = message.payload;
+    const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const streamId = generateMessageId();
 
     try {
@@ -970,8 +1052,8 @@ export class MessageHandler {
     message: Message<ClaudeGetMessagesRequestPayload>,
     peerAddress: string
   ): Promise<Message<ClaudeGetMessagesResponsePayload>> {
-    const { sessionId, offset = 0, limit = 50 } = message.payload;
-    const cwd = this.getClientRepoPath(peerAddress);
+    const { sessionId, cwd: payloadCwd, offset = 0, limit = 50 } = message.payload;
+    const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
 
     try {
       const result = await this.claudeService.getMessages(sessionId, cwd, offset, limit);

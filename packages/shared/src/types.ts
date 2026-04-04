@@ -58,6 +58,10 @@ export type MessageType =
   | 'agent:browse-directory:response'
   | 'agent:add-repo'
   | 'agent:add-repo:response'
+  | 'agent:list-coding-paths'
+  | 'agent:list-coding-paths:response'
+  | 'agent:add-coding-path'
+  | 'agent:add-coding-path:response'
   // Claude Code SDK Remote Control
   | 'claude:list-sessions'
   | 'claude:list-sessions:response'
@@ -138,6 +142,11 @@ export interface Repository {
   currentBranch?: string;
 }
 
+export interface CodingPath {
+  path: string;
+  name: string; // basename
+}
+
 // ============================================================================
 // Request/Response Payloads
 // ============================================================================
@@ -153,6 +162,7 @@ export interface HandshakeAckPayload {
   agentVersion: string;
   repoPath: string;
   availableRepos?: Repository[];
+  availableCodingPaths?: CodingPath[];
 }
 
 // Status
@@ -340,6 +350,24 @@ export interface AddRepoResponsePayload {
   error?: string;
 }
 
+// List Coding Paths
+export type ListCodingPathsRequestPayload = Record<string, never>;
+
+export interface ListCodingPathsResponsePayload {
+  paths: CodingPath[];
+}
+
+// Add Coding Path
+export interface AddCodingPathRequestPayload {
+  path: string;
+}
+
+export interface AddCodingPathResponsePayload {
+  success: boolean;
+  path?: CodingPath;
+  error?: string;
+}
+
 // ============================================================================
 // License Types
 // ============================================================================
@@ -514,7 +542,9 @@ export interface ClaudeSessionSummary {
 }
 
 // List Sessions
-export type ClaudeListSessionsRequestPayload = Record<string, never>;
+export interface ClaudeListSessionsRequestPayload {
+  cwd?: string;
+}
 
 export interface ClaudeListSessionsResponsePayload {
   sessions: ClaudeSessionSummary[];
@@ -524,6 +554,7 @@ export interface ClaudeListSessionsResponsePayload {
 // Start Session
 export interface ClaudeStartRequestPayload {
   prompt: string;
+  cwd?: string;
   allowedTools?: string[];
   systemPrompt?: string;
   model?: string;
@@ -540,6 +571,7 @@ export interface ClaudeStartResponsePayload {
 export interface ClaudeResumeRequestPayload {
   sessionId: string;
   prompt: string;
+  cwd?: string;
 }
 
 export interface ClaudeResumeResponsePayload {
@@ -562,6 +594,7 @@ export interface ClaudeCancelResponsePayload {
 // Get Messages (paginated)
 export interface ClaudeGetMessagesRequestPayload {
   sessionId: string;
+  cwd?: string;
   offset?: number;  // defaults to 0
   limit?: number;   // defaults to 50
 }

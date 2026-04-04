@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import { clsx } from 'clsx';
-import { useClaudeStore, type ChatMessage } from '../stores/claudeStore';
+import { useClaudeStore } from '../stores/claudeStore';
 import type { ClaudeSessionSummary } from '@sumicom/quicksave-shared';
+import { MessageBubble } from './chat/MessageBubble';
 
 interface ClaudePanelProps {
-  onBack: () => void;
   onSelectSession?: (sessionId: string) => void;
   sessionId?: string;
   onListSessions: () => Promise<void>;
@@ -12,10 +12,10 @@ interface ClaudePanelProps {
   onStartSession: (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string }) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string) => Promise<void>;
   onCancelSession: (sessionId: string) => Promise<void>;
+  onNewSession?: () => void;
 }
 
 export function ClaudePanel({
-  onBack,
   onSelectSession,
   sessionId: urlSessionId,
   onListSessions,
@@ -23,6 +23,7 @@ export function ClaudePanel({
   onStartSession,
   onResumeSession,
   onCancelSession,
+  onNewSession,
 }: ClaudePanelProps) {
   const {
     sessions,
@@ -39,7 +40,8 @@ export function ClaudePanel({
     clearMessages,
   } = useClaudeStore();
 
-  const [view, setView] = useState<'sessions' | 'chat'>(urlSessionId ? 'chat' : 'sessions');
+  // View is determined by URL: sessionId present = chat, absent = sessions
+  const isChat = !!urlSessionId;
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -49,17 +51,16 @@ export function ClaudePanel({
     if (urlSessionId && urlSessionId !== activeSessionId) {
       setActiveSession(urlSessionId);
       clearMessages();
-      setView('chat');
       onGetSessionMessages(urlSessionId);
     }
   }, [urlSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load sessions on mount and when returning to sessions view
+  // Load sessions when showing sessions list
   useEffect(() => {
-    if (view === 'sessions') {
+    if (!isChat) {
       onListSessions();
     }
-  }, [view, onListSessions]);
+  }, [isChat, onListSessions]);
 
   // Auto-scroll to bottom when new messages arrive or on initial load
   const hasScrolledRef = useRef(false);
@@ -76,19 +77,17 @@ export function ClaudePanel({
 
   // Focus input when chat view opens
   useEffect(() => {
-    if (view === 'chat' && inputRef.current && !isStreaming) {
+    if (isChat && inputRef.current && !isStreaming) {
       inputRef.current.focus();
     }
-  }, [view, isStreaming]);
+  }, [isChat, isStreaming]);
 
   const handleSelectSession = useCallback(async (session: ClaudeSessionSummary) => {
     if (onSelectSession) {
-      // Navigate to /coding/:sessionId — the URL change will trigger auto-load
       onSelectSession(session.sessionId);
     } else {
       setActiveSession(session.sessionId);
       clearMessages();
-      setView('chat');
       await onGetSessionMessages(session.sessionId);
     }
   }, [onSelectSession, setActiveSession, clearMessages, onGetSessionMessages]);
@@ -96,8 +95,10 @@ export function ClaudePanel({
   const handleNewSession = useCallback(() => {
     setActiveSession(null);
     clearMessages();
-    setView('chat');
-  }, [setActiveSession, clearMessages]);
+    if (onNewSession) {
+      onNewSession();
+    }
+  }, [setActiveSession, clearMessages, onNewSession]);
 
   const handleSend = useCallback(async () => {
     const prompt = promptInput.trim();
@@ -123,10 +124,6 @@ export function ClaudePanel({
     await onGetSessionMessages(activeSessionId, messages.length);
   }, [activeSessionId, isLoadingHistory, historyHasMore, messages.length, onGetSessionMessages]);
 
-  const handleBack = useCallback(() => {
-    setView('sessions');
-  }, []);
-
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -144,43 +141,7 @@ export function ClaudePanel({
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700 flex-shrink-0 bg-slate-800">
-        <div className="flex items-center gap-2">
-          <button onClick={view === 'chat' ? handleBack : onBack} className="p-1 hover:bg-slate-700 rounded">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
-          </button>
-          <h2 className="text-lg font-semibold">
-            {view === 'chat' ? 'Claude Code' : 'Sessions'}
-          </h2>
-          {isStreaming && (
-            <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded-full animate-pulse">
-              streaming
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          {view === 'sessions' && (
-            <button
-              onClick={handleNewSession}
-              className="text-sm px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded-md transition-colors"
-            >
-              New
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Content */}
-      {view === 'sessions' ? (
-        <SessionList
-          sessions={sessions}
-          isLoading={isLoadingSessions}
-          onSelect={handleSelectSession}
-        />
-      ) : (
+      {isChat ? (
         <div className="flex flex-col flex-1 min-h-0">
           {/* Messages */}
           <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
@@ -194,7 +155,7 @@ export function ClaudePanel({
               </button>
             )}
             {messages.map((msg, i) => (
-              <MessageBubble key={i} message={msg} />
+              <MessageBubble key={i} message={msg} isLast={i === messages.length - 1} />
             ))}
             {streamError && (
               <div className="text-sm text-red-400 bg-red-500/10 rounded-lg px-3 py-2">
@@ -205,7 +166,12 @@ export function ClaudePanel({
           </div>
 
           {/* Input */}
-          <div className="border-t border-slate-700 px-4 py-3 flex-shrink-0 safe-area-bottom bg-slate-900">
+          <div className="border-t border-slate-700 px-4 pt-3 flex-shrink-0 bg-slate-900" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.75rem)' }}>
+            {isStreaming && (
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-blue-400 animate-pulse">streaming...</span>
+              </div>
+            )}
             <div className="flex items-end gap-2">
               <textarea
                 ref={inputRef}
@@ -247,6 +213,13 @@ export function ClaudePanel({
             </div>
           </div>
         </div>
+      ) : (
+        <SessionList
+          sessions={sessions}
+          isLoading={isLoadingSessions}
+          onSelect={handleSelectSession}
+          onNewSession={handleNewSession}
+        />
       )}
     </div>
   );
@@ -256,10 +229,12 @@ function SessionList({
   sessions,
   isLoading,
   onSelect,
+  onNewSession,
 }: {
   sessions: ClaudeSessionSummary[];
   isLoading: boolean;
   onSelect: (session: ClaudeSessionSummary) => void;
+  onNewSession: () => void;
 }) {
   if (isLoading) {
     return (
@@ -269,98 +244,47 @@ function SessionList({
     );
   }
 
-  if (sessions.length === 0) {
-    return (
-      <div className="flex-1 flex items-center justify-center py-12 text-slate-400 text-sm">
-        No sessions found. Start a new one!
-      </div>
-    );
-  }
-
   return (
     <div className="flex-1 overflow-y-auto safe-area-bottom">
-      {sessions.map((session) => (
-        <button
-          key={session.sessionId}
-          onClick={() => onSelect(session)}
-          className="w-full text-left px-4 py-3 hover:bg-slate-700/50 border-b border-slate-700/50 transition-colors"
-        >
-          <p className="text-sm font-medium truncate">
-            {session.summary || session.sessionId.slice(0, 12)}
-          </p>
-          <div className="flex items-center gap-2 mt-1 text-xs text-slate-400">
-            {session.gitBranch && (
-              <span className="flex items-center gap-1">
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-                {session.gitBranch}
-              </span>
-            )}
-            <span>{formatRelativeTime(session.lastModified)}</span>
-          </div>
-        </button>
-      ))}
-    </div>
-  );
-}
+      {/* New session button */}
+      <button
+        onClick={onNewSession}
+        className="w-full text-left px-4 py-3 border-b border-slate-700/50 transition-colors hover:bg-slate-700/50 flex items-center gap-2"
+      >
+        <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+        </svg>
+        <span className="text-sm text-blue-400 font-medium">New Session</span>
+      </button>
 
-function MessageBubble({ message }: { message: ChatMessage }) {
-  const [expanded, setExpanded] = useState(false);
-
-  if (message.role === 'user') {
-    return (
-      <div className="flex justify-end">
-        <div className="bg-blue-600 rounded-lg rounded-br-sm px-3 py-2 max-w-[85%] text-sm whitespace-pre-wrap break-words">
-          {message.content}
+      {sessions.length === 0 ? (
+        <div className="flex items-center justify-center py-12 text-slate-400 text-sm">
+          No sessions yet
         </div>
-      </div>
-    );
-  }
-
-  if (message.role === 'assistant') {
-    return (
-      <div className="flex justify-start">
-        <div className="bg-slate-700 rounded-lg rounded-bl-sm px-3 py-2 max-w-[85%] text-sm whitespace-pre-wrap break-words">
-          {message.content || <span className="text-slate-400 animate-pulse">...</span>}
-        </div>
-      </div>
-    );
-  }
-
-  if (message.role === 'tool') {
-    return (
-      <div className="flex justify-start">
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="bg-slate-700/50 border border-slate-600 rounded-lg px-3 py-1.5 max-w-[85%] text-xs text-slate-300 text-left overflow-hidden"
-        >
-          <div className="flex items-center gap-1.5">
-            <svg className="w-3 h-3 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-            </svg>
-            <span className="font-mono text-yellow-400 truncate">{message.toolName || 'tool_result'}</span>
-            <svg
-              className={clsx('w-3 h-3 text-slate-400 transition-transform flex-shrink-0', expanded && 'rotate-180')}
-              fill="none" stroke="currentColor" viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
-          </div>
-          {expanded && (
-            <pre className="mt-2 text-xs text-slate-400 whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
-              {message.content}
-            </pre>
-          )}
-        </button>
-      </div>
-    );
-  }
-
-  // system
-  return (
-    <div className="text-center text-xs text-slate-500 py-1">
-      {message.content}
+      ) : (
+        sessions.map((session) => (
+          <button
+            key={session.sessionId}
+            onClick={() => onSelect(session)}
+            className="w-full text-left px-4 py-3 hover:bg-slate-700/50 border-b border-slate-700/50 transition-colors"
+          >
+            <p className="text-sm font-medium truncate">
+              {session.summary || session.sessionId.slice(0, 12)}
+            </p>
+            <div className="flex items-center gap-2 mt-1 text-xs text-slate-400">
+              {session.gitBranch && (
+                <span className="flex items-center gap-1">
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                  {session.gitBranch}
+                </span>
+              )}
+              <span>{formatRelativeTime(session.lastModified)}</span>
+            </div>
+          </button>
+        ))
+      )}
     </div>
   );
 }

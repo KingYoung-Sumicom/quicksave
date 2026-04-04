@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useMachineStore, selectSortedMachines, selectRecentMachines } from '../stores/machineStore';
+import { useConnectionStore } from '../stores/connectionStore';
 import { MachineCard } from './MachineCard';
 import { AddMachineModal } from './AddMachineModal';
 import { EditMachineModal } from './EditMachineModal';
@@ -13,22 +13,20 @@ interface FleetDashboardProps {
 }
 
 export function FleetDashboard({ onConnect, onSendApiKeyToAgent }: FleetDashboardProps) {
-  const navigate = useNavigate();
   const machines = useMachineStore(selectSortedMachines);
   const recentMachines = useMachineStore(selectRecentMachines(3));
   const { removeMachine } = useMachineStore();
+  const { setPendingRepoPath } = useConnectionStore();
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingMachine, setEditingMachine] = useState<Machine | null>(null);
   const [showSettings, setShowSettings] = useState(false);
 
   const handleConnect = (machine: Machine, repoPath?: string) => {
-    // Navigate to connecting page immediately - connection will be initiated there
-    // Include repo path in URL if specified
-    const url = repoPath
-      ? `/connect/${machine.agentId}?repo=${encodeURIComponent(repoPath)}`
-      : `/connect/${machine.agentId}`;
-    navigate(url);
+    if (repoPath) {
+      setPendingRepoPath(repoPath);
+    }
+    onConnect(machine.agentId, machine.publicKey);
   };
 
   const handleRemove = (machine: Machine) => {

@@ -120,10 +120,10 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     return handleResponse(message);
   }, [handlePushMessage, handleResponse]);
 
-  const listSessions = useCallback(async () => {
+  const listSessions = useCallback(async (cwd?: string) => {
     setLoadingSessions(true);
     try {
-      const message = createMessage('claude:list-sessions', {});
+      const message = createMessage('claude:list-sessions', { ...(cwd ? { cwd } : {}) });
       const response = await sendRequest<ClaudeListSessionsResponsePayload>(message);
       if (response.error) {
         throw new Error(response.error);
@@ -137,10 +137,10 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
   }, [sendRequest, setSessions, setLoadingSessions]);
 
   const getSessionMessages = useCallback(
-    async (sessionId: string, offset = 0, limit = 50) => {
+    async (sessionId: string, offset = 0, limit = 50, cwd?: string) => {
       setLoadingHistory(true);
       try {
-        const message = createMessage('claude:get-messages', { sessionId, offset, limit });
+        const message = createMessage('claude:get-messages', { sessionId, offset, limit, ...(cwd ? { cwd } : {}) });
         const response = await sendRequest<ClaudeGetMessagesResponsePayload>(message);
         if (response.error) {
           throw new Error(response.error);
@@ -191,7 +191,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
   );
 
   const startSession = useCallback(
-    async (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string }) => {
+    async (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; cwd?: string }) => {
       clearMessages();
       setStreaming(true);
       setStreamError(null);
@@ -203,6 +203,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
           allowedTools: opts?.allowedTools,
           systemPrompt: opts?.systemPrompt,
           model: opts?.model,
+          ...(opts?.cwd ? { cwd: opts.cwd } : {}),
         });
         const response = await sendRequest<ClaudeStartResponsePayload>(message, 120000);
         if (!response.success) {
@@ -218,12 +219,12 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
   );
 
   const resumeSession = useCallback(
-    async (sessionId: string, prompt: string) => {
+    async (sessionId: string, prompt: string, cwd?: string) => {
       setStreaming(true);
       setStreamError(null);
       appendMessage({ role: 'user', content: prompt, timestamp: Date.now() });
       try {
-        const message = createMessage('claude:resume', { sessionId, prompt });
+        const message = createMessage('claude:resume', { sessionId, prompt, ...(cwd ? { cwd } : {}) });
         const response = await sendRequest<ClaudeResumeResponsePayload>(message, 120000);
         if (!response.success) {
           throw new Error(response.error || 'Failed to resume session');

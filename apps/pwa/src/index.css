@@ -127,3 +127,77 @@ html {
 .animate-slide-in-right {
   animation: slide-in-right 0.2s ease-out;
 }
+
+/* Navigation drawer slide-in */
+@keyframes slide-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in-left {
+  animation: slide-in-left 0.2s ease-out;
+}
+
+/* Markdown rendering in chat messages */
+.chat-markdown {
+  @apply text-sm text-slate-200 leading-relaxed;
+}
+.chat-markdown p {
+  @apply my-1.5;
+}
+.chat-markdown p:first-child {
+  @apply mt-0;
+}
+.chat-markdown p:last-child {
+  @apply mb-0;
+}
+.chat-markdown h1, .chat-markdown h2, .chat-markdown h3 {
+  @apply font-semibold text-slate-100 mt-3 mb-1.5;
+}
+.chat-markdown h1 { @apply text-base; }
+.chat-markdown h2 { @apply text-sm; }
+.chat-markdown strong {
+  @apply font-semibold text-slate-100;
+}
+.chat-markdown em {
+  @apply italic;
+}
+.chat-markdown a {
+  @apply text-blue-400 hover:text-blue-300 underline;
+}
+.chat-markdown ul, .chat-markdown ol {
+  @apply my-1.5 pl-5;
+}
+.chat-markdown ul { @apply list-disc; }
+.chat-markdown ol { @apply list-decimal; }
+.chat-markdown li {
+  @apply my-0.5;
+}
+.chat-markdown code {
+  @apply font-mono text-xs bg-slate-800 text-emerald-400 px-1 py-0.5 rounded;
+}
+.chat-markdown pre {
+  @apply my-2 rounded-lg overflow-x-auto bg-slate-900 p-3;
+}
+.chat-markdown pre code {
+  @apply bg-transparent p-0 text-slate-300;
+}
+.chat-markdown blockquote {
+  @apply border-l-2 border-slate-500 pl-3 my-2 text-slate-400 italic;
+}
+.chat-markdown table {
+  @apply w-full text-xs my-2;
+}
+.chat-markdown th {
+  @apply text-left font-semibold border-b border-slate-600 pb-1;
+}
+.chat-markdown td {
+  @apply border-b border-slate-700/50 py-1 pr-2;
+}
+.chat-markdown hr {
+  @apply border-slate-600 my-3;
+}

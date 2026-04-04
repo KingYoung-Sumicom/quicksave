@@ -15,7 +15,7 @@ const DEFAULT_SIGNALING_SERVER = process.env.QUICKSAVE_SIGNALING_URL || 'wss://s
 
 const program = new Command();
 
-function collectRepos(value: string, previous: string[]): string[] {
+function collectValues(value: string, previous: string[]): string[] {
   return previous.concat([value]);
 }
 
@@ -23,7 +23,8 @@ program
   .name('quicksave-agent')
   .description('Quicksave desktop agent for remote git control')
   .version('0.1.0')
-  .option('-r, --repo <path>', 'Path to git repository (can specify multiple)', collectRepos, [])
+  .option('-r, --repo <path>', 'Path to git repository (can specify multiple)', collectValues, [])
+  .option('-c, --coding-path <path>', 'Path for Claude Code sessions (can specify multiple, non-git dirs OK)', collectValues, [])
   .option('-s, --signaling <url>', 'Signaling server URL', DEFAULT_SIGNALING_SERVER)
   .option('--no-qr', 'Disable QR code display')
   .action(async (options) => {
@@ -75,8 +76,11 @@ program
       keyPair: config.keyPair,
     });
 
-    // Create message handler with all valid repos
-    const messageHandler = new MessageHandler(validRepos, config.license);
+    // Resolve coding paths
+    const resolvedCodingPaths = (options.codingPath || []).map((p: string) => resolve(p));
+
+    // Create message handler with all valid repos + coding paths
+    const messageHandler = new MessageHandler(validRepos, config.license, resolvedCodingPaths);
 
     // Handle incoming messages
     connection.on('message', async (message: Message, peerAddress: string) => {

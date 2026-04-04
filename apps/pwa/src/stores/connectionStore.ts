@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ConnectionState, Repository } from '@sumicom/quicksave-shared';
+import type { ConnectionState, Repository, CodingPath } from '@sumicom/quicksave-shared';
 
 export type ConnectionStep = 'signaling' | 'waiting-for-agent' | 'key-exchange' | 'handshake';
 
@@ -11,6 +11,7 @@ interface ConnectionStore {
   repoPath: string | null;
   pendingRepoPath: string | null; // Repo to switch to after connecting
   availableRepos: Repository[];
+  availableCodingPaths: CodingPath[];
   connectedAt: number | null;
   error: string | null;
   isPro: boolean;
@@ -23,10 +24,11 @@ interface ConnectionStore {
   // Actions
   setConnecting: (agentId: string) => void;
   setSignaling: () => void;
-  setConnected: (repoPath: string, isPro: boolean, availableRepos?: Repository[]) => void;
+  setConnected: (repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[]) => void;
   setRepoPath: (repoPath: string) => void;
   setPendingRepoPath: (repoPath: string | null) => void;
   setAvailableRepos: (repos: Repository[]) => void;
+  setAvailableCodingPaths: (paths: CodingPath[]) => void;
   setDisconnected: () => void;
   setReconnecting: (attempt: number, maxAttempts: number) => void;
   setError: (error: string) => void;
@@ -58,6 +60,7 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
   repoPath: null,
   pendingRepoPath: null,
   availableRepos: [],
+  availableCodingPaths: [],
   connectedAt: null,
   error: null,
   isPro: false,
@@ -81,11 +84,12 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
       state: 'connecting',
     }),
 
-  setConnected: (repoPath, isPro, availableRepos) =>
+  setConnected: (repoPath, isPro, availableRepos, availableCodingPaths) =>
     set({
       state: 'connected',
       repoPath: repoPath || null,
       availableRepos: availableRepos || [],
+      availableCodingPaths: availableCodingPaths || [],
       connectedAt: Date.now(),
       isPro,
       error: null,
@@ -106,6 +110,11 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
   setAvailableRepos: (repos) =>
     set({
       availableRepos: repos,
+    }),
+
+  setAvailableCodingPaths: (paths) =>
+    set({
+      availableCodingPaths: paths,
     }),
 
   setDisconnected: () =>
@@ -155,6 +164,7 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
       repoPath: null,
       pendingRepoPath: null,
       availableRepos: [],
+      availableCodingPaths: [],
       connectedAt: null,
       error: null,
       isPro: false,

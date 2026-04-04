@@ -13,12 +13,13 @@ import {
   type KeyPair,
   type License,
   type Repository,
+  type CodingPath,
 } from '@sumicom/quicksave-shared';
 
 export type ConnectionStep = 'signaling' | 'waiting-for-agent' | 'key-exchange' | 'handshake';
 
 export type ConnectionEventHandler = {
-  onConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[]) => void;
+  onConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[]) => void;
   onDisconnected: (agentId?: string) => void;
   onReconnecting: (attempt: number, maxAttempts: number) => void;
   onMessage: (message: Message) => void;
@@ -401,9 +402,9 @@ export class WebSocketClient {
 
       // Handle handshake response
       if (message.type === 'handshake:ack') {
-        const payload = message.payload as { repoPath: string; license?: License; availableRepos?: Repository[] };
+        const payload = message.payload as { repoPath: string; license?: License; availableRepos?: Repository[]; availableCodingPaths?: CodingPath[] };
         const isPro = payload.license ? verifyLicense(payload.license) : false;
-        this.eventHandlers.onConnected(session.agentId, payload.repoPath, isPro, payload.availableRepos);
+        this.eventHandlers.onConnected(session.agentId, payload.repoPath, isPro, payload.availableRepos, payload.availableCodingPaths);
         return;
       }
 

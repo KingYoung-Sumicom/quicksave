@@ -1,5 +1,5 @@
 import { useCallback, useRef, useEffect, useMemo, useState } from 'react';
-import { HashRouter, Routes, Route, useNavigate, useLocation, useParams } from 'react-router-dom';
+import { HashRouter, Routes, Route, useNavigate, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { useConnectionStore } from './stores/connectionStore';
 import { useGitStore } from './stores/gitStore';
 import { useMachineStore } from './stores/machineStore';
@@ -9,18 +9,20 @@ import { useClaudeOperations } from './hooks/useClaudeOperations';
 import { WebSocketClient } from './lib/websocket';
 import { ConnectionSetup } from './components/ConnectionSetup';
 import { FleetDashboard } from './components/FleetDashboard';
-import { ConnectingPage } from './components/ConnectingPage';
+import { ConnectingOverlay } from './components/ConnectingOverlay';
 import { StatusBar } from './components/StatusBar';
 import { RepoView } from './components/RepoView';
 import { RepoSwitcher } from './components/RepoSwitcher';
 import { GitignoreEditor } from './components/GitignoreEditor';
 import { ClaudePanel } from './components/ClaudePanel';
+import { AgentDashboard } from './components/AgentDashboard';
+import { NavigationDrawer } from './components/NavigationDrawer';
 import { getApiKey, saveApiKey as saveApiKeyToStorage, exportMasterSecret, importMasterSecret } from './lib/secureStorage';
 import { SyncClient } from './lib/syncClient';
+import { resolveHash, getAllKnownPaths } from './lib/pathHash';
 
 function AppContent() {
   const clientRef = useRef<WebSocketClient | null>(null);
-  const [clientReady, setClientReady] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const intentionalDisconnectRef = useRef(false);
@@ -29,8 +31,6 @@ function AppContent() {
     repoPath,
     isPro,
     signalingServer,
-    reconnectAttempt,
-    maxReconnectAttempts,
     pendingRepoPath,
     setConnecting,
     setSignaling,
@@ -83,6 +83,7 @@ function AppContent() {
 
   const [showRepoSwitcher, setShowRepoSwitcher] = useState(false);
   const [showGitignoreEditor, setShowGitignoreEditor] = useState(false);
+  const [showNavDrawer, setShowNavDrawer] = useState(false);
 
   // Initialize identity store (persistent X25519 keypair) on startup
   useEffect(() => {
@@ -200,12 +201,13 @@ function AppContent() {
     if (!identityPublicKey || clientRef.current) return;
 
     const client = new WebSocketClient(signalingServer, identityPublicKey, {
-      onConnected: (agentId, path, pro, availableRepos) => {
+      onConnected: (agentId, path, pro, availableRepos, availableCodingPaths) => {
         agentIdRef.current = agentId;
-        handlersRef.current.setConnected(path, pro, availableRepos);
+        handlersRef.current.setConnected(path, pro, availableRepos, availableCodingPaths);
         handlersRef.current.setCurrentRepoPath(path);
         const repoPaths = availableRepos?.map((r) => r.path);
-        handlersRef.current.recordConnection(agentId, path, pro, repoPaths);
+        const codingPaths = availableCodingPaths?.map((p) => p.path);
+        handlersRef.current.recordConnection(agentId, path, pro, repoPaths, codingPaths);
         // Only navigate on initial connection, not reconnect
         if (!locationRef.current.pathname.startsWith(`/agent/${agentId}`)) {
           // Check for a saved returnPath (e.g. from memory recovery or disconnect redirect)
@@ -214,7 +216,7 @@ function AppContent() {
           if (returnPath && returnPath.startsWith(`/agent/${agentId}`)) {
             handlersRef.current.navigate(returnPath, { replace: true });
           } else {
-            handlersRef.current.navigate(`/agent/${agentId}/repo`, { replace: true });
+            handlersRef.current.navigate(`/agent/${agentId}`, { replace: true });
           }
         }
       },
@@ -222,7 +224,9 @@ function AppContent() {
         handlersRef.current.setDisconnected();
       },
       onReconnecting: (attempt, maxAttempts) => {
-        handlersRef.current.setReconnecting(attempt, maxAttempts);
+        if (!intentionalDisconnectRef.current) {
+          handlersRef.current.setReconnecting(attempt, maxAttempts);
+        }
       },
       onMessage: (message) => {
         // Try Claude push/response messages first, then git responses
@@ -231,7 +235,10 @@ function AppContent() {
         }
       },
       onError: (error) => {
-        handlersRef.current.setError(error.message);
+        // Don't show errors during intentional disconnect
+        if (!intentionalDisconnectRef.current) {
+          handlersRef.current.setError(error.message);
+        }
       },
       onConnectionStep: (step, attempt) => {
         handlersRef.current.setConnectionStep(step, attempt);
@@ -242,7 +249,6 @@ function AppContent() {
     });
 
     clientRef.current = client;
-    setClientReady(true);
 
     client.connect().catch((error) => {
       console.error('Failed to connect WebSocket:', error);
@@ -252,7 +258,6 @@ function AppContent() {
     return () => {
       client.disconnect();
       clientRef.current = null;
-      setClientReady(false);
     };
   }, [identityPublicKey, signalingServer]);
 
@@ -292,17 +297,21 @@ function AppContent() {
     navigate('/', { replace: true });
   }, [handleAbortConnection, navigate]);
 
-  const switchingMachineRef = useRef(false);
   const handleSwitchMachine = useCallback((targetAgentId: string) => {
-    switchingMachineRef.current = true;
     if (clientRef.current && agentIdRef.current) {
       clientRef.current.disconnectFromAgent(agentIdRef.current);
     }
     agentIdRef.current = null;
     reset();
     resetGit();
-    navigate(`/connect/${targetAgentId}`, { replace: true });
-  }, [reset, resetGit, navigate]);
+    // Look up machine and connect directly (overlay will appear)
+    const machine = useMachineStore.getState().getMachine(targetAgentId);
+    if (machine) {
+      handleConnect(targetAgentId, machine.publicKey);
+    } else {
+      navigate('/', { replace: true });
+    }
+  }, [reset, resetGit, navigate, handleConnect]);
 
   // Fetch status and sync API key when connected
   useEffect(() => {
@@ -371,66 +380,52 @@ function AppContent() {
       return;
     }
     if (location.pathname === '/' && isConnected && agentIdRef.current && clientRef.current) {
-      navigate(`/agent/${agentIdRef.current}/repo`, { replace: true });
+      navigate(`/agent/${agentIdRef.current}`, { replace: true });
     }
   }, [location.pathname, isConnected, navigate]);
 
-  // Redirect to connect page if on repo page but not connected
-  const repoRedirectRef = useRef(false);
+  // Auto-connect when on agent page but disconnected
+  const autoConnectRef = useRef(false);
   useEffect(() => {
-    // Don't redirect if user intentionally disconnected
     if (intentionalDisconnectRef.current) return;
-    if (repoRedirectRef.current) return;
-    // Don't redirect if switching machines (handleSwitchMachine already navigated)
-    if (switchingMachineRef.current) return;
+    if (autoConnectRef.current) return;
+    // Wait for WS client to be ready (identity must initialize first)
+    if (!clientRef.current) return;
     if (location.pathname.startsWith('/agent/') && !isConnected && !isReconnecting && state !== 'connecting') {
-      repoRedirectRef.current = true;
       const match = location.pathname.match(/\/agent\/([^/]+)/);
       if (match) {
-        // Save current path so we can restore it after reconnect
+        autoConnectRef.current = true;
+        // Save current path for restoration after connect
         sessionStorage.setItem('quicksave:returnPath', location.pathname);
-        navigate(`/connect/${match[1]}`, { replace: true });
+        const machine = useMachineStore.getState().getMachine(match[1]);
+        if (machine) {
+          handleConnect(machine.agentId, machine.publicKey);
+        } else {
+          navigate('/', { replace: true });
+        }
       } else {
         navigate('/', { replace: true });
       }
     }
-  }, [location.pathname, isConnected, isReconnecting, state, navigate]);
+  }, [location.pathname, isConnected, isReconnecting, state, navigate, handleConnect, identityPublicKey]);
 
-  // Reset redirect ref and intentional disconnect flag when navigating away from repo
+  // Reset auto-connect ref when navigating away
   useEffect(() => {
     if (!location.pathname.startsWith('/agent/')) {
-      repoRedirectRef.current = false;
-    }
-    // Reset flags when user starts a new connection
-    if (location.pathname.startsWith('/connect/')) {
-      intentionalDisconnectRef.current = false;
-      switchingMachineRef.current = false;
+      autoConnectRef.current = false;
     }
   }, [location.pathname]);
 
   // Repo page content
   const repoElement = useMemo(() => {
-    if (!isConnected && !isReconnecting) {
-      return null; // Will redirect
+    if (!isConnected && !isReconnecting && state !== 'connecting') {
+      return null; // Will auto-connect
     }
+
+    const currentAgentId = agentIdRef.current || '';
 
     return (
       <div className="flex flex-col h-[100dvh] min-h-0">
-        {/* Reconnecting Overlay */}
-        {isReconnecting && (
-          <div className="fixed inset-0 bg-slate-900/80 flex items-center justify-center z-50">
-            <div className="bg-slate-800 rounded-lg p-6 text-center max-w-sm mx-4">
-              <div className="flex justify-center mb-4">
-                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-500"></div>
-              </div>
-              <h3 className="text-lg font-medium mb-2">Reconnecting...</h3>
-              <p className="text-sm text-slate-400">
-                Attempt {reconnectAttempt} of {maxReconnectAttempts}
-              </p>
-            </div>
-          </div>
-        )}
-
         <StatusBar
           connectionState={state}
           branch={status?.branch}
@@ -439,9 +434,18 @@ function AppContent() {
           repoPath={repoPath}
           onDisconnect={handleDisconnect}
           onSwitchMachine={handleSwitchMachine}
+          onOpenMenu={() => setShowNavDrawer(true)}
           onSwitchRepo={() => setShowRepoSwitcher(true)}
           onOpenGitignore={() => setShowGitignoreEditor(true)}
-          onOpenClaude={() => navigate(`/agent/${agentIdRef.current}/coding`)}
+        />
+        <NavigationDrawer
+          isOpen={showNavDrawer}
+          onClose={() => setShowNavDrawer(false)}
+          agentId={currentAgentId}
+          currentRepoPath={repoPath}
+          onOpenRepoSwitcher={() => { setShowNavDrawer(false); setShowRepoSwitcher(true); }}
+          onListSessions={listSessions}
+          onBackToFleet={() => { setShowNavDrawer(false); handleDisconnect(); }}
         />
         <RepoSwitcher
           isOpen={showRepoSwitcher}
@@ -457,71 +461,189 @@ function AppContent() {
           onRead={readGitignore}
           onWrite={writeGitignore}
         />
-        <Routes>
-          <Route path="/repo" element={
-            <RepoView
-              onRefresh={fetchStatus}
-              onFetchDiff={fetchDiff}
-              onStage={stageFiles}
-              onUnstage={unstageFiles}
-              onStagePatch={stagePatch}
-              onUnstagePatch={unstagePatch}
-              onDiscard={discardChanges}
-              onUntrack={untrackFiles}
-              onAddToGitignore={addToGitignore}
-              onCommit={async (msg, desc) => { await commit(msg, desc); }}
-              onGenerateAiSummary={generateCommitSummary}
-              onSetApiKey={setApiKey}
-            />
-          } />
-          <Route path="/coding" element={
-            <ClaudePanel
-              onBack={() => navigate(`/agent/${agentIdRef.current}/repo`)}
-              onSelectSession={(sid) => navigate(`/agent/${agentIdRef.current}/coding/${sid}`)}
-              onListSessions={listSessions}
-              onGetSessionMessages={getSessionMessages}
-              onStartSession={startSession}
-              onResumeSession={resumeSession}
-              onCancelSession={cancelSession}
-            />
-          } />
-          <Route path="/coding/:sessionId" element={
-            <ClaudePanelWithSession
-              onBack={() => navigate(`/agent/${agentIdRef.current}/coding`)}
-              onSelectSession={(sid) => navigate(`/agent/${agentIdRef.current}/coding/${sid}`)}
-              onListSessions={listSessions}
-              onGetSessionMessages={getSessionMessages}
-              onStartSession={startSession}
-              onResumeSession={resumeSession}
-              onCancelSession={cancelSession}
-            />
-          } />
-        </Routes>
+        {isConnected && (
+          <Routes>
+            <Route index element={
+              <AgentDashboard
+                agentId={currentAgentId}
+                onListSessions={listSessions}
+                onDisconnect={handleDisconnect}
+                onOpenRepoSwitcher={() => setShowRepoSwitcher(true)}
+              />
+            } />
+            <Route path="/repo/:pathHash" element={
+              <RepoViewWithHash
+                agentId={currentAgentId}
+                onSwitchRepo={switchRepo}
+                onRefresh={fetchStatus}
+                onFetchDiff={fetchDiff}
+                onStage={stageFiles}
+                onUnstage={unstageFiles}
+                onStagePatch={stagePatch}
+                onUnstagePatch={unstagePatch}
+                onDiscard={discardChanges}
+                onUntrack={untrackFiles}
+                onAddToGitignore={addToGitignore}
+                onCommit={async (msg, desc) => { await commit(msg, desc); }}
+                onGenerateAiSummary={generateCommitSummary}
+                onSetApiKey={setApiKey}
+              />
+            } />
+            <Route path="/coding/:pathHash" element={
+              <ClaudePanelWithHash
+                agentId={currentAgentId}
+                onListSessions={listSessions}
+                onGetSessionMessages={getSessionMessages}
+                onStartSession={startSession}
+                onResumeSession={resumeSession}
+                onCancelSession={cancelSession}
+              />
+            } />
+            <Route path="/coding/:pathHash/:sessionId" element={
+              <ClaudePanelWithHash
+                agentId={currentAgentId}
+                onListSessions={listSessions}
+                onGetSessionMessages={getSessionMessages}
+                onStartSession={startSession}
+                onResumeSession={resumeSession}
+                onCancelSession={cancelSession}
+              />
+            } />
+          </Routes>
+        )}
       </div>
     );
-  }, [isConnected, isReconnecting, reconnectAttempt, maxReconnectAttempts, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, readGitignore, writeGitignore, commit, generateCommitSummary, setApiKey, showRepoSwitcher, showGitignoreEditor, listRepos, switchRepo, listSessions, getSessionMessages, startSession, resumeSession, cancelSession, navigate]);
+  }, [isConnected, isReconnecting, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, readGitignore, writeGitignore, commit, generateCommitSummary, setApiKey, showRepoSwitcher, showGitignoreEditor, showNavDrawer, listRepos, switchRepo, listSessions, getSessionMessages, startSession, resumeSession, cancelSession, navigate]);
+
+  // Show connecting overlay globally (covers any page)
+  const showOverlay = state === 'connecting' || state === 'reconnecting' || (state === 'error' && !!useConnectionStore.getState().error);
 
   return (
     <div className="h-[100dvh] flex flex-col bg-slate-900 text-slate-100 overflow-auto">
       <Routes>
         <Route path="/" element={homeElement} />
-        <Route path="/connect/:agentId" element={<ConnectingPageWrapper onConnect={handleConnect} onAbort={handleAbortConnection} clientReady={clientReady} />} />
+        <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
         <Route path="/agent/:agentId/*" element={repoElement} />
       </Routes>
+      {showOverlay && <ConnectingOverlay onAbort={handleAbortConnection} />}
     </div>
   );
 }
 
-// Wrapper to extract :sessionId param and pass to ClaudePanel
-function ClaudePanelWithSession(props: Omit<React.ComponentProps<typeof ClaudePanel>, 'sessionId'>) {
-  const { sessionId } = useParams<{ sessionId: string }>();
-  return <ClaudePanel key={sessionId} {...props} sessionId={sessionId} />;
+// Wrapper that resolves :pathHash → full path and switches repo if needed
+function RepoViewWithHash({
+  agentId,
+  onSwitchRepo,
+  ...repoViewProps
+}: { agentId: string; onSwitchRepo: (path: string) => void } & React.ComponentProps<typeof RepoView>) {
+  const { pathHash } = useParams<{ pathHash: string }>();
+  const { repoPath } = useConnectionStore();
+
+  useEffect(() => {
+    if (!pathHash) return;
+    const resolved = resolveHash(pathHash, getAllKnownPaths(agentId));
+    if (resolved && resolved !== repoPath) {
+      onSwitchRepo(resolved);
+    }
+  }, [pathHash, agentId, repoPath, onSwitchRepo]);
+
+  return <RepoView {...repoViewProps} />;
 }
 
-// Wrapper to force ConnectingPage remount when agentId changes
-function ConnectingPageWrapper({ onConnect, onAbort, clientReady }: { onConnect: (agentId: string, publicKey: string) => void; onAbort: () => void; clientReady: boolean }) {
+// Wrapper that resolves :pathHash → cwd and binds it to Claude operations
+function ClaudePanelWithHash({
+  agentId,
+  onListSessions,
+  onGetSessionMessages,
+  onStartSession,
+  onResumeSession,
+  onCancelSession,
+}: {
+  agentId: string;
+  onListSessions: (cwd?: string) => Promise<void>;
+  onGetSessionMessages: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
+  onStartSession: (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; cwd?: string }) => Promise<void>;
+  onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
+  onCancelSession: (sessionId: string) => Promise<void>;
+}) {
+  const { pathHash, sessionId } = useParams<{ pathHash: string; sessionId: string }>();
+  const navigate = useNavigate();
+
+  const cwd = pathHash ? resolveHash(pathHash, getAllKnownPaths(agentId)) : undefined;
+
+  // Bind cwd into all callbacks
+  const boundListSessions = useCallback(() => onListSessions(cwd), [onListSessions, cwd]);
+  const boundGetMessages = useCallback(
+    (sid: string, offset?: number, limit?: number) => onGetSessionMessages(sid, offset, limit, cwd),
+    [onGetSessionMessages, cwd]
+  );
+  const boundStartSession = useCallback(
+    (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string }) =>
+      onStartSession(prompt, { ...opts, cwd }),
+    [onStartSession, cwd]
+  );
+  const boundResumeSession = useCallback(
+    (sid: string, prompt: string) => onResumeSession(sid, prompt, cwd),
+    [onResumeSession, cwd]
+  );
+
+  const basePath = pathHash ? `/agent/${agentId}/coding/${pathHash}` : `/agent/${agentId}`;
+
+  return (
+    <ClaudePanel
+      key={sessionId || 'new'}
+      sessionId={sessionId}
+      onSelectSession={(sid) => navigate(`${basePath}/${sid}`)}
+      onNewSession={() => navigate(basePath)}
+      onListSessions={boundListSessions}
+      onGetSessionMessages={boundGetMessages}
+      onStartSession={boundStartSession}
+      onResumeSession={boundResumeSession}
+      onCancelSession={onCancelSession}
+    />
+  );
+}
+
+
+// Lightweight handler for QR code / shared link connections (/connect/:agentId?pk=...&name=...)
+// Adds machine if new, triggers connection, and redirects — no UI of its own.
+function ConnectHandler({ onConnect }: { onConnect: (agentId: string, publicKey: string) => void }) {
   const { agentId } = useParams<{ agentId: string }>();
-  return <ConnectingPage key={agentId} onConnect={onConnect} onAbort={onAbort} clientReady={clientReady} />;
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const { addMachine, getMachine } = useMachineStore();
+  const { setPendingRepoPath } = useConnectionStore();
+  const initiated = useRef(false);
+
+  useEffect(() => {
+    if (initiated.current || !agentId) return;
+    initiated.current = true;
+
+    const pk = searchParams.get('pk');
+    const name = searchParams.get('name');
+    const repo = searchParams.get('repo');
+
+    if (repo) setPendingRepoPath(repo);
+
+    if (pk) {
+      // New machine from QR code
+      if (!getMachine(agentId)) {
+        addMachine({ agentId, publicKey: pk, nickname: name || `Machine ${agentId.slice(0, 8)}`, icon: '💻' });
+      }
+      onConnect(agentId, pk);
+    } else {
+      // Reconnect to existing machine
+      const machine = getMachine(agentId);
+      if (machine) {
+        onConnect(machine.agentId, machine.publicKey);
+      }
+    }
+
+    // Redirect to agent page (overlay will show connecting)
+    navigate(`/agent/${agentId}`, { replace: true });
+  }, [agentId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return null;
 }
 
 function App() {

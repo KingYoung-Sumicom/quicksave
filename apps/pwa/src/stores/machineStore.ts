@@ -15,6 +15,7 @@ export interface Machine {
   lastConnectedAt: number | null;
   lastRepoPath: string | null;
   knownRepos: string[];
+  knownCodingPaths: string[];
   isPro: boolean;
 }
 
@@ -26,7 +27,7 @@ interface MachineStore {
   addMachine: (machine: Pick<Machine, 'agentId' | 'publicKey' | 'nickname' | 'icon'>) => void;
   updateMachine: (agentId: string, updates: Partial<Omit<Machine, 'agentId'>>) => void;
   removeMachine: (agentId: string) => void;
-  recordConnection: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: string[]) => void;
+  recordConnection: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: string[], availableCodingPaths?: string[]) => void;
   addKnownRepo: (agentId: string, repoPath: string) => void;
   syncKnownRepos: (agentId: string, repoPaths: string[]) => void;
   overwriteMachines: (machines: Machine[]) => void;
@@ -54,6 +55,7 @@ export const useMachineStore = create<MachineStore>()(
                 lastConnectedAt: null,
                 lastRepoPath: null,
                 knownRepos: [],
+                knownCodingPaths: [],
                 isPro: false,
               },
             ],
@@ -72,7 +74,7 @@ export const useMachineStore = create<MachineStore>()(
           machines: state.machines.filter((m) => m.agentId !== agentId),
         })),
 
-      recordConnection: (agentId, repoPath, isPro, availableRepos) =>
+      recordConnection: (agentId, repoPath, isPro, availableRepos, availableCodingPaths) =>
         set((state) => ({
           machines: state.machines.map((m) => {
             if (m.agentId !== agentId) return m;
@@ -82,11 +84,17 @@ export const useMachineStore = create<MachineStore>()(
             const newRepos = availableRepos || [];
             const allRepos = [...new Set([...existingRepos, ...newRepos, repoPath])];
 
+            // Merge coding paths
+            const existingCodingPaths = m.knownCodingPaths || [];
+            const newCodingPaths = availableCodingPaths || [];
+            const allCodingPaths = [...new Set([...existingCodingPaths, ...newCodingPaths])];
+
             return {
               ...m,
               lastConnectedAt: Date.now(),
               lastRepoPath: repoPath,
               knownRepos: allRepos,
+              knownCodingPaths: allCodingPaths,
               isPro,
             };
           }),
@@ -119,7 +127,18 @@ export const useMachineStore = create<MachineStore>()(
     }),
     {
       name: 'quicksave-machines',
-      version: 1,
+      version: 2,
+      migrate: (persisted: unknown, version: number) => {
+        const state = persisted as { machines: Machine[] };
+        if (version < 2) {
+          // Add knownCodingPaths to existing machines
+          state.machines = state.machines.map((m) => ({
+            ...m,
+            knownCodingPaths: (m as Machine).knownCodingPaths || [],
+          }));
+        }
+        return state;
+      },
     }
   )
 );
