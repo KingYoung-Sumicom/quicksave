@@ -12,7 +12,7 @@ import { FleetDashboard } from './components/FleetDashboard';
 import { ConnectingOverlay } from './components/ConnectingOverlay';
 import { StatusBar } from './components/StatusBar';
 import { RepoView } from './components/RepoView';
-import { RepoSwitcher } from './components/RepoSwitcher';
+import { PathBrowser } from './components/PathBrowser';
 import { GitignoreEditor } from './components/GitignoreEditor';
 import { ClaudePanel } from './components/ClaudePanel';
 import { AgentDashboard } from './components/AgentDashboard';
@@ -20,6 +20,7 @@ import { NavigationDrawer } from './components/NavigationDrawer';
 import { getApiKey, saveApiKey as saveApiKeyToStorage, exportMasterSecret, importMasterSecret } from './lib/secureStorage';
 import { SyncClient } from './lib/syncClient';
 import { resolveHash, getAllKnownPaths } from './lib/pathHash';
+import { useMediaQuery } from './hooks/useMediaQuery';
 
 function AppContent() {
   const clientRef = useRef<WebSocketClient | null>(null);
@@ -66,10 +67,10 @@ function AppContent() {
     generateCommitSummary,
     setApiKey,
     checkApiKeyStatus,
-    listRepos,
     switchRepo,
     browseDirectory,
     addRepo,
+    addCodingPath,
   } = useGitOperations(clientRef);
 
   const {
@@ -81,9 +82,11 @@ function AppContent() {
     cancelSession,
   } = useClaudeOperations(clientRef);
 
-  const [showRepoSwitcher, setShowRepoSwitcher] = useState(false);
+  const [showPathBrowser, setShowPathBrowser] = useState(false);
+  const [pathBrowserMode, setPathBrowserMode] = useState<'repo' | 'workspace'>('repo');
   const [showGitignoreEditor, setShowGitignoreEditor] = useState(false);
-  const [showNavDrawer, setShowNavDrawer] = useState(false);
+  const isDesktop = useMediaQuery('(min-width: 768px)');
+  const [showNavDrawer, setShowNavDrawer] = useState(isDesktop);
 
   // Initialize identity store (persistent X25519 keypair) on startup
   useEffect(() => {
@@ -291,6 +294,21 @@ function AppContent() {
     resetGit();
   }, [reset, resetGit]);
 
+  const handleRetryConnection = useCallback(() => {
+    const currentAgentId = agentIdRef.current;
+    if (!currentAgentId) return;
+
+    if (clientRef.current) {
+      clientRef.current.disconnectFromAgent(currentAgentId);
+    }
+    reset();
+
+    const machine = useMachineStore.getState().getMachine(currentAgentId);
+    if (machine) {
+      handleConnect(currentAgentId, machine.publicKey);
+    }
+  }, [reset, handleConnect]);
+
   const handleDisconnect = useCallback(() => {
     intentionalDisconnectRef.current = true;
     handleAbortConnection();
@@ -326,13 +344,6 @@ function AppContent() {
       checkApiKeyStatus();
     }
   }, [state, fetchStatus, checkApiKeyStatus, setApiKey]);
-
-  // Auto-open repo browser when connected with no repo
-  useEffect(() => {
-    if (state === 'connected' && !repoPath) {
-      setShowRepoSwitcher(true);
-    }
-  }, [state, repoPath]);
 
   // Switch to pending repo after connection if different from current
   useEffect(() => {
@@ -424,6 +435,12 @@ function AppContent() {
 
     const currentAgentId = agentIdRef.current || '';
 
+    const openPathBrowser = (mode: 'repo' | 'workspace' = 'repo') => {
+      if (!isDesktop) setShowNavDrawer(false);
+      setPathBrowserMode(mode);
+      setShowPathBrowser(true);
+    };
+
     return (
       <div className="flex flex-col h-[100dvh] min-h-0">
         <StatusBar
@@ -434,86 +451,92 @@ function AppContent() {
           repoPath={repoPath}
           onDisconnect={handleDisconnect}
           onSwitchMachine={handleSwitchMachine}
-          onOpenMenu={() => setShowNavDrawer(true)}
-          onSwitchRepo={() => setShowRepoSwitcher(true)}
+          onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
+          onSwitchRepo={() => openPathBrowser('repo')}
           onOpenGitignore={() => setShowGitignoreEditor(true)}
         />
-        <NavigationDrawer
-          isOpen={showNavDrawer}
-          onClose={() => setShowNavDrawer(false)}
-          agentId={currentAgentId}
-          currentRepoPath={repoPath}
-          onOpenRepoSwitcher={() => { setShowNavDrawer(false); setShowRepoSwitcher(true); }}
-          onListSessions={listSessions}
-          onBackToFleet={() => { setShowNavDrawer(false); handleDisconnect(); }}
-        />
-        <RepoSwitcher
-          isOpen={showRepoSwitcher}
-          onClose={() => setShowRepoSwitcher(false)}
-          onListRepos={listRepos}
-          onSwitchRepo={switchRepo}
-          onBrowseDirectory={browseDirectory}
-          onAddRepo={addRepo}
-        />
-        <GitignoreEditor
-          isOpen={showGitignoreEditor}
-          onClose={() => setShowGitignoreEditor(false)}
-          onRead={readGitignore}
-          onWrite={writeGitignore}
-        />
-        {isConnected && (
-          <Routes>
-            <Route index element={
-              <AgentDashboard
-                agentId={currentAgentId}
-                onListSessions={listSessions}
-                onDisconnect={handleDisconnect}
-                onOpenRepoSwitcher={() => setShowRepoSwitcher(true)}
-              />
-            } />
-            <Route path="/repo/:pathHash" element={
-              <RepoViewWithHash
-                agentId={currentAgentId}
-                onSwitchRepo={switchRepo}
-                onRefresh={fetchStatus}
-                onFetchDiff={fetchDiff}
-                onStage={stageFiles}
-                onUnstage={unstageFiles}
-                onStagePatch={stagePatch}
-                onUnstagePatch={unstagePatch}
-                onDiscard={discardChanges}
-                onUntrack={untrackFiles}
-                onAddToGitignore={addToGitignore}
-                onCommit={async (msg, desc) => { await commit(msg, desc); }}
-                onGenerateAiSummary={generateCommitSummary}
-                onSetApiKey={setApiKey}
-              />
-            } />
-            <Route path="/coding/:pathHash" element={
-              <ClaudePanelWithHash
-                agentId={currentAgentId}
-                onListSessions={listSessions}
-                onGetSessionMessages={getSessionMessages}
-                onStartSession={startSession}
-                onResumeSession={resumeSession}
-                onCancelSession={cancelSession}
-              />
-            } />
-            <Route path="/coding/:pathHash/:sessionId" element={
-              <ClaudePanelWithHash
-                agentId={currentAgentId}
-                onListSessions={listSessions}
-                onGetSessionMessages={getSessionMessages}
-                onStartSession={startSession}
-                onResumeSession={resumeSession}
-                onCancelSession={cancelSession}
-              />
-            } />
-          </Routes>
-        )}
+        <div className="flex flex-1 min-h-0">
+          <NavigationDrawer
+            isOpen={showNavDrawer}
+            persistent={isDesktop}
+            onClose={() => setShowNavDrawer(false)}
+            agentId={currentAgentId}
+            currentRepoPath={repoPath}
+            onAddRepo={() => openPathBrowser('repo')}
+            onAddWorkspace={() => openPathBrowser('workspace')}
+            onListSessions={listSessions}
+            onBackToFleet={() => { setShowNavDrawer(false); handleDisconnect(); }}
+          />
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            <PathBrowser
+              isOpen={showPathBrowser}
+              mode={pathBrowserMode}
+              onClose={() => setShowPathBrowser(false)}
+              onSwitchRepo={switchRepo}
+              onBrowseDirectory={browseDirectory}
+              onAddRepo={addRepo}
+              onAddCodingPath={addCodingPath}
+            />
+            <GitignoreEditor
+              isOpen={showGitignoreEditor}
+              onClose={() => setShowGitignoreEditor(false)}
+              onRead={readGitignore}
+              onWrite={writeGitignore}
+            />
+            {isConnected && (
+              <Routes>
+                <Route index element={
+                  <AgentDashboard
+                    agentId={currentAgentId}
+                    onListSessions={listSessions}
+                    onAddRepo={() => openPathBrowser('repo')}
+                  />
+                } />
+                <Route path="/repo/:pathHash" element={
+                  <RepoViewWithHash
+                    agentId={currentAgentId}
+                    onSwitchRepo={switchRepo}
+                    onRefresh={fetchStatus}
+                    onFetchDiff={fetchDiff}
+                    onStage={stageFiles}
+                    onUnstage={unstageFiles}
+                    onStagePatch={stagePatch}
+                    onUnstagePatch={unstagePatch}
+                    onDiscard={discardChanges}
+                    onUntrack={untrackFiles}
+                    onAddToGitignore={addToGitignore}
+                    onCommit={async (msg, desc) => { await commit(msg, desc); }}
+                    onGenerateAiSummary={generateCommitSummary}
+                    onSetApiKey={setApiKey}
+                  />
+                } />
+                <Route path="/coding/:pathHash" element={
+                  <ClaudePanelWithHash
+                    agentId={currentAgentId}
+                    onListSessions={listSessions}
+                    onGetSessionMessages={getSessionMessages}
+                    onStartSession={startSession}
+                    onResumeSession={resumeSession}
+                    onCancelSession={cancelSession}
+                  />
+                } />
+                <Route path="/coding/:pathHash/:sessionId" element={
+                  <ClaudePanelWithHash
+                    agentId={currentAgentId}
+                    onListSessions={listSessions}
+                    onGetSessionMessages={getSessionMessages}
+                    onStartSession={startSession}
+                    onResumeSession={resumeSession}
+                    onCancelSession={cancelSession}
+                  />
+                } />
+              </Routes>
+            )}
+          </div>
+        </div>
       </div>
     );
-  }, [isConnected, isReconnecting, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, readGitignore, writeGitignore, commit, generateCommitSummary, setApiKey, showRepoSwitcher, showGitignoreEditor, showNavDrawer, listRepos, switchRepo, listSessions, getSessionMessages, startSession, resumeSession, cancelSession, navigate]);
+  }, [isConnected, isReconnecting, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, readGitignore, writeGitignore, commit, generateCommitSummary, setApiKey, showPathBrowser, pathBrowserMode, showGitignoreEditor, showNavDrawer, isDesktop, switchRepo, listSessions, getSessionMessages, startSession, resumeSession, cancelSession, navigate, browseDirectory, addRepo, addCodingPath]);
 
   // Show connecting overlay globally (covers any page)
   const showOverlay = state === 'connecting' || state === 'reconnecting' || (state === 'error' && !!useConnectionStore.getState().error);
@@ -525,7 +548,7 @@ function AppContent() {
         <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
         <Route path="/agent/:agentId/*" element={repoElement} />
       </Routes>
-      {showOverlay && <ConnectingOverlay onAbort={handleAbortConnection} />}
+      {showOverlay && <ConnectingOverlay onAbort={handleAbortConnection} onRetry={handleRetryConnection} />}
     </div>
   );
 }

@@ -66,7 +66,7 @@ import {
   generateMessageId,
 } from '@sumicom/quicksave-shared';
 import { GitOperations } from '../git/operations.js';
-import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey } from '../config.js';
+import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedCodingPath } from '../config.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';
 import { ClaudeCodeService } from '../ai/claudeCodeService.js';
 import { readdir, stat } from 'fs/promises';
@@ -103,6 +103,25 @@ export class MessageHandler {
           this.codingPaths.set(p, { path: p, name: basename(p) });
         }
       }
+    }
+  }
+
+  addRepo(repo: Repository): void {
+    if (this.repos.has(repo.path)) return;
+    this.repos.set(repo.path, new GitOperations(repo.path));
+    this.availableRepos.push(repo);
+    this.codingPaths.set(repo.path, { path: repo.path, name: repo.name });
+    if (!this.defaultRepoPath) {
+      this.defaultRepoPath = repo.path;
+    }
+  }
+
+  removeRepo(path: string): void {
+    this.repos.delete(path);
+    this.availableRepos = this.availableRepos.filter((r) => r.path !== path);
+    this.codingPaths.delete(path);
+    if (this.defaultRepoPath === path) {
+      this.defaultRepoPath = this.availableRepos.length > 0 ? this.availableRepos[0].path : '';
     }
   }
 
@@ -867,6 +886,7 @@ export class MessageHandler {
 
       const newPath: CodingPath = { path: codingPath, name: basename(codingPath) };
       this.codingPaths.set(codingPath, newPath);
+      addManagedCodingPath(codingPath);
 
       const response = createMessage<AddCodingPathResponsePayload>(
         'agent:add-coding-path:response',
@@ -895,9 +915,13 @@ export class MessageHandler {
     try {
       const cwd = message.payload.cwd || this.getClientRepoPath(peerAddress);
       const sessions = await this.claudeService.listAvailableSessions(cwd);
+      const enriched = sessions.map((s) => ({
+        ...s,
+        isActive: this.claudeService.isActive(s.sessionId),
+      }));
       const response = createMessage<ClaudeListSessionsResponsePayload>(
         'claude:list-sessions:response',
-        { sessions }
+        { sessions: enriched }
       );
       response.id = message.id;
       return response;

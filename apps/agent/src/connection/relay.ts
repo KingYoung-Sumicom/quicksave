@@ -153,6 +153,8 @@ export class SignalingClient extends EventEmitter {
       // Send compressed
       this.compress(JSON.stringify(message)).then((compressed) => {
         this.ws?.send(JSON.stringify({ z: compressed }));
+      }).catch((error) => {
+        console.error('Failed to send signaling message:', error);
       });
     }
   }

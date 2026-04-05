@@ -1,10 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { existsSync, unlinkSync, mkdirSync } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
-import { mkdtempSync, rmSync } from 'fs';
-
-// We test the helper functions directly rather than the module-level constants
+import { describe, it, expect } from 'vitest';
 import { isProcessAlive } from './singleton.js';
 import { shouldRestartDaemon, IPC_VERSION, BUILD_ID } from './types.js';
 import type { HelloResult } from './types.js';

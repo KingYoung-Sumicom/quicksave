@@ -22,7 +22,9 @@ import {
   type SwitchRepoResponsePayload,
   type BrowseDirectoryResponsePayload,
   type AddRepoResponsePayload,
+  type AddCodingPathResponsePayload,
   type Repository,
+  type CodingPath,
   type ClaudeModel,
 } from '@sumicom/quicksave-shared';
 import { useConnectionStore } from '../stores/connectionStore';
@@ -54,7 +56,7 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     clearSelection,
     selectedModel,
   } = useGitStore();
-  const { setRepoPath, setAvailableRepos } = useConnectionStore();
+  const { setRepoPath, setAvailableRepos, setAvailableCodingPaths, availableCodingPaths } = useConnectionStore();
 
   const sendRequest = useCallback(
     <T>(message: Message, timeoutMs = 30000): Promise<T> => {
@@ -482,6 +484,26 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     [sendRequest, listRepos, setError]
   );
 
+  const addCodingPath = useCallback(
+    async (path: string): Promise<CodingPath | null> => {
+      try {
+        const message = createMessage('agent:add-coding-path', { path });
+        const response = await sendRequest<AddCodingPathResponsePayload>(message, 10000);
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to add workspace');
+        }
+        if (response.path) {
+          setAvailableCodingPaths([...availableCodingPaths, response.path]);
+        }
+        return response.path ?? null;
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Failed to add workspace');
+        return null;
+      }
+    },
+    [sendRequest, setAvailableCodingPaths, availableCodingPaths, setError]
+  );
+
   return {
     handleResponse,
     fetchStatus,
@@ -506,5 +528,6 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     switchRepo,
     browseDirectory,
     addRepo,
+    addCodingPath,
   };
 }

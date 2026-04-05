@@ -539,6 +539,7 @@ export interface ClaudeSessionSummary {
   cwd?: string;
   gitBranch?: string;
   messageCount?: number;
+  isActive?: boolean;
 }
 
 // List Sessions

@@ -163,8 +163,12 @@ export class AgentConnection extends EventEmitter {
       const peerKey = peerAddress.replace('pwa:', '');
       console.log(`Key exchange complete with ${peerKey.slice(0, 12)}..., connection encrypted`);
 
-      // Emit 'connected' only for new peers
-      const isNewPeer = !this.peers.has(peerAddress);
+      const isReconnect = this.peers.has(peerAddress);
+
+      if (isReconnect) {
+        // Peer reconnected with new DEK — clean up old session state first
+        this.emit('disconnected', peerAddress);
+      }
 
       // Create/update PeerSession for that address
       this.peers.set(peerAddress, {
@@ -173,9 +177,7 @@ export class AgentConnection extends EventEmitter {
         connectedAt: Date.now(),
       });
 
-      if (isNewPeer) {
-        this.emit('connected', peerAddress);
-      }
+      this.emit('connected', peerAddress);
 
       // V2: Send acknowledgment
       const ack = JSON.stringify({
@@ -202,6 +204,8 @@ export class AgentConnection extends EventEmitter {
       const compressedBase64 = compressed.toString('base64');
       const encrypted = encryptWithSharedSecret(compressedBase64, peer.sessionDEK);
       this.signaling.sendData(encrypted, targetAddress);
+    }).catch((error) => {
+      console.error('Failed to send message:', error);
     });
   }
 

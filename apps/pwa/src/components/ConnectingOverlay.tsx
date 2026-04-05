@@ -2,9 +2,10 @@ import { useConnectionStore, type ConnectionStep } from '../stores/connectionSto
 
 interface ConnectingOverlayProps {
   onAbort: () => void;
+  onRetry: () => void;
 }
 
-export function ConnectingOverlay({ onAbort }: ConnectingOverlayProps) {
+export function ConnectingOverlay({ onAbort, onRetry }: ConnectingOverlayProps) {
   const { state, error, connectionStep, keyExchangeAttempt, agentOnline } = useConnectionStore();
 
   // Only show for connecting/reconnecting states
@@ -76,13 +77,23 @@ export function ConnectingOverlay({ onAbort }: ConnectingOverlayProps) {
           <StepDot active={stepIndex >= 3} completed={false} label="Secure" />
         </div>
 
-        {/* Cancel */}
-        <button
-          onClick={onAbort}
-          className="mt-8 text-sm text-slate-500 hover:text-slate-300 transition-colors"
-        >
-          Cancel
-        </button>
+        {/* Actions */}
+        <div className="mt-8 flex items-center justify-center gap-4">
+          <button
+            onClick={onAbort}
+            className="px-5 py-2 text-sm bg-slate-800 hover:bg-slate-700 text-red-400 rounded-lg font-medium transition-colors"
+          >
+            Cancel
+          </button>
+          {isAgentOffline && (
+            <button
+              onClick={onRetry}
+              className="px-5 py-2 text-sm bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-medium transition-colors"
+            >
+              Retry
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

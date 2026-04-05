@@ -7,20 +7,24 @@ import type { Repository, CodingPath, ClaudeSessionSummary } from '@sumicom/quic
 
 interface NavigationDrawerProps {
   isOpen: boolean;
+  persistent?: boolean;
   onClose: () => void;
   agentId: string;
   currentRepoPath: string | null;
-  onOpenRepoSwitcher: () => void;
+  onAddRepo: () => void;
+  onAddWorkspace: () => void;
   onListSessions: (cwd?: string) => Promise<void>;
   onBackToFleet: () => void;
 }
 
 export function NavigationDrawer({
   isOpen,
+  persistent,
   onClose,
   agentId,
   currentRepoPath,
-  onOpenRepoSwitcher,
+  onAddRepo,
+  onAddWorkspace,
   onListSessions,
   onBackToFleet,
 }: NavigationDrawerProps) {
@@ -55,12 +59,85 @@ export function NavigationDrawer({
     return () => { cancelled = true; };
   }, [isOpen, availableCodingPaths, onListSessions]);
 
-  if (!isOpen) return null;
-
   const handleNavigate = (url: string) => {
-    onClose();
+    if (!persistent) onClose();
     navigate(url);
   };
+
+  // Persistent desktop sidebar
+  if (persistent) {
+    if (!isOpen) return null;
+
+    return (
+      <div className="w-64 flex-shrink-0 border-r border-slate-700 bg-slate-800 flex flex-col overflow-hidden">
+        {/* Header */}
+        <div className="px-4 py-4 border-b border-slate-700">
+          <button
+            onClick={() => handleNavigate(`/agent/${agentId}`)}
+            className="text-lg font-bold hover:text-blue-400 transition-colors"
+          >
+            Dashboard
+          </button>
+        </div>
+
+        {/* Scrollable content */}
+        <div className="flex-1 overflow-y-auto py-3">
+          <SectionHeader title="Repositories" onAdd={onAddRepo} />
+          {availableRepos.map((repo) => (
+            <RepoItem
+              key={repo.path}
+              repo={repo}
+              active={repo.path === currentRepoPath}
+              onClick={() => handleNavigate(agentUrl(agentId, 'repo', repo.path))}
+            />
+          ))}
+          {availableRepos.length === 0 && (
+            <p className="px-4 py-2 text-xs text-slate-500">No repos</p>
+          )}
+
+          <SectionHeader title="Coding" onAdd={onAddWorkspace} />
+          {availableCodingPaths.map((cp) => {
+            const sessions = sessionsByPath.get(cp.path) || [];
+            const sorted = [...sessions].sort((a, b) => (b.isActive ? 1 : 0) - (a.isActive ? 1 : 0));
+            return (
+              <div key={cp.path}>
+                <CodingItem
+                  codingPath={cp}
+                  onClick={() => handleNavigate(agentUrl(agentId, 'coding', cp.path))}
+                />
+                {sorted.slice(0, 5).map((session) => (
+                  <SessionItem
+                    key={session.sessionId}
+                    session={session}
+                    onClick={() => handleNavigate(agentUrl(agentId, 'coding', cp.path, session.sessionId))}
+                  />
+                ))}
+              </div>
+            );
+          })}
+          {availableCodingPaths.length === 0 && (
+            <p className="px-4 py-2 text-xs text-slate-500">No coding paths</p>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-4 py-3 border-t border-slate-700">
+          <button
+            onClick={onBackToFleet}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+            Back to Fleet
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Mobile overlay drawer
+  if (!isOpen) return null;
 
   return (
     <>
@@ -84,8 +161,7 @@ export function NavigationDrawer({
 
         {/* Scrollable content */}
         <div className="flex-1 overflow-y-auto py-3">
-          {/* Repositories */}
-          <SectionHeader title="Repositories" onAdd={onOpenRepoSwitcher} />
+          <SectionHeader title="Repositories" onAdd={onAddRepo} />
           {availableRepos.map((repo) => (
             <RepoItem
               key={repo.path}
@@ -98,29 +174,22 @@ export function NavigationDrawer({
             <p className="px-4 py-2 text-xs text-slate-500">No repos</p>
           )}
 
-          {/* Coding */}
-          <SectionHeader title="Coding" />
+          <SectionHeader title="Coding" onAdd={onAddWorkspace} />
           {availableCodingPaths.map((cp) => {
             const sessions = sessionsByPath.get(cp.path) || [];
+            const sorted = [...sessions].sort((a, b) => (b.isActive ? 1 : 0) - (a.isActive ? 1 : 0));
             return (
               <div key={cp.path}>
                 <CodingItem
                   codingPath={cp}
                   onClick={() => handleNavigate(agentUrl(agentId, 'coding', cp.path))}
                 />
-                {sessions.slice(0, 3).map((session) => (
-                  <button
+                {sorted.slice(0, 5).map((session) => (
+                  <SessionItem
                     key={session.sessionId}
+                    session={session}
                     onClick={() => handleNavigate(agentUrl(agentId, 'coding', cp.path, session.sessionId))}
-                    className="w-full flex items-center gap-2 pl-10 pr-4 py-1.5 text-left text-xs text-slate-400 hover:bg-slate-700 transition-colors"
-                  >
-                    <span className="truncate">
-                      {session.summary || session.sessionId.slice(0, 12)}
-                    </span>
-                    <span className="text-slate-600 flex-shrink-0 ml-auto">
-                      {formatRelativeTime(session.lastModified)}
-                    </span>
-                  </button>
+                  />
                 ))}
               </div>
             );
@@ -128,10 +197,9 @@ export function NavigationDrawer({
           {availableCodingPaths.length === 0 && (
             <p className="px-4 py-2 text-xs text-slate-500">No coding paths</p>
           )}
-
         </div>
 
-        {/* Footer — sticky bottom */}
+        {/* Footer */}
         <div className="px-4 py-3 border-t border-slate-700 safe-area-bottom">
           <button
             onClick={() => { onClose(); onBackToFleet(); }}
@@ -194,6 +262,26 @@ function CodingItem({ codingPath, onClick }: { codingPath: CodingPath; onClick: 
   );
 }
 
+function SessionItem({ session, onClick }: { session: ClaudeSessionSummary; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center gap-2 pl-10 pr-4 py-1.5 text-left text-xs hover:bg-slate-700 transition-colors ${
+        session.isActive ? 'text-white' : 'text-slate-400'
+      }`}
+    >
+      {session.isActive && (
+        <span className="w-1.5 h-1.5 rounded-full bg-green-400 flex-shrink-0 animate-pulse" />
+      )}
+      <span className="truncate">
+        {session.summary || session.sessionId.slice(0, 12)}
+      </span>
+      <span className={`flex-shrink-0 ml-auto ${session.isActive ? 'text-green-400' : 'text-slate-600'}`}>
+        {session.isActive ? 'Active' : formatRelativeTime(session.lastModified)}
+      </span>
+    </button>
+  );
+}
 
 function formatRelativeTime(timestamp: number): string {
   const diff = Date.now() - timestamp;

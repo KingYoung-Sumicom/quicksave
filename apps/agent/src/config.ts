@@ -13,6 +13,8 @@ export interface AgentConfig {
   license?: License;
   signalingServer: string;
   anthropicApiKey?: string;
+  managedRepos?: string[];
+  managedCodingPaths?: string[];
 }
 
 const CONFIG_DIR = join(homedir(), '.quicksave');
@@ -94,6 +96,50 @@ export function setAnthropicApiKey(apiKey: string): void {
 
 export function hasAnthropicApiKey(): boolean {
   return !!loadConfig()?.anthropicApiKey;
+}
+
+// Managed repos helpers
+export function getManagedRepos(): string[] {
+  return loadConfig()?.managedRepos ?? [];
+}
+
+export function addManagedRepo(path: string): void {
+  const config = loadConfig();
+  if (!config) return;
+  const repos = config.managedRepos ?? [];
+  if (!repos.includes(path)) {
+    repos.push(path);
+    config.managedRepos = repos;
+    saveConfig(config);
+  }
+}
+
+export function removeManagedRepo(path: string): void {
+  const config = loadConfig();
+  if (!config) return;
+  const repos = config.managedRepos ?? [];
+  const idx = repos.indexOf(path);
+  if (idx !== -1) {
+    repos.splice(idx, 1);
+    config.managedRepos = repos;
+    saveConfig(config);
+  }
+}
+
+// Managed coding paths helpers
+export function getManagedCodingPaths(): string[] {
+  return loadConfig()?.managedCodingPaths ?? [];
+}
+
+export function addManagedCodingPath(path: string): void {
+  const config = loadConfig();
+  if (!config) return;
+  const paths = config.managedCodingPaths ?? [];
+  if (!paths.includes(path)) {
+    paths.push(path);
+    config.managedCodingPaths = paths;
+    saveConfig(config);
+  }
 }
 
 /**

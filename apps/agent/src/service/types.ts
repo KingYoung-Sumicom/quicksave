@@ -135,6 +135,29 @@ export interface ServiceState {
 }
 
 // ---------------------------------------------------------------------------
+// get-pairing-info
+// ---------------------------------------------------------------------------
+
+export interface PairingInfoResult {
+  agentId: string;
+  publicKey: string;
+  pairingUrl: string;
+  connectionState: 'connected' | 'connecting' | 'disconnected';
+  peerCount: number;
+}
+
+// ---------------------------------------------------------------------------
+// repo management
+// ---------------------------------------------------------------------------
+
+export interface RepoInfo {
+  path: string;
+  name: string;
+  valid: boolean;
+  currentBranch?: string;
+}
+
+// ---------------------------------------------------------------------------
 // ensureDaemon helper types
 // ---------------------------------------------------------------------------
 

@@ -7,15 +7,13 @@ import { agentUrl } from '../lib/pathHash';
 interface AgentDashboardProps {
   agentId: string;
   onListSessions: (cwd?: string) => Promise<void>;
-  onDisconnect: () => void;
-  onOpenRepoSwitcher: () => void;
+  onAddRepo: () => void;
 }
 
 export function AgentDashboard({
   agentId,
   onListSessions,
-  onDisconnect,
-  onOpenRepoSwitcher,
+  onAddRepo,
 }: AgentDashboardProps) {
   const navigate = useNavigate();
   const { availableRepos, availableCodingPaths } = useConnectionStore();
@@ -82,7 +80,7 @@ export function AgentDashboard({
               Repositories
             </h2>
             <button
-              onClick={onOpenRepoSwitcher}
+              onClick={onAddRepo}
               className="text-sm text-blue-400 hover:text-blue-300 transition-colors"
             >
               + Add
@@ -184,15 +182,6 @@ export function AgentDashboard({
           )}
         </section>
 
-        {/* Actions */}
-        <section>
-          <button
-            onClick={onDisconnect}
-            className="w-full text-sm text-slate-500 hover:text-slate-300 py-2 transition-colors"
-          >
-            Disconnect
-          </button>
-        </section>
       </div>
     </div>
   );

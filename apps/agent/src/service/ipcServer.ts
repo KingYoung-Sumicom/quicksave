@@ -52,6 +52,7 @@ export class IpcServer extends EventEmitter {
   private nextClientId = 1;
   private startedAt: Date;
   private version: string;
+  private statusProvider?: () => StatusResult;
 
   constructor(opts: { version: string }) {
     super();
@@ -69,6 +70,11 @@ export class IpcServer extends EventEmitter {
   /** Register a JSON-RPC method handler. */
   registerMethod(method: string, handler: MethodHandler): void {
     this.methods.set(method, handler);
+  }
+
+  /** Set a provider for live status data (wired after AgentConnection starts). */
+  setStatusProvider(fn: () => StatusResult): void {
+    this.statusProvider = fn;
   }
 
   /** Start listening on the given Unix socket path. */
@@ -254,12 +260,12 @@ export class IpcServer extends EventEmitter {
   }
 
   private handleStatus(): StatusResult {
+    if (this.statusProvider) return this.statusProvider();
     const uptimeMs = Date.now() - this.startedAt.getTime();
     return {
       version: this.version,
       pid: process.pid,
       uptime: Math.floor(uptimeMs / 1000),
-      // Placeholder — will be wired to AgentConnection in a later step
       connectionState: 'disconnected',
       peerCount: 0,
       activeSessions: 0,

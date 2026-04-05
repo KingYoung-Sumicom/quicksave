@@ -274,6 +274,18 @@ export class WebSocketClient {
           if (session && !session.keyExchangeComplete) {
             this.initiateKeyExchange(session);
           }
+        } else {
+          // Agent went offline — reset key exchange so we re-negotiate when it returns
+          const session = this.sessions.get(agentId);
+          if (session) {
+            session.keyExchangeComplete = false;
+            session.sessionDEK = null;
+            session.keyExchangeRetries = 0;
+            if (session.keyExchangeTimeout) {
+              clearTimeout(session.keyExchangeTimeout);
+              session.keyExchangeTimeout = null;
+            }
+          }
         }
         break;
       }

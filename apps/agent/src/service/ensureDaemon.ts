@@ -10,12 +10,13 @@
  * 5. If lock acquisition fails, retry attach with backoff (up to 3 attempts, 500ms base delay).
  */
 
-import { spawn } from 'child_process';
-import { resolve } from 'path';
+import { fork } from 'child_process';
+import { openSync } from 'fs';
+import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { IpcClient } from './ipcClient.js';
 import { readServiceState } from './stateStore.js';
-import { isProcessAlive, cleanStaleRuntime } from './singleton.js';
+import { isProcessAlive, cleanStaleRuntime, getRunDir } from './singleton.js';
 import { shouldRestartDaemon, IPC_VERSION, BUILD_ID } from './types.js';
 import type { HelloResult } from './types.js';
 
@@ -99,17 +100,16 @@ async function startAndConnect(): Promise<EnsureDaemonResult> {
  * Spawn `quicksave service run` as a detached background process.
  */
 function spawnDaemon(): void {
-  // Resolve the path to the CLI entry point
-  const entryPath = resolve(fileURLToPath(import.meta.url), '../../index.js');
+  const thisFile = fileURLToPath(import.meta.url);
+  const isTs = thisFile.endsWith('.ts');
+  const entryPath = resolve(thisFile, isTs ? '../../index.ts' : '../../index.js');
 
-  const child = spawn(
-    process.execPath,
-    [entryPath, 'service', 'run'],
-    {
-      detached: true,
-      stdio: 'ignore',
-    },
-  );
+  const logFd = openSync(join(getRunDir(), 'daemon.log'), 'a');
+  const child = fork(entryPath, ['service', 'run'], {
+    detached: true,
+    stdio: ['ignore', logFd, logFd, 'ipc'],
+    execArgv: isTs ? ['--import', 'tsx'] : [],
+  });
 
   child.unref();
 }
