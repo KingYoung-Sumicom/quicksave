@@ -9,6 +9,11 @@ import { AgentConnection } from './connection/connection.js';
 import { MessageHandler } from './handlers/messageHandler.js';
 import { GitOperations } from './git/operations.js';
 import { getOrCreateConfig, getConfigPath, rotateKeyPair } from './config.js';
+import { runDaemon } from './service/run.js';
+import { IpcClient } from './service/ipcClient.js';
+import { readServiceState } from './service/stateStore.js';
+import { isProcessAlive } from './service/singleton.js';
+import type { StatusResult } from './service/types.js';
 import type { Message, Repository } from '@sumicom/quicksave-shared';
 
 const DEFAULT_SIGNALING_SERVER = process.env.QUICKSAVE_SIGNALING_URL || 'wss://signal.quicksave.dev';
@@ -181,5 +186,144 @@ program
       process.exit(1);
     }
   });
+
+// ---------------------------------------------------------------------------
+// Service subcommands
+// ---------------------------------------------------------------------------
+
+const serviceCmd = program
+  .command('service')
+  .description('Manage the quicksave background service');
+
+serviceCmd
+  .command('run')
+  .description('Run the daemon in the foreground (not normally invoked directly)')
+  .action(async () => {
+    await runDaemon();
+  });
+
+serviceCmd
+  .command('start')
+  .description('Start the background daemon')
+  .action(async () => {
+    // Check if already running
+    const state = readServiceState();
+    if (state && isProcessAlive(state.pid)) {
+      console.log(`Daemon is already running (pid: ${state.pid})`);
+      return;
+    }
+
+    // ensureDaemon auto-starts; import dynamically to avoid circular load at parse time
+    const { ensureDaemon } = await import('./service/ensureDaemon.js');
+    try {
+      const { hello } = await ensureDaemon();
+      console.log(`Daemon started (pid: ${hello.daemonPid})`);
+    } catch (err) {
+      console.error('Failed to start daemon:', (err as Error).message);
+      process.exit(1);
+    }
+  });
+
+serviceCmd
+  .command('stop')
+  .description('Stop the running daemon')
+  .action(async () => {
+    const state = readServiceState();
+    if (!state) {
+      console.log('No daemon is running.');
+      return;
+    }
+
+    if (!isProcessAlive(state.pid)) {
+      console.log('Daemon process is dead. Cleaning up stale files...');
+      const { cleanStaleRuntime } = await import('./service/singleton.js');
+      const { removeServiceState } = await import('./service/stateStore.js');
+      cleanStaleRuntime();
+      removeServiceState();
+      console.log('Done.');
+      return;
+    }
+
+    try {
+      const client = new IpcClient();
+      await client.connect(state.socketPath);
+      await client.request('shutdown');
+      client.close();
+      console.log('Daemon stopped.');
+    } catch (err) {
+      console.error('Failed to stop daemon:', (err as Error).message);
+      process.exit(1);
+    }
+  });
+
+serviceCmd
+  .command('status')
+  .description('Show daemon status')
+  .action(async () => {
+    const state = readServiceState();
+    if (!state) {
+      console.log('No daemon is running.');
+      return;
+    }
+
+    if (!isProcessAlive(state.pid)) {
+      console.log('Daemon process is dead (stale service.json).');
+      console.log(`  Last PID: ${state.pid}`);
+      console.log(`  Started:  ${state.startedAt}`);
+      return;
+    }
+
+    try {
+      const client = new IpcClient();
+      await client.connect(state.socketPath);
+      const status = await client.request<StatusResult>('status');
+      client.close();
+
+      console.log('Quicksave daemon is running');
+      console.log(`  PID:              ${status.pid}`);
+      console.log(`  Version:          ${status.version}`);
+      console.log(`  Uptime:           ${formatUptime(status.uptime)}`);
+      console.log(`  Connection:       ${status.connectionState}`);
+      console.log(`  Peers:            ${status.peerCount}`);
+      console.log(`  Active sessions:  ${status.activeSessions}`);
+      console.log(`  Managed repos:    ${status.managedRepos}`);
+    } catch (err) {
+      console.error('Failed to query daemon:', (err as Error).message);
+      process.exit(1);
+    }
+  });
+
+serviceCmd
+  .command('info')
+  .description('Show daemon info from service.json (no IPC required)')
+  .action(() => {
+    const state = readServiceState();
+    if (!state) {
+      console.log('No service state file found.');
+      return;
+    }
+
+    const alive = isProcessAlive(state.pid);
+    console.log(`PID:        ${state.pid} (${alive ? 'alive' : 'dead'})`);
+    console.log(`Version:    ${state.version}`);
+    console.log(`IPC:        ${state.ipcVersion}`);
+    console.log(`Build ID:   ${state.buildId}`);
+    console.log(`Started:    ${state.startedAt}`);
+    console.log(`Heartbeat:  ${state.lastHeartbeatAt}`);
+    console.log(`Socket:     ${state.socketPath}`);
+    console.log(`Agent ID:   ${state.agentId}`);
+    console.log(`Signaling:  ${state.signalingServer}`);
+    console.log(`Connection: ${state.connectionState}`);
+    console.log(`Peers:      ${state.peerCount}`);
+  });
+
+function formatUptime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
 
 program.parse();
