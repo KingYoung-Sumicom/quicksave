@@ -938,14 +938,9 @@ export class MessageHandler {
     try {
       const cwd = message.payload.cwd || this.getClientRepoPath(peerAddress);
       const sessions = await this.claudeService.listAvailableSessions(cwd);
-      const enriched = sessions.map((s) => ({
-        ...s,
-        isActive: this.claudeService.isOpen(s.sessionId),
-        isStreaming: this.claudeService.isStreaming(s.sessionId),
-      }));
       const response = createMessage<ClaudeListSessionsResponsePayload>(
         'claude:list-sessions:response',
-        { sessions: enriched }
+        { sessions }
       );
       response.id = message.id;
       return response;

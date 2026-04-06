@@ -488,13 +488,13 @@ export interface ConnectionInfo {
 
 export type ClaudeModel =
   | 'claude-haiku-4-5'
-  | 'claude-sonnet-4-5'
-  | 'claude-opus-4-5';
+  | 'claude-sonnet-4-6'
+  | 'claude-opus-4-6';
 
-export const CLAUDE_MODELS: { id: ClaudeModel; name: string; description: string }[] = [
-  { id: 'claude-haiku-4-5', name: 'Haiku', description: 'Fast & affordable' },
-  { id: 'claude-sonnet-4-5', name: 'Sonnet', description: 'Balanced speed & quality' },
-  { id: 'claude-opus-4-5', name: 'Opus', description: 'Highest quality' },
+export const CLAUDE_MODELS: { id: ClaudeModel; name: string; label: string; description: string }[] = [
+  { id: 'claude-haiku-4-5', name: 'Haiku', label: 'Haiku 4.5', description: 'Fast & affordable' },
+  { id: 'claude-sonnet-4-6', name: 'Sonnet', label: 'Sonnet 4.6', description: 'Balanced speed & quality' },
+  { id: 'claude-opus-4-6', name: 'Opus', label: 'Opus 4.6', description: 'Highest quality' },
 ];
 
 // Generate Commit Summary

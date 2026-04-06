@@ -1,14 +1,4 @@
-interface AskOption {
-  label: string;
-  description?: string;
-}
-
-interface AskQuestion {
-  question: string;
-  header?: string;
-  options?: AskOption[];
-  multiSelect?: boolean;
-}
+import type { AskQuestion } from './askQuestionTypes';
 
 export function AskUserQuestionToolView({ input, answers }: {
   input: Record<string, unknown>;

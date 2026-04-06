@@ -5,24 +5,10 @@ const RESULT_COLORS: Record<string, string> = {
   ExitPlanMode: 'border-indigo-500/40',
 };
 
-// --- AskUserQuestion result ---
-// AskUserQuestionOutput: { questions: [...], answers: { [questionText]: selectedLabel }, annotations?: {...} }
-
-interface AskOption { label: string; description?: string }
-interface AskQuestionEcho {
-  question: string;
-  header?: string;
-  options?: AskOption[];
-  multiSelect?: boolean;
-}
-interface AskUserQuestionOutputShape {
-  questions?: AskQuestionEcho[];
-  answers?: Record<string, string>;
-  annotations?: Record<string, { preview?: string; notes?: string }>;
-}
+import type { AskUserQuestionOutput } from './toolViews/askQuestionTypes';
 
 function AskUserQuestionResult({ content }: { content: string }) {
-  let parsed: AskUserQuestionOutputShape = {};
+  let parsed: AskUserQuestionOutput = {};
   try {
     parsed = JSON.parse(content);
   } catch {

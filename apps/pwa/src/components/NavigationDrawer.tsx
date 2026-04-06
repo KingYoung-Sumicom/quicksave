@@ -6,6 +6,7 @@ import { useConnectionStore } from '../stores/connectionStore';
 import { useClaudeStore } from '../stores/claudeStore';
 import { useMachineStore, selectSortedMachines } from '../stores/machineStore';
 import { agentUrl } from '../lib/pathHash';
+import { formatRelativeTimeCompact as formatRelativeTime } from '../lib/formatRelativeTime';
 import type { Repository, CodingPath, ClaudeSessionSummary } from '@sumicom/quicksave-shared';
 
 interface NavigationDrawerProps {
@@ -445,13 +446,3 @@ function SessionItem({ session, onClick }: { session: ClaudeSessionSummary; onCl
   );
 }
 
-function formatRelativeTime(timestamp: number): string {
-  const diff = Date.now() - timestamp;
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return 'now';
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  return `${days}d`;
-}

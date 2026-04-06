@@ -47,12 +47,36 @@ type PermissionLevel = 'bypassPermissions' | 'acceptEdits' | 'default' | 'plan';
 /** Tools auto-approved at each permission level (no user prompt).
  *  Read/Glob/Grep are always auto-approved at SDK level (allowedTools).
  *  Tools NOT listed here go through canUseTool → permission prompt.
- *  Skill, ToolSearch, and Config always require permission (code execution / control plane). */
+ *
+ *  Risk tiers:
+ *  - Safe:     Edit, Write, NotebookEdit, TodoWrite, Agent, EnterWorktree, ExitWorktree
+ *  - Network:  WebFetch, WebSearch
+ *  - Execute:  Bash
+ *  - Code/Control: Skill, ToolSearch, Config
+ *  - Schedule: CronCreate, CronDelete (arbitrary scheduled execution)
+ *  - Remote:   RemoteTrigger (triggers remote agents)
+ *  - Workflow:  EnterPlanMode, ExitPlanMode (ExitPlanMode has its own interactive UI)
+ */
 const AUTO_APPROVE: Record<PermissionLevel, Set<string>> = {
-  bypassPermissions: new Set(['Edit', 'Write', 'Bash', 'WebFetch', 'WebSearch', 'NotebookEdit', 'TodoWrite', 'Agent', 'EnterWorktree', 'ExitWorktree', 'Skill', 'ToolSearch', 'Config']),
-  acceptEdits:       new Set(['Edit', 'Write', 'NotebookEdit', 'TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent']),
-  default:           new Set(['TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent']),
-  plan:              new Set(),
+  bypassPermissions: new Set([
+    // Safe
+    'Edit', 'Write', 'NotebookEdit', 'TodoWrite', 'Agent', 'EnterWorktree', 'ExitWorktree',
+    // Network
+    'WebFetch', 'WebSearch',
+    // Execute
+    'Bash',
+    // Code/Control
+    'Skill', 'ToolSearch', 'Config',
+    // Schedule + Remote
+    'CronCreate', 'CronDelete', 'CronList', 'RemoteTrigger',
+    // Workflow
+    'EnterPlanMode', 'ExitPlanMode',
+    // Background tasks
+    'TaskOutput', 'TaskStop',
+  ]),
+  acceptEdits: new Set(['Edit', 'Write', 'NotebookEdit', 'TodoWrite', 'Agent', 'EnterWorktree', 'ExitWorktree']),
+  default:     new Set(['TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent']),
+  plan:        new Set(),
 };
 
 interface PersistentSession {
@@ -253,14 +277,14 @@ export class ClaudeCodeService extends EventEmitter {
       const sessionOpts = {
         model: opts.model ?? DEFAULT_MODEL,
         allowedTools: opts.allowedTools ?? ['Read', 'Glob', 'Grep'],
-        permissionMode: 'default' as const,  // Most restrictive — pushes everything to canUseTool
-        settingSources: ['user' as const, 'project' as const, 'local' as const],  // Respect .claude/settings*.json allow/deny rules
+        permissionMode: 'default' as const,
+        settingSources: ['user' as const, 'project' as const, 'local' as const],
         canUseTool: async (
           toolName: string,
           input: Record<string, unknown>,
           options: { title?: string; description?: string; displayName?: string; toolUseID: string; signal: AbortSignal }
         ) => {
-          console.log(`[canUseTool] toolName=${toolName} title=${options.title} displayName=${options.displayName} inputKeys=${Object.keys(input).join(',')}`);
+
 
           const resolvedSessionId = sessionId ?? 'unknown';
 
@@ -268,7 +292,7 @@ export class ClaudeCodeService extends EventEmitter {
           const ps = resolvedSessionId !== 'unknown' ? this.sessions.get(resolvedSessionId) : undefined;
           const level = ps?.permissionLevel ?? 'acceptEdits';
           if (AUTO_APPROVE[level].has(toolName)) {
-            console.log(`[canUseTool] auto-approved by permission level '${level}'`);
+
             return { behavior: 'allow' as const, updatedInput: input };
           }
           const requestId = `perm-${++this.requestCounter}`;
@@ -276,7 +300,7 @@ export class ClaudeCodeService extends EventEmitter {
           // AskUserQuestion: forward as question type with options
           const isQuestion = toolName === 'AskUserQuestion';
           const questions = isQuestion ? (input as any).questions : undefined;
-          console.log(`[canUseTool] isQuestion=${isQuestion} questions=${JSON.stringify(questions)?.slice(0, 300)}`);
+
 
           // Forward request to PWA
           const request: ClaudeUserInputRequestPayload = {
@@ -302,7 +326,7 @@ export class ClaudeCodeService extends EventEmitter {
               ),
             } : {}),
           };
-          console.log(`[canUseTool] emitting user-input-request: inputType=${request.inputType}`);
+
           this.emit('user-input-request', request);
           this.emitSessionUpdate(resolvedSessionId);
 
@@ -401,27 +425,19 @@ export class ClaudeCodeService extends EventEmitter {
       content: opts.prompt,
     });
 
-    let sessionId = '';
-
-    this.consumeStream(session, opts.streamId, (id) => {
-      sessionId = id;
-      this.sessions.set(id, {
-        session,
-        sessionId: id,
-        cwd: opts.cwd,
-        streaming: true,
-        cancelStreaming: null,
-        permissionLevel: level,
+    const sessionId = await new Promise<string>((resolve) => {
+      this.consumeStream(session, opts.streamId, (id) => {
+        this.sessions.set(id, {
+          session,
+          sessionId: id,
+          cwd: opts.cwd,
+          streaming: true,
+          cancelStreaming: null,
+          permissionLevel: level,
+        });
+        this.emitSessionUpdate(id);
+        resolve(id);
       });
-      this.emitSessionUpdate(id);
-    });
-
-    await new Promise<void>((resolve) => {
-      const check = () => {
-        if (sessionId) return resolve();
-        setTimeout(check, 50);
-      };
-      check();
     });
 
     return sessionId;
@@ -465,34 +481,26 @@ export class ClaudeCodeService extends EventEmitter {
     });
     await session.send(opts.prompt);
 
-    let actualSessionId = opts.sessionId;
-
-    this.consumeStream(session, opts.streamId, (id) => {
-      actualSessionId = id;
-      if (id !== opts.sessionId) {
-        this.emit('stream', {
-          sessionId: id, streamId: opts.streamId,
-          eventType: 'system',
-          content: `Warning: SDK created new session ${id} instead of resuming ${opts.sessionId}`,
+    const actualSessionId = await new Promise<string>((resolve) => {
+      this.consumeStream(session, opts.streamId, (id) => {
+        if (id !== opts.sessionId) {
+          this.emit('stream', {
+            sessionId: id, streamId: opts.streamId,
+            eventType: 'system',
+            content: `Warning: SDK created new session ${id} instead of resuming ${opts.sessionId}`,
+          });
+        }
+        this.sessions.set(id, {
+          session,
+          sessionId: id,
+          cwd: opts.cwd,
+          streaming: true,
+          cancelStreaming: null,
+          permissionLevel: 'acceptEdits' as PermissionLevel,
         });
-      }
-      this.sessions.set(id, {
-        session,
-        sessionId: id,
-        cwd: opts.cwd,
-        streaming: true,
-        cancelStreaming: null,
-        permissionLevel: 'acceptEdits' as PermissionLevel,
+        this.emitSessionUpdate(id);
+        resolve(id);
       });
-      this.emitSessionUpdate(id);
-    });
-
-    await new Promise<void>((resolve) => {
-      const check = () => {
-        if (this.sessions.has(actualSessionId)) return resolve();
-        setTimeout(check, 50);
-      };
-      check();
     });
 
     return actualSessionId;
@@ -513,7 +521,7 @@ export class ClaudeCodeService extends EventEmitter {
     const ps = this.sessions.get(sessionId);
     if (!ps) return false;
     ps.permissionLevel = level;
-    console.log(`[permission] session=${sessionId} level changed to '${level}'`);
+
     this.emitSessionUpdate(sessionId);
     return true;
   }
@@ -541,10 +549,6 @@ export class ClaudeCodeService extends EventEmitter {
   }
 
   isOpen(sessionId: string): boolean {
-    return this.sessions.has(sessionId);
-  }
-
-  isActive(sessionId: string): boolean {
     return this.sessions.has(sessionId);
   }
 

@@ -240,9 +240,7 @@ export class AgentConnection extends EventEmitter {
 
   /** Send a message to all connected peers. */
   broadcast(message: Message): void {
-    const addresses = [...this.peers.keys()];
-    console.log(`[broadcast] type=${message.type} to ${addresses.length} peers: ${addresses.map(a => a.slice(0, 20)).join(', ')}`);
-    for (const address of addresses) {
+    for (const [address] of this.peers) {
       this.send(message, address);
     }
   }

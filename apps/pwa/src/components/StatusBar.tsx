@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useLocation, useMatch } from 'react-router-dom';
 import { clsx } from 'clsx';
-import type { ConnectionState } from '@sumicom/quicksave-shared';
+import { CLAUDE_MODELS, type ConnectionState } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
-import { SESSION_STATUS, type SessionStatusKey } from './SessionStatusBadge';
+import { SessionStatusBadge, type SessionStatusKey } from './SessionStatusBadge';
 
 interface StatusBarProps {
   connectionState: ConnectionState;
@@ -138,21 +138,10 @@ function SessionStatusIndicator() {
 
   const hasPendingInput = messages.some((m) => !!m.pendingInputRequest);
   const statusKey: SessionStatusKey = hasPendingInput ? 'waiting' : isStreaming ? 'thinking' : 'standby';
-  const status = SESSION_STATUS[statusKey];
 
-  return (
-    <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[10px] font-medium ${status.borderColor} ${status.bgColor} ${status.textColor}`}>
-      {status.label}
-      <span className={clsx('w-1.5 h-1.5 rounded-full', status.dotColor, status.pulse && 'animate-pulse')} />
-    </span>
-  );
+  return <SessionStatusBadge statusKey={statusKey} />;
 }
 
-const MODELS = [
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-  { id: 'claude-opus-4-6', label: 'Opus 4.6' },
-  { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
-] as const;
 
 const PERMISSION_MODES = [
   { id: 'acceptEdits', label: 'Accept Edits', desc: 'Approve file writes' },
@@ -195,7 +184,7 @@ function SessionSettingsMenu({ onCloseSession }: { onCloseSession?: () => void }
               <p className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Model</p>
             </div>
             <div className="px-1.5 pb-1.5">
-              {MODELS.map((m) => (
+              {CLAUDE_MODELS.map((m) => (
                 <button
                   key={m.id}
                   onClick={() => setSelectedModel(m.id)}

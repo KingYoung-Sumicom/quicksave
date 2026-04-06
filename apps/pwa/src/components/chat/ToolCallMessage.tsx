@@ -13,7 +13,7 @@ import { AgentToolView } from './toolViews/AgentToolView';
 import { TodoWriteToolView } from './toolViews/TodoWriteToolView';
 import { NotebookEditToolView } from './toolViews/NotebookEditToolView';
 import { AskUserQuestionToolView } from './toolViews/AskUserQuestionToolView';
-import { EnterPlanModeToolView, ExitPlanModeToolView } from './toolViews/PlanModeToolView';
+import { EnterPlanModeToolView, ExitPlanModeToolView, ExitPlanModeInteractiveView } from './toolViews/PlanModeToolView';
 import { ToolSearchToolView } from './toolViews/ToolSearchToolView';
 import { FallbackToolView } from './toolViews/FallbackToolView';
 
@@ -405,6 +405,18 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
     );
   }
 
+  // ExitPlanMode with pending request: render plan review with approve/reject
+  // Plan text is in the INPUT (input.plan), not the output
+  if (toolName === 'ExitPlanMode' && hasPending && onRespond) {
+    return (
+      <div className="flex justify-start">
+        <div className="bg-slate-800/60 border-l-2 border-indigo-500/80 rounded-r-lg pl-2.5 pr-3 py-1.5 max-w-[90%] text-xs text-slate-300 overflow-hidden">
+          <ExitPlanModeInteractiveView input={parsedInput} plan={parsedInput.plan as string} onRespond={onRespond} />
+        </div>
+      </div>
+    );
+  }
+
   const ToolView = toolName ? TOOL_VIEWS[toolName] : undefined;
   const accentColor = hasPending
     ? 'border-amber-500/80'
@@ -416,9 +428,11 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
         <div className="min-w-0">
           {toolName === 'AskUserQuestion'
             ? <AskUserQuestionToolView input={parsedInput} answers={(parsedResult as any)?.answers} />
-            : ToolView
-              ? <ToolView input={parsedInput} />
-              : <FallbackToolView toolName={toolName} content={toolInput || content} />}
+            : toolName === 'ExitPlanMode'
+              ? <ExitPlanModeToolView input={parsedInput} plan={parsedInput.plan as string} />
+              : ToolView
+                ? <ToolView input={parsedInput} />
+                : <FallbackToolView toolName={toolName} content={toolInput || content} />}
         </div>
         {pendingInputRequest && onRespond && pendingInputRequest.inputType === 'permission' && (
           <InlinePermissionActions request={pendingInputRequest} onRespond={onRespond} />

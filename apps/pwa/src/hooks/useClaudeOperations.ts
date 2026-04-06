@@ -92,7 +92,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
 
     if (message.type === 'claude:user-input-request') {
       const payload = message.payload as ClaudeUserInputRequestPayload;
-      console.log(`[pushMessage] received user-input-request: requestId=${payload.requestId} toolName=${payload.toolName} inputType=${payload.inputType}`);
+
       tagPendingInput(payload);
       return true;
     }
@@ -105,8 +105,13 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
 
     if (message.type === 'claude:session-updated') {
       const payload = message.payload as { sessionId: string; isActive: boolean; isStreaming: boolean; hasPendingInput: boolean };
-      // Update the session in the list so badges reflect current state
       const { sessions } = useClaudeStore.getState();
+      const current = sessions.find((s) => s.sessionId === payload.sessionId);
+      // Skip update if nothing changed
+      if (current &&
+        current.isActive === payload.isActive &&
+        current.isStreaming === payload.isStreaming &&
+        current.hasPendingInput === payload.hasPendingInput) return true;
       const updated = sessions.map((s) =>
         s.sessionId === payload.sessionId
           ? { ...s, isActive: payload.isActive, isStreaming: payload.isStreaming, hasPendingInput: payload.hasPendingInput }
@@ -141,7 +146,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     }
 
     return false;
-  }, [handleStreamEvent, setStreaming, setStreamError, appendMessage, tagPendingInput]);
+  }, [handleStreamEvent, setStreaming, setStreamError, appendMessage, tagPendingInput, clearPendingInput, setSessions]);
 
   // Combined message handler — returns true if message was consumed
   const handleMessage = useCallback((message: Message): boolean => {

@@ -221,10 +221,10 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   tagPendingInput: (request) =>
     set((state) => {
       const last = state.messages[state.messages.length - 1];
-      console.log(`[tagPendingInput] requestId=${request.requestId} toolName=${request.toolName} msgCount=${state.messages.length} isStreaming=${state.isStreaming} last.toolName=${last?.toolName} last.toolResultOf=${last?.toolResultOf}`);
+
       // Last message is a tool call with no result following → tag it
       if (last?.toolName && !last.toolResultOf && !last.pendingInputRequest) {
-        console.log(`[tagPendingInput] tagging last message directly`);
+
         const msgs = [...state.messages];
         msgs[msgs.length - 1] = { ...last, pendingInputRequest: request };
         return { messages: msgs };
@@ -232,7 +232,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       // SDK calls canUseTool BEFORE yielding tool_use to the stream.
       // Create a synthetic message so the user can respond immediately.
       if (state.isStreaming) {
-        console.log(`[tagPendingInput] creating synthetic (streaming)`);
+
         return {
           messages: [...state.messages, {
             role: 'tool' as const,
@@ -246,17 +246,17 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         };
       }
       // Reconnect: history hasn't loaded yet — defer for setMessages to apply
-      console.log(`[tagPendingInput] deferring (not streaming, no matching last message)`);
       return { deferredPendingInput: request };
     }),
 
   clearPendingInput: (requestId) =>
     set((state) => {
-      const msgs = state.messages.map((m) =>
-        m.pendingInputRequest?.requestId === requestId
-          ? { ...m, pendingInputRequest: undefined }
-          : m
+      const idx = state.messages.findIndex(
+        (m) => m.pendingInputRequest?.requestId === requestId
       );
+      if (idx === -1) return state;
+      const msgs = [...state.messages];
+      msgs[idx] = { ...msgs[idx], pendingInputRequest: undefined };
       return { messages: msgs };
     }),
 
