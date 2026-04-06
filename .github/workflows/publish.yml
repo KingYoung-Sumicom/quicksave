@@ -5,12 +5,13 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -20,12 +21,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
           cache: pnpm
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: https://registry.npmjs.org
 
-      - name: Upgrade npm for OIDC support
-        run: npm install -g npm@latest
+      - run: npm install -g npm@latest
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -37,7 +37,7 @@ jobs:
         run: pnpm test
 
       - name: Publish @sumicom/quicksave-shared
-        run: pnpm --filter @sumicom/quicksave-shared publish --provenance --access public --no-git-checks
+        run: pnpm --filter @sumicom/quicksave-shared publish --access public --no-git-checks
 
       - name: Publish @sumicom/quicksave
-        run: pnpm --filter @sumicom/quicksave publish --provenance --access public --no-git-checks
+        run: pnpm --filter @sumicom/quicksave publish --access public --no-git-checks
