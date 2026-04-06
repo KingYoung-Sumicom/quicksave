@@ -63,8 +63,7 @@ import {
   ClaudeCloseResponsePayload,
   ClaudeGetMessagesRequestPayload,
   ClaudeGetMessagesResponsePayload,
-  ClaudeStreamPayload,
-  ClaudeStreamEndPayload,
+  ClaudeUserInputResponsePayload,
   generateMessageId,
 } from '@sumicom/quicksave-shared';
 import { GitOperations } from '../git/operations.js';
@@ -154,6 +153,8 @@ export class MessageHandler {
         this.repoLocks.delete(repoPath);
       }
     }
+    // Pending user input requests are NOT auto-approved on disconnect.
+    // They persist until the user reconnects and explicitly responds.
   }
 
   cleanup(): void {
@@ -162,6 +163,10 @@ export class MessageHandler {
 
   getActiveSessionCount(): number {
     return this.claudeService.getActiveSessionCount();
+  }
+
+  getClaudeService(): ClaudeCodeService {
+    return this.claudeService;
   }
 
   private getAiService(): CommitSummaryService | null {
@@ -178,7 +183,6 @@ export class MessageHandler {
   async handleMessage(
     message: Message,
     peerAddress: string = 'default',
-    sendCallback?: (msg: Message) => void
   ): Promise<Message> {
     const isVerbose = message.type.startsWith('claude:') || message.type.startsWith('agent:add');
     if (isVerbose) {
@@ -242,15 +246,17 @@ export class MessageHandler {
         case 'claude:list-sessions':
           return this.handleClaudeListSessions(message as Message<ClaudeListSessionsRequestPayload>, peerAddress);
         case 'claude:start':
-          return this.handleClaudeStart(message as Message<ClaudeStartRequestPayload>, peerAddress, sendCallback);
+          return this.handleClaudeStart(message as Message<ClaudeStartRequestPayload>, peerAddress);
         case 'claude:resume':
-          return this.handleClaudeResume(message as Message<ClaudeResumeRequestPayload>, peerAddress, sendCallback);
+          return this.handleClaudeResume(message as Message<ClaudeResumeRequestPayload>, peerAddress);
         case 'claude:cancel':
           return this.handleClaudeCancel(message as Message<ClaudeCancelRequestPayload>);
         case 'claude:close':
           return this.handleClaudeClose(message as Message<ClaudeCloseRequestPayload>);
         case 'claude:get-messages':
           return this.handleClaudeGetMessages(message as Message<ClaudeGetMessagesRequestPayload>, peerAddress);
+        case 'claude:user-input-response':
+          return this.handleClaudeUserInputResponse(message as Message<ClaudeUserInputResponsePayload>);
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
       }
@@ -260,7 +266,10 @@ export class MessageHandler {
     }
   }
 
-  private handleHandshake(message: Message<HandshakePayload>, peerAddress: string): Message<HandshakeAckPayload> {
+  private handleHandshake(
+    message: Message<HandshakePayload>,
+    peerAddress: string,
+  ): Message<HandshakeAckPayload> {
     const response = createMessage<HandshakeAckPayload>('handshake:ack', {
       success: true,
       agentVersion: this.agentVersion,
@@ -269,6 +278,14 @@ export class MessageHandler {
       availableCodingPaths: [...this.codingPaths.values()],
     });
     response.id = message.id;
+
+    // Re-emit pending user input requests so they get broadcast to the new peer
+    const pending = this.claudeService.getPendingInputRequests();
+    for (const request of pending) {
+      console.log(`[handshake] re-emitting pending user input: requestId=${request.requestId}`);
+      this.claudeService.emit('user-input-request', request);
+    }
+
     return response;
   }
 
@@ -945,52 +962,17 @@ export class MessageHandler {
   private async handleClaudeStart(
     message: Message<ClaudeStartRequestPayload>,
     peerAddress: string,
-    sendCallback?: (msg: Message) => void
   ): Promise<Message<ClaudeStartResponsePayload>> {
-    const { prompt, cwd: payloadCwd, allowedTools, systemPrompt, model } = message.payload;
+    const { prompt, cwd: payloadCwd, allowedTools, systemPrompt, model, permissionMode } = message.payload;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const streamId = generateMessageId();
     console.log(`[claude:start] cwd=${cwd} prompt=${prompt.slice(0, 80)}`);
 
     try {
       const sessionId = await this.claudeService.startSession({
-        prompt,
-        cwd,
-        allowedTools,
-        systemPrompt,
-        model,
-        onStream: (event) => {
-          if (sendCallback) {
-            sendCallback(
-              createMessage<ClaudeStreamPayload>('claude:stream', {
-                streamId,
-                sessionId,
-                eventType: event.eventType,
-                content: event.content,
-                toolName: event.toolName,
-                toolInput: event.toolInput,
-                isPartial: event.isPartial,
-              })
-            );
-          }
-        },
-        onEnd: (result) => {
-          if (sendCallback) {
-            sendCallback(
-              createMessage<ClaudeStreamEndPayload>('claude:stream:end', {
-                streamId,
-                sessionId,
-                success: result.success,
-                error: result.error,
-                totalCostUsd: result.totalCostUsd,
-                tokenUsage: result.tokenUsage,
-              })
-            );
-          }
-        },
+        prompt, cwd, streamId, allowedTools, systemPrompt, model, permissionMode,
       });
 
-      this.claudeService.openSession(sessionId);
       console.log(`[claude:start] session created: ${sessionId}`);
       const response = createMessage<ClaudeStartResponsePayload>(
         'claude:start:response',
@@ -1012,7 +994,6 @@ export class MessageHandler {
   private async handleClaudeResume(
     message: Message<ClaudeResumeRequestPayload>,
     peerAddress: string,
-    sendCallback?: (msg: Message) => void
   ): Promise<Message<ClaudeResumeResponsePayload>> {
     const { sessionId: requestedId, prompt, cwd: payloadCwd } = message.payload;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
@@ -1021,41 +1002,9 @@ export class MessageHandler {
 
     try {
       const actualSessionId = await this.claudeService.resumeSession({
-        sessionId: requestedId,
-        prompt,
-        cwd,
-        onStream: (event) => {
-          if (sendCallback) {
-            sendCallback(
-              createMessage<ClaudeStreamPayload>('claude:stream', {
-                streamId,
-                sessionId: requestedId,
-                eventType: event.eventType,
-                content: event.content,
-                toolName: event.toolName,
-                toolInput: event.toolInput,
-                isPartial: event.isPartial,
-              })
-            );
-          }
-        },
-        onEnd: (result) => {
-          if (sendCallback) {
-            sendCallback(
-              createMessage<ClaudeStreamEndPayload>('claude:stream:end', {
-                streamId,
-                sessionId: actualSessionId,
-                success: result.success,
-                error: result.error,
-                totalCostUsd: result.totalCostUsd,
-                tokenUsage: result.tokenUsage,
-              })
-            );
-          }
-        },
+        sessionId: requestedId, prompt, cwd, streamId,
       });
 
-      this.claudeService.openSession(actualSessionId);
       console.log(`[claude:resume] session resumed: ${actualSessionId}`);
       const response = createMessage<ClaudeResumeResponsePayload>(
         'claude:resume:response',
@@ -1097,6 +1046,17 @@ export class MessageHandler {
       'claude:close:response',
       { success, error: success ? undefined : 'Session not found or already closed' }
     );
+    response.id = message.id;
+    return response;
+  }
+
+  private handleClaudeUserInputResponse(
+    message: Message<ClaudeUserInputResponsePayload>
+  ): Message {
+    const resolved = this.claudeService.resolveUserInput(message.payload);
+    console.log(`[claude:user-input-response] requestId=${message.payload.requestId} action=${message.payload.action} resolved=${resolved}`);
+    // No dedicated response type — just acknowledge
+    const response = createMessage('claude:user-input-response', { success: resolved });
     response.id = message.id;
     return response;
   }

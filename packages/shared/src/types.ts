@@ -77,6 +77,10 @@ export type MessageType =
   | 'claude:get-messages:response'
   | 'claude:stream'       // agent-push: streaming content
   | 'claude:stream:end'   // agent-push: session turn complete
+  | 'claude:user-input-request'   // agent-push: session needs user input
+  | 'claude:user-input-response'  // pwa-push: user's response to input request
+  | 'claude:user-input-resolved'  // agent-push: pending input was resolved (notify other tabs)
+  | 'claude:session-updated'      // agent-push: session state changed (active/streaming/pending)
   | 'error';
 
 // ============================================================================
@@ -543,6 +547,7 @@ export interface ClaudeSessionSummary {
   messageCount?: number;
   isActive?: boolean;
   isStreaming?: boolean;
+  hasPendingInput?: boolean;
 }
 
 // List Sessions
@@ -562,6 +567,7 @@ export interface ClaudeStartRequestPayload {
   allowedTools?: string[];
   systemPrompt?: string;
   model?: string;
+  permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
 }
 
 export interface ClaudeStartResponsePayload {
@@ -635,6 +641,7 @@ export type ClaudeStreamEventType =
   | 'assistant_text'
   | 'tool_use'
   | 'tool_result'
+  | 'user_message'
   | 'system'
   | 'error';
 
@@ -655,4 +662,34 @@ export interface ClaudeStreamEndPayload {
   error?: string;
   totalCostUsd?: number;
   tokenUsage?: { input: number; output: number };
+}
+
+// User input request types (agent → PWA)
+export type ClaudeUserInputType = 'permission' | 'question';
+
+export interface ClaudeUserInputOption {
+  key: string;
+  label: string;
+  description?: string;
+}
+
+export interface ClaudeUserInputRequestPayload {
+  sessionId: string;
+  requestId: string;
+  inputType: ClaudeUserInputType;
+  title: string;
+  message?: string;
+  options?: ClaudeUserInputOption[];
+  // Permission-specific fields
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+}
+
+// User input response (PWA → agent)
+export interface ClaudeUserInputResponsePayload {
+  sessionId: string;
+  requestId: string;
+  action: 'allow' | 'deny' | 'respond';
+  response?: string;
+  selectedKey?: string;
 }

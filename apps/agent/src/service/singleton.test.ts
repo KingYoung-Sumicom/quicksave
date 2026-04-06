@@ -47,12 +47,12 @@ describe('shouldRestartDaemon', () => {
     expect(result.action).toBe('warn_outdated');
   });
 
-  it('returns ok when buildId differs in production', () => {
-    // Default NODE_ENV is not "development"
+  it('returns restart when buildId differs in dev mode', () => {
+    // In dev mode, BUILD_ID starts with 'dev-' so isDev() returns true
     const result = shouldRestartDaemon(
-      makeDaemon({ daemonBuildId: 'old-build' }),
-      { ipcVersion: IPC_VERSION, buildId: 'new-build' },
+      makeDaemon({ daemonBuildId: 'dev-aaa111bbb222' }),
+      { ipcVersion: IPC_VERSION, buildId: 'dev-ccc333ddd444' },
     );
-    expect(result.action).toBe('ok');
+    expect(result.action).toBe('restart');
   });
 });

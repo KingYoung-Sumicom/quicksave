@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useMatch } from 'react-router-dom';
 import { clsx } from 'clsx';
 import type { ConnectionState } from '@sumicom/quicksave-shared';
-import { useMachineStore, selectSortedMachines } from '../stores/machineStore';
-import { useConnectionStore } from '../stores/connectionStore';
+import { useClaudeStore } from '../stores/claudeStore';
+import { SESSION_STATUS, type SessionStatusKey } from './SessionStatusBadge';
 
 interface StatusBarProps {
   connectionState: ConnectionState;
@@ -11,11 +11,10 @@ interface StatusBarProps {
   ahead?: number;
   behind?: number;
   repoPath?: string | null;
-  onDisconnect: () => void;
-  onSwitchMachine?: (agentId: string) => void;
   onOpenMenu?: () => void;
   onSwitchRepo?: () => void;
   onOpenGitignore?: () => void;
+  onCloseSession?: () => void;
 }
 
 export function StatusBar({
@@ -24,21 +23,15 @@ export function StatusBar({
   ahead = 0,
   behind = 0,
   repoPath,
-  onDisconnect,
-  onSwitchMachine,
   onOpenMenu,
   onSwitchRepo,
   onOpenGitignore,
+  onCloseSession,
 }: StatusBarProps) {
-  const [showSwitcher, setShowSwitcher] = useState(false);
-  const machines = useMachineStore(selectSortedMachines);
-  const { agentId } = useConnectionStore();
   const location = useLocation();
   const isOnRepoPage = location.pathname.includes('/repo/');
 
   const isConnected = connectionState === 'connected';
-  const currentMachine = machines.find((m) => m.agentId === agentId);
-  const hasMultipleMachines = machines.length > 1;
 
   return (
     <header className="sticky top-0 z-30 bg-slate-800 border-b border-slate-700 safe-area-top">
@@ -58,100 +51,12 @@ export function StatusBar({
           )}
         </div>
 
-        {/* Center: Machine switcher */}
-        <div className="flex items-center justify-center flex-1 max-w-xs">
-          {hasMultipleMachines ? (
-            <button
-              onClick={() => setShowSwitcher(!showSwitcher)}
-              className={clsx(
-                'flex items-center gap-2 hover:bg-slate-700 rounded-md px-2 py-1 transition-colors',
-                showSwitcher && 'bg-slate-700'
-              )}
-            >
-              <span className="text-lg">{currentMachine?.icon || '💻'}</span>
-              <span className="text-lg font-bold truncate max-w-[150px]">
-                {currentMachine?.nickname || 'quicksave'}
-              </span>
-              <svg
-                className={clsx('w-4 h-4 text-slate-400 transition-transform', showSwitcher && 'rotate-180')}
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-          ) : (
-            <div className="flex items-center gap-2">
-              {currentMachine && <span className="text-lg">{currentMachine.icon}</span>}
-              <h1 className="text-lg font-bold">
-                {currentMachine?.nickname || 'quicksave'}
-              </h1>
-            </div>
-          )}
-        </div>
-
-        {/* Right: Connection indicator */}
-        <div className="flex items-center justify-end w-10">
-          <ConnectionIndicator state={connectionState} />
+        {/* Right: Session status (only in session view) + settings gear */}
+        <div className="flex items-center justify-end gap-2 flex-1">
+          <SessionStatusIndicator />
+          <SessionSettingsMenu onCloseSession={onCloseSession} />
         </div>
       </div>
-
-      {/* Machine Switcher Dropdown */}
-      {showSwitcher && (
-        <>
-          {/* Backdrop */}
-          <div
-            className="fixed inset-0 z-10"
-            onClick={() => setShowSwitcher(false)}
-          />
-          {/* Dropdown */}
-          <div className="absolute left-1/2 -translate-x-1/2 top-14 w-full max-w-md bg-slate-700 rounded-lg shadow-lg z-20 overflow-hidden">
-            <div className="p-2 border-b border-slate-600">
-              <p className="text-xs text-slate-400 px-2">Switch Machine</p>
-            </div>
-            <div className="max-h-64 overflow-y-auto">
-              {machines.map((machine) => (
-                <button
-                  key={machine.agentId}
-                  onClick={() => {
-                    setShowSwitcher(false);
-                    if (machine.agentId !== agentId && onSwitchMachine) {
-                      onSwitchMachine(machine.agentId);
-                    }
-                  }}
-                  className={clsx(
-                    'w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-600 transition-colors',
-                    machine.agentId === agentId && 'bg-slate-600/50'
-                  )}
-                >
-                  <span className="text-lg">{machine.icon}</span>
-                  <div className="flex-1 text-left min-w-0">
-                    <p className="font-medium truncate">{machine.nickname}</p>
-                    <p className="text-xs text-slate-400 truncate">
-                      {machine.lastRepoPath || 'No repo'}
-                    </p>
-                  </div>
-                  {machine.agentId === agentId && (
-                    <span className="text-green-400 text-sm">Connected</span>
-                  )}
-                </button>
-              ))}
-            </div>
-            <div className="p-2 border-t border-slate-600">
-              <button
-                onClick={() => {
-                  setShowSwitcher(false);
-                  onDisconnect();
-                }}
-                className="w-full px-4 py-2 text-sm text-blue-400 hover:bg-slate-600 rounded-md transition-colors text-left"
-              >
-                Manage Machines...
-              </button>
-            </div>
-          </div>
-        </>
-      )}
 
       {/* Branch Info — only on repo pages */}
       {isConnected && isOnRepoPage && branch && (
@@ -222,54 +127,132 @@ export function StatusBar({
   );
 }
 
-function ConnectionIndicator({ state }: { state: ConnectionState }) {
-  const getColor = () => {
-    switch (state) {
-      case 'connected':
-        return 'text-green-500';
-      case 'connecting':
-        return 'text-yellow-500';
-      case 'error':
-        return 'text-red-500';
-      default:
-        return 'text-slate-500';
-    }
-  };
 
-  const isAnimating = state === 'connecting';
+function SessionStatusIndicator() {
+  const isOnSessionPage = !!useMatch('/agent/:agentId/coding/:pathHash/:sessionId');
+  const activeSessionId = useClaudeStore((s) => s.activeSessionId);
+  const isStreaming = useClaudeStore((s) => s.isStreaming);
+  const messages = useClaudeStore((s) => s.messages);
 
-  // Connected: solid signal icon
-  // Connecting/Signaling: animated signal icon
-  // Error: X icon
-  // Disconnected: signal with slash
+  if (!isOnSessionPage || !activeSessionId) return null;
+
+  const hasPendingInput = messages.some((m) => !!m.pendingInputRequest);
+  const statusKey: SessionStatusKey = hasPendingInput ? 'waiting' : isStreaming ? 'thinking' : 'standby';
+  const status = SESSION_STATUS[statusKey];
+
   return (
-    <div className={clsx('w-5 h-5', getColor(), isAnimating && 'animate-pulse')}>
-      {state === 'connected' && (
-        // Two connected nodes icon
-        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-5 h-5">
-          <circle cx="6" cy="12" r="3" strokeWidth={2} />
-          <circle cx="18" cy="12" r="3" strokeWidth={2} />
-          <path strokeLinecap="round" strokeWidth={2} d="M9 12h6" />
+    <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[10px] font-medium ${status.borderColor} ${status.bgColor} ${status.textColor}`}>
+      {status.label}
+      <span className={clsx('w-1.5 h-1.5 rounded-full', status.dotColor, status.pulse && 'animate-pulse')} />
+    </span>
+  );
+}
+
+const MODELS = [
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { id: 'claude-opus-4-6', label: 'Opus 4.6' },
+  { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
+] as const;
+
+const PERMISSION_MODES = [
+  { id: 'acceptEdits', label: 'Accept Edits', desc: 'Approve file writes' },
+  { id: 'bypassPermissions', label: 'Bypass', desc: 'Auto-approve all' },
+  { id: 'plan', label: 'Plan', desc: 'Read-only planning' },
+] as const;
+
+function SessionSettingsMenu({ onCloseSession }: { onCloseSession?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const activeSessionId = useClaudeStore((s) => s.activeSessionId);
+  const selectedModel = useClaudeStore((s) => s.selectedModel);
+  const selectedPermissionMode = useClaudeStore((s) => s.selectedPermissionMode);
+  const setSelectedModel = useClaudeStore((s) => s.setSelectedModel);
+  const setSelectedPermissionMode = useClaudeStore((s) => s.setSelectedPermissionMode);
+
+  if (!activeSessionId) return null;
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className={clsx(
+          'p-1.5 rounded-md transition-colors',
+          open ? 'bg-slate-600' : 'hover:bg-slate-700'
+        )}
+        aria-label="Session settings"
+      >
+        <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
         </svg>
-      )}
-      {state === 'connecting' && (
-        // Connecting animation - signal waves
-        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-5 h-5">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
-        </svg>
-      )}
-      {state === 'error' && (
-        // Error X icon
-        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-5 h-5">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-        </svg>
-      )}
-      {(state === 'disconnected' || !state) && (
-        // Disconnected - broken link
-        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-5 h-5">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-        </svg>
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-10 w-56 bg-slate-700 rounded-lg shadow-lg z-20 overflow-hidden border border-slate-600">
+            {/* Model selector */}
+            <div className="px-3 pt-2.5 pb-1">
+              <p className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Model</p>
+            </div>
+            <div className="px-1.5 pb-1.5">
+              {MODELS.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => setSelectedModel(m.id)}
+                  className={clsx(
+                    'w-full text-left text-xs px-2.5 py-1.5 rounded-md transition-colors',
+                    selectedModel === m.id
+                      ? 'bg-blue-600/30 text-blue-300'
+                      : 'text-slate-300 hover:bg-slate-600'
+                  )}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="border-t border-slate-600" />
+
+            {/* Permission mode selector */}
+            <div className="px-3 pt-2.5 pb-1">
+              <p className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Permissions</p>
+            </div>
+            <div className="px-1.5 pb-1.5">
+              {PERMISSION_MODES.map((pm) => (
+                <button
+                  key={pm.id}
+                  onClick={() => setSelectedPermissionMode(pm.id)}
+                  className={clsx(
+                    'w-full text-left text-xs px-2.5 py-1.5 rounded-md transition-colors',
+                    selectedPermissionMode === pm.id
+                      ? 'bg-blue-600/30 text-blue-300'
+                      : 'text-slate-300 hover:bg-slate-600'
+                  )}
+                >
+                  <span>{pm.label}</span>
+                  <span className="text-slate-500 ml-1.5">{pm.desc}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="border-t border-slate-600" />
+
+            {/* End session */}
+            <div className="px-1.5 py-1.5">
+              <button
+                onClick={() => {
+                  setOpen(false);
+                  onCloseSession?.();
+                }}
+                className="w-full text-left text-xs px-2.5 py-1.5 rounded-md text-red-400 hover:bg-red-500/20 transition-colors"
+              >
+                End session
+              </button>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
 }
+

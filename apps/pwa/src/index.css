@@ -142,6 +142,12 @@ html {
   animation: slide-in-left 0.2s ease-out;
 }
 
+/* Allow text selection in chat messages (especially iOS PWA) */
+.select-text {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 /* Markdown rendering in chat messages */
 .chat-markdown {
   @apply text-sm text-slate-200 leading-relaxed;

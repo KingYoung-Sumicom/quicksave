@@ -26,7 +26,7 @@ import {
 import { writeServiceState, removeServiceState } from './stateStore.js';
 import { IPC_VERSION, BUILD_ID } from './types.js';
 import type { ServiceState, StatusResult, PairingInfoResult, RepoInfo } from './types.js';
-import type { Message, Repository } from '@sumicom/quicksave-shared';
+import { createMessage, type Message, type Repository } from '@sumicom/quicksave-shared';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const PACKAGE_VERSION = '0.4.0';
@@ -79,14 +79,33 @@ export async function runDaemon(): Promise<void> {
 
   const messageHandler = new MessageHandler(validRepos, config.license, codingPaths);
 
+  // Pub/sub: ClaudeCodeService emits events → broadcast to all connected PWA peers
+  const claudeService = messageHandler.getClaudeService();
+  claudeService.on('stream', (event) => {
+    console.log(`[pub/sub] stream event=${event.eventType} session=${event.sessionId} peers=${connection.getPeerCount()}`);
+    connection.broadcast(createMessage('claude:stream', event));
+  });
+  claudeService.on('stream:end', (result) => {
+    console.log(`[pub/sub] stream:end session=${result.sessionId} success=${result.success} peers=${connection.getPeerCount()}`);
+    connection.broadcast(createMessage('claude:stream:end', result));
+  });
+  claudeService.on('user-input-request', (request) => {
+    console.log(`[pub/sub] user-input-request requestId=${request.requestId} toolName=${request.toolName} peers=${connection.getPeerCount()}`);
+    connection.broadcast(createMessage('claude:user-input-request', request));
+  });
+  claudeService.on('user-input-resolved', (info) => {
+    console.log(`[pub/sub] user-input-resolved requestId=${info.requestId} peers=${connection.getPeerCount()}`);
+    connection.broadcast(createMessage('claude:user-input-resolved', info));
+  });
+  claudeService.on('session-updated', (info) => {
+    console.log(`[pub/sub] session-updated session=${info.sessionId} active=${info.isActive} streaming=${info.isStreaming} pending=${info.hasPendingInput}`);
+    connection.broadcast(createMessage('claude:session-updated', info));
+  });
+
   // Wire: incoming PWA messages → MessageHandler → response back to PWA
   connection.on('message', async (message: Message, peerAddress: string) => {
     try {
-      const response = await messageHandler.handleMessage(
-        message,
-        peerAddress,
-        (msg: Message) => connection.send(msg, peerAddress),
-      );
+      const response = await messageHandler.handleMessage(message, peerAddress);
       connection.send(response, peerAddress);
     } catch (error) {
       console.error('Failed to handle message:', error);

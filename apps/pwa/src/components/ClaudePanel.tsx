@@ -1,8 +1,10 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { clsx } from 'clsx';
 import { useClaudeStore } from '../stores/claudeStore';
-import type { ClaudeSessionSummary } from '@sumicom/quicksave-shared';
+import type { ClaudeSessionSummary, ClaudeUserInputResponsePayload } from '@sumicom/quicksave-shared';
 import { MessageBubble } from './chat/MessageBubble';
+
+type StartSessionOpts = { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string };
 
 interface ClaudePanelProps {
   onSelectSession?: (sessionId: string) => void;
@@ -10,10 +12,10 @@ interface ClaudePanelProps {
   newSession?: boolean;
   onListSessions: () => Promise<void>;
   onGetSessionMessages: (sessionId: string, offset?: number, limit?: number) => Promise<void>;
-  onStartSession: (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string }) => Promise<void>;
+  onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string) => Promise<void>;
   onCancelSession: (sessionId: string) => Promise<void>;
-  onCloseSession: (sessionId: string) => Promise<void>;
+  onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
   onNewSession?: () => void;
 }
 
@@ -26,7 +28,7 @@ export function ClaudePanel({
   onStartSession,
   onResumeSession,
   onCancelSession,
-  onCloseSession,
+  onRespondToUserInput,
   onNewSession,
 }: ClaudePanelProps) {
   const {
@@ -39,6 +41,8 @@ export function ClaudePanel({
     historyHasMore,
     isLoadingHistory,
     promptInput,
+    selectedModel,
+    selectedPermissionMode,
     setPromptInput,
     setActiveSession,
     clearMessages,
@@ -50,11 +54,12 @@ export function ClaudePanel({
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-load session from URL param on mount
+  // Load session messages when navigating to a different session
   useEffect(() => {
     if (urlSessionId && urlSessionId !== activeSessionId) {
       setActiveSession(urlSessionId);
       clearMessages();
+      hasScrolledRef.current = false;
       onGetSessionMessages(urlSessionId);
     }
   }, [urlSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -113,9 +118,9 @@ export function ClaudePanel({
     if (activeSessionId) {
       await onResumeSession(activeSessionId, prompt);
     } else {
-      await onStartSession(prompt);
+      await onStartSession(prompt, { model: selectedModel, permissionMode: selectedPermissionMode });
     }
-  }, [promptInput, isStreaming, activeSessionId, setPromptInput, onResumeSession, onStartSession]);
+  }, [promptInput, isStreaming, activeSessionId, selectedModel, selectedPermissionMode, setPromptInput, onResumeSession, onStartSession]);
 
   const handleCancel = useCallback(() => {
     if (activeSessionId) {
@@ -123,11 +128,18 @@ export function ClaudePanel({
     }
   }, [activeSessionId, onCancelSession]);
 
-  const handleClose = useCallback(() => {
-    if (activeSessionId) {
-      onCloseSession(activeSessionId);
-    }
-  }, [activeSessionId, onCloseSession]);
+  const handleRespondToInput = useCallback((requestId: string, action: 'allow' | 'deny', response?: string) => {
+    if (!onRespondToUserInput) return;
+    // Find the pending request from the tagged message
+    const msg = messages.find((m) => m.pendingInputRequest?.requestId === requestId);
+    if (!msg?.pendingInputRequest) return;
+    onRespondToUserInput({
+      sessionId: msg.pendingInputRequest.sessionId,
+      requestId,
+      action: action === 'allow' ? (response ? 'respond' : 'allow') : 'deny',
+      response,
+    });
+  }, [messages, onRespondToUserInput]);
 
   const handleLoadMore = useCallback(async () => {
     if (!activeSessionId || isLoadingHistory || !historyHasMore) return;
@@ -135,7 +147,7 @@ export function ClaudePanel({
   }, [activeSessionId, isLoadingHistory, historyHasMore, messages.length, onGetSessionMessages]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       handleSend();
     }
@@ -154,7 +166,7 @@ export function ClaudePanel({
       {isChat ? (
         <div className="flex flex-col flex-1 min-h-0">
           {/* Messages */}
-          <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+          <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 select-text">
             {historyHasMore && (
               <button
                 onClick={handleLoadMore}
@@ -165,7 +177,13 @@ export function ClaudePanel({
               </button>
             )}
             {messages.map((msg, i) => (
-              <MessageBubble key={i} message={msg} isLast={i === messages.length - 1} />
+              <MessageBubble
+                key={i}
+                message={msg}
+                nextMessage={messages[i + 1]}
+                isLast={i === messages.length - 1}
+                onRespondToInput={handleRespondToInput}
+              />
             ))}
             {streamError && (
               <div className="text-sm text-red-400 bg-red-500/10 rounded-lg px-3 py-2">
@@ -177,28 +195,13 @@ export function ClaudePanel({
 
           {/* Input */}
           <div className="border-t border-slate-700 px-4 pt-3 flex-shrink-0 bg-slate-900" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.75rem)' }}>
-            {isStreaming ? (
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs text-blue-400 animate-pulse">streaming...</span>
-              </div>
-            ) : activeSessionId ? (
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs text-green-400">Session active</span>
-                <button
-                  onClick={handleClose}
-                  className="text-xs text-slate-400 hover:text-red-400 transition-colors"
-                >
-                  End session
-                </button>
-              </div>
-            ) : null}
             <div className="flex items-end gap-2">
               <textarea
                 ref={inputRef}
                 value={promptInput}
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
-                placeholder={activeSessionId ? 'Continue session...' : 'Start a new session...'}
+                placeholder=""
                 className="flex-1 bg-slate-700 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-blue-500"
                 rows={1}
                 disabled={isStreaming}

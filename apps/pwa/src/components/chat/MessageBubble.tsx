@@ -5,7 +5,12 @@ import { ToolResultMessage } from './ToolResultMessage';
 import { UserMessage } from './UserMessage';
 import { SystemMessage } from './SystemMessage';
 
-export function MessageBubble({ message, isLast }: { message: ChatMessage; isLast: boolean }) {
+export function MessageBubble({ message, nextMessage, isLast, onRespondToInput }: {
+  message: ChatMessage;
+  nextMessage?: ChatMessage;
+  isLast: boolean;
+  onRespondToInput?: (requestId: string, action: 'allow' | 'deny', response?: string) => void;
+}) {
   switch (message.role) {
     case 'user':
       return <UserMessage content={message.content} />;
@@ -13,9 +18,24 @@ export function MessageBubble({ message, isLast }: { message: ChatMessage; isLas
       return <AssistantMessage content={message.content} isLast={isLast} />;
     case 'tool':
       if (message.toolName) {
-        return <ToolCallMessage toolName={message.toolName} toolInput={message.toolInput} content={message.content} />;
+        // Pass tool result from next message so views can show selected answers
+        const toolResultContent = nextMessage?.toolResultOf === message.toolName
+          ? nextMessage.content : undefined;
+        return (
+          <ToolCallMessage
+            toolName={message.toolName}
+            toolInput={message.toolInput}
+            content={message.content}
+            toolResultContent={toolResultContent}
+            pendingInputRequest={message.pendingInputRequest}
+            onRespond={message.pendingInputRequest && onRespondToInput
+              ? (action, response) => onRespondToInput(message.pendingInputRequest!.requestId, action, response)
+              : undefined
+            }
+          />
+        );
       }
-      return <ToolResultMessage content={message.content} />;
+      return <ToolResultMessage content={message.content} toolResultOf={message.toolResultOf} />;
     case 'system':
       return <SystemMessage content={message.content} />;
     default:

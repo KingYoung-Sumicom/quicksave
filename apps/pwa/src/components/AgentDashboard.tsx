@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useConnectionStore } from '../stores/connectionStore';
 import type { Repository, CodingPath, ClaudeSessionSummary } from '@sumicom/quicksave-shared';
 import { agentUrl } from '../lib/pathHash';
+import { SESSION_STATUS, sessionStatusKey } from './SessionStatusBadge';
 
 interface AgentDashboardProps {
   agentId: string;
@@ -159,6 +160,11 @@ export function AgentDashboard({
                             onClick={() => handleSessionClick(cp, session.sessionId)}
                             className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-700/50 transition-colors text-left"
                           >
+                            {(() => {
+                              const sk = sessionStatusKey(session);
+                              const s = SESSION_STATUS[sk];
+                              return <span className={`w-2 h-2 rounded-full flex-shrink-0 ${s.dotColor}${s.pulse ? ' animate-pulse' : ''}`} />;
+                            })()}
                             <div className="flex-1 min-w-0">
                               <p className="text-xs text-slate-300 truncate">
                                 {session.summary || session.sessionId.slice(0, 12)}
@@ -168,9 +174,6 @@ export function AgentDashboard({
                                 {session.gitBranch && ` · ${session.gitBranch}`}
                               </p>
                             </div>
-                            <svg className="w-3 h-3 text-slate-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                            </svg>
                           </button>
                         ))}
                       </div>

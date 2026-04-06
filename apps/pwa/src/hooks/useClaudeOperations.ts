@@ -10,6 +10,8 @@ import {
   type ClaudeGetMessagesResponsePayload,
   type ClaudeStreamPayload,
   type ClaudeStreamEndPayload,
+  type ClaudeUserInputRequestPayload,
+  type ClaudeUserInputResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { useClaudeStore, type ChatMessage } from '../stores/claudeStore';
 import { WebSocketClient } from '../lib/websocket';
@@ -34,6 +36,8 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     clearMessages,
     handleStreamEvent,
     appendMessage,
+    tagPendingInput,
+    clearPendingInput,
   } = useClaudeStore();
 
   const sendRequest = useCallback(
@@ -86,6 +90,32 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       return true;
     }
 
+    if (message.type === 'claude:user-input-request') {
+      const payload = message.payload as ClaudeUserInputRequestPayload;
+      console.log(`[pushMessage] received user-input-request: requestId=${payload.requestId} toolName=${payload.toolName} inputType=${payload.inputType}`);
+      tagPendingInput(payload);
+      return true;
+    }
+
+    if (message.type === 'claude:user-input-resolved') {
+      const payload = message.payload as { requestId: string };
+      clearPendingInput(payload.requestId);
+      return true;
+    }
+
+    if (message.type === 'claude:session-updated') {
+      const payload = message.payload as { sessionId: string; isActive: boolean; isStreaming: boolean; hasPendingInput: boolean };
+      // Update the session in the list so badges reflect current state
+      const { sessions } = useClaudeStore.getState();
+      const updated = sessions.map((s) =>
+        s.sessionId === payload.sessionId
+          ? { ...s, isActive: payload.isActive, isStreaming: payload.isStreaming, hasPendingInput: payload.hasPendingInput }
+          : s
+      );
+      setSessions(updated);
+      return true;
+    }
+
     if (message.type === 'claude:stream:end') {
       const payload = message.payload as ClaudeStreamEndPayload;
       setStreaming(false);
@@ -111,7 +141,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     }
 
     return false;
-  }, [handleStreamEvent, setStreaming, setStreamError, appendMessage]);
+  }, [handleStreamEvent, setStreaming, setStreamError, appendMessage, tagPendingInput]);
 
   // Combined message handler — returns true if message was consumed
   const handleMessage = useCallback((message: Message): boolean => {
@@ -148,34 +178,44 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
         }
         // Convert history messages to chat messages
         const chatMessages = response.messages
-          .map((m): ChatMessage | null => {
-            // Tool use (assistant message with toolName) → show as tool bubble
+          .flatMap((m): ChatMessage[] => {
+            const results: ChatMessage[] = [];
+
+            // Tool use → show as tool bubble
             if (m.toolName) {
-              return {
+              results.push({
                 role: 'tool',
                 content: m.toolInput || '',
                 toolName: m.toolName,
                 toolInput: m.toolInput,
                 timestamp: Date.now(),
-              };
+              });
             }
-            // Tool result with no text content → skip (noise)
-            if (!m.content && m.toolResult) {
-              return null;
+
+            // Tool result → show as tool result bubble
+            if (m.toolResult) {
+              results.push({
+                role: 'tool',
+                content: m.toolResult,
+                toolResultOf: m.toolName,
+                timestamp: Date.now(),
+              });
             }
-            // Empty message → skip
-            if (!m.content) {
-              return null;
+
+            // Text content (non-tool messages, or assistant text alongside tool calls)
+            if (m.content && !m.toolName) {
+              results.push({
+                role: m.role as 'user' | 'assistant',
+                content: m.content,
+                timestamp: Date.now(),
+              });
             }
-            return {
-              role: m.role as 'user' | 'assistant',
-              content: m.content,
-              timestamp: Date.now(),
-            };
-          })
-          .filter((m): m is ChatMessage => m !== null);
+
+            return results;
+          });
 
         if (offset === 0) {
+          // setMessages will auto-apply any deferred pending input from reconnect
           setMessages(chatMessages);
         } else {
           // Prepend older messages (infinite scroll)
@@ -192,7 +232,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
   );
 
   const startSession = useCallback(
-    async (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; cwd?: string }) => {
+    async (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => {
       clearMessages();
       setStreaming(true);
       setStreamError(null);
@@ -204,6 +244,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
           allowedTools: opts?.allowedTools,
           systemPrompt: opts?.systemPrompt,
           model: opts?.model,
+          permissionMode: opts?.permissionMode,
           ...(opts?.cwd ? { cwd: opts.cwd } : {}),
         });
         const response = await sendRequest<ClaudeStartResponsePayload>(message, 120000);
@@ -241,13 +282,11 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
 
   const cancelSession = useCallback(
     async (sessionId: string) => {
+      // Always clear streaming state immediately
+      setStreaming(false);
       try {
         const message = createMessage('claude:cancel', { sessionId });
-        const response = await sendRequest<ClaudeCancelResponsePayload>(message);
-        if (!response.success) {
-          throw new Error(response.error || 'Failed to cancel session');
-        }
-        setStreaming(false);
+        await sendRequest<ClaudeCancelResponsePayload>(message);
       } catch (error) {
         console.error('Failed to cancel session:', error);
       }
@@ -257,19 +296,27 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
 
   const closeSession = useCallback(
     async (sessionId: string) => {
+      // Always clear local state — user wants to leave regardless of backend result
+      setActiveSession(null, null);
+      setStreaming(false);
+      clearMessages();
       try {
         const message = createMessage('claude:close', { sessionId });
-        const response = await sendRequest<ClaudeCloseResponsePayload>(message);
-        if (!response.success) {
-          throw new Error(response.error || 'Failed to close session');
-        }
-        setActiveSession(null, null);
-        setStreaming(false);
+        await sendRequest<ClaudeCloseResponsePayload>(message);
       } catch (error) {
         console.error('Failed to close session:', error);
       }
     },
-    [sendRequest, setActiveSession, setStreaming]
+    [sendRequest, setActiveSession, setStreaming, clearMessages]
+  );
+
+  const respondToUserInput = useCallback(
+    (response: ClaudeUserInputResponsePayload) => {
+      clearPendingInput(response.requestId);
+      const message = createMessage<ClaudeUserInputResponsePayload>('claude:user-input-response', response);
+      clientRef.current?.send(message);
+    },
+    [clientRef, clearPendingInput]
   );
 
   return {
@@ -280,5 +327,6 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     resumeSession,
     cancelSession,
     closeSession,
+    respondToUserInput,
   };
 }

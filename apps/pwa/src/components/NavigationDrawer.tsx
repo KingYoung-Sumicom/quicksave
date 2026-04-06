@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { clsx } from 'clsx';
+import { SESSION_STATUS, sessionStatusKey } from './SessionStatusBadge';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useClaudeStore } from '../stores/claudeStore';
+import { useMachineStore, selectSortedMachines } from '../stores/machineStore';
 import { agentUrl } from '../lib/pathHash';
 import type { Repository, CodingPath, ClaudeSessionSummary } from '@sumicom/quicksave-shared';
 
@@ -15,6 +18,7 @@ interface NavigationDrawerProps {
   onAddWorkspace: () => void;
   onListSessions: (cwd?: string) => Promise<void>;
   onBackToFleet: () => void;
+  onSwitchMachine?: (agentId: string) => void;
 }
 
 export function NavigationDrawer({
@@ -27,12 +31,19 @@ export function NavigationDrawer({
   onAddWorkspace,
   onListSessions,
   onBackToFleet,
+  onSwitchMachine,
 }: NavigationDrawerProps) {
   const navigate = useNavigate();
   const { availableRepos, availableCodingPaths } = useConnectionStore();
+  const { agentId: connectedAgentId } = useConnectionStore();
+  const machines = useMachineStore(selectSortedMachines);
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
   const isStreaming = useClaudeStore((s) => s.isStreaming);
   const [sessionsByPath, setSessionsByPath] = useState<Map<string, ClaudeSessionSummary[]>>(new Map());
+  const [showMachineSwitcher, setShowMachineSwitcher] = useState(false);
+
+  const currentMachine = machines.find((m) => m.agentId === connectedAgentId);
+  const hasMultipleMachines = machines.length > 1;
 
   // Fetch sessions for each coding path when drawer opens or a session starts/ends
   useEffect(() => {
@@ -80,14 +91,75 @@ export function NavigationDrawer({
 
     return (
       <div className="w-64 flex-shrink-0 border-r border-slate-700 bg-slate-800 flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="px-4 py-4 border-b border-slate-700">
-          <button
-            onClick={() => handleNavigate(`/agent/${agentId}`)}
-            className="text-lg font-bold hover:text-blue-400 transition-colors"
-          >
-            Dashboard
-          </button>
+        {/* Header: Machine switcher */}
+        <div className="px-3 py-3 border-b border-slate-700 relative">
+          {hasMultipleMachines ? (
+            <button
+              onClick={() => setShowMachineSwitcher(!showMachineSwitcher)}
+              className={clsx(
+                'w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-slate-700 transition-colors',
+                showMachineSwitcher && 'bg-slate-700'
+              )}
+            >
+              <span className="text-lg">{currentMachine?.icon || '💻'}</span>
+              <span className="font-semibold truncate flex-1 text-left">{currentMachine?.nickname || 'quicksave'}</span>
+              <svg
+                className={clsx('w-4 h-4 text-slate-400 transition-transform flex-shrink-0', showMachineSwitcher && 'rotate-180')}
+                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+          ) : (
+            <div className="flex items-center gap-2 px-2 py-1.5">
+              <span className="text-lg">{currentMachine?.icon || '💻'}</span>
+              <span className="font-semibold truncate">{currentMachine?.nickname || 'quicksave'}</span>
+            </div>
+          )}
+          {showMachineSwitcher && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setShowMachineSwitcher(false)} />
+              <div className="absolute left-2 right-2 top-full mt-1 bg-slate-700 rounded-lg shadow-lg z-20 overflow-hidden border border-slate-600">
+                <div className="p-2 border-b border-slate-600">
+                  <p className="text-xs text-slate-400 px-2">Switch Machine</p>
+                </div>
+                <div className="max-h-48 overflow-y-auto">
+                  {machines.map((machine) => (
+                    <button
+                      key={machine.agentId}
+                      onClick={() => {
+                        setShowMachineSwitcher(false);
+                        if (machine.agentId !== connectedAgentId && onSwitchMachine) {
+                          onSwitchMachine(machine.agentId);
+                        }
+                      }}
+                      className={clsx(
+                        'w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-600 transition-colors',
+                        machine.agentId === connectedAgentId && 'bg-slate-600/50'
+                      )}
+                    >
+                      <span className="text-lg">{machine.icon}</span>
+                      <div className="flex-1 text-left min-w-0">
+                        <p className="text-sm font-medium truncate">{machine.nickname}</p>
+                        <p className="text-xs text-slate-400 truncate">{machine.lastRepoPath || 'No repo'}</p>
+                      </div>
+                      {machine.agentId === connectedAgentId && (
+                        <span className="text-green-400 text-xs flex-shrink-0">Connected</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+                <div className="p-2 border-t border-slate-600">
+                  <button
+                    onClick={() => { setShowMachineSwitcher(false); onBackToFleet(); }}
+                    className="w-full px-4 py-2 text-sm text-blue-400 hover:bg-slate-600 rounded-md transition-colors text-left"
+                  >
+                    Manage Machines...
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Scrollable content */}
@@ -163,14 +235,75 @@ export function NavigationDrawer({
 
       {/* Drawer */}
       <div className="fixed inset-y-0 left-0 z-50 w-72 max-w-[80vw] bg-slate-800 flex flex-col animate-slide-in-left safe-area-top">
-        {/* Header */}
-        <div className="px-4 py-4 border-b border-slate-700">
-          <button
-            onClick={() => handleNavigate(`/agent/${agentId}`)}
-            className="text-lg font-bold hover:text-blue-400 transition-colors"
-          >
-            Dashboard
-          </button>
+        {/* Header: Machine switcher */}
+        <div className="px-3 py-3 border-b border-slate-700 relative">
+          {hasMultipleMachines ? (
+            <button
+              onClick={() => setShowMachineSwitcher(!showMachineSwitcher)}
+              className={clsx(
+                'w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-slate-700 transition-colors',
+                showMachineSwitcher && 'bg-slate-700'
+              )}
+            >
+              <span className="text-lg">{currentMachine?.icon || '💻'}</span>
+              <span className="font-semibold truncate flex-1 text-left">{currentMachine?.nickname || 'quicksave'}</span>
+              <svg
+                className={clsx('w-4 h-4 text-slate-400 transition-transform flex-shrink-0', showMachineSwitcher && 'rotate-180')}
+                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+          ) : (
+            <div className="flex items-center gap-2 px-2 py-1.5">
+              <span className="text-lg">{currentMachine?.icon || '💻'}</span>
+              <span className="font-semibold truncate">{currentMachine?.nickname || 'quicksave'}</span>
+            </div>
+          )}
+          {showMachineSwitcher && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setShowMachineSwitcher(false)} />
+              <div className="absolute left-2 right-2 top-full mt-1 bg-slate-700 rounded-lg shadow-lg z-20 overflow-hidden border border-slate-600">
+                <div className="p-2 border-b border-slate-600">
+                  <p className="text-xs text-slate-400 px-2">Switch Machine</p>
+                </div>
+                <div className="max-h-48 overflow-y-auto">
+                  {machines.map((machine) => (
+                    <button
+                      key={machine.agentId}
+                      onClick={() => {
+                        setShowMachineSwitcher(false);
+                        if (machine.agentId !== connectedAgentId && onSwitchMachine) {
+                          onSwitchMachine(machine.agentId);
+                        }
+                      }}
+                      className={clsx(
+                        'w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-600 transition-colors',
+                        machine.agentId === connectedAgentId && 'bg-slate-600/50'
+                      )}
+                    >
+                      <span className="text-lg">{machine.icon}</span>
+                      <div className="flex-1 text-left min-w-0">
+                        <p className="text-sm font-medium truncate">{machine.nickname}</p>
+                        <p className="text-xs text-slate-400 truncate">{machine.lastRepoPath || 'No repo'}</p>
+                      </div>
+                      {machine.agentId === connectedAgentId && (
+                        <span className="text-green-400 text-xs flex-shrink-0">Connected</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+                <div className="p-2 border-t border-slate-600">
+                  <button
+                    onClick={() => { setShowMachineSwitcher(false); onBackToFleet(); }}
+                    className="w-full px-4 py-2 text-sm text-blue-400 hover:bg-slate-600 rounded-md transition-colors text-left"
+                  >
+                    Manage Machines...
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Scrollable content */}
@@ -292,8 +425,9 @@ function CodingItem({ codingPath, onClick, onNewSession }: { codingPath: CodingP
 }
 
 function SessionItem({ session, onClick }: { session: ClaudeSessionSummary; onClick: () => void }) {
-  const isStreamingNow = session.isActive && session.isStreaming;
-  const isOpenIdle = session.isActive && !session.isStreaming;
+  const statusKey = sessionStatusKey(session);
+  const dotColor = SESSION_STATUS[statusKey].dotColor;
+  const pulse = SESSION_STATUS[statusKey].pulse;
 
   return (
     <button
@@ -302,25 +436,11 @@ function SessionItem({ session, onClick }: { session: ClaudeSessionSummary; onCl
         session.isActive ? 'text-white' : 'text-slate-400'
       }`}
     >
-      {isStreamingNow ? (
-        <svg className="w-3 h-3 text-green-400 flex-shrink-0 animate-pulse" fill="currentColor" viewBox="0 0 24 24">
-          <path d="M13 10V3L4 14h7v7l9-11h-7z" />
-        </svg>
-      ) : isOpenIdle ? (
-        <span className="w-3 h-3 flex-shrink-0 flex items-center justify-center">
-          <span className="w-2 h-2 rounded-full bg-green-400" />
-        </span>
-      ) : (
-        <svg className="w-3 h-3 text-slate-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-        </svg>
-      )}
-      <span className="truncate">
+      <span className={clsx('w-1.5 h-1.5 rounded-full flex-shrink-0', dotColor, pulse && 'animate-pulse')} />
+      <span className="truncate flex-1 min-w-0">
         {session.summary || session.sessionId.slice(0, 12)}
       </span>
-      <span className={`flex-shrink-0 ml-auto ${session.isActive ? 'text-green-400' : 'text-slate-600'}`}>
-        {isStreamingNow ? 'Streaming' : isOpenIdle ? 'Open' : formatRelativeTime(session.lastModified)}
-      </span>
+      <span className="flex-shrink-0 text-slate-600">{formatRelativeTime(session.lastModified)}</span>
     </button>
   );
 }

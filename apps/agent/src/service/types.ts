@@ -5,6 +5,11 @@
  * Each JSON-RPC message is terminated by '\n'.
  */
 
+import { createHash } from 'crypto';
+import { readdirSync, statSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
 // ---------------------------------------------------------------------------
 // Version constants
 // ---------------------------------------------------------------------------
@@ -13,11 +18,32 @@
 export const IPC_VERSION = 1;
 
 /**
- * Build output content hash, injected at build time.
- * In dev mode, used to detect stale daemons running old code.
- * Falls back to "dev" if not replaced by the bundler.
+ * Build output content hash, replaced by the bundler at production build time.
+ * In dev mode (placeholder unreplaced), hashes source file mtimes so the
+ * value only changes when code actually changes — avoids spurious daemon restarts.
  */
-export const BUILD_ID = '__BUILD_ID__';
+const _PLACEHOLDER = '__BUILD_ID__';
+export const BUILD_ID = _PLACEHOLDER === '__BUILD' + '_ID__'
+  ? devBuildId()
+  : _PLACEHOLDER;
+
+function devBuildId(): string {
+  try {
+    const srcDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+    const hash = createHash('md5');
+    (function walk(dir: string) {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+        const p = resolve(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (e.name.endsWith('.ts')) hash.update(`${p}:${statSync(p).mtimeMs}`);
+      }
+    })(srcDir);
+    return 'dev-' + hash.digest('hex').slice(0, 12);
+  } catch {
+    return 'dev';
+  }
+}
 
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 base types
@@ -182,5 +208,5 @@ export function shouldRestartDaemon(
 }
 
 function isDev(): boolean {
-  return process.env.NODE_ENV === 'development';
+  return BUILD_ID.startsWith('dev-') || process.env.NODE_ENV === 'development';
 }

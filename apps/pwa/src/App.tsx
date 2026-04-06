@@ -16,6 +16,7 @@ import { RepoView } from './components/RepoView';
 import { PathBrowser } from './components/PathBrowser';
 import { GitignoreEditor } from './components/GitignoreEditor';
 import { ClaudePanel } from './components/ClaudePanel';
+import type { ClaudeUserInputResponsePayload } from '@sumicom/quicksave-shared';
 import { AgentDashboard } from './components/AgentDashboard';
 import { NavigationDrawer } from './components/NavigationDrawer';
 import { getApiKey, saveApiKey as saveApiKeyToStorage, exportMasterSecret, importMasterSecret } from './lib/secureStorage';
@@ -82,6 +83,7 @@ function AppContent() {
     resumeSession,
     cancelSession,
     closeSession,
+    respondToUserInput,
   } = useClaudeOperations(clientRef);
 
   const [showPathBrowser, setShowPathBrowser] = useState(false);
@@ -444,30 +446,33 @@ function AppContent() {
     };
 
     return (
-      <div className="flex flex-col h-[100dvh] min-h-0">
-        <StatusBar
-          connectionState={state}
-          branch={status?.branch}
-          ahead={status?.ahead}
-          behind={status?.behind}
-          repoPath={repoPath}
-          onDisconnect={handleDisconnect}
+      <div className="flex h-[100dvh] min-h-0">
+        <NavigationDrawer
+          isOpen={showNavDrawer}
+          persistent={isDesktop}
+          onClose={() => setShowNavDrawer(false)}
+          agentId={currentAgentId}
+          currentRepoPath={repoPath}
+          onAddRepo={() => openPathBrowser('repo')}
+          onAddWorkspace={() => openPathBrowser('workspace')}
+          onListSessions={listSessions}
           onSwitchMachine={handleSwitchMachine}
-          onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
-          onSwitchRepo={() => openPathBrowser('repo')}
-          onOpenGitignore={() => setShowGitignoreEditor(true)}
+          onBackToFleet={() => { setShowNavDrawer(false); handleDisconnect(); }}
         />
-        <div className="flex flex-1 min-h-0">
-          <NavigationDrawer
-            isOpen={showNavDrawer}
-            persistent={isDesktop}
-            onClose={() => setShowNavDrawer(false)}
-            agentId={currentAgentId}
-            currentRepoPath={repoPath}
-            onAddRepo={() => openPathBrowser('repo')}
-            onAddWorkspace={() => openPathBrowser('workspace')}
-            onListSessions={listSessions}
-            onBackToFleet={() => { setShowNavDrawer(false); handleDisconnect(); }}
+        <div className="flex flex-col flex-1 min-h-0">
+          <StatusBar
+            connectionState={state}
+            branch={status?.branch}
+            ahead={status?.ahead}
+            behind={status?.behind}
+            repoPath={repoPath}
+            onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
+            onSwitchRepo={() => openPathBrowser('repo')}
+            onOpenGitignore={() => setShowGitignoreEditor(true)}
+            onCloseSession={() => {
+              const sid = useClaudeStore.getState().activeSessionId;
+              if (sid) closeSession(sid);
+            }}
           />
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
             {isConnected && (
@@ -505,7 +510,7 @@ function AppContent() {
                     onStartSession={startSession}
                     onResumeSession={resumeSession}
                     onCancelSession={cancelSession}
-                    onCloseSession={closeSession}
+                    onRespondToUserInput={respondToUserInput}
                   />
                 } />
                 <Route path="/coding/:pathHash/:sessionId" element={
@@ -516,7 +521,7 @@ function AppContent() {
                     onStartSession={startSession}
                     onResumeSession={resumeSession}
                     onCancelSession={cancelSession}
-                    onCloseSession={closeSession}
+                    onRespondToUserInput={respondToUserInput}
                   />
                 } />
               </Routes>
@@ -585,15 +590,15 @@ function ClaudePanelWithHash({
   onStartSession,
   onResumeSession,
   onCancelSession,
-  onCloseSession,
+  onRespondToUserInput,
 }: {
   agentId: string;
   onListSessions: (cwd?: string) => Promise<void>;
   onGetSessionMessages: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
-  onStartSession: (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; cwd?: string }) => Promise<void>;
+  onStartSession: (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
   onCancelSession: (sessionId: string) => Promise<void>;
-  onCloseSession: (sessionId: string) => Promise<void>;
+  onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
 }) {
   const { pathHash, sessionId: urlSessionId } = useParams<{ pathHash: string; sessionId: string }>();
   const navigate = useNavigate();
@@ -604,12 +609,16 @@ function ClaudePanelWithHash({
   const cwd = pathHash ? resolveHash(pathHash, getAllKnownPaths(agentId)) : undefined;
   const basePath = pathHash ? `/agent/${agentId}/coding/${pathHash}` : `/agent/${agentId}`;
 
-  // When a session starts (activeSessionId changes), update URL to include sessionId
+  // When a session starts (activeSessionId changes), update URL to include sessionId.
+  // Only react to activeSessionId changes — including urlSessionId in deps causes a
+  // navigate→param change→re-fire loop that triggers browser throttling.
+  const prevActiveRef = useRef(activeSessionId);
   useEffect(() => {
-    if (activeSessionId && activeSessionId !== urlSessionId) {
+    if (activeSessionId && activeSessionId !== prevActiveRef.current) {
       navigate(`${basePath}/${activeSessionId}`, { replace: true });
     }
-  }, [activeSessionId, urlSessionId, basePath, navigate]);
+    prevActiveRef.current = activeSessionId;
+  }, [activeSessionId, basePath, navigate]);
 
   // Bind cwd into all callbacks
   const boundListSessions = useCallback(() => onListSessions(cwd), [onListSessions, cwd]);
@@ -618,7 +627,7 @@ function ClaudePanelWithHash({
     [onGetSessionMessages, cwd]
   );
   const boundStartSession = useCallback(
-    (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string }) =>
+    (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string }) =>
       onStartSession(prompt, { ...opts, cwd }),
     [onStartSession, cwd]
   );
@@ -627,12 +636,8 @@ function ClaudePanelWithHash({
     [onResumeSession, cwd]
   );
 
-  // Key on activeSessionId (from store) to avoid remount when URL updates
-  const stableKey = activeSessionId || urlSessionId || (isNewSession ? 'new-session' : 'list');
-
   return (
     <ClaudePanel
-      key={stableKey}
       sessionId={urlSessionId}
       newSession={isNewSession && !activeSessionId}
       onSelectSession={(sid) => navigate(`${basePath}/${sid}`)}
@@ -642,7 +647,7 @@ function ClaudePanelWithHash({
       onStartSession={boundStartSession}
       onResumeSession={boundResumeSession}
       onCancelSession={onCancelSession}
-      onCloseSession={onCloseSession}
+      onRespondToUserInput={onRespondToUserInput}
     />
   );
 }

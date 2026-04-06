@@ -50,6 +50,11 @@ interface RoutedEnvelope {
   payload: string;
 }
 
+/** Message types that should be relayed across tabs via BroadcastChannel. */
+const CROSS_TAB_MESSAGE_TYPES = new Set([
+  'claude:stream', 'claude:stream:end', 'claude:user-input-request',
+]);
+
 export class WebSocketClient {
   private signalingServer: string;
   private connectionId: string; // Unique per window to allow multiple tabs
@@ -60,6 +65,10 @@ export class WebSocketClient {
   private sessions: Map<string, AgentSession> = new Map();
   private activeAgentId: string | null = null;
   private connectPromise: Promise<void> | null = null;
+
+  // Cross-tab message relay: the tab with the active relay connection
+  // broadcasts push messages to other tabs via BroadcastChannel.
+  private crossTabChannel: BroadcastChannel | null = null;
 
   // Auto-reconnect state (for the WebSocket connection itself)
   private autoReconnect = true;
@@ -84,6 +93,15 @@ export class WebSocketClient {
     const suffix = Math.random().toString(36).slice(2, 10);
     this.connectionId = `${identityPublicKey}-${suffix}`;
     this.eventHandlers = handlers;
+
+    // Cross-tab relay: listen for push messages broadcast by the tab that owns the relay connection
+    this.crossTabChannel = new BroadcastChannel('quicksave-agent-push');
+    this.crossTabChannel.onmessage = (event) => {
+      const message = event.data as Message;
+      if (message?.type && CROSS_TAB_MESSAGE_TYPES.has(message.type)) {
+        this.eventHandlers.onMessage(message);
+      }
+    };
   }
 
   // Gzip compression helpers

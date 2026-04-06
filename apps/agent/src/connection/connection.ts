@@ -237,6 +237,15 @@ export class AgentConnection extends EventEmitter {
   hasPeers(): boolean {
     return this.peers.size > 0;
   }
+
+  /** Send a message to all connected peers. */
+  broadcast(message: Message): void {
+    const addresses = [...this.peers.keys()];
+    console.log(`[broadcast] type=${message.type} to ${addresses.length} peers: ${addresses.map(a => a.slice(0, 20)).join(', ')}`);
+    for (const address of addresses) {
+      this.send(message, address);
+    }
+  }
 }
 
 /**
