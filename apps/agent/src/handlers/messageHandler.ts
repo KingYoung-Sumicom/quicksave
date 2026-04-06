@@ -76,7 +76,7 @@ import { homedir } from 'os';
 
 export class MessageHandler {
   private repos: Map<string, GitOperations>;
-  private agentVersion = '0.1.0';
+  private agentVersion = '0.5.0';
   private defaultRepoPath: string;
   private clientRepos: Map<string, string> = new Map(); // peerAddress -> repoPath
   private repoLocks: Map<string, string> = new Map(); // repoPath -> peerAddress holding lock
