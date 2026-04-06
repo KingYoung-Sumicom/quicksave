@@ -59,6 +59,8 @@ import {
   ClaudeResumeResponsePayload,
   ClaudeCancelRequestPayload,
   ClaudeCancelResponsePayload,
+  ClaudeCloseRequestPayload,
+  ClaudeCloseResponsePayload,
   ClaudeGetMessagesRequestPayload,
   ClaudeGetMessagesResponsePayload,
   ClaudeStreamPayload,
@@ -66,7 +68,7 @@ import {
   generateMessageId,
 } from '@sumicom/quicksave-shared';
 import { GitOperations } from '../git/operations.js';
-import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedCodingPath } from '../config.js';
+import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, addManagedCodingPath } from '../config.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';
 import { ClaudeCodeService } from '../ai/claudeCodeService.js';
 import { readdir, stat } from 'fs/promises';
@@ -92,16 +94,10 @@ export class MessageHandler {
     this.availableRepos = repos;
     this.defaultRepoPath = repos.length > 0 ? repos[0].path : '';
 
-    // Git repos are also coding paths
-    for (const repo of repos) {
-      this.codingPaths.set(repo.path, { path: repo.path, name: repo.name });
-    }
-    // Add explicit coding paths (non-git dirs)
+    // Load explicit coding paths only (repos and coding paths are independent)
     if (codingPaths) {
       for (const p of codingPaths) {
-        if (!this.codingPaths.has(p)) {
-          this.codingPaths.set(p, { path: p, name: basename(p) });
-        }
+        this.codingPaths.set(p, { path: p, name: basename(p) });
       }
     }
   }
@@ -110,7 +106,6 @@ export class MessageHandler {
     if (this.repos.has(repo.path)) return;
     this.repos.set(repo.path, new GitOperations(repo.path));
     this.availableRepos.push(repo);
-    this.codingPaths.set(repo.path, { path: repo.path, name: repo.name });
     if (!this.defaultRepoPath) {
       this.defaultRepoPath = repo.path;
     }
@@ -119,7 +114,6 @@ export class MessageHandler {
   removeRepo(path: string): void {
     this.repos.delete(path);
     this.availableRepos = this.availableRepos.filter((r) => r.path !== path);
-    this.codingPaths.delete(path);
     if (this.defaultRepoPath === path) {
       this.defaultRepoPath = this.availableRepos.length > 0 ? this.availableRepos[0].path : '';
     }
@@ -166,6 +160,10 @@ export class MessageHandler {
     this.claudeService.cleanup();
   }
 
+  getActiveSessionCount(): number {
+    return this.claudeService.getActiveSessionCount();
+  }
+
   private getAiService(): CommitSummaryService | null {
     const apiKey = getAnthropicApiKey();
     if (!apiKey) return null;
@@ -182,6 +180,10 @@ export class MessageHandler {
     peerAddress: string = 'default',
     sendCallback?: (msg: Message) => void
   ): Promise<Message> {
+    const isVerbose = message.type.startsWith('claude:') || message.type.startsWith('agent:add');
+    if (isVerbose) {
+      console.log(`[msg] ${message.type} from ${peerAddress.slice(0, 12)}`);
+    }
     try {
       switch (message.type) {
         case 'handshake':
@@ -245,6 +247,8 @@ export class MessageHandler {
           return this.handleClaudeResume(message as Message<ClaudeResumeRequestPayload>, peerAddress, sendCallback);
         case 'claude:cancel':
           return this.handleClaudeCancel(message as Message<ClaudeCancelRequestPayload>);
+        case 'claude:close':
+          return this.handleClaudeClose(message as Message<ClaudeCloseRequestPayload>);
         case 'claude:get-messages':
           return this.handleClaudeGetMessages(message as Message<ClaudeGetMessagesRequestPayload>, peerAddress);
         default:
@@ -828,6 +832,8 @@ export class MessageHandler {
         currentBranch: current,
       };
       this.availableRepos.push(newRepo);
+      // Persist to agent.json
+      addManagedRepo(rootPath);
 
       const response = createMessage<AddRepoResponsePayload>('agent:add-repo:response', {
         success: true,
@@ -917,7 +923,8 @@ export class MessageHandler {
       const sessions = await this.claudeService.listAvailableSessions(cwd);
       const enriched = sessions.map((s) => ({
         ...s,
-        isActive: this.claudeService.isActive(s.sessionId),
+        isActive: this.claudeService.isOpen(s.sessionId),
+        isStreaming: this.claudeService.isStreaming(s.sessionId),
       }));
       const response = createMessage<ClaudeListSessionsResponsePayload>(
         'claude:list-sessions:response',
@@ -943,6 +950,7 @@ export class MessageHandler {
     const { prompt, cwd: payloadCwd, allowedTools, systemPrompt, model } = message.payload;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const streamId = generateMessageId();
+    console.log(`[claude:start] cwd=${cwd} prompt=${prompt.slice(0, 80)}`);
 
     try {
       const sessionId = await this.claudeService.startSession({
@@ -982,6 +990,8 @@ export class MessageHandler {
         },
       });
 
+      this.claudeService.openSession(sessionId);
+      console.log(`[claude:start] session created: ${sessionId}`);
       const response = createMessage<ClaudeStartResponsePayload>(
         'claude:start:response',
         { success: true, sessionId, streamId }
@@ -989,6 +999,7 @@ export class MessageHandler {
       response.id = message.id;
       return response;
     } catch (error) {
+      console.error(`[claude:start] error:`, error);
       const response = createMessage<ClaudeStartResponsePayload>(
         'claude:start:response',
         { success: false, error: error instanceof Error ? error.message : 'Failed to start session' }
@@ -1006,6 +1017,7 @@ export class MessageHandler {
     const { sessionId: requestedId, prompt, cwd: payloadCwd } = message.payload;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const streamId = generateMessageId();
+    console.log(`[claude:resume] session=${requestedId} cwd=${cwd} prompt=${prompt.slice(0, 80)}`);
 
     try {
       const actualSessionId = await this.claudeService.resumeSession({
@@ -1043,6 +1055,8 @@ export class MessageHandler {
         },
       });
 
+      this.claudeService.openSession(actualSessionId);
+      console.log(`[claude:resume] session resumed: ${actualSessionId}`);
       const response = createMessage<ClaudeResumeResponsePayload>(
         'claude:resume:response',
         { success: true, sessionId: actualSessionId, streamId }
@@ -1050,6 +1064,7 @@ export class MessageHandler {
       response.id = message.id;
       return response;
     } catch (error) {
+      console.error(`[claude:resume] error:`, error);
       const response = createMessage<ClaudeResumeResponsePayload>(
         'claude:resume:response',
         { success: false, error: error instanceof Error ? error.message : 'Failed to resume session' }
@@ -1067,6 +1082,20 @@ export class MessageHandler {
     const response = createMessage<ClaudeCancelResponsePayload>(
       'claude:cancel:response',
       { success, error: success ? undefined : 'Session not found or already ended' }
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private handleClaudeClose(
+    message: Message<ClaudeCloseRequestPayload>
+  ): Message<ClaudeCloseResponsePayload> {
+    const { sessionId } = message.payload;
+    const success = this.claudeService.closeSession(sessionId);
+    console.log(`[claude:close] session=${sessionId} success=${success}`);
+    const response = createMessage<ClaudeCloseResponsePayload>(
+      'claude:close:response',
+      { success, error: success ? undefined : 'Session not found or already closed' }
     );
     response.id = message.id;
     return response;

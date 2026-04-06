@@ -71,6 +71,8 @@ export type MessageType =
   | 'claude:resume:response'
   | 'claude:cancel'
   | 'claude:cancel:response'
+  | 'claude:close'
+  | 'claude:close:response'
   | 'claude:get-messages'
   | 'claude:get-messages:response'
   | 'claude:stream'       // agent-push: streaming content
@@ -540,6 +542,7 @@ export interface ClaudeSessionSummary {
   gitBranch?: string;
   messageCount?: number;
   isActive?: boolean;
+  isStreaming?: boolean;
 }
 
 // List Sessions
@@ -588,6 +591,16 @@ export interface ClaudeCancelRequestPayload {
 }
 
 export interface ClaudeCancelResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+// Close Session (user explicitly ends a session)
+export interface ClaudeCloseRequestPayload {
+  sessionId: string;
+}
+
+export interface ClaudeCloseResponsePayload {
   success: boolean;
   error?: string;
 }

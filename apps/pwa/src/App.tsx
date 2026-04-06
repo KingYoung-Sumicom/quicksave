@@ -1,6 +1,7 @@
 import { useCallback, useRef, useEffect, useMemo, useState } from 'react';
 import { HashRouter, Routes, Route, useNavigate, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { useConnectionStore } from './stores/connectionStore';
+import { useClaudeStore } from './stores/claudeStore';
 import { useGitStore } from './stores/gitStore';
 import { useMachineStore } from './stores/machineStore';
 import { useIdentityStore } from './stores/identityStore';
@@ -80,6 +81,7 @@ function AppContent() {
     startSession,
     resumeSession,
     cancelSession,
+    closeSession,
   } = useClaudeOperations(clientRef);
 
   const [showPathBrowser, setShowPathBrowser] = useState(false);
@@ -468,21 +470,6 @@ function AppContent() {
             onBackToFleet={() => { setShowNavDrawer(false); handleDisconnect(); }}
           />
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-            <PathBrowser
-              isOpen={showPathBrowser}
-              mode={pathBrowserMode}
-              onClose={() => setShowPathBrowser(false)}
-              onSwitchRepo={switchRepo}
-              onBrowseDirectory={browseDirectory}
-              onAddRepo={addRepo}
-              onAddCodingPath={addCodingPath}
-            />
-            <GitignoreEditor
-              isOpen={showGitignoreEditor}
-              onClose={() => setShowGitignoreEditor(false)}
-              onRead={readGitignore}
-              onWrite={writeGitignore}
-            />
             {isConnected && (
               <Routes>
                 <Route index element={
@@ -518,6 +505,7 @@ function AppContent() {
                     onStartSession={startSession}
                     onResumeSession={resumeSession}
                     onCancelSession={cancelSession}
+                    onCloseSession={closeSession}
                   />
                 } />
                 <Route path="/coding/:pathHash/:sessionId" element={
@@ -528,6 +516,7 @@ function AppContent() {
                     onStartSession={startSession}
                     onResumeSession={resumeSession}
                     onCancelSession={cancelSession}
+                    onCloseSession={closeSession}
                   />
                 } />
               </Routes>
@@ -536,7 +525,7 @@ function AppContent() {
         </div>
       </div>
     );
-  }, [isConnected, isReconnecting, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, readGitignore, writeGitignore, commit, generateCommitSummary, setApiKey, showPathBrowser, pathBrowserMode, showGitignoreEditor, showNavDrawer, isDesktop, switchRepo, listSessions, getSessionMessages, startSession, resumeSession, cancelSession, navigate, browseDirectory, addRepo, addCodingPath]);
+  }, [isConnected, isReconnecting, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, commit, generateCommitSummary, setApiKey, showNavDrawer, isDesktop, switchRepo, listSessions, getSessionMessages, startSession, resumeSession, cancelSession, closeSession, navigate, addCodingPath]);
 
   // Show connecting overlay globally (covers any page)
   const showOverlay = state === 'connecting' || state === 'reconnecting' || (state === 'error' && !!useConnectionStore.getState().error);
@@ -549,6 +538,21 @@ function AppContent() {
         <Route path="/agent/:agentId/*" element={repoElement} />
       </Routes>
       {showOverlay && <ConnectingOverlay onAbort={handleAbortConnection} onRetry={handleRetryConnection} />}
+      <PathBrowser
+        isOpen={showPathBrowser}
+        mode={pathBrowserMode}
+        onClose={() => setShowPathBrowser(false)}
+        onSwitchRepo={switchRepo}
+        onBrowseDirectory={browseDirectory}
+        onAddRepo={addRepo}
+        onAddCodingPath={addCodingPath}
+      />
+      <GitignoreEditor
+        isOpen={showGitignoreEditor}
+        onClose={() => setShowGitignoreEditor(false)}
+        onRead={readGitignore}
+        onWrite={writeGitignore}
+      />
     </div>
   );
 }
@@ -581,6 +585,7 @@ function ClaudePanelWithHash({
   onStartSession,
   onResumeSession,
   onCancelSession,
+  onCloseSession,
 }: {
   agentId: string;
   onListSessions: (cwd?: string) => Promise<void>;
@@ -588,11 +593,23 @@ function ClaudePanelWithHash({
   onStartSession: (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; cwd?: string }) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
   onCancelSession: (sessionId: string) => Promise<void>;
+  onCloseSession: (sessionId: string) => Promise<void>;
 }) {
-  const { pathHash, sessionId } = useParams<{ pathHash: string; sessionId: string }>();
+  const { pathHash, sessionId: urlSessionId } = useParams<{ pathHash: string; sessionId: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const isNewSession = searchParams.has('new');
+  const activeSessionId = useClaudeStore((s) => s.activeSessionId);
 
   const cwd = pathHash ? resolveHash(pathHash, getAllKnownPaths(agentId)) : undefined;
+  const basePath = pathHash ? `/agent/${agentId}/coding/${pathHash}` : `/agent/${agentId}`;
+
+  // When a session starts (activeSessionId changes), update URL to include sessionId
+  useEffect(() => {
+    if (activeSessionId && activeSessionId !== urlSessionId) {
+      navigate(`${basePath}/${activeSessionId}`, { replace: true });
+    }
+  }, [activeSessionId, urlSessionId, basePath, navigate]);
 
   // Bind cwd into all callbacks
   const boundListSessions = useCallback(() => onListSessions(cwd), [onListSessions, cwd]);
@@ -610,19 +627,22 @@ function ClaudePanelWithHash({
     [onResumeSession, cwd]
   );
 
-  const basePath = pathHash ? `/agent/${agentId}/coding/${pathHash}` : `/agent/${agentId}`;
+  // Key on activeSessionId (from store) to avoid remount when URL updates
+  const stableKey = activeSessionId || urlSessionId || (isNewSession ? 'new-session' : 'list');
 
   return (
     <ClaudePanel
-      key={sessionId || 'new'}
-      sessionId={sessionId}
+      key={stableKey}
+      sessionId={urlSessionId}
+      newSession={isNewSession && !activeSessionId}
       onSelectSession={(sid) => navigate(`${basePath}/${sid}`)}
-      onNewSession={() => navigate(basePath)}
+      onNewSession={() => navigate(`${basePath}?new`)}
       onListSessions={boundListSessions}
       onGetSessionMessages={boundGetMessages}
       onStartSession={boundStartSession}
       onResumeSession={boundResumeSession}
       onCancelSession={onCancelSession}
+      onCloseSession={onCloseSession}
     />
   );
 }

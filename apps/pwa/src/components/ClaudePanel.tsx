@@ -7,22 +7,26 @@ import { MessageBubble } from './chat/MessageBubble';
 interface ClaudePanelProps {
   onSelectSession?: (sessionId: string) => void;
   sessionId?: string;
+  newSession?: boolean;
   onListSessions: () => Promise<void>;
   onGetSessionMessages: (sessionId: string, offset?: number, limit?: number) => Promise<void>;
   onStartSession: (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string }) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string) => Promise<void>;
   onCancelSession: (sessionId: string) => Promise<void>;
+  onCloseSession: (sessionId: string) => Promise<void>;
   onNewSession?: () => void;
 }
 
 export function ClaudePanel({
   onSelectSession,
   sessionId: urlSessionId,
+  newSession,
   onListSessions,
   onGetSessionMessages,
   onStartSession,
   onResumeSession,
   onCancelSession,
+  onCloseSession,
   onNewSession,
 }: ClaudePanelProps) {
   const {
@@ -40,8 +44,8 @@ export function ClaudePanel({
     clearMessages,
   } = useClaudeStore();
 
-  // View is determined by URL: sessionId present = chat, absent = sessions
-  const isChat = !!urlSessionId;
+  // View is determined by URL: sessionId present = chat, ?new = new session, absent = sessions list
+  const isChat = !!urlSessionId || !!newSession;
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -119,6 +123,12 @@ export function ClaudePanel({
     }
   }, [activeSessionId, onCancelSession]);
 
+  const handleClose = useCallback(() => {
+    if (activeSessionId) {
+      onCloseSession(activeSessionId);
+    }
+  }, [activeSessionId, onCloseSession]);
+
   const handleLoadMore = useCallback(async () => {
     if (!activeSessionId || isLoadingHistory || !historyHasMore) return;
     await onGetSessionMessages(activeSessionId, messages.length);
@@ -167,11 +177,21 @@ export function ClaudePanel({
 
           {/* Input */}
           <div className="border-t border-slate-700 px-4 pt-3 flex-shrink-0 bg-slate-900" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.75rem)' }}>
-            {isStreaming && (
+            {isStreaming ? (
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs text-blue-400 animate-pulse">streaming...</span>
               </div>
-            )}
+            ) : activeSessionId ? (
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-green-400">Session active</span>
+                <button
+                  onClick={handleClose}
+                  className="text-xs text-slate-400 hover:text-red-400 transition-colors"
+                >
+                  End session
+                </button>
+              </div>
+            ) : null}
             <div className="flex items-end gap-2">
               <textarea
                 ref={inputRef}

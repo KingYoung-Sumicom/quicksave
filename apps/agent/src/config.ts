@@ -19,6 +19,7 @@ export interface AgentConfig {
 
 const CONFIG_DIR = join(homedir(), '.quicksave');
 const CONFIG_FILE = join(CONFIG_DIR, 'agent.json');
+const DEFAULT_SIGNALING_SERVER = 'wss://signal.quicksave.dev';
 
 export function ensureConfigDir(): void {
   if (!existsSync(CONFIG_DIR)) {
@@ -104,8 +105,7 @@ export function getManagedRepos(): string[] {
 }
 
 export function addManagedRepo(path: string): void {
-  const config = loadConfig();
-  if (!config) return;
+  const config = loadConfig() ?? getOrCreateConfig(DEFAULT_SIGNALING_SERVER);
   const repos = config.managedRepos ?? [];
   if (!repos.includes(path)) {
     repos.push(path);
@@ -132,8 +132,7 @@ export function getManagedCodingPaths(): string[] {
 }
 
 export function addManagedCodingPath(path: string): void {
-  const config = loadConfig();
-  if (!config) return;
+  const config = loadConfig() ?? getOrCreateConfig(DEFAULT_SIGNALING_SERVER);
   const paths = config.managedCodingPaths ?? [];
   if (!paths.includes(path)) {
     paths.push(path);

@@ -30,9 +30,11 @@ export function NavigationDrawer({
 }: NavigationDrawerProps) {
   const navigate = useNavigate();
   const { availableRepos, availableCodingPaths } = useConnectionStore();
+  const activeSessionId = useClaudeStore((s) => s.activeSessionId);
+  const isStreaming = useClaudeStore((s) => s.isStreaming);
   const [sessionsByPath, setSessionsByPath] = useState<Map<string, ClaudeSessionSummary[]>>(new Map());
 
-  // Fetch sessions for each coding path when drawer opens
+  // Fetch sessions for each coding path when drawer opens or a session starts/ends
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
@@ -57,11 +59,19 @@ export function NavigationDrawer({
     };
     fetchAll();
     return () => { cancelled = true; };
-  }, [isOpen, availableCodingPaths, onListSessions]);
+  }, [isOpen, availableCodingPaths, onListSessions, activeSessionId, isStreaming]);
 
   const handleNavigate = (url: string) => {
     if (!persistent) onClose();
     navigate(url);
+  };
+
+  const handleNewSession = (codingPath: string) => {
+    const { setActiveSession, clearMessages, setPromptInput } = useClaudeStore.getState();
+    setActiveSession(null);
+    clearMessages();
+    setPromptInput('');
+    handleNavigate(agentUrl(agentId, 'coding', codingPath) + '?new');
   };
 
   // Persistent desktop sidebar
@@ -98,12 +108,16 @@ export function NavigationDrawer({
           <SectionHeader title="Coding" onAdd={onAddWorkspace} />
           {availableCodingPaths.map((cp) => {
             const sessions = sessionsByPath.get(cp.path) || [];
-            const sorted = [...sessions].sort((a, b) => (b.isActive ? 1 : 0) - (a.isActive ? 1 : 0));
+            const sorted = [...sessions].sort((a, b) => {
+              const rank = (s: ClaudeSessionSummary) => s.isStreaming ? 2 : s.isActive ? 1 : 0;
+              return rank(b) - rank(a);
+            });
             return (
               <div key={cp.path}>
                 <CodingItem
                   codingPath={cp}
                   onClick={() => handleNavigate(agentUrl(agentId, 'coding', cp.path))}
+                  onNewSession={() => handleNewSession(cp.path)}
                 />
                 {sorted.slice(0, 5).map((session) => (
                   <SessionItem
@@ -177,12 +191,16 @@ export function NavigationDrawer({
           <SectionHeader title="Coding" onAdd={onAddWorkspace} />
           {availableCodingPaths.map((cp) => {
             const sessions = sessionsByPath.get(cp.path) || [];
-            const sorted = [...sessions].sort((a, b) => (b.isActive ? 1 : 0) - (a.isActive ? 1 : 0));
+            const sorted = [...sessions].sort((a, b) => {
+              const rank = (s: ClaudeSessionSummary) => s.isStreaming ? 2 : s.isActive ? 1 : 0;
+              return rank(b) - rank(a);
+            });
             return (
               <div key={cp.path}>
                 <CodingItem
                   codingPath={cp}
                   onClick={() => handleNavigate(agentUrl(agentId, 'coding', cp.path))}
+                  onNewSession={() => handleNewSession(cp.path)}
                 />
                 {sorted.slice(0, 5).map((session) => (
                   <SessionItem
@@ -248,21 +266,35 @@ function RepoItem({ repo, active, onClick }: { repo: Repository; active: boolean
   );
 }
 
-function CodingItem({ codingPath, onClick }: { codingPath: CodingPath; onClick: () => void }) {
+function CodingItem({ codingPath, onClick, onNewSession }: { codingPath: CodingPath; onClick: () => void; onNewSession: () => void }) {
   return (
-    <button
-      onClick={onClick}
-      className="w-full flex items-center gap-2 px-4 py-2 text-left text-sm text-slate-300 hover:bg-slate-700 transition-colors"
-    >
-      <svg className="w-4 h-4 text-purple-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-      </svg>
-      <span className="truncate">{codingPath.name}</span>
-    </button>
+    <div className="flex items-center hover:bg-slate-700 transition-colors">
+      <button
+        onClick={onClick}
+        className="flex-1 flex items-center gap-2 px-4 py-2 text-left text-sm text-slate-300 min-w-0"
+      >
+        <svg className="w-4 h-4 text-purple-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+        <span className="truncate">{codingPath.name}</span>
+      </button>
+      <button
+        onClick={(e) => { e.stopPropagation(); onNewSession(); }}
+        title="New session"
+        className="px-2 py-1 mr-2 text-slate-500 hover:text-purple-400 transition-colors"
+      >
+        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+        </svg>
+      </button>
+    </div>
   );
 }
 
 function SessionItem({ session, onClick }: { session: ClaudeSessionSummary; onClick: () => void }) {
+  const isStreamingNow = session.isActive && session.isStreaming;
+  const isOpenIdle = session.isActive && !session.isStreaming;
+
   return (
     <button
       onClick={onClick}
@@ -270,14 +302,24 @@ function SessionItem({ session, onClick }: { session: ClaudeSessionSummary; onCl
         session.isActive ? 'text-white' : 'text-slate-400'
       }`}
     >
-      {session.isActive && (
-        <span className="w-1.5 h-1.5 rounded-full bg-green-400 flex-shrink-0 animate-pulse" />
+      {isStreamingNow ? (
+        <svg className="w-3 h-3 text-green-400 flex-shrink-0 animate-pulse" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+      ) : isOpenIdle ? (
+        <span className="w-3 h-3 flex-shrink-0 flex items-center justify-center">
+          <span className="w-2 h-2 rounded-full bg-green-400" />
+        </span>
+      ) : (
+        <svg className="w-3 h-3 text-slate-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+        </svg>
       )}
       <span className="truncate">
         {session.summary || session.sessionId.slice(0, 12)}
       </span>
       <span className={`flex-shrink-0 ml-auto ${session.isActive ? 'text-green-400' : 'text-slate-600'}`}>
-        {session.isActive ? 'Active' : formatRelativeTime(session.lastModified)}
+        {isStreamingNow ? 'Streaming' : isOpenIdle ? 'Open' : formatRelativeTime(session.lastModified)}
       </span>
     </button>
   );

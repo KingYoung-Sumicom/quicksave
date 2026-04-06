@@ -32,6 +32,7 @@ interface ActiveSession {
 
 export class ClaudeCodeService {
   private activeSessions: Map<string, ActiveSession> = new Map();
+  private openSessions: Set<string> = new Set();
 
   async listAvailableSessions(cwd: string): Promise<ClaudeSessionSummary[]> {
     const sessions = await listSessions({ dir: cwd, limit: 50 });
@@ -215,8 +216,33 @@ export class ClaudeCodeService {
     return true;
   }
 
-  isActive(sessionId: string): boolean {
+  openSession(sessionId: string): void {
+    this.openSessions.add(sessionId);
+  }
+
+  closeSession(sessionId: string): boolean {
+    const wasOpen = this.openSessions.delete(sessionId);
+    // Also cancel if currently streaming
+    if (this.activeSessions.has(sessionId)) {
+      this.cancelSession(sessionId);
+    }
+    return wasOpen;
+  }
+
+  isStreaming(sessionId: string): boolean {
     return this.activeSessions.has(sessionId);
+  }
+
+  isOpen(sessionId: string): boolean {
+    return this.openSessions.has(sessionId);
+  }
+
+  isActive(sessionId: string): boolean {
+    return this.openSessions.has(sessionId);
+  }
+
+  getActiveSessionCount(): number {
+    return this.openSessions.size;
   }
 
   cleanup(): void {
@@ -224,6 +250,7 @@ export class ClaudeCodeService {
       session.abortController.abort();
     }
     this.activeSessions.clear();
+    this.openSessions.clear();
   }
 
   private async consumeStream(
@@ -235,6 +262,7 @@ export class ClaudeCodeService {
   ): Promise<void> {
     let textBuffer = '';
     let bufferTimer: ReturnType<typeof setTimeout> | null = null;
+    let capturedSessionId: string | null = null;
 
     const flushText = () => {
       if (textBuffer) {
@@ -244,6 +272,12 @@ export class ClaudeCodeService {
       if (bufferTimer) {
         clearTimeout(bufferTimer);
         bufferTimer = null;
+      }
+    };
+
+    const cleanupSession = () => {
+      if (capturedSessionId) {
+        this.activeSessions.delete(capturedSessionId);
       }
     };
 
@@ -264,6 +298,8 @@ export class ClaudeCodeService {
 
         // Capture session ID from init message
         if (message.type === 'system' && message.subtype === 'init') {
+          capturedSessionId = message.session_id;
+          console.log(`[stream] init session=${message.session_id}`);
           onSessionId(message.session_id);
           continue;
         }
@@ -326,8 +362,8 @@ export class ClaudeCodeService {
         // Final result
         if (message.type === 'result') {
           flushText();
-          const sessionId = message.session_id;
-          this.activeSessions.delete(sessionId);
+          console.log(`[stream] result session=${capturedSessionId} subtype=${message.subtype} cost=$${message.total_cost_usd?.toFixed(4) ?? '?'}`);
+          cleanupSession();
           onEnd({
             success: message.subtype === 'success',
             error: message.subtype !== 'success'
@@ -342,11 +378,15 @@ export class ClaudeCodeService {
         }
       }
 
-      // Stream ended without result message
+      // Stream ended without result message (abort or unexpected end)
       flushText();
+      console.log(`[stream] ended without result session=${capturedSessionId} (abort or unexpected)`);
+      cleanupSession();
       onEnd({ success: true });
     } catch (error) {
       flushText();
+      console.error(`[stream] error session=${capturedSessionId}:`, error);
+      cleanupSession();
       const msg = error instanceof Error ? error.message : 'Unknown error';
       onEnd({ success: false, error: msg });
     }

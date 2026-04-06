@@ -119,7 +119,7 @@ export async function runDaemon(): Promise<void> {
       uptime: Math.floor(uptimeMs / 1000),
       connectionState: serviceState.connectionState,
       peerCount: connection.getPeerCount(),
-      activeSessions: 0, // TODO: wire to SessionSupervisor
+      activeSessions: messageHandler.getActiveSessionCount(),
       managedRepos: getManagedRepos().length,
     };
   });

@@ -6,6 +6,7 @@ import {
   type ClaudeStartResponsePayload,
   type ClaudeResumeResponsePayload,
   type ClaudeCancelResponsePayload,
+  type ClaudeCloseResponsePayload,
   type ClaudeGetMessagesResponsePayload,
   type ClaudeStreamPayload,
   type ClaudeStreamEndPayload,
@@ -254,6 +255,23 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     [sendRequest, setStreaming]
   );
 
+  const closeSession = useCallback(
+    async (sessionId: string) => {
+      try {
+        const message = createMessage('claude:close', { sessionId });
+        const response = await sendRequest<ClaudeCloseResponsePayload>(message);
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to close session');
+        }
+        setActiveSession(null, null);
+        setStreaming(false);
+      } catch (error) {
+        console.error('Failed to close session:', error);
+      }
+    },
+    [sendRequest, setActiveSession, setStreaming]
+  );
+
   return {
     handleMessage,
     listSessions,
@@ -261,5 +279,6 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     startSession,
     resumeSession,
     cancelSession,
+    closeSession,
   };
 }
