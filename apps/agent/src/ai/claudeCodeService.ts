@@ -42,12 +42,26 @@ export interface StreamEndResult {
  *   'user-input-request' (request: ClaudeUserInputRequestPayload)
  */
 
+type PermissionLevel = 'bypassPermissions' | 'acceptEdits' | 'default' | 'plan';
+
+/** Tools auto-approved at each permission level (no user prompt).
+ *  Read/Glob/Grep are always auto-approved at SDK level (allowedTools).
+ *  Tools NOT listed here go through canUseTool → permission prompt.
+ *  Skill, ToolSearch, and Config always require permission (code execution / control plane). */
+const AUTO_APPROVE: Record<PermissionLevel, Set<string>> = {
+  bypassPermissions: new Set(['Edit', 'Write', 'Bash', 'WebFetch', 'WebSearch', 'NotebookEdit', 'TodoWrite', 'Agent', 'EnterWorktree', 'ExitWorktree', 'Skill', 'ToolSearch', 'Config']),
+  acceptEdits:       new Set(['Edit', 'Write', 'NotebookEdit', 'TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent']),
+  default:           new Set(['TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent']),
+  plan:              new Set(),
+};
+
 interface PersistentSession {
   session: SDKSession;
   sessionId: string;
   cwd: string;
   streaming: boolean;
   cancelStreaming: (() => void) | null;
+  permissionLevel: PermissionLevel;
 }
 
 /** Extract readable text from tool_result content (which may be a string or array of blocks). */
@@ -231,16 +245,16 @@ export class ClaudeCodeService extends EventEmitter {
     }
   ): SDKSession {
     const originalCwd = process.cwd();
-    const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
-    const permMode = validModes.includes(opts.permissionMode as any)
-      ? (opts.permissionMode as typeof validModes[number])
-      : 'acceptEdits';
     try {
       process.chdir(cwd);
+      // allowedTools = SDK auto-approve list (bypasses canUseTool entirely).
+      // Only list tools that should NEVER prompt at ANY permission level.
+      // Everything else goes through permissionMode → canUseTool for dynamic control.
       const sessionOpts = {
         model: opts.model ?? DEFAULT_MODEL,
-        allowedTools: opts.allowedTools ?? ['Read', 'Glob', 'Grep', 'Bash', 'Edit', 'Write'],
-        permissionMode: permMode,
+        allowedTools: opts.allowedTools ?? ['Read', 'Glob', 'Grep'],
+        permissionMode: 'default' as const,  // Most restrictive — pushes everything to canUseTool
+        settingSources: ['user' as const, 'project' as const, 'local' as const],  // Respect .claude/settings*.json allow/deny rules
         canUseTool: async (
           toolName: string,
           input: Record<string, unknown>,
@@ -249,6 +263,14 @@ export class ClaudeCodeService extends EventEmitter {
           console.log(`[canUseTool] toolName=${toolName} title=${options.title} displayName=${options.displayName} inputKeys=${Object.keys(input).join(',')}`);
 
           const resolvedSessionId = sessionId ?? 'unknown';
+
+          // Check runtime permission level — auto-approve if tool is in the allow set
+          const ps = resolvedSessionId !== 'unknown' ? this.sessions.get(resolvedSessionId) : undefined;
+          const level = ps?.permissionLevel ?? 'acceptEdits';
+          if (AUTO_APPROVE[level].has(toolName)) {
+            console.log(`[canUseTool] auto-approved by permission level '${level}'`);
+            return { behavior: 'allow' as const, updatedInput: input };
+          }
           const requestId = `perm-${++this.requestCounter}`;
 
           // AskUserQuestion: forward as question type with options
@@ -359,6 +381,9 @@ export class ClaudeCodeService extends EventEmitter {
     model?: string;
     permissionMode?: string;
   }): Promise<string> {
+    const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
+    const level: PermissionLevel = validModes.includes(opts.permissionMode as any)
+      ? (opts.permissionMode as PermissionLevel) : 'acceptEdits';
     const session = this.createSessionWithCwd(opts.cwd, null, {
       allowedTools: opts.allowedTools,
       model: opts.model,
@@ -386,6 +411,7 @@ export class ClaudeCodeService extends EventEmitter {
         cwd: opts.cwd,
         streaming: true,
         cancelStreaming: null,
+        permissionLevel: level,
       });
       this.emitSessionUpdate(id);
     });
@@ -456,6 +482,7 @@ export class ClaudeCodeService extends EventEmitter {
         cwd: opts.cwd,
         streaming: true,
         cancelStreaming: null,
+        permissionLevel: 'acceptEdits' as PermissionLevel,
       });
       this.emitSessionUpdate(id);
     });
@@ -480,6 +507,19 @@ export class ClaudeCodeService extends EventEmitter {
     }
     ps.streaming = false;
     return true;
+  }
+
+  setPermissionLevel(sessionId: string, level: PermissionLevel): boolean {
+    const ps = this.sessions.get(sessionId);
+    if (!ps) return false;
+    ps.permissionLevel = level;
+    console.log(`[permission] session=${sessionId} level changed to '${level}'`);
+    this.emitSessionUpdate(sessionId);
+    return true;
+  }
+
+  getPermissionLevel(sessionId: string): PermissionLevel {
+    return this.sessions.get(sessionId)?.permissionLevel ?? 'acceptEdits';
   }
 
   closeSession(sessionId: string): boolean {

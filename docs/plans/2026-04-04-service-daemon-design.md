@@ -15,7 +15,46 @@ Related reference:
 >
 > **History storage:** The SDK writes an append-only JSONL per session at `~/.claude/projects/{project-hash}/{session-id}.jsonl`. This is the single source of truth for message history. We do not maintain a separate JSONL — the SDK's is complete, un-truncated, and includes compaction entries.
 >
+> **Event architecture:** `ClaudeCodeService` extends `EventEmitter` and emits `stream`, `stream:end`, `user-input-request`, `user-input-resolved`, and `session-updated` events. `run.ts` subscribes and calls `connection.broadcast()` to push events to all connected PWA peers. No callbacks are bound to specific connections — stale-callback issues are eliminated.
+>
 > **Sections marked `[DEFERRED]` below describe the original detached-worker design. They are preserved for reference but are not implemented and not currently planned.**
+
+### Tool Permission Model (Implemented 2026-04-07)
+
+Permission control is handled **entirely in our `canUseTool` callback**, not by the SDK's `allowedTools` or `permissionMode`. This allows runtime permission level changes without restarting the session.
+
+**Architecture:**
+- SDK `permissionMode` is set to `'default'` (most restrictive) so all tool calls reach `canUseTool`.
+- SDK `allowedTools` only contains `['Read', 'Glob', 'Grep']` — read-only tools that never need prompting.
+- SDK `settingSources: ['user', 'project', 'local']` — respects `.claude/settings*.json` allow/deny rules. These run **before** `canUseTool` (SDK layer: hooks → deny → mode → allow → canUseTool).
+- Our `canUseTool` checks the session's `permissionLevel` against an `AUTO_APPROVE` map.
+- `setPermissionLevel(sessionId, level)` changes the level at runtime — next tool call uses the new level immediately.
+
+**Permission matrix:**
+
+| Tool | `bypassPermissions` | `acceptEdits` | `default` | `plan` |
+|---|---|---|---|---|
+| Read, Glob, Grep | SDK auto | SDK auto | SDK auto | SDK auto |
+| Edit, Write, NotebookEdit | auto | auto | **prompt** | **prompt** |
+| Bash | auto | **prompt** | **prompt** | **prompt** |
+| WebFetch, WebSearch | auto | **prompt** | **prompt** | **prompt** |
+| Skill, ToolSearch, Config | auto | **prompt** | **prompt** | **prompt** |
+| Agent, TodoWrite, Worktree | auto | auto | auto | **prompt** |
+| AskUserQuestion | interactive UI | interactive UI | interactive UI | interactive UI |
+
+- **SDK auto**: Tool is in SDK `allowedTools`, bypasses `canUseTool` entirely.
+- **auto**: Our `canUseTool` returns `{ behavior: 'allow' }` immediately.
+- **prompt**: Our `canUseTool` emits `user-input-request`, waits for user Allow/Deny via PWA.
+- **interactive UI**: `AskUserQuestion` always renders the structured question UI regardless of permission level.
+
+**Precedence order** (first match wins):
+1. `.claude/settings*.json` deny rules → blocked
+2. `.claude/settings*.json` allow rules (e.g. `Bash(npx vitest run:*)`) → auto-approved
+3. SDK `allowedTools` (`Read`, `Glob`, `Grep`) → auto-approved
+4. Our `AUTO_APPROVE[session.permissionLevel]` → auto-approved
+5. Our `canUseTool` → prompt user via PWA
+
+**TODO:** Implement a PWA UI for users to manage their own per-tool allow rules (similar to `.claude/settings.local.json` but through the UI).
 
 ## Problem
 
