@@ -12,6 +12,9 @@ import {
   type ClaudeStreamEndPayload,
   type ClaudeUserInputRequestPayload,
   type ClaudeUserInputResponsePayload,
+  type ClaudePreferences,
+  type ClaudeSetPreferencesResponsePayload,
+  type ClaudeSetSessionPermissionResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { useClaudeStore, type ChatMessage } from '../stores/claudeStore';
 import { WebSocketClient } from '../lib/websocket';
@@ -38,6 +41,8 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     appendMessage,
     tagPendingInput,
     clearPendingInput,
+    setSelectedModel,
+    setSelectedPermissionMode,
   } = useClaudeStore();
 
   const sendRequest = useCallback(
@@ -92,7 +97,6 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
 
     if (message.type === 'claude:user-input-request') {
       const payload = message.payload as ClaudeUserInputRequestPayload;
-
       tagPendingInput(payload);
       return true;
     }
@@ -104,24 +108,32 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     }
 
     if (message.type === 'claude:session-updated') {
-      const payload = message.payload as { sessionId: string; isActive: boolean; isStreaming: boolean; hasPendingInput: boolean };
+      const payload = message.payload as { sessionId: string; isActive: boolean; isStreaming: boolean; hasPendingInput: boolean; permissionMode?: string };
       const { sessions, activeSessionId } = useClaudeStore.getState();
       const current = sessions.find((s) => s.sessionId === payload.sessionId);
       // Skip update if nothing changed
       if (current &&
         current.isActive === payload.isActive &&
         current.isStreaming === payload.isStreaming &&
-        current.hasPendingInput === payload.hasPendingInput) return true;
+        current.hasPendingInput === payload.hasPendingInput &&
+        current.permissionMode === payload.permissionMode) return true;
       const updated = sessions.map((s) =>
         s.sessionId === payload.sessionId
-          ? { ...s, isActive: payload.isActive, isStreaming: payload.isStreaming, hasPendingInput: payload.hasPendingInput }
+          ? { ...s, isActive: payload.isActive, isStreaming: payload.isStreaming, hasPendingInput: payload.hasPendingInput, permissionMode: payload.permissionMode }
           : s
       );
       setSessions(updated);
-      // Keep store isStreaming in sync for the active session (e.g. prompt sent from another tab)
+      // Keep store in sync for the active session
       if (payload.sessionId === activeSessionId) {
         setStreaming(payload.isStreaming);
+        if (payload.permissionMode) setSelectedPermissionMode(payload.permissionMode);
       }
+      return true;
+    }
+
+    if (message.type === 'claude:preferences-updated') {
+      const prefs = message.payload as ClaudePreferences;
+      setSelectedModel(prefs.model);
       return true;
     }
 
@@ -301,10 +313,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
 
   const closeSession = useCallback(
     async (sessionId: string) => {
-      // Always clear local state — user wants to leave regardless of backend result
-      setActiveSession(null, null);
       setStreaming(false);
-      clearMessages();
       try {
         const message = createMessage('claude:close', { sessionId });
         await sendRequest<ClaudeCloseResponsePayload>(message);
@@ -312,7 +321,28 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
         console.error('Failed to close session:', error);
       }
     },
-    [sendRequest, setActiveSession, setStreaming, clearMessages]
+    [sendRequest, setStreaming]
+  );
+
+  const setPreferences = useCallback(
+    (prefs: Partial<ClaudePreferences>) => {
+      if (prefs.model !== undefined) setSelectedModel(prefs.model);
+      const message = createMessage<{ preferences: Partial<ClaudePreferences> }>('claude:set-preferences', { preferences: prefs });
+      sendRequest<ClaudeSetPreferencesResponsePayload>(message).then((response) => {
+        setSelectedModel(response.preferences.model);
+      }).catch(() => { /* broadcast will resync if needed */ });
+    },
+    [sendRequest, setSelectedModel],
+  );
+
+  const setSessionPermission = useCallback(
+    (sessionId: string, permissionMode: string) => {
+      // Optimistic update
+      setSelectedPermissionMode(permissionMode);
+      const message = createMessage<{ sessionId: string; permissionMode: string }>('claude:set-session-permission', { sessionId, permissionMode });
+      sendRequest<ClaudeSetSessionPermissionResponsePayload>(message).catch(() => { /* session-updated broadcast will resync */ });
+    },
+    [sendRequest, setSelectedPermissionMode],
   );
 
   const respondToUserInput = useCallback(
@@ -333,5 +363,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     cancelSession,
     closeSession,
     respondToUserInput,
+    setPreferences,
+    setSessionPermission,
   };
 }

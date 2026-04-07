@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useConnectionStore } from '../stores/connectionStore';
 import type { Repository, CodingPath, ClaudeSessionSummary } from '@sumicom/quicksave-shared';
 import { agentUrl } from '../lib/pathHash';
-import { SESSION_STATUS, sessionStatusKey } from './SessionStatusBadge';
+import { StatusDot, sessionStatusKey } from './SessionStatusBadge';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
 
 interface AgentDashboardProps {
@@ -161,11 +161,7 @@ export function AgentDashboard({
                             onClick={() => handleSessionClick(cp, session.sessionId)}
                             className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-700/50 transition-colors text-left"
                           >
-                            {(() => {
-                              const sk = sessionStatusKey(session);
-                              const s = SESSION_STATUS[sk];
-                              return <span className={`w-2 h-2 rounded-full flex-shrink-0 ${s.dotColor}${s.pulse ? ' animate-pulse' : ''}`} />;
-                            })()}
+                            <StatusDot statusKey={sessionStatusKey(session)} />
                             <div className="flex-1 min-w-0">
                               <p className="text-xs text-slate-300 truncate">
                                 {session.summary || session.sessionId.slice(0, 12)}

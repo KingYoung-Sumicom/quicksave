@@ -99,4 +99,6 @@ export const REQUEST_RESPONSE_MAP: Record<string, string> = {
   'claude:resume': 'claude:resume:response',
   'claude:cancel': 'claude:cancel:response',
   'claude:get-messages': 'claude:get-messages:response',
+  'claude:get-preferences': 'claude:get-preferences:response',
+  'claude:set-preferences': 'claude:set-preferences:response',
 };

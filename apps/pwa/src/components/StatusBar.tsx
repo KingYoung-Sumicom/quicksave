@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { useLocation, useMatch } from 'react-router-dom';
 import { clsx } from 'clsx';
-import { CLAUDE_MODELS, type ConnectionState } from '@sumicom/quicksave-shared';
+import { CLAUDE_MODELS, type ConnectionState, type ClaudePreferences } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
-import { SessionStatusBadge, type SessionStatusKey } from './SessionStatusBadge';
+import { StatusDot, sessionStatusKey, type SessionStatusKey } from './SessionStatusBadge';
 
 interface StatusBarProps {
   connectionState: ConnectionState;
@@ -14,7 +14,10 @@ interface StatusBarProps {
   onOpenMenu?: () => void;
   onSwitchRepo?: () => void;
   onOpenGitignore?: () => void;
+  onSetPreferences?: (prefs: Partial<ClaudePreferences>) => void;
+  onSetSessionPermission?: (sessionId: string, mode: string) => void;
   onCloseSession?: () => void;
+  onCancelSession?: () => void;
 }
 
 export function StatusBar({
@@ -26,7 +29,10 @@ export function StatusBar({
   onOpenMenu,
   onSwitchRepo,
   onOpenGitignore,
+  onSetPreferences,
+  onSetSessionPermission,
   onCloseSession,
+  onCancelSession,
 }: StatusBarProps) {
   const location = useLocation();
   const isOnRepoPage = location.pathname.includes('/repo/');
@@ -35,9 +41,9 @@ export function StatusBar({
 
   return (
     <header className="sticky top-0 z-30 bg-slate-800 border-b border-slate-700 safe-area-top touch-none">
-      <div className="flex items-center justify-between px-4 py-3">
+      <div className="relative flex items-center px-4 py-3 min-h-[52px]">
         {/* Left: Menu button */}
-        <div className="flex items-center w-10">
+        <div className="flex items-center w-10 shrink-0">
           {isConnected && onOpenMenu && (
             <button
               onClick={onOpenMenu}
@@ -51,10 +57,15 @@ export function StatusBar({
           )}
         </div>
 
-        {/* Right: Session status (only in session view) + settings gear */}
-        <div className="flex items-center justify-end gap-2 flex-1">
+        {/* Center: Session title + status badge (absolute so it's truly centered) */}
+        <div className="absolute inset-x-14 inset-y-0 flex items-center justify-center py-2">
           <SessionStatusIndicator />
-          <SessionSettingsMenu onCloseSession={onCloseSession} />
+        </div>
+
+        {/* Right: Stop button (streaming) + Settings gear */}
+        <div className="ml-auto shrink-0 flex items-center gap-1">
+          <StopButton onCancelSession={onCancelSession} />
+          <SessionSettingsMenu onCloseSession={onCloseSession} onSetPreferences={onSetPreferences} onSetSessionPermission={onSetSessionPermission} />
         </div>
       </div>
 
@@ -128,18 +139,45 @@ export function StatusBar({
 }
 
 
+function StopButton({ onCancelSession }: { onCancelSession?: () => void }) {
+  const isOnSessionPage = !!useMatch('/agent/:agentId/coding/:pathHash/:sessionId');
+  const isStreaming = useClaudeStore((s) => s.isStreaming);
+
+  if (!isOnSessionPage || !isStreaming || !onCancelSession) return null;
+
+  return (
+    <button
+      onClick={onCancelSession}
+      className="w-7 h-7 rounded-full bg-red-600 hover:bg-red-500 transition-colors flex items-center justify-center"
+      title="Stop"
+    >
+      <svg className="w-3 h-3" fill="white" viewBox="0 0 12 12">
+        <rect x="2" y="2" width="8" height="8" />
+      </svg>
+    </button>
+  );
+}
+
 function SessionStatusIndicator() {
   const isOnSessionPage = !!useMatch('/agent/:agentId/coding/:pathHash/:sessionId');
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
-  const isStreaming = useClaudeStore((s) => s.isStreaming);
-  const messages = useClaudeStore((s) => s.messages);
+  const sessions = useClaudeStore((s) => s.sessions);
 
   if (!isOnSessionPage || !activeSessionId) return null;
 
-  const hasPendingInput = messages.some((m) => !!m.pendingInputRequest);
-  const statusKey: SessionStatusKey = hasPendingInput ? 'waiting' : isStreaming ? 'thinking' : 'standby';
+  const session = sessions.find((s) => s.sessionId === activeSessionId);
+  if (!session) return null;
 
-  return <SessionStatusBadge statusKey={statusKey} />;
+  const statusKey: SessionStatusKey = sessionStatusKey(session);
+
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-center">
+      <StatusDot statusKey={statusKey} />
+      {session.summary && (
+        <span className="text-sm text-slate-300 break-words">{session.summary}</span>
+      )}
+    </div>
+  );
 }
 
 
@@ -149,13 +187,11 @@ const PERMISSION_MODES = [
   { id: 'plan', label: 'Plan', desc: 'Read-only planning' },
 ] as const;
 
-function SessionSettingsMenu({ onCloseSession }: { onCloseSession?: () => void }) {
+function SessionSettingsMenu({ onCloseSession, onSetPreferences, onSetSessionPermission }: { onCloseSession?: () => void; onSetPreferences?: (prefs: Partial<ClaudePreferences>) => void; onSetSessionPermission?: (sessionId: string, mode: string) => void }) {
   const [open, setOpen] = useState(false);
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
   const selectedModel = useClaudeStore((s) => s.selectedModel);
   const selectedPermissionMode = useClaudeStore((s) => s.selectedPermissionMode);
-  const setSelectedModel = useClaudeStore((s) => s.setSelectedModel);
-  const setSelectedPermissionMode = useClaudeStore((s) => s.setSelectedPermissionMode);
 
   if (!activeSessionId) return null;
 
@@ -187,7 +223,7 @@ function SessionSettingsMenu({ onCloseSession }: { onCloseSession?: () => void }
               {CLAUDE_MODELS.map((m) => (
                 <button
                   key={m.id}
-                  onClick={() => setSelectedModel(m.id)}
+                  onClick={() => onSetPreferences?.({ model: m.id })}
                   className={clsx(
                     'w-full text-left text-xs px-2.5 py-1.5 rounded-md transition-colors',
                     selectedModel === m.id
@@ -210,7 +246,7 @@ function SessionSettingsMenu({ onCloseSession }: { onCloseSession?: () => void }
               {PERMISSION_MODES.map((pm) => (
                 <button
                   key={pm.id}
-                  onClick={() => setSelectedPermissionMode(pm.id)}
+                  onClick={() => activeSessionId && onSetSessionPermission?.(activeSessionId, pm.id)}
                   className={clsx(
                     'w-full text-left text-xs px-2.5 py-1.5 rounded-md transition-colors',
                     selectedPermissionMode === pm.id

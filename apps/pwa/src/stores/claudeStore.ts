@@ -101,8 +101,15 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   setLoadingSessions: (loading) => set({ isLoadingSessions: loading }),
 
   // Active session
-  setActiveSession: (sessionId, streamId = null) =>
-    set({ activeSessionId: sessionId, activeStreamId: streamId, streamError: null }),
+  setActiveSession: (sessionId, streamId = null) => {
+    const session = sessionId ? get().sessions.find((s) => s.sessionId === sessionId) : null;
+    set({
+      activeSessionId: sessionId,
+      activeStreamId: streamId,
+      streamError: null,
+      selectedPermissionMode: session?.permissionMode ?? 'acceptEdits',
+    });
+  },
   setStreaming: (streaming) => set({ isStreaming: streaming }),
   setStreamError: (error) => set({ streamError: error, isStreaming: false }),
 

@@ -81,6 +81,15 @@ export type MessageType =
   | 'claude:user-input-response'  // pwa-push: user's response to input request
   | 'claude:user-input-resolved'  // agent-push: pending input was resolved (notify other tabs)
   | 'claude:session-updated'      // agent-push: session state changed (active/streaming/pending)
+  | 'claude:get-preferences'
+  | 'claude:get-preferences:response'
+  | 'claude:set-preferences'
+  | 'claude:set-preferences:response'
+  | 'claude:preferences-updated'  // agent-push: preferences changed, broadcast to all peers
+  | 'claude:set-session-permission'           // pwa-push: change permission level for a specific session
+  | 'claude:set-session-permission:response'  // agent-push: permission change applied
+  | 'claude:active-sessions'                  // pwa-request: get in-memory active sessions
+  | 'claude:active-sessions:response'         // agent-response: active sessions snapshot
   | 'error';
 
 // ============================================================================
@@ -157,6 +166,55 @@ export interface CodingPath {
 // Request/Response Payloads
 // ============================================================================
 
+// Claude preferences (model) — owned by agent, synced to PWA.
+// permissionMode is session-scoped; use claude:set-session-permission to change it.
+export interface ClaudePreferences {
+  model: string;
+}
+
+export type ClaudeGetPreferencesRequestPayload = Record<string, never>;
+
+export interface ClaudeGetPreferencesResponsePayload {
+  preferences: ClaudePreferences;
+}
+
+export interface ClaudeSetPreferencesRequestPayload {
+  preferences: Partial<ClaudePreferences>;
+}
+
+export interface ClaudeSetPreferencesResponsePayload {
+  success: boolean;
+  preferences: ClaudePreferences; // always the current applied value
+  error?: string;
+}
+
+export type ClaudePreferencesUpdatedPayload = ClaudePreferences;
+
+export interface ClaudeSetSessionPermissionRequestPayload {
+  sessionId: string;
+  permissionMode: string;
+}
+
+export interface ClaudeSetSessionPermissionResponsePayload {
+  success: boolean;
+  sessionId: string;
+  permissionMode: string;
+}
+
+export interface ClaudeActiveSession {
+  sessionId: string;
+  cwd: string;
+  isStreaming: boolean;
+  hasPendingInput: boolean;
+  permissionMode: string;
+}
+
+export type ClaudeActiveSessionsRequestPayload = Record<string, never>;
+
+export interface ClaudeActiveSessionsResponsePayload {
+  sessions: ClaudeActiveSession[];
+}
+
 // Handshake
 export interface HandshakePayload {
   publicKey: string; // Base64 encoded
@@ -169,6 +227,7 @@ export interface HandshakeAckPayload {
   repoPath: string;
   availableRepos?: Repository[];
   availableCodingPaths?: CodingPath[];
+  preferences?: ClaudePreferences;
 }
 
 // Status
@@ -548,6 +607,7 @@ export interface ClaudeSessionSummary {
   isActive?: boolean;
   isStreaming?: boolean;
   hasPendingInput?: boolean;
+  permissionMode?: string;
 }
 
 // List Sessions

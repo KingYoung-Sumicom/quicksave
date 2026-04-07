@@ -43,6 +43,7 @@ export class AgentConnection extends EventEmitter {
   private signaling: SignalingClient;
   private keyPair: KeyPair;
   private peers: Map<string, PeerSession> = new Map();
+  private peerSessions: Map<string, string> = new Map(); // peerAddress → sessionId
 
   // Key exchange replay protection
   private static readonly KEY_EXCHANGE_MAX_AGE_MS = 60000; // 60 seconds
@@ -212,6 +213,7 @@ export class AgentConnection extends EventEmitter {
   private handlePeerDisconnected(peerAddress: string): void {
     if (this.peers.has(peerAddress)) {
       this.peers.delete(peerAddress);
+      this.peerSessions.delete(peerAddress);
       this.emit('disconnected', peerAddress);
     }
 
@@ -238,10 +240,24 @@ export class AgentConnection extends EventEmitter {
     return this.peers.size > 0;
   }
 
+  /** Register which session a peer is currently viewing. */
+  subscribePeerToSession(peerAddress: string, sessionId: string): void {
+    this.peerSessions.set(peerAddress, sessionId);
+  }
+
   /** Send a message to all connected peers. */
   broadcast(message: Message): void {
     for (const [address] of this.peers) {
       this.send(message, address);
+    }
+  }
+
+  /** Send a message only to peers subscribed to a specific session. */
+  sendToSession(sessionId: string, message: Message): void {
+    for (const [address] of this.peers) {
+      if (this.peerSessions.get(address) === sessionId) {
+        this.send(message, address);
+      }
     }
   }
 }

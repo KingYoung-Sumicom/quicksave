@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 import { createReadStream } from 'fs';
+import { readdir, stat } from 'fs/promises';
 import { createInterface } from 'readline';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -16,6 +17,7 @@ import type {
   ClaudeStreamEventType,
   ClaudeUserInputRequestPayload,
   ClaudeUserInputResponsePayload,
+  ClaudePreferences,
 } from '@sumicom/quicksave-shared';
 const TOOL_RESULT_TRUNCATE_LENGTH = 500;
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
@@ -157,13 +159,96 @@ interface PendingUserInput {
   request: ClaudeUserInputRequestPayload;  // stored for re-send on reconnect
 }
 
+
 export class ClaudeCodeService extends EventEmitter {
   private sessions: Map<string, PersistentSession> = new Map();
+  private sessionPermissions: Map<string, PermissionLevel> = new Map(); // persists across active/inactive
   private pendingInputRequests: Map<string, PendingUserInput> = new Map();
   private requestCounter = 0;
+  private preferences: ClaudePreferences = {
+    model: DEFAULT_MODEL,
+  };
 
   constructor() {
     super();
+  }
+
+  /**
+   * Initialize preferences from the most recently used session's JSONL.
+   * Reads the last assistant message's model field.
+   */
+  async initPreferences(): Promise<void> {
+    try {
+      const claudeDir = join(homedir(), '.claude', 'projects');
+      const projectDirs = await readdir(claudeDir);
+      let mostRecentFile: string | null = null;
+      let mostRecentMtime = 0;
+
+      for (const projectDir of projectDirs) {
+        const projectPath = join(claudeDir, projectDir);
+        try {
+          const files = await readdir(projectPath);
+          for (const file of files) {
+            if (!file.endsWith('.jsonl')) continue;
+            const filePath = join(projectPath, file);
+            const fileStat = await stat(filePath);
+            if (fileStat.mtimeMs > mostRecentMtime) {
+              mostRecentMtime = fileStat.mtimeMs;
+              mostRecentFile = filePath;
+            }
+          }
+        } catch { /* skip unreadable dirs */ }
+      }
+
+      if (!mostRecentFile) return;
+
+      const assistantEntries = await new Promise<any[]>((resolve, reject) => {
+        const results: any[] = [];
+        const rl = createInterface({ input: createReadStream(mostRecentFile!), crlfDelay: Infinity });
+        rl.on('line', (line) => {
+          if (!line.trim()) return;
+          try {
+            const obj = JSON.parse(line);
+            if (obj.type === 'assistant') results.push(obj);
+          } catch { /* malformed line */ }
+        });
+        rl.on('close', () => resolve(results));
+        rl.on('error', reject);
+      });
+
+      for (let i = assistantEntries.length - 1; i >= 0; i--) {
+        const model = assistantEntries[i].message?.model;
+        if (model) {
+          this.preferences.model = model;
+          break;
+        }
+      }
+    } catch { /* use defaults */ }
+  }
+
+  getPreferences(): ClaudePreferences {
+    return { ...this.preferences };
+  }
+
+  /**
+   * Update preferences. Returns the applied preferences (may differ if validation fails).
+   * Emits 'preferences-updated' if any value actually changed.
+   */
+  setPreferences(prefs: Partial<ClaudePreferences>): ClaudePreferences {
+    const next = { ...this.preferences };
+    let changed = false;
+
+    if (prefs.model !== undefined && prefs.model !== this.preferences.model) {
+      next.model = prefs.model;
+      changed = true;
+    }
+
+    if (changed) {
+      this.preferences = next;
+      this.emit('preferences-updated', this.preferences);
+    }
+
+    return { ...this.preferences };
   }
 
   /** Build and emit a session-updated event with current state. */
@@ -176,6 +261,7 @@ export class ClaudeCodeService extends EventEmitter {
       isActive: !!ps,
       isStreaming: ps?.streaming ?? false,
       hasPendingInput,
+      permissionMode: ps?.permissionLevel,
     });
   }
 
@@ -206,6 +292,7 @@ export class ClaudeCodeService extends EventEmitter {
         isActive,
         isStreaming,
         hasPendingInput,
+        permissionMode: this.sessions.get(s.sessionId)?.permissionLevel ?? this.sessionPermissions.get(s.sessionId),
       };
     }));
     // Sort: pending first, then active, then by lastModified
@@ -499,6 +586,7 @@ export class ClaudeCodeService extends EventEmitter {
           cancelStreaming: null,
           permissionLevel: level,
         });
+        this.sessionPermissions.set(id, level);
         this.emitSessionUpdate(id);
         resolve(id);
       });
@@ -554,14 +642,16 @@ export class ClaudeCodeService extends EventEmitter {
             content: `Warning: SDK created new session ${id} instead of resuming ${opts.sessionId}`,
           });
         }
+        const restoredLevel = this.sessionPermissions.get(opts.sessionId) ?? 'acceptEdits' as PermissionLevel;
         this.sessions.set(id, {
           session,
           sessionId: id,
           cwd: opts.cwd,
           streaming: true,
           cancelStreaming: null,
-          permissionLevel: 'acceptEdits' as PermissionLevel,
+          permissionLevel: restoredLevel,
         });
+        this.sessionPermissions.set(id, restoredLevel);
         this.emitSessionUpdate(id);
         resolve(id);
       });
@@ -583,15 +673,37 @@ export class ClaudeCodeService extends EventEmitter {
 
   setPermissionLevel(sessionId: string, level: PermissionLevel): boolean {
     const ps = this.sessions.get(sessionId);
-    if (!ps) return false;
-    ps.permissionLevel = level;
-
-    this.emitSessionUpdate(sessionId);
+    if (ps) {
+      ps.permissionLevel = level;
+    }
+    // Persist across active/inactive lifecycle
+    this.sessionPermissions.set(sessionId, level);
+    // Always broadcast so all clients sync, even for inactive sessions
+    this.emit('session-updated', {
+      sessionId,
+      isActive: !!ps,
+      isStreaming: ps?.streaming ?? false,
+      hasPendingInput: ps ? Array.from(this.pendingInputRequests.values()).some((p) => p.request.sessionId === sessionId) : false,
+      permissionMode: level,
+    });
     return true;
   }
 
   getPermissionLevel(sessionId: string): PermissionLevel {
     return this.sessions.get(sessionId)?.permissionLevel ?? 'acceptEdits';
+  }
+
+  getActiveSessions(): { sessionId: string; cwd: string; isStreaming: boolean; hasPendingInput: boolean; permissionMode: string }[] {
+    const pendingSessionIds = new Set(
+      Array.from(this.pendingInputRequests.values()).map((p) => p.request.sessionId)
+    );
+    return Array.from(this.sessions.entries()).map(([id, ps]) => ({
+      sessionId: id,
+      cwd: ps.cwd,
+      isStreaming: ps.streaming,
+      hasPendingInput: pendingSessionIds.has(id),
+      permissionMode: ps.permissionLevel,
+    }));
   }
 
   closeSession(sessionId: string): boolean {

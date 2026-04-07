@@ -15,7 +15,6 @@ interface ClaudePanelProps {
   onGetSessionMessages: (sessionId: string, offset?: number, limit?: number) => Promise<void>;
   onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string) => Promise<void>;
-  onCancelSession: (sessionId: string) => Promise<void>;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
   onNewSession?: () => void;
 }
@@ -28,7 +27,7 @@ export function ClaudePanel({
   onGetSessionMessages,
   onStartSession,
   onResumeSession,
-  onCancelSession,
+
   onRespondToUserInput,
   onNewSession,
 }: ClaudePanelProps) {
@@ -48,6 +47,9 @@ export function ClaudePanel({
     setActiveSession,
     clearMessages,
   } = useClaudeStore();
+
+  const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
+  const isInactive = !!activeSessionId && activeSession && activeSession.isActive === false;
 
   // Map toolUseId → result content for parallel tool call display
   const toolResultByUseId = useMemo(() => {
@@ -144,7 +146,7 @@ export function ClaudePanel({
 
   const handleSend = useCallback(async () => {
     const prompt = promptInput.trim();
-    if (!prompt || isStreaming) return;
+    if (!prompt) return;
 
     isAtBottomRef.current = true;
     if (chatContainerRef.current) {
@@ -161,12 +163,6 @@ export function ClaudePanel({
       await onStartSession(prompt, { model: selectedModel, permissionMode: selectedPermissionMode });
     }
   }, [promptInput, isStreaming, activeSessionId, selectedModel, selectedPermissionMode, setPromptInput, onResumeSession, onStartSession]);
-
-  const handleCancel = useCallback(() => {
-    if (activeSessionId) {
-      onCancelSession(activeSessionId);
-    }
-  }, [activeSessionId, onCancelSession]);
 
   const handleRespondToInput = useCallback((requestId: string, action: 'allow' | 'deny', response?: string) => {
     if (!onRespondToUserInput) return;
@@ -277,6 +273,26 @@ export function ClaudePanel({
             <div ref={messagesEndRef} />
           </div>
 
+          {/* Inactive session banner */}
+          {isInactive && (
+            <div className="flex items-center gap-2 px-4 py-2 bg-slate-700/50 border-t border-slate-700 text-xs text-slate-400">
+              {isStreaming ? (
+                <>
+                  <svg className="w-3.5 h-3.5 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                  </svg>
+                  Starting session...
+                </>
+              ) : (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-500 shrink-0" />
+                  Session inactive — send a message to resume
+                </>
+              )}
+            </div>
+          )}
+
           {/* Input */}
           <div className="border-t border-slate-700 px-4 pt-3 flex-shrink-0 bg-slate-900 safe-area-bottom-input touch-none">
             <div className="flex items-end gap-2">
@@ -288,35 +304,22 @@ export function ClaudePanel({
                 placeholder=""
                 className="flex-1 bg-slate-700 rounded-lg px-3 py-2 text-sm resize-none overflow-y-auto focus:outline-none focus:ring-1 focus:ring-blue-500"
                 rows={1}
-                disabled={isStreaming}
               />
-              {isStreaming ? (
-                <button
-                  onClick={handleCancel}
-                  className="p-2 bg-red-600 hover:bg-red-500 rounded-lg transition-colors flex-shrink-0"
-                  title="Cancel"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              ) : (
-                <button
-                  onPointerDown={(e) => { e.preventDefault(); handleSend(); }}
-                  disabled={!promptInput.trim()}
-                  className={clsx(
-                    'p-2 rounded-lg transition-colors flex-shrink-0',
-                    promptInput.trim()
-                      ? 'bg-blue-600 hover:bg-blue-500'
-                      : 'bg-slate-600 text-slate-400'
-                  )}
-                  title="Send"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />
-                  </svg>
-                </button>
-              )}
+              <button
+                onPointerDown={(e) => { e.preventDefault(); handleSend(); }}
+                disabled={!promptInput.trim()}
+                className={clsx(
+                  'p-2 rounded-lg transition-colors flex-shrink-0',
+                  promptInput.trim()
+                    ? 'bg-blue-600 hover:bg-blue-500'
+                    : 'bg-slate-600 text-slate-400'
+                )}
+                title="Send"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />
+                </svg>
+              </button>
             </div>
           </div>
         </>

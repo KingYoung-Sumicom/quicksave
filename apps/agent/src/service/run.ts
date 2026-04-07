@@ -79,23 +79,35 @@ export async function runDaemon(): Promise<void> {
 
   const messageHandler = new MessageHandler(validRepos, config.license, codingPaths);
 
-  // Pub/sub: ClaudeCodeService emits events → broadcast to all connected PWA peers
+  // Pub/sub: ClaudeCodeService emits events → send only to peers subscribed to that session
   const claudeService = messageHandler.getClaudeService();
   claudeService.on('stream', (event) => {
-    connection.broadcast(createMessage('claude:stream', event));
+    connection.sendToSession(event.sessionId, createMessage('claude:stream', event));
   });
   claudeService.on('stream:end', (result) => {
-    connection.broadcast(createMessage('claude:stream:end', result));
+    connection.sendToSession(result.sessionId, createMessage('claude:stream:end', result));
   });
   claudeService.on('user-input-request', (request) => {
-    connection.broadcast(createMessage('claude:user-input-request', request));
+    connection.sendToSession(request.sessionId, createMessage('claude:user-input-request', request));
   });
   claudeService.on('user-input-resolved', (info) => {
-    connection.broadcast(createMessage('claude:user-input-resolved', info));
+    connection.sendToSession(info.sessionId, createMessage('claude:user-input-resolved', info));
   });
   claudeService.on('session-updated', (info) => {
+    // session-updated goes to all peers (needed for session list status dots)
     connection.broadcast(createMessage('claude:session-updated', info));
   });
+  claudeService.on('preferences-updated', (prefs) => {
+    connection.broadcast(createMessage('claude:preferences-updated', prefs));
+  });
+
+  // Init preferences from the last session's JSONL (best-effort, non-blocking)
+  claudeService.initPreferences().catch(() => {});
+
+  // Track which session each peer is viewing
+  messageHandler.onPeerSubscribed = (peerAddress, sessionId) => {
+    connection.subscribePeerToSession(peerAddress, sessionId);
+  };
 
   // Wire: incoming PWA messages → MessageHandler → response back to PWA
   connection.on('message', async (message: Message, peerAddress: string) => {
@@ -234,7 +246,7 @@ function registerDaemonMethods(
 ): void {
   // get-pairing-info
   ipcServer.registerMethod('get-pairing-info', (): PairingInfoResult => {
-    const pairingUrl = `https://quicksave.dev/connect?id=${config.agentId}&pk=${encodeURIComponent(config.keyPair.publicKey)}&name=${encodeURIComponent(hostname())}`;
+    const pairingUrl = `https://quicksave.dev/#/connect/${config.agentId}?pk=${encodeURIComponent(config.keyPair.publicKey)}&name=${encodeURIComponent(hostname())}`;
     return {
       agentId: config.agentId,
       publicKey: config.keyPair.publicKey,

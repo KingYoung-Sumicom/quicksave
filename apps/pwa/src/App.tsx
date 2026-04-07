@@ -84,6 +84,8 @@ function AppContent() {
     cancelSession,
     closeSession,
     respondToUserInput,
+    setPreferences,
+    setSessionPermission,
   } = useClaudeOperations(clientRef);
 
   const [showPathBrowser, setShowPathBrowser] = useState(false);
@@ -244,8 +246,11 @@ function AppContent() {
     if (!identityPublicKey || clientRef.current) return;
 
     const client = new WebSocketClient(signalingServer, identityPublicKey, {
-      onConnected: (agentId, path, pro, availableRepos, availableCodingPaths) => {
+      onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences) => {
         agentIdRef.current = agentId;
+        if (preferences) {
+          useClaudeStore.getState().setSelectedModel(preferences.model);
+        }
         handlersRef.current.setConnected(path, pro, availableRepos, availableCodingPaths);
         handlersRef.current.setCurrentRepoPath(path);
         const repoPaths = availableRepos?.map((r) => r.path);
@@ -506,9 +511,15 @@ function AppContent() {
             onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
             onSwitchRepo={() => openPathBrowser('repo')}
             onOpenGitignore={() => setShowGitignoreEditor(true)}
+            onSetPreferences={setPreferences}
+            onSetSessionPermission={setSessionPermission}
             onCloseSession={() => {
               const sid = useClaudeStore.getState().activeSessionId;
               if (sid) closeSession(sid);
+            }}
+            onCancelSession={() => {
+              const sid = useClaudeStore.getState().activeSessionId;
+              if (sid) cancelSession(sid);
             }}
           />
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
@@ -546,7 +557,6 @@ function AppContent() {
                     onGetSessionMessages={getSessionMessages}
                     onStartSession={startSession}
                     onResumeSession={resumeSession}
-                    onCancelSession={cancelSession}
                     onRespondToUserInput={respondToUserInput}
                   />
                 } />
@@ -557,7 +567,6 @@ function AppContent() {
                     onGetSessionMessages={getSessionMessages}
                     onStartSession={startSession}
                     onResumeSession={resumeSession}
-                    onCancelSession={cancelSession}
                     onRespondToUserInput={respondToUserInput}
                   />
                 } />
@@ -626,7 +635,6 @@ function ClaudePanelWithHash({
   onGetSessionMessages,
   onStartSession,
   onResumeSession,
-  onCancelSession,
   onRespondToUserInput,
 }: {
   agentId: string;
@@ -634,7 +642,6 @@ function ClaudePanelWithHash({
   onGetSessionMessages: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
   onStartSession: (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
-  onCancelSession: (sessionId: string) => Promise<void>;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
 }) {
   const { pathHash, sessionId: urlSessionId } = useParams<{ pathHash: string; sessionId: string }>();
@@ -683,7 +690,6 @@ function ClaudePanelWithHash({
       onGetSessionMessages={boundGetMessages}
       onStartSession={boundStartSession}
       onResumeSession={boundResumeSession}
-      onCancelSession={onCancelSession}
       onRespondToUserInput={onRespondToUserInput}
     />
   );

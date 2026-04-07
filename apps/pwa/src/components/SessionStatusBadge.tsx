@@ -5,7 +5,7 @@ export type SessionStatusKey = 'thinking' | 'waiting' | 'standby' | 'closed';
 
 export const SESSION_STATUS = {
   thinking: { label: 'Thinking', dotColor: 'bg-blue-400',  textColor: 'text-blue-300',  borderColor: 'border-blue-500/30',  bgColor: 'bg-blue-500/10',  pulse: true  },
-  waiting:  { label: 'Waiting',  dotColor: 'bg-amber-400', textColor: 'text-amber-300', borderColor: 'border-amber-500/30', bgColor: 'bg-amber-500/10', pulse: true  },
+  waiting:  { label: 'Waiting',  dotColor: 'bg-blue-400',  textColor: 'text-blue-300',  borderColor: 'border-blue-500/30',  bgColor: 'bg-blue-500/10',  pulse: true  },
   standby:  { label: 'Standby',  dotColor: 'bg-green-400', textColor: 'text-green-300', borderColor: 'border-green-500/30', bgColor: 'bg-green-500/10', pulse: false },
   closed:   { label: 'Closed',   dotColor: 'bg-slate-500', textColor: 'text-slate-400', borderColor: 'border-slate-600/30', bgColor: 'bg-slate-700/30', pulse: false },
 } as const;
@@ -16,6 +16,13 @@ export function sessionStatusKey(session: ClaudeSessionSummary): SessionStatusKe
   if (session.isStreaming) return 'thinking';
   if (session.hasPendingInput) return 'waiting';
   return 'standby';
+}
+
+export function StatusDot({ statusKey }: { statusKey: SessionStatusKey }) {
+  const s = SESSION_STATUS[statusKey];
+  return (
+    <span className={clsx('w-2 h-2 rounded-full shrink-0', s.dotColor, s.pulse && 'animate-pulse')} />
+  );
 }
 
 interface SessionStatusBadgeProps {

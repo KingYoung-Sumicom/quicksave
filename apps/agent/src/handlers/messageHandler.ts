@@ -64,6 +64,12 @@ import {
   ClaudeGetMessagesRequestPayload,
   ClaudeGetMessagesResponsePayload,
   ClaudeUserInputResponsePayload,
+  ClaudeGetPreferencesResponsePayload,
+  ClaudeSetPreferencesRequestPayload,
+  ClaudeSetPreferencesResponsePayload,
+  ClaudeSetSessionPermissionRequestPayload,
+  ClaudeSetSessionPermissionResponsePayload,
+  ClaudeActiveSessionsResponsePayload,
   generateMessageId,
 } from '@sumicom/quicksave-shared';
 import { GitOperations } from '../git/operations.js';
@@ -84,6 +90,7 @@ export class MessageHandler {
   private codingPaths: Map<string, CodingPath> = new Map(); // path -> CodingPath
   private aiService: CommitSummaryService | null = null;
   private claudeService: ClaudeCodeService = new ClaudeCodeService();
+  onPeerSubscribed?: (peerAddress: string, sessionId: string) => void;
 
   constructor(repos: Repository[], _license?: License, codingPaths?: string[]) {
     this.repos = new Map();
@@ -257,6 +264,14 @@ export class MessageHandler {
           return this.handleClaudeGetMessages(message as Message<ClaudeGetMessagesRequestPayload>, peerAddress);
         case 'claude:user-input-response':
           return this.handleClaudeUserInputResponse(message as Message<ClaudeUserInputResponsePayload>);
+        case 'claude:get-preferences':
+          return this.handleGetPreferences(message);
+        case 'claude:set-preferences':
+          return this.handleSetPreferences(message as Message<ClaudeSetPreferencesRequestPayload>);
+        case 'claude:set-session-permission':
+          return this.handleSetSessionPermission(message as Message<ClaudeSetSessionPermissionRequestPayload>);
+        case 'claude:active-sessions':
+          return this.handleGetActiveSessions(message);
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
       }
@@ -276,6 +291,7 @@ export class MessageHandler {
       repoPath: this.getClientRepoPath(peerAddress),
       availableRepos: this.availableRepos,
       availableCodingPaths: [...this.codingPaths.values()],
+      preferences: this.claudeService.getPreferences(),
     });
     response.id = message.id;
 
@@ -969,6 +985,7 @@ export class MessageHandler {
       });
 
       console.log(`[claude:start] session created: ${sessionId}`);
+      this.onPeerSubscribed?.(peerAddress, sessionId);
       const response = createMessage<ClaudeStartResponsePayload>(
         'claude:start:response',
         { success: true, sessionId, streamId }
@@ -1001,6 +1018,7 @@ export class MessageHandler {
       });
 
       console.log(`[claude:resume] session resumed: ${actualSessionId}`);
+      this.onPeerSubscribed?.(peerAddress, actualSessionId);
       const response = createMessage<ClaudeResumeResponsePayload>(
         'claude:resume:response',
         { success: true, sessionId: actualSessionId, streamId }
@@ -1062,6 +1080,7 @@ export class MessageHandler {
   ): Promise<Message<ClaudeGetMessagesResponsePayload>> {
     const { sessionId, cwd: payloadCwd, offset = 0, limit = 50 } = message.payload;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
+    this.onPeerSubscribed?.(peerAddress, sessionId);
 
     try {
       const result = await this.claudeService.getMessages(sessionId, cwd, offset, limit);
@@ -1084,6 +1103,47 @@ export class MessageHandler {
       response.id = message.id;
       return response;
     }
+  }
+
+  private handleGetPreferences(message: Message): Message<ClaudeGetPreferencesResponsePayload> {
+    const response = createMessage<ClaudeGetPreferencesResponsePayload>(
+      'claude:get-preferences:response',
+      { preferences: this.claudeService.getPreferences() },
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private handleSetPreferences(message: Message<ClaudeSetPreferencesRequestPayload>): Message<ClaudeSetPreferencesResponsePayload> {
+    const applied = this.claudeService.setPreferences(message.payload.preferences);
+    const response = createMessage<ClaudeSetPreferencesResponsePayload>(
+      'claude:set-preferences:response',
+      { success: true, preferences: applied },
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private handleSetSessionPermission(message: Message<ClaudeSetSessionPermissionRequestPayload>): Message<ClaudeSetSessionPermissionResponsePayload> {
+    const { sessionId, permissionMode } = message.payload;
+    const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan'];
+    const success = validModes.includes(permissionMode) && this.claudeService.setPermissionLevel(sessionId, permissionMode as any);
+    const response = createMessage<ClaudeSetSessionPermissionResponsePayload>(
+      'claude:set-session-permission:response',
+      { success, sessionId, permissionMode },
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private handleGetActiveSessions(message: Message): Message<ClaudeActiveSessionsResponsePayload> {
+    const sessions = this.claudeService.getActiveSessions();
+    const response = createMessage<ClaudeActiveSessionsResponsePayload>(
+      'claude:active-sessions:response',
+      { sessions },
+    );
+    response.id = message.id;
+    return response;
   }
 
   private createErrorResponse(id: string, code: string, message: string): Message<ErrorPayload> {
