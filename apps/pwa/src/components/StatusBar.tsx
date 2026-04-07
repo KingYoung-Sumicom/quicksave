@@ -58,7 +58,7 @@ export function StatusBar({
         </div>
 
         {/* Center: Session title + status badge (absolute so it's truly centered) */}
-        <div className="absolute inset-x-14 inset-y-0 flex items-center justify-center py-2">
+        <div className="absolute left-14 right-20 inset-y-0 flex items-center justify-center py-2 overflow-hidden">
           <SessionStatusIndicator />
         </div>
 
@@ -143,16 +143,20 @@ function StopButton({ onCancelSession }: { onCancelSession?: () => void }) {
   const isOnSessionPage = !!useMatch('/agent/:agentId/coding/:pathHash/:sessionId');
   const isStreaming = useClaudeStore((s) => s.isStreaming);
 
-  if (!isOnSessionPage || !isStreaming || !onCancelSession) return null;
+  if (!isOnSessionPage || !onCancelSession) return null;
 
   return (
     <button
       onClick={onCancelSession}
-      className="w-7 h-7 rounded-full bg-red-600 hover:bg-red-500 transition-colors flex items-center justify-center"
+      disabled={!isStreaming}
+      className={clsx(
+        'p-1.5 rounded-md transition-colors',
+        isStreaming ? 'hover:bg-slate-700 text-slate-200' : 'text-slate-600 cursor-default',
+      )}
       title="Stop"
     >
-      <svg className="w-3 h-3" fill="white" viewBox="0 0 12 12">
-        <rect x="2" y="2" width="8" height="8" />
+      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+        <path fillRule="evenodd" clipRule="evenodd" d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zM9 9h6v6H9z" />
       </svg>
     </button>
   );
@@ -171,10 +175,10 @@ function SessionStatusIndicator() {
   const statusKey: SessionStatusKey = sessionStatusKey(session);
 
   return (
-    <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-center">
+    <div className="flex items-center justify-center gap-2">
       <StatusDot statusKey={statusKey} />
       {session.summary && (
-        <span className="text-sm text-slate-300 break-words">{session.summary}</span>
+        <span className="text-sm text-slate-300 line-clamp-2 min-w-0">{session.summary}</span>
       )}
     </div>
   );
