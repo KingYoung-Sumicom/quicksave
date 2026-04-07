@@ -105,7 +105,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
 
     if (message.type === 'claude:session-updated') {
       const payload = message.payload as { sessionId: string; isActive: boolean; isStreaming: boolean; hasPendingInput: boolean };
-      const { sessions } = useClaudeStore.getState();
+      const { sessions, activeSessionId } = useClaudeStore.getState();
       const current = sessions.find((s) => s.sessionId === payload.sessionId);
       // Skip update if nothing changed
       if (current &&
@@ -118,6 +118,10 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
           : s
       );
       setSessions(updated);
+      // Keep store isStreaming in sync for the active session (e.g. prompt sent from another tab)
+      if (payload.sessionId === activeSessionId) {
+        setStreaming(payload.isStreaming);
+      }
       return true;
     }
 
