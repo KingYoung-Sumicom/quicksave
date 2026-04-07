@@ -296,7 +296,8 @@ function AppContent() {
     agentIdRef.current = null;
     reset();
     resetGit();
-  }, [reset, resetGit]);
+    navigate('/', { replace: true });
+  }, [reset, resetGit, navigate]);
 
   const handleRetryConnection = useCallback(() => {
     const currentAgentId = agentIdRef.current;

@@ -181,43 +181,39 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
         if (response.error) {
           throw new Error(response.error);
         }
-        // Convert history messages to chat messages
-        const chatMessages = response.messages
-          .flatMap((m): ChatMessage[] => {
-            const results: ChatMessage[] = [];
-
-            // Tool use → show as tool bubble
-            if (m.toolName) {
-              results.push({
-                role: 'tool',
-                content: m.toolInput || '',
-                toolName: m.toolName,
-                toolInput: m.toolInput,
-                timestamp: Date.now(),
-              });
-            }
-
-            // Tool result → show as tool result bubble
-            if (m.toolResult) {
-              results.push({
-                role: 'tool',
-                content: m.toolResult,
-                toolResultOf: m.toolName,
-                timestamp: Date.now(),
-              });
-            }
-
-            // Text content (non-tool messages, or assistant text alongside tool calls)
-            if (m.content && !m.toolName) {
-              results.push({
-                role: m.role as 'user' | 'assistant',
-                content: m.content,
-                timestamp: Date.now(),
-              });
-            }
-
-            return results;
-          });
+        // Convert history messages to chat messages.
+        // toolName and toolResult live on separate ClaudeHistoryMessages (different
+        // JSONL entries), so we track the last tool name to associate results.
+        const chatMessages: ChatMessage[] = [];
+        let lastToolName: string | undefined;
+        for (const m of response.messages) {
+          if (m.toolName) {
+            lastToolName = m.toolName;
+            chatMessages.push({
+              role: 'tool',
+              content: m.toolInput || '',
+              toolName: m.toolName,
+              toolInput: m.toolInput,
+              timestamp: Date.now(),
+            });
+          }
+          if (m.toolResult) {
+            chatMessages.push({
+              role: 'tool',
+              content: m.toolResult,
+              toolResultOf: lastToolName,
+              timestamp: Date.now(),
+            });
+            lastToolName = undefined;
+          }
+          if (m.content && !m.toolName) {
+            chatMessages.push({
+              role: m.role as 'user' | 'assistant' | 'system',
+              content: m.content,
+              timestamp: Date.now(),
+            });
+          }
+        }
 
         if (offset === 0) {
           // setMessages will auto-apply any deferred pending input from reconnect

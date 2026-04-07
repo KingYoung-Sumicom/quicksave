@@ -5,6 +5,9 @@ import { ToolResultMessage } from './ToolResultMessage';
 import { UserMessage } from './UserMessage';
 import { SystemMessage } from './SystemMessage';
 
+// Tools whose result is rendered inline within the tool call block
+const TOOLS_WITH_INLINE_RESULT = new Set(['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep']);
+
 export function MessageBubble({ message, nextMessage, isLast, onRespondToInput }: {
   message: ChatMessage;
   nextMessage?: ChatMessage;
@@ -35,6 +38,8 @@ export function MessageBubble({ message, nextMessage, isLast, onRespondToInput }
           />
         );
       }
+      // Suppress result when the tool call already renders it inline
+      if (message.toolResultOf && TOOLS_WITH_INLINE_RESULT.has(message.toolResultOf)) return null;
       return <ToolResultMessage content={message.content} toolResultOf={message.toolResultOf} />;
     case 'system':
       return <SystemMessage content={message.content} />;

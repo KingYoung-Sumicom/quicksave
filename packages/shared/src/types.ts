@@ -621,7 +621,7 @@ export interface ClaudeGetMessagesRequestPayload {
 
 export interface ClaudeHistoryMessage {
   index: number;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   toolName?: string;
   toolInput?: string;

@@ -1,4 +1,5 @@
-import { useState, type ComponentType } from 'react';
+import { useState, type ComponentType, type ReactNode } from 'react';
+import { parseToolUseError } from './ToolResultMessage';
 import type { ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';
 import { ReadToolView } from './toolViews/ReadToolView';
 import { EditToolView } from './toolViews/EditToolView';
@@ -17,7 +18,8 @@ import { EnterPlanModeToolView, ExitPlanModeToolView, ExitPlanModeInteractiveVie
 import { ToolSearchToolView } from './toolViews/ToolSearchToolView';
 import { FallbackToolView } from './toolViews/FallbackToolView';
 
-const TOOL_VIEWS: Record<string, ComponentType<{ input: Record<string, unknown> }>> = {
+type ToolViewProps = { input: Record<string, unknown>; headerSuffix?: ReactNode };
+const TOOL_VIEWS: Record<string, ComponentType<ToolViewProps>> = {
   Read: ReadToolView,
   Edit: EditToolView,
   Write: WriteToolView,
@@ -31,7 +33,7 @@ const TOOL_VIEWS: Record<string, ComponentType<{ input: Record<string, unknown> 
   TodoWrite: TodoWriteToolView,
   NotebookEdit: NotebookEditToolView,
   AskUserQuestion: AskUserQuestionToolView,
-  EnterPlanMode: EnterPlanModeToolView as ComponentType<{ input: Record<string, unknown> }>,
+  EnterPlanMode: EnterPlanModeToolView as ComponentType<ToolViewProps>,
   ExitPlanMode: ExitPlanModeToolView,
   ToolSearch: ToolSearchToolView,
 };
@@ -367,6 +369,53 @@ function InteractiveQuestionView({ request, parsedInput, onRespond }: {
   );
 }
 
+const INLINE_RESULT_TOOLS = new Set(['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep']);
+const INLINE_RESULT_BORDER: Record<string, string> = {
+  Read:  'border-blue-500/20',
+  Write: 'border-green-500/20',
+  Edit:  'border-yellow-500/20',
+  Bash:  'border-orange-500/20',
+  Glob:  'border-purple-500/20',
+  Grep:  'border-purple-500/20',
+};
+
+// Tools where result text is implied by the tool call itself (suppress unless error)
+const TOOLS_SUPPRESS_RESULT_CONTENT = new Set(['Edit']);
+
+function InlineToolResult({ content, toolName, suppressContent, expanded }: {
+  content: string;
+  toolName?: string;
+  suppressContent?: boolean;
+  expanded: boolean;
+}) {
+  const borderColor = INLINE_RESULT_BORDER[toolName ?? ''] ?? 'border-slate-500/20';
+
+  if (!content.trim()) return null;
+
+  const toolError = parseToolUseError(content);
+  if (toolError !== null || suppressContent) {
+    if (toolError === null) return null; // suppressed and no error
+    return (
+      <div className="mt-1.5 border-t border-red-500/30">
+        <div className="pt-1.5 flex items-start gap-1.5">
+          <span className="text-red-400/70 text-[10px] uppercase tracking-wide shrink-0 mt-px">Error</span>
+          <span className="text-red-300 text-xs">{toolError || 'Tool call failed'}</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!expanded) return null;
+
+  return (
+    <div className={`mt-1.5 border-t ${borderColor}`}>
+      <pre className="mt-1 min-w-0 whitespace-pre-wrap break-all text-slate-400 overflow-x-auto pt-1">
+        {content}
+      </pre>
+    </div>
+  );
+}
+
 export function ToolCallMessage({ toolName, toolInput, content, toolResultContent, pendingInputRequest, onRespond }: {
   toolName?: string;
   toolInput?: string;
@@ -394,7 +443,7 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
   if (toolName === 'AskUserQuestion' && hasPending && pendingInputRequest.inputType === 'question' && onRespond) {
     return (
       <div className="flex justify-start">
-        <div className="bg-slate-800/60 border-l-2 border-blue-500/80 rounded-r-lg pl-2.5 pr-3 py-1.5 max-w-[90%] text-xs text-slate-300 overflow-hidden">
+        <div className="bg-slate-800/60 border-l-2 border-blue-500/80 rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-xs text-slate-300 overflow-hidden">
           <InteractiveQuestionView
             request={pendingInputRequest}
             parsedInput={parsedInput}
@@ -410,7 +459,7 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
   if (toolName === 'ExitPlanMode' && hasPending && onRespond) {
     return (
       <div className="flex justify-start">
-        <div className="bg-slate-800/60 border-l-2 border-indigo-500/80 rounded-r-lg pl-2.5 pr-3 py-1.5 max-w-[90%] text-xs text-slate-300 overflow-hidden">
+        <div className="bg-slate-800/60 border-l-2 border-indigo-500/80 rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-xs text-slate-300 overflow-hidden">
           <ExitPlanModeInteractiveView input={parsedInput} plan={parsedInput.plan as string} onRespond={onRespond} />
         </div>
       </div>
@@ -422,18 +471,51 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
     ? 'border-amber-500/80'
     : toolName ? (TOOL_COLORS[toolName] || 'border-slate-500/60') : 'border-slate-500/60';
 
+  // Inline result expand state (lifted so chevron can live in header row)
+  const isInlineResultTool = !!(toolName && INLINE_RESULT_TOOLS.has(toolName) && toolResultContent);
+  const resultContent = toolResultContent || '';
+  const resultLineCount = resultContent.trimEnd().split('\n').length;
+  const resultAutoExpand = !resultContent.trim() || resultLineCount <= 2;
+  const resultSuppressed = toolName ? TOOLS_SUPPRESS_RESULT_CONTENT.has(toolName) : false;
+  const resultError = isInlineResultTool ? parseToolUseError(resultContent) : null;
+  const showChevron = isInlineResultTool && !resultAutoExpand && resultError === null && !resultSuppressed;
+  const [resultExpanded, setResultExpanded] = useState(false);
+
+  const chevronButton: ReactNode = showChevron ? (
+    <button
+      onClick={() => setResultExpanded(v => !v)}
+      className="flex items-center gap-1 shrink-0 bg-slate-700/60 hover:bg-slate-600/60 text-slate-400 hover:text-slate-300 rounded px-1.5 py-0.5 transition-colors"
+    >
+      <svg
+        className={`w-2.5 h-2.5 transition-transform ${resultExpanded ? 'rotate-90' : ''}`}
+        fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+      >
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+      </svg>
+      <span className="text-[10px]">{resultLineCount} lines</span>
+    </button>
+  ) : null;
+
   return (
     <div className="flex justify-start">
-      <div className={`bg-slate-800/60 border-l-2 ${accentColor} rounded-r-lg pl-2.5 pr-3 py-1.5 max-w-[90%] text-xs text-slate-300 overflow-hidden`}>
+      <div className={`bg-slate-800/60 border-l-2 ${accentColor} rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-xs text-slate-300 overflow-hidden`}>
         <div className="min-w-0">
           {toolName === 'AskUserQuestion'
             ? <AskUserQuestionToolView input={parsedInput} answers={(parsedResult as any)?.answers} />
             : toolName === 'ExitPlanMode'
               ? <ExitPlanModeToolView input={parsedInput} plan={parsedInput.plan as string} />
               : ToolView
-                ? <ToolView input={parsedInput} />
+                ? <ToolView input={parsedInput} headerSuffix={isInlineResultTool ? chevronButton : undefined} />
                 : <FallbackToolView toolName={toolName} content={toolInput || content} />}
         </div>
+        {isInlineResultTool && (
+          <InlineToolResult
+            content={resultContent}
+            toolName={toolName}
+            suppressContent={resultSuppressed}
+            expanded={resultAutoExpand || resultExpanded}
+          />
+        )}
         {pendingInputRequest && onRespond && pendingInputRequest.inputType === 'permission' && (
           <InlinePermissionActions request={pendingInputRequest} onRespond={onRespond} />
         )}

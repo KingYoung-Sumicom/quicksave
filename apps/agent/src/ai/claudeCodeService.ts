@@ -1,4 +1,8 @@
 import { EventEmitter } from 'events';
+import { createReadStream } from 'fs';
+import { createInterface } from 'readline';
+import { join } from 'path';
+import { homedir } from 'os';
 import {
   unstable_v2_createSession,
   unstable_v2_resumeSession,
@@ -100,6 +104,52 @@ function extractToolResultText(content: unknown): string {
   return JSON.stringify(content);
 }
 
+// ─── Direct JSONL reader ──────────────────────────────────────────────────────
+// getSessionMessages() from the SDK follows the parentUuid chain, which stops
+// at each compact_boundary. Reading the file directly lets us surface all
+// messages across every compaction epoch in a single flat list.
+//
+// Set to false to fall back to the SDK reader (only shows current epoch).
+const READ_THROUGH_COMPACT_BOUNDARY = false;
+
+function projectDirName(cwd: string): string {
+  // Mirrors SDK logic: replace non-alphanumeric chars with '-'.
+  // Paths under 200 chars use the raw replacement; longer ones get a hash
+  // suffix — but that edge case is unlikely for normal project paths.
+  return cwd.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+function jsonlPath(sessionId: string, cwd: string): string {
+  return join(homedir(), '.claude', 'projects', projectDirName(cwd), `${sessionId}.jsonl`);
+}
+
+async function readAllJSONLMessages(sessionId: string, cwd: string): Promise<any[]> {
+  const filePath = jsonlPath(sessionId, cwd);
+  const entries: any[] = [];
+
+  await new Promise<void>((resolve, reject) => {
+    const rl = createInterface({
+      input: createReadStream(filePath),
+      crlfDelay: Infinity,
+    });
+    rl.on('line', (line) => {
+      if (!line.trim()) return;
+      try {
+        const obj = JSON.parse(line);
+        const t = obj.type;
+        // Keep user/assistant turns and compact_boundary markers; skip progress/queue-op
+        if (t === 'user' || t === 'assistant' || (t === 'system' && obj.subtype === 'compact_boundary')) {
+          entries.push(obj);
+        }
+      } catch { /* malformed line — skip */ }
+    });
+    rl.on('close', resolve);
+    rl.on('error', reject);
+  });
+
+  return entries;
+}
+
 interface PendingUserInput {
   resolve: (response: ClaudeUserInputResponsePayload) => void;
   request: ClaudeUserInputRequestPayload;  // stored for re-send on reconnect
@@ -171,7 +221,9 @@ export class ClaudeCodeService extends EventEmitter {
    */
   private async detectPendingFromJSONL(sessionId: string, cwd: string): Promise<boolean> {
     try {
-      const allMessages = await getSessionMessages(sessionId, { dir: cwd });
+      const allMessages = READ_THROUGH_COMPACT_BOUNDARY
+        ? await readAllJSONLMessages(sessionId, cwd)
+        : await getSessionMessages(sessionId, { dir: cwd });
       if (allMessages.length === 0) return false;
       const last = allMessages[allMessages.length - 1] as any;
       // Last message is assistant with a tool_use block and no following user/tool_result
@@ -190,18 +242,24 @@ export class ClaudeCodeService extends EventEmitter {
     offset = 0,
     limit = 50
   ): Promise<{ messages: ClaudeHistoryMessage[]; total: number; hasMore: boolean }> {
-    // Read directly from SDK JSONL — the single source of truth.
-    // SDK writes messages immediately and retains full, un-truncated data.
-    // Messages are chronological (old→new). We paginate from the tail:
-    //   offset=0  → last `limit` messages (most recent)
-    //   offset=50 → the `limit` messages before those, etc.
-    const allMessages = await getSessionMessages(sessionId, { dir: cwd });
+    const allMessages = READ_THROUGH_COMPACT_BOUNDARY
+      ? await readAllJSONLMessages(sessionId, cwd)
+      : await getSessionMessages(sessionId, { dir: cwd });
     const total = allMessages.length;
     const tailStart = Math.max(0, total - offset - limit);
     const tailEnd = Math.max(0, total - offset);
     const sliced = allMessages.slice(tailStart, tailEnd);
 
-    const messages: ClaudeHistoryMessage[] = sliced.map((msg, i) => {
+    const messages: ClaudeHistoryMessage[] = sliced.map((msg: any, i) => {
+      // compact_boundary system entries — render as a divider
+      if (msg.type === 'system' && msg.subtype === 'compact_boundary') {
+        return {
+          index: tailStart + i,
+          role: 'system' as const,
+          content: 'Context compacted',
+        };
+      }
+
       const role = msg.type as 'user' | 'assistant';
       let content = '';
       let toolName: string | undefined;

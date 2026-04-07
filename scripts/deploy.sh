@@ -7,13 +7,13 @@
 # Environment variables:
 #   GITHUB_REPO - GitHub repo (default: KingYoung-Sumicom/quicksave)
 #   DEPLOY_ENV  - Environment to deploy (staging|production, passed via webhook header)
+#   RUN_ID      - GitHub Actions run ID (passed via webhook header, skips API lookup)
 #
 set -e
 
 REPO="${GITHUB_REPO:-KingYoung-Sumicom/quicksave}"
 ENV="${DEPLOY_ENV:-staging}"
 LOG="/var/log/quicksave-deploy.log"
-API="https://api.github.com/repos/${REPO}"
 
 # Validate environment
 if [[ "$ENV" != "staging" && "$ENV" != "production" ]]; then
@@ -35,23 +35,10 @@ log() {
 
 log "Deploy triggered"
 
-# Auth header (optional — public repos work without it, but token avoids rate limits)
-AUTH_HEADER=""
-if [ -n "$GH_TOKEN" ]; then
-    AUTH_HEADER="Authorization: Bearer $GH_TOKEN"
+# Use run ID from webhook header if provided, otherwise find latest successful run
+if [ -z "$RUN_ID" ]; then
+    RUN_ID=$(gh run list --repo "$REPO" --workflow deploy.yml --branch "$BRANCH" --status success --limit 1 --json databaseId -q '.[0].databaseId')
 fi
-
-curl_gh() {
-    if [ -n "$AUTH_HEADER" ]; then
-        curl -sL -H "$AUTH_HEADER" "$@"
-    else
-        curl -sL "$@"
-    fi
-}
-
-# Get latest successful run for the branch
-RUN_ID=$(curl_gh "${API}/actions/workflows/deploy.yml/runs?branch=${BRANCH}&status=success&per_page=1" \
-    | python3 -c "import sys,json; runs=json.load(sys.stdin).get('workflow_runs',[]); print(runs[0]['id'] if runs else '')")
 
 if [ -z "$RUN_ID" ]; then
     log "ERROR - No successful workflow runs found for branch $BRANCH"
@@ -60,21 +47,9 @@ fi
 
 log "Downloading artifacts from run $RUN_ID (branch: $BRANCH)"
 
-# Get artifact download URL
-ARTIFACT_URL=$(curl_gh "${API}/actions/runs/${RUN_ID}/artifacts" \
-    | python3 -c "import sys,json; arts=json.load(sys.stdin).get('artifacts',[]); matches=[a for a in arts if a['name']=='dist-${ENV}']; print(matches[0]['archive_download_url'] if matches else '')")
-
-if [ -z "$ARTIFACT_URL" ]; then
-    log "ERROR - Artifact dist-${ENV} not found in run $RUN_ID"
-    exit 1
-fi
-
 # Download and extract artifact
 rm -rf /tmp/quicksave-deploy
-mkdir -p /tmp/quicksave-deploy
-curl_gh "$ARTIFACT_URL" -o /tmp/quicksave-deploy/artifact.zip
-unzip -q /tmp/quicksave-deploy/artifact.zip -d /tmp/quicksave-deploy
-rm -f /tmp/quicksave-deploy/artifact.zip
+gh run download "$RUN_ID" --repo "$REPO" --name "dist-${ENV}" --dir /tmp/quicksave-deploy
 
 # Verify download
 if [ ! -d "/tmp/quicksave-deploy/pwa/dist" ]; then

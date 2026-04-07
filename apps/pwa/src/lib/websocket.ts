@@ -489,7 +489,9 @@ export class WebSocketClient {
     // Compress before encryption for better compression ratio
     const serialized = serializeMessage(message);
     this.compress(serialized).then((compressed) => {
-      const encrypted = encryptWithSharedSecret(compressed, session.sessionDEK!);
+      // Re-check DEK: may have been cleared during async compression (e.g. reconnect)
+      if (!session.sessionDEK) return;
+      const encrypted = encryptWithSharedSecret(compressed, session.sessionDEK);
       this.sendRouted(agentId, encrypted);
     });
   }

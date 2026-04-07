@@ -50,7 +50,8 @@ cat > /opt/webhook/hooks.json << EOF
     "execute-command": "/opt/quicksave/scripts/deploy.sh",
     "command-working-directory": "/opt/quicksave",
     "pass-environment-to-command": [
-      { "envname": "DEPLOY_ENV", "source": "string", "name": "staging" }
+      { "envname": "DEPLOY_ENV", "source": "string", "name": "staging" },
+      { "envname": "RUN_ID", "source": "header", "name": "X-Run-ID" }
     ],
     "trigger-rule": {
       "match": {
@@ -65,7 +66,8 @@ cat > /opt/webhook/hooks.json << EOF
     "execute-command": "/opt/quicksave/scripts/deploy.sh",
     "command-working-directory": "/opt/quicksave",
     "pass-environment-to-command": [
-      { "envname": "DEPLOY_ENV", "source": "string", "name": "production" }
+      { "envname": "DEPLOY_ENV", "source": "string", "name": "production" },
+      { "envname": "RUN_ID", "source": "header", "name": "X-Run-ID" }
     ],
     "trigger-rule": {
       "match": {

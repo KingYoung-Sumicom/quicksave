@@ -66,8 +66,10 @@ export function ClaudePanel({
     // Resize textarea to match restored content
     requestAnimationFrame(() => {
       if (inputRef.current) {
-        inputRef.current.style.height = 'auto';
-        inputRef.current.style.height = `${inputRef.current.scrollHeight}px`;
+        const el = inputRef.current;
+        el.style.height = 'auto';
+        const lineHeight = parseInt(getComputedStyle(el).lineHeight) || 20;
+        el.style.height = `${Math.min(el.scrollHeight, lineHeight * 5)}px`;
       }
     });
   }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -77,7 +79,7 @@ export function ClaudePanel({
     if (urlSessionId && urlSessionId !== activeSessionId) {
       setActiveSession(urlSessionId);
       clearMessages();
-      hasScrolledRef.current = false;
+      isAtBottomRef.current = true;
       onGetSessionMessages(urlSessionId);
     }
   }, [urlSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -89,15 +91,23 @@ export function ClaudePanel({
     }
   }, [isChat, onListSessions]);
 
-  // Auto-scroll to bottom when new messages arrive or on initial load
-  const hasScrolledRef = useRef(false);
+  // Auto-scroll: stick to bottom unless user has scrolled up
+  const isAtBottomRef = useRef(true);
   useEffect(() => {
     const container = chatContainerRef.current;
     if (!container) return;
-    if (isStreaming) {
-      container.scrollTop = container.scrollHeight;
-    } else if (messages.length > 0 && !hasScrolledRef.current) {
-      hasScrolledRef.current = true;
+    const onScroll = () => {
+      const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      isAtBottomRef.current = distFromBottom < 80;
+    };
+    container.addEventListener('scroll', onScroll, { passive: true });
+    return () => container.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useEffect(() => {
+    const container = chatContainerRef.current;
+    if (!container) return;
+    if (isAtBottomRef.current) {
       container.scrollTop = container.scrollHeight;
     }
   }, [messages, isStreaming]);
@@ -131,6 +141,11 @@ export function ClaudePanel({
     const prompt = promptInput.trim();
     if (!prompt || isStreaming) return;
 
+    isAtBottomRef.current = true;
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+
     setPromptInput('');
     if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
     if (draftKey) localStorage.removeItem(draftKey);
@@ -163,8 +178,27 @@ export function ClaudePanel({
 
   const handleLoadMore = useCallback(async () => {
     if (!activeSessionId || isLoadingHistory || !historyHasMore) return;
+    const container = chatContainerRef.current;
+    const prevScrollHeight = container?.scrollHeight ?? 0;
     await onGetSessionMessages(activeSessionId, messages.length);
+    // Restore scroll position so the viewport doesn't jump to top
+    if (container) {
+      container.scrollTop = container.scrollHeight - prevScrollHeight;
+    }
   }, [activeSessionId, isLoadingHistory, historyHasMore, messages.length, onGetSessionMessages]);
+
+  // Auto-load older messages when sentinel scrolls into view
+  const topSentinelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const sentinel = topSentinelRef.current;
+    if (!sentinel || !historyHasMore) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) handleLoadMore(); },
+      { root: chatContainerRef.current, threshold: 0 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [historyHasMore, handleLoadMore]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -194,7 +228,8 @@ export function ClaudePanel({
     saveDraft(value);
     const el = e.target;
     el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
+    const lineHeight = parseInt(getComputedStyle(el).lineHeight) || 20;
+    el.style.height = `${Math.min(el.scrollHeight, lineHeight * 5)}px`;
   }, [saveDraft, setPromptInput]);
 
   return (
@@ -204,13 +239,14 @@ export function ClaudePanel({
           {/* Messages */}
           <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 select-text">
             {historyHasMore && (
-              <button
-                onClick={handleLoadMore}
-                disabled={isLoadingHistory}
-                className="w-full text-sm text-slate-400 hover:text-slate-300 py-2"
-              >
-                {isLoadingHistory ? 'Loading...' : 'Load older messages'}
-              </button>
+              <div ref={topSentinelRef} className="flex justify-center py-2 h-8">
+                {isLoadingHistory && (
+                  <svg className="w-5 h-5 text-slate-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                  </svg>
+                )}
+              </div>
             )}
             {messages.map((msg, i) => (
               <MessageBubble
@@ -238,7 +274,7 @@ export function ClaudePanel({
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
                 placeholder=""
-                className="flex-1 bg-slate-700 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="flex-1 bg-slate-700 rounded-lg px-3 py-2 text-sm resize-none overflow-y-auto focus:outline-none focus:ring-1 focus:ring-blue-500"
                 rows={1}
                 disabled={isStreaming}
               />

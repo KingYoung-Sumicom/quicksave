@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 // Tool-result accent colors (slightly dimmer than tool-call colors)
 const RESULT_COLORS: Record<string, string> = {
   AskUserQuestion: 'border-blue-500/40',
@@ -90,6 +92,12 @@ function AskUserQuestionResult({ content }: { content: string }) {
   );
 }
 
+/** Returns the error message if content is a <tool_use_error> block, else null. */
+export function parseToolUseError(content: string): string | null {
+  const m = content.trim().match(/^<tool_use_error>([\s\S]*?)<\/tool_use_error>$/);
+  return m ? m[1].trim() : null;
+}
+
 export function ToolResultMessage({ content, toolResultOf }: {
   content: string;
   toolResultOf?: string;
@@ -100,22 +108,57 @@ export function ToolResultMessage({ content, toolResultOf }: {
   if (toolResultOf === 'AskUserQuestion' && content.trim()) {
     return (
       <div className="flex justify-start">
-        <div className={`bg-slate-800/40 border-l-2 ${accentColor} rounded-r-lg pl-2.5 pr-3 py-1.5 max-w-[90%] text-xs text-slate-400 overflow-hidden`}>
+        <div className={`bg-slate-800/40 border-l-2 ${accentColor} rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-xs text-slate-400 overflow-hidden`}>
           <AskUserQuestionResult content={content} />
         </div>
       </div>
     );
   }
 
-  // Default result: preformatted content
+  // Default result: collapsible preformatted content
   if (!content.trim()) return null;
+
+  const toolError = parseToolUseError(content);
+  if (toolError !== null) {
+    return (
+      <div className="flex justify-start">
+        <div className="bg-red-500/10 border-l-2 border-red-500/60 rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-xs overflow-hidden">
+          <span className="text-red-400/70 text-[10px] uppercase tracking-wide">Error</span>
+          <div className="mt-0.5 text-red-300">{toolError || 'Tool call failed'}</div>
+        </div>
+      </div>
+    );
+  }
+
+  return <CollapsibleResult content={content} accentColor={accentColor} />;
+}
+
+function CollapsibleResult({ content, accentColor }: { content: string; accentColor: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const lines = content.trimEnd().split('\n');
+  const lineCount = lines.length;
+  const preview = lines.slice(0, 2).join('\n');
 
   return (
     <div className="flex justify-start">
-      <div className={`bg-slate-800/40 border-l-2 ${accentColor} rounded-r-lg pl-2.5 pr-3 py-1.5 max-w-[90%] text-xs text-slate-400 overflow-hidden`}>
-        <pre className="min-w-0 whitespace-pre-wrap break-all">
-          {content}
-        </pre>
+      <div className={`bg-slate-800/40 border-l-2 ${accentColor} rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-xs text-slate-400 overflow-hidden`}>
+        <button
+          onClick={() => setExpanded(v => !v)}
+          className="flex items-center gap-1.5 w-full text-left text-slate-500 hover:text-slate-400 transition-colors mb-1"
+        >
+          <svg
+            className={`w-3 h-3 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+          <span className="text-[10px] uppercase tracking-wide">{lineCount} line{lineCount !== 1 ? 's' : ''}</span>
+        </button>
+        {expanded ? (
+          <pre className="min-w-0 whitespace-pre-wrap break-all">{content}</pre>
+        ) : (
+          <pre className="min-w-0 whitespace-pre-wrap break-all text-slate-600 line-clamp-2">{preview}{lineCount > 2 ? '\n…' : ''}</pre>
+        )}
       </div>
     </div>
   );
