@@ -93,8 +93,7 @@ function AppContent() {
   const [showNavDrawer, setShowNavDrawer] = useState(isDesktop);
 
 
-
-  // Track visualViewport height → CSS variable + directly lock body height
+  // Track visualViewport height → CSS variable so #root shrinks when keyboard opens
   useEffect(() => {
     const vv = window.visualViewport;
     const update = () => {
@@ -108,16 +107,17 @@ function AppContent() {
     return () => vv?.removeEventListener('resize', update);
   }, []);
 
-  // When iOS scrolls the layout viewport (e.g. keyboard open), immediately reset to 0
+  // Prevent iOS from scrolling the layout viewport when keyboard opens
   useEffect(() => {
-    const vv = window.visualViewport;
-    if (!vv) return;
-    const reset = () => window.scrollTo(0, 0);
-    vv.addEventListener('scroll', reset);
-    return () => vv.removeEventListener('scroll', reset);
+    const reset = () => {
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    };
+    window.visualViewport?.addEventListener('scroll', reset);
+    return () => window.visualViewport?.removeEventListener('scroll', reset);
   }, []);
 
-  // Prevent iOS body bounce scroll
+  // Prevent body bounce scroll
   useEffect(() => {
     const prevent = (e: TouchEvent) => {
       if (e.target === document.body || e.target === document.documentElement) {

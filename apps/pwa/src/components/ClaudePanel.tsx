@@ -302,7 +302,7 @@ export function ClaudePanel({
                 </button>
               ) : (
                 <button
-                  onClick={handleSend}
+                  onPointerDown={(e) => { e.preventDefault(); handleSend(); }}
                   disabled={!promptInput.trim()}
                   className={clsx(
                     'p-2 rounded-lg transition-colors flex-shrink-0',
