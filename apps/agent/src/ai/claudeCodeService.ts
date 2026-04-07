@@ -27,6 +27,8 @@ export interface StreamEvent {
   content: string;
   toolName?: string;
   toolInput?: string;
+  toolUseId?: string;        // Present on tool_use events
+  toolResultForId?: string;  // Present on tool_result events
   isPartial?: boolean;
 }
 
@@ -250,58 +252,62 @@ export class ClaudeCodeService extends EventEmitter {
     const tailEnd = Math.max(0, total - offset);
     const sliced = allMessages.slice(tailStart, tailEnd);
 
-    const messages: ClaudeHistoryMessage[] = sliced.map((msg: any, i) => {
+    const messages: ClaudeHistoryMessage[] = sliced.flatMap((msg: any, i) => {
       // compact_boundary system entries — render as a divider
       if (msg.type === 'system' && msg.subtype === 'compact_boundary') {
-        return {
+        return [{
           index: tailStart + i,
           role: 'system' as const,
           content: 'Context compacted',
-        };
+        }];
       }
 
       const role = msg.type as 'user' | 'assistant';
-      let content = '';
-      let toolName: string | undefined;
-      let toolInput: string | undefined;
-      let toolResult: string | undefined;
-      let truncated = false;
-
       const rawMessage = msg.message as any;
+      const expanded: import('@sumicom/quicksave-shared').ClaudeHistoryMessage[] = [];
+
       if (rawMessage?.content) {
         if (typeof rawMessage.content === 'string') {
-          content = rawMessage.content;
+          expanded.push({ index: tailStart + i, role, content: rawMessage.content });
         } else if (Array.isArray(rawMessage.content)) {
-          const parts: string[] = [];
+          const textParts: string[] = [];
           for (const block of rawMessage.content) {
             if (block.type === 'text') {
-              parts.push(block.text);
+              textParts.push(block.text);
             } else if (block.type === 'tool_use') {
-              toolName = block.name;
-              toolInput = JSON.stringify(block.input);
+              expanded.push({
+                index: tailStart + i,
+                role,
+                content: '',
+                toolName: block.name,
+                toolInput: JSON.stringify(block.input),
+                toolUseId: block.id,
+              });
             } else if (block.type === 'tool_result') {
               const resultStr = extractToolResultText(block.content);
-              if (resultStr.length > TOOL_RESULT_TRUNCATE_LENGTH) {
-                toolResult = resultStr.slice(0, TOOL_RESULT_TRUNCATE_LENGTH) + ' [truncated]';
-                truncated = true;
-              } else {
-                toolResult = resultStr;
-              }
+              const truncated = resultStr.length > TOOL_RESULT_TRUNCATE_LENGTH;
+              expanded.push({
+                index: tailStart + i,
+                role,
+                content: '',
+                toolResult: truncated
+                  ? resultStr.slice(0, TOOL_RESULT_TRUNCATE_LENGTH) + ' [truncated]'
+                  : resultStr,
+                toolResultForId: block.tool_use_id,
+                truncated,
+              });
             }
           }
-          content = parts.join('\n');
+          if (textParts.length > 0) {
+            expanded.unshift({ index: tailStart + i, role, content: textParts.join('\n') });
+          }
         }
       }
 
-      return {
-        index: tailStart + i,
-        role,
-        content,
-        toolName,
-        toolInput,
-        toolResult,
-        truncated,
-      };
+      if (expanded.length === 0) {
+        expanded.push({ index: tailStart + i, role, content: '' });
+      }
+      return expanded;
     });
 
     return {
@@ -741,6 +747,7 @@ export class ClaudeCodeService extends EventEmitter {
                   content: '',
                   toolName: block.name,
                   toolInput,
+                  toolUseId: block.id,
                 });
               }
             }
@@ -761,6 +768,7 @@ export class ClaudeCodeService extends EventEmitter {
                 emitStream({
                   eventType: 'tool_result',
                   content: truncated,
+                  toolResultForId: block.tool_use_id,
                 });
               }
             }

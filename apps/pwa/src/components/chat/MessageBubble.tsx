@@ -8,9 +8,9 @@ import { SystemMessage } from './SystemMessage';
 // Tools whose result is rendered inline within the tool call block
 const TOOLS_WITH_INLINE_RESULT = new Set(['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep']);
 
-export function MessageBubble({ message, nextMessage, isLast, onRespondToInput }: {
+export function MessageBubble({ message, toolResultContent, isLast, onRespondToInput }: {
   message: ChatMessage;
-  nextMessage?: ChatMessage;
+  toolResultContent?: string;
   isLast: boolean;
   onRespondToInput?: (requestId: string, action: 'allow' | 'deny', response?: string) => void;
 }) {
@@ -21,9 +21,6 @@ export function MessageBubble({ message, nextMessage, isLast, onRespondToInput }
       return <AssistantMessage content={message.content} isLast={isLast} />;
     case 'tool':
       if (message.toolName) {
-        // Pass tool result from next message so views can show selected answers
-        const toolResultContent = nextMessage?.toolResultOf === message.toolName
-          ? nextMessage.content : undefined;
         return (
           <ToolCallMessage
             toolName={message.toolName}

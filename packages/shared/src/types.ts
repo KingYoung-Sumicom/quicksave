@@ -625,7 +625,9 @@ export interface ClaudeHistoryMessage {
   content: string;
   toolName?: string;
   toolInput?: string;
+  toolUseId?: string;    // Unique ID for this tool call (tool_use block id)
   toolResult?: string;
+  toolResultForId?: string;  // toolUseId this result belongs to (tool_result block tool_use_id)
   truncated?: boolean;
 }
 
@@ -652,6 +654,8 @@ export interface ClaudeStreamPayload {
   content: string;
   toolName?: string;
   toolInput?: string;
+  toolUseId?: string;        // Present on tool_use events (block.id)
+  toolResultForId?: string;  // Present on tool_result events (block.tool_use_id)
   isPartial?: boolean;
 }
 

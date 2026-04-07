@@ -39,6 +39,7 @@ export class SignalingClient extends EventEmitter {
         this.ws.on('open', () => {
           this.isConnected = true;
           this.reconnectAttempts = 0;
+          this.startHeartbeat();
           this.emit('connected');
           resolve();
         });
@@ -73,6 +74,7 @@ export class SignalingClient extends EventEmitter {
 
         this.ws.on('close', () => {
           this.isConnected = false;
+          this.clearHeartbeat();
           this.emit('disconnected');
           this.attemptReconnect();
         });
@@ -178,9 +180,40 @@ export class SignalingClient extends EventEmitter {
   }
 
   private intentionalDisconnect = false;
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private pongTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  private startHeartbeat(): void {
+    this.clearHeartbeat();
+    this.ws?.on('pong', () => {
+      if (this.pongTimeout) {
+        clearTimeout(this.pongTimeout);
+        this.pongTimeout = null;
+      }
+    });
+
+    this.heartbeatInterval = setInterval(() => {
+      this.ws?.ping();
+      this.pongTimeout = setTimeout(() => {
+        this.ws?.terminate();
+      }, 15000);
+    }, 60000);
+  }
+
+  private clearHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    if (this.pongTimeout) {
+      clearTimeout(this.pongTimeout);
+      this.pongTimeout = null;
+    }
+  }
 
   disconnect(): void {
     this.intentionalDisconnect = true; // Prevent reconnection
+    this.clearHeartbeat();
     if (this.ws) {
       this.sendBye();
       this.ws.close();

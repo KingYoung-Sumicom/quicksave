@@ -92,6 +92,42 @@ function AppContent() {
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const [showNavDrawer, setShowNavDrawer] = useState(isDesktop);
 
+
+
+  // Track visualViewport height → CSS variable + directly lock body height
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const update = () => {
+      const h = vv ? vv.height : window.innerHeight;
+      document.documentElement.style.setProperty('--vv-height', `${h}px`);
+      document.documentElement.style.height = `${h}px`;
+      document.body.style.height = `${h}px`;
+    };
+    update();
+    vv?.addEventListener('resize', update);
+    return () => vv?.removeEventListener('resize', update);
+  }, []);
+
+  // When iOS scrolls the layout viewport (e.g. keyboard open), immediately reset to 0
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const reset = () => window.scrollTo(0, 0);
+    vv.addEventListener('scroll', reset);
+    return () => vv.removeEventListener('scroll', reset);
+  }, []);
+
+  // Prevent iOS body bounce scroll
+  useEffect(() => {
+    const prevent = (e: TouchEvent) => {
+      if (e.target === document.body || e.target === document.documentElement) {
+        e.preventDefault();
+      }
+    };
+    document.addEventListener('touchmove', prevent, { passive: false });
+    return () => document.removeEventListener('touchmove', prevent);
+  }, []);
+
   // Initialize identity store (persistent X25519 keypair) on startup
   useEffect(() => {
     initIdentity();
@@ -447,7 +483,7 @@ function AppContent() {
     };
 
     return (
-      <div className="flex h-[100dvh] min-h-0">
+      <div className="flex flex-1 min-h-0">
         <NavigationDrawer
           isOpen={showNavDrawer}
           persistent={isDesktop}
@@ -537,7 +573,7 @@ function AppContent() {
   const showOverlay = state === 'connecting' || state === 'reconnecting' || (state === 'error' && !!useConnectionStore.getState().error);
 
   return (
-    <div className="h-[100dvh] flex flex-col bg-slate-900 text-slate-100 overflow-hidden">
+    <div className="flex flex-col bg-slate-900 text-slate-100 overflow-hidden h-full">
       <Routes>
         <Route path="/" element={homeElement} />
         <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />

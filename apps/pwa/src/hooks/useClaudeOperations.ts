@@ -86,7 +86,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
   const handlePushMessage = useCallback((message: Message): boolean => {
     if (message.type === 'claude:stream') {
       const payload = message.payload as ClaudeStreamPayload;
-      handleStreamEvent(payload.eventType, payload.content, payload.toolName, payload.toolInput);
+      handleStreamEvent(payload.eventType, payload.content, payload.toolName, payload.toolInput, payload.toolUseId, payload.toolResultForId);
       return true;
     }
 
@@ -181,32 +181,32 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
         if (response.error) {
           throw new Error(response.error);
         }
-        // Convert history messages to chat messages.
-        // toolName and toolResult live on separate ClaudeHistoryMessages (different
-        // JSONL entries), so we track the last tool name to associate results.
+        // Build toolUseId → toolName map for result association
+        const toolNameById = new Map<string, string>();
+        for (const m of response.messages) {
+          if (m.toolName && m.toolUseId) toolNameById.set(m.toolUseId, m.toolName);
+        }
+
         const chatMessages: ChatMessage[] = [];
-        let lastToolName: string | undefined;
         for (const m of response.messages) {
           if (m.toolName) {
-            lastToolName = m.toolName;
             chatMessages.push({
               role: 'tool',
               content: m.toolInput || '',
               toolName: m.toolName,
               toolInput: m.toolInput,
+              toolUseId: m.toolUseId,
               timestamp: Date.now(),
             });
-          }
-          if (m.toolResult) {
+          } else if (m.toolResult !== undefined) {
             chatMessages.push({
               role: 'tool',
               content: m.toolResult,
-              toolResultOf: lastToolName,
+              toolResultOf: m.toolResultForId ? toolNameById.get(m.toolResultForId) : undefined,
+              toolUseId: m.toolResultForId,
               timestamp: Date.now(),
             });
-            lastToolName = undefined;
-          }
-          if (m.content && !m.toolName) {
+          } else if (m.content) {
             chatMessages.push({
               role: m.role as 'user' | 'assistant' | 'system',
               content: m.content,

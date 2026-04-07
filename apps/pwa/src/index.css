@@ -21,9 +21,21 @@
   background: #64748b;
 }
 
-/* Prevent pull-to-refresh on mobile */
-html {
-  overscroll-behavior: none;
+/* Prevent iOS body scroll */
+html, body {
+  overflow: hidden;
+  width: 100%;
+}
+
+#root {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--vv-height, 100dvh);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Safe area padding for notched devices */
@@ -33,6 +45,13 @@ html {
 
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom);
+}
+
+.safe-area-bottom-input {
+  padding-bottom: 0.75rem;
+  :root:not(:has(input:focus-visible, textarea:focus-visible, [contenteditable]:focus-visible)) & {
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.75rem);
+  }
 }
 
 /* Diff styles */

@@ -68,7 +68,7 @@ function PlainUserMessage({ content }: { content: string }) {
   const displayContent = collapsible && !expanded
     ? lines.slice(0, COLLAPSE_THRESHOLD).join('\n') : content;
   return (
-    <div className="bg-slate-700 rounded-lg px-3 py-2 w-full text-sm whitespace-pre-wrap break-words">
+    <div className="bg-slate-700 rounded-lg px-3 py-2 max-w-full text-sm whitespace-pre-wrap break-words inline-block">
       {displayContent}
       {collapsible && !expanded && <span className="text-blue-300/70">…</span>}
       {collapsible && (

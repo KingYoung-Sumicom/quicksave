@@ -6,7 +6,8 @@ export interface ChatMessage {
   content: string;
   toolName?: string;      // Present on tool_use messages
   toolInput?: string;     // JSON string of tool input (tool_use only)
-  toolResultOf?: string;  // toolName of the preceding tool_use (tool_result only)
+  toolUseId?: string;     // Unique ID for this tool call (present on both tool_use and tool_result)
+  toolResultOf?: string;  // toolName of the corresponding tool_use (tool_result only)
   pendingInputRequest?: ClaudeUserInputRequestPayload; // Pending user action on this tool call
   _synthetic?: boolean;   // Created by tagPendingInput before the stream event arrived
   timestamp: number;
@@ -59,7 +60,7 @@ interface ClaudeStore {
   clearMessages: () => void;
 
   // Actions — stream events
-  handleStreamEvent: (eventType: ClaudeStreamEventType, content: string, toolName?: string, toolInput?: string) => void;
+  handleStreamEvent: (eventType: ClaudeStreamEventType, content: string, toolName?: string, toolInput?: string, toolUseId?: string, toolResultForId?: string) => void;
 
   // Actions — pending input (tag/clear on messages)
   tagPendingInput: (request: ClaudeUserInputRequestPayload) => void;
@@ -139,7 +140,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   clearMessages: () => set({ messages: [], historyTotal: 0, historyHasMore: false }),
 
   // Stream events → chat messages
-  handleStreamEvent: (eventType, content, toolName, toolInput) => {
+  handleStreamEvent: (eventType, content, toolName, toolInput, toolUseId, toolResultForId) => {
     const store = get();
     switch (eventType) {
       case 'user_message': {
@@ -182,19 +183,30 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
           content: toolInput || '',
           toolName,
           toolInput,
+          toolUseId,
           timestamp: Date.now(),
         });
         break;
       }
       case 'tool_result': {
-        // Associate result with the preceding tool call's toolName
+        // Find the matching tool call by toolUseId (handles parallel tool calls correctly)
         const msgs = store.messages;
-        const prevTool = msgs.length > 0 ? msgs[msgs.length - 1] : undefined;
-        const resultOf = prevTool?.role === 'tool' && prevTool.toolName ? prevTool.toolName : undefined;
+        let resultOf: string | undefined;
+        if (toolResultForId) {
+          const matchingCall = [...msgs].reverse().find(
+            (m) => m.role === 'tool' && m.toolName && m.toolUseId === toolResultForId
+          );
+          resultOf = matchingCall?.toolName;
+        } else {
+          // Fallback: last unanswered tool call (sequential case)
+          const prevTool = msgs.length > 0 ? msgs[msgs.length - 1] : undefined;
+          resultOf = prevTool?.role === 'tool' && prevTool.toolName ? prevTool.toolName : undefined;
+        }
         store.appendMessage({
           role: 'tool',
           content: content,
           toolResultOf: resultOf,
+          toolUseId: toolResultForId,
           timestamp: Date.now(),
         });
       }

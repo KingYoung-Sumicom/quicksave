@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useMemo } from 'react';
 import { clsx } from 'clsx';
 import { useClaudeStore } from '../stores/claudeStore';
 import type { ClaudeSessionSummary, ClaudeUserInputResponsePayload } from '@sumicom/quicksave-shared';
@@ -48,6 +48,17 @@ export function ClaudePanel({
     setActiveSession,
     clearMessages,
   } = useClaudeStore();
+
+  // Map toolUseId → result content for parallel tool call display
+  const toolResultByUseId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const msg of messages) {
+      if (msg.role === 'tool' && !msg.toolName && msg.toolUseId) {
+        map.set(msg.toolUseId, msg.content);
+      }
+    }
+    return map;
+  }, [messages]);
 
   // View is determined by URL: sessionId present = chat, ?new = new session, absent = sessions list
   const isChat = !!urlSessionId || !!newSession;
@@ -112,12 +123,6 @@ export function ClaudePanel({
     }
   }, [messages, isStreaming]);
 
-  // Focus input when chat view opens
-  useEffect(() => {
-    if (isChat && inputRef.current && !isStreaming) {
-      inputRef.current.focus();
-    }
-  }, [isChat, isStreaming]);
 
   const handleSelectSession = useCallback(async (session: ClaudeSessionSummary) => {
     if (onSelectSession) {
@@ -235,9 +240,9 @@ export function ClaudePanel({
   return (
     <div className="flex flex-col flex-1 min-h-0">
       {isChat ? (
-        <div className="flex flex-col flex-1 min-h-0">
+        <>
           {/* Messages */}
-          <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 select-text">
+          <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 select-text overscroll-contain">
             {historyHasMore && (
               <div ref={topSentinelRef} className="flex justify-center py-2 h-8">
                 {isLoadingHistory && (
@@ -252,7 +257,7 @@ export function ClaudePanel({
               <MessageBubble
                 key={i}
                 message={msg}
-                nextMessage={messages[i + 1]}
+                toolResultContent={msg.toolUseId ? toolResultByUseId.get(msg.toolUseId) : undefined}
                 isLast={i === messages.length - 1}
                 onRespondToInput={handleRespondToInput}
               />
@@ -262,11 +267,18 @@ export function ClaudePanel({
                 {streamError}
               </div>
             )}
+            {isStreaming && messages[messages.length - 1]?.role !== 'assistant' && (
+              <div className="flex items-center gap-1.5 py-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:0ms]" />
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:150ms]" />
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:300ms]" />
+              </div>
+            )}
             <div ref={messagesEndRef} />
           </div>
 
           {/* Input */}
-          <div className="border-t border-slate-700 px-4 pt-3 flex-shrink-0 bg-slate-900" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 0.75rem)' }}>
+          <div className="border-t border-slate-700 px-4 pt-3 flex-shrink-0 bg-slate-900 safe-area-bottom-input touch-none">
             <div className="flex items-end gap-2">
               <textarea
                 ref={inputRef}
@@ -307,7 +319,7 @@ export function ClaudePanel({
               )}
             </div>
           </div>
-        </div>
+        </>
       ) : (
         <SessionList
           sessions={sessions}
