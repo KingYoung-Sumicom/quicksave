@@ -21,8 +21,9 @@ export class SignalingClient extends EventEmitter {
   private url: string;
   private agentId: string;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
+  private maxReconnectAttempts = Infinity; // Never give up — daemon should always try to reconnect
   private reconnectDelay = 1000;
+  private maxReconnectDelay = 90000;
   private isConnected = false;
 
   constructor(signalingServer: string, agentId: string) {
@@ -160,15 +161,15 @@ export class SignalingClient extends EventEmitter {
   }
 
   private attemptReconnect(): void {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('Max reconnect attempts reached');
-      return;
-    }
-
+    if (this.intentionalDisconnect) return;
     this.reconnectAttempts++;
-    const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+    const jitter = Math.floor(Math.random() * 5000);
+    const delay = Math.min(
+      this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1) + jitter,
+      this.maxReconnectDelay,
+    );
 
-    console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+    console.log(`Reconnecting in ${delay / 1000}s (attempt ${this.reconnectAttempts})`);
 
     setTimeout(() => {
       this.connect().catch((error) => {
@@ -177,8 +178,10 @@ export class SignalingClient extends EventEmitter {
     }, delay);
   }
 
+  private intentionalDisconnect = false;
+
   disconnect(): void {
-    this.maxReconnectAttempts = 0; // Prevent reconnection
+    this.intentionalDisconnect = true; // Prevent reconnection
     if (this.ws) {
       this.sendBye();
       this.ws.close();

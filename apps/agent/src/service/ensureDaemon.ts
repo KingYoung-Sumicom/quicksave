@@ -11,7 +11,7 @@
  */
 
 import { fork } from 'child_process';
-import { openSync } from 'fs';
+import { openSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { IpcClient } from './ipcClient.js';
@@ -104,7 +104,10 @@ function spawnDaemon(): void {
   const isTs = thisFile.endsWith('.ts');
   const entryPath = resolve(thisFile, isTs ? '../../index.ts' : '../../index.js');
 
-  const logFd = openSync(join(getRunDir(), 'daemon.log'), 'a');
+  // Ensure run directory exists before opening log file (daemon hasn't started yet)
+  const runDir = getRunDir();
+  mkdirSync(runDir, { recursive: true });
+  const logFd = openSync(join(runDir, 'daemon.log'), 'a');
   const child = fork(entryPath, ['service', 'run'], {
     detached: true,
     stdio: ['ignore', logFd, logFd, 'ipc'],

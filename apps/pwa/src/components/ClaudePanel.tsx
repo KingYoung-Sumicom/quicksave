@@ -55,6 +55,23 @@ export function ClaudePanel({
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  // Per-session draft persistence
+  const draftKey = urlSessionId ? `qs_draft_${urlSessionId}` : newSession ? 'qs_draft_new' : null;
+
+  // Restore draft when session changes
+  useEffect(() => {
+    if (!draftKey) return;
+    const saved = localStorage.getItem(draftKey) ?? '';
+    setPromptInput(saved);
+    // Resize textarea to match restored content
+    requestAnimationFrame(() => {
+      if (inputRef.current) {
+        inputRef.current.style.height = 'auto';
+        inputRef.current.style.height = `${inputRef.current.scrollHeight}px`;
+      }
+    });
+  }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Load session messages when navigating to a different session
   useEffect(() => {
     if (urlSessionId && urlSessionId !== activeSessionId) {
@@ -115,6 +132,8 @@ export function ClaudePanel({
     if (!prompt || isStreaming) return;
 
     setPromptInput('');
+    if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+    if (draftKey) localStorage.removeItem(draftKey);
 
     if (activeSessionId) {
       await onResumeSession(activeSessionId, prompt);
@@ -154,13 +173,29 @@ export function ClaudePanel({
     }
   }, [handleSend]);
 
-  // Auto-resize textarea to fit content
+  // Debounced draft save (3s)
+  const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveDraft = useCallback((value: string) => {
+    if (!draftKey) return;
+    if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+    draftSaveTimer.current = setTimeout(() => {
+      if (value) {
+        localStorage.setItem(draftKey, value);
+      } else {
+        localStorage.removeItem(draftKey);
+      }
+    }, 3000);
+  }, [draftKey]);
+
+  // Auto-resize textarea to fit content, persist draft to localStorage
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setPromptInput(e.target.value);
+    const value = e.target.value;
+    setPromptInput(value);
+    saveDraft(value);
     const el = e.target;
     el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
-  }, [setPromptInput]);
+    el.style.height = `${el.scrollHeight}px`;
+  }, [saveDraft, setPromptInput]);
 
   return (
     <div className="flex flex-col flex-1 min-h-0">

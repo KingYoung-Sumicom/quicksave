@@ -113,7 +113,7 @@ export function ToolResultMessage({ content, toolResultOf }: {
   return (
     <div className="flex justify-start">
       <div className={`bg-slate-800/40 border-l-2 ${accentColor} rounded-r-lg pl-2.5 pr-3 py-1.5 max-w-[90%] text-xs text-slate-400 overflow-hidden`}>
-        <pre className="min-w-0 whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
+        <pre className="min-w-0 whitespace-pre-wrap break-all">
           {content}
         </pre>
       </div>

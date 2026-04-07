@@ -459,7 +459,7 @@ function AppContent() {
           onSwitchMachine={handleSwitchMachine}
           onBackToFleet={() => { setShowNavDrawer(false); handleDisconnect(); }}
         />
-        <div className="flex flex-col flex-1 min-h-0">
+        <div className="flex flex-col flex-1 min-h-0 min-w-0">
           <StatusBar
             connectionState={state}
             branch={status?.branch}
@@ -536,7 +536,7 @@ function AppContent() {
   const showOverlay = state === 'connecting' || state === 'reconnecting' || (state === 'error' && !!useConnectionStore.getState().error);
 
   return (
-    <div className="h-[100dvh] flex flex-col bg-slate-900 text-slate-100 overflow-auto">
+    <div className="h-[100dvh] flex flex-col bg-slate-900 text-slate-100 overflow-hidden">
       <Routes>
         <Route path="/" element={homeElement} />
         <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />

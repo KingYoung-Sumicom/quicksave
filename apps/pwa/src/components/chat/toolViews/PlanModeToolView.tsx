@@ -22,7 +22,7 @@ export function ExitPlanModeToolView({ input, plan }: {
     <div>
       <span className="text-indigo-400">Plan ready for review</span>
       {plan && (
-        <div className="mt-2 prose prose-invert prose-xs max-w-none text-slate-300 max-h-64 overflow-y-auto">
+        <div className="mt-2 prose prose-invert prose-xs max-w-none text-slate-300 overflow-visible">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{plan}</ReactMarkdown>
         </div>
       )}
@@ -55,7 +55,7 @@ export function ExitPlanModeInteractiveView({ input, plan, onRespond }: {
     <div>
       <span className="text-indigo-400 font-medium">Plan for review</span>
       {plan && (
-        <div className="mt-2 prose prose-invert prose-xs max-w-none text-slate-300 max-h-64 overflow-y-auto">
+        <div className="mt-2 prose prose-invert prose-xs max-w-none text-slate-300 overflow-visible">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{plan}</ReactMarkdown>
         </div>
       )}

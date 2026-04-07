@@ -251,7 +251,7 @@ export function RepoView({
   const totalChanges = staged.length + unstaged.length + untracked.length;
 
   return (
-    <div className="flex-1 overflow-auto safe-area-bottom">
+    <div className="flex-1 overflow-y-auto overflow-x-hidden safe-area-bottom">
       <div className="p-4 space-y-4">
         {/* Error Display */}
         {error && (
