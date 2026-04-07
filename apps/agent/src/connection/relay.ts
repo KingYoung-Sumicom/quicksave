@@ -21,7 +21,6 @@ export class SignalingClient extends EventEmitter {
   private url: string;
   private agentId: string;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = Infinity; // Never give up — daemon should always try to reconnect
   private reconnectDelay = 1000;
   private maxReconnectDelay = 90000;
   private isConnected = false;

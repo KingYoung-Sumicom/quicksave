@@ -114,6 +114,8 @@ function spawnDaemon(): void {
     execArgv: isTs ? ['--import', 'tsx'] : [],
   });
 
+  // Disconnect IPC so parent can exit immediately
+  child.disconnect();
   child.unref();
 }
 

@@ -29,7 +29,7 @@ import type { ServiceState, StatusResult, PairingInfoResult, RepoInfo } from './
 import { createMessage, type Message, type Repository } from '@sumicom/quicksave-shared';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
-const PACKAGE_VERSION = '0.5.0';
+const PACKAGE_VERSION = '0.5.1';
 
 export async function runDaemon(): Promise<void> {
   ensureDirectories();
