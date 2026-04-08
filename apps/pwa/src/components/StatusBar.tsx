@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useLocation, useMatch } from 'react-router-dom';
 import { clsx } from 'clsx';
-import { CLAUDE_MODELS, type ConnectionState, type ClaudePreferences } from '@sumicom/quicksave-shared';
+import { type ConnectionState, type ClaudePreferences } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
 import { StatusDot, sessionStatusKey, type SessionStatusKey } from './SessionStatusBadge';
 
@@ -18,6 +18,8 @@ interface StatusBarProps {
   onSetSessionPermission?: (sessionId: string, mode: string) => void;
   onCloseSession?: () => void;
   onCancelSession?: () => void;
+  onOpenSettings?: () => void;
+  title?: string;
 }
 
 export function StatusBar({
@@ -33,6 +35,8 @@ export function StatusBar({
   onSetSessionPermission,
   onCloseSession,
   onCancelSession,
+  onOpenSettings,
+  title,
 }: StatusBarProps) {
   const location = useLocation();
   const isOnRepoPage = location.pathname.includes('/repo/');
@@ -57,15 +61,27 @@ export function StatusBar({
           )}
         </div>
 
-        {/* Center: Session title + status badge (absolute so it's truly centered) */}
+        {/* Center: Session status or page title */}
         <div className="absolute left-14 right-20 inset-y-0 flex items-center justify-center py-2 overflow-hidden">
-          <SessionStatusIndicator />
+          <SessionStatusIndicator title={title} />
         </div>
 
         {/* Right: Stop button (streaming) + Settings gear */}
         <div className="ml-auto shrink-0 flex items-center gap-1">
           <StopButton onCancelSession={onCancelSession} />
-          <SessionSettingsMenu onCloseSession={onCloseSession} onSetPreferences={onSetPreferences} onSetSessionPermission={onSetSessionPermission} />
+          <SessionSettingsMenu onSetPreferences={onSetPreferences} onSetSessionPermission={onSetSessionPermission} onCloseSession={onCloseSession} />
+          {onOpenSettings && (
+            <button
+              onClick={onOpenSettings}
+              className="p-1.5 rounded-md transition-colors hover:bg-slate-700 text-slate-400"
+              aria-label="Settings"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 010 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 010-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 
@@ -148,10 +164,9 @@ function StopButton({ onCancelSession }: { onCancelSession?: () => void }) {
   return (
     <button
       onClick={onCancelSession}
-      disabled={!isStreaming}
       className={clsx(
-        'p-1.5 rounded-md transition-colors',
-        isStreaming ? 'hover:bg-slate-700 text-slate-200' : 'text-slate-600 cursor-default',
+        'p-1.5 rounded-md transition-colors hover:bg-slate-700',
+        isStreaming ? 'text-slate-200' : 'text-slate-500',
       )}
       title="Stop"
     >
@@ -162,12 +177,15 @@ function StopButton({ onCancelSession }: { onCancelSession?: () => void }) {
   );
 }
 
-function SessionStatusIndicator() {
+function SessionStatusIndicator({ title }: { title?: string }) {
   const isOnSessionPage = !!useMatch('/agent/:agentId/coding/:pathHash/:sessionId');
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
   const sessions = useClaudeStore((s) => s.sessions);
 
-  if (!isOnSessionPage || !activeSessionId) return null;
+  if (!isOnSessionPage || !activeSessionId) {
+    if (!title) return null;
+    return <span className="text-sm font-medium text-slate-300 truncate">{title}</span>;
+  }
 
   const session = sessions.find((s) => s.sessionId === activeSessionId);
   if (!session) return null;
@@ -185,13 +203,28 @@ function SessionStatusIndicator() {
 }
 
 
-const PERMISSION_MODES = [
-  { id: 'acceptEdits', label: 'Accept Edits', desc: 'Approve file writes' },
-  { id: 'bypassPermissions', label: 'Bypass', desc: 'Auto-approve all' },
-  { id: 'plan', label: 'Plan', desc: 'Read-only planning' },
-] as const;
+const MODELS = [
+  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { value: 'claude-opus-4-6', label: 'Opus 4.6' },
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+];
 
-function SessionSettingsMenu({ onCloseSession, onSetPreferences, onSetSessionPermission }: { onCloseSession?: () => void; onSetPreferences?: (prefs: Partial<ClaudePreferences>) => void; onSetSessionPermission?: (sessionId: string, mode: string) => void }) {
+const PERMISSION_MODES = [
+  { value: 'default', label: 'Default' },
+  { value: 'acceptEdits', label: 'Accept Edits' },
+  { value: 'bypassPermissions', label: 'Bypass' },
+  { value: 'plan', label: 'Plan Only' },
+];
+
+function SessionSettingsMenu({
+  onSetPreferences,
+  onSetSessionPermission,
+  onCloseSession,
+}: {
+  onSetPreferences?: (prefs: Partial<ClaudePreferences>) => void;
+  onSetSessionPermission?: (sessionId: string, mode: string) => void;
+  onCloseSession?: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
   const selectedModel = useClaudeStore((s) => s.selectedModel);
@@ -218,56 +251,51 @@ function SessionSettingsMenu({ onCloseSession, onSetPreferences, onSetSessionPer
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-10 w-56 bg-slate-700 rounded-lg shadow-lg z-20 overflow-hidden border border-slate-600">
-            {/* Model selector */}
-            <div className="px-3 pt-2.5 pb-1">
-              <p className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Model</p>
-            </div>
-            <div className="px-1.5 pb-1.5">
-              {CLAUDE_MODELS.map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => onSetPreferences?.({ model: m.id })}
-                  className={clsx(
-                    'w-full text-left text-xs px-2.5 py-1.5 rounded-md transition-colors',
-                    selectedModel === m.id
-                      ? 'bg-blue-600/30 text-blue-300'
-                      : 'text-slate-300 hover:bg-slate-600'
-                  )}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
+          <div className="absolute right-0 top-10 w-48 bg-slate-700 rounded-lg shadow-lg z-20 overflow-hidden border border-slate-600">
+            {/* Model */}
+            {onSetPreferences && (
+              <div className="px-2.5 pt-2 pb-1">
+                <span className="text-[10px] text-slate-500 uppercase tracking-wide">Model</span>
+                <div className="mt-1 flex flex-col gap-0.5">
+                  {MODELS.map((m) => (
+                    <button
+                      key={m.value}
+                      onClick={() => { onSetPreferences({ model: m.value }); }}
+                      className={clsx(
+                        'text-left text-xs px-2 py-1 rounded transition-colors',
+                        selectedModel === m.value ? 'bg-blue-600/30 text-blue-300' : 'text-slate-300 hover:bg-slate-600'
+                      )}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
-            <div className="border-t border-slate-600" />
-
-            {/* Permission mode selector */}
-            <div className="px-3 pt-2.5 pb-1">
-              <p className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">Permissions</p>
-            </div>
-            <div className="px-1.5 pb-1.5">
-              {PERMISSION_MODES.map((pm) => (
-                <button
-                  key={pm.id}
-                  onClick={() => activeSessionId && onSetSessionPermission?.(activeSessionId, pm.id)}
-                  className={clsx(
-                    'w-full text-left text-xs px-2.5 py-1.5 rounded-md transition-colors',
-                    selectedPermissionMode === pm.id
-                      ? 'bg-blue-600/30 text-blue-300'
-                      : 'text-slate-300 hover:bg-slate-600'
-                  )}
-                >
-                  <span>{pm.label}</span>
-                  <span className="text-slate-500 ml-1.5">{pm.desc}</span>
-                </button>
-              ))}
-            </div>
-
-            <div className="border-t border-slate-600" />
+            {/* Permission mode */}
+            {onSetSessionPermission && (
+              <div className="px-2.5 pt-2 pb-1 border-t border-slate-600">
+                <span className="text-[10px] text-slate-500 uppercase tracking-wide">Permission</span>
+                <div className="mt-1 flex flex-col gap-0.5">
+                  {PERMISSION_MODES.map((p) => (
+                    <button
+                      key={p.value}
+                      onClick={() => { onSetSessionPermission(activeSessionId, p.value); }}
+                      className={clsx(
+                        'text-left text-xs px-2 py-1 rounded transition-colors',
+                        selectedPermissionMode === p.value ? 'bg-blue-600/30 text-blue-300' : 'text-slate-300 hover:bg-slate-600'
+                      )}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* End session */}
-            <div className="px-1.5 py-1.5">
+            <div className="px-1.5 py-1.5 border-t border-slate-600">
               <button
                 onClick={() => {
                   setOpen(false);

@@ -701,6 +701,7 @@ export interface ClaudeGetMessagesResponsePayload {
 // Stream event types (agent-push)
 export type ClaudeStreamEventType =
   | 'assistant_text'
+  | 'thinking'
   | 'tool_use'
   | 'tool_result'
   | 'user_message'

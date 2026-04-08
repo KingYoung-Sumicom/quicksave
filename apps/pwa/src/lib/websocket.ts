@@ -51,9 +51,13 @@ interface RoutedEnvelope {
   payload: string;
 }
 
-/** Message types that should be relayed across tabs via BroadcastChannel. */
+/** Message types that should be relayed across tabs via BroadcastChannel.
+ *  Only broadcast-scoped events belong here — session-scoped events
+ *  (stream, stream:end, user-input-request) are delivered directly
+ *  to the subscribed peer via sendToSession on the agent side. */
 const CROSS_TAB_MESSAGE_TYPES = new Set([
-  'claude:stream', 'claude:stream:end', 'claude:user-input-request',
+  'claude:session-updated', 'claude:preferences-updated',
+  'claude:user-input-resolved',
 ]);
 
 export class WebSocketClient {
@@ -70,6 +74,10 @@ export class WebSocketClient {
   // Cross-tab message relay: the tab with the active relay connection
   // broadcasts push messages to other tabs via BroadcastChannel.
   private crossTabChannel: BroadcastChannel | null = null;
+
+  // Serialize incoming message processing — decompress is async and without
+  // serialization, rapid WebSocket messages can resolve out of order.
+  private messageQueue: Promise<void> = Promise.resolve();
 
   // Auto-reconnect state (for the WebSocket connection itself)
   private autoReconnect = true;
@@ -141,9 +149,13 @@ export class WebSocketClient {
         resolve();
       };
 
-      this.ws.onmessage = async (event) => {
-        const rawData = event.data instanceof Blob ? await event.data.text() : event.data;
-        await this.handleMessage(rawData);
+      this.ws.onmessage = (event) => {
+        // Chain onto messageQueue to guarantee in-order processing.
+        // Without this, concurrent async decompress can resolve out of order.
+        this.messageQueue = this.messageQueue.then(async () => {
+          const rawData = event.data instanceof Blob ? await event.data.text() : event.data;
+          await this.handleMessage(rawData);
+        }).catch((err) => console.error('Message processing error:', err));
       };
 
       this.ws.onerror = (error) => {
@@ -440,6 +452,11 @@ export class WebSocketClient {
       }
 
       this.eventHandlers.onMessage(message);
+      // Relay broadcast events to other tabs so their session list indicators stay current.
+      // BroadcastChannel doesn't deliver to the sender, so there's no loop risk.
+      if (CROSS_TAB_MESSAGE_TYPES.has(message.type)) {
+        this.crossTabChannel?.postMessage(message);
+      }
     } catch (error) {
       console.error('Failed to handle message:', error);
     }

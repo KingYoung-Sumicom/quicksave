@@ -93,30 +93,49 @@ function AppContent() {
   const [showGitignoreEditor, setShowGitignoreEditor] = useState(false);
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const [showNavDrawer, setShowNavDrawer] = useState(isDesktop);
+  const [showFleetSettings, setShowFleetSettings] = useState(false);
 
 
-  // Track visualViewport height → CSS variable so #root shrinks when keyboard opens
+  // Track visualViewport height → CSS variable so #root shrinks when keyboard opens.
   useEffect(() => {
     const vv = window.visualViewport;
-    const update = () => {
+    const setHeight = () => {
       const h = vv ? vv.height : window.innerHeight;
       document.documentElement.style.setProperty('--vv-height', `${h}px`);
-      document.documentElement.style.height = `${h}px`;
-      document.body.style.height = `${h}px`;
-    };
-    update();
-    vv?.addEventListener('resize', update);
-    return () => vv?.removeEventListener('resize', update);
-  }, []);
-
-  // Prevent iOS from scrolling the layout viewport when keyboard opens
-  useEffect(() => {
-    const reset = () => {
       document.documentElement.scrollTop = 0;
       document.body.scrollTop = 0;
     };
-    window.visualViewport?.addEventListener('scroll', reset);
-    return () => window.visualViewport?.removeEventListener('scroll', reset);
+    setHeight();
+    vv?.addEventListener('resize', setHeight);
+    vv?.addEventListener('scroll', setHeight);
+
+    // On focus, poll each rAF until viewport height stabilises — this catches the
+    // keyboard animation on iOS before the first resize/scroll event fires.
+    const onFocus = (e: FocusEvent) => {
+      const target = e.target;
+      if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLTextAreaElement)) return;
+      let last = -1;
+      let stable = 0;
+      const poll = () => {
+        const h = vv ? vv.height : window.innerHeight;
+        document.documentElement.style.setProperty('--vv-height', `${h}px`);
+        if (h === last) {
+          if (++stable >= 3) return; // settled for 3 consecutive frames
+        } else {
+          stable = 0;
+          last = h;
+        }
+        requestAnimationFrame(poll);
+      };
+      requestAnimationFrame(poll);
+    };
+    document.addEventListener('focusin', onFocus);
+
+    return () => {
+      vv?.removeEventListener('resize', setHeight);
+      vv?.removeEventListener('scroll', setHeight);
+      document.removeEventListener('focusin', onFocus);
+    };
   }, []);
 
   // Prevent body bounce scroll
@@ -421,12 +440,33 @@ function AppContent() {
       // Already connected, will redirect via effect
     }
     const saveApiKey = isConnected ? setApiKey : undefined;
-    return machines.length > 0 ? (
-      <FleetDashboard onConnect={handleConnect} onSendApiKeyToAgent={saveApiKey} />
+    const inner = machines.length > 0 ? (
+      <FleetDashboard
+        onNavigate={(agentId) => {
+          intentionalDisconnectRef.current = false;
+          const machine = useMachineStore.getState().getMachine(agentId);
+          if (machine) handleConnect(agentId, machine.publicKey);
+          navigate(`/agent/${agentId}`);
+        }}
+        onConnect={handleConnect}
+        onSendApiKeyToAgent={saveApiKey}
+        showSettings={showFleetSettings}
+        onCloseSettings={() => setShowFleetSettings(false)}
+      />
     ) : (
       <ConnectionSetup onConnect={handleConnect} onSendApiKeyToAgent={saveApiKey} />
     );
-  }, [machines.length, handleConnect, isConnected, setApiKey]);
+    return (
+      <div className="flex flex-col min-h-screen">
+        <StatusBar
+          connectionState={state}
+          title="Quicksave"
+          onOpenSettings={() => setShowFleetSettings(true)}
+        />
+        {inner}
+      </div>
+    );
+  }, [machines.length, handleConnect, isConnected, setApiKey, state, showFleetSettings, navigate]);
 
   // Redirect to repo if connected on home page
   // Note: We check clientRef.current to ensure we have an active connection,

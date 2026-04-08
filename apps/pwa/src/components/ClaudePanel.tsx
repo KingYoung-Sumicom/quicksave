@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback, useMemo } from 'react';
 import { clsx } from 'clsx';
 import { useClaudeStore } from '../stores/claudeStore';
 import type { ClaudeSessionSummary, ClaudeUserInputResponsePayload } from '@sumicom/quicksave-shared';
+import { StatusDot, sessionStatusKey } from './SessionStatusBadge';
 import { MessageBubble } from './chat/MessageBubble';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
 
@@ -201,12 +202,13 @@ export function ClaudePanel({
     return () => observer.disconnect();
   }, [historyHasMore, handleLoadMore]);
 
+  const isMobile = 'ontouchstart' in window;
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isMobile) {
       e.preventDefault();
       handleSend();
     }
-  }, [handleSend]);
+  }, [handleSend, isMobile]);
 
   // Debounced draft save (3s)
   const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -263,7 +265,7 @@ export function ClaudePanel({
                 {streamError}
               </div>
             )}
-            {isStreaming && messages[messages.length - 1]?.role !== 'assistant' && (
+            {isStreaming && (isInactive || messages[messages.length - 1]?.role !== 'assistant') && (
               <div className="flex items-center gap-1.5 py-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:0ms]" />
                 <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:150ms]" />
@@ -376,21 +378,26 @@ function SessionList({
           <button
             key={session.sessionId}
             onClick={() => onSelect(session)}
-            className="w-full text-left px-4 py-3 hover:bg-slate-700/50 border-b border-slate-700/50 transition-colors"
+            className="w-full text-left px-4 py-3 hover:bg-slate-700/50 border-b border-slate-700/50 transition-colors flex items-start gap-3"
           >
-            <p className="text-sm font-medium truncate">
-              {session.summary || session.sessionId.slice(0, 12)}
-            </p>
-            <div className="flex items-center gap-2 mt-1 text-xs text-slate-400">
-              {session.gitBranch && (
-                <span className="flex items-center gap-1">
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                  {session.gitBranch}
-                </span>
-              )}
-              <span>{formatRelativeTime(session.lastModified)}</span>
+            <div className="mt-1 shrink-0">
+              <StatusDot statusKey={sessionStatusKey(session)} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">
+                {session.summary || session.sessionId.slice(0, 12)}
+              </p>
+              <div className="flex items-center gap-2 mt-1 text-xs text-slate-400">
+                {session.gitBranch && (
+                  <span className="flex items-center gap-1">
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                    {session.gitBranch}
+                  </span>
+                )}
+                <span>{formatRelativeTime(session.lastModified)}</span>
+              </div>
             </div>
           </button>
         ))

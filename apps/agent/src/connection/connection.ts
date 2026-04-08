@@ -192,6 +192,11 @@ export class AgentConnection extends EventEmitter {
     }
   }
 
+  // Per-peer send queue to guarantee message ordering.
+  // gzipAsync is non-blocking — without serialization, fast consecutive
+  // send() calls can compress out of order and arrive at the relay scrambled.
+  private sendQueues: Map<string, Promise<void>> = new Map();
+
   send(message: Message, targetAddress: string): void {
     const peer = this.peers.get(targetAddress);
     if (!peer) {
@@ -199,15 +204,19 @@ export class AgentConnection extends EventEmitter {
       return;
     }
 
-    // Compress before encryption for better compression ratio
     const serialized = serializeMessage(message);
-    gzipAsync(Buffer.from(serialized)).then((compressed) => {
+    const prev = this.sendQueues.get(targetAddress) ?? Promise.resolve();
+    const next = prev.then(async () => {
+      // Re-check peer: may have disconnected while queued
+      if (!this.peers.has(targetAddress)) return;
+      const compressed = await gzipAsync(Buffer.from(serialized));
       const compressedBase64 = compressed.toString('base64');
       const encrypted = encryptWithSharedSecret(compressedBase64, peer.sessionDEK);
       this.signaling.sendData(encrypted, targetAddress);
     }).catch((error) => {
       console.error('Failed to send message:', error);
     });
+    this.sendQueues.set(targetAddress, next);
   }
 
   private handlePeerDisconnected(peerAddress: string): void {
@@ -242,6 +251,10 @@ export class AgentConnection extends EventEmitter {
 
   /** Register which session a peer is currently viewing. */
   subscribePeerToSession(peerAddress: string, sessionId: string): void {
+    const prev = this.peerSessions.get(peerAddress);
+    if (prev !== sessionId) {
+      console.log(`[sub] ${peerAddress.slice(0, 12)} ${prev?.slice(0, 8) ?? '(none)'} → ${sessionId.slice(0, 8)}`);
+    }
     this.peerSessions.set(peerAddress, sessionId);
   }
 
@@ -254,10 +267,15 @@ export class AgentConnection extends EventEmitter {
 
   /** Send a message only to peers subscribed to a specific session. */
   sendToSession(sessionId: string, message: Message): void {
+    let sent = 0;
     for (const [address] of this.peers) {
       if (this.peerSessions.get(address) === sessionId) {
         this.send(message, address);
+        sent++;
       }
+    }
+    if (sent === 0 && (message.payload as any)?.eventType) {
+      console.warn(`[sendToSession] NO peers for session=${sessionId.slice(0, 8)} event=${(message.payload as any).eventType} peers=${this.peers.size} subscriptions=${JSON.stringify([...this.peerSessions.entries()].map(([a,s]) => `${a.slice(0,12)}→${s.slice(0,8)}`))}`);
     }
   }
 }

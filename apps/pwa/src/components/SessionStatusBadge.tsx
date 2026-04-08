@@ -1,20 +1,21 @@
 import { clsx } from 'clsx';
 import type { ClaudeSessionSummary } from '@sumicom/quicksave-shared';
 
-export type SessionStatusKey = 'thinking' | 'waiting' | 'standby' | 'closed';
+export type SessionStatusKey = 'thinking' | 'pending' | 'waiting' | 'standby' | 'closed';
 
 export const SESSION_STATUS = {
-  thinking: { label: 'Thinking', dotColor: 'bg-blue-400',  textColor: 'text-blue-300',  borderColor: 'border-blue-500/30',  bgColor: 'bg-blue-500/10',  pulse: true  },
-  waiting:  { label: 'Waiting',  dotColor: 'bg-blue-400',  textColor: 'text-blue-300',  borderColor: 'border-blue-500/30',  bgColor: 'bg-blue-500/10',  pulse: true  },
-  standby:  { label: 'Standby',  dotColor: 'bg-green-400', textColor: 'text-green-300', borderColor: 'border-green-500/30', bgColor: 'bg-green-500/10', pulse: false },
-  closed:   { label: 'Closed',   dotColor: 'bg-slate-500', textColor: 'text-slate-400', borderColor: 'border-slate-600/30', bgColor: 'bg-slate-700/30', pulse: false },
+  thinking: { label: 'Thinking', dotColor: 'bg-blue-400',   textColor: 'text-blue-300',   borderColor: 'border-blue-500/30',   bgColor: 'bg-blue-500/10',   pulse: true  },
+  pending:  { label: 'Pending',  dotColor: 'bg-orange-400', textColor: 'text-orange-300', borderColor: 'border-orange-500/30', bgColor: 'bg-orange-500/10', pulse: true  },
+  waiting:  { label: 'Waiting',  dotColor: 'bg-blue-400',   textColor: 'text-blue-300',   borderColor: 'border-blue-500/30',   bgColor: 'bg-blue-500/10',   pulse: true  },
+  standby:  { label: 'Standby',  dotColor: 'bg-green-400',  textColor: 'text-green-300',  borderColor: 'border-green-500/30',  bgColor: 'bg-green-500/10',  pulse: false },
+  closed:   { label: 'Closed',   dotColor: 'bg-slate-500',  textColor: 'text-slate-400',  borderColor: 'border-slate-600/30',  bgColor: 'bg-slate-700/30',  pulse: false },
 } as const;
 
 /** Derive status from a session summary. */
 export function sessionStatusKey(session: ClaudeSessionSummary): SessionStatusKey {
   if (!session.isActive) return 'closed';
   if (session.isStreaming) return 'thinking';
-  if (session.hasPendingInput) return 'waiting';
+  if (session.hasPendingInput) return 'pending';
   return 'standby';
 }
 

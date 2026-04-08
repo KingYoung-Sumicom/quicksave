@@ -429,6 +429,7 @@ export class ClaudeCodeService extends EventEmitter {
         model: opts.model ?? DEFAULT_MODEL,
         allowedTools: opts.allowedTools ?? ['Read', 'Glob', 'Grep'],
         permissionMode: 'default' as const,
+        includePartialMessages: true,
         settingSources: ['user' as const, 'project' as const, 'local' as const],
         canUseTool: async (
           toolName: string,
@@ -765,6 +766,7 @@ export class ClaudeCodeService extends EventEmitter {
 
     const flushText = () => {
       if (textBuffer) {
+        console.log(`[stream] flushText len=${textBuffer.length} session=${capturedSessionId?.slice(0,8)}`);
         emitStream({ eventType: 'assistant_text', content: textBuffer });
         textBuffer = '';
       }
@@ -837,31 +839,40 @@ export class ClaudeCodeService extends EventEmitter {
             if (delta?.type === 'text_delta' && delta.text) {
               bufferText(delta.text);
             }
+          } else if (!event?.type?.includes('delta')) {
+            console.log(`[stream] stream_event type=${event?.type} session=${capturedSessionId?.slice(0,8)}`);
           }
           continue;
         }
 
-        // Complete assistant messages
+        // Complete assistant messages — v2 SDK does not support includePartialMessages,
+        // so text and tool_use both come through here (no stream_event text_delta).
         if (message.type === 'assistant') {
           flushText();
           const betaMessage = (message as any).message;
-          if (betaMessage?.content) {
-            for (const block of betaMessage.content) {
-              if (block.type === 'text' && block.text) {
-                emitStream({
-                  eventType: 'assistant_text',
-                  content: block.text,
-                });
-              } else if (block.type === 'tool_use') {
-                const toolInput = JSON.stringify(block.input);
-                emitStream({
-                  eventType: 'tool_use',
-                  content: '',
-                  toolName: block.name,
-                  toolInput,
-                  toolUseId: block.id,
-                });
-              }
+          const blocks = betaMessage?.content ?? [];
+          console.log(`[stream] assistant session=${capturedSessionId} blocks=${blocks.length} types=${blocks.map((b: any) => b.type).join(',')}`);
+          for (const block of blocks) {
+            if (block.type === 'thinking' && block.thinking) {
+              emitStream({
+                eventType: 'thinking',
+                content: block.thinking,
+              });
+            } else if (block.type === 'text' && block.text) {
+              emitStream({
+                eventType: 'assistant_text',
+                content: block.text,
+              });
+            } else if (block.type === 'tool_use') {
+              const toolInput = JSON.stringify(block.input);
+              console.log(`[stream] emitting tool_use name=${block.name} id=${block.id}`);
+              emitStream({
+                eventType: 'tool_use',
+                content: '',
+                toolName: block.name,
+                toolInput,
+                toolUseId: block.id,
+              });
             }
           }
           continue;
@@ -877,6 +888,7 @@ export class ClaudeCodeService extends EventEmitter {
                 const truncated = resultContent.length > TOOL_RESULT_TRUNCATE_LENGTH
                   ? resultContent.slice(0, TOOL_RESULT_TRUNCATE_LENGTH) + ' [truncated]'
                   : resultContent;
+                console.log(`[stream] emitting tool_result for=${block.tool_use_id}`);
                 emitStream({
                   eventType: 'tool_result',
                   content: truncated,

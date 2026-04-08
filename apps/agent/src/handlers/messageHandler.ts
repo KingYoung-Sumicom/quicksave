@@ -295,13 +295,6 @@ export class MessageHandler {
     });
     response.id = message.id;
 
-    // Re-emit pending user input requests so they get broadcast to the new peer
-    const pending = this.claudeService.getPendingInputRequests();
-    for (const request of pending) {
-      console.log(`[handshake] re-emitting pending user input: requestId=${request.requestId}`);
-      this.claudeService.emit('user-input-request', request);
-    }
-
     return response;
   }
 

@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { ClaudeSessionSummary, ClaudeStreamEventType, ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';
 
 export interface ChatMessage {
-  role: 'user' | 'assistant' | 'tool' | 'system';
+  role: 'user' | 'assistant' | 'tool' | 'system' | 'thinking';
   content: string;
   toolName?: string;      // Present on tool_use messages
   toolInput?: string;     // JSON string of tool input (tool_use only)
@@ -161,6 +161,9 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         }
         break;
       }
+      case 'thinking':
+        store.appendMessage({ role: 'thinking', content, timestamp: Date.now() });
+        break;
       case 'assistant_text':
         store.appendAssistantText(content);
         break;
@@ -173,11 +176,11 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
           (m) => m._synthetic && m.role === 'tool' && m.toolName === toolName
         );
         if (hasSynthetic) {
-          // Clear the synthetic flag — the real stream event confirms it
+          // Confirm the synthetic — update with real toolUseId/toolInput so inline results work
           set((state) => ({
             messages: state.messages.map((m) =>
               m._synthetic && m.role === 'tool' && m.toolName === toolName
-                ? { ...m, _synthetic: undefined }
+                ? { ...m, _synthetic: undefined, toolUseId, toolInput }
                 : m
             ),
           }));

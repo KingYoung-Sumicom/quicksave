@@ -82,6 +82,9 @@ export async function runDaemon(): Promise<void> {
   // Pub/sub: ClaudeCodeService emits events → send only to peers subscribed to that session
   const claudeService = messageHandler.getClaudeService();
   claudeService.on('stream', (event) => {
+    if (event.eventType === 'tool_use' || event.eventType === 'tool_result') {
+      console.log(`[run] stream ${event.eventType} session=${event.sessionId} name=${event.toolName ?? ''} id=${event.toolUseId ?? event.toolResultForId ?? ''}`);
+    }
     connection.sendToSession(event.sessionId, createMessage('claude:stream', event));
   });
   claudeService.on('stream:end', (result) => {
@@ -104,9 +107,15 @@ export async function runDaemon(): Promise<void> {
   // Init preferences from the last session's JSONL (best-effort, non-blocking)
   claudeService.initPreferences().catch(() => {});
 
-  // Track which session each peer is viewing
+  // Track which session each peer is viewing; re-send any pending requests for that session
   messageHandler.onPeerSubscribed = (peerAddress, sessionId) => {
     connection.subscribePeerToSession(peerAddress, sessionId);
+    const pending = claudeService.getPendingInputRequests();
+    for (const request of pending) {
+      if (request.sessionId === sessionId) {
+        connection.send(createMessage('claude:user-input-request', request), peerAddress);
+      }
+    }
   };
 
   // Wire: incoming PWA messages → MessageHandler → response back to PWA

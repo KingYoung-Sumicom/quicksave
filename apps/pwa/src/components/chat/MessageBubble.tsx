@@ -3,6 +3,7 @@ import { AssistantMessage } from './AssistantMessage';
 import { ToolCallMessage } from './ToolCallMessage';
 import { ToolResultMessage } from './ToolResultMessage';
 import { UserMessage } from './UserMessage';
+import { ThinkingMessage } from './ThinkingMessage';
 import { SystemMessage } from './SystemMessage';
 
 // Tools whose result is rendered inline within the tool call block
@@ -38,6 +39,8 @@ export function MessageBubble({ message, toolResultContent, isLast, onRespondToI
       // Suppress result when the tool call already renders it inline
       if (message.toolResultOf && TOOLS_WITH_INLINE_RESULT.has(message.toolResultOf)) return null;
       return <ToolResultMessage content={message.content} toolResultOf={message.toolResultOf} />;
+    case 'thinking':
+      return <ThinkingMessage content={message.content} />;
     case 'system':
       return <SystemMessage content={message.content} />;
     default:

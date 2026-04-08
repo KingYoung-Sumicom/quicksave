@@ -94,29 +94,28 @@ export function NavigationDrawer({
       <div className="w-64 flex-shrink-0 border-r border-slate-700 bg-slate-800 flex flex-col overflow-hidden">
         {/* Header: Machine switcher */}
         <div className="px-3 py-3 border-b border-slate-700 relative">
-          {hasMultipleMachines ? (
+          <div className={clsx('flex items-center rounded-md', showMachineSwitcher && 'bg-slate-700')}>
             <button
-              onClick={() => setShowMachineSwitcher(!showMachineSwitcher)}
-              className={clsx(
-                'w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-slate-700 transition-colors',
-                showMachineSwitcher && 'bg-slate-700'
-              )}
+              onClick={() => handleNavigate(`/agent/${agentId}`)}
+              className="flex-1 flex items-center gap-2 px-2 py-1.5 hover:bg-slate-700 rounded-l-md transition-colors min-w-0"
             >
               <span className="text-lg">{currentMachine?.icon || '💻'}</span>
-              <span className="font-semibold truncate flex-1 text-left">{currentMachine?.nickname || 'quicksave'}</span>
-              <svg
-                className={clsx('w-4 h-4 text-slate-400 transition-transform flex-shrink-0', showMachineSwitcher && 'rotate-180')}
-                fill="none" stroke="currentColor" viewBox="0 0 24 24"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-          ) : (
-            <div className="flex items-center gap-2 px-2 py-1.5">
-              <span className="text-lg">{currentMachine?.icon || '💻'}</span>
               <span className="font-semibold truncate">{currentMachine?.nickname || 'quicksave'}</span>
-            </div>
-          )}
+            </button>
+            {hasMultipleMachines && (
+              <button
+                onClick={() => setShowMachineSwitcher(!showMachineSwitcher)}
+                className="px-2 py-1.5 hover:bg-slate-700 rounded-r-md transition-colors flex-shrink-0"
+              >
+                <svg
+                  className={clsx('w-4 h-4 text-slate-400 transition-transform', showMachineSwitcher && 'rotate-180')}
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            )}
+          </div>
           {showMachineSwitcher && (
             <>
               <div className="fixed inset-0 z-10" onClick={() => setShowMachineSwitcher(false)} />
@@ -238,29 +237,28 @@ export function NavigationDrawer({
       <div className="fixed inset-y-0 left-0 z-50 w-72 max-w-[80vw] bg-slate-800 flex flex-col animate-slide-in-left safe-area-top">
         {/* Header: Machine switcher */}
         <div className="px-3 py-3 border-b border-slate-700 relative">
-          {hasMultipleMachines ? (
+          <div className={clsx('flex items-center rounded-md', showMachineSwitcher && 'bg-slate-700')}>
             <button
-              onClick={() => setShowMachineSwitcher(!showMachineSwitcher)}
-              className={clsx(
-                'w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-slate-700 transition-colors',
-                showMachineSwitcher && 'bg-slate-700'
-              )}
+              onClick={() => handleNavigate(`/agent/${agentId}`)}
+              className="flex-1 flex items-center gap-2 px-2 py-1.5 hover:bg-slate-700 rounded-l-md transition-colors min-w-0"
             >
               <span className="text-lg">{currentMachine?.icon || '💻'}</span>
-              <span className="font-semibold truncate flex-1 text-left">{currentMachine?.nickname || 'quicksave'}</span>
-              <svg
-                className={clsx('w-4 h-4 text-slate-400 transition-transform flex-shrink-0', showMachineSwitcher && 'rotate-180')}
-                fill="none" stroke="currentColor" viewBox="0 0 24 24"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-          ) : (
-            <div className="flex items-center gap-2 px-2 py-1.5">
-              <span className="text-lg">{currentMachine?.icon || '💻'}</span>
               <span className="font-semibold truncate">{currentMachine?.nickname || 'quicksave'}</span>
-            </div>
-          )}
+            </button>
+            {hasMultipleMachines && (
+              <button
+                onClick={() => setShowMachineSwitcher(!showMachineSwitcher)}
+                className="px-2 py-1.5 hover:bg-slate-700 rounded-r-md transition-colors flex-shrink-0"
+              >
+                <svg
+                  className={clsx('w-4 h-4 text-slate-400 transition-transform', showMachineSwitcher && 'rotate-180')}
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            )}
+          </div>
           {showMachineSwitcher && (
             <>
               <div className="fixed inset-0 z-10" onClick={() => setShowMachineSwitcher(false)} />
