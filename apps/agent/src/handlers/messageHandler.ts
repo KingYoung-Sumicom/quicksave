@@ -1005,13 +1005,21 @@ export class MessageHandler {
     const streamId = generateMessageId();
     console.log(`[claude:resume] session=${requestedId} cwd=${cwd} prompt=${prompt.slice(0, 80)}`);
 
+    // Subscribe before resumeSession starts streaming — hot resume emits events
+    // immediately (user_message, then assistant turns), so we must be subscribed
+    // before session.send() fires, not after resumeSession() returns.
+    this.onPeerSubscribed?.(peerAddress, requestedId);
+
     try {
       const actualSessionId = await this.claudeService.resumeSession({
         sessionId: requestedId, prompt, cwd, streamId,
       });
 
       console.log(`[claude:resume] session resumed: ${actualSessionId}`);
-      this.onPeerSubscribed?.(peerAddress, actualSessionId);
+      // Re-subscribe with actual session ID (cold resume may return a different ID)
+      if (actualSessionId !== requestedId) {
+        this.onPeerSubscribed?.(peerAddress, actualSessionId);
+      }
       const response = createMessage<ClaudeResumeResponsePayload>(
         'claude:resume:response',
         { success: true, sessionId: actualSessionId, streamId }
@@ -1073,10 +1081,12 @@ export class MessageHandler {
   ): Promise<Message<ClaudeGetMessagesResponsePayload>> {
     const { sessionId, cwd: payloadCwd, offset = 0, limit = 50 } = message.payload;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
-    this.onPeerSubscribed?.(peerAddress, sessionId);
 
     try {
       const result = await this.claudeService.getMessages(sessionId, cwd, offset, limit);
+      // Subscribe only after successful retrieval so a failed/invalid request
+      // doesn't overwrite an active streaming session's subscription.
+      this.onPeerSubscribed?.(peerAddress, sessionId);
       const response = createMessage<ClaudeGetMessagesResponsePayload>(
         'claude:get-messages:response',
         result

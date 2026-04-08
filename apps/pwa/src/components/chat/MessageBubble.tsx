@@ -5,6 +5,7 @@ import { ToolResultMessage } from './ToolResultMessage';
 import { UserMessage } from './UserMessage';
 import { ThinkingMessage } from './ThinkingMessage';
 import { SystemMessage } from './SystemMessage';
+import { SubagentBlockMessage } from './SubagentBlockMessage';
 
 // Tools whose result is rendered inline within the tool call block
 const TOOLS_WITH_INLINE_RESULT = new Set(['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep']);
@@ -43,6 +44,21 @@ export function MessageBubble({ message, toolResultContent, isLast, onRespondToI
       return <ThinkingMessage content={message.content} />;
     case 'system':
       return <SystemMessage content={message.content} />;
+    case 'subagent':
+      return (
+        <SubagentBlockMessage
+          content={message.content}
+          subagentStatus={message.subagentStatus}
+          subagentSummary={message.subagentSummary}
+          toolUseCount={message.toolUseCount}
+          lastToolName={message.lastToolName}
+          subagentEvents={message.subagentEvents}
+          pendingInputRequest={message.pendingInputRequest}
+          onRespond={message.pendingInputRequest && onRespondToInput
+            ? (action, response) => onRespondToInput(message.pendingInputRequest!.requestId, action, response)
+            : undefined}
+        />
+      );
     default:
       return null;
   }

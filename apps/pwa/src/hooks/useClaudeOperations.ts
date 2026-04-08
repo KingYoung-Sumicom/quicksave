@@ -91,7 +91,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
   const handlePushMessage = useCallback((message: Message): boolean => {
     if (message.type === 'claude:stream') {
       const payload = message.payload as ClaudeStreamPayload;
-      handleStreamEvent(payload.eventType, payload.content, payload.toolName, payload.toolInput, payload.toolUseId, payload.toolResultForId);
+      handleStreamEvent(payload.eventType, payload.content, payload.toolName, payload.toolInput, payload.toolUseId, payload.toolResultForId, payload.parentToolUseId, payload.taskId, payload.toolUseCount, payload.lastToolName, payload.subagentStatus, payload.subagentSummary);
       return true;
     }
 
@@ -231,6 +231,34 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
           }
         }
 
+        // Insert subagent blocks after their parent Task tool_use messages
+        if (response.subagentBlocks) {
+          for (const block of response.subagentBlocks) {
+            const subagentMsg: ChatMessage = {
+              role: 'subagent',
+              content: block.description,
+              toolUseId: block.toolUseId,
+              taskId: block.taskId,
+              subagentStatus: block.status,
+              subagentSummary: block.summary,
+              toolUseCount: block.toolUseCount,
+              lastToolName: block.lastToolName,
+              subagentEvents: block.events.map((e) => ({
+                role: 'tool' as const,
+                toolName: e.toolName,
+                toolInput: e.toolInput,
+                toolUseId: e.toolUseId,
+                toolResultOf: e.toolResultForId ? toolNameById.get(e.toolResultForId) : undefined,
+                content: e.toolResult ?? e.content ?? '',
+              })),
+              timestamp: Date.now(),
+            };
+            const idx = chatMessages.findIndex((m) => m.toolUseId === block.toolUseId);
+            if (idx >= 0) chatMessages.splice(idx + 1, 0, subagentMsg);
+            else chatMessages.push(subagentMsg);
+          }
+        }
+
         if (offset === 0) {
           // setMessages will auto-apply any deferred pending input from reconnect
           setMessages(chatMessages);
@@ -247,7 +275,6 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     },
     [sendRequest, setMessages, setHistoryMeta, setLoadingHistory]
   );
-
   const startSession = useCallback(
     async (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => {
       clearMessages();

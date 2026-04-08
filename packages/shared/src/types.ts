@@ -691,11 +691,23 @@ export interface ClaudeHistoryMessage {
   truncated?: boolean;
 }
 
+export interface ClaudeSubagentBlock {
+  toolUseId: string;          // Matches parent session's Task tool_use_id
+  taskId: string;             // SDK task_id (subagent JSONL filename stem)
+  description: string;        // From task_started
+  summary?: string;           // From task_notification
+  status: 'running' | 'completed' | 'failed' | 'stopped';
+  toolUseCount: number;
+  lastToolName?: string;
+  events: ClaudeHistoryMessage[];  // Subagent's internal tool calls/results
+}
+
 export interface ClaudeGetMessagesResponsePayload {
   messages: ClaudeHistoryMessage[];
   total: number;
   hasMore: boolean;
   error?: string;
+  subagentBlocks?: ClaudeSubagentBlock[];  // Keyed by toolUseId for the parent Task call
 }
 
 // Stream event types (agent-push)
@@ -706,7 +718,10 @@ export type ClaudeStreamEventType =
   | 'tool_result'
   | 'user_message'
   | 'system'
-  | 'error';
+  | 'error'
+  | 'subagent_start'     // subagent task started (task_started SDK event)
+  | 'subagent_progress'  // subagent progress update (task_progress SDK event)
+  | 'subagent_end';      // subagent task completed (task_notification SDK event)
 
 export interface ClaudeStreamPayload {
   streamId: string;
@@ -718,6 +733,13 @@ export interface ClaudeStreamPayload {
   toolUseId?: string;        // Present on tool_use events (block.id)
   toolResultForId?: string;  // Present on tool_result events (block.tool_use_id)
   isPartial?: boolean;
+  // Subagent fields
+  parentToolUseId?: string;  // Non-null on tool_use/tool_result from inside a subagent
+  taskId?: string;           // subagent_start/end: SDK task_id (matches subagent JSONL filename)
+  toolUseCount?: number;     // subagent_progress: total tool uses so far
+  lastToolName?: string;     // subagent_progress: last tool used by subagent
+  subagentStatus?: 'completed' | 'failed' | 'stopped'; // subagent_end
+  subagentSummary?: string;  // subagent_end: summary from task_notification
 }
 
 export interface ClaudeStreamEndPayload {

@@ -22,7 +22,7 @@ export function ThinkingMessage({ content }: { content: string }) {
           </span>
         </div>
         {expanded && (
-          <pre className="mt-1.5 whitespace-pre-wrap break-words text-slate-500 max-h-60 overflow-y-auto">
+          <pre className="mt-1.5 whitespace-pre-wrap break-words text-slate-500">
             {content}
           </pre>
         )}

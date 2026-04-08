@@ -9,11 +9,14 @@ import {
   unstable_v2_resumeSession,
   listSessions,
   getSessionMessages,
+  listSubagents,
+  getSubagentMessages,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKSession } from '@anthropic-ai/claude-agent-sdk';
 import type {
   ClaudeSessionSummary,
   ClaudeHistoryMessage,
+  ClaudeSubagentBlock,
   ClaudeStreamEventType,
   ClaudeUserInputRequestPayload,
   ClaudeUserInputResponsePayload,
@@ -32,6 +35,12 @@ export interface StreamEvent {
   toolUseId?: string;        // Present on tool_use events
   toolResultForId?: string;  // Present on tool_result events
   isPartial?: boolean;
+  parentToolUseId?: string;  // Non-null for tool events from inside a subagent
+  taskId?: string;
+  toolUseCount?: number;
+  lastToolName?: string;
+  subagentStatus?: 'completed' | 'failed' | 'stopped';
+  subagentSummary?: string;
 }
 
 export interface StreamEndResult {
@@ -94,6 +103,8 @@ interface PersistentSession {
   streaming: boolean;
   cancelStreaming: (() => void) | null;
   permissionLevel: PermissionLevel;
+  // Maps SDK task_id → parent tool_use_id for subagent blocks (in-memory only)
+  subagentMap: Map<string, string>;
 }
 
 /** Extract readable text from tool_result content (which may be a string or array of blocks). */
@@ -330,7 +341,7 @@ export class ClaudeCodeService extends EventEmitter {
     cwd: string,
     offset = 0,
     limit = 50
-  ): Promise<{ messages: ClaudeHistoryMessage[]; total: number; hasMore: boolean }> {
+  ): Promise<{ messages: ClaudeHistoryMessage[]; total: number; hasMore: boolean; subagentBlocks: ClaudeSubagentBlock[] }> {
     const allMessages = READ_THROUGH_COMPACT_BOUNDARY
       ? await readAllJSONLMessages(sessionId, cwd)
       : await getSessionMessages(sessionId, { dir: cwd });
@@ -397,10 +408,66 @@ export class ClaudeCodeService extends EventEmitter {
       return expanded;
     });
 
+    // Load subagent blocks (best-effort, non-fatal)
+    const subagentBlocks: ClaudeSubagentBlock[] = [];
+    try {
+      const taskIds = await listSubagents(sessionId, { dir: cwd });
+      // Build toolUseId mapping from in-memory session if available
+      const ps = this.sessions.get(sessionId);
+      // Collect Task tool_use_ids from parent messages (in order)
+      const taskToolUseIds = messages
+        .filter((m) => m.toolName === 'Task' && m.toolUseId)
+        .map((m) => m.toolUseId as string);
+
+      for (let i = 0; i < taskIds.length; i++) {
+        const taskId = taskIds[i];
+        try {
+          const subMsgs = await getSubagentMessages(sessionId, taskId, { dir: cwd });
+          const events: ClaudeHistoryMessage[] = [];
+          let idx = 0;
+          for (const sm of subMsgs) {
+            const rawMsg = (sm as any).message as any;
+            if (!rawMsg?.content) continue;
+            const role = sm.type as 'user' | 'assistant';
+            if (typeof rawMsg.content === 'string' && rawMsg.content) {
+              events.push({ index: idx++, role, content: rawMsg.content });
+            } else if (Array.isArray(rawMsg.content)) {
+              const textParts: string[] = [];
+              for (const block of rawMsg.content) {
+                if (block.type === 'text') {
+                  textParts.push(block.text);
+                } else if (block.type === 'tool_use') {
+                  events.push({ index: idx++, role, content: '', toolName: block.name, toolInput: JSON.stringify(block.input), toolUseId: block.id });
+                } else if (block.type === 'tool_result') {
+                  const r = extractToolResultText(block.content);
+                  events.push({ index: idx++, role, content: r.length > TOOL_RESULT_TRUNCATE_LENGTH ? r.slice(0, TOOL_RESULT_TRUNCATE_LENGTH) + ' [truncated]' : r, toolResult: r, toolResultForId: block.tool_use_id });
+                }
+              }
+              if (textParts.length > 0) events.unshift({ index: idx++, role, content: textParts.join('\n') });
+            }
+          }
+          // Match tool_use_id: prefer in-memory map, fallback to position
+          const toolUseId = ps?.subagentMap.get(taskId) ?? taskToolUseIds[i] ?? taskId;
+          const toolUseCount = events.filter((e) => e.toolName).length;
+          const lastTool = events.filter((e) => e.toolName).at(-1);
+          subagentBlocks.push({
+            toolUseId,
+            taskId,
+            description: '',
+            status: 'completed',
+            toolUseCount,
+            lastToolName: lastTool?.toolName,
+            events,
+          });
+        } catch { /* skip unreadable subagent */ }
+      }
+    } catch { /* listSubagents failed — not all sessions have subagents */ }
+
     return {
       messages,
       total,
       hasMore: tailStart > 0,
+      subagentBlocks,
     };
   }
 
@@ -586,6 +653,7 @@ export class ClaudeCodeService extends EventEmitter {
           streaming: true,
           cancelStreaming: null,
           permissionLevel: level,
+          subagentMap: new Map(),
         });
         this.sessionPermissions.set(id, level);
         this.emitSessionUpdate(id);
@@ -615,9 +683,7 @@ export class ClaudeCodeService extends EventEmitter {
       });
       await existing.session.send(opts.prompt);
 
-      this.consumeStream(existing.session, opts.streamId, () => {
-        // Session ID already captured
-      });
+      this.consumeStream(existing.session, opts.streamId, () => {}, opts.sessionId);
 
       return opts.sessionId;
     }
@@ -651,6 +717,7 @@ export class ClaudeCodeService extends EventEmitter {
           streaming: true,
           cancelStreaming: null,
           permissionLevel: restoredLevel,
+          subagentMap: new Map(),
         });
         this.sessionPermissions.set(id, restoredLevel);
         this.emitSessionUpdate(id);
@@ -753,11 +820,12 @@ export class ClaudeCodeService extends EventEmitter {
   private async consumeStream(
     session: SDKSession,
     streamId: string,
-    onSessionId: (id: string) => void
+    onSessionId: (id: string) => void,
+    initialSessionId?: string
   ): Promise<void> {
     let textBuffer = '';
     let bufferTimer: ReturnType<typeof setTimeout> | null = null;
-    let capturedSessionId: string | null = null;
+    let capturedSessionId: string | null = initialSessionId ?? null;
     let cancelled = false;
 
     const emitStream = (event: Omit<StreamEvent, 'sessionId' | 'streamId'>) => {
@@ -820,6 +888,39 @@ export class ClaudeCodeService extends EventEmitter {
           continue;
         }
 
+        // Subagent lifecycle events
+        if (message.type === 'system' && (message as any).subtype === 'task_started') {
+          const m = message as any;
+          const taskId: string = m.task_id;
+          const toolUseId: string | undefined = m.tool_use_id;
+          if (capturedSessionId && toolUseId) {
+            const ps = this.sessions.get(capturedSessionId);
+            ps?.subagentMap.set(taskId, toolUseId);
+          }
+          emitStream({ eventType: 'subagent_start', content: m.description ?? '', taskId, toolUseId: m.tool_use_id });
+          continue;
+        }
+
+        if (message.type === 'system' && (message as any).subtype === 'task_progress') {
+          const m = message as any;
+          emitStream({
+            eventType: 'subagent_progress', content: m.description ?? '',
+            taskId: m.task_id, toolUseId: m.tool_use_id,
+            toolUseCount: m.usage?.tool_uses, lastToolName: m.last_tool_name,
+          });
+          continue;
+        }
+
+        if (message.type === 'system' && (message as any).subtype === 'task_notification') {
+          const m = message as any;
+          emitStream({
+            eventType: 'subagent_end', content: m.summary ?? '',
+            taskId: m.task_id, toolUseId: m.tool_use_id,
+            subagentStatus: m.status, subagentSummary: m.summary,
+          });
+          continue;
+        }
+
         // Session state changed — 'idle' means turn is over
         if (message.type === 'system' && (message as any).subtype === 'session_state_changed') {
           const state = (message as any).state;
@@ -847,39 +948,52 @@ export class ClaudeCodeService extends EventEmitter {
 
         // Complete assistant messages — v2 SDK does not support includePartialMessages,
         // so text and tool_use both come through here (no stream_event text_delta).
+        // Assistant messages: parent_tool_use_id non-null = from a subagent.
+        // Emit subagent tool events tagged with parentToolUseId so PWA can group them.
         if (message.type === 'assistant') {
-          flushText();
+          const parentToolUseId = (message as any).parent_tool_use_id ?? undefined;
+          if (!parentToolUseId) flushText();
           const betaMessage = (message as any).message;
           const blocks = betaMessage?.content ?? [];
-          console.log(`[stream] assistant session=${capturedSessionId} blocks=${blocks.length} types=${blocks.map((b: any) => b.type).join(',')}`);
+          if (!parentToolUseId) {
+            console.log(`[stream] assistant session=${capturedSessionId} blocks=${blocks.length} types=${blocks.map((b: any) => b.type).join(',')}`);
+          }
           for (const block of blocks) {
-            if (block.type === 'thinking' && block.thinking) {
-              emitStream({
-                eventType: 'thinking',
-                content: block.thinking,
-              });
-            } else if (block.type === 'text' && block.text) {
-              emitStream({
-                eventType: 'assistant_text',
-                content: block.text,
-              });
-            } else if (block.type === 'tool_use') {
-              const toolInput = JSON.stringify(block.input);
-              console.log(`[stream] emitting tool_use name=${block.name} id=${block.id}`);
-              emitStream({
-                eventType: 'tool_use',
-                content: '',
-                toolName: block.name,
-                toolInput,
-                toolUseId: block.id,
-              });
+            if (!parentToolUseId) {
+              if (block.type === 'thinking' && block.thinking) {
+                emitStream({ eventType: 'thinking', content: block.thinking });
+              } else if (block.type === 'text' && block.text) {
+                emitStream({ eventType: 'assistant_text', content: block.text });
+              } else if (block.type === 'tool_use') {
+                emitStream({ eventType: 'tool_use', content: '', toolName: block.name, toolInput: JSON.stringify(block.input), toolUseId: block.id });
+              }
+            } else {
+              // Subagent tool call — emit tagged so PWA can group under subagent block
+              if (block.type === 'tool_use') {
+                emitStream({ eventType: 'tool_use', content: '', toolName: block.name, toolInput: JSON.stringify(block.input), toolUseId: block.id, parentToolUseId });
+              }
             }
           }
           continue;
         }
 
-        // User messages contain tool results
+        // User messages contain tool results.
+        // Subagent messages have a different session_id — emit tagged with parentToolUseId.
         if (message.type === 'user') {
+          const msgSessionId = (message as any).session_id;
+          const isSubagent = !!(msgSessionId && msgSessionId !== capturedSessionId);
+          // Resolve parentToolUseId: find which Task tool_use_id spawned this subagent session
+          let parentToolUseId: string | undefined;
+          if (isSubagent && capturedSessionId) {
+            const ps = this.sessions.get(capturedSessionId);
+            if (ps) {
+              // Look up by session_id — find task whose session matches
+              // (We use subagentMap for the known mapping; fallback: skip)
+              for (const [, tuId] of ps.subagentMap) {
+                parentToolUseId = tuId; // best-effort: last known subagent
+              }
+            }
+          }
           const userMsg = (message as any).message;
           if (userMsg?.content && Array.isArray(userMsg.content)) {
             for (const block of userMsg.content) {
@@ -888,20 +1002,21 @@ export class ClaudeCodeService extends EventEmitter {
                 const truncated = resultContent.length > TOOL_RESULT_TRUNCATE_LENGTH
                   ? resultContent.slice(0, TOOL_RESULT_TRUNCATE_LENGTH) + ' [truncated]'
                   : resultContent;
-                console.log(`[stream] emitting tool_result for=${block.tool_use_id}`);
-                emitStream({
-                  eventType: 'tool_result',
-                  content: truncated,
-                  toolResultForId: block.tool_use_id,
-                });
+                emitStream({ eventType: 'tool_result', content: truncated, toolResultForId: block.tool_use_id, ...(isSubagent && parentToolUseId ? { parentToolUseId } : {}) });
               }
             }
           }
           continue;
         }
 
-        // Final result — turn is complete but session stays alive
+        // Final result — turn is complete but session stays alive.
+        // Subagent result messages have a different session_id — skip them
+        // instead of returning (which would prematurely end the parent stream).
         if (message.type === 'result') {
+          if ((message as any).session_id !== capturedSessionId) {
+            console.log(`[stream] skip subagent result session=${(message as any).session_id?.slice(0,8)}`);
+            continue;
+          }
           flushText();
           const result = message as any;
           console.log(`[stream] result session=${capturedSessionId} subtype=${result.subtype} cost=$${result.total_cost_usd?.toFixed(4) ?? '?'}`);
