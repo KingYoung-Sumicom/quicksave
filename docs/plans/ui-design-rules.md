@@ -49,3 +49,13 @@ Components that display information inside the chat view (tool results, plan vie
 **Why:** The only scroll container in the chat view is the messages list. Nesting scrollable regions inside it breaks touch scroll (gesture is captured by the inner container) and hides content from the user. Since the messages list already scrolls, there is no need to cap inner components — the user can always scroll past them.
 
 ---
+
+### No scrollbars anywhere inside the chat view
+
+No element inside the chat view may render a visible scrollbar. This means avoiding `overflow-y-auto`, `overflow-y-scroll`, or `overflow-auto` on any element that is a descendant of the messages list — including collapsible blocks, expanded previews, `<pre>` tags, and inline result views.
+
+**Why:** Nested scrollbars are visually noisy and confusing. On touch devices they also capture scroll gestures (see rule above). The messages list is the one and only scroll surface. If content is long, it should expand in place and let the outer list scroll past it — not introduce its own scroll region.
+
+**How to apply:** When expanding content inline (e.g. a thinking block, tool result, or subagent event list), use `whitespace-pre-wrap break-words` and let height grow naturally. Remove `max-h-*` and `overflow-y-auto` whenever you add expandable content to a chat component.
+
+---
