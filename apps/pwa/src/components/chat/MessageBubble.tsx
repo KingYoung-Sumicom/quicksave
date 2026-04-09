@@ -21,7 +21,7 @@ export function MessageBubble({ message, toolResultContent, isLast, onRespondToI
       return <UserMessage content={message.content} />;
     case 'assistant':
       return <AssistantMessage content={message.content} isLast={isLast} />;
-    case 'tool':
+    case 'tool': {
       if (message.toolName) {
         return (
           <ToolCallMessage
@@ -32,14 +32,13 @@ export function MessageBubble({ message, toolResultContent, isLast, onRespondToI
             pendingInputRequest={message.pendingInputRequest}
             onRespond={message.pendingInputRequest && onRespondToInput
               ? (action, response) => onRespondToInput(message.pendingInputRequest!.requestId, action, response)
-              : undefined
-            }
+              : undefined}
           />
         );
       }
-      // Suppress result when the tool call already renders it inline
       if (message.toolResultOf && TOOLS_WITH_INLINE_RESULT.has(message.toolResultOf)) return null;
       return <ToolResultMessage content={message.content} toolResultOf={message.toolResultOf} />;
+    }
     case 'thinking':
       return <ThinkingMessage content={message.content} />;
     case 'system':
@@ -52,7 +51,8 @@ export function MessageBubble({ message, toolResultContent, isLast, onRespondToI
           subagentSummary={message.subagentSummary}
           toolUseCount={message.toolUseCount}
           lastToolName={message.lastToolName}
-          subagentEvents={message.subagentEvents}
+          toolUseId={message.toolUseId}
+          agentId={message.agentId}
           pendingInputRequest={message.pendingInputRequest}
           onRespond={message.pendingInputRequest && onRespondToInput
             ? (action, response) => onRespondToInput(message.pendingInputRequest!.requestId, action, response)

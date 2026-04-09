@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import type { SubagentEvent } from '../../stores/claudeStore';
 import type { ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';
 
 const STATUS_STYLES: Record<string, { dot: string; label: string }> = {
@@ -9,54 +8,14 @@ const STATUS_STYLES: Record<string, { dot: string; label: string }> = {
   stopped:   { dot: 'bg-slate-400',              label: 'Stopped' },
 };
 
-function SubagentEventRow({ event }: { event: SubagentEvent }) {
-  const isResult = !event.toolName;
-  const [expanded, setExpanded] = useState(false);
-
-  if (isResult) {
-    const content = event.content ?? '';
-    if (!content.trim()) return null;
-    const lines = content.trimEnd().split('\n');
-    const preview = lines[0].slice(0, 60) + (lines[0].length > 60 || lines.length > 1 ? '…' : '');
-    return (
-      <div className="text-[10px] text-slate-500 pl-3 py-0.5">
-        <button
-          className="text-left w-full hover:text-slate-400 transition-colors"
-          onClick={() => setExpanded((v) => !v)}
-        >
-          <span className="italic">{event.toolResultOf ? `↳ ${event.toolResultOf} result` : '↳ result'}</span>
-          {!expanded && <span className="ml-1 text-slate-600">{preview}</span>}
-        </button>
-        {expanded && (
-          <pre className="mt-0.5 whitespace-pre-wrap break-words text-slate-500 pl-2">{content}</pre>
-        )}
-      </div>
-    );
-  }
-
-  const input = event.toolInput ?? event.content ?? '';
-  let parsedPreview = input;
-  try {
-    const obj = JSON.parse(input);
-    const firstVal = Object.values(obj)[0];
-    if (typeof firstVal === 'string') parsedPreview = firstVal.slice(0, 60);
-  } catch { /* ignore */ }
-
-  return (
-    <div className="flex items-start gap-1.5 py-0.5 pl-1">
-      <span className="text-[10px] font-medium text-slate-400 shrink-0">{event.toolName}</span>
-      <span className="text-[10px] text-slate-600 truncate">{parsedPreview}</span>
-    </div>
-  );
-}
-
-export function SubagentBlockMessage({ content, subagentStatus = 'running', subagentSummary, toolUseCount = 0, lastToolName, subagentEvents = [], pendingInputRequest, onRespond }: {
+export function SubagentBlockMessage({ content, subagentStatus = 'running', subagentSummary, toolUseCount = 0, lastToolName, pendingInputRequest, onRespond }: {
   content: string;
   subagentStatus?: 'running' | 'completed' | 'failed' | 'stopped';
   subagentSummary?: string;
   toolUseCount?: number;
   lastToolName?: string;
-  subagentEvents?: SubagentEvent[];
+  toolUseId?: string;
+  agentId?: string;
   pendingInputRequest?: ClaudeUserInputRequestPayload;
   onRespond?: (action: 'allow' | 'deny', response?: string) => void;
 }) {
@@ -70,7 +29,7 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
       : content.slice(0, 60) + (content.length > 60 ? '…' : '');
 
   return (
-    <div className="flex justify-start">
+    <div className="flex justify-start flex-col gap-0.5">
       <div className="bg-slate-800/40 border-l-2 border-violet-500/50 rounded-r-lg w-full overflow-hidden">
         {/* Header row */}
         <button
@@ -84,13 +43,9 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
           </svg>
 
-          {/* Status dot */}
           <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${status.dot}`} />
-
-          {/* Description */}
           <span className="text-xs text-slate-400 flex-1 min-w-0 truncate">{headerLine}</span>
 
-          {/* Right side meta */}
           <span className="flex items-center gap-2 shrink-0">
             {toolUseCount > 0 && (
               <span className="text-[10px] text-slate-600">{toolUseCount} tool{toolUseCount !== 1 ? 's' : ''}</span>
@@ -101,7 +56,7 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
           </span>
         </button>
 
-        {/* Pending permission prompt — always visible, no expand needed */}
+        {/* Pending permission — always visible */}
         {pendingInputRequest && onRespond && (
           <div className="px-2.5 pb-2 pt-1.5 border-t border-amber-500/20">
             <p className="text-xs text-amber-400/80 mb-2">{pendingInputRequest.title}</p>
@@ -122,28 +77,12 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
           </div>
         )}
 
-        {/* Expanded content */}
+        {/* Expanded: show description and summary */}
         {expanded && (
-          <div className="px-2.5 pb-2 border-t border-slate-700/40">
-            {/* Task description */}
-            <p className="text-[10px] text-slate-500 pt-1.5 pb-1 italic">{content}</p>
-
-            {/* Internal events */}
-            {subagentEvents.length > 0 ? (
-              <div className="divide-y divide-slate-700/20">
-                {subagentEvents.map((ev, i) => (
-                  <SubagentEventRow key={i} event={ev} />
-                ))}
-              </div>
-            ) : (
-              <p className="text-[10px] text-slate-600 italic">No internal events recorded.</p>
-            )}
-
-            {/* Summary */}
+          <div className="px-2.5 pb-2 pt-1 border-t border-slate-700/40 space-y-1">
+            <p className="text-[10px] text-slate-500 italic">{content}</p>
             {subagentSummary && (
-              <div className="mt-1.5 pt-1.5 border-t border-slate-700/40">
-                <p className="text-[10px] text-slate-500">{subagentSummary}</p>
-              </div>
+              <p className="text-[10px] text-slate-500">{subagentSummary}</p>
             )}
           </div>
         )}

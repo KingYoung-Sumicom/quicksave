@@ -5,7 +5,7 @@ const COLLAPSE_THRESHOLD = 4;
 // ─── task-notification parser ─────────────────────────────────────────────────
 
 interface TaskNotification {
-  taskId?: string;
+  agentId?: string;
   status?: string;
   summary?: string;
 }
@@ -16,7 +16,7 @@ function parseTaskNotification(content: string): TaskNotification | null {
     const m = content.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`));
     return m ? m[1].trim() : undefined;
   };
-  return { taskId: get('task-id'), status: get('status'), summary: get('summary') };
+  return { agentId: get('task-id'), status: get('status'), summary: get('summary') };
 }
 
 function TaskNotificationMessage({ content }: { content: string }) {
@@ -45,8 +45,8 @@ function TaskNotificationMessage({ content }: { content: string }) {
                       {notif.summary}
                     </div>
                   )}
-                  {notif.taskId && (
-                    <div className="text-[10px] text-slate-500 mt-0.5 font-mono">{notif.taskId}</div>
+                  {notif.agentId && (
+                    <div className="text-[10px] text-slate-500 mt-0.5 font-mono">{notif.agentId}</div>
                   )}
                 </div>
               </div>

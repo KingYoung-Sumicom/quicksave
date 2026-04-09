@@ -724,6 +724,7 @@ function ClaudePanelWithHash({
     <ClaudePanel
       sessionId={urlSessionId}
       newSession={isNewSession && !activeSessionId}
+      cwd={cwd}
       onSelectSession={(sid) => navigate(`${basePath}/${sid}`)}
       onNewSession={() => navigate(`${basePath}?new`)}
       onListSessions={boundListSessions}

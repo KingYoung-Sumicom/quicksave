@@ -33,15 +33,34 @@ cd apps/agent && npx vitest run
 
 All tests must pass before proceeding.
 
-## Step 3: Commit
+## Step 3: Commit with release note
 
-Create a single commit with message: `v$ARGUMENTS`
+First, find the previous version tag to determine the range of commits to summarize:
+
+```bash
+git tag --sort=-version:refname | head -2
+```
+
+Collect all commit messages since the previous tag:
+
+```bash
+git log <prev-tag>..HEAD --oneline
+```
+
+Summarize those commits into a concise **Changes** section, grouped by type (feat, fix, chore, etc.). Then create a single commit with the release note as the message body.
 
 Do NOT include any Co-Authored-By attribution.
 
 ```bash
 git add -A
-git commit -m "v$ARGUMENTS"
+git commit -m "$(cat <<'EOF'
+v$ARGUMENTS
+
+Changes:
+- <summarized change 1>
+- <summarized change 2>
+EOF
+)"
 ```
 
 ## Step 4: Tag and push

@@ -1,9 +1,5 @@
 import { EventEmitter } from 'events';
-import { createReadStream } from 'fs';
-import { readdir, stat } from 'fs/promises';
-import { createInterface } from 'readline';
-import { join } from 'path';
-import { homedir } from 'os';
+import { resolve } from 'path';
 import {
   unstable_v2_createSession,
   unstable_v2_resumeSession,
@@ -35,8 +31,7 @@ export interface StreamEvent {
   toolUseId?: string;        // Present on tool_use events
   toolResultForId?: string;  // Present on tool_result events
   isPartial?: boolean;
-  parentToolUseId?: string;  // Non-null for tool events from inside a subagent
-  taskId?: string;
+  agentId?: string;
   toolUseCount?: number;
   lastToolName?: string;
   subagentStatus?: 'completed' | 'failed' | 'stopped';
@@ -103,8 +98,6 @@ interface PersistentSession {
   streaming: boolean;
   cancelStreaming: (() => void) | null;
   permissionLevel: PermissionLevel;
-  // Maps SDK task_id → parent tool_use_id for subagent blocks (in-memory only)
-  subagentMap: Map<string, string>;
 }
 
 /** Extract readable text from tool_result content (which may be a string or array of blocks). */
@@ -117,52 +110,6 @@ function extractToolResultText(content: unknown): string {
       .join('\n');
   }
   return JSON.stringify(content);
-}
-
-// ─── Direct JSONL reader ──────────────────────────────────────────────────────
-// getSessionMessages() from the SDK follows the parentUuid chain, which stops
-// at each compact_boundary. Reading the file directly lets us surface all
-// messages across every compaction epoch in a single flat list.
-//
-// Set to false to fall back to the SDK reader (only shows current epoch).
-const READ_THROUGH_COMPACT_BOUNDARY = false;
-
-function projectDirName(cwd: string): string {
-  // Mirrors SDK logic: replace non-alphanumeric chars with '-'.
-  // Paths under 200 chars use the raw replacement; longer ones get a hash
-  // suffix — but that edge case is unlikely for normal project paths.
-  return cwd.replace(/[^a-zA-Z0-9]/g, '-');
-}
-
-function jsonlPath(sessionId: string, cwd: string): string {
-  return join(homedir(), '.claude', 'projects', projectDirName(cwd), `${sessionId}.jsonl`);
-}
-
-async function readAllJSONLMessages(sessionId: string, cwd: string): Promise<any[]> {
-  const filePath = jsonlPath(sessionId, cwd);
-  const entries: any[] = [];
-
-  await new Promise<void>((resolve, reject) => {
-    const rl = createInterface({
-      input: createReadStream(filePath),
-      crlfDelay: Infinity,
-    });
-    rl.on('line', (line) => {
-      if (!line.trim()) return;
-      try {
-        const obj = JSON.parse(line);
-        const t = obj.type;
-        // Keep user/assistant turns and compact_boundary markers; skip progress/queue-op
-        if (t === 'user' || t === 'assistant' || (t === 'system' && obj.subtype === 'compact_boundary')) {
-          entries.push(obj);
-        }
-      } catch { /* malformed line — skip */ }
-    });
-    rl.on('close', resolve);
-    rl.on('error', reject);
-  });
-
-  return entries;
 }
 
 interface PendingUserInput {
@@ -185,51 +132,23 @@ export class ClaudeCodeService extends EventEmitter {
   }
 
   /**
-   * Initialize preferences from the most recently used session's JSONL.
-   * Reads the last assistant message's model field.
+   * Initialize preferences from the most recently used session.
+   * Uses SDK listSessions + getSessionMessages to read the last assistant message's model field.
    */
   async initPreferences(): Promise<void> {
     try {
-      const claudeDir = join(homedir(), '.claude', 'projects');
-      const projectDirs = await readdir(claudeDir);
-      let mostRecentFile: string | null = null;
-      let mostRecentMtime = 0;
+      const sessions = await listSessions();
+      if (sessions.length === 0) return;
 
-      for (const projectDir of projectDirs) {
-        const projectPath = join(claudeDir, projectDir);
-        try {
-          const files = await readdir(projectPath);
-          for (const file of files) {
-            if (!file.endsWith('.jsonl')) continue;
-            const filePath = join(projectPath, file);
-            const fileStat = await stat(filePath);
-            if (fileStat.mtimeMs > mostRecentMtime) {
-              mostRecentMtime = fileStat.mtimeMs;
-              mostRecentFile = filePath;
-            }
-          }
-        } catch { /* skip unreadable dirs */ }
-      }
+      // Sessions are sorted by lastModified desc by the SDK
+      const latest = sessions[0] as any;
+      const sessionId: string = latest.sessionId;
+      const cwd: string | undefined = latest.cwd;
 
-      if (!mostRecentFile) return;
-
-      const assistantEntries = await new Promise<any[]>((resolve, reject) => {
-        const results: any[] = [];
-        const rl = createInterface({ input: createReadStream(mostRecentFile!), crlfDelay: Infinity });
-        rl.on('line', (line) => {
-          if (!line.trim()) return;
-          try {
-            const obj = JSON.parse(line);
-            if (obj.type === 'assistant') results.push(obj);
-          } catch { /* malformed line */ }
-        });
-        rl.on('close', () => resolve(results));
-        rl.on('error', reject);
-      });
-
-      for (let i = assistantEntries.length - 1; i >= 0; i--) {
-        const model = assistantEntries[i].message?.model;
-        if (model) {
+      const msgs = await getSessionMessages(sessionId, { dir: cwd });
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const model = (msgs[i].message as any)?.model;
+        if (model && msgs[i].type === 'assistant') {
           this.preferences.model = model;
           break;
         }
@@ -316,21 +235,33 @@ export class ClaudeCodeService extends EventEmitter {
   }
 
   /**
-   * Check if a session's last message in the SDK JSONL is an unanswered tool_use.
-   * Reads only the last few messages to keep it fast.
+   * Check if a session's last message is an unanswered tool_use.
+   * Uses SDK getSessionMessages + listSubagents/getSubagentMessages.
    */
   private async detectPendingFromJSONL(sessionId: string, cwd: string): Promise<boolean> {
-    try {
-      const allMessages = READ_THROUGH_COMPACT_BOUNDARY
-        ? await readAllJSONLMessages(sessionId, cwd)
-        : await getSessionMessages(sessionId, { dir: cwd });
-      if (allMessages.length === 0) return false;
-      const last = allMessages[allMessages.length - 1] as any;
-      // Last message is assistant with a tool_use block and no following user/tool_result
+    const hasPendingToolUse = (msgs: any[]): boolean => {
+      if (msgs.length === 0) return false;
+      const last = msgs[msgs.length - 1];
       if (last.type !== 'assistant') return false;
       const content = last.message?.content;
-      if (!Array.isArray(content)) return false;
-      return content.some((block: any) => block.type === 'tool_use');
+      return Array.isArray(content) && content.some((b: any) => b.type === 'tool_use');
+    };
+
+    try {
+      // Check parent session
+      const allMessages = await getSessionMessages(sessionId, { dir: cwd });
+      if (hasPendingToolUse(allMessages as any[])) return true;
+
+      // Check subagents — a subagent may be waiting for permission
+      try {
+        const agentIds = await listSubagents(sessionId, { dir: cwd });
+        for (const agentId of agentIds) {
+          const subMsgs = await getSubagentMessages(sessionId, agentId, { dir: cwd });
+          if (hasPendingToolUse(subMsgs as any[])) return true;
+        }
+      } catch { /* no subagents */ }
+
+      return false;
     } catch {
       return false;
     }
@@ -341,18 +272,44 @@ export class ClaudeCodeService extends EventEmitter {
     cwd: string,
     offset = 0,
     limit = 50
-  ): Promise<{ messages: ClaudeHistoryMessage[]; total: number; hasMore: boolean; subagentBlocks: ClaudeSubagentBlock[] }> {
-    const allMessages = READ_THROUGH_COMPACT_BOUNDARY
-      ? await readAllJSONLMessages(sessionId, cwd)
-      : await getSessionMessages(sessionId, { dir: cwd });
+  ): Promise<{ messages: ClaudeHistoryMessage[]; total: number; hasMore: boolean; subagentBlocks: ClaudeSubagentBlock[]; toolNameMap: Record<string, string> }> {
+    const allMessages = (await getSessionMessages(sessionId, { dir: cwd, includeSystemMessages: true }) as any[])
+      .filter((m: any) => !m.isSidechain);
+
     const total = allMessages.length;
     const tailStart = Math.max(0, total - offset - limit);
     const tailEnd = Math.max(0, total - offset);
     const sliced = allMessages.slice(tailStart, tailEnd);
 
-    const messages: ClaudeHistoryMessage[] = sliced.flatMap((msg: any, i) => {
-      // compact_boundary system entries — render as a divider
-      if (msg.type === 'system' && msg.subtype === 'compact_boundary') {
+    // Build toolNameMap from ALL messages so tool_results can always resolve their tool_use name.
+    // Also collect Agent tool_use blocks → subagent block derivation.
+    const toolNameMap: Record<string, string> = {};
+    const agentToolUses = new Map<string, { description: string; hasResult: boolean; resultSummary?: string }>();
+
+    for (const msg of allMessages) {
+      const rawMsg = (msg as any).message as any;
+      if (!Array.isArray(rawMsg?.content)) continue;
+      for (const block of rawMsg.content) {
+        if (block.type === 'tool_use' && block.id && block.name) {
+          toolNameMap[block.id] = block.name;
+          if (block.name === 'Agent') {
+            agentToolUses.set(block.id, {
+              description: (block.input as any)?.description ?? '',
+              hasResult: false,
+            });
+          }
+        }
+        if (block.type === 'tool_result' && agentToolUses.has(block.tool_use_id)) {
+          const entry = agentToolUses.get(block.tool_use_id)!;
+          entry.hasResult = true;
+          const text = extractToolResultText(block.content);
+          if (text) entry.resultSummary = text.slice(0, 200);
+        }
+      }
+    }
+
+    const messages: ClaudeHistoryMessage[] = sliced.flatMap((msg: any, i: number) => {
+      if (msg.type === 'system') {
         return [{
           index: tailStart + i,
           role: 'system' as const,
@@ -373,6 +330,8 @@ export class ClaudeCodeService extends EventEmitter {
             if (block.type === 'text') {
               textParts.push(block.text);
             } else if (block.type === 'tool_use') {
+              // Skip Agent tool_use — represented by subagentBlocks instead
+              if (agentToolUses.has(block.id)) continue;
               expanded.push({
                 index: tailStart + i,
                 role,
@@ -382,6 +341,8 @@ export class ClaudeCodeService extends EventEmitter {
                 toolUseId: block.id,
               });
             } else if (block.type === 'tool_result') {
+              // Skip Agent tool_result — represented by subagentBlocks instead
+              if (agentToolUses.has(block.tool_use_id)) continue;
               const resultStr = extractToolResultText(block.content);
               const truncated = resultStr.length > TOOL_RESULT_TRUNCATE_LENGTH;
               expanded.push({
@@ -408,66 +369,25 @@ export class ClaudeCodeService extends EventEmitter {
       return expanded;
     });
 
-    // Load subagent blocks (best-effort, non-fatal)
+    // Build subagent blocks from Agent tool_use / tool_result pairs
     const subagentBlocks: ClaudeSubagentBlock[] = [];
-    try {
-      const taskIds = await listSubagents(sessionId, { dir: cwd });
-      // Build toolUseId mapping from in-memory session if available
-      const ps = this.sessions.get(sessionId);
-      // Collect Task tool_use_ids from parent messages (in order)
-      const taskToolUseIds = messages
-        .filter((m) => m.toolName === 'Task' && m.toolUseId)
-        .map((m) => m.toolUseId as string);
-
-      for (let i = 0; i < taskIds.length; i++) {
-        const taskId = taskIds[i];
-        try {
-          const subMsgs = await getSubagentMessages(sessionId, taskId, { dir: cwd });
-          const events: ClaudeHistoryMessage[] = [];
-          let idx = 0;
-          for (const sm of subMsgs) {
-            const rawMsg = (sm as any).message as any;
-            if (!rawMsg?.content) continue;
-            const role = sm.type as 'user' | 'assistant';
-            if (typeof rawMsg.content === 'string' && rawMsg.content) {
-              events.push({ index: idx++, role, content: rawMsg.content });
-            } else if (Array.isArray(rawMsg.content)) {
-              const textParts: string[] = [];
-              for (const block of rawMsg.content) {
-                if (block.type === 'text') {
-                  textParts.push(block.text);
-                } else if (block.type === 'tool_use') {
-                  events.push({ index: idx++, role, content: '', toolName: block.name, toolInput: JSON.stringify(block.input), toolUseId: block.id });
-                } else if (block.type === 'tool_result') {
-                  const r = extractToolResultText(block.content);
-                  events.push({ index: idx++, role, content: r.length > TOOL_RESULT_TRUNCATE_LENGTH ? r.slice(0, TOOL_RESULT_TRUNCATE_LENGTH) + ' [truncated]' : r, toolResult: r, toolResultForId: block.tool_use_id });
-                }
-              }
-              if (textParts.length > 0) events.unshift({ index: idx++, role, content: textParts.join('\n') });
-            }
-          }
-          // Match tool_use_id: prefer in-memory map, fallback to position
-          const toolUseId = ps?.subagentMap.get(taskId) ?? taskToolUseIds[i] ?? taskId;
-          const toolUseCount = events.filter((e) => e.toolName).length;
-          const lastTool = events.filter((e) => e.toolName).at(-1);
-          subagentBlocks.push({
-            toolUseId,
-            taskId,
-            description: '',
-            status: 'completed',
-            toolUseCount,
-            lastToolName: lastTool?.toolName,
-            events,
-          });
-        } catch { /* skip unreadable subagent */ }
-      }
-    } catch { /* listSubagents failed — not all sessions have subagents */ }
+    for (const [toolUseId, info] of agentToolUses) {
+      subagentBlocks.push({
+        toolUseId,
+        agentId: toolUseId,
+        description: info.description,
+        summary: info.resultSummary,
+        status: info.hasResult ? 'completed' : 'running',
+        toolUseCount: 0,
+      });
+    }
 
     return {
       messages,
       total,
       hasMore: tailStart > 0,
       subagentBlocks,
+      toolNameMap,
     };
   }
 
@@ -511,8 +431,25 @@ export class ClaudeCodeService extends EventEmitter {
           const ps = resolvedSessionId !== 'unknown' ? this.sessions.get(resolvedSessionId) : undefined;
           const level = ps?.permissionLevel ?? 'acceptEdits';
           if (AUTO_APPROVE[level].has(toolName)) {
-
-            return { behavior: 'allow' as const, updatedInput: input };
+            // For file-writing tools, restrict auto-approval to paths inside the project cwd
+            const FILE_WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
+            if (FILE_WRITE_TOOLS.has(toolName)) {
+              const filePath = (input.file_path ?? input.path) as string | undefined;
+              if (filePath) {
+                const resolvedFile = resolve(filePath);
+                const resolvedCwd = resolve(cwd);
+                const inScope = resolvedFile === resolvedCwd || resolvedFile.startsWith(resolvedCwd + '/');
+                if (!inScope) {
+                  // Fall through to permission prompt below
+                } else {
+                  return { behavior: 'allow' as const, updatedInput: input };
+                }
+              } else {
+                return { behavior: 'allow' as const, updatedInput: input };
+              }
+            } else {
+              return { behavior: 'allow' as const, updatedInput: input };
+            }
           }
           const requestId = `perm-${++this.requestCounter}`;
 
@@ -653,7 +590,6 @@ export class ClaudeCodeService extends EventEmitter {
           streaming: true,
           cancelStreaming: null,
           permissionLevel: level,
-          subagentMap: new Map(),
         });
         this.sessionPermissions.set(id, level);
         this.emitSessionUpdate(id);
@@ -717,7 +653,6 @@ export class ClaudeCodeService extends EventEmitter {
           streaming: true,
           cancelStreaming: null,
           permissionLevel: restoredLevel,
-          subagentMap: new Map(),
         });
         this.sessionPermissions.set(id, restoredLevel);
         this.emitSessionUpdate(id);
@@ -891,13 +826,7 @@ export class ClaudeCodeService extends EventEmitter {
         // Subagent lifecycle events
         if (message.type === 'system' && (message as any).subtype === 'task_started') {
           const m = message as any;
-          const taskId: string = m.task_id;
-          const toolUseId: string | undefined = m.tool_use_id;
-          if (capturedSessionId && toolUseId) {
-            const ps = this.sessions.get(capturedSessionId);
-            ps?.subagentMap.set(taskId, toolUseId);
-          }
-          emitStream({ eventType: 'subagent_start', content: m.description ?? '', taskId, toolUseId: m.tool_use_id });
+          emitStream({ eventType: 'subagent_start', content: m.description ?? '', agentId: m.task_id, toolUseId: m.tool_use_id });
           continue;
         }
 
@@ -905,7 +834,7 @@ export class ClaudeCodeService extends EventEmitter {
           const m = message as any;
           emitStream({
             eventType: 'subagent_progress', content: m.description ?? '',
-            taskId: m.task_id, toolUseId: m.tool_use_id,
+            agentId: m.task_id, toolUseId: m.tool_use_id,
             toolUseCount: m.usage?.tool_uses, lastToolName: m.last_tool_name,
           });
           continue;
@@ -915,7 +844,7 @@ export class ClaudeCodeService extends EventEmitter {
           const m = message as any;
           emitStream({
             eventType: 'subagent_end', content: m.summary ?? '',
-            taskId: m.task_id, toolUseId: m.tool_use_id,
+            agentId: m.task_id, toolUseId: m.tool_use_id,
             subagentStatus: m.status, subagentSummary: m.summary,
           });
           continue;
@@ -946,54 +875,27 @@ export class ClaudeCodeService extends EventEmitter {
           continue;
         }
 
-        // Complete assistant messages — v2 SDK does not support includePartialMessages,
-        // so text and tool_use both come through here (no stream_event text_delta).
-        // Assistant messages: parent_tool_use_id non-null = from a subagent.
-        // Emit subagent tool events tagged with parentToolUseId so PWA can group them.
+        // Complete assistant messages — skip sidechain (subagent) messages.
         if (message.type === 'assistant') {
-          const parentToolUseId = (message as any).parent_tool_use_id ?? undefined;
-          if (!parentToolUseId) flushText();
+          if ((message as any).agentId) continue; // sidechain message — ignore
+          flushText();
           const betaMessage = (message as any).message;
           const blocks = betaMessage?.content ?? [];
-          if (!parentToolUseId) {
-            console.log(`[stream] assistant session=${capturedSessionId} blocks=${blocks.length} types=${blocks.map((b: any) => b.type).join(',')}`);
-          }
           for (const block of blocks) {
-            if (!parentToolUseId) {
-              if (block.type === 'thinking' && block.thinking) {
-                emitStream({ eventType: 'thinking', content: block.thinking });
-              } else if (block.type === 'text' && block.text) {
-                emitStream({ eventType: 'assistant_text', content: block.text });
-              } else if (block.type === 'tool_use') {
-                emitStream({ eventType: 'tool_use', content: '', toolName: block.name, toolInput: JSON.stringify(block.input), toolUseId: block.id });
-              }
-            } else {
-              // Subagent tool call — emit tagged so PWA can group under subagent block
-              if (block.type === 'tool_use') {
-                emitStream({ eventType: 'tool_use', content: '', toolName: block.name, toolInput: JSON.stringify(block.input), toolUseId: block.id, parentToolUseId });
-              }
+            if (block.type === 'thinking' && block.thinking) {
+              emitStream({ eventType: 'thinking', content: block.thinking });
+            } else if (block.type === 'text' && block.text) {
+              emitStream({ eventType: 'assistant_text', content: block.text });
+            } else if (block.type === 'tool_use') {
+              emitStream({ eventType: 'tool_use', content: '', toolName: block.name, toolInput: JSON.stringify(block.input), toolUseId: block.id });
             }
           }
           continue;
         }
 
-        // User messages contain tool results.
-        // Subagent messages have a different session_id — emit tagged with parentToolUseId.
+        // User messages contain tool results — skip sidechain messages.
         if (message.type === 'user') {
-          const msgSessionId = (message as any).session_id;
-          const isSubagent = !!(msgSessionId && msgSessionId !== capturedSessionId);
-          // Resolve parentToolUseId: find which Task tool_use_id spawned this subagent session
-          let parentToolUseId: string | undefined;
-          if (isSubagent && capturedSessionId) {
-            const ps = this.sessions.get(capturedSessionId);
-            if (ps) {
-              // Look up by session_id — find task whose session matches
-              // (We use subagentMap for the known mapping; fallback: skip)
-              for (const [, tuId] of ps.subagentMap) {
-                parentToolUseId = tuId; // best-effort: last known subagent
-              }
-            }
-          }
+          if ((message as any).agentId) continue; // sidechain message — ignore
           const userMsg = (message as any).message;
           if (userMsg?.content && Array.isArray(userMsg.content)) {
             for (const block of userMsg.content) {
@@ -1002,7 +904,7 @@ export class ClaudeCodeService extends EventEmitter {
                 const truncated = resultContent.length > TOOL_RESULT_TRUNCATE_LENGTH
                   ? resultContent.slice(0, TOOL_RESULT_TRUNCATE_LENGTH) + ' [truncated]'
                   : resultContent;
-                emitStream({ eventType: 'tool_result', content: truncated, toolResultForId: block.tool_use_id, ...(isSubagent && parentToolUseId ? { parentToolUseId } : {}) });
+                emitStream({ eventType: 'tool_result', content: truncated, toolResultForId: block.tool_use_id });
               }
             }
           }

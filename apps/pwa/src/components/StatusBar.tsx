@@ -4,6 +4,7 @@ import { clsx } from 'clsx';
 import { type ConnectionState, type ClaudePreferences } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
 import { StatusDot, sessionStatusKey, type SessionStatusKey } from './SessionStatusBadge';
+import { MODELS, PERMISSION_MODES } from '../lib/claudePresets';
 
 interface StatusBarProps {
   connectionState: ConnectionState;
@@ -203,18 +204,6 @@ function SessionStatusIndicator({ title }: { title?: string }) {
 }
 
 
-const MODELS = [
-  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-  { value: 'claude-opus-4-6', label: 'Opus 4.6' },
-  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
-];
-
-const PERMISSION_MODES = [
-  { value: 'default', label: 'Default' },
-  { value: 'acceptEdits', label: 'Accept Edits' },
-  { value: 'bypassPermissions', label: 'Bypass' },
-  { value: 'plan', label: 'Plan Only' },
-];
 
 function SessionSettingsMenu({
   onSetPreferences,

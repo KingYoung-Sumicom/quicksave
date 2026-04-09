@@ -91,7 +91,12 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
   const handlePushMessage = useCallback((message: Message): boolean => {
     if (message.type === 'claude:stream') {
       const payload = message.payload as ClaudeStreamPayload;
-      handleStreamEvent(payload.eventType, payload.content, payload.toolName, payload.toolInput, payload.toolUseId, payload.toolResultForId, payload.parentToolUseId, payload.taskId, payload.toolUseCount, payload.lastToolName, payload.subagentStatus, payload.subagentSummary);
+      // Ignore events that belong to a different stream (stale events from previous session)
+      const activeStreamId = useClaudeStore.getState().activeStreamId;
+      if (activeStreamId && payload.streamId && payload.streamId !== activeStreamId) {
+        return true; // consume but discard
+      }
+      handleStreamEvent(payload.eventType, payload.content, payload.toolName, payload.toolInput, payload.toolUseId, payload.toolResultForId, payload.agentId, payload.toolUseCount, payload.lastToolName, payload.subagentStatus, payload.subagentSummary);
       return true;
     }
 
@@ -197,10 +202,17 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
         if (response.error) {
           throw new Error(response.error);
         }
-        // Build toolUseId → toolName map for result association
-        const toolNameById = new Map<string, string>();
+        // Build toolUseId → toolName map:
+        // Prefer server-provided map (covers all messages, not just current page) to avoid
+        // orphan tool_result entries when the corresponding tool_use is outside the page window.
+        const toolNameById = new Map<string, string>(
+          response.toolNameMap ? Object.entries(response.toolNameMap) : []
+        );
+        // Also index from current page messages (fallback / supplement)
         for (const m of response.messages) {
-          if (m.toolName && m.toolUseId) toolNameById.set(m.toolUseId, m.toolName);
+          if (m.toolName && m.toolUseId && !toolNameById.has(m.toolUseId)) {
+            toolNameById.set(m.toolUseId, m.toolName);
+          }
         }
 
         const chatMessages: ChatMessage[] = [];
@@ -238,19 +250,11 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
               role: 'subagent',
               content: block.description,
               toolUseId: block.toolUseId,
-              taskId: block.taskId,
+              agentId: block.agentId,
               subagentStatus: block.status,
               subagentSummary: block.summary,
               toolUseCount: block.toolUseCount,
               lastToolName: block.lastToolName,
-              subagentEvents: block.events.map((e) => ({
-                role: 'tool' as const,
-                toolName: e.toolName,
-                toolInput: e.toolInput,
-                toolUseId: e.toolUseId,
-                toolResultOf: e.toolResultForId ? toolNameById.get(e.toolResultForId) : undefined,
-                content: e.toolResult ?? e.content ?? '',
-              })),
               timestamp: Date.now(),
             };
             const idx = chatMessages.findIndex((m) => m.toolUseId === block.toolUseId);

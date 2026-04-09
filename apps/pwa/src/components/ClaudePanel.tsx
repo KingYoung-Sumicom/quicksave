@@ -1,10 +1,11 @@
-import { useEffect, useRef, useCallback, useMemo } from 'react';
+import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import { useClaudeStore } from '../stores/claudeStore';
 import type { ClaudeSessionSummary, ClaudeUserInputResponsePayload } from '@sumicom/quicksave-shared';
 import { StatusDot, sessionStatusKey } from './SessionStatusBadge';
 import { MessageBubble } from './chat/MessageBubble';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
+import { MODELS, PERMISSION_MODES, AGENT_TYPES, type AgentType } from '../lib/claudePresets';
 
 type StartSessionOpts = { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string };
 
@@ -12,6 +13,7 @@ interface ClaudePanelProps {
   onSelectSession?: (sessionId: string) => void;
   sessionId?: string;
   newSession?: boolean;
+  cwd?: string;
   onListSessions: () => Promise<void>;
   onGetSessionMessages: (sessionId: string, offset?: number, limit?: number) => Promise<void>;
   onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
@@ -24,6 +26,7 @@ export function ClaudePanel({
   onSelectSession,
   sessionId: urlSessionId,
   newSession,
+  cwd,
   onListSessions,
   onGetSessionMessages,
   onStartSession,
@@ -62,6 +65,9 @@ export function ClaudePanel({
     }
     return map;
   }, [messages]);
+
+  // Agent type for new sessions (local — doesn't persist after session starts)
+  const [selectedAgentType, setSelectedAgentType] = useState<AgentType>(AGENT_TYPES[0]);
 
   // View is determined by URL: sessionId present = chat, ?new = new session, absent = sessions list
   const isChat = !!urlSessionId || !!newSession;
@@ -161,9 +167,14 @@ export function ClaudePanel({
     if (activeSessionId) {
       await onResumeSession(activeSessionId, prompt);
     } else {
-      await onStartSession(prompt, { model: selectedModel, permissionMode: selectedPermissionMode });
+      await onStartSession(prompt, {
+        model: selectedModel,
+        permissionMode: selectedPermissionMode,
+        ...(selectedAgentType.allowedTools !== undefined ? { allowedTools: selectedAgentType.allowedTools } : {}),
+        ...(selectedAgentType.systemPrompt ? { systemPrompt: selectedAgentType.systemPrompt } : {}),
+      });
     }
-  }, [promptInput, isStreaming, activeSessionId, selectedModel, selectedPermissionMode, setPromptInput, onResumeSession, onStartSession]);
+  }, [promptInput, isStreaming, activeSessionId, selectedModel, selectedPermissionMode, selectedAgentType, setPromptInput, onResumeSession, onStartSession]);
 
   const handleRespondToInput = useCallback((requestId: string, action: 'allow' | 'deny', response?: string) => {
     if (!onRespondToUserInput) return;
@@ -275,6 +286,15 @@ export function ClaudePanel({
             <div ref={messagesEndRef} />
           </div>
 
+          {/* New session empty state — sits just above the input */}
+          {newSession && messages.length === 0 && (
+            <NewSessionEmptyState
+              cwd={cwd}
+              selectedAgentType={selectedAgentType}
+              onSelectAgentType={setSelectedAgentType}
+            />
+          )}
+
           {/* Inactive session banner */}
           {isInactive && (
             <div className="flex items-center gap-2 px-4 py-2 bg-slate-700/50 border-t border-slate-700 text-xs text-slate-400">
@@ -333,6 +353,87 @@ export function ClaudePanel({
           onNewSession={handleNewSession}
         />
       )}
+    </div>
+  );
+}
+
+function SelectorRow<T extends { value: string; label: string }>({ label, options, value, onSelect }: {
+  label: string;
+  options: T[];
+  value: string;
+  onSelect: (opt: T) => void;
+}) {
+  return (
+    <div>
+      <p className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">{label}</p>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map((opt) => (
+          <button
+            key={opt.value}
+            onClick={() => onSelect(opt)}
+            className={clsx(
+              'text-xs px-2.5 py-1 rounded-lg border transition-colors',
+              value === opt.value
+                ? 'bg-blue-600/30 border-blue-500/60 text-blue-300'
+                : 'bg-slate-700/60 border-slate-600/50 text-slate-400 hover:border-slate-500 hover:text-slate-300'
+            )}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function NewSessionEmptyState({ cwd, selectedAgentType, onSelectAgentType }: {
+  cwd?: string;
+  selectedAgentType: AgentType;
+  onSelectAgentType: (agent: AgentType) => void;
+}) {
+  const { selectedModel, selectedPermissionMode, setSelectedModel, setSelectedPermissionMode } = useClaudeStore();
+
+  return (
+    <div className="px-4 pt-4 pb-2 flex justify-start">
+      <div className="bg-slate-800/50 rounded-xl p-4 space-y-4 border border-slate-700/50 inline-block min-w-0">
+        {/* Title + path */}
+        <div>
+          <h2 className="text-sm font-semibold text-slate-200">New Session</h2>
+          {cwd && (
+            <p className="mt-0.5 text-xs text-slate-500 flex items-center gap-1 min-w-0">
+              <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+              </svg>
+              <span className="truncate">{cwd}</span>
+            </p>
+          )}
+        </div>
+
+        {/* Selectors */}
+        <SelectorRow
+          label="Agent"
+          options={AGENT_TYPES}
+          value={selectedAgentType.value}
+          onSelect={onSelectAgentType}
+        />
+        <SelectorRow
+          label="Model"
+          options={MODELS}
+          value={selectedModel}
+          onSelect={(m) => setSelectedModel(m.value)}
+        />
+        <SelectorRow
+          label="Permission"
+          options={PERMISSION_MODES}
+          value={selectedPermissionMode}
+          onSelect={(p) => setSelectedPermissionMode(p.value)}
+        />
+
+        {/* Hint */}
+        <p className="text-xs text-slate-600">
+          Type a message below to start the session
+        </p>
+      </div>
     </div>
   );
 }

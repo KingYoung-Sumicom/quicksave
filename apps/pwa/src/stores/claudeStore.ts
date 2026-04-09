@@ -1,15 +1,6 @@
 import { create } from 'zustand';
 import type { ClaudeSessionSummary, ClaudeStreamEventType, ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';
 
-export interface SubagentEvent {
-  role: 'tool';
-  toolName?: string;
-  toolInput?: string;
-  toolUseId?: string;
-  toolResultOf?: string;
-  content: string;
-}
-
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'tool' | 'system' | 'thinking' | 'subagent';
   content: string;
@@ -21,12 +12,11 @@ export interface ChatMessage {
   _synthetic?: boolean;   // Created by tagPendingInput before the stream event arrived
   timestamp: number;
   // Subagent block fields (role === 'subagent')
-  taskId?: string;
+  agentId?: string;
   subagentStatus?: 'running' | 'completed' | 'failed' | 'stopped';
   subagentSummary?: string;
   toolUseCount?: number;
   lastToolName?: string;
-  subagentEvents?: SubagentEvent[];
 }
 
 interface ClaudeStore {
@@ -76,7 +66,7 @@ interface ClaudeStore {
   clearMessages: () => void;
 
   // Actions — stream events
-  handleStreamEvent: (eventType: ClaudeStreamEventType, content: string, toolName?: string, toolInput?: string, toolUseId?: string, toolResultForId?: string, parentToolUseId?: string, taskId?: string, toolUseCount?: number, lastToolName?: string, subagentStatus?: 'completed' | 'failed' | 'stopped', subagentSummary?: string) => void;
+  handleStreamEvent: (eventType: ClaudeStreamEventType, content: string, toolName?: string, toolInput?: string, toolUseId?: string, toolResultForId?: string, agentId?: string, toolUseCount?: number, lastToolName?: string, subagentStatus?: 'completed' | 'failed' | 'stopped', subagentSummary?: string) => void;
 
   // Actions — pending input (tag/clear on messages)
   tagPendingInput: (request: ClaudeUserInputRequestPayload) => void;
@@ -131,7 +121,6 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
 
   // Messages
   setMessages: (messages) => set((state) => {
-    const last = messages[messages.length - 1];
     // Apply deferred pending input OR preserve existing pending from prior setMessages
     const deferred = state.deferredPendingInput;
     const existingPending = state.messages.find((m) => m.pendingInputRequest)?.pendingInputRequest;
@@ -139,14 +128,20 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
 
     if (pending) {
       messages = [...messages];
-      if (last?.toolName && !last.toolResultOf && !last.pendingInputRequest) {
-        // Normal tool call — tag last message
-        messages[messages.length - 1] = { ...last, pendingInputRequest: pending };
+      // Search backwards for the most recent unanswered tool call
+      const toolIdx = [...messages].reverse().findIndex(
+        (m) => m.toolName && !m.toolResultOf && !m.pendingInputRequest
+      );
+      if (toolIdx >= 0) {
+        const realIdx = messages.length - 1 - toolIdx;
+        messages[realIdx] = { ...messages[realIdx], pendingInputRequest: pending };
       } else {
         // Subagent permission: tag the last running subagent block
-        const idx = [...messages].reverse().findIndex((m) => m.role === 'subagent' && m.subagentStatus === 'running' && !m.pendingInputRequest);
-        if (idx >= 0) {
-          const realIdx = messages.length - 1 - idx;
+        const subIdx = [...messages].reverse().findIndex(
+          (m) => m.role === 'subagent' && m.subagentStatus === 'running' && !m.pendingInputRequest
+        );
+        if (subIdx >= 0) {
+          const realIdx = messages.length - 1 - subIdx;
           messages[realIdx] = { ...messages[realIdx], pendingInputRequest: pending };
         }
       }
@@ -173,7 +168,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   clearMessages: () => set({ messages: [], historyTotal: 0, historyHasMore: false }),
 
   // Stream events → chat messages
-  handleStreamEvent: (eventType, content, toolName, toolInput, toolUseId, toolResultForId, parentToolUseId, taskId, toolUseCount, lastToolName, subagentStatus, subagentSummary) => {
+  handleStreamEvent: (eventType, content, toolName, toolInput, toolUseId, toolResultForId, agentId, toolUseCount, lastToolName, subagentStatus, subagentSummary) => {
     const store = get();
     switch (eventType) {
       case 'user_message': {
@@ -194,17 +189,6 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         store.appendAssistantText(content);
         break;
       case 'tool_use': {
-        if (parentToolUseId) {
-          // Subagent internal tool call — append to matching subagent block
-          set((state) => ({
-            messages: state.messages.map((m) =>
-              m.role === 'subagent' && m.toolUseId === parentToolUseId
-                ? { ...m, lastToolName: toolName, toolUseCount: (m.toolUseCount ?? 0) + 1, subagentEvents: [...(m.subagentEvents ?? []), { role: 'tool' as const, toolName, toolInput, toolUseId, content: toolInput || '' }] }
-                : m
-            ),
-          }));
-          break;
-        }
         // Check if a synthetic message was already created by tagPendingInput
         // (SDK calls canUseTool before yielding tool_use to stream, causing a deadlock
         //  where the stream event only arrives AFTER the user responds)
@@ -236,17 +220,6 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         break;
       }
       case 'tool_result': {
-        if (parentToolUseId) {
-          // Subagent internal tool result — append to matching subagent block
-          set((state) => ({
-            messages: state.messages.map((m) => {
-              if (m.role !== 'subagent' || m.toolUseId !== parentToolUseId) return m;
-              const toolResultOf = m.subagentEvents?.find((e) => e.toolUseId === toolResultForId)?.toolName;
-              return { ...m, subagentEvents: [...(m.subagentEvents ?? []), { role: 'tool' as const, toolResultOf, toolUseId: toolResultForId, content }] };
-            }),
-          }));
-          break;
-        }
         // Find the matching tool call by toolUseId (handles parallel tool calls correctly)
         const msgs = store.messages;
         let resultOf: string | undefined;
@@ -274,10 +247,9 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
           role: 'subagent',
           content,
           toolUseId,   // parent Task tool_use_id
-          taskId,
+          agentId,
           subagentStatus: 'running',
           toolUseCount: 0,
-          subagentEvents: [],
           timestamp: Date.now(),
         });
         break;
@@ -320,12 +292,14 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   // create a synthetic if streaming (tool_use not yet arrived), or defer for history load.
   tagPendingInput: (request) =>
     set((state) => {
-      const last = state.messages[state.messages.length - 1];
-
-      // Last message is a tool call with no result following → tag it
-      if (last?.toolName && !last.toolResultOf && !last.pendingInputRequest) {
+      // Search backwards for the most recent unanswered tool call
+      const toolIdx = [...state.messages].reverse().findIndex(
+        (m) => m.toolName && !m.toolResultOf && !m.pendingInputRequest
+      );
+      if (toolIdx >= 0) {
+        const realIdx = state.messages.length - 1 - toolIdx;
         const msgs = [...state.messages];
-        msgs[msgs.length - 1] = { ...last, pendingInputRequest: request };
+        msgs[realIdx] = { ...msgs[realIdx], pendingInputRequest: request };
         return { messages: msgs };
       }
       // Subagent pending permission: tag the last running subagent block
