@@ -10,8 +10,11 @@
  * 6. Run heartbeat loop.
  */
 
-import { basename } from 'path';
+import { basename, join, resolve, dirname } from 'path';
 import { hostname } from 'os';
+import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
+
 import { getOrCreateConfig, getManagedRepos, getManagedCodingPaths, addManagedRepo, removeManagedRepo } from '../config.js';
 import { AgentConnection } from '../connection/connection.js';
 import { MessageHandler } from '../handlers/messageHandler.js';
@@ -21,11 +24,12 @@ import {
   acquireLock,
   ensureDirectories,
   getSocketPath,
+  getRunDir,
   cleanStaleRuntime,
 } from './singleton.js';
 import { writeServiceState, removeServiceState } from './stateStore.js';
-import { IPC_VERSION, BUILD_ID } from './types.js';
-import type { ServiceState, StatusResult, PairingInfoResult, RepoInfo } from './types.js';
+import { IPC_VERSION, BUILD_ID, isDebugEnabled } from './types.js';
+import type { ServiceState, StatusResult, PairingInfoResult, RepoInfo, DebugResult } from './types.js';
 import { createMessage, type Message, type Repository } from '@sumicom/quicksave-shared';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
@@ -77,21 +81,63 @@ export async function runDaemon(): Promise<void> {
     keyPair: config.keyPair,
   });
 
-  const messageHandler = new MessageHandler(validRepos, config.license, codingPaths);
+  const isProduction = !BUILD_ID.startsWith('dev-');
+  const messageHandler = new MessageHandler(validRepos, config.license, codingPaths, isProduction);
 
-  // Pub/sub: ClaudeCodeService emits events → send only to peers subscribed to that session
+  // Self-restart after update: spawn a detached launcher that
+  // 1. sanity-checks the new binary (--version)
+  // 2. only then kills the old daemon
+  // 3. starts the new daemon
+  // If the sanity check fails, old daemon stays alive untouched.
+  messageHandler.onRestartRequested = () => {
+    console.log('Update complete — spawning upgrade launcher...');
+    const thisFile = fileURLToPath(import.meta.url);
+    const isTs = thisFile.endsWith('.ts');
+    const entryPath = resolve(dirname(thisFile), isTs ? '../index.ts' : '../index.js');
+    const logPath = join(getRunDir(), 'daemon.log');
+    const node = process.execPath;
+    const nf = isTs ? `--import tsx ` : '';
+    const oldPid = process.pid;
+    // Detached shell: verify → kill old → start new
+    const script = [
+      `sleep 1`,
+      // Sanity-check: if new binary can't even print version, abort
+      `"${node}" ${nf}"${entryPath}" --version > /dev/null 2>&1`,
+      `|| { echo "[upgrade] new binary failed sanity check, aborting" >> "${logPath}"; exit 1; }`,
+      // New binary works — kill old daemon (graceful shutdown releases lock)
+      `kill ${oldPid}`,
+      // Wait for old daemon to fully exit and release lock
+      `for i in 1 2 3 4 5; do kill -0 ${oldPid} 2>/dev/null || break; sleep 1; done`,
+      // Start new daemon
+      `"${node}" ${nf}"${entryPath}" service run >> "${logPath}" 2>&1`,
+    ].join(' && ');
+    spawn('sh', ['-c', script], {
+      detached: true, stdio: 'ignore', env: process.env,
+    }).unref();
+  };
+
+  // Pub/sub: ClaudeCodeService emits card events → send only to peers subscribed to that session
   const claudeService = messageHandler.getClaudeService();
-  claudeService.on('stream', (event) => {
-    if (event.eventType === 'tool_use' || event.eventType === 'tool_result') {
-      console.log(`[run] stream ${event.eventType} session=${event.sessionId} name=${event.toolName ?? ''} id=${event.toolUseId ?? event.toolResultForId ?? ''}`);
+  claudeService.on('card-event', (event) => {
+    const msg = createMessage('claude:card-event', event);
+    const sent = connection.sendToSession(event.sessionId, msg);
+    // Defense-in-depth: broadcast permission card events if no peer is subscribed yet
+    if (sent === 0 && event.type === 'add' && event.card.pendingInput) {
+      console.warn(`[card-event] fallback broadcast for permission card session=${event.sessionId.slice(0, 8)}`);
+      connection.broadcast(msg);
     }
-    connection.sendToSession(event.sessionId, createMessage('claude:stream', event));
   });
-  claudeService.on('stream:end', (result) => {
-    connection.sendToSession(result.sessionId, createMessage('claude:stream:end', result));
+  claudeService.on('card-stream-end', (result) => {
+    connection.sendToSession(result.sessionId, createMessage('claude:card-stream-end', result));
   });
   claudeService.on('user-input-request', (request) => {
-    connection.sendToSession(request.sessionId, createMessage('claude:user-input-request', request));
+    const msg = createMessage('claude:user-input-request', request);
+    const sent = connection.sendToSession(request.sessionId, msg);
+    if (sent === 0) {
+      // Defense-in-depth: broadcast if no peer is subscribed to this session
+      console.warn(`[user-input-request] fallback broadcast for session=${request.sessionId.slice(0, 8)}`);
+      connection.broadcast(msg);
+    }
   });
   claudeService.on('user-input-resolved', (info) => {
     connection.sendToSession(info.sessionId, createMessage('claude:user-input-resolved', info));
@@ -107,15 +153,16 @@ export async function runDaemon(): Promise<void> {
   // Init preferences from the last session's JSONL (best-effort, non-blocking)
   claudeService.initPreferences().catch(() => {});
 
-  // Track which session each peer is viewing; re-send any pending requests for that session
+  // Track which session each peer is viewing.
+  // Permission state is now carried directly on cards (via CardBuilder),
+  // so getCards() returns cards with pendingInput already attached.
+  // No need to re-send user-input-request on subscribe.
   messageHandler.onPeerSubscribed = (peerAddress, sessionId) => {
     connection.subscribePeerToSession(peerAddress, sessionId);
-    const pending = claudeService.getPendingInputRequests();
-    for (const request of pending) {
-      if (request.sessionId === sessionId) {
-        connection.send(createMessage('claude:user-input-request', request), peerAddress);
-      }
-    }
+  };
+
+  messageHandler.onPeerUnsubscribed = (peerAddress, sessionId) => {
+    connection.unsubscribePeerFromSession(peerAddress, sessionId);
   };
 
   // Wire: incoming PWA messages → MessageHandler → response back to PWA
@@ -334,6 +381,53 @@ function registerDaemonMethods(
   ipcServer.registerMethod('restart', (): { ok: true } => {
     process.nextTick(() => ipcServer.emit('shutdown-requested'));
     return { ok: true };
+  });
+
+  // Debug methods — gated by QUICKSAVE_DEBUG / dev mode
+  if (!isDebugEnabled()) return;
+
+  // debug — full daemon introspection snapshot
+  ipcServer.registerMethod('debug', (): DebugResult => {
+    const connState = connection.getDebugState();
+    const claudeState = messageHandler.getClaudeService().getDebugState();
+    return {
+      pid: process.pid,
+      uptime: process.uptime(),
+      peers: connState.peers,
+      subscriptions: connState.subscriptions,
+      pendingInputs: claudeState.pendingInputs,
+      activeSessions: claudeState.activeSessions,
+    };
+  });
+
+  // resolve-input — force-resolve a stuck permission request
+  ipcServer.registerMethod('resolve-input', (params): { resolved: boolean } => {
+    const requestId = params.requestId as string;
+    const action = (params.action as string) || 'allow';
+    if (!requestId) throw Object.assign(new Error('Missing requestId'), { rpcCode: -32602 });
+    const resolved = messageHandler.getClaudeService().resolveUserInput({
+      requestId,
+      sessionId: '',
+      action: action as 'allow' | 'deny',
+    });
+    return { resolved };
+  });
+
+  // list-sessions — SDK sessions enriched with live state
+  ipcServer.registerMethod('list-sessions', async (params): Promise<{ sessions: unknown[] }> => {
+    const cwd = (params.cwd as string) || getManagedRepos()[0] || process.cwd();
+    const sessions = await messageHandler.getClaudeService().listAvailableSessions(cwd);
+    return { sessions };
+  });
+
+  // get-cards — card history for a session
+  ipcServer.registerMethod('get-cards', async (params): Promise<unknown> => {
+    const sessionId = params.sessionId as string;
+    const cwd = (params.cwd as string) || getManagedRepos()[0] || process.cwd();
+    const offset = (params.offset as number) || 0;
+    const limit = (params.limit as number) || 50;
+    if (!sessionId) throw Object.assign(new Error('Missing sessionId'), { rpcCode: -32602 });
+    return messageHandler.getClaudeService().getCards(sessionId, cwd, offset, limit);
   });
 }
 

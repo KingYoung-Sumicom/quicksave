@@ -10,11 +10,13 @@ interface FleetDashboardProps {
   onNavigate: (agentId: string) => void;
   onConnect: (agentId: string, publicKey: string) => void;
   onSendApiKeyToAgent?: (apiKey: string) => Promise<boolean>;
+  onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
+  onUpdateAgent?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; restarting: boolean; error?: string }>;
   showSettings?: boolean;
   onCloseSettings?: () => void;
 }
 
-export function FleetDashboard({ onNavigate, onConnect, onSendApiKeyToAgent, showSettings = false, onCloseSettings }: FleetDashboardProps) {
+export function FleetDashboard({ onNavigate, onConnect, onSendApiKeyToAgent, onCheckAgentUpdate, onUpdateAgent, showSettings = false, onCloseSettings }: FleetDashboardProps) {
   const machines = useMachineStore(selectSortedMachines);
   const { removeMachine } = useMachineStore();
 
@@ -28,8 +30,8 @@ export function FleetDashboard({ onNavigate, onConnect, onSendApiKeyToAgent, sho
   };
 
   return (
-    <div className="min-h-screen flex flex-col safe-area-top safe-area-bottom">
-      <div className="w-full max-w-lg mx-auto px-4 py-6 flex flex-col flex-1">
+    <div className="h-full flex flex-col overflow-hidden safe-area-top safe-area-bottom">
+      <div className="w-full max-w-lg mx-auto px-4 py-6 flex flex-col flex-1 overflow-y-auto">
       {/* All Machines */}
       <section className="flex-1 mt-4">
         <div className="flex items-center justify-between mb-3">
@@ -65,7 +67,7 @@ export function FleetDashboard({ onNavigate, onConnect, onSendApiKeyToAgent, sho
       {/* Help Text */}
       <div className="mt-6 text-center">
         <p className="text-sm text-slate-500">
-          Run <code className="text-slate-400">quicksave-agent</code> on your computer, then tap <strong className="text-slate-400">+ Add Machine</strong> to pair.
+          Run <code className="text-slate-400">quicksave</code> on your computer, then tap <strong className="text-slate-400">+ Add Machine</strong> to pair.
         </p>
       </div>
 
@@ -90,6 +92,8 @@ export function FleetDashboard({ onNavigate, onConnect, onSendApiKeyToAgent, sho
         isOpen={showSettings}
         onClose={onCloseSettings ?? (() => {})}
         onSendApiKeyToAgent={onSendApiKeyToAgent}
+        onCheckAgentUpdate={onCheckAgentUpdate}
+        onUpdateAgent={onUpdateAgent}
       />
       </div>
     </div>

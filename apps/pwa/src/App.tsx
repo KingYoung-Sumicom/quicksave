@@ -11,7 +11,8 @@ import { WebSocketClient } from './lib/websocket';
 import { ConnectionSetup } from './components/ConnectionSetup';
 import { FleetDashboard } from './components/FleetDashboard';
 import { ConnectingOverlay } from './components/ConnectingOverlay';
-import { StatusBar } from './components/StatusBar';
+import { FleetStatusBar } from './components/FleetStatusBar';
+import { AgentStatusBar } from './components/AgentStatusBar';
 import { RepoView } from './components/RepoView';
 import { PathBrowser } from './components/PathBrowser';
 import { GitignoreEditor } from './components/GitignoreEditor';
@@ -73,12 +74,14 @@ function AppContent() {
     browseDirectory,
     addRepo,
     addCodingPath,
+    checkAgentUpdate,
+    updateAgent,
   } = useGitOperations(clientRef);
 
   const {
     handleMessage: handleClaudeMessage,
     listSessions,
-    getSessionMessages,
+    getSessionCards,
     startSession,
     resumeSession,
     cancelSession,
@@ -86,6 +89,7 @@ function AppContent() {
     respondToUserInput,
     setPreferences,
     setSessionPermission,
+    unsubscribeSession,
   } = useClaudeOperations(clientRef);
 
   const [showPathBrowser, setShowPathBrowser] = useState(false);
@@ -94,6 +98,7 @@ function AppContent() {
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const [showNavDrawer, setShowNavDrawer] = useState(isDesktop);
   const [showFleetSettings, setShowFleetSettings] = useState(false);
+  const [showAgentSettings, setShowAgentSettings] = useState(false);
 
 
   // Track visualViewport height → CSS variable so #root shrinks when keyboard opens.
@@ -265,12 +270,12 @@ function AppContent() {
     if (!identityPublicKey || clientRef.current) return;
 
     const client = new WebSocketClient(signalingServer, identityPublicKey, {
-      onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences) => {
+      onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences, agentVersion, latestVersion, devBuild) => {
         agentIdRef.current = agentId;
         if (preferences) {
           useClaudeStore.getState().setSelectedModel(preferences.model);
         }
-        handlersRef.current.setConnected(path, pro, availableRepos, availableCodingPaths);
+        handlersRef.current.setConnected(path, pro, availableRepos, availableCodingPaths, agentVersion, latestVersion, devBuild);
         handlersRef.current.setCurrentRepoPath(path);
         const repoPaths = availableRepos?.map((r) => r.path);
         const codingPaths = availableCodingPaths?.map((p) => p.path);
@@ -316,6 +321,8 @@ function AppContent() {
     });
 
     clientRef.current = client;
+    // Debug: expose for console access
+    if (typeof window !== 'undefined') (window as any).__wsClient = client;
 
     client.connect().catch((error) => {
       console.error('Failed to connect WebSocket:', error);
@@ -440,6 +447,8 @@ function AppContent() {
       // Already connected, will redirect via effect
     }
     const saveApiKey = isConnected ? setApiKey : undefined;
+    const handleCheckUpdate = isConnected ? checkAgentUpdate : undefined;
+    const handleUpdateAgent = isConnected ? updateAgent : undefined;
     const inner = machines.length > 0 ? (
       <FleetDashboard
         onNavigate={(agentId) => {
@@ -450,23 +459,24 @@ function AppContent() {
         }}
         onConnect={handleConnect}
         onSendApiKeyToAgent={saveApiKey}
+        onCheckAgentUpdate={handleCheckUpdate}
+        onUpdateAgent={handleUpdateAgent}
         showSettings={showFleetSettings}
         onCloseSettings={() => setShowFleetSettings(false)}
       />
     ) : (
-      <ConnectionSetup onConnect={handleConnect} onSendApiKeyToAgent={saveApiKey} />
+      <ConnectionSetup onConnect={handleConnect} onSendApiKeyToAgent={saveApiKey} onCheckAgentUpdate={handleCheckUpdate} onUpdateAgent={handleUpdateAgent} />
     );
     return (
-      <div className="flex flex-col min-h-screen">
-        <StatusBar
-          connectionState={state}
+      <div className="flex flex-col h-screen overflow-hidden">
+        <FleetStatusBar
           title="Quicksave"
           onOpenSettings={() => setShowFleetSettings(true)}
         />
         {inner}
       </div>
     );
-  }, [machines.length, handleConnect, isConnected, setApiKey, state, showFleetSettings, navigate]);
+  }, [machines.length, handleConnect, isConnected, setApiKey, checkAgentUpdate, updateAgent, state, showFleetSettings, navigate]);
 
   // Redirect to repo if connected on home page
   // Note: We check clientRef.current to ensure we have an active connection,
@@ -542,12 +552,14 @@ function AppContent() {
           onBackToFleet={() => { setShowNavDrawer(false); handleDisconnect(); }}
         />
         <div className="flex flex-col flex-1 min-h-0 min-w-0">
-          <StatusBar
-            connectionState={state}
+          <AgentStatusBar
             branch={status?.branch}
             ahead={status?.ahead}
             behind={status?.behind}
             repoPath={repoPath}
+            showSettings={showAgentSettings}
+            onOpenSettings={() => setShowAgentSettings(true)}
+            onCloseSettings={() => setShowAgentSettings(false)}
             onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
             onSwitchRepo={() => openPathBrowser('repo')}
             onOpenGitignore={() => setShowGitignoreEditor(true)}
@@ -561,6 +573,8 @@ function AppContent() {
               const sid = useClaudeStore.getState().activeSessionId;
               if (sid) cancelSession(sid);
             }}
+            onCheckAgentUpdate={checkAgentUpdate}
+            onUpdateAgent={updateAgent}
           />
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
             {isConnected && (
@@ -594,20 +608,22 @@ function AppContent() {
                   <ClaudePanelWithHash
                     agentId={currentAgentId}
                     onListSessions={listSessions}
-                    onGetSessionMessages={getSessionMessages}
+                    onGetSessionCards={getSessionCards}
                     onStartSession={startSession}
                     onResumeSession={resumeSession}
                     onRespondToUserInput={respondToUserInput}
+                    onUnsubscribeSession={unsubscribeSession}
                   />
                 } />
                 <Route path="/coding/:pathHash/:sessionId" element={
                   <ClaudePanelWithHash
                     agentId={currentAgentId}
                     onListSessions={listSessions}
-                    onGetSessionMessages={getSessionMessages}
+                    onGetSessionCards={getSessionCards}
                     onStartSession={startSession}
                     onResumeSession={resumeSession}
                     onRespondToUserInput={respondToUserInput}
+                    onUnsubscribeSession={unsubscribeSession}
                   />
                 } />
               </Routes>
@@ -616,7 +632,7 @@ function AppContent() {
         </div>
       </div>
     );
-  }, [isConnected, isReconnecting, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, commit, generateCommitSummary, setApiKey, showNavDrawer, isDesktop, switchRepo, listSessions, getSessionMessages, startSession, resumeSession, cancelSession, closeSession, navigate, addCodingPath]);
+  }, [isConnected, isReconnecting, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, commit, generateCommitSummary, setApiKey, showNavDrawer, isDesktop, switchRepo, listSessions, getSessionCards, startSession, resumeSession, cancelSession, closeSession, navigate, addCodingPath, showAgentSettings]);
 
   // Show connecting overlay globally (covers any page)
   const showOverlay = state === 'connecting' || state === 'reconnecting' || (state === 'error' && !!useConnectionStore.getState().error);
@@ -672,17 +688,19 @@ function RepoViewWithHash({
 function ClaudePanelWithHash({
   agentId,
   onListSessions,
-  onGetSessionMessages,
+  onGetSessionCards,
   onStartSession,
   onResumeSession,
   onRespondToUserInput,
+  onUnsubscribeSession,
 }: {
   agentId: string;
   onListSessions: (cwd?: string) => Promise<void>;
-  onGetSessionMessages: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
+  onGetSessionCards: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
   onStartSession: (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
+  onUnsubscribeSession?: (sessionId: string) => void;
 }) {
   const { pathHash, sessionId: urlSessionId } = useParams<{ pathHash: string; sessionId: string }>();
   const navigate = useNavigate();
@@ -706,9 +724,9 @@ function ClaudePanelWithHash({
 
   // Bind cwd into all callbacks
   const boundListSessions = useCallback(() => onListSessions(cwd), [onListSessions, cwd]);
-  const boundGetMessages = useCallback(
-    (sid: string, offset?: number, limit?: number) => onGetSessionMessages(sid, offset, limit, cwd),
-    [onGetSessionMessages, cwd]
+  const boundGetCards = useCallback(
+    (sid: string, offset?: number, limit?: number) => onGetSessionCards(sid, offset, limit, cwd),
+    [onGetSessionCards, cwd]
   );
   const boundStartSession = useCallback(
     (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string }) =>
@@ -728,7 +746,8 @@ function ClaudePanelWithHash({
       onSelectSession={(sid) => navigate(`${basePath}/${sid}`)}
       onNewSession={() => navigate(`${basePath}?new`)}
       onListSessions={boundListSessions}
-      onGetSessionMessages={boundGetMessages}
+      onGetSessionCards={boundGetCards}
+      onUnsubscribeSession={onUnsubscribeSession}
       onStartSession={boundStartSession}
       onResumeSession={boundResumeSession}
       onRespondToUserInput={onRespondToUserInput}

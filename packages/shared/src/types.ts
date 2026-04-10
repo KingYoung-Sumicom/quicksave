@@ -62,6 +62,10 @@ export type MessageType =
   | 'agent:list-coding-paths:response'
   | 'agent:add-coding-path'
   | 'agent:add-coding-path:response'
+  | 'agent:check-update'
+  | 'agent:check-update:response'
+  | 'agent:update'
+  | 'agent:update:response'
   // Claude Code SDK Remote Control
   | 'claude:list-sessions'
   | 'claude:list-sessions:response'
@@ -90,6 +94,13 @@ export type MessageType =
   | 'claude:set-session-permission:response'  // agent-push: permission change applied
   | 'claude:active-sessions'                  // pwa-request: get in-memory active sessions
   | 'claude:active-sessions:response'         // agent-response: active sessions snapshot
+  // Card-based protocol (v2)
+  | 'claude:card-event'            // agent-push: card add/update/append_text
+  | 'claude:card-stream-end'       // agent-push: card streaming turn complete
+  | 'claude:get-cards'             // pwa-request: get card history
+  | 'claude:get-cards:response'    // agent-response: card history
+  | 'claude:unsubscribe'           // pwa-push: unsubscribe from session events
+  | 'claude:unsubscribe:response'  // agent-response: unsubscribe ack
   | 'error';
 
 // ============================================================================
@@ -228,6 +239,8 @@ export interface HandshakeAckPayload {
   availableRepos?: Repository[];
   availableCodingPaths?: CodingPath[];
   preferences?: ClaudePreferences;
+  latestVersion?: string; // Cached npm registry check (agent-side, 12h dedup)
+  devBuild?: boolean; // true when running from source (non-production build)
 }
 
 // Status
@@ -430,6 +443,27 @@ export interface AddCodingPathRequestPayload {
 export interface AddCodingPathResponsePayload {
   success: boolean;
   path?: CodingPath;
+  error?: string;
+}
+
+// Agent Update Check
+export type AgentCheckUpdateRequestPayload = Record<string, never>;
+
+export interface AgentCheckUpdateResponsePayload {
+  currentVersion: string;
+  latestVersion?: string;
+  updateAvailable: boolean;
+  error?: string;
+}
+
+// Agent Self-Update
+export type AgentUpdateRequestPayload = Record<string, never>;
+
+export interface AgentUpdateResponsePayload {
+  success: boolean;
+  previousVersion: string;
+  newVersion?: string;  // npm install output parsed version
+  restarting: boolean;  // true if daemon will restart automatically
   error?: string;
 }
 
@@ -769,6 +803,8 @@ export interface ClaudeUserInputRequestPayload {
   // Permission-specific fields
   toolName?: string;
   toolInput?: Record<string, unknown>;
+  toolUseId?: string;  // tool_use block id for exact card matching on reconnect
+  agentId?: string;  // Present when permission is from a subagent
 }
 
 // User input response (PWA → agent)

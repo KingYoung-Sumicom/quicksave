@@ -1,9 +1,10 @@
-import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { clsx } from 'clsx';
 import { useClaudeStore } from '../stores/claudeStore';
+import { useConnectionStore } from '../stores/connectionStore';
 import type { ClaudeSessionSummary, ClaudeUserInputResponsePayload } from '@sumicom/quicksave-shared';
 import { StatusDot, sessionStatusKey } from './SessionStatusBadge';
-import { MessageBubble } from './chat/MessageBubble';
+import { CardRenderer } from './chat/CardRenderer';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
 import { MODELS, PERMISSION_MODES, AGENT_TYPES, type AgentType } from '../lib/claudePresets';
 
@@ -15,10 +16,11 @@ interface ClaudePanelProps {
   newSession?: boolean;
   cwd?: string;
   onListSessions: () => Promise<void>;
-  onGetSessionMessages: (sessionId: string, offset?: number, limit?: number) => Promise<void>;
+  onGetSessionCards: (sessionId: string, offset?: number, limit?: number) => Promise<void>;
   onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string) => Promise<void>;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
+  onUnsubscribeSession?: (sessionId: string) => void;
   onNewSession?: () => void;
 }
 
@@ -28,11 +30,12 @@ export function ClaudePanel({
   newSession,
   cwd,
   onListSessions,
-  onGetSessionMessages,
+  onGetSessionCards,
   onStartSession,
   onResumeSession,
 
   onRespondToUserInput,
+  onUnsubscribeSession,
   onNewSession,
 }: ClaudePanelProps) {
   const {
@@ -41,7 +44,7 @@ export function ClaudePanel({
     activeSessionId,
     isStreaming,
     streamError,
-    messages,
+    cards,
     historyHasMore,
     isLoadingHistory,
     promptInput,
@@ -49,22 +52,11 @@ export function ClaudePanel({
     selectedPermissionMode,
     setPromptInput,
     setActiveSession,
-    clearMessages,
+    clearCards,
   } = useClaudeStore();
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
   const isInactive = !!activeSessionId && activeSession && activeSession.isActive === false;
-
-  // Map toolUseId → result content for parallel tool call display
-  const toolResultByUseId = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const msg of messages) {
-      if (msg.role === 'tool' && !msg.toolName && msg.toolUseId) {
-        map.set(msg.toolUseId, msg.content);
-      }
-    }
-    return map;
-  }, [messages]);
 
   // Agent type for new sessions (local — doesn't persist after session starts)
   const [selectedAgentType, setSelectedAgentType] = useState<AgentType>(AGENT_TYPES[0]);
@@ -94,22 +86,38 @@ export function ClaudePanel({
     });
   }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const connectionState = useConnectionStore((s) => s.state);
+
   // Load session messages when navigating to a different session
   useEffect(() => {
     if (urlSessionId && urlSessionId !== activeSessionId) {
+      // Unsubscribe from previous session before switching
+      if (activeSessionId) {
+        onUnsubscribeSession?.(activeSessionId);
+      }
       setActiveSession(urlSessionId);
-      clearMessages();
+      clearCards();
       isAtBottomRef.current = true;
-      onGetSessionMessages(urlSessionId);
+      onGetSessionCards(urlSessionId);
     }
   }, [urlSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load sessions when showing sessions list
+  // Retry loading cards after reconnect (e.g. page reload before WS was ready)
   useEffect(() => {
+    if (connectionState === 'connected' && urlSessionId && cards.length === 0 && !isLoadingHistory) {
+      onGetSessionCards(urlSessionId);
+    }
+  }, [connectionState]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Unsubscribe when leaving session view (navigating to session list)
+  useEffect(() => {
+    if (!isChat && activeSessionId) {
+      onUnsubscribeSession?.(activeSessionId);
+    }
     if (!isChat) {
       onListSessions();
     }
-  }, [isChat, onListSessions]);
+  }, [isChat, onListSessions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-scroll: stick to bottom unless user has scrolled up
   const isAtBottomRef = useRef(true);
@@ -130,7 +138,7 @@ export function ClaudePanel({
     if (isAtBottomRef.current) {
       container.scrollTop = container.scrollHeight;
     }
-  }, [messages, isStreaming]);
+  }, [cards, isStreaming]);
 
 
   const handleSelectSession = useCallback(async (session: ClaudeSessionSummary) => {
@@ -138,18 +146,21 @@ export function ClaudePanel({
       onSelectSession(session.sessionId);
     } else {
       setActiveSession(session.sessionId);
-      clearMessages();
-      await onGetSessionMessages(session.sessionId);
+      clearCards();
+      await onGetSessionCards(session.sessionId);
     }
-  }, [onSelectSession, setActiveSession, clearMessages, onGetSessionMessages]);
+  }, [onSelectSession, setActiveSession, clearCards, onGetSessionCards]);
 
   const handleNewSession = useCallback(() => {
+    if (activeSessionId) {
+      onUnsubscribeSession?.(activeSessionId);
+    }
     setActiveSession(null);
-    clearMessages();
+    clearCards();
     if (onNewSession) {
       onNewSession();
     }
-  }, [setActiveSession, clearMessages, onNewSession]);
+  }, [activeSessionId, setActiveSession, clearCards, onNewSession, onUnsubscribeSession]);
 
   const handleSend = useCallback(async () => {
     const prompt = promptInput.trim();
@@ -178,27 +189,26 @@ export function ClaudePanel({
 
   const handleRespondToInput = useCallback((requestId: string, action: 'allow' | 'deny', response?: string) => {
     if (!onRespondToUserInput) return;
-    // Find the pending request from the tagged message
-    const msg = messages.find((m) => m.pendingInputRequest?.requestId === requestId);
-    if (!msg?.pendingInputRequest) return;
+    const card = cards.find((c) => c.pendingInput?.requestId === requestId);
+    if (!card?.pendingInput) return;
     onRespondToUserInput({
-      sessionId: msg.pendingInputRequest.sessionId,
+      sessionId: card.pendingInput.sessionId,
       requestId,
       action: action === 'allow' ? (response ? 'respond' : 'allow') : 'deny',
       response,
     });
-  }, [messages, onRespondToUserInput]);
+  }, [cards, onRespondToUserInput]);
 
   const handleLoadMore = useCallback(async () => {
     if (!activeSessionId || isLoadingHistory || !historyHasMore) return;
     const container = chatContainerRef.current;
     const prevScrollHeight = container?.scrollHeight ?? 0;
-    await onGetSessionMessages(activeSessionId, messages.length);
+    await onGetSessionCards(activeSessionId, cards.length);
     // Restore scroll position so the viewport doesn't jump to top
     if (container) {
       container.scrollTop = container.scrollHeight - prevScrollHeight;
     }
-  }, [activeSessionId, isLoadingHistory, historyHasMore, messages.length, onGetSessionMessages]);
+  }, [activeSessionId, isLoadingHistory, historyHasMore, cards.length, onGetSessionCards]);
 
   // Auto-load older messages when sentinel scrolls into view
   const topSentinelRef = useRef<HTMLDivElement>(null);
@@ -262,12 +272,11 @@ export function ClaudePanel({
                 )}
               </div>
             )}
-            {messages.map((msg, i) => (
-              <MessageBubble
-                key={i}
-                message={msg}
-                toolResultContent={msg.toolUseId ? toolResultByUseId.get(msg.toolUseId) : undefined}
-                isLast={i === messages.length - 1}
+            {cards.map((card, i) => (
+              <CardRenderer
+                key={card.id}
+                card={card}
+                isLast={i === cards.length - 1}
                 onRespondToInput={handleRespondToInput}
               />
             ))}
@@ -276,24 +285,23 @@ export function ClaudePanel({
                 {streamError}
               </div>
             )}
-            {isStreaming && (isInactive || messages[messages.length - 1]?.role !== 'assistant') && (
+            {isStreaming && (isInactive || cards[cards.length - 1]?.type !== 'assistant_text') && (
               <div className="flex items-center gap-1.5 py-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:0ms]" />
                 <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:150ms]" />
                 <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:300ms]" />
               </div>
             )}
+            {/* New session empty state — inside scrollable container */}
+            {newSession && cards.length === 0 && (
+              <NewSessionEmptyState
+                cwd={cwd}
+                selectedAgentType={selectedAgentType}
+                onSelectAgentType={setSelectedAgentType}
+              />
+            )}
             <div ref={messagesEndRef} />
           </div>
-
-          {/* New session empty state — sits just above the input */}
-          {newSession && messages.length === 0 && (
-            <NewSessionEmptyState
-              cwd={cwd}
-              selectedAgentType={selectedAgentType}
-              onSelectAgentType={setSelectedAgentType}
-            />
-          )}
 
           {/* Inactive session banner */}
           {isInactive && (

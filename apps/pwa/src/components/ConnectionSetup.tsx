@@ -7,9 +7,11 @@ import { SettingsPanel } from './SettingsPanel';
 interface Props {
   onConnect: (agentId: string, publicKey: string) => void;
   onSendApiKeyToAgent?: (apiKey: string) => Promise<boolean>;
+  onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
+  onUpdateAgent?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; restarting: boolean; error?: string }>;
 }
 
-export function ConnectionSetup({ onConnect, onSendApiKeyToAgent }: Props) {
+export function ConnectionSetup({ onConnect, onSendApiKeyToAgent, onCheckAgentUpdate, onUpdateAgent }: Props) {
   const [agentId, setAgentId] = useState('');
   const [publicKey, setPublicKey] = useState('');
   const [mode, setMode] = useState<'scan' | 'manual'>('scan');
@@ -162,7 +164,7 @@ export function ConnectionSetup({ onConnect, onSendApiKeyToAgent }: Props) {
         {/* Help Text */}
         <div className="mt-6 text-center">
           <p className="text-sm text-slate-500">
-            Run <code className="text-slate-400">quicksave-agent</code> on your computer to get connection details.
+            Run <code className="text-slate-400">quicksave</code> on your computer to get connection details.
           </p>
         </div>
       </div>
@@ -172,6 +174,8 @@ export function ConnectionSetup({ onConnect, onSendApiKeyToAgent }: Props) {
         isOpen={showSettings}
         onClose={() => setShowSettings(false)}
         onSendApiKeyToAgent={onSendApiKeyToAgent}
+        onCheckAgentUpdate={onCheckAgentUpdate}
+        onUpdateAgent={onUpdateAgent}
       />
     </div>
   );

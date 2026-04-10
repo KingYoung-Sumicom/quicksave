@@ -173,6 +173,35 @@ export interface PairingInfoResult {
 }
 
 // ---------------------------------------------------------------------------
+// debug introspection
+// ---------------------------------------------------------------------------
+
+export interface DebugResult {
+  pid: number;
+  uptime: number;
+  peers: Array<{
+    address: string;
+    connectedAt: number;
+    topics: string[];
+  }>;
+  subscriptions: Record<string, string[]>;
+  pendingInputs: Array<{
+    requestId: string;
+    sessionId: string;
+    toolName?: string;
+    agentId?: string;
+    inputType: string;
+  }>;
+  activeSessions: Array<{
+    sessionId: string;
+    cwd: string;
+    isStreaming: boolean;
+    hasPendingInput: boolean;
+    permissionMode: string;
+  }>;
+}
+
+// ---------------------------------------------------------------------------
 // repo management
 // ---------------------------------------------------------------------------
 
@@ -209,4 +238,14 @@ export function shouldRestartDaemon(
 
 function isDev(): boolean {
   return BUILD_ID.startsWith('dev-') || process.env.NODE_ENV === 'development';
+}
+
+/**
+ * Debug CLI commands are enabled by default in dev mode.
+ * In production builds, set QUICKSAVE_DEBUG=1 to enable.
+ */
+export function isDebugEnabled(): boolean {
+  if (process.env.QUICKSAVE_DEBUG === '1') return true;
+  if (process.env.QUICKSAVE_DEBUG === '0') return false;
+  return isDev();
 }

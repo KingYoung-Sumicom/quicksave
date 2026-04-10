@@ -51,6 +51,8 @@ import {
   ListCodingPathsResponsePayload,
   AddCodingPathRequestPayload,
   AddCodingPathResponsePayload,
+  AgentCheckUpdateResponsePayload,
+  AgentUpdateResponsePayload,
   ClaudeListSessionsRequestPayload,
   ClaudeListSessionsResponsePayload,
   ClaudeStartRequestPayload,
@@ -62,7 +64,6 @@ import {
   ClaudeCloseRequestPayload,
   ClaudeCloseResponsePayload,
   ClaudeGetMessagesRequestPayload,
-  ClaudeGetMessagesResponsePayload,
   ClaudeUserInputResponsePayload,
   ClaudeGetPreferencesResponsePayload,
   ClaudeSetPreferencesRequestPayload,
@@ -70,6 +71,7 @@ import {
   ClaudeSetSessionPermissionRequestPayload,
   ClaudeSetSessionPermissionResponsePayload,
   ClaudeActiveSessionsResponsePayload,
+  CardHistoryResponse,
   generateMessageId,
 } from '@sumicom/quicksave-shared';
 import { GitOperations } from '../git/operations.js';
@@ -79,6 +81,8 @@ import { ClaudeCodeService } from '../ai/claudeCodeService.js';
 import { readdir, stat } from 'fs/promises';
 import { join, dirname, basename } from 'path';
 import { homedir } from 'os';
+
+const VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 export class MessageHandler {
   private repos: Map<string, GitOperations>;
@@ -90,15 +94,21 @@ export class MessageHandler {
   private codingPaths: Map<string, CodingPath> = new Map(); // path -> CodingPath
   private aiService: CommitSummaryService | null = null;
   private claudeService: ClaudeCodeService = new ClaudeCodeService();
+  private latestVersionCache: { version: string; checkedAt: number } | null = null;
+  private versionCheckInFlight: Promise<string | null> | null = null;
   onPeerSubscribed?: (peerAddress: string, sessionId: string) => void;
+  onPeerUnsubscribed?: (peerAddress: string, sessionId: string) => void;
 
-  constructor(repos: Repository[], _license?: License, codingPaths?: string[]) {
+  private productionBuild: boolean;
+
+  constructor(repos: Repository[], _license?: License, codingPaths?: string[], productionBuild = false) {
     this.repos = new Map();
     for (const repo of repos) {
       this.repos.set(repo.path, new GitOperations(repo.path));
     }
     this.availableRepos = repos;
     this.defaultRepoPath = repos.length > 0 ? repos[0].path : '';
+    this.productionBuild = productionBuild;
 
     // Load explicit coding paths only (repos and coding paths are independent)
     if (codingPaths) {
@@ -106,6 +116,42 @@ export class MessageHandler {
         this.codingPaths.set(p, { path: p, name: basename(p) });
       }
     }
+  }
+
+  /**
+   * Check npm registry for latest version. Deduped: returns cached value
+   * if checked within the last 12 hours. Only runs in production builds.
+   */
+  private async checkLatestVersion(force = false): Promise<string | null> {
+    if (!force && !this.productionBuild) return null;
+
+    // Return cached value if fresh
+    if (!force && this.latestVersionCache &&
+        Date.now() - this.latestVersionCache.checkedAt < VERSION_CHECK_INTERVAL_MS) {
+      return this.latestVersionCache.version;
+    }
+
+    // Dedup concurrent requests
+    if (this.versionCheckInFlight) return this.versionCheckInFlight;
+
+    this.versionCheckInFlight = (async () => {
+      try {
+        const res = await fetch('https://registry.npmjs.org/@sumicom/quicksave/latest');
+        if (!res.ok) return null;
+        const data = await res.json() as { version?: string };
+        if (data.version) {
+          this.latestVersionCache = { version: data.version, checkedAt: Date.now() };
+          return data.version;
+        }
+        return null;
+      } catch {
+        return null;
+      } finally {
+        this.versionCheckInFlight = null;
+      }
+    })();
+
+    return this.versionCheckInFlight;
   }
 
   addRepo(repo: Repository): void {
@@ -249,6 +295,10 @@ export class MessageHandler {
           return this.handleListCodingPaths(message);
         case 'agent:add-coding-path':
           return this.handleAddCodingPath(message as Message<AddCodingPathRequestPayload>);
+        case 'agent:check-update':
+          return this.handleAgentCheckUpdate(message);
+        case 'agent:update':
+          return this.handleAgentUpdate(message);
         // Claude Code SDK
         case 'claude:list-sessions':
           return this.handleClaudeListSessions(message as Message<ClaudeListSessionsRequestPayload>, peerAddress);
@@ -260,8 +310,6 @@ export class MessageHandler {
           return this.handleClaudeCancel(message as Message<ClaudeCancelRequestPayload>);
         case 'claude:close':
           return this.handleClaudeClose(message as Message<ClaudeCloseRequestPayload>);
-        case 'claude:get-messages':
-          return this.handleClaudeGetMessages(message as Message<ClaudeGetMessagesRequestPayload>, peerAddress);
         case 'claude:user-input-response':
           return this.handleClaudeUserInputResponse(message as Message<ClaudeUserInputResponsePayload>);
         case 'claude:get-preferences':
@@ -272,6 +320,13 @@ export class MessageHandler {
           return this.handleSetSessionPermission(message as Message<ClaudeSetSessionPermissionRequestPayload>);
         case 'claude:active-sessions':
           return this.handleGetActiveSessions(message);
+        case 'claude:get-cards':
+          return this.handleClaudeGetCards(message as Message<ClaudeGetMessagesRequestPayload>, peerAddress);
+        case 'claude:unsubscribe': {
+          const unsub = message.payload as { sessionId: string };
+          this.onPeerUnsubscribed?.(peerAddress, unsub.sessionId);
+          return createMessage('claude:unsubscribe:response', { ok: true });
+        }
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
       }
@@ -285,6 +340,9 @@ export class MessageHandler {
     message: Message<HandshakePayload>,
     peerAddress: string,
   ): Message<HandshakeAckPayload> {
+    // Fire-and-forget: check npm registry for latest version (12h dedup, production only)
+    this.checkLatestVersion().catch(() => {});
+
     const response = createMessage<HandshakeAckPayload>('handshake:ack', {
       success: true,
       agentVersion: this.agentVersion,
@@ -292,6 +350,8 @@ export class MessageHandler {
       availableRepos: this.availableRepos,
       availableCodingPaths: [...this.codingPaths.values()],
       preferences: this.claudeService.getPreferences(),
+      latestVersion: this.latestVersionCache?.version,
+      devBuild: !this.productionBuild || undefined,
     });
     response.id = message.id;
 
@@ -937,6 +997,98 @@ export class MessageHandler {
   }
 
   // ============================================================================
+  // Agent Self-Update
+  // ============================================================================
+
+  /** Callback set by run.ts to trigger daemon restart after update. */
+  onRestartRequested?: () => void;
+
+  private async handleAgentCheckUpdate(
+    message: Message,
+  ): Promise<Message<AgentCheckUpdateResponsePayload>> {
+    const currentVersion = this.agentVersion;
+    try {
+      const latestVersion = await this.checkLatestVersion(/* force */ true);
+      const response = createMessage<AgentCheckUpdateResponsePayload>(
+        'agent:check-update:response',
+        {
+          currentVersion,
+          latestVersion: latestVersion || undefined,
+          updateAvailable: !!latestVersion && latestVersion !== currentVersion,
+        },
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<AgentCheckUpdateResponsePayload>(
+        'agent:check-update:response',
+        {
+          currentVersion,
+          updateAvailable: false,
+          error: error instanceof Error ? error.message : 'Failed to check for updates',
+        },
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleAgentUpdate(
+    message: Message,
+  ): Promise<Message<AgentUpdateResponsePayload>> {
+    const previousVersion = this.agentVersion;
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+
+      // Use npm to install the latest global package
+      const { stdout, stderr } = await execFileAsync('npm', [
+        'install', '-g', '@sumicom/quicksave@latest',
+      ], { timeout: 120_000 });
+
+      const output = (stdout + '\n' + stderr).trim();
+
+      // Parse the installed version from npm output
+      // npm output typically contains lines like: + @sumicom/quicksave@0.5.3
+      const versionMatch = output.match(/@sumicom\/quicksave@(\d+\.\d+\.\d+)/);
+      const newVersion = versionMatch?.[1];
+
+      const needsRestart = !!newVersion && newVersion !== previousVersion;
+
+      const response = createMessage<AgentUpdateResponsePayload>(
+        'agent:update:response',
+        {
+          success: true,
+          previousVersion,
+          newVersion: newVersion || undefined,
+          restarting: needsRestart,
+        },
+      );
+      response.id = message.id;
+
+      // Schedule daemon restart AFTER we send the response back to PWA
+      if (needsRestart && this.onRestartRequested) {
+        setTimeout(() => this.onRestartRequested?.(), 500);
+      }
+
+      return response;
+    } catch (error) {
+      const response = createMessage<AgentUpdateResponsePayload>(
+        'agent:update:response',
+        {
+          success: false,
+          previousVersion,
+          restarting: false,
+          error: error instanceof Error ? error.message : 'Failed to update agent',
+        },
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  // ============================================================================
   // Claude Code SDK Handlers
   // ============================================================================
 
@@ -1075,32 +1227,27 @@ export class MessageHandler {
     return response;
   }
 
-  private async handleClaudeGetMessages(
+  private async handleClaudeGetCards(
     message: Message<ClaudeGetMessagesRequestPayload>,
     peerAddress: string
-  ): Promise<Message<ClaudeGetMessagesResponsePayload>> {
+  ): Promise<Message<CardHistoryResponse>> {
     const { sessionId, cwd: payloadCwd, offset = 0, limit = 50 } = message.payload;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
 
     try {
-      const result = await this.claudeService.getMessages(sessionId, cwd, offset, limit);
-      // Subscribe only after successful retrieval so a failed/invalid request
-      // doesn't overwrite an active streaming session's subscription.
+      const result = await this.claudeService.getCards(sessionId, cwd, offset, limit);
       this.onPeerSubscribed?.(peerAddress, sessionId);
-      const response = createMessage<ClaudeGetMessagesResponsePayload>(
-        'claude:get-messages:response',
-        result
-      );
+      const response = createMessage<CardHistoryResponse>('claude:get-cards:response', result);
       response.id = message.id;
       return response;
     } catch (error) {
-      const response = createMessage<ClaudeGetMessagesResponsePayload>(
-        'claude:get-messages:response',
+      const response = createMessage<CardHistoryResponse>(
+        'claude:get-cards:response',
         {
-          messages: [],
+          cards: [],
           total: 0,
           hasMore: false,
-          error: error instanceof Error ? error.message : 'Failed to get messages',
+          error: error instanceof Error ? error.message : 'Failed to get cards',
         }
       );
       response.id = message.id;

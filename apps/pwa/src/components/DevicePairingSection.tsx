@@ -154,6 +154,7 @@ export function DevicePairingSection() {
       <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
         Device Sync
       </h3>
+      <div className="max-h-64 overflow-y-auto space-y-4 overscroll-contain">
 
       {/* My Identity */}
       <div className="space-y-2">
@@ -279,6 +280,8 @@ export function DevicePairingSection() {
           Generates a new identity key. All paired devices and saved machines will be wiped.
         </p>
       </div>
+
+      </div>{/* end scroll container */}
 
       {/* Rotate Confirmation Dialog */}
       {showRotateConfirm && (

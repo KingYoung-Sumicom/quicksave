@@ -15,6 +15,7 @@ import {
   type KeyExchangeV2,
 } from '@sumicom/quicksave-shared';
 import { SignalingClient } from './relay.js';
+import { PubSub, sessionTopic, BROADCAST_TOPIC } from './pubsub.js';
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
@@ -43,7 +44,7 @@ export class AgentConnection extends EventEmitter {
   private signaling: SignalingClient;
   private keyPair: KeyPair;
   private peers: Map<string, PeerSession> = new Map();
-  private peerSessions: Map<string, string> = new Map(); // peerAddress → sessionId
+  private pubsub = new PubSub();
 
   // Key exchange replay protection
   private static readonly KEY_EXCHANGE_MAX_AGE_MS = 60000; // 60 seconds
@@ -80,8 +81,9 @@ export class AgentConnection extends EventEmitter {
 
     // Reset encryption state when WebSocket reconnects (before peer-disconnected)
     this.signaling.on('disconnected', () => {
-      // Clear all peers, emit disconnected for each
+      // Clear all peers and their pubsub subscriptions
       for (const [address] of this.peers) {
+        this.pubsub.unsubscribeAll(address);
         this.emit('disconnected', address);
       }
       this.peers.clear();
@@ -180,6 +182,9 @@ export class AgentConnection extends EventEmitter {
 
       this.emit('connected', peerAddress);
 
+      // Auto-subscribe new peers to broadcast topic
+      this.pubsub.subscribe(peerAddress, BROADCAST_TOPIC);
+
       // V2: Send acknowledgment
       const ack = JSON.stringify({
         type: 'key-exchange-ack',
@@ -222,7 +227,10 @@ export class AgentConnection extends EventEmitter {
   private handlePeerDisconnected(peerAddress: string): void {
     if (this.peers.has(peerAddress)) {
       this.peers.delete(peerAddress);
-      this.peerSessions.delete(peerAddress);
+      const removedTopics = this.pubsub.unsubscribeAll(peerAddress);
+      if (removedTopics.size > 0) {
+        console.log(`[disconnect] ${peerAddress.slice(0, 12)} removed from ${removedTopics.size} topics`);
+      }
       this.emit('disconnected', peerAddress);
     }
 
@@ -249,34 +257,82 @@ export class AgentConnection extends EventEmitter {
     return this.peers.size > 0;
   }
 
-  /** Register which session a peer is currently viewing. */
-  subscribePeerToSession(peerAddress: string, sessionId: string): void {
-    const prev = this.peerSessions.get(peerAddress);
-    if (prev !== sessionId) {
-      console.log(`[sub] ${peerAddress.slice(0, 12)} ${prev?.slice(0, 8) ?? '(none)'} → ${sessionId.slice(0, 8)}`);
+  /**
+   * Register which session a peer is currently viewing.
+   * Returns true if this is a NEW subscription (peer was not already on this session topic).
+   */
+  subscribePeerToSession(peerAddress: string, sessionId: string): boolean {
+    const topic = sessionTopic(sessionId);
+    const isNew = this.pubsub.subscribe(peerAddress, topic);
+    if (isNew) {
+      console.log(`[sub] ${peerAddress.slice(0, 12)} → ${sessionId.slice(0, 8)}`);
     }
-    this.peerSessions.set(peerAddress, sessionId);
+    // Ensure broadcast subscription
+    this.pubsub.subscribe(peerAddress, BROADCAST_TOPIC);
+    return isNew;
   }
 
-  /** Send a message to all connected peers. */
+  /**
+   * Remove a peer's session subscription.
+   * Called when the PWA explicitly unsubscribes from a session.
+   */
+  unsubscribePeerFromSession(peerAddress: string, sessionId: string): void {
+    const topic = sessionTopic(sessionId);
+    this.pubsub.unsubscribe(peerAddress, topic);
+    console.log(`[unsub] ${peerAddress.slice(0, 12)} x ${sessionId.slice(0, 8)}`);
+  }
+
+  /** Debug snapshot of peers and pubsub state. */
+  getDebugState(): { peers: Array<{ address: string; connectedAt: number; topics: string[] }>; subscriptions: Record<string, string[]> } {
+    const peers = Array.from(this.peers.entries()).map(([addr, ps]) => ({
+      address: addr.slice(0, 16),
+      connectedAt: ps.connectedAt,
+      topics: [...(this.pubsub.topicsOf(addr))],
+    }));
+    const { topics } = this.pubsub.getState();
+    const subscriptions: Record<string, string[]> = {};
+    for (const [topic, addrs] of Object.entries(topics)) {
+      subscriptions[topic] = addrs.map(a => a.slice(0, 16));
+    }
+    return { peers, subscriptions };
+  }
+
+  /** Send a message to all connected peers via broadcast topic. */
   broadcast(message: Message): void {
-    for (const [address] of this.peers) {
-      this.send(message, address);
+    const subscribers = this.pubsub.subscribers(BROADCAST_TOPIC);
+    if (subscribers.size > 0) {
+      for (const address of subscribers) {
+        if (this.peers.has(address)) {
+          this.send(message, address);
+        }
+      }
+    } else {
+      // Fallback: peers connected but haven't subscribed yet
+      for (const [address] of this.peers) {
+        this.send(message, address);
+      }
     }
   }
 
-  /** Send a message only to peers subscribed to a specific session. */
-  sendToSession(sessionId: string, message: Message): void {
+  /** Send a message only to peers subscribed to a specific session. Returns number of peers sent to. */
+  sendToSession(sessionId: string, message: Message): number {
+    const topic = sessionTopic(sessionId);
+    const subscribers = this.pubsub.subscribers(topic);
     let sent = 0;
-    for (const [address] of this.peers) {
-      if (this.peerSessions.get(address) === sessionId) {
+    for (const address of subscribers) {
+      if (this.peers.has(address)) {
         this.send(message, address);
         sent++;
       }
     }
-    if (sent === 0 && (message.payload as any)?.eventType) {
-      console.warn(`[sendToSession] NO peers for session=${sessionId.slice(0, 8)} event=${(message.payload as any).eventType} peers=${this.peers.size} subscriptions=${JSON.stringify([...this.peerSessions.entries()].map(([a,s]) => `${a.slice(0,12)}→${s.slice(0,8)}`))}`);
+    if (sent === 0) {
+      const msgType = message.type;
+      const eventType = (message.payload as any)?.eventType;
+      if (eventType || msgType === 'claude:user-input-request') {
+        console.warn(`[sendToSession] NO peers for session=${sessionId.slice(0, 8)} type=${msgType} peers=${this.peers.size}`);
+      }
     }
+    return sent;
   }
 }
 

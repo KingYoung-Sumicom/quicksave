@@ -15,6 +15,9 @@ interface ConnectionStore {
   connectedAt: number | null;
   error: string | null;
   isPro: boolean;
+  agentVersion: string | null;
+  latestVersion: string | null;
+  devBuild: boolean;
   reconnectAttempt: number | null;
   maxReconnectAttempts: number | null;
   connectionStep: ConnectionStep | null;
@@ -24,7 +27,9 @@ interface ConnectionStore {
   // Actions
   setConnecting: (agentId: string) => void;
   setSignaling: () => void;
-  setConnected: (repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[]) => void;
+  setConnected: (repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string, latestVersion?: string, devBuild?: boolean) => void;
+  setAgentVersion: (version: string) => void;
+  setLatestVersion: (version: string) => void;
   setRepoPath: (repoPath: string) => void;
   setPendingRepoPath: (repoPath: string | null) => void;
   setAvailableRepos: (repos: Repository[]) => void;
@@ -64,6 +69,9 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
   connectedAt: null,
   error: null,
   isPro: false,
+  agentVersion: null,
+  latestVersion: null,
+  devBuild: false,
   reconnectAttempt: null,
   maxReconnectAttempts: null,
   connectionStep: null,
@@ -84,7 +92,7 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
       state: 'connecting',
     }),
 
-  setConnected: (repoPath, isPro, availableRepos, availableCodingPaths) =>
+  setConnected: (repoPath, isPro, availableRepos, availableCodingPaths, agentVersion, latestVersion, devBuild) =>
     set({
       state: 'connected',
       repoPath: repoPath || null,
@@ -92,10 +100,19 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
       availableCodingPaths: availableCodingPaths || [],
       connectedAt: Date.now(),
       isPro,
+      agentVersion: agentVersion || null,
+      latestVersion: latestVersion || null,
+      devBuild: devBuild || false,
       error: null,
       connectionStep: null,
       keyExchangeAttempt: null,
     }),
+
+  setAgentVersion: (version) =>
+    set({ agentVersion: version }),
+
+  setLatestVersion: (version) =>
+    set({ latestVersion: version }),
 
   setRepoPath: (repoPath) =>
     set({
@@ -168,6 +185,9 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
       connectedAt: null,
       error: null,
       isPro: false,
+      agentVersion: null,
+      latestVersion: null,
+      devBuild: false,
       reconnectAttempt: null,
       maxReconnectAttempts: null,
       connectionStep: null,

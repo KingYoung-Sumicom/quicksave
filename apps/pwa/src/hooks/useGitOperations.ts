@@ -23,6 +23,8 @@ import {
   type BrowseDirectoryResponsePayload,
   type AddRepoResponsePayload,
   type AddCodingPathResponsePayload,
+  type AgentCheckUpdateResponsePayload,
+  type AgentUpdateResponsePayload,
   type Repository,
   type CodingPath,
   type ClaudeModel,
@@ -504,6 +506,33 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     [sendRequest, setAvailableCodingPaths, availableCodingPaths, setError]
   );
 
+  const checkAgentUpdate = useCallback(async () => {
+    try {
+      const message = createMessage('agent:check-update', {});
+      return await sendRequest<AgentCheckUpdateResponsePayload>(message, 15000);
+    } catch (error) {
+      return {
+        currentVersion: 'unknown',
+        updateAvailable: false,
+        error: error instanceof Error ? error.message : 'Failed to check for updates',
+      };
+    }
+  }, [sendRequest]);
+
+  const updateAgent = useCallback(async () => {
+    try {
+      const message = createMessage('agent:update', {});
+      return await sendRequest<AgentUpdateResponsePayload>(message, 180000);
+    } catch (error) {
+      return {
+        success: false,
+        previousVersion: 'unknown',
+        restarting: false,
+        error: error instanceof Error ? error.message : 'Failed to update agent',
+      };
+    }
+  }, [sendRequest]);
+
   return {
     handleResponse,
     fetchStatus,
@@ -529,5 +558,7 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     browseDirectory,
     addRepo,
     addCodingPath,
+    checkAgentUpdate,
+    updateAgent,
   };
 }

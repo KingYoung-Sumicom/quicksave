@@ -79,9 +79,9 @@ export function NavigationDrawer({
   };
 
   const handleNewSession = (codingPath: string) => {
-    const { setActiveSession, clearMessages, setPromptInput } = useClaudeStore.getState();
+    const { setActiveSession, clearCards, setPromptInput } = useClaudeStore.getState();
     setActiveSession(null);
-    clearMessages();
+    clearCards();
     setPromptInput('');
     handleNavigate(agentUrl(agentId, 'coding', codingPath) + '?new');
   };

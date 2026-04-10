@@ -11,47 +11,24 @@ import {
 import type { SDKSession } from '@anthropic-ai/claude-agent-sdk';
 import type {
   ClaudeSessionSummary,
-  ClaudeHistoryMessage,
-  ClaudeSubagentBlock,
-  ClaudeStreamEventType,
   ClaudeUserInputRequestPayload,
   ClaudeUserInputResponsePayload,
   ClaudePreferences,
+  CardEvent,
+  CardHistoryResponse,
+  CardStreamEnd,
 } from '@sumicom/quicksave-shared';
-const TOOL_RESULT_TRUNCATE_LENGTH = 500;
+import { StreamCardBuilder, buildCardsFromHistory } from './cardBuilder.js';
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
-
-export interface StreamEvent {
-  sessionId: string;
-  streamId: string;
-  eventType: ClaudeStreamEventType;
-  content: string;
-  toolName?: string;
-  toolInput?: string;
-  toolUseId?: string;        // Present on tool_use events
-  toolResultForId?: string;  // Present on tool_result events
-  isPartial?: boolean;
-  agentId?: string;
-  toolUseCount?: number;
-  lastToolName?: string;
-  subagentStatus?: 'completed' | 'failed' | 'stopped';
-  subagentSummary?: string;
-}
-
-export interface StreamEndResult {
-  sessionId: string;
-  streamId: string;
-  success: boolean;
-  error?: string;
-  totalCostUsd?: number;
-  tokenUsage?: { input: number; output: number };
-}
 
 /**
  * Events emitted by ClaudeCodeService:
- *   'stream'       (event: StreamEvent)
- *   'stream:end'   (result: StreamEndResult)
+ *   'card-event'         (event: CardEvent)
+ *   'card-stream-end'    (result: CardStreamEnd)
  *   'user-input-request' (request: ClaudeUserInputRequestPayload)
+ *   'user-input-resolved' ({ requestId, sessionId })
+ *   'session-updated'    ({ sessionId, isActive, isStreaming, hasPendingInput, permissionMode })
+ *   'preferences-updated' (prefs: ClaudePreferences)
  */
 
 type PermissionLevel = 'bypassPermissions' | 'acceptEdits' | 'default' | 'plan';
@@ -91,13 +68,26 @@ const AUTO_APPROVE: Record<PermissionLevel, Set<string>> = {
   plan:        new Set(),
 };
 
+interface SessionIdRef {
+  current: string | null;
+  promise: Promise<string>;
+}
+
 interface PersistentSession {
   session: SDKSession;
   sessionId: string;
+  sessionIdRef: SessionIdRef;
   cwd: string;
   streaming: boolean;
   cancelStreaming: (() => void) | null;
   permissionLevel: PermissionLevel;
+  cardBuilder: StreamCardBuilder | null;
+}
+
+function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
 }
 
 /** Extract readable text from tool_result content (which may be a string or array of blocks). */
@@ -244,7 +234,21 @@ export class ClaudeCodeService extends EventEmitter {
       const last = msgs[msgs.length - 1];
       if (last.type !== 'assistant') return false;
       const content = last.message?.content;
-      return Array.isArray(content) && content.some((b: any) => b.type === 'tool_use');
+      if (!Array.isArray(content)) return false;
+      const toolUseIds = content.filter((b: any) => b.type === 'tool_use').map((b: any) => b.id);
+      if (toolUseIds.length === 0) return false;
+      // Check if all tool_use blocks already have a corresponding tool_result
+      const resolvedIds = new Set<string>(
+        msgs
+          .filter((m: any) => m.type === 'user')
+          .flatMap((m: any) => {
+            const c = m.message?.content;
+            return Array.isArray(c)
+              ? c.filter((b: any) => b.type === 'tool_result').map((b: any) => b.tool_use_id as string)
+              : [];
+          })
+      );
+      return toolUseIds.some((id: string) => !resolvedIds.has(id));
     };
 
     try {
@@ -267,130 +271,6 @@ export class ClaudeCodeService extends EventEmitter {
     }
   }
 
-  async getMessages(
-    sessionId: string,
-    cwd: string,
-    offset = 0,
-    limit = 50
-  ): Promise<{ messages: ClaudeHistoryMessage[]; total: number; hasMore: boolean; subagentBlocks: ClaudeSubagentBlock[]; toolNameMap: Record<string, string> }> {
-    const allMessages = (await getSessionMessages(sessionId, { dir: cwd, includeSystemMessages: true }) as any[])
-      .filter((m: any) => !m.isSidechain);
-
-    const total = allMessages.length;
-    const tailStart = Math.max(0, total - offset - limit);
-    const tailEnd = Math.max(0, total - offset);
-    const sliced = allMessages.slice(tailStart, tailEnd);
-
-    // Build toolNameMap from ALL messages so tool_results can always resolve their tool_use name.
-    // Also collect Agent tool_use blocks → subagent block derivation.
-    const toolNameMap: Record<string, string> = {};
-    const agentToolUses = new Map<string, { description: string; hasResult: boolean; resultSummary?: string }>();
-
-    for (const msg of allMessages) {
-      const rawMsg = (msg as any).message as any;
-      if (!Array.isArray(rawMsg?.content)) continue;
-      for (const block of rawMsg.content) {
-        if (block.type === 'tool_use' && block.id && block.name) {
-          toolNameMap[block.id] = block.name;
-          if (block.name === 'Agent') {
-            agentToolUses.set(block.id, {
-              description: (block.input as any)?.description ?? '',
-              hasResult: false,
-            });
-          }
-        }
-        if (block.type === 'tool_result' && agentToolUses.has(block.tool_use_id)) {
-          const entry = agentToolUses.get(block.tool_use_id)!;
-          entry.hasResult = true;
-          const text = extractToolResultText(block.content);
-          if (text) entry.resultSummary = text.slice(0, 200);
-        }
-      }
-    }
-
-    const messages: ClaudeHistoryMessage[] = sliced.flatMap((msg: any, i: number) => {
-      if (msg.type === 'system') {
-        return [{
-          index: tailStart + i,
-          role: 'system' as const,
-          content: 'Context compacted',
-        }];
-      }
-
-      const role = msg.type as 'user' | 'assistant';
-      const rawMessage = msg.message as any;
-      const expanded: import('@sumicom/quicksave-shared').ClaudeHistoryMessage[] = [];
-
-      if (rawMessage?.content) {
-        if (typeof rawMessage.content === 'string') {
-          expanded.push({ index: tailStart + i, role, content: rawMessage.content });
-        } else if (Array.isArray(rawMessage.content)) {
-          const textParts: string[] = [];
-          for (const block of rawMessage.content) {
-            if (block.type === 'text') {
-              textParts.push(block.text);
-            } else if (block.type === 'tool_use') {
-              // Skip Agent tool_use — represented by subagentBlocks instead
-              if (agentToolUses.has(block.id)) continue;
-              expanded.push({
-                index: tailStart + i,
-                role,
-                content: '',
-                toolName: block.name,
-                toolInput: JSON.stringify(block.input),
-                toolUseId: block.id,
-              });
-            } else if (block.type === 'tool_result') {
-              // Skip Agent tool_result — represented by subagentBlocks instead
-              if (agentToolUses.has(block.tool_use_id)) continue;
-              const resultStr = extractToolResultText(block.content);
-              const truncated = resultStr.length > TOOL_RESULT_TRUNCATE_LENGTH;
-              expanded.push({
-                index: tailStart + i,
-                role,
-                content: '',
-                toolResult: truncated
-                  ? resultStr.slice(0, TOOL_RESULT_TRUNCATE_LENGTH) + ' [truncated]'
-                  : resultStr,
-                toolResultForId: block.tool_use_id,
-                truncated,
-              });
-            }
-          }
-          if (textParts.length > 0) {
-            expanded.unshift({ index: tailStart + i, role, content: textParts.join('\n') });
-          }
-        }
-      }
-
-      if (expanded.length === 0) {
-        expanded.push({ index: tailStart + i, role, content: '' });
-      }
-      return expanded;
-    });
-
-    // Build subagent blocks from Agent tool_use / tool_result pairs
-    const subagentBlocks: ClaudeSubagentBlock[] = [];
-    for (const [toolUseId, info] of agentToolUses) {
-      subagentBlocks.push({
-        toolUseId,
-        agentId: toolUseId,
-        description: info.description,
-        summary: info.resultSummary,
-        status: info.hasResult ? 'completed' : 'running',
-        toolUseCount: 0,
-      });
-    }
-
-    return {
-      messages,
-      total,
-      hasMore: tailStart > 0,
-      subagentBlocks,
-      toolNameMap,
-    };
-  }
-
   /**
    * Create a V2 session with the given cwd.
    * V2 SDKSessionOptions doesn't expose `cwd`, so we temporarily change
@@ -404,6 +284,7 @@ export class ClaudeCodeService extends EventEmitter {
       model?: string;
       permissionMode?: string;
       resumeSessionId?: string;
+      sessionIdRef?: SessionIdRef;
     }
   ): SDKSession {
     const originalCwd = process.cwd();
@@ -421,15 +302,21 @@ export class ClaudeCodeService extends EventEmitter {
         canUseTool: async (
           toolName: string,
           input: Record<string, unknown>,
-          options: { title?: string; description?: string; displayName?: string; toolUseID: string; signal: AbortSignal }
+          options: { title?: string; description?: string; displayName?: string; toolUseID: string; agentID?: string; signal: AbortSignal }
         ) => {
 
 
-          const resolvedSessionId = sessionId ?? 'unknown';
+          // Resolve session ID: use mutable ref (updated when init arrives),
+          // fall back to static closure, await deferred if still unknown.
+          let resolvedSessionId = opts.sessionIdRef?.current ?? sessionId;
+          if (!resolvedSessionId && opts.sessionIdRef?.promise) {
+            resolvedSessionId = await opts.sessionIdRef.promise;
+          }
+          resolvedSessionId = resolvedSessionId ?? 'unknown';
 
           // Check runtime permission level — auto-approve if tool is in the allow set
           const ps = resolvedSessionId !== 'unknown' ? this.sessions.get(resolvedSessionId) : undefined;
-          const level = ps?.permissionLevel ?? 'acceptEdits';
+          const level = ps?.permissionLevel ?? this.sessionPermissions.get(resolvedSessionId) ?? 'acceptEdits';
           if (AUTO_APPROVE[level].has(toolName)) {
             // For file-writing tools, restrict auto-approval to paths inside the project cwd
             const FILE_WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
@@ -471,6 +358,8 @@ export class ClaudeCodeService extends EventEmitter {
               : (options.description ?? JSON.stringify(input).slice(0, 500)),
             toolName,
             toolInput: input,
+            toolUseId: options.toolUseID,
+            ...(options.agentID ? { agentId: options.agentID } : {}),
             // Include structured options for question type
             ...(isQuestion && questions ? {
               options: questions.flatMap((q: any) =>
@@ -482,6 +371,25 @@ export class ClaudeCodeService extends EventEmitter {
               ),
             } : {}),
           };
+
+          // Card-based: create/attach pending input on the correct card
+          const builder = ps?.cardBuilder;
+          if (builder) {
+            const pendingAttachment = {
+              sessionId: resolvedSessionId,
+              requestId,
+              inputType: request.inputType,
+              title: request.title,
+              message: request.message,
+              options: request.options,
+            };
+            // Every permission gets its own ToolCallCard.
+            // Subagent permissions are ephemeral — removed after resolution
+            // (the tool runs in the sidechain, so no result will arrive).
+            const ephemeral = !!options.agentID;
+            const cardEvt = builder.toolCallFromPermission(toolName, input, options.toolUseID, pendingAttachment, ephemeral);
+            this.emit('card-event', cardEvt);
+          }
 
           this.emit('user-input-request', request);
           this.emitSessionUpdate(resolvedSessionId);
@@ -540,6 +448,14 @@ export class ClaudeCodeService extends EventEmitter {
     if (!pending) return false;
     this.pendingInputRequests.delete(response.requestId);
     pending.resolve(response);
+
+    // Clear pending input on the card
+    const ps = this.sessions.get(pending.request.sessionId);
+    if (ps?.cardBuilder) {
+      const cardEvt = ps.cardBuilder.clearPendingInput(response.requestId);
+      if (cardEvt) this.emit('card-event', cardEvt);
+    }
+
     this.emit('user-input-resolved', { requestId: response.requestId, sessionId: pending.request.sessionId });
     this.emitSessionUpdate(pending.request.sessionId);
     return true;
@@ -550,6 +466,21 @@ export class ClaudeCodeService extends EventEmitter {
    */
   getPendingInputRequests(): ClaudeUserInputRequestPayload[] {
     return Array.from(this.pendingInputRequests.values()).map((p) => p.request);
+  }
+
+  /** Debug snapshot of pending inputs and active sessions. */
+  getDebugState(): {
+    pendingInputs: Array<{ requestId: string; sessionId: string; toolName?: string; agentId?: string; inputType: string }>;
+    activeSessions: Array<{ sessionId: string; cwd: string; isStreaming: boolean; hasPendingInput: boolean; permissionMode: string }>;
+  } {
+    const pendingInputs = Array.from(this.pendingInputRequests.values()).map((p) => ({
+      requestId: p.request.requestId,
+      sessionId: p.request.sessionId,
+      toolName: p.request.toolName,
+      agentId: (p.request as any).agentId,
+      inputType: p.request.inputType,
+    }));
+    return { pendingInputs, activeSessions: this.getActiveSessions() };
   }
 
   async startSession(opts: {
@@ -564,10 +495,16 @@ export class ClaudeCodeService extends EventEmitter {
     const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
     const level: PermissionLevel = validModes.includes(opts.permissionMode as any)
       ? (opts.permissionMode as PermissionLevel) : 'acceptEdits';
+
+    // Mutable ref so canUseTool can access the real sessionId once init arrives
+    const deferred = createDeferred<string>();
+    const sessionIdRef: SessionIdRef = { current: null, promise: deferred.promise };
+
     const session = this.createSessionWithCwd(opts.cwd, null, {
       allowedTools: opts.allowedTools,
       model: opts.model,
       permissionMode: opts.permissionMode,
+      sessionIdRef,
     });
 
     const prompt = opts.systemPrompt
@@ -575,23 +512,22 @@ export class ClaudeCodeService extends EventEmitter {
       : opts.prompt;
 
     await session.send(prompt);
-    this.emit('stream', {
-      sessionId: '', streamId: opts.streamId,
-      eventType: 'user_message' as ClaudeStreamEventType,
-      content: opts.prompt,
-    });
 
     const sessionId = await new Promise<string>((resolve) => {
       this.consumeStream(session, opts.streamId, (id) => {
+        sessionIdRef.current = id;
+        deferred.resolve(id);
+        this.sessionPermissions.set(id, level);
         this.sessions.set(id, {
           session,
           sessionId: id,
+          sessionIdRef,
           cwd: opts.cwd,
           streaming: true,
           cancelStreaming: null,
           permissionLevel: level,
+          cardBuilder: null,
         });
-        this.sessionPermissions.set(id, level);
         this.emitSessionUpdate(id);
         resolve(id);
       });
@@ -612,11 +548,6 @@ export class ClaudeCodeService extends EventEmitter {
       console.log(`[v2] hot resume session=${opts.sessionId}`);
       existing.streaming = true;
       this.emitSessionUpdate(opts.sessionId);
-      this.emit('stream', {
-        sessionId: opts.sessionId, streamId: opts.streamId,
-        eventType: 'user_message' as ClaudeStreamEventType,
-        content: opts.prompt,
-      });
       await existing.session.send(opts.prompt);
 
       this.consumeStream(existing.session, opts.streamId, () => {}, opts.sessionId);
@@ -625,36 +556,35 @@ export class ClaudeCodeService extends EventEmitter {
     }
 
     console.log(`[v2] cold resume session=${opts.sessionId}`);
+    const deferred = createDeferred<string>();
+    const sessionIdRef: SessionIdRef = { current: opts.sessionId, promise: deferred.promise };
+    deferred.resolve(opts.sessionId); // already known for resume
+
     const session = this.createSessionWithCwd(opts.cwd, opts.sessionId, {
       resumeSessionId: opts.sessionId,
+      sessionIdRef,
     });
 
-    this.emit('stream', {
-      sessionId: opts.sessionId, streamId: opts.streamId,
-      eventType: 'user_message' as ClaudeStreamEventType,
-      content: opts.prompt,
-    });
     await session.send(opts.prompt);
 
     const actualSessionId = await new Promise<string>((resolve) => {
       this.consumeStream(session, opts.streamId, (id) => {
         if (id !== opts.sessionId) {
-          this.emit('stream', {
-            sessionId: id, streamId: opts.streamId,
-            eventType: 'system',
-            content: `Warning: SDK created new session ${id} instead of resuming ${opts.sessionId}`,
-          });
+          console.warn(`[v2] SDK created new session ${id} instead of resuming ${opts.sessionId}`);
         }
+        sessionIdRef.current = id;
         const restoredLevel = this.sessionPermissions.get(opts.sessionId) ?? 'acceptEdits' as PermissionLevel;
+        this.sessionPermissions.set(id, restoredLevel);
         this.sessions.set(id, {
           session,
           sessionId: id,
+          sessionIdRef,
           cwd: opts.cwd,
           streaming: true,
           cancelStreaming: null,
           permissionLevel: restoredLevel,
+          cardBuilder: null,
         });
-        this.sessionPermissions.set(id, restoredLevel);
         this.emitSessionUpdate(id);
         resolve(id);
       });
@@ -752,6 +682,34 @@ export class ClaudeCodeService extends EventEmitter {
     this.sessions.clear();
   }
 
+  /** Get the CardBuilder for a session (if streaming). Used by canUseTool. */
+  getCardBuilder(sessionId: string): StreamCardBuilder | null {
+    return this.sessions.get(sessionId)?.cardBuilder ?? null;
+  }
+
+  /** Get card-based history for a session. */
+  async getCards(
+    sessionId: string,
+    cwd: string,
+    offset = 0,
+    limit = 50,
+  ): Promise<CardHistoryResponse> {
+    // Active session: use live CardBuilder cards (already carry pendingInput).
+    // This eliminates the race condition where JSONL history cards overwrite
+    // pendingInput state, and avoids PWA-side agentId matching entirely.
+    const ps = this.sessions.get(sessionId);
+    if (ps?.cardBuilder) {
+      const allCards = ps.cardBuilder.getCards();
+      const total = allCards.length;
+      const start = Math.max(0, total - offset - limit);
+      const end = Math.max(0, total - offset);
+      return { cards: allCards.slice(start, end), total, hasMore: start > 0 };
+    }
+
+    // Inactive session: fall back to JSONL history (no live pending state)
+    return buildCardsFromHistory(sessionId, cwd, offset, limit);
+  }
+
   private async consumeStream(
     session: SDKSession,
     streamId: string,
@@ -763,14 +721,17 @@ export class ClaudeCodeService extends EventEmitter {
     let capturedSessionId: string | null = initialSessionId ?? null;
     let cancelled = false;
 
-    const emitStream = (event: Omit<StreamEvent, 'sessionId' | 'streamId'>) => {
-      this.emit('stream', { ...event, sessionId: capturedSessionId ?? '', streamId });
+    // CardBuilder for this streaming turn
+    const cb = new StreamCardBuilder(capturedSessionId ?? '', streamId);
+
+    const emitCard = (event: CardEvent) => {
+      this.emit('card-event', event);
     };
 
     const flushText = () => {
       if (textBuffer) {
         console.log(`[stream] flushText len=${textBuffer.length} session=${capturedSessionId?.slice(0,8)}`);
-        emitStream({ eventType: 'assistant_text', content: textBuffer });
+        emitCard(cb.assistantText(textBuffer));
         textBuffer = '';
       }
       if (bufferTimer) {
@@ -785,7 +746,11 @@ export class ClaudeCodeService extends EventEmitter {
         if (ps) {
           ps.streaming = false;
           ps.cancelStreaming = null;
+          ps.cardBuilder = null;
         }
+        // Finalize assistant text card if still streaming
+        const finalizeEvent = cb.finalizeAssistantText();
+        if (finalizeEvent) emitCard(finalizeEvent);
         this.emitSessionUpdate(capturedSessionId);
       }
     };
@@ -806,6 +771,7 @@ export class ClaudeCodeService extends EventEmitter {
         const ps = this.sessions.get(capturedSessionId);
         if (ps) {
           ps.cancelStreaming = () => { cancelled = true; };
+          ps.cardBuilder = cb;
         }
       }
     };
@@ -817,6 +783,7 @@ export class ClaudeCodeService extends EventEmitter {
         // Capture session ID from init message
         if (message.type === 'system' && (message as any).subtype === 'init') {
           capturedSessionId = message.session_id;
+          cb.updateSessionId(capturedSessionId);
           console.log(`[stream] init session=${message.session_id}`);
           onSessionId(message.session_id);
           setCancelFn();
@@ -826,27 +793,22 @@ export class ClaudeCodeService extends EventEmitter {
         // Subagent lifecycle events
         if (message.type === 'system' && (message as any).subtype === 'task_started') {
           const m = message as any;
-          emitStream({ eventType: 'subagent_start', content: m.description ?? '', agentId: m.task_id, toolUseId: m.tool_use_id });
+          flushText();
+          emitCard(cb.subagentStart(m.description ?? '', m.task_id, m.tool_use_id));
           continue;
         }
 
         if (message.type === 'system' && (message as any).subtype === 'task_progress') {
           const m = message as any;
-          emitStream({
-            eventType: 'subagent_progress', content: m.description ?? '',
-            agentId: m.task_id, toolUseId: m.tool_use_id,
-            toolUseCount: m.usage?.tool_uses, lastToolName: m.last_tool_name,
-          });
+          const cardEvt = cb.subagentProgress(m.task_id, m.tool_use_id, m.usage?.tool_uses, m.last_tool_name);
+          if (cardEvt) emitCard(cardEvt);
           continue;
         }
 
         if (message.type === 'system' && (message as any).subtype === 'task_notification') {
           const m = message as any;
-          emitStream({
-            eventType: 'subagent_end', content: m.summary ?? '',
-            agentId: m.task_id, toolUseId: m.tool_use_id,
-            subagentStatus: m.status, subagentSummary: m.summary,
-          });
+          const cardEvt = cb.subagentEnd(m.task_id, m.tool_use_id, m.status, m.summary);
+          if (cardEvt) emitCard(cardEvt);
           continue;
         }
 
@@ -856,7 +818,6 @@ export class ClaudeCodeService extends EventEmitter {
           if (state === 'idle') {
             flushText();
             console.log(`[stream] session_state_changed=idle session=${capturedSessionId}`);
-            // Don't call onEnd here — the result message will follow
           }
           continue;
         }
@@ -883,11 +844,19 @@ export class ClaudeCodeService extends EventEmitter {
           const blocks = betaMessage?.content ?? [];
           for (const block of blocks) {
             if (block.type === 'thinking' && block.thinking) {
-              emitStream({ eventType: 'thinking', content: block.thinking });
+              emitCard(cb.thinkingBlock(block.thinking));
+            } else if (block.type === 'redacted_thinking') {
+              emitCard(cb.thinkingBlock('[Redacted thinking]'));
             } else if (block.type === 'text' && block.text) {
-              emitStream({ eventType: 'assistant_text', content: block.text });
+              emitCard(cb.assistantText(block.text));
             } else if (block.type === 'tool_use') {
-              emitStream({ eventType: 'tool_use', content: '', toolName: block.name, toolInput: JSON.stringify(block.input), toolUseId: block.id });
+              // Agent tool calls are represented by SubagentCards (via task_started).
+              // Skip creating a redundant ToolCallCard for them.
+              if (block.name !== 'Agent') {
+                emitCard(cb.toolUse(block.name, block.input ?? {}, block.id));
+              }
+            } else if (block.type === 'server_tool_use' || block.type === 'mcp_tool_use') {
+              emitCard(cb.toolUse(block.name ?? block.type, block.input ?? {}, block.id ?? ''));
             }
           }
           continue;
@@ -901,10 +870,19 @@ export class ClaudeCodeService extends EventEmitter {
             for (const block of userMsg.content) {
               if (block.type === 'tool_result') {
                 const resultContent = extractToolResultText(block.content);
-                const truncated = resultContent.length > TOOL_RESULT_TRUNCATE_LENGTH
-                  ? resultContent.slice(0, TOOL_RESULT_TRUNCATE_LENGTH) + ' [truncated]'
-                  : resultContent;
-                emitStream({ eventType: 'tool_result', content: truncated, toolResultForId: block.tool_use_id });
+                const cardEvt = cb.toolResult(block.tool_use_id, resultContent, !!block.is_error);
+                if (cardEvt) emitCard(cardEvt);
+              }
+              // Handle server/MCP tool results in streaming
+              if (block.type === 'web_search_tool_result' || block.type === 'web_fetch_tool_result' ||
+                  block.type === 'mcp_tool_result' || block.type === 'code_execution_tool_result' ||
+                  block.type === 'tool_search_tool_result') {
+                const resultContent = extractToolResultText(block.content ?? block.text ?? '');
+                const parentId = block.tool_use_id;
+                if (parentId) {
+                  const cardEvt = cb.toolResult(parentId, resultContent, !!block.is_error);
+                  if (cardEvt) emitCard(cardEvt);
+                }
               }
             }
           }
@@ -912,8 +890,7 @@ export class ClaudeCodeService extends EventEmitter {
         }
 
         // Final result — turn is complete but session stays alive.
-        // Subagent result messages have a different session_id — skip them
-        // instead of returning (which would prematurely end the parent stream).
+        // Subagent result messages have a different session_id — skip them.
         if (message.type === 'result') {
           if ((message as any).session_id !== capturedSessionId) {
             console.log(`[stream] skip subagent result session=${(message as any).session_id?.slice(0,8)}`);
@@ -923,8 +900,10 @@ export class ClaudeCodeService extends EventEmitter {
           const result = message as any;
           console.log(`[stream] result session=${capturedSessionId} subtype=${result.subtype} cost=$${result.total_cost_usd?.toFixed(4) ?? '?'}`);
           markStreamingDone();
-          this.emit('stream:end', {
-            sessionId: capturedSessionId ?? '', streamId,
+
+          const streamEnd: CardStreamEnd = {
+            streamId,
+            sessionId: capturedSessionId ?? '',
             success: result.subtype === 'success',
             error: result.subtype !== 'success'
               ? (result.errors?.join('; ') || `Session ended: ${result.subtype}`)
@@ -933,7 +912,8 @@ export class ClaudeCodeService extends EventEmitter {
             tokenUsage: result.usage
               ? { input: result.usage.input_tokens, output: result.usage.output_tokens }
               : undefined,
-          });
+          };
+          this.emit('card-stream-end', streamEnd);
           return;
         }
       }
@@ -941,13 +921,15 @@ export class ClaudeCodeService extends EventEmitter {
       flushText();
       console.log(`[stream] ended without result session=${capturedSessionId} (cancel or unexpected)`);
       markStreamingDone();
-      this.emit('stream:end', { sessionId: capturedSessionId ?? '', streamId, success: true });
+      const endPayload: CardStreamEnd = { streamId, sessionId: capturedSessionId ?? '', success: true };
+      this.emit('card-stream-end', endPayload);
     } catch (error) {
       flushText();
       console.error(`[stream] error session=${capturedSessionId}:`, error);
       markStreamingDone();
       const msg = error instanceof Error ? error.message : 'Unknown error';
-      this.emit('stream:end', { sessionId: capturedSessionId ?? '', streamId, success: false, error: msg });
+      const endPayload: CardStreamEnd = { streamId, sessionId: capturedSessionId ?? '', success: false, error: msg };
+      this.emit('card-stream-end', endPayload);
     }
   }
 }
