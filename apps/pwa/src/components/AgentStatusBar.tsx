@@ -1,5 +1,5 @@
 import { useLocation, useMatch } from 'react-router-dom';
-import type { ClaudePreferences } from '@sumicom/quicksave-shared';
+import type { ConfigValue } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
 import { StatusDot, sessionStatusKey, type SessionStatusKey } from './SessionStatusBadge';
 import { BaseStatusBar, SettingsGearButton } from './BaseStatusBar';
@@ -16,8 +16,7 @@ interface AgentStatusBarProps {
   onOpenMenu: () => void;
   onSwitchRepo?: () => void;
   onOpenGitignore?: () => void;
-  onSetPreferences?: (prefs: Partial<ClaudePreferences>) => void;
-  onSetSessionPermission?: (sessionId: string, mode: string) => void;
+  onSetSessionConfig?: (key: string, value: ConfigValue) => void;
   onCloseSession?: () => void;
   onCancelSession?: () => void;
   onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
@@ -35,8 +34,7 @@ export function AgentStatusBar({
   onOpenMenu,
   onSwitchRepo,
   onOpenGitignore,
-  onSetPreferences,
-  onSetSessionPermission,
+  onSetSessionConfig,
   onCloseSession,
   onCancelSession,
   onCheckAgentUpdate,
@@ -78,8 +76,7 @@ export function AgentStatusBar({
       <AgentSettingsDrawer
         isOpen={showSettings}
         onClose={onCloseSettings}
-        onSetPreferences={onSetPreferences}
-        onSetSessionPermission={onSetSessionPermission}
+        onSetSessionConfig={onSetSessionConfig}
         onCancelSession={onCancelSession}
         onCloseSession={onCloseSession}
         onCheckAgentUpdate={onCheckAgentUpdate}

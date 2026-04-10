@@ -59,8 +59,14 @@ export class StreamCardBuilder {
     this.sessionId = sessionId;
   }
 
+  /** Start a new turn: update streamId and reset per-turn state, keep accumulated cards. */
+  startNewTurn(streamId: string): void {
+    this.streamId = streamId;
+    this.currentTextCardId = null;
+  }
+
   private nextId(): CardId {
-    return `${this.sessionId}:${++this.seq}`;
+    return `${this.sessionId}:${this.streamId}:${++this.seq}`;
   }
 
   private addEvent(card: Card, afterCardId?: CardId): CardAddEvent {
@@ -162,6 +168,15 @@ export class StreamCardBuilder {
     ephemeral = false,
   ): CardEvent {
     this.currentTextCardId = null;
+
+    // If the card was already created by the assistant message's tool_use block
+    // (which arrives in the stream BEFORE canUseTool fires), update it with pendingInput.
+    const existingCardId = this.toolUseIdToCardId.get(toolUseId);
+    if (existingCardId) {
+      if (ephemeral) this.ephemeralCards.add(existingCardId);
+      return this.updateEvent(existingCardId, { pendingInput });
+    }
+
     const id = this.nextId();
     const card: ToolCallCard = {
       type: 'tool_call', id, timestamp: Date.now(),
@@ -199,6 +214,11 @@ export class StreamCardBuilder {
       if (card.pendingInput?.requestId === requestId) return card.id;
     }
     return undefined;
+  }
+
+  /** Check if a tool card already exists for the given tool_use_id. */
+  hasToolCard(toolUseId: string): boolean {
+    return this.toolUseIdToCardId.has(toolUseId);
   }
 
   /** Return all live cards (insertion order). Cards carry pendingInput if set. */

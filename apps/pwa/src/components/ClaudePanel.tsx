@@ -8,6 +8,13 @@ import { CardRenderer } from './chat/CardRenderer';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
 import { MODELS, PERMISSION_MODES, AGENT_TYPES, type AgentType } from '../lib/claudePresets';
 
+const REASONING_EFFORTS = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'max', label: 'Max' },
+];
+
 type StartSessionOpts = { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string };
 
 interface ClaudePanelProps {
@@ -17,6 +24,7 @@ interface ClaudePanelProps {
   cwd?: string;
   onListSessions: () => Promise<void>;
   onGetSessionCards: (sessionId: string, offset?: number, limit?: number) => Promise<void>;
+  onGetSessionConfig?: (sessionId: string) => Promise<void>;
   onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string) => Promise<void>;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
@@ -31,6 +39,7 @@ export function ClaudePanel({
   cwd,
   onListSessions,
   onGetSessionCards,
+  onGetSessionConfig,
   onStartSession,
   onResumeSession,
 
@@ -56,7 +65,26 @@ export function ClaudePanel({
   } = useClaudeStore();
 
   const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
-  const isInactive = !!activeSessionId && activeSession && activeSession.isActive === false;
+  const isInactiveRaw = !!activeSessionId && !!activeSession && activeSession.isActive === false;
+  // Stabilize: only update isInactive when the session is actually found in the list.
+  // Prevents flicker during session list refresh (where activeSession is briefly undefined).
+  const isInactiveRef = useRef(false);
+  if (activeSession !== undefined || !activeSessionId) {
+    isInactiveRef.current = isInactiveRaw;
+  }
+  const isInactive = isInactiveRef.current;
+  // True during the window between setStreaming(true) and setActiveSession() — new session spinning up
+  const isStartingNewSession = isStreaming && !activeSessionId;
+  // True during cold resume: set when resuming an inactive session, cleared on first card event.
+  const [isResuming, setIsResuming] = useState(false);
+
+  // Clear isResuming when first non-user card arrives (Claude started responding)
+  useEffect(() => {
+    if (isResuming && cards.length > 0) {
+      const last = cards[cards.length - 1];
+      if (last.type !== 'user') setIsResuming(false);
+    }
+  }, [isResuming, cards]);
 
   // Agent type for new sessions (local — doesn't persist after session starts)
   const [selectedAgentType, setSelectedAgentType] = useState<AgentType>(AGENT_TYPES[0]);
@@ -99,6 +127,7 @@ export function ClaudePanel({
       clearCards();
       isAtBottomRef.current = true;
       onGetSessionCards(urlSessionId);
+      onGetSessionConfig?.(urlSessionId);
     }
   }, [urlSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -106,6 +135,7 @@ export function ClaudePanel({
   useEffect(() => {
     if (connectionState === 'connected' && urlSessionId && cards.length === 0 && !isLoadingHistory) {
       onGetSessionCards(urlSessionId);
+      onGetSessionConfig?.(urlSessionId);
     }
   }, [connectionState]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -176,6 +206,7 @@ export function ClaudePanel({
     if (draftKey) localStorage.removeItem(draftKey);
 
     if (activeSessionId) {
+      if (isInactive) setIsResuming(true);
       await onResumeSession(activeSessionId, prompt);
     } else {
       await onStartSession(prompt, {
@@ -285,13 +316,23 @@ export function ClaudePanel({
                 {streamError}
               </div>
             )}
-            {isStreaming && (isInactive || cards[cards.length - 1]?.type !== 'assistant_text') && (
-              <div className="flex items-center gap-1.5 py-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:0ms]" />
-                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:150ms]" />
-                <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:300ms]" />
-              </div>
-            )}
+            {(() => {
+              const lastCard = cards[cards.length - 1];
+              const lastIsEmptyText = lastCard?.type === 'assistant_text' && !(lastCard as any).text;
+              const showDots = isStreaming && !isResuming && (
+                isStartingNewSession ||
+                !lastCard ||
+                lastCard.type !== 'assistant_text' ||
+                lastIsEmptyText
+              );
+              return showDots ? (
+                <div className="flex items-center gap-1.5 py-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:0ms]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:150ms]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:300ms]" />
+                </div>
+              ) : null;
+            })()}
             {/* New session empty state — inside scrollable container */}
             {newSession && cards.length === 0 && (
               <NewSessionEmptyState
@@ -303,16 +344,16 @@ export function ClaudePanel({
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Inactive session banner */}
-          {isInactive && (
+          {/* Session status banner */}
+          {(isStartingNewSession || isResuming || isInactive) && (
             <div className="flex items-center gap-2 px-4 py-2 bg-slate-700/50 border-t border-slate-700 text-xs text-slate-400">
-              {isStreaming ? (
+              {(isStartingNewSession || isResuming || (isInactive && isStreaming)) ? (
                 <>
                   <svg className="w-3.5 h-3.5 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
                   </svg>
-                  Starting session...
+                  {isStartingNewSession ? 'Starting session...' : 'Resuming session...'}
                 </>
               ) : (
                 <>
@@ -399,7 +440,7 @@ function NewSessionEmptyState({ cwd, selectedAgentType, onSelectAgentType }: {
   selectedAgentType: AgentType;
   onSelectAgentType: (agent: AgentType) => void;
 }) {
-  const { selectedModel, selectedPermissionMode, setSelectedModel, setSelectedPermissionMode } = useClaudeStore();
+  const { selectedModel, selectedPermissionMode, selectedReasoningEffort, setSelectedModel, setSelectedPermissionMode, setSelectedReasoningEffort } = useClaudeStore();
 
   return (
     <div className="px-4 pt-4 pb-2 flex justify-start">
@@ -429,6 +470,12 @@ function NewSessionEmptyState({ cwd, selectedAgentType, onSelectAgentType }: {
           options={MODELS}
           value={selectedModel}
           onSelect={(m) => setSelectedModel(m.value)}
+        />
+        <SelectorRow
+          label="Reasoning Effort"
+          options={REASONING_EFFORTS}
+          value={selectedReasoningEffort}
+          onSelect={(e) => setSelectedReasoningEffort(e.value as 'low' | 'medium' | 'high' | 'max')}
         />
         <SelectorRow
           label="Permission"

@@ -8,28 +8,20 @@ export function AssistantMessage({ content, isLast }: { content: string; isLast:
   const isStreaming = useClaudeStore((s) => s.isStreaming);
   const isActivelyStreaming = isLast && isStreaming;
 
-  if (!content) {
-    return (
-      <div className="py-1">
-        <span className="text-slate-400 animate-pulse text-sm">...</span>
-      </div>
-    );
-  }
+  // Empty content while streaming — ClaudePanel renders bounce dots instead;
+  // rendering nothing here avoids a duplicate loading indicator.
+  if (!content) return null;
 
   return (
     <div className="py-1 w-full text-sm">
-      {isActivelyStreaming ? (
-        <div className="whitespace-pre-wrap break-words">
+      <div className="chat-markdown">
+        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
           {content}
+        </ReactMarkdown>
+        {isActivelyStreaming && (
           <span className="inline-block w-1.5 h-4 bg-blue-400 animate-pulse ml-0.5 align-text-bottom rounded-sm" />
-        </div>
-      ) : (
-        <div className="chat-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-            {content}
-          </ReactMarkdown>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

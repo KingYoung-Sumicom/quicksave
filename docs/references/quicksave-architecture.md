@@ -74,18 +74,39 @@ acquireLock()
 ```
 claude:start → MessageHandler.handle_claude_start()
   → claudeCodeService.startSession(opts)
-    → unstable_v2_createSession()     [Claude Agent SDK]
-    → session.send(prompt)
-    → for await (msg of session.stream()):
-        StreamCardBuilder.processSDKMessage(msg) → CardEvent
-        emit('card-event', event)
+    → AsyncQueue<SDKUserMessage> inputQueue = new AsyncQueue()
+    → query(inputQueue, { resume: null })          [Claude Agent SDK]
+    → inputQueue.push({ type: 'text', text: prompt })
+    → consumeQueryStream(sessionId, query):
+        for await (msg of query):
+          if (msg.type === 'result'): continue      [next turn]
+          else: StreamCardBuilder.processSDKMessage(msg) → CardEvent
+               emit('card-event', event)
   ← sessionId
 
 claude:resume → resumeSession(sessionId, prompt)
-  → unstable_v2_resumeSession()
+  → find PersistentSession by sessionId
+  → if (session.cold): new query() with resume: sessionId
+  → else (hot): inputQueue.push({ type: 'text', text: prompt })
 
 claude:cancel → cancelSession(sessionId)
-  → cancelStreaming()            [AbortController]
+  → query.interrupt()              [SDK built-in]
+
+claude:close → closeSession(sessionId)
+  → inputQueue.end() + query.close()
+```
+
+**PersistentSession 資料結構：**
+```typescript
+interface PersistentSession {
+  query: Query;                    // Streaming AsyncGenerator<SDKMessage>
+  inputQueue: AsyncQueue<SDKUserMessage>;  // Feeds prompts to query
+  sessionId: string;
+  cwd: string;
+  streaming: boolean;
+  permissionLevel: PermissionLevel;
+  cardBuilder: StreamCardBuilder | null;
+}
 ```
 
 ### AI Provider 事件
@@ -394,14 +415,19 @@ interface DebugResult {
   ↓ [加密] → WebRTC → [解密]
   ↓ MessageHandler.handle_claude_start()
   ↓ ClaudeCodeService.startSession()
-  ↓ Claude Agent SDK (unstable_v2_createSession)
-  ↓ for await (SDKMessage of session.stream())
-  ↓ StreamCardBuilder.processSDKMessage() → CardEvent
-  ↓ emit('card-event')
+  ↓ inputQueue = new AsyncQueue<SDKUserMessage>()
+  ↓ query = query(inputQueue, { resume: null })   [Claude Agent SDK]
+  ↓ inputQueue.push({ type: 'text', text: prompt })
+  ↓ consumeQueryStream() loop:
+     for await (msg of query)
+       if msg !== 'result':
+         StreamCardBuilder.processSDKMessage() → CardEvent
+         emit('card-event')
   ↓ connection.sendToSession() → [加密] → WebRTC → [解密]
   ↓ useClaudeOperations → 收到 'claude:card-event' push
   ↓ claudeStore.handleCardEvent()
   ↓ React re-render → CardRenderer
+  ↓ on 'result': loop continues, waiting for next inputQueue.push()
 ```
 
 ---

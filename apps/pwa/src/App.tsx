@@ -87,8 +87,8 @@ function AppContent() {
     cancelSession,
     closeSession,
     respondToUserInput,
-    setPreferences,
-    setSessionPermission,
+    getSessionConfig,
+    setSessionConfig,
     unsubscribeSession,
   } = useClaudeOperations(clientRef);
 
@@ -265,9 +265,24 @@ function AppContent() {
     };
   });
 
-  // Create WebSocketClient once when identity is ready
+  // Create WebSocketClient once when identity is ready.
+  // Preserve the client across Vite HMR updates so we don't destroy the
+  // WebSocket connection (and cause a black screen) every time a file changes.
   useEffect(() => {
-    if (!identityPublicKey || clientRef.current) return;
+    if (!identityPublicKey) return;
+
+    // Recover a surviving client from a previous HMR cycle
+    const hot = (import.meta as any).hot as import('vite/types/hot.d.ts').ViteHotContext | undefined;
+    const hmrClient = hot?.data?.wsClient as WebSocketClient | undefined;
+
+    if (hmrClient) {
+      // Reuse the existing connected client
+      clientRef.current = hmrClient;
+      if (typeof window !== 'undefined') (window as any).__wsClient = hmrClient;
+      return;
+    }
+
+    if (clientRef.current) return;
 
     const client = new WebSocketClient(signalingServer, identityPublicKey, {
       onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences, agentVersion, latestVersion, devBuild) => {
@@ -330,7 +345,12 @@ function AppContent() {
     });
 
     return () => {
-      client.disconnect();
+      // During HMR, stash the client so the next module instance can reuse it
+      if (hot) {
+        hot.data.wsClient = client;
+      } else {
+        client.disconnect();
+      }
       clientRef.current = null;
     };
   }, [identityPublicKey, signalingServer]);
@@ -427,9 +447,11 @@ function AppContent() {
     }
   }, [state, pendingRepoPath, repoPath, setPendingRepoPath, switchRepo]);
 
-  // Clean up on unmount
+  // Clean up on unmount (but not during HMR — the main effect handles that)
   useEffect(() => {
     return () => {
+      const hot = (import.meta as any).hot as import('vite/types/hot.d.ts').ViteHotContext | undefined;
+      if (hot) return; // HMR: let the main effect stash the client
       if (clientRef.current) {
         clientRef.current.disconnect();
         clientRef.current = null;
@@ -550,6 +572,7 @@ function AppContent() {
           onListSessions={listSessions}
           onSwitchMachine={handleSwitchMachine}
           onBackToFleet={() => { setShowNavDrawer(false); handleDisconnect(); }}
+          onOpen={() => setShowNavDrawer(true)}
         />
         <div className="flex flex-col flex-1 min-h-0 min-w-0">
           <AgentStatusBar
@@ -563,8 +586,10 @@ function AppContent() {
             onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
             onSwitchRepo={() => openPathBrowser('repo')}
             onOpenGitignore={() => setShowGitignoreEditor(true)}
-            onSetPreferences={setPreferences}
-            onSetSessionPermission={setSessionPermission}
+            onSetSessionConfig={(key, value) => {
+              const sid = useClaudeStore.getState().activeSessionId;
+              if (sid) setSessionConfig(sid, key, value);
+            }}
             onCloseSession={() => {
               const sid = useClaudeStore.getState().activeSessionId;
               if (sid) closeSession(sid);
@@ -609,6 +634,7 @@ function AppContent() {
                     agentId={currentAgentId}
                     onListSessions={listSessions}
                     onGetSessionCards={getSessionCards}
+                    onGetSessionConfig={getSessionConfig}
                     onStartSession={startSession}
                     onResumeSession={resumeSession}
                     onRespondToUserInput={respondToUserInput}
@@ -620,6 +646,7 @@ function AppContent() {
                     agentId={currentAgentId}
                     onListSessions={listSessions}
                     onGetSessionCards={getSessionCards}
+                    onGetSessionConfig={getSessionConfig}
                     onStartSession={startSession}
                     onResumeSession={resumeSession}
                     onRespondToUserInput={respondToUserInput}
@@ -689,6 +716,7 @@ function ClaudePanelWithHash({
   agentId,
   onListSessions,
   onGetSessionCards,
+  onGetSessionConfig,
   onStartSession,
   onResumeSession,
   onRespondToUserInput,
@@ -697,6 +725,7 @@ function ClaudePanelWithHash({
   agentId: string;
   onListSessions: (cwd?: string) => Promise<void>;
   onGetSessionCards: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
+  onGetSessionConfig?: (sessionId: string) => Promise<void>;
   onStartSession: (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
@@ -747,6 +776,7 @@ function ClaudePanelWithHash({
       onNewSession={() => navigate(`${basePath}?new`)}
       onListSessions={boundListSessions}
       onGetSessionCards={boundGetCards}
+      onGetSessionConfig={onGetSessionConfig}
       onUnsubscribeSession={onUnsubscribeSession}
       onStartSession={boundStartSession}
       onResumeSession={boundResumeSession}

@@ -98,18 +98,20 @@ export async function runDaemon(): Promise<void> {
     const node = process.execPath;
     const nf = isTs ? `--import tsx ` : '';
     const oldPid = process.pid;
+    // Escape single quotes in paths for safe shell interpolation
+    const sq = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
     // Detached shell: verify → kill old → start new
     const script = [
       `sleep 1`,
       // Sanity-check: if new binary can't even print version, abort
-      `"${node}" ${nf}"${entryPath}" --version > /dev/null 2>&1`,
-      `|| { echo "[upgrade] new binary failed sanity check, aborting" >> "${logPath}"; exit 1; }`,
+      `${sq(node)} ${nf}${sq(entryPath)} --version > /dev/null 2>&1`,
+      `|| { echo "[upgrade] new binary failed sanity check, aborting" >> ${sq(logPath)}; exit 1; }`,
       // New binary works — kill old daemon (graceful shutdown releases lock)
       `kill ${oldPid}`,
       // Wait for old daemon to fully exit and release lock
       `for i in 1 2 3 4 5; do kill -0 ${oldPid} 2>/dev/null || break; sleep 1; done`,
       // Start new daemon
-      `"${node}" ${nf}"${entryPath}" service run >> "${logPath}" 2>&1`,
+      `${sq(node)} ${nf}${sq(entryPath)} service run >> ${sq(logPath)} 2>&1`,
     ].join(' && ');
     spawn('sh', ['-c', script], {
       detached: true, stdio: 'ignore', env: process.env,
@@ -148,6 +150,9 @@ export async function runDaemon(): Promise<void> {
   });
   claudeService.on('preferences-updated', (prefs) => {
     connection.broadcast(createMessage('claude:preferences-updated', prefs));
+  });
+  claudeService.on('session-config-updated', (payload) => {
+    connection.broadcast(createMessage('session:config-updated', payload));
   });
 
   // Init preferences from the last session's JSONL (best-effort, non-blocking)

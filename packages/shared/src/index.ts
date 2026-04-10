@@ -1,6 +1,9 @@
 // Types
 export * from './types.js';
 
+// Shared defaults
+export * from './defaults.js';
+
 // Card-based message architecture
 export * from './cards.js';
 

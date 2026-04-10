@@ -101,6 +101,11 @@ export type MessageType =
   | 'claude:get-cards:response'    // agent-response: card history
   | 'claude:unsubscribe'           // pwa-push: unsubscribe from session events
   | 'claude:unsubscribe:response'  // agent-response: unsubscribe ack
+  | 'session:get-config'           // pwa-request: get session config
+  | 'session:get-config:response'  // agent-response: session config
+  | 'session:set-config'           // pwa-request: set a key on session config
+  | 'session:set-config:response'  // agent-response: set-config ack with full config
+  | 'session:config-updated'       // agent-push: session config changed
   | 'error';
 
 // ============================================================================
@@ -177,10 +182,11 @@ export interface CodingPath {
 // Request/Response Payloads
 // ============================================================================
 
-// Claude preferences (model) — owned by agent, synced to PWA.
+// Claude preferences (model, reasoning effort) — owned by agent, synced to PWA.
 // permissionMode is session-scoped; use claude:set-session-permission to change it.
 export interface ClaudePreferences {
   model: string;
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
 }
 
 export type ClaudeGetPreferencesRequestPayload = Record<string, never>;
@@ -210,6 +216,45 @@ export interface ClaudeSetSessionPermissionResponsePayload {
   success: boolean;
   sessionId: string;
   permissionMode: string;
+}
+
+// ============================================================================
+// Generic per-session config
+// ============================================================================
+
+/** Any JSON-primitive value that can be stored as a session config entry. */
+export type ConfigValue = string | number | boolean | null;
+
+/** PWA → Agent: get the full config for a session */
+export interface SessionGetConfigRequestPayload {
+  sessionId: string;
+}
+
+/** Agent → PWA: full session config */
+export interface SessionGetConfigResponsePayload {
+  sessionId: string;
+  config: Record<string, ConfigValue>;
+}
+
+/** PWA → Agent: set a single key on a session's config */
+export interface SessionSetConfigRequestPayload {
+  sessionId: string;
+  key: string;
+  value: ConfigValue;
+}
+
+/** Agent → PWA: response with the full config after update */
+export interface SessionSetConfigResponsePayload {
+  success: boolean;
+  sessionId: string;
+  config: Record<string, ConfigValue>;
+  error?: string;
+}
+
+/** Agent → PWA (push broadcast): a session's config was updated */
+export interface SessionConfigUpdatedPayload {
+  sessionId: string;
+  config: Record<string, ConfigValue>;
 }
 
 export interface ClaudeActiveSession {

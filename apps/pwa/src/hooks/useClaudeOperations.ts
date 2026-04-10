@@ -15,6 +15,10 @@ import {
   type ClaudePreferences,
   type ClaudeSetPreferencesResponsePayload,
   type ClaudeSetSessionPermissionResponsePayload,
+  type ConfigValue,
+  type SessionGetConfigResponsePayload,
+  type SessionSetConfigResponsePayload,
+  type SessionConfigUpdatedPayload,
 } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
 import { WebSocketClient } from '../lib/websocket';
@@ -43,7 +47,16 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     clearPendingInput,
     setSelectedModel,
     setSelectedPermissionMode,
+    setSelectedReasoningEffort,
+    setSessionConfigKey,
+    applySessionConfig,
   } = useClaudeStore();
+
+  // Apply a full or partial ClaudePreferences object to the store
+  const applyPreferences = useCallback((prefs: Partial<ClaudePreferences>) => {
+    if (prefs.model !== undefined) setSelectedModel(prefs.model);
+    if (prefs.reasoningEffort !== undefined) setSelectedReasoningEffort(prefs.reasoningEffort);
+  }, [setSelectedModel, setSelectedReasoningEffort]);
 
   const sendRequest = useCallback(
     <T>(message: Message, timeoutMs = 30000): Promise<T> => {
@@ -92,12 +105,12 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     // Card-based protocol
     if (message.type === 'claude:card-event') {
       const event = message.payload as CardEvent;
-      const { activeSessionId, activeStreamId } = useClaudeStore.getState();
+      const { activeSessionId, activeStreamIds } = useClaudeStore.getState();
       // Ignore events for sessions we are not viewing
       if (activeSessionId && event.sessionId !== activeSessionId) {
         return true;
       }
-      if (activeStreamId && event.streamId && event.streamId !== activeStreamId) {
+      if (activeStreamIds.length > 0 && event.streamId && !activeStreamIds.includes(event.streamId)) {
         return true; // consume but discard stale events
       }
       handleCardEvent(event);
@@ -135,15 +148,29 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     }
 
     if (message.type === 'claude:user-input-request') {
-      // Permission state is now carried on cards directly (agent-side CardBuilder).
-      // This push is only used for notifications (sound/vibration) — no card matching needed.
+      // Also set hasPendingInput on the session as a reliable fallback
+      // in case the session-updated push is missed.
+      const payload = message.payload as { sessionId: string };
+      if (payload.sessionId) {
+        const { sessions } = useClaudeStore.getState();
+        setSessions(sessions.map((s) =>
+          s.sessionId === payload.sessionId ? { ...s, hasPendingInput: true } : s
+        ));
+      }
       // TODO: trigger notification sound/vibration here
       return true;
     }
 
     if (message.type === 'claude:user-input-resolved') {
-      const payload = message.payload as { requestId: string };
+      const payload = message.payload as { requestId: string; sessionId: string };
       clearPendingInput(payload.requestId);
+      // Also clear hasPendingInput on the session
+      if (payload.sessionId) {
+        const { sessions } = useClaudeStore.getState();
+        setSessions(sessions.map((s) =>
+          s.sessionId === payload.sessionId ? { ...s, hasPendingInput: false } : s
+        ));
+      }
       return true;
     }
 
@@ -170,13 +197,18 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     }
 
     if (message.type === 'claude:preferences-updated') {
-      const prefs = message.payload as ClaudePreferences;
-      setSelectedModel(prefs.model);
+      applyPreferences(message.payload as ClaudePreferences);
+      return true;
+    }
+
+    if (message.type === 'session:config-updated') {
+      const { sessionId, config } = message.payload as SessionConfigUpdatedPayload;
+      applySessionConfig(sessionId, config);
       return true;
     }
 
     return false;
-  }, [handleCardEvent, setStreaming, setStreamError, appendCard, clearPendingInput, setSessions, setSelectedModel, setSelectedPermissionMode]);
+  }, [handleCardEvent, setStreaming, setStreamError, appendCard, clearPendingInput, setSessions, applyPreferences, applySessionConfig, setSelectedPermissionMode]);
 
   // Combined message handler
   const handleMessage = useCallback((message: Message): boolean => {
@@ -254,8 +286,10 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     [sendRequest, clearCards, setStreaming, setStreamError, setActiveSession, appendCard]
   );
 
+  const { addStreamId } = useClaudeStore.getState();
   const resumeSession = useCallback(
     async (sessionId: string, prompt: string, cwd?: string) => {
+      const wasAlreadyStreaming = useClaudeStore.getState().isStreaming;
       setStreaming(true);
       setStreamError(null);
       appendCard({ type: 'user', id: `local-user-${Date.now()}`, timestamp: Date.now(), text: prompt });
@@ -265,7 +299,13 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
         if (!response.success) {
           throw new Error(response.error || 'Failed to resume session');
         }
-        setActiveSession(response.sessionId ?? sessionId, response.streamId ?? null);
+        if (wasAlreadyStreaming) {
+          // Hot resume: add the new streamId without clearing the current one
+          if (response.streamId) addStreamId(response.streamId);
+        } else {
+          // Cold resume: set as the only active streamId
+          setActiveSession(response.sessionId ?? sessionId, response.streamId ?? null);
+        }
       } catch (error) {
         setStreaming(false);
         setStreamError(error instanceof Error ? error.message : 'Failed to resume session');
@@ -302,13 +342,13 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
 
   const setPreferences = useCallback(
     (prefs: Partial<ClaudePreferences>) => {
-      if (prefs.model !== undefined) setSelectedModel(prefs.model);
+      applyPreferences(prefs); // optimistic
       const message = createMessage<{ preferences: Partial<ClaudePreferences> }>('claude:set-preferences', { preferences: prefs });
       sendRequest<ClaudeSetPreferencesResponsePayload>(message).then((response) => {
-        setSelectedModel(response.preferences.model);
+        applyPreferences(response.preferences); // confirm with actual applied value
       }).catch(() => { /* broadcast will resync if needed */ });
     },
-    [sendRequest, setSelectedModel],
+    [sendRequest, applyPreferences],
   );
 
   const setSessionPermission = useCallback(
@@ -318,6 +358,28 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       sendRequest<ClaudeSetSessionPermissionResponsePayload>(message).catch(() => {});
     },
     [sendRequest, setSelectedPermissionMode],
+  );
+
+  const setSessionConfig = useCallback(
+    (sessionId: string, key: string, value: ConfigValue) => {
+      setSessionConfigKey(sessionId, key, value); // optimistic
+      const message = createMessage<{ sessionId: string; key: string; value: ConfigValue }>('session:set-config', { sessionId, key, value });
+      sendRequest<SessionSetConfigResponsePayload>(message).then((response) => {
+        applySessionConfig(sessionId, response.config); // confirm with actual applied config
+      }).catch(() => {});
+    },
+    [sendRequest, setSessionConfigKey, applySessionConfig],
+  );
+
+  const getSessionConfig = useCallback(
+    async (sessionId: string) => {
+      try {
+        const message = createMessage<{ sessionId: string }>('session:get-config', { sessionId });
+        const response = await sendRequest<SessionGetConfigResponsePayload>(message);
+        applySessionConfig(sessionId, response.config);
+      } catch { /* agent may not support this yet */ }
+    },
+    [sendRequest, applySessionConfig],
   );
 
   const respondToUserInput = useCallback(
@@ -348,6 +410,8 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     respondToUserInput,
     setPreferences,
     setSessionPermission,
+    getSessionConfig,
+    setSessionConfig,
     unsubscribeSession,
   };
 }

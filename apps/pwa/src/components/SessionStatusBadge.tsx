@@ -14,8 +14,8 @@ export const SESSION_STATUS = {
 /** Derive status from a session summary. */
 export function sessionStatusKey(session: ClaudeSessionSummary): SessionStatusKey {
   if (!session.isActive) return 'closed';
-  if (session.isStreaming) return 'thinking';
   if (session.hasPendingInput) return 'pending';
+  if (session.isStreaming) return 'thinking';
   return 'standby';
 }
 

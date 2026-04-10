@@ -14,21 +14,23 @@ import type {
   ClaudeUserInputRequestPayload,
   ClaudeUserInputResponsePayload,
   ClaudePreferences,
+  ConfigValue,
   CardEvent,
   CardHistoryResponse,
   CardStreamEnd,
 } from '@sumicom/quicksave-shared';
+import { DEFAULT_MODEL } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder, buildCardsFromHistory } from './cardBuilder.js';
-const DEFAULT_MODEL = 'claude-sonnet-4-6';
 
 /**
  * Events emitted by ClaudeCodeService:
- *   'card-event'         (event: CardEvent)
- *   'card-stream-end'    (result: CardStreamEnd)
- *   'user-input-request' (request: ClaudeUserInputRequestPayload)
- *   'user-input-resolved' ({ requestId, sessionId })
- *   'session-updated'    ({ sessionId, isActive, isStreaming, hasPendingInput, permissionMode })
- *   'preferences-updated' (prefs: ClaudePreferences)
+ *   'card-event'           (event: CardEvent)
+ *   'card-stream-end'      (result: CardStreamEnd)
+ *   'user-input-request'   (request: ClaudeUserInputRequestPayload)
+ *   'user-input-resolved'  ({ requestId, sessionId })
+ *   'session-updated'      ({ sessionId, isActive, isStreaming, hasPendingInput, permissionMode })
+ *   'preferences-updated'  (prefs: ClaudePreferences)
+ *   'session-config-updated' ({ sessionId, config: Record<string, ConfigValue> })
  */
 
 type PermissionLevel = 'bypassPermissions' | 'acceptEdits' | 'default' | 'plan';
@@ -79,9 +81,16 @@ interface PersistentSession {
   sessionIdRef: SessionIdRef;
   cwd: string;
   streaming: boolean;
-  cancelStreaming: (() => void) | null;
   permissionLevel: PermissionLevel;
   cardBuilder: StreamCardBuilder | null;
+  /** Queued prompts waiting to be processed after current turn completes */
+  _promptQueue: Array<{ prompt: string; streamId: string }>;
+  /** Set to true to abort the current stream */
+  _cancelled: boolean;
+  /** True if the turn loop is running (prevents starting duplicate loops) */
+  _loopRunning: boolean;
+  /** The single stream generator — only call session.stream() once, reuse across turns */
+  _streamGenerator: AsyncGenerator<any, void> | null;
 }
 
 function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -111,6 +120,7 @@ interface PendingUserInput {
 export class ClaudeCodeService extends EventEmitter {
   private sessions: Map<string, PersistentSession> = new Map();
   private sessionPermissions: Map<string, PermissionLevel> = new Map(); // persists across active/inactive
+  private sessionConfigs: Map<string, Record<string, ConfigValue>> = new Map(); // generic per-session config
   private pendingInputRequests: Map<string, PendingUserInput> = new Map();
   private requestCounter = 0;
   private preferences: ClaudePreferences = {
@@ -171,6 +181,33 @@ export class ClaudeCodeService extends EventEmitter {
     return { ...this.preferences };
   }
 
+  getSessionConfig(sessionId: string): Record<string, ConfigValue> {
+    return { ...this.sessionConfigs.get(sessionId) };
+  }
+
+  /**
+   * Set a single key on a session's config. Applies known keys immediately:
+   *   model / reasoningEffort → updates global preferences (takes effect next turn)
+   *   permissionMode          → calls setPermissionLevel (immediate)
+   */
+  setSessionConfig(sessionId: string, key: string, value: ConfigValue): Record<string, ConfigValue> {
+    const prev = this.sessionConfigs.get(sessionId) ?? {};
+    const next = { ...prev, [key]: value };
+    this.sessionConfigs.set(sessionId, next);
+
+    // Apply known keys
+    if (key === 'model' && typeof value === 'string') {
+      this.setPreferences({ model: value });
+    } else if (key === 'reasoningEffort' && (typeof value === 'string' || value === null)) {
+      this.setPreferences({ reasoningEffort: value as ClaudePreferences['reasoningEffort'] });
+    } else if (key === 'permissionMode' && typeof value === 'string') {
+      this.setPermissionLevel(sessionId, value as PermissionLevel);
+    }
+
+    this.emit('session-config-updated', { sessionId, config: next });
+    return next;
+  }
+
   /** Build and emit a session-updated event with current state. */
   private emitSessionUpdate(sessionId: string): void {
     const ps = this.sessions.get(sessionId);
@@ -197,8 +234,10 @@ export class ClaudeCodeService extends EventEmitter {
       const isStreaming = this.sessions.get(s.sessionId)?.streaming ?? false;
       let hasPendingInput = pendingSessionIds.has(s.sessionId);
 
-      // If not already known as pending from memory, check JSONL tail
-      if (!hasPendingInput) {
+      // Only check JSONL for sessions NOT in memory — in-memory sessions use
+      // pendingInputRequests as the authoritative source. JSONL may have mid-flight
+      // tool_use blocks that haven't received tool_result yet (false positive).
+      if (!hasPendingInput && !isActive) {
         hasPendingInput = await this.detectPendingFromJSONL(s.sessionId, cwd);
       }
 
@@ -229,13 +268,13 @@ export class ClaudeCodeService extends EventEmitter {
    * Uses SDK getSessionMessages + listSubagents/getSubagentMessages.
    */
   private async detectPendingFromJSONL(sessionId: string, cwd: string): Promise<boolean> {
-    const hasPendingToolUse = (msgs: any[]): boolean => {
+    const hasPendingToolUse = (msgs: any[], label = 'parent'): boolean => {
       if (msgs.length === 0) return false;
       const last = msgs[msgs.length - 1];
       if (last.type !== 'assistant') return false;
       const content = last.message?.content;
       if (!Array.isArray(content)) return false;
-      const toolUseIds = content.filter((b: any) => b.type === 'tool_use').map((b: any) => b.id);
+      const toolUseIds = content.filter((b: any) => b.type === 'tool_use').map((b: any) => b.id as string);
       if (toolUseIds.length === 0) return false;
       // Check if all tool_use blocks already have a corresponding tool_result
       const resolvedIds = new Set<string>(
@@ -248,7 +287,14 @@ export class ClaudeCodeService extends EventEmitter {
               : [];
           })
       );
-      return toolUseIds.some((id: string) => !resolvedIds.has(id));
+      const unresolvedIds = toolUseIds.filter((id: string) => !resolvedIds.has(id));
+      if (unresolvedIds.length > 0) {
+        const toolNames = content
+          .filter((b: any) => b.type === 'tool_use' && unresolvedIds.includes(b.id))
+          .map((b: any) => b.name);
+        console.log(`[detectPending] ${label} session=${sessionId.slice(0, 8)}: unresolved tool_use: ${toolNames.join(', ')} (${unresolvedIds.length}/${toolUseIds.length})`);
+      }
+      return unresolvedIds.length > 0;
     };
 
     try {
@@ -261,7 +307,7 @@ export class ClaudeCodeService extends EventEmitter {
         const agentIds = await listSubagents(sessionId, { dir: cwd });
         for (const agentId of agentIds) {
           const subMsgs = await getSubagentMessages(sessionId, agentId, { dir: cwd });
-          if (hasPendingToolUse(subMsgs as any[])) return true;
+          if (hasPendingToolUse(subMsgs as any[], `subagent:${agentId.slice(0, 8)}`)) return true;
         }
       } catch { /* no subagents */ }
 
@@ -304,7 +350,6 @@ export class ClaudeCodeService extends EventEmitter {
           input: Record<string, unknown>,
           options: { title?: string; description?: string; displayName?: string; toolUseID: string; agentID?: string; signal: AbortSignal }
         ) => {
-
 
           // Resolve session ID: use mutable ref (updated when init arrives),
           // fall back to static closure, await deferred if still unknown.
@@ -392,10 +437,13 @@ export class ClaudeCodeService extends EventEmitter {
           }
 
           this.emit('user-input-request', request);
+
+          // Register pending BEFORE emitting session-updated so hasPendingInput is true
+          const responsePromise = this.waitForUserInput(requestId, request, options.signal);
           this.emitSessionUpdate(resolvedSessionId);
 
           // Wait for explicit user response (no timeout — user must act)
-          const response = await this.waitForUserInput(requestId, request, options.signal);
+          const response = await responsePromise;
           if (response.action === 'deny') {
             return { behavior: 'deny' as const, message: 'User denied permission' };
           }
@@ -513,8 +561,18 @@ export class ClaudeCodeService extends EventEmitter {
 
     await session.send(prompt);
 
-    const sessionId = await new Promise<string>((resolve) => {
-      this.consumeStream(session, opts.streamId, (id) => {
+    // Create the stream generator ONCE — reused by processTurnLoop.
+    // IMPORTANT: Do NOT use for-await+break to consume init, because break
+    // calls generator.return() which closes the generator permanently.
+    const streamGen = session.stream();
+
+    // Pull messages manually until we get the init message
+    let sessionId: string | undefined;
+    while (!sessionId) {
+      const { value: message, done } = await streamGen.next();
+      if (done) throw new Error('Stream ended before init message');
+      if (message.type === 'system' && (message as any).subtype === 'init') {
+        const id = message.session_id;
         sessionIdRef.current = id;
         deferred.resolve(id);
         this.sessionPermissions.set(id, level);
@@ -524,14 +582,24 @@ export class ClaudeCodeService extends EventEmitter {
           sessionIdRef,
           cwd: opts.cwd,
           streaming: true,
-          cancelStreaming: null,
           permissionLevel: level,
           cardBuilder: null,
+          _promptQueue: [],
+          _cancelled: false,
+          _loopRunning: false,
+          _streamGenerator: streamGen,
         });
         this.emitSessionUpdate(id);
-        resolve(id);
-      });
-    });
+        sessionId = id;
+      }
+    }
+
+    // Seed the queue with the initial streamId (prompt already sent via session.send())
+    const ps = this.sessions.get(sessionId)!;
+    ps._promptQueue.push({ prompt: '', streamId: opts.streamId });
+
+    // Start the turn loop (reuses the same streamGen — picks up remaining messages)
+    this.processTurnLoop(sessionId);
 
     return sessionId;
   }
@@ -545,20 +613,23 @@ export class ClaudeCodeService extends EventEmitter {
     const existing = this.sessions.get(opts.sessionId);
 
     if (existing) {
-      console.log(`[v2] hot resume session=${opts.sessionId}`);
-      existing.streaming = true;
-      this.emitSessionUpdate(opts.sessionId);
-      await existing.session.send(opts.prompt);
-
-      this.consumeStream(existing.session, opts.streamId, () => {}, opts.sessionId);
-
+      // Hot resume — push to queue
+      console.log(`[v2] hot resume (enqueue) session=${opts.sessionId}`);
+      existing._promptQueue.push({ prompt: opts.prompt, streamId: opts.streamId });
+      // If not looping, start the loop
+      if (!existing._loopRunning) {
+        this.processTurnLoop(opts.sessionId);
+      }
       return opts.sessionId;
     }
 
+    // Cold resume: create new session with resumeSessionId
     console.log(`[v2] cold resume session=${opts.sessionId}`);
     const deferred = createDeferred<string>();
     const sessionIdRef: SessionIdRef = { current: opts.sessionId, promise: deferred.promise };
     deferred.resolve(opts.sessionId); // already known for resume
+
+    const restoredLevel = this.sessionPermissions.get(opts.sessionId) ?? 'acceptEdits' as PermissionLevel;
 
     const session = this.createSessionWithCwd(opts.cwd, opts.sessionId, {
       resumeSessionId: opts.sessionId,
@@ -567,13 +638,20 @@ export class ClaudeCodeService extends EventEmitter {
 
     await session.send(opts.prompt);
 
-    const actualSessionId = await new Promise<string>((resolve) => {
-      this.consumeStream(session, opts.streamId, (id) => {
+    // Create the stream generator ONCE — reused by processTurnLoop.
+    // Use manual .next() to avoid for-await+break closing the generator.
+    const streamGen = session.stream();
+
+    let actualSessionId: string | undefined;
+    while (!actualSessionId) {
+      const { value: message, done } = await streamGen.next();
+      if (done) throw new Error('Stream ended before init message');
+      if (message.type === 'system' && (message as any).subtype === 'init') {
+        const id = message.session_id;
         if (id !== opts.sessionId) {
           console.warn(`[v2] SDK created new session ${id} instead of resuming ${opts.sessionId}`);
         }
         sessionIdRef.current = id;
-        const restoredLevel = this.sessionPermissions.get(opts.sessionId) ?? 'acceptEdits' as PermissionLevel;
         this.sessionPermissions.set(id, restoredLevel);
         this.sessions.set(id, {
           session,
@@ -581,14 +659,24 @@ export class ClaudeCodeService extends EventEmitter {
           sessionIdRef,
           cwd: opts.cwd,
           streaming: true,
-          cancelStreaming: null,
           permissionLevel: restoredLevel,
           cardBuilder: null,
+          _promptQueue: [],
+          _cancelled: false,
+          _loopRunning: false,
+          _streamGenerator: streamGen,
         });
         this.emitSessionUpdate(id);
-        resolve(id);
-      });
-    });
+        actualSessionId = id;
+      }
+    }
+
+    // Seed the queue (prompt already sent)
+    const ps = this.sessions.get(actualSessionId)!;
+    ps._promptQueue.push({ prompt: '', streamId: opts.streamId });
+
+    // Start the turn loop (reuses same streamGen)
+    this.processTurnLoop(actualSessionId);
 
     return actualSessionId;
   }
@@ -596,10 +684,8 @@ export class ClaudeCodeService extends EventEmitter {
   cancelSession(sessionId: string): boolean {
     const ps = this.sessions.get(sessionId);
     if (!ps) return false;
-    // Stop streaming but keep the session process alive
-    if (ps.cancelStreaming) {
-      ps.cancelStreaming();
-    }
+    ps._cancelled = true;
+    ps._promptQueue.length = 0; // drain queue
     ps.streaming = false;
     return true;
   }
@@ -642,11 +728,8 @@ export class ClaudeCodeService extends EventEmitter {
   closeSession(sessionId: string): boolean {
     const ps = this.sessions.get(sessionId);
     if (!ps) return false;
-    // Stop streaming if active
-    if (ps.cancelStreaming) {
-      ps.cancelStreaming();
-    }
-    // Terminate the subprocess
+    ps._cancelled = true;
+    ps._promptQueue.length = 0;
     ps.session.close();
     this.sessions.delete(sessionId);
     this.emitSessionUpdate(sessionId);
@@ -694,242 +777,244 @@ export class ClaudeCodeService extends EventEmitter {
     offset = 0,
     limit = 50,
   ): Promise<CardHistoryResponse> {
-    // Active session: use live CardBuilder cards (already carry pendingInput).
-    // This eliminates the race condition where JSONL history cards overwrite
-    // pendingInput state, and avoids PWA-side agentId matching entirely.
-    const ps = this.sessions.get(sessionId);
-    if (ps?.cardBuilder) {
-      const allCards = ps.cardBuilder.getCards();
-      const total = allCards.length;
-      const start = Math.max(0, total - offset - limit);
-      const end = Math.max(0, total - offset);
-      return { cards: allCards.slice(start, end), total, hasMore: start > 0 };
+    // Always use JSONL as the source of truth for history.
+    // Overlay pendingInput from in-memory state (only matters during permission prompts).
+    const result = await buildCardsFromHistory(sessionId, cwd, offset, limit);
+
+    // Attach pendingInput to matching tool cards
+    const pendingByToolUseId = new Map<string, any>();
+    for (const [, pending] of this.pendingInputRequests) {
+      if (pending.request.sessionId === sessionId && pending.request.toolUseId) {
+        pendingByToolUseId.set(pending.request.toolUseId, {
+          sessionId: pending.request.sessionId,
+          requestId: pending.request.requestId,
+          inputType: pending.request.inputType,
+          title: pending.request.title,
+          message: pending.request.message,
+          options: pending.request.options,
+        });
+      }
+    }
+    if (pendingByToolUseId.size > 0) {
+      for (const card of result.cards) {
+        if (card.type === 'tool_call' && (card as any).toolUseId) {
+          const pending = pendingByToolUseId.get((card as any).toolUseId);
+          if (pending) (card as any).pendingInput = pending;
+        }
+      }
     }
 
-    // Inactive session: fall back to JSONL history (no live pending state)
-    return buildCardsFromHistory(sessionId, cwd, offset, limit);
+    return result;
   }
 
-  private async consumeStream(
-    session: SDKSession,
-    streamId: string,
-    onSessionId: (id: string) => void,
-    initialSessionId?: string
-  ): Promise<void> {
+  /**
+   * Turn loop: dequeue prompt → send() → consume stream → on result, check queue → repeat.
+   * The first entry may have an empty prompt (already sent by startSession/resumeSession).
+   */
+  private async processTurnLoop(sessionId: string): Promise<void> {
+    const ps = this.sessions.get(sessionId);
+    if (!ps || ps._loopRunning) return;
+    ps._loopRunning = true;
+
     let textBuffer = '';
     let bufferTimer: ReturnType<typeof setTimeout> | null = null;
-    let capturedSessionId: string | null = initialSessionId ?? null;
-    let cancelled = false;
 
-    // CardBuilder for this streaming turn
-    const cb = new StreamCardBuilder(capturedSessionId ?? '', streamId);
+    const emitCard = (event: CardEvent) => { this.emit('card-event', event); };
 
-    const emitCard = (event: CardEvent) => {
-      this.emit('card-event', event);
-    };
-
-    const flushText = () => {
-      if (textBuffer) {
-        console.log(`[stream] flushText len=${textBuffer.length} session=${capturedSessionId?.slice(0,8)}`);
-        emitCard(cb.assistantText(textBuffer));
-        textBuffer = '';
-      }
-      if (bufferTimer) {
-        clearTimeout(bufferTimer);
-        bufferTimer = null;
-      }
-    };
-
-    const markStreamingDone = () => {
-      if (capturedSessionId) {
-        const ps = this.sessions.get(capturedSessionId);
-        if (ps) {
-          ps.streaming = false;
-          ps.cancelStreaming = null;
-          ps.cardBuilder = null;
-        }
-        // Finalize assistant text card if still streaming
-        const finalizeEvent = cb.finalizeAssistantText();
-        if (finalizeEvent) emitCard(finalizeEvent);
-        this.emitSessionUpdate(capturedSessionId);
-      }
-    };
-
-    const bufferText = (text: string) => {
-      textBuffer += text;
-      if (!bufferTimer) {
-        bufferTimer = setTimeout(flushText, 150);
-      }
-      if (textBuffer.length > 2048) {
-        flushText();
-      }
-    };
-
-    // Wire up cancel function for this streaming turn
-    const setCancelFn = () => {
-      if (capturedSessionId) {
-        const ps = this.sessions.get(capturedSessionId);
-        if (ps) {
-          ps.cancelStreaming = () => { cancelled = true; };
-          ps.cardBuilder = cb;
-        }
-      }
-    };
+    // Create cardBuilder once, reuse across turns (accumulates all cards)
+    if (!ps.cardBuilder) {
+      ps.cardBuilder = new StreamCardBuilder(sessionId, '');
+    }
 
     try {
-      for await (const message of session.stream()) {
-        if (cancelled) break;
+      while (ps._promptQueue.length > 0) {
+        const { prompt, streamId } = ps._promptQueue.shift()!;
+        ps._cancelled = false;
+        ps.streaming = true;
 
-        // Capture session ID from init message
-        if (message.type === 'system' && (message as any).subtype === 'init') {
-          capturedSessionId = message.session_id;
-          cb.updateSessionId(capturedSessionId);
-          console.log(`[stream] init session=${message.session_id}`);
-          onSessionId(message.session_id);
-          setCancelFn();
-          continue;
-        }
+        const cb = ps.cardBuilder!;
+        cb.startNewTurn(streamId);
+        this.emitSessionUpdate(sessionId);
 
-        // Subagent lifecycle events
-        if (message.type === 'system' && (message as any).subtype === 'task_started') {
-          const m = message as any;
-          flushText();
-          emitCard(cb.subagentStart(m.description ?? '', m.task_id, m.tool_use_id));
-          continue;
-        }
+        // Reset text buffering for this turn
+        textBuffer = '';
+        if (bufferTimer) { clearTimeout(bufferTimer); bufferTimer = null; }
 
-        if (message.type === 'system' && (message as any).subtype === 'task_progress') {
-          const m = message as any;
-          const cardEvt = cb.subagentProgress(m.task_id, m.tool_use_id, m.usage?.tool_uses, m.last_tool_name);
-          if (cardEvt) emitCard(cardEvt);
-          continue;
-        }
-
-        if (message.type === 'system' && (message as any).subtype === 'task_notification') {
-          const m = message as any;
-          const cardEvt = cb.subagentEnd(m.task_id, m.tool_use_id, m.status, m.summary);
-          if (cardEvt) emitCard(cardEvt);
-          continue;
-        }
-
-        // Session state changed — 'idle' means turn is over
-        if (message.type === 'system' && (message as any).subtype === 'session_state_changed') {
-          const state = (message as any).state;
-          if (state === 'idle') {
-            flushText();
-            console.log(`[stream] session_state_changed=idle session=${capturedSessionId}`);
+        const flushText = () => {
+          if (textBuffer) {
+            console.log(`[stream] flushText len=${textBuffer.length} session=${sessionId.slice(0,8)}`);
+            emitCard(cb.assistantText(textBuffer));
+            textBuffer = '';
           }
-          continue;
+          if (bufferTimer) { clearTimeout(bufferTimer); bufferTimer = null; }
+        };
+
+        const bufferText = (text: string) => {
+          textBuffer += text;
+          if (!bufferTimer) { bufferTimer = setTimeout(flushText, 150); }
+          if (textBuffer.length > 2048) { flushText(); }
+        };
+
+        // Send prompt if non-empty (empty means prompt was already sent before loop started)
+        if (prompt) {
+          emitCard(cb.userMessage(prompt));
+          await ps.session.send(prompt);
+          // New turn = new generator (v2 API: one stream() call per send())
+          ps._streamGenerator = ps.session.stream();
         }
 
-        // Streaming partial events
-        if (message.type === 'stream_event') {
-          const event = (message as any).event;
-          if (event?.type === 'content_block_delta') {
-            const delta = event.delta;
-            if (delta?.type === 'text_delta' && delta.text) {
-              bufferText(delta.text);
+        // Consume this turn's stream using manual .next() to avoid
+        // for-await+break calling generator.return() which kills the stream.
+        const gen = ps._streamGenerator;
+        if (!gen) {
+          console.error(`[stream] no generator for session=${sessionId}`);
+          break;
+        }
+        let turnDone = false;
+        try {
+          while (!turnDone && !ps._cancelled) {
+            const { value: message, done } = await gen.next();
+            if (done) { turnDone = true; break; }
+
+            // Subagent lifecycle events
+            if (message.type === 'system' && (message as any).subtype === 'task_started') {
+              const m = message as any;
+              flushText();
+              emitCard(cb.subagentStart(m.description ?? '', m.task_id, m.tool_use_id));
+              continue;
             }
-          } else if (!event?.type?.includes('delta')) {
-            console.log(`[stream] stream_event type=${event?.type} session=${capturedSessionId?.slice(0,8)}`);
-          }
-          continue;
-        }
 
-        // Complete assistant messages — skip sidechain (subagent) messages.
-        if (message.type === 'assistant') {
-          if ((message as any).agentId) continue; // sidechain message — ignore
-          flushText();
-          const betaMessage = (message as any).message;
-          const blocks = betaMessage?.content ?? [];
-          for (const block of blocks) {
-            if (block.type === 'thinking' && block.thinking) {
-              emitCard(cb.thinkingBlock(block.thinking));
-            } else if (block.type === 'redacted_thinking') {
-              emitCard(cb.thinkingBlock('[Redacted thinking]'));
-            } else if (block.type === 'text' && block.text) {
-              emitCard(cb.assistantText(block.text));
-            } else if (block.type === 'tool_use') {
-              // Agent tool calls are represented by SubagentCards (via task_started).
-              // Skip creating a redundant ToolCallCard for them.
-              if (block.name !== 'Agent') {
-                emitCard(cb.toolUse(block.name, block.input ?? {}, block.id));
-              }
-            } else if (block.type === 'server_tool_use' || block.type === 'mcp_tool_use') {
-              emitCard(cb.toolUse(block.name ?? block.type, block.input ?? {}, block.id ?? ''));
+            if (message.type === 'system' && (message as any).subtype === 'task_progress') {
+              const m = message as any;
+              const cardEvt = cb.subagentProgress(m.task_id, m.tool_use_id, m.usage?.tool_uses, m.last_tool_name);
+              if (cardEvt) emitCard(cardEvt);
+              continue;
             }
-          }
-          continue;
-        }
 
-        // User messages contain tool results — skip sidechain messages.
-        if (message.type === 'user') {
-          if ((message as any).agentId) continue; // sidechain message — ignore
-          const userMsg = (message as any).message;
-          if (userMsg?.content && Array.isArray(userMsg.content)) {
-            for (const block of userMsg.content) {
-              if (block.type === 'tool_result') {
-                const resultContent = extractToolResultText(block.content);
-                const cardEvt = cb.toolResult(block.tool_use_id, resultContent, !!block.is_error);
-                if (cardEvt) emitCard(cardEvt);
+            if (message.type === 'system' && (message as any).subtype === 'task_notification') {
+              const m = message as any;
+              const cardEvt = cb.subagentEnd(m.task_id, m.tool_use_id, m.status, m.summary);
+              if (cardEvt) emitCard(cardEvt);
+              continue;
+            }
+
+            // Session state changed — 'idle' means turn is over
+            if (message.type === 'system' && (message as any).subtype === 'session_state_changed') {
+              const state = (message as any).state;
+              if (state === 'idle') {
+                flushText();
+                console.log(`[stream] session_state_changed=idle session=${sessionId}`);
               }
-              // Handle server/MCP tool results in streaming
-              if (block.type === 'web_search_tool_result' || block.type === 'web_fetch_tool_result' ||
-                  block.type === 'mcp_tool_result' || block.type === 'code_execution_tool_result' ||
-                  block.type === 'tool_search_tool_result') {
-                const resultContent = extractToolResultText(block.content ?? block.text ?? '');
-                const parentId = block.tool_use_id;
-                if (parentId) {
-                  const cardEvt = cb.toolResult(parentId, resultContent, !!block.is_error);
-                  if (cardEvt) emitCard(cardEvt);
+              continue;
+            }
+
+            // Streaming partial events
+            if (message.type === 'stream_event') {
+              const event = (message as any).event;
+              if (event?.type === 'content_block_delta') {
+                const delta = event.delta;
+                if (delta?.type === 'text_delta' && delta.text) {
+                  bufferText(delta.text);
+                }
+              } else if (!event?.type?.includes('delta')) {
+                console.log(`[stream] stream_event type=${event?.type} session=${sessionId.slice(0,8)}`);
+              }
+              continue;
+            }
+
+            // Complete assistant messages — skip sidechain (subagent) messages.
+            if (message.type === 'assistant') {
+              if ((message as any).agentId) continue; // sidechain message — ignore
+              flushText();
+              const betaMessage = (message as any).message;
+              const blocks = betaMessage?.content ?? [];
+              for (const block of blocks) {
+                if (block.type === 'thinking' && block.thinking) {
+                  emitCard(cb.thinkingBlock(block.thinking));
+                } else if (block.type === 'redacted_thinking') {
+                  emitCard(cb.thinkingBlock('[Redacted thinking]'));
+                } else if (block.type === 'text' && block.text) {
+                  emitCard(cb.assistantText(block.text));
+                } else if (block.type === 'tool_use') {
+                  // Agent tool calls are represented by SubagentCards (via task_started).
+                  if (block.name !== 'Agent') {
+                    emitCard(cb.toolUse(block.name, block.input ?? {}, block.id));
+                  }
+                } else if (block.type === 'server_tool_use' || block.type === 'mcp_tool_use') {
+                  emitCard(cb.toolUse(block.name ?? block.type, block.input ?? {}, block.id ?? ''));
                 }
               }
+              continue;
+            }
+
+            // User messages contain tool results — skip sidechain messages.
+            if (message.type === 'user') {
+              if ((message as any).agentId) continue; // sidechain message — ignore
+              const userMsg = (message as any).message;
+              if (userMsg?.content && Array.isArray(userMsg.content)) {
+                for (const block of userMsg.content) {
+                  if (block.type === 'tool_result') {
+                    const resultContent = extractToolResultText(block.content);
+                    const cardEvt = cb.toolResult(block.tool_use_id, resultContent, !!block.is_error);
+                    if (cardEvt) emitCard(cardEvt);
+                  }
+                  // Handle server/MCP tool results in streaming
+                  if (block.type === 'web_search_tool_result' || block.type === 'web_fetch_tool_result' ||
+                      block.type === 'mcp_tool_result' || block.type === 'code_execution_tool_result' ||
+                      block.type === 'tool_search_tool_result') {
+                    const resultContent = extractToolResultText(block.content ?? block.text ?? '');
+                    const parentId = block.tool_use_id;
+                    if (parentId) {
+                      const cardEvt = cb.toolResult(parentId, resultContent, !!block.is_error);
+                      if (cardEvt) emitCard(cardEvt);
+                    }
+                  }
+                }
+              }
+              continue;
+            }
+
+            // ── Result — exit this turn's stream, loop will check queue ──
+            if (message.type === 'result') {
+              if ((message as any).session_id !== sessionId) {
+                console.log(`[stream] skip subagent result session=${(message as any).session_id?.slice(0,8)}`);
+                continue;
+              }
+              flushText();
+              const result = message as any;
+              console.log(`[stream] result session=${sessionId} subtype=${result.subtype} cost=$${result.total_cost_usd?.toFixed(4) ?? '?'}`);
+
+              const streamEnd: CardStreamEnd = {
+                streamId,
+                sessionId,
+                success: result.subtype === 'success',
+                error: result.subtype !== 'success'
+                  ? (result.errors?.join('; ') || `Session ended: ${result.subtype}`)
+                  : undefined,
+                totalCostUsd: result.total_cost_usd,
+                tokenUsage: result.usage
+                  ? { input: result.usage.input_tokens, output: result.usage.output_tokens }
+                  : undefined,
+              };
+              this.emit('card-stream-end', streamEnd);
+              turnDone = true; // exit this turn's stream without closing generator
             }
           }
-          continue;
-        }
-
-        // Final result — turn is complete but session stays alive.
-        // Subagent result messages have a different session_id — skip them.
-        if (message.type === 'result') {
-          if ((message as any).session_id !== capturedSessionId) {
-            console.log(`[stream] skip subagent result session=${(message as any).session_id?.slice(0,8)}`);
-            continue;
-          }
+        } catch (error) {
           flushText();
-          const result = message as any;
-          console.log(`[stream] result session=${capturedSessionId} subtype=${result.subtype} cost=$${result.total_cost_usd?.toFixed(4) ?? '?'}`);
-          markStreamingDone();
-
-          const streamEnd: CardStreamEnd = {
-            streamId,
-            sessionId: capturedSessionId ?? '',
-            success: result.subtype === 'success',
-            error: result.subtype !== 'success'
-              ? (result.errors?.join('; ') || `Session ended: ${result.subtype}`)
-              : undefined,
-            totalCostUsd: result.total_cost_usd,
-            tokenUsage: result.usage
-              ? { input: result.usage.input_tokens, output: result.usage.output_tokens }
-              : undefined,
-          };
-          this.emit('card-stream-end', streamEnd);
-          return;
+          console.error(`[stream] error session=${sessionId}:`, error);
+          const msg = error instanceof Error ? error.message : 'Unknown error';
+          this.emit('card-stream-end', { streamId, sessionId, success: false, error: msg });
         }
-      }
 
-      flushText();
-      console.log(`[stream] ended without result session=${capturedSessionId} (cancel or unexpected)`);
-      markStreamingDone();
-      const endPayload: CardStreamEnd = { streamId, sessionId: capturedSessionId ?? '', success: true };
-      this.emit('card-stream-end', endPayload);
-    } catch (error) {
-      flushText();
-      console.error(`[stream] error session=${capturedSessionId}:`, error);
-      markStreamingDone();
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      const endPayload: CardStreamEnd = { streamId, sessionId: capturedSessionId ?? '', success: false, error: msg };
-      this.emit('card-stream-end', endPayload);
+        // Turn done — finalize text, keep cardBuilder (accumulates across turns)
+        const finalizeEvent = cb.finalizeAssistantText();
+        if (finalizeEvent) emitCard(finalizeEvent);
+        ps.streaming = false;
+        this.emitSessionUpdate(sessionId);
+      }
+    } finally {
+      ps._loopRunning = false;
     }
   }
 }

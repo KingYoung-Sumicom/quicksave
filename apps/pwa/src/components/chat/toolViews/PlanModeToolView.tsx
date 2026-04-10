@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
 
 export function EnterPlanModeToolView() {
   return <span className="text-indigo-400">Entering plan mode</span>;
@@ -22,8 +23,8 @@ export function ExitPlanModeToolView({ input, plan }: {
     <div>
       <span className="text-indigo-400">Plan ready for review</span>
       {plan && (
-        <div className="mt-2 prose prose-invert prose-xs max-w-none text-slate-300 overflow-visible">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{plan}</ReactMarkdown>
+        <div className="mt-2 chat-markdown plan-markdown">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{plan}</ReactMarkdown>
         </div>
       )}
       {allowedPrompts.length > 0 && (
@@ -55,8 +56,8 @@ export function ExitPlanModeInteractiveView({ input, plan, onRespond }: {
     <div>
       <span className="text-indigo-400 font-medium">Plan for review</span>
       {plan && (
-        <div className="mt-2 prose prose-invert prose-xs max-w-none text-slate-300 overflow-visible">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{plan}</ReactMarkdown>
+        <div className="mt-2 chat-markdown plan-markdown">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{plan}</ReactMarkdown>
         </div>
       )}
       {allowedPrompts.length > 0 && (

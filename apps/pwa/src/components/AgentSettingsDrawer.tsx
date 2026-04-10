@@ -1,15 +1,14 @@
 import { useState, useEffect } from 'react';
-import { clsx } from 'clsx';
-import type { ClaudePreferences } from '@sumicom/quicksave-shared';
+import { SwipeableDrawer } from './SwipeableDrawer';
+import type { ConfigValue } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
 import { useConnectionStore } from '../stores/connectionStore';
-import { MODELS, PERMISSION_MODES } from '../lib/claudePresets';
+import { ClaudeSettingsSection } from './settings/ClaudeSettingsSection';
 
 interface AgentSettingsDrawerProps {
   isOpen: boolean;
   onClose: () => void;
-  onSetPreferences?: (prefs: Partial<ClaudePreferences>) => void;
-  onSetSessionPermission?: (sessionId: string, mode: string) => void;
+  onSetSessionConfig?: (key: string, value: ConfigValue) => void;
   onCancelSession?: () => void;
   onCloseSession?: () => void;
   onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
@@ -19,8 +18,7 @@ interface AgentSettingsDrawerProps {
 export function AgentSettingsDrawer({
   isOpen,
   onClose,
-  onSetPreferences,
-  onSetSessionPermission,
+  onSetSessionConfig,
   onCancelSession,
   onCloseSession,
   onCheckAgentUpdate,
@@ -28,8 +26,6 @@ export function AgentSettingsDrawer({
 }: AgentSettingsDrawerProps) {
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
   const isStreaming = useClaudeStore((s) => s.isStreaming);
-  const selectedModel = useClaudeStore((s) => s.selectedModel);
-  const selectedPermissionMode = useClaudeStore((s) => s.selectedPermissionMode);
 
   const agentVersion = useConnectionStore((s) => s.agentVersion);
   const latestVersion = useConnectionStore((s) => s.latestVersion);
@@ -44,15 +40,8 @@ export function AgentSettingsDrawer({
     if (!isOpen) setUpdateResult(null);
   }, [isOpen]);
 
-  if (!isOpen) return null;
-
   return (
-    <>
-      {/* Overlay */}
-      <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
-
-      {/* Drawer */}
-      <div className="fixed inset-y-0 right-0 w-[90%] max-w-[400px] bg-slate-800 z-50 animate-slide-in-right flex flex-col shadow-xl">
+    <SwipeableDrawer isOpen={isOpen} onClose={onClose} side="right" drawerWidth={400} className="w-[90%] max-w-[400px] bg-slate-800 flex flex-col shadow-xl">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-slate-700">
           <h2 className="text-lg font-semibold text-white">Settings</h2>
@@ -70,61 +59,24 @@ export function AgentSettingsDrawer({
         {/* Scrollable content */}
         <div className="flex-1 overflow-y-auto p-4 space-y-6">
 
+          {/* Section: Claude — model, reasoning effort, permission */}
+          <div className="space-y-3">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+              Claude
+            </h3>
+            <ClaudeSettingsSection
+              sessionId={activeSessionId}
+              onSetConfig={onSetSessionConfig}
+            />
+          </div>
+
           {/* Section: Session Controls — only when there's an active session */}
-          {activeSessionId && (
+          {activeSessionId && (onCancelSession || onCloseSession) && (
             <div className="space-y-3">
               <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
                 Session
               </h3>
-
-              {/* Model */}
-              {onSetPreferences && (
-                <div className="space-y-1.5">
-                  <p className="text-sm text-slate-300">Model</p>
-                  <div className="flex flex-col gap-1">
-                    {MODELS.map((m) => (
-                      <button
-                        key={m.value}
-                        onClick={() => onSetPreferences({ model: m.value })}
-                        className={clsx(
-                          'text-left text-sm px-3 py-2 rounded-md transition-colors',
-                          selectedModel === m.value
-                            ? 'bg-blue-600/20 text-blue-300 border border-blue-500/30'
-                            : 'text-slate-300 hover:bg-slate-700'
-                        )}
-                      >
-                        {m.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Permission Mode */}
-              {onSetSessionPermission && (
-                <div className="space-y-1.5">
-                  <p className="text-sm text-slate-300">Permission</p>
-                  <div className="flex flex-col gap-1">
-                    {PERMISSION_MODES.map((p) => (
-                      <button
-                        key={p.value}
-                        onClick={() => onSetSessionPermission(activeSessionId, p.value)}
-                        className={clsx(
-                          'text-left text-sm px-3 py-2 rounded-md transition-colors',
-                          selectedPermissionMode === p.value
-                            ? 'bg-blue-600/20 text-blue-300 border border-blue-500/30'
-                            : 'text-slate-300 hover:bg-slate-700'
-                        )}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Stop / End Session */}
-              <div className="flex gap-2 pt-1">
+              <div className="flex gap-2">
                 {onCancelSession && (
                   <button
                     onClick={() => { onCancelSession(); onClose(); }}
@@ -147,7 +99,7 @@ export function AgentSettingsDrawer({
           )}
 
           {/* Divider */}
-          {activeSessionId && <div className="border-t border-slate-700" />}
+          <div className="border-t border-slate-700" />
 
           {/* Section: CLI Agent */}
           <div className="space-y-3">
@@ -259,7 +211,6 @@ export function AgentSettingsDrawer({
             )}
           </div>
         </div>
-      </div>
-    </>
+    </SwipeableDrawer>
   );
 }

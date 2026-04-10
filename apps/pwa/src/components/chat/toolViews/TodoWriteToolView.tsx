@@ -1,5 +1,10 @@
 export function TodoWriteToolView({ input }: { input: Record<string, unknown> }) {
-  const todos = (input.todos as Array<{ content: string; status: string }>) || [];
+  const raw = input.todos;
+  const todos: Array<{ content: string; status: string }> = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? (() => { try { const p = JSON.parse(raw); return Array.isArray(p) ? p : []; } catch { return []; } })()
+      : [];
   if (todos.length === 0) {
     return <span className="text-teal-400">Update task list</span>;
   }

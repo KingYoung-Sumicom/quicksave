@@ -459,7 +459,7 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
   if (toolName === 'ExitPlanMode' && hasPending && onRespond) {
     return (
       <div className="flex justify-start">
-        <div className="bg-slate-800/60 border-l-2 border-indigo-500/80 rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-xs text-slate-300 overflow-hidden">
+        <div className="bg-slate-800/60 border-l-2 border-indigo-500/80 rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-sm text-slate-300 overflow-x-auto">
           <ExitPlanModeInteractiveView input={parsedInput} plan={parsedInput.plan as string} onRespond={onRespond} />
         </div>
       </div>
@@ -498,7 +498,7 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
 
   return (
     <div className="flex justify-start">
-      <div className={`bg-slate-800/60 border-l-2 ${accentColor} rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-xs text-slate-300 overflow-hidden`}>
+      <div className={`bg-slate-800/60 border-l-2 ${accentColor} rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-slate-300 ${toolName === 'ExitPlanMode' ? 'text-sm overflow-x-auto' : 'text-xs overflow-hidden'}`}>
         <div className="min-w-0">
           {toolName === 'AskUserQuestion'
             ? <AskUserQuestionToolView input={parsedInput} answers={(parsedResult as any)?.answers} />

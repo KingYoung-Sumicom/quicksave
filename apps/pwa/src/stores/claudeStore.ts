@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import type { Card, CardEvent, ClaudeSessionSummary } from '@sumicom/quicksave-shared';
+import type { Card, CardEvent, ClaudeSessionSummary, ConfigValue } from '@sumicom/quicksave-shared';
+import { DEFAULT_MODEL, DEFAULT_PERMISSION_MODE, DEFAULT_REASONING_EFFORT } from '@sumicom/quicksave-shared';
 
 interface ClaudeStore {
   // Session list
@@ -8,7 +9,7 @@ interface ClaudeStore {
 
   // Active session
   activeSessionId: string | null;
-  activeStreamId: string | null;
+  activeStreamIds: string[];
   isStreaming: boolean;
   streamError: string | null;
 
@@ -23,9 +24,13 @@ interface ClaudeStore {
   promptInput: string;
   isVisible: boolean;
 
-  // Session preferences (applied on next session start)
+  // Session preferences (defaults for new sessions)
   selectedModel: string;
   selectedPermissionMode: string;
+  selectedReasoningEffort: 'low' | 'medium' | 'high' | 'max';
+
+  // Per-session runtime config (keyed by sessionId)
+  sessionConfigs: Record<string, Record<string, ConfigValue>>;
 
   // Actions — sessions
   setSessions: (sessions: ClaudeSessionSummary[]) => void;
@@ -33,6 +38,7 @@ interface ClaudeStore {
 
   // Actions — active session
   setActiveSession: (sessionId: string | null, streamId?: string | null) => void;
+  addStreamId: (streamId: string) => void;
   setStreaming: (streaming: boolean) => void;
   setStreamError: (error: string | null) => void;
 
@@ -48,9 +54,14 @@ interface ClaudeStore {
   // Actions — pending input
   clearPendingInput: (requestId: string) => void;
 
-  // Actions — session preferences
+  // Actions — session preferences (new session defaults)
   setSelectedModel: (model: string) => void;
   setSelectedPermissionMode: (mode: string) => void;
+  setSelectedReasoningEffort: (effort: 'low' | 'medium' | 'high' | 'max') => void;
+
+  // Actions — per-session runtime config
+  setSessionConfigKey: (sessionId: string, key: string, value: ConfigValue) => void;
+  applySessionConfig: (sessionId: string, config: Record<string, ConfigValue>) => void;
 
   // Actions — UI
   setPromptInput: (input: string) => void;
@@ -65,7 +76,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   sessions: [],
   isLoadingSessions: false,
   activeSessionId: null,
-  activeStreamId: null,
+  activeStreamIds: [],
   isStreaming: false,
   streamError: null,
   cards: [],
@@ -74,8 +85,10 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   isLoadingHistory: false,
   promptInput: '',
   isVisible: false,
-  selectedModel: 'claude-sonnet-4-6',
-  selectedPermissionMode: 'acceptEdits',
+  selectedModel: DEFAULT_MODEL,
+  selectedPermissionMode: DEFAULT_PERMISSION_MODE,
+  selectedReasoningEffort: DEFAULT_REASONING_EFFORT,
+  sessionConfigs: {},
 
   // Sessions
   setSessions: (sessions) => set({ sessions }),
@@ -86,12 +99,18 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     const session = sessionId ? get().sessions.find((s) => s.sessionId === sessionId) : null;
     set({
       activeSessionId: sessionId,
-      activeStreamId: streamId,
+      activeStreamIds: streamId ? [streamId] : [],
       streamError: null,
       selectedPermissionMode: session?.permissionMode ?? 'acceptEdits',
     });
   },
-  setStreaming: (streaming) => set({ isStreaming: streaming, ...(!streaming ? { activeStreamId: null } : {}) }),
+  addStreamId: (streamId: string) => {
+    const current = get().activeStreamIds;
+    if (!current.includes(streamId)) {
+      set({ activeStreamIds: [...current, streamId] });
+    }
+  },
+  setStreaming: (streaming) => set({ isStreaming: streaming, ...(!streaming ? { activeStreamIds: [] } : {}) }),
   setStreamError: (error) => set({ streamError: error, isStreaming: false }),
 
   // Cards — server returns cards with pendingInput already attached
@@ -160,9 +179,26 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       return { cards };
     }),
 
-  // Session preferences
+  // Session preferences (new session defaults)
   setSelectedModel: (model) => set({ selectedModel: model }),
   setSelectedPermissionMode: (mode) => set({ selectedPermissionMode: mode }),
+  setSelectedReasoningEffort: (effort) => set({ selectedReasoningEffort: effort }),
+
+  // Per-session runtime config
+  setSessionConfigKey: (sessionId, key, value) =>
+    set((state) => ({
+      sessionConfigs: {
+        ...state.sessionConfigs,
+        [sessionId]: { ...state.sessionConfigs[sessionId], [key]: value },
+      },
+    })),
+  applySessionConfig: (sessionId, config) =>
+    set((state) => ({
+      sessionConfigs: {
+        ...state.sessionConfigs,
+        [sessionId]: { ...state.sessionConfigs[sessionId], ...config },
+      },
+    })),
 
   // UI
   setPromptInput: (input) => set({ promptInput: input }),
@@ -174,7 +210,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       sessions: [],
       isLoadingSessions: false,
       activeSessionId: null,
-      activeStreamId: null,
+      activeStreamIds: [],
       isStreaming: false,
       streamError: null,
       cards: [],

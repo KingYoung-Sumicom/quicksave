@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { SwipeableDrawer } from './SwipeableDrawer';
 import { exportMasterSecret, importMasterSecret, saveApiKey as saveApiKeyToStorage, hasApiKey, getApiKey } from '../lib/secureStorage';
 import { useMachineStore } from '../stores/machineStore';
 import type { Machine } from '../stores/machineStore';
@@ -63,8 +64,6 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAge
       });
     }
   }, [isOpen]);
-
-  if (!isOpen) return null;
 
   async function handleSaveApiKey(): Promise<void> {
     if (!apiKey.trim()) {
@@ -214,15 +213,7 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAge
   }
 
   return (
-    <>
-      {/* Overlay */}
-      <div
-        className="fixed inset-0 bg-black/50 z-40"
-        onClick={onClose}
-      />
-
-      {/* Panel */}
-      <div className="fixed inset-y-0 right-0 w-[90%] max-w-[400px] bg-slate-800 z-50 animate-slide-in-right flex flex-col shadow-xl">
+    <SwipeableDrawer isOpen={isOpen} onClose={onClose} side="right" drawerWidth={400} className="w-[90%] max-w-[400px] bg-slate-800 flex flex-col shadow-xl">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-slate-700">
           <h2 className="text-lg font-semibold text-white">Settings</h2>
@@ -561,7 +552,6 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAge
             </>
           )}
         </div>
-      </div>
 
       {/* Confirmation Dialog */}
       {pendingBackup !== null && (
@@ -598,6 +588,6 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAge
           </div>
         </>
       )}
-    </>
+    </SwipeableDrawer>
   );
 }

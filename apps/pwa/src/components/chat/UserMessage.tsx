@@ -1,6 +1,9 @@
 import { useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
 
-const COLLAPSE_THRESHOLD = 4;
+const COLLAPSE_LINE_THRESHOLD = 4;
 
 // ─── task-notification parser ─────────────────────────────────────────────────
 
@@ -20,7 +23,6 @@ function parseTaskNotification(content: string): TaskNotification | null {
 }
 
 function TaskNotificationMessage({ content }: { content: string }) {
-  // May have multiple task-notification blocks or surrounding text
   const parts = content.split(/(<task-notification>[\s\S]*?<\/task-notification>)/g);
   return (
     <div className="flex justify-start">
@@ -62,21 +64,25 @@ function TaskNotificationMessage({ content }: { content: string }) {
 }
 
 function PlainUserMessage({ content }: { content: string }) {
-  const lines = content.split('\n');
-  const collapsible = lines.length > COLLAPSE_THRESHOLD;
+  const lineCount = content.split('\n').length;
+  const collapsible = lineCount > COLLAPSE_LINE_THRESHOLD;
   const [expanded, setExpanded] = useState(false);
-  const displayContent = collapsible && !expanded
-    ? lines.slice(0, COLLAPSE_THRESHOLD).join('\n') : content;
+
   return (
-    <div className="bg-slate-700 rounded-lg px-3 py-2 max-w-full text-sm whitespace-pre-wrap break-words inline-block">
-      {displayContent}
-      {collapsible && !expanded && <span className="text-blue-300/70">…</span>}
+    <div className="bg-slate-700 rounded-lg px-3 py-2 max-w-full inline-block">
+      <div
+        className={`chat-markdown overflow-hidden transition-all ${collapsible && !expanded ? 'max-h-24' : ''}`}
+      >
+        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+          {content}
+        </ReactMarkdown>
+      </div>
       {collapsible && (
         <button
           onClick={() => setExpanded(v => !v)}
-          className="block mt-1 text-[10px] text-slate-400/60 hover:text-slate-300 transition-colors"
+          className="mt-1 text-[10px] text-slate-400/60 hover:text-slate-300 transition-colors"
         >
-          {expanded ? 'Show less' : `Show ${lines.length - COLLAPSE_THRESHOLD} more lines`}
+          {expanded ? 'Show less' : `Show ${lineCount - COLLAPSE_LINE_THRESHOLD} more lines`}
         </button>
       )}
     </div>

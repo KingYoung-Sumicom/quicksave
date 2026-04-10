@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { clsx } from 'clsx';
 import { SESSION_STATUS, sessionStatusKey } from './SessionStatusBadge';
 import { useConnectionStore } from '../stores/connectionStore';
+import { SwipeableDrawer } from './SwipeableDrawer';
 import { useClaudeStore } from '../stores/claudeStore';
 import { useMachineStore, selectSortedMachines } from '../stores/machineStore';
 import { agentUrl } from '../lib/pathHash';
@@ -20,6 +21,7 @@ interface NavigationDrawerProps {
   onListSessions: (cwd?: string) => Promise<void>;
   onBackToFleet: () => void;
   onSwitchMachine?: (agentId: string) => void;
+  onOpen?: () => void;
 }
 
 export function NavigationDrawer({
@@ -33,15 +35,17 @@ export function NavigationDrawer({
   onListSessions,
   onBackToFleet,
   onSwitchMachine,
+  onOpen,
 }: NavigationDrawerProps) {
   const navigate = useNavigate();
   const { availableRepos, availableCodingPaths } = useConnectionStore();
   const { agentId: connectedAgentId } = useConnectionStore();
   const machines = useMachineStore(selectSortedMachines);
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
-  const isStreaming = useClaudeStore((s) => s.isStreaming);
+  const storeSessions = useClaudeStore((s) => s.sessions);
   const [sessionsByPath, setSessionsByPath] = useState<Map<string, ClaudeSessionSummary[]>>(new Map());
   const [showMachineSwitcher, setShowMachineSwitcher] = useState(false);
+
 
   const currentMachine = machines.find((m) => m.agentId === connectedAgentId);
   const hasMultipleMachines = machines.length > 1;
@@ -71,7 +75,7 @@ export function NavigationDrawer({
     };
     fetchAll();
     return () => { cancelled = true; };
-  }, [isOpen, availableCodingPaths, onListSessions, activeSessionId, isStreaming]);
+  }, [isOpen, availableCodingPaths, onListSessions, activeSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleNavigate = (url: string) => {
     if (!persistent) onClose();
@@ -179,9 +183,15 @@ export function NavigationDrawer({
 
           <SectionHeader title="Coding" onAdd={onAddWorkspace} />
           {availableCodingPaths.map((cp) => {
-            const sessions = sessionsByPath.get(cp.path) || [];
+            const baseSessions = sessionsByPath.get(cp.path) || [];
+            // Merge live state from store (push-updated) into fetched sessions
+            const storeMap = new Map(storeSessions.map((s) => [s.sessionId, s]));
+            const sessions = baseSessions.map((s) => {
+              const live = storeMap.get(s.sessionId);
+              return live ? { ...s, isActive: live.isActive, isStreaming: live.isStreaming, hasPendingInput: live.hasPendingInput } : s;
+            });
             const sorted = [...sessions].sort((a, b) => {
-              const rank = (s: ClaudeSessionSummary) => s.isStreaming ? 2 : s.isActive ? 1 : 0;
+              const rank = (ss: ClaudeSessionSummary) => ss.isStreaming ? 2 : ss.isActive ? 1 : 0;
               return rank(b) - rank(a);
             });
             return (
@@ -223,18 +233,15 @@ export function NavigationDrawer({
   }
 
   // Mobile overlay drawer
-  if (!isOpen) return null;
-
   return (
-    <>
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 z-40 bg-black/50"
-        onClick={onClose}
-      />
-
-      {/* Drawer */}
-      <div className="fixed inset-y-0 left-0 z-50 w-72 max-w-[80vw] bg-slate-800 flex flex-col animate-slide-in-left safe-area-top">
+    <SwipeableDrawer
+      isOpen={isOpen}
+      onClose={onClose}
+      onOpen={onOpen}
+      side="left"
+      drawerWidth={288}
+      className="w-72 max-w-[80vw] bg-slate-800 flex flex-col safe-area-top"
+    >
         {/* Header: Machine switcher */}
         <div className="px-3 py-3 border-b border-slate-700 relative">
           <div className={clsx('flex items-center rounded-md', showMachineSwitcher && 'bg-slate-700')}>
@@ -322,9 +329,15 @@ export function NavigationDrawer({
 
           <SectionHeader title="Coding" onAdd={onAddWorkspace} />
           {availableCodingPaths.map((cp) => {
-            const sessions = sessionsByPath.get(cp.path) || [];
+            const baseSessions = sessionsByPath.get(cp.path) || [];
+            // Merge live state from store (push-updated) into fetched sessions
+            const storeMap = new Map(storeSessions.map((s) => [s.sessionId, s]));
+            const sessions = baseSessions.map((s) => {
+              const live = storeMap.get(s.sessionId);
+              return live ? { ...s, isActive: live.isActive, isStreaming: live.isStreaming, hasPendingInput: live.hasPendingInput } : s;
+            });
             const sorted = [...sessions].sort((a, b) => {
-              const rank = (s: ClaudeSessionSummary) => s.isStreaming ? 2 : s.isActive ? 1 : 0;
+              const rank = (ss: ClaudeSessionSummary) => ss.isStreaming ? 2 : ss.isActive ? 1 : 0;
               return rank(b) - rank(a);
             });
             return (
@@ -361,8 +374,7 @@ export function NavigationDrawer({
             Back
           </button>
         </div>
-      </div>
-    </>
+    </SwipeableDrawer>
   );
 }
 

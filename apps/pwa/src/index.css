@@ -184,8 +184,9 @@ html, body {
 .chat-markdown h1, .chat-markdown h2, .chat-markdown h3 {
   @apply font-semibold text-slate-100 mt-3 mb-1.5;
 }
-.chat-markdown h1 { @apply text-base; }
-.chat-markdown h2 { @apply text-sm; }
+.chat-markdown h1 { @apply text-lg; }
+.chat-markdown h2 { @apply text-base; }
+.chat-markdown h3 { @apply text-sm; }
 .chat-markdown strong {
   @apply font-semibold text-slate-100;
 }
@@ -226,4 +227,18 @@ html, body {
 }
 .chat-markdown hr {
   @apply border-slate-600 my-3;
+}
+
+/* Plan mode cards — more vertical breathing room between sections */
+.plan-markdown h1, .plan-markdown h2, .plan-markdown h3 {
+  @apply mt-5 mb-2;
+}
+.plan-markdown h1:first-child, .plan-markdown h2:first-child, .plan-markdown h3:first-child {
+  @apply mt-1;
+}
+.plan-markdown p {
+  @apply my-2 leading-relaxed;
+}
+.plan-markdown li {
+  @apply my-1;
 }

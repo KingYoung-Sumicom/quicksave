@@ -73,6 +73,10 @@ import {
   ClaudeActiveSessionsResponsePayload,
   CardHistoryResponse,
   generateMessageId,
+  SessionGetConfigRequestPayload,
+  SessionGetConfigResponsePayload,
+  SessionSetConfigRequestPayload,
+  SessionSetConfigResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { GitOperations } from '../git/operations.js';
 import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, addManagedCodingPath } from '../config.js';
@@ -327,6 +331,10 @@ export class MessageHandler {
           this.onPeerUnsubscribed?.(peerAddress, unsub.sessionId);
           return createMessage('claude:unsubscribe:response', { ok: true });
         }
+        case 'session:get-config':
+          return this.handleGetSessionConfig(message as Message<SessionGetConfigRequestPayload>);
+        case 'session:set-config':
+          return this.handleSetSessionConfig(message as Message<SessionSetConfigRequestPayload>);
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
       }
@@ -1051,8 +1059,18 @@ export class MessageHandler {
 
       // Parse the installed version from npm output
       // npm output typically contains lines like: + @sumicom/quicksave@0.5.3
-      const versionMatch = output.match(/@sumicom\/quicksave@(\d+\.\d+\.\d+)/);
-      const newVersion = versionMatch?.[1];
+      let newVersion = output.match(/@sumicom\/quicksave@(\d+\.\d+\.\d+)/)?.[1];
+
+      // Fallback: query npm for the actually installed version
+      if (!newVersion) {
+        try {
+          const { stdout: listOut } = await execFileAsync('npm', [
+            'list', '-g', '@sumicom/quicksave', '--json',
+          ], { timeout: 10_000 });
+          const listData = JSON.parse(listOut) as { dependencies?: { '@sumicom/quicksave'?: { version?: string } } };
+          newVersion = listData.dependencies?.['@sumicom/quicksave']?.version;
+        } catch { /* best-effort */ }
+      }
 
       const needsRestart = !!newVersion && newVersion !== previousVersion;
 
@@ -1080,7 +1098,9 @@ export class MessageHandler {
           success: false,
           previousVersion,
           restarting: false,
-          error: error instanceof Error ? error.message : 'Failed to update agent',
+          error: error instanceof Error
+            ? (error.message.includes('EACCES') ? `Permission denied. Try: sudo npm install -g @sumicom/quicksave@latest` : error.message)
+            : 'Failed to update agent',
         },
       );
       response.id = message.id;
@@ -1281,6 +1301,28 @@ export class MessageHandler {
     const response = createMessage<ClaudeSetSessionPermissionResponsePayload>(
       'claude:set-session-permission:response',
       { success, sessionId, permissionMode },
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private handleGetSessionConfig(message: Message<SessionGetConfigRequestPayload>): Message<SessionGetConfigResponsePayload> {
+    const { sessionId } = message.payload;
+    const config = this.claudeService.getSessionConfig(sessionId);
+    const response = createMessage<SessionGetConfigResponsePayload>(
+      'session:get-config:response',
+      { sessionId, config },
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private handleSetSessionConfig(message: Message<SessionSetConfigRequestPayload>): Message<SessionSetConfigResponsePayload> {
+    const { sessionId, key, value } = message.payload;
+    const config = this.claudeService.setSessionConfig(sessionId, key, value);
+    const response = createMessage<SessionSetConfigResponsePayload>(
+      'session:set-config:response',
+      { success: true, sessionId, config },
     );
     response.id = message.id;
     return response;
