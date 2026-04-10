@@ -16,56 +16,50 @@ export function QRScanner({ onScan, onPairingScan, onError }: QRScannerProps) {
   const [permissionDenied, setPermissionDenied] = useState(false);
 
   const handleScan = useCallback((decodedText: string) => {
+    const stopAndCall = (fn: () => void) => {
+      if (scannerRef.current?.isScanning) {
+        scannerRef.current.stop().catch(console.error);
+      }
+      setIsScanning(false);
+      setShouldStart(false);
+      fn();
+    };
+
     try {
-      // Try to parse as URL
       const url = new URL(decodedText);
-      const id = url.searchParams.get('id');
-      const pk = url.searchParams.get('pk');
 
-      if (id && pk) {
-        const name = url.searchParams.get('name') || undefined;
-        // Stop scanning before calling callback
-        if (scannerRef.current?.isScanning) {
-          scannerRef.current.stop().catch(console.error);
-        }
-        setIsScanning(false);
-        setShouldStart(false);
-        onScan(id, pk, name);
-        return;
-      }
-
-      // Check for pairing URL format: ?pair=PUBLIC_KEY
-      const pairKey = url.searchParams.get('pair');
-      if (pairKey && onPairingScan) {
-        if (scannerRef.current?.isScanning) {
-          scannerRef.current.stop().catch(console.error);
-        }
-        setIsScanning(false);
-        setShouldStart(false);
-        onPairingScan(pairKey);
-        return;
-      }
-
-      // Try to parse as JSON (alternative format)
-      try {
-        const data = JSON.parse(decodedText);
-        if (data.id && data.pk) {
-          if (scannerRef.current?.isScanning) {
-            scannerRef.current.stop().catch(console.error);
-          }
-          setIsScanning(false);
-          setShouldStart(false);
-          onScan(data.id, data.pk);
+      // Agent URL format: https://quicksave.dev/#/connect/{agentId}?pk={key}&name={name}
+      const hash = url.hash; // e.g. "#/connect/abc123?pk=xyz&name=MyPC"
+      const connectMatch = hash.match(/^#\/connect\/([^?]+)\??(.*)/);
+      if (connectMatch) {
+        const agentId = connectMatch[1];
+        const hashParams = new URLSearchParams(connectMatch[2]);
+        const pk = hashParams.get('pk');
+        if (agentId && pk) {
+          const name = hashParams.get('name') || undefined;
+          stopAndCall(() => onScan(agentId, pk, name));
           return;
         }
-      } catch {
-        // Not JSON, ignore
       }
 
-      // Invalid QR code format
+      // Legacy format: ?id={agentId}&pk={key}
+      const id = url.searchParams.get('id');
+      const pk = url.searchParams.get('pk');
+      if (id && pk) {
+        const name = url.searchParams.get('name') || undefined;
+        stopAndCall(() => onScan(id, pk, name));
+        return;
+      }
+
+      // Pairing format: ?pair=PUBLIC_KEY
+      const pairKey = url.searchParams.get('pair');
+      if (pairKey && onPairingScan) {
+        stopAndCall(() => onPairingScan(pairKey));
+        return;
+      }
+
       setError('Invalid QR code. Please scan the QR code from quicksave-agent.');
     } catch {
-      // Not a URL, try other formats
       setError('Invalid QR code format.');
     }
   }, [onScan, onPairingScan]);

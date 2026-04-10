@@ -67,7 +67,7 @@ export function FleetDashboard({ onNavigate, onConnect, onSendApiKeyToAgent, onC
       {/* Help Text */}
       <div className="mt-6 text-center">
         <p className="text-sm text-slate-500">
-          Run <code className="text-slate-400">quicksave</code> on your computer, then tap <strong className="text-slate-400">+ Add Machine</strong> to pair.
+          Install with <code className="text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">npx @sumicom/quicksave</code>, then tap <strong className="text-slate-400">+ Add Machine</strong> to pair.
         </p>
       </div>
 
