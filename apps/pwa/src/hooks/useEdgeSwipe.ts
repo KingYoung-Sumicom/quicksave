@@ -63,9 +63,18 @@ export function useEdgeSwipe({
         return;
       }
 
-      // Prevent iOS system edge gesture from firing — must be done on touchstart.
-      // Only called within edge zone or when drawer is open.
-      e.preventDefault();
+      // When drawer is open, only track swipe-to-close if starting outside drawer area
+      // (i.e. on the backdrop). Touches inside the drawer should pass through to child elements.
+      if (isOpenRef.current) {
+        const insideDrawer = side === 'left'
+          ? touch.clientX <= drawerWidth
+          : touch.clientX >= window.innerWidth - drawerWidth;
+        if (insideDrawer) {
+          phase.current = 'rejected';
+          return;
+        }
+      }
+
       phase.current = 'pending';
     };
 

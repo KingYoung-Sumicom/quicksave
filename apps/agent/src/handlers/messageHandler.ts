@@ -77,11 +77,19 @@ import {
   SessionGetConfigResponsePayload,
   SessionSetConfigRequestPayload,
   SessionSetConfigResponsePayload,
+  SessionRegistryEntry,
+  SessionListHistoryRequestPayload,
+  SessionListHistoryResponsePayload,
+  SessionUpdateHistoryRequestPayload,
+  SessionUpdateHistoryResponsePayload,
+  SessionDeleteHistoryRequestPayload,
+  SessionDeleteHistoryResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { GitOperations } from '../git/operations.js';
 import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, addManagedCodingPath } from '../config.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';
 import { ClaudeCodeService } from '../ai/claudeCodeService.js';
+import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { readdir, stat } from 'fs/promises';
 import { join, dirname, basename } from 'path';
 import { homedir } from 'os';
@@ -102,6 +110,7 @@ export class MessageHandler {
   private versionCheckInFlight: Promise<string | null> | null = null;
   onPeerSubscribed?: (peerAddress: string, sessionId: string) => void;
   onPeerUnsubscribed?: (peerAddress: string, sessionId: string) => void;
+  onHistoryUpdated?: (cwd: string, entry: SessionRegistryEntry, action: 'upsert' | 'delete') => void;
 
   private productionBuild: boolean;
 
@@ -335,6 +344,12 @@ export class MessageHandler {
           return this.handleGetSessionConfig(message as Message<SessionGetConfigRequestPayload>);
         case 'session:set-config':
           return this.handleSetSessionConfig(message as Message<SessionSetConfigRequestPayload>);
+        case 'session:list-history':
+          return this.handleListHistory(message as Message<SessionListHistoryRequestPayload>, peerAddress);
+        case 'session:update-history':
+          return this.handleUpdateHistory(message as Message<SessionUpdateHistoryRequestPayload>);
+        case 'session:delete-history':
+          return this.handleDeleteHistory(message as Message<SessionDeleteHistoryRequestPayload>);
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
       }
@@ -1151,6 +1166,21 @@ export class MessageHandler {
 
       console.log(`[claude:start] session created: ${sessionId}`);
       this.onPeerSubscribed?.(peerAddress, sessionId);
+
+      // Register in session history
+      const now = Date.now();
+      const registry = getSessionRegistry();
+      const gitBranch = await this.getGitBranchQuiet(cwd);
+      registry.upsertEntry({
+        sessionId, cwd,
+        repoName: basename(cwd),
+        gitBranch,
+        firstPrompt: prompt.slice(0, 100),
+        createdAt: now,
+        lastAccessedAt: now,
+      });
+      this.onHistoryUpdated?.(cwd, registry.getEntry(cwd, sessionId)!, 'upsert');
+
       const response = createMessage<ClaudeStartResponsePayload>(
         'claude:start:response',
         { success: true, sessionId, streamId }
@@ -1192,6 +1222,19 @@ export class MessageHandler {
       if (actualSessionId !== requestedId) {
         this.onPeerSubscribed?.(peerAddress, actualSessionId);
       }
+
+      // Update session history
+      const registry = getSessionRegistry();
+      const existing = registry.getEntry(cwd, requestedId) ?? registry.getEntry(cwd, actualSessionId);
+      const gitBranch = await this.getGitBranchQuiet(cwd);
+      registry.upsertEntry({
+        ...(existing ?? { sessionId: actualSessionId, cwd, repoName: basename(cwd), createdAt: Date.now() }),
+        sessionId: actualSessionId,
+        lastAccessedAt: Date.now(),
+        gitBranch,
+      });
+      this.onHistoryUpdated?.(cwd, registry.getEntry(cwd, actualSessionId)!, 'upsert');
+
       const response = createMessage<ClaudeResumeResponsePayload>(
         'claude:resume:response',
         { success: true, sessionId: actualSessionId, streamId }
@@ -1209,11 +1252,11 @@ export class MessageHandler {
     }
   }
 
-  private handleClaudeCancel(
+  private async handleClaudeCancel(
     message: Message<ClaudeCancelRequestPayload>
-  ): Message<ClaudeCancelResponsePayload> {
+  ): Promise<Message<ClaudeCancelResponsePayload>> {
     const { sessionId } = message.payload;
-    const success = this.claudeService.cancelSession(sessionId);
+    const success = await this.claudeService.cancelSession(sessionId);
     const response = createMessage<ClaudeCancelResponsePayload>(
       'claude:cancel:response',
       { success, error: success ? undefined : 'Session not found or already ended' }
@@ -1336,6 +1379,65 @@ export class MessageHandler {
     );
     response.id = message.id;
     return response;
+  }
+
+  // ── Session Registry (History) ──────────────────────────────────────
+
+  private handleListHistory(
+    message: Message<SessionListHistoryRequestPayload>,
+    peerAddress: string,
+  ): Message<SessionListHistoryResponsePayload> {
+    const cwd = message.payload.cwd || this.getClientRepoPath(peerAddress);
+    const entries = getSessionRegistry().getEntriesForProject(cwd);
+    const response = createMessage<SessionListHistoryResponsePayload>(
+      'session:list-history:response',
+      { entries },
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private handleUpdateHistory(
+    message: Message<SessionUpdateHistoryRequestPayload>,
+  ): Message<SessionUpdateHistoryResponsePayload> {
+    const { sessionId, cwd, updates } = message.payload;
+    const entry = getSessionRegistry().updateEntry(cwd, sessionId, updates);
+    const response = createMessage<SessionUpdateHistoryResponsePayload>(
+      'session:update-history:response',
+      entry ? { success: true, entry } : { success: false, error: 'Entry not found' },
+    );
+    response.id = message.id;
+    if (entry) {
+      this.onHistoryUpdated?.(cwd, entry, 'upsert');
+    }
+    return response;
+  }
+
+  private handleDeleteHistory(
+    message: Message<SessionDeleteHistoryRequestPayload>,
+  ): Message<SessionDeleteHistoryResponsePayload> {
+    const { sessionId, cwd } = message.payload;
+    const entry = getSessionRegistry().getEntry(cwd, sessionId);
+    const success = getSessionRegistry().deleteEntry(cwd, sessionId);
+    const response = createMessage<SessionDeleteHistoryResponsePayload>(
+      'session:delete-history:response',
+      { success, error: success ? undefined : 'Entry not found' },
+    );
+    response.id = message.id;
+    if (success && entry) {
+      this.onHistoryUpdated?.(cwd, entry, 'delete');
+    }
+    return response;
+  }
+
+  private async getGitBranchQuiet(cwd: string): Promise<string | undefined> {
+    try {
+      const git = new GitOperations(cwd);
+      const { current } = await git.getBranches();
+      return current || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private createErrorResponse(id: string, code: string, message: string): Message<ErrorPayload> {

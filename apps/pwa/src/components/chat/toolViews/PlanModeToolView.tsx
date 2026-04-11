@@ -13,30 +13,53 @@ interface AllowedPrompt {
 }
 
 /** Static view — shows plan summary and requested permissions. */
-export function ExitPlanModeToolView({ input, plan }: {
+export function ExitPlanModeToolView({ input, plan, isRejected }: {
   input: Record<string, unknown>;
   plan?: string | null;
+  isRejected?: boolean;
 }) {
   const allowedPrompts = (input.allowedPrompts as AllowedPrompt[]) || [];
+  const hasResult = isRejected !== undefined;
 
   return (
     <div>
-      <span className="text-indigo-400">Plan ready for review</span>
+      <span className="flex items-center gap-2">
+        <span className="text-indigo-400">Plan ready for review</span>
+        {hasResult && (isRejected ? (
+          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-red-600/30 text-red-400 ring-1 ring-red-500/30">Rejected</span>
+        ) : (
+          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-green-600/30 text-green-400 ring-1 ring-green-500/30">Approved</span>
+        ))}
+      </span>
       {plan && (
         <div className="mt-2 chat-markdown plan-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{plan}</ReactMarkdown>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeHighlight]}
+            components={{
+              table: ({ children }) => (
+                <div className="overflow-x-auto my-2">
+                  <table className="w-max min-w-full">{children}</table>
+                </div>
+              ),
+            }}
+          >{plan}</ReactMarkdown>
         </div>
       )}
       {allowedPrompts.length > 0 && (
-        <div className="mt-2 space-y-1">
-          <span className="text-slate-500 text-[10px] uppercase tracking-wide">Requested permissions</span>
-          {allowedPrompts.map((p, i) => (
-            <div key={i} className="flex items-start gap-1.5 text-slate-300">
-              <span className="text-amber-400/70 text-[10px] font-mono mt-px shrink-0">{p.tool}</span>
-              <span>{p.prompt}</span>
-            </div>
-          ))}
-        </div>
+        <details className="mt-2">
+          <summary className="text-slate-500 text-[10px] uppercase tracking-wide cursor-pointer hover:text-slate-400 select-none">
+            Requested permissions ({allowedPrompts.length})
+          </summary>
+          <div className="mt-1 space-y-1">
+            {allowedPrompts.map((p, i) => (
+              <div key={i} className="flex items-start gap-1.5 text-slate-300">
+                <span className="text-amber-400/70 text-[10px] font-mono mt-px shrink-0">{p.tool}</span>
+                <span>{p.prompt}</span>
+              </div>
+            ))}
+          </div>
+        </details>
       )}
     </div>
   );
@@ -57,19 +80,33 @@ export function ExitPlanModeInteractiveView({ input, plan, onRespond }: {
       <span className="text-indigo-400 font-medium">Plan for review</span>
       {plan && (
         <div className="mt-2 chat-markdown plan-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{plan}</ReactMarkdown>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeHighlight]}
+            components={{
+              table: ({ children }) => (
+                <div className="overflow-x-auto my-2">
+                  <table className="w-max min-w-full">{children}</table>
+                </div>
+              ),
+            }}
+          >{plan}</ReactMarkdown>
         </div>
       )}
       {allowedPrompts.length > 0 && (
-        <div className="mt-2 space-y-1">
-          <span className="text-slate-500 text-[10px] uppercase tracking-wide">Requested permissions</span>
-          {allowedPrompts.map((p, i) => (
-            <div key={i} className="flex items-start gap-1.5 text-slate-300">
-              <span className="text-amber-400/70 text-[10px] font-mono mt-px shrink-0">{p.tool}</span>
-              <span>{p.prompt}</span>
-            </div>
-          ))}
-        </div>
+        <details className="mt-2">
+          <summary className="text-slate-500 text-[10px] uppercase tracking-wide cursor-pointer hover:text-slate-400 select-none">
+            Requested permissions ({allowedPrompts.length})
+          </summary>
+          <div className="mt-1 space-y-1">
+            {allowedPrompts.map((p, i) => (
+              <div key={i} className="flex items-start gap-1.5 text-slate-300">
+                <span className="text-amber-400/70 text-[10px] font-mono mt-px shrink-0">{p.tool}</span>
+                <span>{p.prompt}</span>
+              </div>
+            ))}
+          </div>
+        </details>
       )}
       <div className="mt-3 space-y-2">
         {showReject ? (

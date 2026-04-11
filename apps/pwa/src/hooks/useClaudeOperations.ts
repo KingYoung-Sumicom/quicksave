@@ -119,11 +119,17 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
 
     if (message.type === 'claude:card-stream-end') {
       const payload = message.payload as CardStreamEnd;
-      const activeSessionId = useClaudeStore.getState().activeSessionId;
+      const { activeSessionId, activeStreamIds } = useClaudeStore.getState();
       if (activeSessionId && payload.sessionId !== activeSessionId) {
         return true;
       }
-      setStreaming(false);
+      // Remove this streamId; only stop streaming if no other streams are active
+      const remaining = activeStreamIds.filter((id) => id !== payload.streamId);
+      if (remaining.length > 0) {
+        useClaudeStore.setState({ activeStreamIds: remaining });
+      } else {
+        setStreaming(false);
+      }
       if (!payload.success) {
         setStreamError(payload.error || 'Session ended with error');
       }
@@ -290,6 +296,11 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
   const resumeSession = useCallback(
     async (sessionId: string, prompt: string, cwd?: string) => {
       const wasAlreadyStreaming = useClaudeStore.getState().isStreaming;
+      if (wasAlreadyStreaming) {
+        // Hot resume: clear stream filter so early events from the new stream aren't dropped
+        // before we know its streamId. The response will re-add the correct IDs.
+        useClaudeStore.setState({ activeStreamIds: [] });
+      }
       setStreaming(true);
       setStreamError(null);
       appendCard({ type: 'user', id: `local-user-${Date.now()}`, timestamp: Date.now(), text: prompt });
@@ -300,7 +311,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
           throw new Error(response.error || 'Failed to resume session');
         }
         if (wasAlreadyStreaming) {
-          // Hot resume: add the new streamId without clearing the current one
+          // Hot resume: set the new streamId (old stream ended or will end separately)
           if (response.streamId) addStreamId(response.streamId);
         } else {
           // Cold resume: set as the only active streamId

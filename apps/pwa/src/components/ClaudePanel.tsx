@@ -317,14 +317,10 @@ export function ClaudePanel({
               </div>
             )}
             {(() => {
-              const lastCard = cards[cards.length - 1];
-              const lastIsEmptyText = lastCard?.type === 'assistant_text' && !(lastCard as any).text;
-              const showDots = isStreaming && !isResuming && (
-                isStartingNewSession ||
-                !lastCard ||
-                lastCard.type !== 'assistant_text' ||
-                lastIsEmptyText
-              );
+              // Show bounce dots when in "thinking" state (blue indicator):
+              // streaming (from either local state or agent push), not pending permission, not resuming
+              const sessionStreaming = isStreaming || !!activeSession?.isStreaming;
+              const showDots = sessionStreaming && !isResuming && !activeSession?.hasPendingInput;
               return showDots ? (
                 <div className="flex items-center gap-1.5 py-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:0ms]" />

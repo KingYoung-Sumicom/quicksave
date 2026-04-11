@@ -31,6 +31,7 @@ import { writeServiceState, removeServiceState } from './stateStore.js';
 import { IPC_VERSION, BUILD_ID, isDebugEnabled } from './types.js';
 import type { ServiceState, StatusResult, PairingInfoResult, RepoInfo, DebugResult } from './types.js';
 import { createMessage, type Message, type Repository } from '@sumicom/quicksave-shared';
+import { getSessionRegistry } from '../ai/sessionRegistry.js';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const PACKAGE_VERSION = '0.6.0';
@@ -131,6 +132,20 @@ export async function runDaemon(): Promise<void> {
   });
   claudeService.on('card-stream-end', (result) => {
     connection.sendToSession(result.sessionId, createMessage('claude:card-stream-end', result));
+
+    // Update session registry with cost/message count
+    const cwd = claudeService.getSessionCwd(result.sessionId);
+    if (cwd) {
+      const registry = getSessionRegistry();
+      const entry = registry.getEntry(cwd, result.sessionId);
+      if (entry) {
+        registry.updateEntry(cwd, result.sessionId, {
+          messageCount: (entry.messageCount ?? 0) + 1,
+          totalCostUsd: (entry.totalCostUsd ?? 0) + (result.totalCostUsd ?? 0),
+          lastAccessedAt: Date.now(),
+        });
+      }
+    }
   });
   claudeService.on('user-input-request', (request) => {
     const msg = createMessage('claude:user-input-request', request);
@@ -158,6 +173,9 @@ export async function runDaemon(): Promise<void> {
   // Init preferences from the last session's JSONL (best-effort, non-blocking)
   claudeService.initPreferences().catch(() => {});
 
+  // Init session registry (loads all entries from disk)
+  getSessionRegistry();
+
   // Track which session each peer is viewing.
   // Permission state is now carried directly on cards (via CardBuilder),
   // so getCards() returns cards with pendingInput already attached.
@@ -168,6 +186,10 @@ export async function runDaemon(): Promise<void> {
 
   messageHandler.onPeerUnsubscribed = (peerAddress, sessionId) => {
     connection.unsubscribePeerFromSession(peerAddress, sessionId);
+  };
+
+  messageHandler.onHistoryUpdated = (cwd, entry, action) => {
+    connection.broadcast(createMessage('session:history-updated', { cwd, entry, action }));
   };
 
   // Wire: incoming PWA messages → MessageHandler → response back to PWA

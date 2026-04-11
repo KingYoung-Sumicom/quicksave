@@ -65,9 +65,9 @@ const AUTO_APPROVE: Record<PermissionLevel, Set<string>> = {
     // Background tasks
     'TaskOutput', 'TaskStop',
   ]),
-  acceptEdits: new Set(['Edit', 'Write', 'NotebookEdit', 'TodoWrite', 'Agent', 'EnterWorktree', 'ExitWorktree']),
-  default:     new Set(['TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent']),
-  plan:        new Set(),
+  acceptEdits: new Set(['Edit', 'Write', 'NotebookEdit', 'TodoWrite', 'Agent', 'EnterWorktree', 'ExitWorktree', 'EnterPlanMode']),
+  default:     new Set(['TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent', 'EnterPlanMode']),
+  plan:        new Set(['EnterPlanMode']),
 };
 
 interface SessionIdRef {
@@ -445,7 +445,7 @@ export class ClaudeCodeService extends EventEmitter {
           // Wait for explicit user response (no timeout — user must act)
           const response = await responsePromise;
           if (response.action === 'deny') {
-            return { behavior: 'deny' as const, message: 'User denied permission' };
+            return { behavior: 'deny' as const, message: response.response || 'User denied permission' };
           }
 
           // For AskUserQuestion, inject user's answer into the tool input
@@ -681,12 +681,21 @@ export class ClaudeCodeService extends EventEmitter {
     return actualSessionId;
   }
 
-  cancelSession(sessionId: string): boolean {
+  async cancelSession(sessionId: string): Promise<boolean> {
     const ps = this.sessions.get(sessionId);
     if (!ps) return false;
     ps._cancelled = true;
     ps._promptQueue.length = 0; // drain queue
     ps.streaming = false;
+    // Interrupt the SDK stream so gen.next() resolves immediately
+    const gen = ps._streamGenerator as AsyncGenerator & { interrupt?: () => Promise<void> };
+    if (gen?.interrupt) {
+      try {
+        await gen.interrupt();
+      } catch (err) {
+        console.warn(`[cancel] interrupt failed for session=${sessionId}:`, err);
+      }
+    }
     return true;
   }
 
@@ -744,6 +753,10 @@ export class ClaudeCodeService extends EventEmitter {
     return this.sessions.has(sessionId);
   }
 
+  getSessionCwd(sessionId: string): string | undefined {
+    return this.sessions.get(sessionId)?.cwd;
+  }
+
   getActiveSessionCount(): number {
     return this.sessions.size;
   }
@@ -777,29 +790,42 @@ export class ClaudeCodeService extends EventEmitter {
     offset = 0,
     limit = 50,
   ): Promise<CardHistoryResponse> {
-    // Always use JSONL as the source of truth for history.
-    // Overlay pendingInput from in-memory state (only matters during permission prompts).
+    // Use JSONL as the base history source.
     const result = await buildCardsFromHistory(sessionId, cwd, offset, limit);
 
-    // Attach pendingInput to matching tool cards
-    const pendingByToolUseId = new Map<string, any>();
-    for (const [, pending] of this.pendingInputRequests) {
-      if (pending.request.sessionId === sessionId && pending.request.toolUseId) {
-        pendingByToolUseId.set(pending.request.toolUseId, {
-          sessionId: pending.request.sessionId,
-          requestId: pending.request.requestId,
-          inputType: pending.request.inputType,
-          title: pending.request.title,
-          message: pending.request.message,
-          options: pending.request.options,
-        });
+    // For active sessions with a cardBuilder, append live cards that aren't in JSONL yet.
+    // This covers in-flight tool calls (including pending permission requests) that the SDK
+    // hasn't written to JSONL because the turn is still in progress.
+    const ps = this.sessions.get(sessionId);
+    if (ps?.cardBuilder) {
+      const liveCards = ps.cardBuilder.getCards();
+      const existingIds = new Set(result.cards.map((c) => c.id));
+      const newLiveCards = liveCards.filter((c) => !existingIds.has(c.id));
+      if (newLiveCards.length > 0) {
+        result.cards.push(...newLiveCards);
+        result.total += newLiveCards.length;
       }
-    }
-    if (pendingByToolUseId.size > 0) {
-      for (const card of result.cards) {
-        if (card.type === 'tool_call' && (card as any).toolUseId) {
-          const pending = pendingByToolUseId.get((card as any).toolUseId);
-          if (pending) (card as any).pendingInput = pending;
+    } else {
+      // Cold session: overlay pendingInput from in-memory state (if any)
+      const pendingByToolUseId = new Map<string, any>();
+      for (const [, pending] of this.pendingInputRequests) {
+        if (pending.request.sessionId === sessionId && pending.request.toolUseId) {
+          pendingByToolUseId.set(pending.request.toolUseId, {
+            sessionId: pending.request.sessionId,
+            requestId: pending.request.requestId,
+            inputType: pending.request.inputType,
+            title: pending.request.title,
+            message: pending.request.message,
+            options: pending.request.options,
+          });
+        }
+      }
+      if (pendingByToolUseId.size > 0) {
+        for (const card of result.cards) {
+          if (card.type === 'tool_call' && (card as any).toolUseId) {
+            const pending = pendingByToolUseId.get((card as any).toolUseId);
+            if (pending) (card as any).pendingInput = pending;
+          }
         }
       }
     }

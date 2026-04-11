@@ -73,7 +73,17 @@ function PlainUserMessage({ content }: { content: string }) {
       <div
         className={`chat-markdown overflow-hidden transition-all ${collapsible && !expanded ? 'max-h-24' : ''}`}
       >
-        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeHighlight]}
+          components={{
+            table: ({ children }) => (
+              <div className="overflow-x-auto my-2">
+                <table className="w-max min-w-full">{children}</table>
+              </div>
+            ),
+          }}
+        >
           {content}
         </ReactMarkdown>
       </div>

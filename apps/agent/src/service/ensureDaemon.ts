@@ -24,6 +24,7 @@ const MAX_ATTACH_RETRIES = 3;
 const BASE_RETRY_DELAY_MS = 500;
 const DAEMON_READY_TIMEOUT_MS = 10_000;
 const DAEMON_READY_POLL_MS = 200;
+const MAX_SPAWN_ATTEMPTS = 2;
 
 export interface EnsureDaemonResult {
   client: IpcClient;
@@ -90,10 +91,21 @@ export async function ensureDaemon(): Promise<EnsureDaemonResult> {
 
 /**
  * Spawn a new daemon process in detached mode and wait for it to be ready.
+ * Retries once if the first attempt times out (cleans stale files between attempts).
  */
 async function startAndConnect(): Promise<EnsureDaemonResult> {
-  spawnDaemon();
-  return waitForDaemon();
+  for (let attempt = 1; attempt <= MAX_SPAWN_ATTEMPTS; attempt++) {
+    spawnDaemon();
+    try {
+      return await waitForDaemon();
+    } catch {
+      cleanStaleRuntime();
+      if (attempt < MAX_SPAWN_ATTEMPTS) {
+        console.warn(`Daemon startup timed out, retrying (${attempt}/${MAX_SPAWN_ATTEMPTS})...`);
+      }
+    }
+  }
+  throw new Error('Timed out waiting for daemon to start');
 }
 
 /**

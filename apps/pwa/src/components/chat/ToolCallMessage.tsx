@@ -62,23 +62,58 @@ function InlinePermissionActions({ request, onRespond }: {
   request: ClaudeUserInputRequestPayload;
   onRespond: (action: 'allow' | 'deny', response?: string) => void;
 }) {
+  const [showDenyReason, setShowDenyReason] = useState(false);
+  const [denyReason, setDenyReason] = useState('');
+
   return (
     <div className="mt-2 pt-2 border-t border-amber-500/20">
       <p className="text-sm text-amber-400/80 mb-2">{request.title}</p>
-      <div className="flex gap-2">
-        <button
-          onClick={() => onRespond('allow')}
-          className="flex-1 text-sm px-3 py-1.5 bg-green-600/80 hover:bg-green-500 rounded-lg transition-colors font-medium"
-        >
-          Allow
-        </button>
-        <button
-          onClick={() => onRespond('deny')}
-          className="flex-1 text-sm px-3 py-1.5 bg-red-600/60 hover:bg-red-500 rounded-lg transition-colors font-medium"
-        >
-          Deny
-        </button>
-      </div>
+      {showDenyReason ? (
+        <div className="space-y-2">
+          <input
+            type="text"
+            value={denyReason}
+            onChange={(e) => setDenyReason(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                onRespond('deny', denyReason.trim() || undefined);
+              }
+            }}
+            placeholder="Reason (optional)..."
+            className="w-full bg-slate-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-red-500 placeholder-slate-500"
+            autoFocus
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={() => onRespond('deny', denyReason.trim() || undefined)}
+              className="flex-1 text-sm px-3 py-1.5 bg-red-600/80 hover:bg-red-500 rounded-lg transition-colors font-medium"
+            >
+              Deny
+            </button>
+            <button
+              onClick={() => setShowDenyReason(false)}
+              className="text-sm px-3 py-1.5 text-slate-400 hover:text-slate-200 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowDenyReason(true)}
+            className="flex-1 text-sm px-3 py-1.5 bg-red-600/60 hover:bg-red-500 rounded-lg transition-colors font-medium"
+          >
+            Deny
+          </button>
+          <button
+            onClick={() => onRespond('allow')}
+            className="flex-1 text-sm px-3 py-1.5 bg-green-600/80 hover:bg-green-500 rounded-lg transition-colors font-medium"
+          >
+            Allow
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -416,11 +451,12 @@ function InlineToolResult({ content, toolName, suppressContent, expanded }: {
   );
 }
 
-export function ToolCallMessage({ toolName, toolInput, content, toolResultContent, pendingInputRequest, onRespond }: {
+export function ToolCallMessage({ toolName, toolInput, content, toolResultContent, toolResultIsError, pendingInputRequest, onRespond }: {
   toolName?: string;
   toolInput?: string;
   content: string;
   toolResultContent?: string;
+  toolResultIsError?: boolean;
   pendingInputRequest?: ClaudeUserInputRequestPayload;
   onRespond?: (action: 'allow' | 'deny', response?: string) => void;
 }) {
@@ -503,7 +539,7 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
           {toolName === 'AskUserQuestion'
             ? <AskUserQuestionToolView input={parsedInput} answers={(parsedResult as any)?.answers} />
             : toolName === 'ExitPlanMode'
-              ? <ExitPlanModeToolView input={parsedInput} plan={parsedInput.plan as string} />
+              ? <ExitPlanModeToolView input={parsedInput} plan={parsedInput.plan as string} isRejected={toolResultIsError} />
               : ToolView
                 ? <ToolView input={parsedInput} headerSuffix={isInlineResultTool ? chevronButton : undefined} />
                 : <FallbackToolView toolName={toolName} content={toolInput || content} />}

@@ -106,6 +106,14 @@ export type MessageType =
   | 'session:set-config'           // pwa-request: set a key on session config
   | 'session:set-config:response'  // agent-response: set-config ack with full config
   | 'session:config-updated'       // agent-push: session config changed
+  // Session registry (history)
+  | 'session:list-history'           // pwa-request: list session history
+  | 'session:list-history:response'  // agent-response: session history list
+  | 'session:update-history'         // pwa-request: update session history entry
+  | 'session:update-history:response' // agent-response: update ack
+  | 'session:delete-history'         // pwa-request: delete session history entry
+  | 'session:delete-history:response' // agent-response: delete ack
+  | 'session:history-updated'        // agent-push: session history changed
   | 'error';
 
 // ============================================================================
@@ -255,6 +263,62 @@ export interface SessionSetConfigResponsePayload {
 export interface SessionConfigUpdatedPayload {
   sessionId: string;
   config: Record<string, ConfigValue>;
+}
+
+// ============================================================================
+// Session Registry (History) Types
+// ============================================================================
+
+export interface SessionRegistryEntry {
+  sessionId: string;
+  cwd: string;
+  repoName?: string;
+  gitBranch?: string;
+  title?: string;
+  firstPrompt?: string;
+  createdAt: number;
+  lastAccessedAt: number;
+  messageCount?: number;
+  totalCostUsd?: number;
+  pinned?: boolean;
+  archived?: boolean;
+}
+
+export interface SessionListHistoryRequestPayload {
+  cwd?: string;
+}
+
+export interface SessionListHistoryResponsePayload {
+  entries: SessionRegistryEntry[];
+  error?: string;
+}
+
+export interface SessionUpdateHistoryRequestPayload {
+  sessionId: string;
+  cwd: string;
+  updates: Partial<Pick<SessionRegistryEntry, 'title' | 'pinned' | 'archived'>>;
+}
+
+export interface SessionUpdateHistoryResponsePayload {
+  success: boolean;
+  entry?: SessionRegistryEntry;
+  error?: string;
+}
+
+export interface SessionDeleteHistoryRequestPayload {
+  sessionId: string;
+  cwd: string;
+}
+
+export interface SessionDeleteHistoryResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+export interface SessionHistoryUpdatedPayload {
+  cwd: string;
+  entry: SessionRegistryEntry;
+  action: 'upsert' | 'delete';
 }
 
 export interface ClaudeActiveSession {

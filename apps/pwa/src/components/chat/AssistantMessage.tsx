@@ -15,7 +15,17 @@ export function AssistantMessage({ content, isLast }: { content: string; isLast:
   return (
     <div className="py-1 w-full text-sm">
       <div className="chat-markdown">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          rehypePlugins={[rehypeHighlight]}
+          components={{
+            table: ({ children }) => (
+              <div className="overflow-x-auto my-2">
+                <table className="w-max min-w-full">{children}</table>
+              </div>
+            ),
+          }}
+        >
           {content}
         </ReactMarkdown>
         {isActivelyStreaming && (

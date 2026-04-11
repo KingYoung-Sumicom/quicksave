@@ -101,4 +101,8 @@ export const REQUEST_RESPONSE_MAP: Record<string, string> = {
   'claude:get-messages': 'claude:get-messages:response',
   'claude:get-preferences': 'claude:get-preferences:response',
   'claude:set-preferences': 'claude:set-preferences:response',
+  // Session registry (history)
+  'session:list-history': 'session:list-history:response',
+  'session:update-history': 'session:update-history:response',
+  'session:delete-history': 'session:delete-history:response',
 };
