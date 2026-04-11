@@ -26,6 +26,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.71.2
         version: 0.71.2(zod@4.3.6)
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.3.6)
       '@sumicom/quicksave-shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -41,6 +44,9 @@ importers:
       ws:
         specifier: ^8.16.0
         version: 8.19.0
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
     devDependencies:
       '@types/node':
         specifier: ^20.11.0

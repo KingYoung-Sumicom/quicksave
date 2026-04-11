@@ -1154,14 +1154,14 @@ export class MessageHandler {
     message: Message<ClaudeStartRequestPayload>,
     peerAddress: string,
   ): Promise<Message<ClaudeStartResponsePayload>> {
-    const { prompt, cwd: payloadCwd, allowedTools, systemPrompt, model, permissionMode } = message.payload;
+    const { prompt, cwd: payloadCwd, allowedTools, systemPrompt, model, permissionMode, sandboxed } = message.payload;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const streamId = generateMessageId();
-    console.log(`[claude:start] cwd=${cwd} prompt=${prompt.slice(0, 80)}`);
+    console.log(`[claude:start] cwd=${cwd} prompt=${prompt.slice(0, 80)}${sandboxed ? ' [sandboxed]' : ''}`);
 
     try {
       const sessionId = await this.claudeService.startSession({
-        prompt, cwd, streamId, allowedTools, systemPrompt, model, permissionMode,
+        prompt, cwd, streamId, allowedTools, systemPrompt, model, permissionMode, sandboxed,
       });
 
       console.log(`[claude:start] session created: ${sessionId}`);

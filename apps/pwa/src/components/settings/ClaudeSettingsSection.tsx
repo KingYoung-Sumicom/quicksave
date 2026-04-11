@@ -1,10 +1,11 @@
-import { clsx } from 'clsx';
 import type { ConfigValue } from '@sumicom/quicksave-shared';
 import { DEFAULT_MODEL, DEFAULT_PERMISSION_MODE, DEFAULT_REASONING_EFFORT } from '@sumicom/quicksave-shared';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
 import { MODELS, PERMISSION_MODES } from '../../lib/claudePresets';
+import { ButtonGroup } from '../ui/ButtonGroup';
+import { ToggleSwitch } from '../ui/ToggleSwitch';
 
-const REASONING_EFFORT_OPTIONS: { value: 'low' | 'medium' | 'high' | 'max'; label: string; description: string }[] = [
+const REASONING_EFFORT_OPTIONS: { value: string; label: string; description: string }[] = [
   { value: 'low', label: 'Low', description: 'Minimal thinking, fastest responses' },
   { value: 'medium', label: 'Medium', description: 'Moderate thinking' },
   { value: 'high', label: 'High', description: 'Deep thinking' },
@@ -24,76 +25,42 @@ export function ClaudeSettingsSection({ sessionId, onSetConfig }: ClaudeSettings
   const selectedModel = (config['model'] as string | undefined) ?? DEFAULT_MODEL;
   const selectedPermissionMode = (config['permissionMode'] as string | undefined) ?? DEFAULT_PERMISSION_MODE;
   const selectedReasoningEffort = (config['reasoningEffort'] as string | undefined) ?? DEFAULT_REASONING_EFFORT;
+  const sandboxed = (config['sandboxed'] as boolean | undefined) ?? false;
 
   const supportsReasoning = selectedModel.startsWith('claude-');
 
   return (
     <div className="space-y-5">
-      {/* Model */}
-      <div className="space-y-1.5">
-        <p className="text-sm text-slate-300">Model</p>
-        <div className="flex gap-1">
-          {MODELS.map((m) => (
-            <button
-              key={m.value}
-              onClick={() => onSetConfig?.('model', m.value)}
-              className={clsx(
-                'flex-1 text-sm px-3 py-2 rounded-md transition-colors',
-                selectedModel === m.value
-                  ? 'bg-blue-600/20 text-blue-300 border border-blue-500/30'
-                  : 'text-slate-300 hover:bg-slate-700'
-              )}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <ButtonGroup
+        label="Model"
+        options={MODELS}
+        value={selectedModel}
+        onSelect={(m) => onSetConfig?.('model', m.value)}
+      />
 
-      {/* Reasoning effort — Claude only */}
       {supportsReasoning && (
-        <div className="space-y-1.5">
-          <p className="text-sm text-slate-300">Reasoning effort</p>
-          <div className="flex gap-1">
-            {REASONING_EFFORT_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => onSetConfig?.('reasoningEffort', opt.value)}
-                title={opt.description}
-                className={clsx(
-                  'flex-1 text-sm px-3 py-2 rounded-md transition-colors',
-                  selectedReasoningEffort === opt.value
-                    ? 'bg-blue-600/20 text-blue-300 border border-blue-500/30'
-                    : 'text-slate-300 hover:bg-slate-700'
-                )}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </div>
+        <ButtonGroup
+          label="Reasoning effort"
+          options={REASONING_EFFORT_OPTIONS}
+          value={selectedReasoningEffort}
+          onSelect={(opt) => onSetConfig?.('reasoningEffort', opt.value)}
+        />
       )}
 
-      {/* Permission Mode */}
-      <div className="space-y-1.5">
-        <p className="text-sm text-slate-300">Permission</p>
-        <div className="grid grid-cols-2 gap-1">
-          {PERMISSION_MODES.map((p) => (
-            <button
-              key={p.value}
-              onClick={() => onSetConfig?.('permissionMode', p.value)}
-              className={clsx(
-                'text-sm px-3 py-2 rounded-md transition-colors',
-                selectedPermissionMode === p.value
-                  ? 'bg-blue-600/20 text-blue-300 border border-blue-500/30'
-                  : 'text-slate-300 hover:bg-slate-700'
-              )}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <ButtonGroup
+        label="Permission"
+        options={PERMISSION_MODES}
+        value={selectedPermissionMode}
+        onSelect={(p) => onSetConfig?.('permissionMode', p.value)}
+        layout="grid-2"
+      />
+
+      <ToggleSwitch
+        label="Sandbox"
+        description="Restrict writes to project directory"
+        enabled={sandboxed}
+        onChange={(v) => onSetConfig?.('sandboxed', v)}
+      />
     </div>
   );
 }

@@ -1,7 +1,5 @@
 import { useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
+import { ChatMarkdown } from './ChatMarkdown';
 
 const COLLAPSE_LINE_THRESHOLD = 4;
 
@@ -73,19 +71,7 @@ function PlainUserMessage({ content }: { content: string }) {
       <div
         className={`chat-markdown overflow-hidden transition-all ${collapsible && !expanded ? 'max-h-24' : ''}`}
       >
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeHighlight]}
-          components={{
-            table: ({ children }) => (
-              <div className="overflow-x-auto my-2">
-                <table className="w-max min-w-full">{children}</table>
-              </div>
-            ),
-          }}
-        >
-          {content}
-        </ReactMarkdown>
+        <ChatMarkdown>{content}</ChatMarkdown>
       </div>
       {collapsible && (
         <button

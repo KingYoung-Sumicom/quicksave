@@ -50,6 +50,20 @@ Components that display information inside the chat view (tool results, plan vie
 
 ---
 
+### All Enter-to-submit must guard IME composition
+
+Every `onKeyDown` handler that submits on Enter must check `!e.nativeEvent.isComposing`.
+
+```ts
+if (e.key === 'Enter' && !e.nativeEvent.isComposing) { submit(); }
+```
+
+**Why:** CJK input methods (Chinese, Japanese, Korean) use Enter to confirm a character during composition. Without the guard, pressing Enter to pick a candidate character fires the submit action prematurely, making the input unusable for CJK users.
+
+**How to apply:** Search for `e.key === 'Enter'` across the PWA and verify every occurrence includes `!e.nativeEvent.isComposing`. The main chat textarea in `ClaudePanel.tsx` already does this correctly — follow the same pattern everywhere else.
+
+---
+
 ### No scrollbars anywhere inside the chat view
 
 No element inside the chat view may render a visible scrollbar. This means avoiding `overflow-y-auto`, `overflow-y-scroll`, or `overflow-auto` on any element that is a descendant of the messages list — including collapsible blocks, expanded previews, `<pre>` tags, and inline result views.

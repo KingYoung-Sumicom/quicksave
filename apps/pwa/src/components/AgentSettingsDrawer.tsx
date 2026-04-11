@@ -25,7 +25,10 @@ export function AgentSettingsDrawer({
   onUpdateAgent,
 }: AgentSettingsDrawerProps) {
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
-  const isStreaming = useClaudeStore((s) => s.isStreaming);
+  const localIsStreaming = useClaudeStore((s) => s.isStreaming);
+  const sessions = useClaudeStore((s) => s.sessions);
+  const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
+  const isStreaming = localIsStreaming || !!activeSession?.isStreaming;
 
   const agentVersion = useConnectionStore((s) => s.agentVersion);
   const latestVersion = useConnectionStore((s) => s.latestVersion);

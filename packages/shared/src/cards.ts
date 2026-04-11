@@ -165,6 +165,8 @@ export interface CardStreamEnd {
   sessionId: string;
   success: boolean;
   error?: string;
+  /** True when the turn was stopped by user cancel/interrupt */
+  interrupted?: boolean;
   totalCostUsd?: number;
   tokenUsage?: { input: number; output: number };
 }

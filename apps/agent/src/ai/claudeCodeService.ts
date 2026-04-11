@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
-import { resolve } from 'path';
+import { resolve, join, dirname } from 'path';
+import { readFile, writeFile, mkdir } from 'fs/promises';
 import {
   unstable_v2_createSession,
   unstable_v2_resumeSession,
@@ -19,8 +20,9 @@ import type {
   CardHistoryResponse,
   CardStreamEnd,
 } from '@sumicom/quicksave-shared';
-import { DEFAULT_MODEL } from '@sumicom/quicksave-shared';
+import { DEFAULT_MODEL, matchAllowPattern } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder, buildCardsFromHistory } from './cardBuilder.js';
+import { SANDBOX_MCP_PREFIX } from './sandboxMcp.js';
 
 /**
  * Events emitted by ClaudeCodeService:
@@ -82,6 +84,7 @@ interface PersistentSession {
   cwd: string;
   streaming: boolean;
   permissionLevel: PermissionLevel;
+  sandboxed: boolean;
   cardBuilder: StreamCardBuilder | null;
   /** Queued prompts waiting to be processed after current turn completes */
   _promptQueue: Array<{ prompt: string; streamId: string }>;
@@ -120,9 +123,12 @@ interface PendingUserInput {
 export class ClaudeCodeService extends EventEmitter {
   private sessions: Map<string, PersistentSession> = new Map();
   private sessionPermissions: Map<string, PermissionLevel> = new Map(); // persists across active/inactive
+  private sessionSandboxed: Map<string, boolean> = new Map(); // persists across active/inactive
   private sessionConfigs: Map<string, Record<string, ConfigValue>> = new Map(); // generic per-session config
   private pendingInputRequests: Map<string, PendingUserInput> = new Map();
   private requestCounter = 0;
+  /** In-memory allow patterns added via wildcard editor — effective immediately without session reload. */
+  private runtimeAllowPatterns: string[] = [];
   private preferences: ClaudePreferences = {
     model: DEFAULT_MODEL,
   };
@@ -202,6 +208,10 @@ export class ClaudeCodeService extends EventEmitter {
       this.setPreferences({ reasoningEffort: value as ClaudePreferences['reasoningEffort'] });
     } else if (key === 'permissionMode' && typeof value === 'string') {
       this.setPermissionLevel(sessionId, value as PermissionLevel);
+    } else if (key === 'sandboxed' && typeof value === 'boolean') {
+      this.sessionSandboxed.set(sessionId, value);
+      const ps = this.sessions.get(sessionId);
+      if (ps) ps.sandboxed = value;
     }
 
     this.emit('session-config-updated', { sessionId, config: next });
@@ -219,6 +229,7 @@ export class ClaudeCodeService extends EventEmitter {
       isStreaming: ps?.streaming ?? false,
       hasPendingInput,
       permissionMode: ps?.permissionLevel,
+      sandboxed: ps?.sandboxed ?? this.sessionSandboxed.get(sessionId) ?? false,
     });
   }
 
@@ -331,6 +342,7 @@ export class ClaudeCodeService extends EventEmitter {
       permissionMode?: string;
       resumeSessionId?: string;
       sessionIdRef?: SessionIdRef;
+      sandboxed?: boolean;
     }
   ): SDKSession {
     const originalCwd = process.cwd();
@@ -341,7 +353,11 @@ export class ClaudeCodeService extends EventEmitter {
       // Everything else goes through permissionMode → canUseTool for dynamic control.
       const sessionOpts = {
         model: opts.model ?? DEFAULT_MODEL,
-        allowedTools: opts.allowedTools ?? ['Read', 'Glob', 'Grep'],
+        allowedTools: [
+          ...(opts.allowedTools ?? ['Read', 'Glob', 'Grep']),
+          // Auto-approve all tools from the sandbox MCP server
+          `${SANDBOX_MCP_PREFIX}*`,
+        ],
         permissionMode: 'default' as const,
         includePartialMessages: true,
         settingSources: ['user' as const, 'project' as const, 'local' as const],
@@ -358,6 +374,16 @@ export class ClaudeCodeService extends EventEmitter {
             resolvedSessionId = await opts.sessionIdRef.promise;
           }
           resolvedSessionId = resolvedSessionId ?? 'unknown';
+
+          // Sandbox MCP tools: auto-approve when sandbox is on, auto-deny when off
+          if (toolName.startsWith(SANDBOX_MCP_PREFIX)) {
+            const ps2 = resolvedSessionId !== 'unknown' ? this.sessions.get(resolvedSessionId) : undefined;
+            const isSandboxed = ps2?.sandboxed ?? this.sessionSandboxed.get(resolvedSessionId) ?? false;
+            if (isSandboxed) {
+              return { behavior: 'allow' as const, updatedInput: input };
+            }
+            return { behavior: 'deny' as const, message: 'Sandbox mode is not enabled for this session. Enable it in session settings to use SandboxBash.' };
+          }
 
           // Check runtime permission level — auto-approve if tool is in the allow set
           const ps = resolvedSessionId !== 'unknown' ? this.sessions.get(resolvedSessionId) : undefined;
@@ -383,6 +409,12 @@ export class ClaudeCodeService extends EventEmitter {
               return { behavior: 'allow' as const, updatedInput: input };
             }
           }
+
+          // Check in-memory runtime allow patterns (added via wildcard editor)
+          if (this.runtimeAllowPatterns.some((p) => matchAllowPattern(p, toolName, input))) {
+            return { behavior: 'allow' as const, updatedInput: input };
+          }
+
           const requestId = `perm-${++this.requestCounter}`;
 
           // AskUserQuestion: forward as question type with options
@@ -463,6 +495,7 @@ export class ClaudeCodeService extends EventEmitter {
           return { behavior: 'allow' as const, updatedInput: input };
         },
       };
+
       if (opts.resumeSessionId) {
         return unstable_v2_resumeSession(opts.resumeSessionId, sessionOpts);
       }
@@ -504,9 +537,48 @@ export class ClaudeCodeService extends EventEmitter {
       if (cardEvt) this.emit('card-event', cardEvt);
     }
 
+    // Persist allow pattern to settings.local.json if provided
+    if (response.allowPattern && ps?.cwd) {
+      this.persistAllowPattern(ps.cwd, response.allowPattern).catch((err) => {
+        console.error('[persistAllowPattern] failed:', err);
+      });
+    }
+
     this.emit('user-input-resolved', { requestId: response.requestId, sessionId: pending.request.sessionId });
     this.emitSessionUpdate(pending.request.sessionId);
     return true;
+  }
+
+  /**
+   * Write a wildcard allow pattern to the project's .claude/settings.local.json
+   * and add it to the in-memory runtime allow list for immediate effect.
+   */
+  private async persistAllowPattern(cwd: string, pattern: string): Promise<void> {
+    // Add to runtime list immediately so it takes effect in the current session
+    if (!this.runtimeAllowPatterns.includes(pattern)) {
+      this.runtimeAllowPatterns.push(pattern);
+    }
+
+    const settingsPath = join(cwd, '.claude', 'settings.local.json');
+    let settings: Record<string, unknown> = {};
+    try {
+      settings = JSON.parse(await readFile(settingsPath, 'utf-8'));
+    } catch {
+      // File doesn't exist or invalid JSON — start fresh
+    }
+    if (!settings.permissions || typeof settings.permissions !== 'object') {
+      settings.permissions = {};
+    }
+    const perms = settings.permissions as Record<string, unknown>;
+    if (!Array.isArray(perms.allow)) {
+      perms.allow = [];
+    }
+    const allowList = perms.allow as string[];
+    if (allowList.includes(pattern)) return; // Already exists
+    allowList.push(pattern);
+    await mkdir(dirname(settingsPath), { recursive: true });
+    await writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+    console.log(`[persistAllowPattern] added "${pattern}" to ${settingsPath}`);
   }
 
   /**
@@ -539,6 +611,7 @@ export class ClaudeCodeService extends EventEmitter {
     systemPrompt?: string;
     model?: string;
     permissionMode?: string;
+    sandboxed?: boolean;
   }): Promise<string> {
     const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
     const level: PermissionLevel = validModes.includes(opts.permissionMode as any)
@@ -553,11 +626,14 @@ export class ClaudeCodeService extends EventEmitter {
       model: opts.model,
       permissionMode: opts.permissionMode,
       sessionIdRef,
+      sandboxed: opts.sandboxed,
     });
 
-    const prompt = opts.systemPrompt
-      ? `[System context: ${opts.systemPrompt}]\n\n${opts.prompt}`
-      : opts.prompt;
+    const sandboxNote = opts.sandboxed
+      ? '[Sandbox mode: ON — use SandboxBash from quicksave-sandbox MCP for shell commands. Writes are restricted to project directory.]'
+      : '[Sandbox mode: OFF — SandboxBash is available but disabled. Use the standard Bash tool for shell commands.]';
+    const systemParts = [sandboxNote, opts.systemPrompt].filter(Boolean).join('\n');
+    const prompt = `[System context: ${systemParts}]\n\n${opts.prompt}`;
 
     await session.send(prompt);
 
@@ -576,6 +652,13 @@ export class ClaudeCodeService extends EventEmitter {
         sessionIdRef.current = id;
         deferred.resolve(id);
         this.sessionPermissions.set(id, level);
+        if (opts.sandboxed) this.sessionSandboxed.set(id, true);
+        // Seed session config so PWA can read initial values
+        this.sessionConfigs.set(id, {
+          model: opts.model ?? DEFAULT_MODEL,
+          permissionMode: level,
+          sandboxed: !!opts.sandboxed,
+        });
         this.sessions.set(id, {
           session,
           sessionId: id,
@@ -583,6 +666,7 @@ export class ClaudeCodeService extends EventEmitter {
           cwd: opts.cwd,
           streaming: true,
           permissionLevel: level,
+          sandboxed: !!opts.sandboxed,
           cardBuilder: null,
           _promptQueue: [],
           _cancelled: false,
@@ -630,10 +714,12 @@ export class ClaudeCodeService extends EventEmitter {
     deferred.resolve(opts.sessionId); // already known for resume
 
     const restoredLevel = this.sessionPermissions.get(opts.sessionId) ?? 'acceptEdits' as PermissionLevel;
+    const restoredSandboxed = this.sessionSandboxed.get(opts.sessionId) ?? false;
 
     const session = this.createSessionWithCwd(opts.cwd, opts.sessionId, {
       resumeSessionId: opts.sessionId,
       sessionIdRef,
+      sandboxed: restoredSandboxed,
     });
 
     await session.send(opts.prompt);
@@ -653,6 +739,10 @@ export class ClaudeCodeService extends EventEmitter {
         }
         sessionIdRef.current = id;
         this.sessionPermissions.set(id, restoredLevel);
+        if (restoredSandboxed) this.sessionSandboxed.set(id, true);
+        // Merge sandboxed into session config (preserve any existing keys)
+        const prevConfig = this.sessionConfigs.get(id) ?? {};
+        this.sessionConfigs.set(id, { ...prevConfig, permissionMode: restoredLevel, sandboxed: restoredSandboxed });
         this.sessions.set(id, {
           session,
           sessionId: id,
@@ -660,6 +750,7 @@ export class ClaudeCodeService extends EventEmitter {
           cwd: opts.cwd,
           streaming: true,
           permissionLevel: restoredLevel,
+          sandboxed: restoredSandboxed,
           cardBuilder: null,
           _promptQueue: [],
           _cancelled: false,
@@ -685,9 +776,9 @@ export class ClaudeCodeService extends EventEmitter {
     const ps = this.sessions.get(sessionId);
     if (!ps) return false;
     ps._cancelled = true;
-    ps._promptQueue.length = 0; // drain queue
-    ps.streaming = false;
-    // Interrupt the SDK stream so gen.next() resolves immediately
+    // Don't set streaming=false here — let the turn loop handle it after SDK yields result.
+    // Don't drain queue here — done in processTurnLoop after the interrupted turn ends.
+    // Interrupt the SDK stream so it aborts in-flight tools and yields a result message.
     const gen = ps._streamGenerator as AsyncGenerator & { interrupt?: () => Promise<void> };
     if (gen?.interrupt) {
       try {
@@ -721,7 +812,7 @@ export class ClaudeCodeService extends EventEmitter {
     return this.sessions.get(sessionId)?.permissionLevel ?? 'acceptEdits';
   }
 
-  getActiveSessions(): { sessionId: string; cwd: string; isStreaming: boolean; hasPendingInput: boolean; permissionMode: string }[] {
+  getActiveSessions(): { sessionId: string; cwd: string; isStreaming: boolean; hasPendingInput: boolean; permissionMode: string; sandboxed?: boolean }[] {
     const pendingSessionIds = new Set(
       Array.from(this.pendingInputRequests.values()).map((p) => p.request.sessionId)
     );
@@ -731,6 +822,7 @@ export class ClaudeCodeService extends EventEmitter {
       isStreaming: ps.streaming,
       hasPendingInput: pendingSessionIds.has(id),
       permissionMode: ps.permissionLevel,
+      sandboxed: ps.sandboxed || undefined,
     }));
   }
 
@@ -898,7 +990,7 @@ export class ClaudeCodeService extends EventEmitter {
         }
         let turnDone = false;
         try {
-          while (!turnDone && !ps._cancelled) {
+          while (!turnDone) {
             const { value: message, done } = await gen.next();
             if (done) { turnDone = true; break; }
 
@@ -1008,15 +1100,22 @@ export class ClaudeCodeService extends EventEmitter {
               }
               flushText();
               const result = message as any;
-              console.log(`[stream] result session=${sessionId} subtype=${result.subtype} cost=$${result.total_cost_usd?.toFixed(4) ?? '?'}`);
+              const terminalReason: string | undefined = result.terminal_reason;
+              const interrupted = terminalReason === 'aborted_tools' || terminalReason === 'aborted_streaming';
+              console.log(`[stream] result session=${sessionId} subtype=${result.subtype} terminal=${terminalReason ?? '-'} cost=$${result.total_cost_usd?.toFixed(4) ?? '?'}`);
+
+              if (interrupted) {
+                emitCard(cb.systemMessage('User interrupted'));
+              }
 
               const streamEnd: CardStreamEnd = {
                 streamId,
                 sessionId,
-                success: result.subtype === 'success',
-                error: result.subtype !== 'success'
+                success: result.subtype === 'success' && !interrupted,
+                error: (result.subtype !== 'success' && !interrupted)
                   ? (result.errors?.join('; ') || `Session ended: ${result.subtype}`)
                   : undefined,
+                interrupted,
                 totalCostUsd: result.total_cost_usd,
                 tokenUsage: result.usage
                   ? { input: result.usage.input_tokens, output: result.usage.output_tokens }
@@ -1036,6 +1135,12 @@ export class ClaudeCodeService extends EventEmitter {
         // Turn done — finalize text, keep cardBuilder (accumulates across turns)
         const finalizeEvent = cb.finalizeAssistantText();
         if (finalizeEvent) emitCard(finalizeEvent);
+
+        // After interrupt, drain the queue so cancelled prompts don't start new turns
+        if (ps._cancelled) {
+          ps._promptQueue.length = 0;
+        }
+
         ps.streaming = false;
         this.emitSessionUpdate(sessionId);
       }

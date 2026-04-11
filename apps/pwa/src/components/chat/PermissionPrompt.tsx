@@ -1,14 +1,42 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import type { ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';
+import { generateAllowPattern } from '@sumicom/quicksave-shared';
+import { WildcardEditorModal } from './WildcardEditorModal';
+import { ActionButtons } from '../ui/ActionButtons';
 
 interface PermissionPromptProps {
   request: ClaudeUserInputRequestPayload;
-  onRespond: (action: 'allow' | 'deny', response?: string) => void;
+  onRespond: (action: 'allow' | 'deny', response?: string, allowPattern?: string) => void;
 }
 
 export function PermissionPrompt({ request, onRespond }: PermissionPromptProps) {
   const [textInput, setTextInput] = useState('');
+  const [showWildcardEditor, setShowWildcardEditor] = useState(false);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const didLongPress = useRef(false);
   const isPermission = request.inputType === 'permission';
+
+  const startLongPress = useCallback(() => {
+    didLongPress.current = false;
+    longPressTimer.current = setTimeout(() => {
+      didLongPress.current = true;
+      setShowWildcardEditor(true);
+    }, 500);
+  }, []);
+
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }, []);
+
+  const handleAllowClick = useCallback(() => {
+    cancelLongPress();
+    if (!didLongPress.current) {
+      onRespond('allow');
+    }
+  }, [cancelLongPress, onRespond]);
 
   return (
     <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 space-y-2">
@@ -57,7 +85,7 @@ export function PermissionPrompt({ request, onRespond }: PermissionPromptProps) 
             value={textInput}
             onChange={(e) => setTextInput(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && textInput.trim()) {
+              if (e.key === 'Enter' && !e.nativeEvent.isComposing && textInput.trim()) {
                 onRespond('allow', textInput.trim());
               }
             }}
@@ -77,20 +105,33 @@ export function PermissionPrompt({ request, onRespond }: PermissionPromptProps) 
 
       {/* Allow/Deny buttons for permission type */}
       {isPermission && (
-        <div className="flex gap-2 mt-2">
-          <button
-            onClick={() => onRespond('allow')}
-            className="flex-1 text-xs px-3 py-1.5 bg-green-600 hover:bg-green-500 rounded-md transition-colors font-medium"
-          >
-            Allow
-          </button>
-          <button
-            onClick={() => onRespond('deny')}
-            className="flex-1 text-xs px-3 py-1.5 bg-red-600/80 hover:bg-red-500 rounded-md transition-colors font-medium"
-          >
-            Deny
-          </button>
-        </div>
+        <ActionButtons buttons={[
+          {
+            label: 'Allow',
+            variant: 'confirm',
+            onClick: handleAllowClick,
+            onMouseDown: startLongPress,
+            onMouseUp: handleAllowClick,
+            onMouseLeave: cancelLongPress,
+            onTouchStart: startLongPress,
+            onTouchEnd: handleAllowClick,
+            onTouchCancel: cancelLongPress,
+          },
+          { label: 'Deny', variant: 'danger', onClick: () => onRespond('deny') },
+        ]} />
+      )}
+
+      {showWildcardEditor && request.toolName && request.toolInput && (
+        <WildcardEditorModal
+          toolName={request.toolName}
+          toolInput={request.toolInput}
+          defaultPattern={generateAllowPattern(request.toolName, request.toolInput)}
+          onConfirm={(pattern) => {
+            setShowWildcardEditor(false);
+            onRespond('allow', undefined, pattern);
+          }}
+          onCancel={() => setShowWildcardEditor(false)}
+        />
       )}
     </div>
   );

@@ -1,7 +1,5 @@
 import { useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
+import { ChatMarkdown } from '../ChatMarkdown';
 
 export function EnterPlanModeToolView() {
   return <span className="text-indigo-400">Entering plan mode</span>;
@@ -33,17 +31,7 @@ export function ExitPlanModeToolView({ input, plan, isRejected }: {
       </span>
       {plan && (
         <div className="mt-2 chat-markdown plan-markdown">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeHighlight]}
-            components={{
-              table: ({ children }) => (
-                <div className="overflow-x-auto my-2">
-                  <table className="w-max min-w-full">{children}</table>
-                </div>
-              ),
-            }}
-          >{plan}</ReactMarkdown>
+          <ChatMarkdown>{plan}</ChatMarkdown>
         </div>
       )}
       {allowedPrompts.length > 0 && (
@@ -80,17 +68,7 @@ export function ExitPlanModeInteractiveView({ input, plan, onRespond }: {
       <span className="text-indigo-400 font-medium">Plan for review</span>
       {plan && (
         <div className="mt-2 chat-markdown plan-markdown">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeHighlight]}
-            components={{
-              table: ({ children }) => (
-                <div className="overflow-x-auto my-2">
-                  <table className="w-max min-w-full">{children}</table>
-                </div>
-              ),
-            }}
-          >{plan}</ReactMarkdown>
+          <ChatMarkdown>{plan}</ChatMarkdown>
         </div>
       )}
       {allowedPrompts.length > 0 && (
@@ -116,7 +94,7 @@ export function ExitPlanModeInteractiveView({ input, plan, onRespond }: {
               value={rejectMessage}
               onChange={(e) => setRejectMessage(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && rejectMessage.trim()) {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing && rejectMessage.trim()) {
                   onRespond('deny', rejectMessage.trim());
                 }
               }}

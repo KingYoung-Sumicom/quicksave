@@ -7,6 +7,8 @@ import { StatusDot, sessionStatusKey } from './SessionStatusBadge';
 import { CardRenderer } from './chat/CardRenderer';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
 import { MODELS, PERMISSION_MODES, AGENT_TYPES, type AgentType } from '../lib/claudePresets';
+import { ButtonGroup } from './ui/ButtonGroup';
+import { ToggleSwitch } from './ui/ToggleSwitch';
 
 const REASONING_EFFORTS = [
   { value: 'low', label: 'Low' },
@@ -15,7 +17,7 @@ const REASONING_EFFORTS = [
   { value: 'max', label: 'Max' },
 ];
 
-type StartSessionOpts = { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string };
+type StartSessionOpts = { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean };
 
 interface ClaudePanelProps {
   onSelectSession?: (sessionId: string) => void;
@@ -59,6 +61,7 @@ export function ClaudePanel({
     promptInput,
     selectedModel,
     selectedPermissionMode,
+    sandboxEnabled,
     setPromptInput,
     setActiveSession,
     clearCards,
@@ -166,6 +169,15 @@ export function ClaudePanel({
     const container = chatContainerRef.current;
     if (!container) return;
     if (isAtBottomRef.current) {
+      // If the last card has a pending request, scroll to its top so the user sees it fully
+      const lastCard = cards[cards.length - 1];
+      if (lastCard?.pendingInput) {
+        const el = container.querySelector(`[data-card-id="${lastCard.id}"]`);
+        if (el) {
+          el.scrollIntoView({ block: 'start' });
+          return;
+        }
+      }
       container.scrollTop = container.scrollHeight;
     }
   }, [cards, isStreaming]);
@@ -212,13 +224,14 @@ export function ClaudePanel({
       await onStartSession(prompt, {
         model: selectedModel,
         permissionMode: selectedPermissionMode,
+        sandboxed: sandboxEnabled || undefined,
         ...(selectedAgentType.allowedTools !== undefined ? { allowedTools: selectedAgentType.allowedTools } : {}),
         ...(selectedAgentType.systemPrompt ? { systemPrompt: selectedAgentType.systemPrompt } : {}),
       });
     }
-  }, [promptInput, isStreaming, activeSessionId, selectedModel, selectedPermissionMode, selectedAgentType, setPromptInput, onResumeSession, onStartSession]);
+  }, [promptInput, isStreaming, activeSessionId, selectedModel, selectedPermissionMode, sandboxEnabled, selectedAgentType, setPromptInput, onResumeSession, onStartSession]);
 
-  const handleRespondToInput = useCallback((requestId: string, action: 'allow' | 'deny', response?: string) => {
+  const handleRespondToInput = useCallback((requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string) => {
     if (!onRespondToUserInput) return;
     const card = cards.find((c) => c.pendingInput?.requestId === requestId);
     if (!card?.pendingInput) return;
@@ -227,6 +240,7 @@ export function ClaudePanel({
       requestId,
       action: action === 'allow' ? (response ? 'respond' : 'allow') : 'deny',
       response,
+      allowPattern,
     });
   }, [cards, onRespondToUserInput]);
 
@@ -304,12 +318,13 @@ export function ClaudePanel({
               </div>
             )}
             {cards.map((card, i) => (
-              <CardRenderer
-                key={card.id}
-                card={card}
-                isLast={i === cards.length - 1}
-                onRespondToInput={handleRespondToInput}
-              />
+              <div key={card.id} data-card-id={card.id}>
+                <CardRenderer
+                  card={card}
+                  isLast={i === cards.length - 1}
+                  onRespondToInput={handleRespondToInput}
+                />
+              </div>
             ))}
             {streamError && (
               <div className="text-sm text-red-400 bg-red-500/10 rounded-lg px-3 py-2">
@@ -402,41 +417,12 @@ export function ClaudePanel({
   );
 }
 
-function SelectorRow<T extends { value: string; label: string }>({ label, options, value, onSelect }: {
-  label: string;
-  options: T[];
-  value: string;
-  onSelect: (opt: T) => void;
-}) {
-  return (
-    <div>
-      <p className="text-[10px] text-slate-500 uppercase tracking-wide mb-1.5">{label}</p>
-      <div className="flex flex-wrap gap-1.5">
-        {options.map((opt) => (
-          <button
-            key={opt.value}
-            onClick={() => onSelect(opt)}
-            className={clsx(
-              'text-xs px-2.5 py-1 rounded-lg border transition-colors',
-              value === opt.value
-                ? 'bg-blue-600/30 border-blue-500/60 text-blue-300'
-                : 'bg-slate-700/60 border-slate-600/50 text-slate-400 hover:border-slate-500 hover:text-slate-300'
-            )}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function NewSessionEmptyState({ cwd, selectedAgentType, onSelectAgentType }: {
   cwd?: string;
   selectedAgentType: AgentType;
   onSelectAgentType: (agent: AgentType) => void;
 }) {
-  const { selectedModel, selectedPermissionMode, selectedReasoningEffort, setSelectedModel, setSelectedPermissionMode, setSelectedReasoningEffort } = useClaudeStore();
+  const { selectedModel, selectedPermissionMode, selectedReasoningEffort, sandboxEnabled, setSelectedModel, setSelectedPermissionMode, setSelectedReasoningEffort, setSandboxEnabled } = useClaudeStore();
 
   return (
     <div className="px-4 pt-4 pb-2 flex justify-start">
@@ -455,30 +441,11 @@ function NewSessionEmptyState({ cwd, selectedAgentType, onSelectAgentType }: {
         </div>
 
         {/* Selectors */}
-        <SelectorRow
-          label="Agent"
-          options={AGENT_TYPES}
-          value={selectedAgentType.value}
-          onSelect={onSelectAgentType}
-        />
-        <SelectorRow
-          label="Model"
-          options={MODELS}
-          value={selectedModel}
-          onSelect={(m) => setSelectedModel(m.value)}
-        />
-        <SelectorRow
-          label="Reasoning Effort"
-          options={REASONING_EFFORTS}
-          value={selectedReasoningEffort}
-          onSelect={(e) => setSelectedReasoningEffort(e.value as 'low' | 'medium' | 'high' | 'max')}
-        />
-        <SelectorRow
-          label="Permission"
-          options={PERMISSION_MODES}
-          value={selectedPermissionMode}
-          onSelect={(p) => setSelectedPermissionMode(p.value)}
-        />
+        <ButtonGroup label="Agent" options={AGENT_TYPES} value={selectedAgentType.value} onSelect={onSelectAgentType} size="sm" />
+        <ButtonGroup label="Model" options={MODELS} value={selectedModel} onSelect={(m) => setSelectedModel(m.value)} size="sm" />
+        <ButtonGroup label="Reasoning Effort" options={REASONING_EFFORTS} value={selectedReasoningEffort} onSelect={(e) => setSelectedReasoningEffort(e.value as 'low' | 'medium' | 'high' | 'max')} size="sm" />
+        <ButtonGroup label="Permission" options={PERMISSION_MODES} value={selectedPermissionMode} onSelect={(p) => setSelectedPermissionMode(p.value)} size="sm" />
+        <ToggleSwitch label="Sandbox" enabled={sandboxEnabled} onChange={setSandboxEnabled} compact />
 
         {/* Hint */}
         <p className="text-xs text-slate-600">

@@ -1,6 +1,8 @@
-import { useState, type ComponentType, type ReactNode } from 'react';
+import { useState, useRef, useCallback, type ComponentType, type ReactNode } from 'react';
 import { parseToolUseError } from './ToolResultMessage';
 import type { ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';
+import { generateAllowPattern } from '@sumicom/quicksave-shared';
+import { WildcardEditorModal } from './WildcardEditorModal';
 import { ReadToolView } from './toolViews/ReadToolView';
 import { EditToolView } from './toolViews/EditToolView';
 import { WriteToolView } from './toolViews/WriteToolView';
@@ -60,10 +62,35 @@ const TOOL_COLORS: Record<string, string> = {
 
 function InlinePermissionActions({ request, onRespond }: {
   request: ClaudeUserInputRequestPayload;
-  onRespond: (action: 'allow' | 'deny', response?: string) => void;
+  onRespond: (action: 'allow' | 'deny', response?: string, allowPattern?: string) => void;
 }) {
   const [showDenyReason, setShowDenyReason] = useState(false);
   const [denyReason, setDenyReason] = useState('');
+  const [showWildcardEditor, setShowWildcardEditor] = useState(false);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const didLongPress = useRef(false);
+
+  const startLongPress = useCallback(() => {
+    didLongPress.current = false;
+    longPressTimer.current = setTimeout(() => {
+      didLongPress.current = true;
+      setShowWildcardEditor(true);
+    }, 500);
+  }, []);
+
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }, []);
+
+  const handleAllowClick = useCallback(() => {
+    cancelLongPress();
+    if (!didLongPress.current) {
+      onRespond('allow');
+    }
+  }, [cancelLongPress, onRespond]);
 
   return (
     <div className="mt-2 pt-2 border-t border-amber-500/20">
@@ -75,7 +102,7 @@ function InlinePermissionActions({ request, onRespond }: {
             value={denyReason}
             onChange={(e) => setDenyReason(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') {
+              if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                 onRespond('deny', denyReason.trim() || undefined);
               }
             }}
@@ -107,12 +134,30 @@ function InlinePermissionActions({ request, onRespond }: {
             Deny
           </button>
           <button
-            onClick={() => onRespond('allow')}
+            onMouseDown={startLongPress}
+            onMouseUp={handleAllowClick}
+            onMouseLeave={cancelLongPress}
+            onTouchStart={startLongPress}
+            onTouchEnd={handleAllowClick}
+            onTouchCancel={cancelLongPress}
             className="flex-1 text-sm px-3 py-1.5 bg-green-600/80 hover:bg-green-500 rounded-lg transition-colors font-medium"
           >
             Allow
           </button>
         </div>
+      )}
+
+      {showWildcardEditor && request.toolName && request.toolInput && (
+        <WildcardEditorModal
+          toolName={request.toolName}
+          toolInput={request.toolInput}
+          defaultPattern={generateAllowPattern(request.toolName, request.toolInput)}
+          onConfirm={(pattern) => {
+            setShowWildcardEditor(false);
+            onRespond('allow', undefined, pattern);
+          }}
+          onCancel={() => setShowWildcardEditor(false)}
+        />
       )}
     </div>
   );
@@ -301,7 +346,7 @@ function QuestionBlock({ question, header, options, multiSelect, lockedAnswer, h
               value={textInput}
               onChange={(e) => setTextInput(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && textInput.trim()) onAnswer(textInput.trim());
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing && textInput.trim()) onAnswer(textInput.trim());
               }}
               placeholder="Type your answer..."
               className="flex-1 bg-slate-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -458,7 +503,7 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
   toolResultContent?: string;
   toolResultIsError?: boolean;
   pendingInputRequest?: ClaudeUserInputRequestPayload;
-  onRespond?: (action: 'allow' | 'deny', response?: string) => void;
+  onRespond?: (action: 'allow' | 'deny', response?: string, allowPattern?: string) => void;
 }) {
   let parsedInput: Record<string, unknown> = {};
   try {

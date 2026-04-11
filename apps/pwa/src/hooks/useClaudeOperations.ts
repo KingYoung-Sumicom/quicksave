@@ -130,7 +130,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       } else {
         setStreaming(false);
       }
-      if (!payload.success) {
+      if (!payload.success && !payload.interrupted) {
         setStreamError(payload.error || 'Session ended with error');
       }
       // Append cost info as system card if available
@@ -230,7 +230,19 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       if (response.error) {
         throw new Error(response.error);
       }
-      setSessions(response.sessions);
+      // Merge instead of replace: update existing sessions and add new ones,
+      // so sessions from other cwds aren't lost (e.g. when NavigationDrawer
+      // fetches sessions per-project sequentially).
+      const { sessions: existing } = useClaudeStore.getState();
+      const incoming = new Map(response.sessions.map((s) => [s.sessionId, s]));
+      const merged = existing.map((s) => incoming.get(s.sessionId) ?? s);
+      // Add any new sessions not already in the list
+      for (const s of response.sessions) {
+        if (!existing.some((e) => e.sessionId === s.sessionId)) {
+          merged.push(s);
+        }
+      }
+      setSessions(merged);
     } catch (error) {
       console.error('Failed to list sessions:', error);
     } finally {
@@ -264,7 +276,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
   );
 
   const startSession = useCallback(
-    async (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => {
+    async (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string; sandboxed?: boolean }) => {
       clearCards();
       setStreaming(true);
       setStreamError(null);
@@ -277,6 +289,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
           systemPrompt: opts?.systemPrompt,
           model: opts?.model,
           permissionMode: opts?.permissionMode,
+          sandboxed: opts?.sandboxed,
           ...(opts?.cwd ? { cwd: opts.cwd } : {}),
         });
         const response = await sendRequest<ClaudeStartResponsePayload>(message, 120000);

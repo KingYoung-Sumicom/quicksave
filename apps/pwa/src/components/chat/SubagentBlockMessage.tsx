@@ -17,7 +17,7 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
   toolUseId?: string;
   agentId?: string;
   pendingInputRequest?: ClaudeUserInputRequestPayload;
-  onRespond?: (action: 'allow' | 'deny', response?: string) => void;
+  onRespond?: (action: 'allow' | 'deny', response?: string, allowPattern?: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const status = STATUS_STYLES[subagentStatus] ?? STATUS_STYLES.running;

@@ -28,6 +28,7 @@ interface ClaudeStore {
   selectedModel: string;
   selectedPermissionMode: string;
   selectedReasoningEffort: 'low' | 'medium' | 'high' | 'max';
+  sandboxEnabled: boolean;
 
   // Per-session runtime config (keyed by sessionId)
   sessionConfigs: Record<string, Record<string, ConfigValue>>;
@@ -58,6 +59,7 @@ interface ClaudeStore {
   setSelectedModel: (model: string) => void;
   setSelectedPermissionMode: (mode: string) => void;
   setSelectedReasoningEffort: (effort: 'low' | 'medium' | 'high' | 'max') => void;
+  setSandboxEnabled: (enabled: boolean) => void;
 
   // Actions — per-session runtime config
   setSessionConfigKey: (sessionId: string, key: string, value: ConfigValue) => void;
@@ -88,6 +90,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   selectedModel: DEFAULT_MODEL,
   selectedPermissionMode: DEFAULT_PERMISSION_MODE,
   selectedReasoningEffort: DEFAULT_REASONING_EFFORT,
+  sandboxEnabled: false,
   sessionConfigs: {},
 
   // Sessions
@@ -183,6 +186,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   setSelectedModel: (model) => set({ selectedModel: model }),
   setSelectedPermissionMode: (mode) => set({ selectedPermissionMode: mode }),
   setSelectedReasoningEffort: (effort) => set({ selectedReasoningEffort: effort }),
+  setSandboxEnabled: (enabled) => set({ sandboxEnabled: enabled }),
 
   // Per-session runtime config
   setSessionConfigKey: (sessionId, key, value) =>

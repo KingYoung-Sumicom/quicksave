@@ -327,6 +327,7 @@ export interface ClaudeActiveSession {
   isStreaming: boolean;
   hasPendingInput: boolean;
   permissionMode: string;
+  sandboxed?: boolean;
 }
 
 export type ClaudeActiveSessionsRequestPayload = Record<string, never>;
@@ -771,6 +772,7 @@ export interface ClaudeStartRequestPayload {
   systemPrompt?: string;
   model?: string;
   permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
+  sandboxed?: boolean;
 }
 
 export interface ClaudeStartResponsePayload {
@@ -923,4 +925,6 @@ export interface ClaudeUserInputResponsePayload {
   action: 'allow' | 'deny' | 'respond';
   response?: string;
   selectedKey?: string;
+  /** Wildcard pattern to persist in project .claude/settings.local.json allow list */
+  allowPattern?: string;
 }

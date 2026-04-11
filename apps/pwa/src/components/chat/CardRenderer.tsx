@@ -9,7 +9,11 @@ import { SubagentBlockMessage } from './SubagentBlockMessage';
 
 /** Convert PendingInputAttachment to the legacy ClaudeUserInputRequestPayload shape
  *  expected by existing PermissionPrompt / ToolCallMessage components. */
-function toLegacyPending(p: PendingInputAttachment): ClaudeUserInputRequestPayload {
+function toLegacyPending(
+  p: PendingInputAttachment,
+  toolName?: string,
+  toolInput?: Record<string, unknown>,
+): ClaudeUserInputRequestPayload {
   return {
     sessionId: p.sessionId,
     requestId: p.requestId,
@@ -17,13 +21,15 @@ function toLegacyPending(p: PendingInputAttachment): ClaudeUserInputRequestPaylo
     title: p.title,
     message: p.message,
     options: p.options,
+    toolName,
+    toolInput,
   };
 }
 
 export function CardRenderer({ card, isLast, onRespondToInput }: {
   card: Card;
   isLast: boolean;
-  onRespondToInput?: (requestId: string, action: 'allow' | 'deny', response?: string) => void;
+  onRespondToInput?: (requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string) => void;
 }) {
   switch (card.type) {
     case 'user':
@@ -44,9 +50,9 @@ export function CardRenderer({ card, isLast, onRespondToInput }: {
           content={JSON.stringify(tc.toolInput)}
           toolResultContent={tc.result?.content}
           toolResultIsError={tc.result?.isError}
-          pendingInputRequest={tc.pendingInput ? toLegacyPending(tc.pendingInput) : undefined}
+          pendingInputRequest={tc.pendingInput ? toLegacyPending(tc.pendingInput, tc.toolName, tc.toolInput) : undefined}
           onRespond={tc.pendingInput && onRespondToInput
-            ? (action, response) => onRespondToInput(tc.pendingInput!.requestId, action, response)
+            ? (action, response, allowPattern) => onRespondToInput(tc.pendingInput!.requestId, action, response, allowPattern)
             : undefined}
         />
       );
@@ -63,7 +69,7 @@ export function CardRenderer({ card, isLast, onRespondToInput }: {
           lastToolName={sa.lastToolName}
           pendingInputRequest={sa.pendingInput ? toLegacyPending(sa.pendingInput) : undefined}
           onRespond={sa.pendingInput && onRespondToInput
-            ? (action, response) => onRespondToInput(sa.pendingInput!.requestId, action, response)
+            ? (action, response, allowPattern) => onRespondToInput(sa.pendingInput!.requestId, action, response, allowPattern)
             : undefined}
         />
       );

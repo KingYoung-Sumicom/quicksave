@@ -1,7 +1,4 @@
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
-import 'highlight.js/styles/github-dark-dimmed.css';
+import { ChatMarkdown } from './ChatMarkdown';
 import { useClaudeStore } from '../../stores/claudeStore';
 
 export function AssistantMessage({ content, isLast }: { content: string; isLast: boolean }) {
@@ -15,19 +12,7 @@ export function AssistantMessage({ content, isLast }: { content: string; isLast:
   return (
     <div className="py-1 w-full text-sm">
       <div className="chat-markdown">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          rehypePlugins={[rehypeHighlight]}
-          components={{
-            table: ({ children }) => (
-              <div className="overflow-x-auto my-2">
-                <table className="w-max min-w-full">{children}</table>
-              </div>
-            ),
-          }}
-        >
-          {content}
-        </ReactMarkdown>
+        <ChatMarkdown>{content}</ChatMarkdown>
         {isActivelyStreaming && (
           <span className="inline-block w-1.5 h-4 bg-blue-400 animate-pulse ml-0.5 align-text-bottom rounded-sm" />
         )}
