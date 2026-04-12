@@ -57,6 +57,7 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     setCurrentRepoPath,
     clearSelection,
     selectedModel,
+    attributionEnabled,
   } = useGitStore();
   const { setRepoPath, setAvailableRepos, setAvailableCodingPaths, availableCodingPaths } = useConnectionStore();
 
@@ -208,7 +209,7 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     async (commitMessage: string, description?: string) => {
       setLoading(true);
       try {
-        const message = createMessage('git:commit', { message: commitMessage, description });
+        const message = createMessage('git:commit', { message: commitMessage, description, attribution: attributionEnabled });
         const response = await sendRequest<CommitResponsePayload>(message);
         if (!response.success) {
           throw new Error(response.error || 'Failed to commit');
@@ -223,7 +224,7 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setLoading(false);
       }
     },
-    [sendRequest, fetchStatus, clearCommitForm, setLoading, setError]
+    [sendRequest, fetchStatus, clearCommitForm, setLoading, setError, attributionEnabled]
   );
 
   const fetchLog = useCallback(
@@ -369,6 +370,7 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         const message = createMessage('ai:generate-commit-summary', {
           context,
           model: model ?? selectedModel,
+          attribution: attributionEnabled,
         });
         const response = await sendRequest<GenerateCommitSummaryResponsePayload>(message, 60000);
 
@@ -383,7 +385,7 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setGeneratingAiSummary(false);
       }
     },
-    [sendRequest, selectedModel, setAiSummary, setGeneratingAiSummary, setAiSummaryError]
+    [sendRequest, selectedModel, attributionEnabled, setAiSummary, setGeneratingAiSummary, setAiSummaryError]
   );
 
   const setApiKey = useCallback(

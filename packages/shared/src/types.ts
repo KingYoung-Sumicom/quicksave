@@ -398,6 +398,7 @@ export type UnstagePatchResponsePayload = StagePatchResponsePayload;
 export interface CommitRequestPayload {
   message: string;
   description?: string;
+  attribution?: boolean;
 }
 
 export interface CommitResponsePayload {
@@ -704,6 +705,7 @@ export const CLAUDE_MODELS: { id: ClaudeModel; name: string; label: string; desc
 export interface GenerateCommitSummaryRequestPayload {
   context?: string;
   model?: ClaudeModel;
+  attribution?: boolean;
 }
 
 export interface TokenUsage {

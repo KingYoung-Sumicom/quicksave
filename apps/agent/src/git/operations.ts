@@ -347,8 +347,11 @@ export class GitOperations {
   /**
    * Create a commit
    */
-  async commit(message: string, description?: string): Promise<string> {
-    const fullMessage = description ? `${message}\n\n${description}` : message;
+  async commit(message: string, description?: string, attribution = true): Promise<string> {
+    const parts = [message];
+    if (description) parts.push(description);
+    if (attribution) parts.push('Generated-by: Quicksave <save@quicksave.dev>');
+    const fullMessage = parts.join('\n\n');
     const result = await this.git.commit(fullMessage);
     return result.commit;
   }

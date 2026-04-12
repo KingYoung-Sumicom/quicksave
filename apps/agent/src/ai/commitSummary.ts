@@ -9,6 +9,7 @@ export interface GenerateSummaryOptions {
   recentCommits?: string[];
   branchName?: string;
   conventions?: string;
+  attribution?: boolean;
 }
 
 export interface GenerateSummaryResult {
@@ -60,7 +61,7 @@ export class CommitSummaryService {
   }
 
   async generateSummary(options: GenerateSummaryOptions): Promise<GenerateSummaryResult> {
-    const { diffs, context, model = DEFAULT_MODEL, recentCommits, branchName, conventions } = options;
+    const { diffs, context, model = DEFAULT_MODEL, recentCommits, branchName, conventions, attribution = true } = options;
 
     const diffText = this.formatDiffsForPrompt(diffs);
 
@@ -89,6 +90,7 @@ export class CommitSummaryService {
       recentCommits,
       branchName,
       conventions,
+      attribution,
     });
     this.pendingRequests.set(cacheKey, requestPromise);
 
@@ -104,7 +106,7 @@ export class CommitSummaryService {
     context: string | undefined,
     model: ClaudeModel,
     cacheKey: string,
-    extra: { recentCommits?: string[]; branchName?: string; conventions?: string }
+    extra: { recentCommits?: string[]; branchName?: string; conventions?: string; attribution?: boolean }
   ): Promise<GenerateSummaryResult> {
     const prompt = this.buildPrompt(diffText, context, extra);
 
@@ -117,6 +119,13 @@ export class CommitSummaryService {
     });
 
     const result = this.parseResponse(response);
+
+    if (extra.attribution !== false) {
+      const aiTrailer = 'Commit-message-by: Quicksave AI <save@quicksave.dev>';
+      result.description = result.description
+        ? `${result.description}\n\n${aiTrailer}`
+        : aiTrailer;
+    }
 
     // Store in cache
     this.cache.set(cacheKey, {

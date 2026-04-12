@@ -4,6 +4,7 @@ import { exportMasterSecret, importMasterSecret, saveApiKey as saveApiKeyToStora
 import { useMachineStore } from '../stores/machineStore';
 import type { Machine } from '../stores/machineStore';
 import { useConnectionStore } from '../stores/connectionStore';
+import { useGitStore } from '../stores/gitStore';
 import { DevicePairingSection } from './DevicePairingSection';
 
 interface SettingsPanelProps {
@@ -436,7 +437,22 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAge
           {/* Section 3: Device Sync */}
           <DevicePairingSection />
 
-          {/* Section 4: Agent Version & Update — only when connected */}
+          {/* Section 4: Git Attribution */}
+          <div className="border-t border-slate-700" />
+          <div className="space-y-3">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+              Git
+            </h3>
+            <label className="flex items-center justify-between cursor-pointer">
+              <div>
+                <span className="text-sm text-white">Commit attribution</span>
+                <p className="text-xs text-slate-400 mt-0.5">Add Quicksave trailer to commit messages</p>
+              </div>
+              <AttributionToggle />
+            </label>
+          </div>
+
+          {/* Section 5: Agent Version & Update — only when connected */}
           {connectionState === 'connected' && (
             <>
               <div className="border-t border-slate-700" />
@@ -589,5 +605,21 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAge
         </>
       )}
     </SwipeableDrawer>
+  );
+}
+
+function AttributionToggle() {
+  const enabled = useGitStore((s) => s.attributionEnabled);
+  const setEnabled = useGitStore((s) => s.setAttributionEnabled);
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      onClick={() => setEnabled(!enabled)}
+      className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full transition-colors duration-200 ease-in-out ${enabled ? 'bg-purple-600' : 'bg-slate-600'}`}
+    >
+      <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out mt-0.5 ${enabled ? 'translate-x-5 ml-0.5' : 'translate-x-0 ml-0.5'}`} />
+    </button>
   );
 }

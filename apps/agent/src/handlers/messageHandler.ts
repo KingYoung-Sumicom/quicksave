@@ -516,8 +516,8 @@ export class MessageHandler {
       return response;
     }
     try {
-      const { message: commitMessage, description } = message.payload;
-      const hash = await this.getGit(peerAddress).commit(commitMessage, description);
+      const { message: commitMessage, description, attribution } = message.payload;
+      const hash = await this.getGit(peerAddress).commit(commitMessage, description, attribution ?? true);
       const response = createMessage<CommitResponsePayload>('git:commit:response', {
         success: true,
         hash,
@@ -749,6 +749,7 @@ export class MessageHandler {
         recentCommits: recentCommits.length > 0 ? recentCommits : undefined,
         branchName: branchName || undefined,
         conventions,
+        attribution: message.payload.attribution,
       });
 
       const response = createMessage<GenerateCommitSummaryResponsePayload>(

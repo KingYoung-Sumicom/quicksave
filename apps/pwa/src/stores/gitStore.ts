@@ -1,8 +1,16 @@
 import { create } from 'zustand';
 import type { GitStatus, FileDiff, Commit, Branch, FileChange, ClaudeModel, TokenUsage } from '@sumicom/quicksave-shared';
 
-// localStorage helpers for commit message persistence
+// localStorage helpers
 const COMMIT_DRAFT_PREFIX = 'quicksave:commit-draft:';
+const ATTRIBUTION_KEY = 'quicksave:attribution-enabled';
+
+function loadAttributionEnabled(): boolean {
+  try {
+    const v = localStorage.getItem(ATTRIBUTION_KEY);
+    return v === null ? true : v === 'true';
+  } catch { return true; }
+}
 
 interface CommitDraft {
   message: string;
@@ -93,6 +101,8 @@ interface GitStore {
   // Commit form
   commitMessage: string;
   commitDescription: string;
+  attributionEnabled: boolean;
+  setAttributionEnabled: (enabled: boolean) => void;
 
   // AI Summary state
   aiSummary: string | null;
@@ -156,6 +166,12 @@ export const useGitStore = create<GitStore>((set, get) => ({
   currentRepoPath: null,
   commitMessage: '',
   commitDescription: '',
+  attributionEnabled: loadAttributionEnabled(),
+
+  setAttributionEnabled: (enabled) => {
+    set({ attributionEnabled: enabled });
+    try { localStorage.setItem(ATTRIBUTION_KEY, String(enabled)); } catch { /* */ }
+  },
 
   // AI Summary state
   aiSummary: null,
