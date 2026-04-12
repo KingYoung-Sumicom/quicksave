@@ -70,6 +70,7 @@ function extractToolResultText(content: unknown): string {
 export class StreamCardBuilder {
   private sessionId: string;
   private streamId: string;
+  private cwd: string;
   private seq = 0;
   private cards = new Map<CardId, Card>();
   /** tool_use_id → CardId, for pairing tool_result to ToolCallCard */
@@ -80,10 +81,13 @@ export class StreamCardBuilder {
   private ephemeralCards = new Set<CardId>();
   /** Current streaming assistant_text card (for append_text events) */
   private currentTextCardId: CardId | null = null;
+  /** JSONL message count at the start of the current turn — history reads stop here. */
+  private _jsonlCutoff: number | null = null;
 
-  constructor(sessionId: string, streamId: string) {
+  constructor(sessionId: string, streamId: string, cwd: string) {
     this.sessionId = sessionId;
     this.streamId = streamId;
+    this.cwd = cwd;
   }
 
   updateSessionId(sessionId: string): void {
@@ -103,6 +107,21 @@ export class StreamCardBuilder {
     this.agentIdToCardId.clear();
     this.ephemeralCards.clear();
     this.currentTextCardId = null;
+  }
+
+  /** Snapshot current JSONL message count so history reads stop before the active turn. */
+  async snapshotCutoff(): Promise<void> {
+    const msgs = (await readMessagesFromJSONL(this.sessionId, this.cwd))
+      .filter((m: any) => !m.isSidechain);
+    this._jsonlCutoff = msgs.length;
+  }
+
+  get jsonlCutoff(): number | null {
+    return this._jsonlCutoff;
+  }
+
+  set jsonlCutoff(value: number | null) {
+    this._jsonlCutoff = value;
   }
 
   private nextId(): CardId {
@@ -336,9 +355,14 @@ export async function buildCardsFromHistory(
   cwd: string,
   offset = 0,
   limit = 50,
+  maxMessages?: number,
 ): Promise<CardHistoryResponse> {
-  const allMessages = (await readMessagesFromJSONL(sessionId, cwd))
+  let allMessages = (await readMessagesFromJSONL(sessionId, cwd))
     .filter((m: any) => !m.isSidechain);
+
+  if (maxMessages != null) {
+    allMessages = allMessages.slice(0, maxMessages);
+  }
 
   const total = allMessages.length;
   const tailStart = Math.max(0, total - offset - limit);

@@ -468,6 +468,8 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       // Clear accumulated cards — the JSONL now has the full history for this turn.
       // cardBuilder should only hold cards for the next in-progress turn.
       cb.clearCards();
+      // Update cutoff so the next turn's getCards() reads JSONL up to here.
+      await cb.snapshotCutoff();
 
       return true;
     }

@@ -166,7 +166,7 @@ export class SessionManager extends EventEmitter {
     const systemPrompt = systemParts;
 
     // Create cardBuilder with 'pending' sessionId — will be updated after provider returns real one
-    const cardBuilder = new StreamCardBuilder('pending', opts.streamId);
+    const cardBuilder = new StreamCardBuilder('pending', opts.streamId, opts.cwd);
 
     const callbacks = this.makeCallbacks('pending');
 
@@ -184,8 +184,9 @@ export class SessionManager extends EventEmitter {
       callbacks,
     );
 
-    // Update cardBuilder with real sessionId
+    // Update cardBuilder with real sessionId — new session has no prior JSONL
     cardBuilder.updateSessionId(sessionId);
+    cardBuilder.jsonlCutoff = 0;
 
     // Update callbacks to use real sessionId (re-bind the closures)
     // The callbacks are already handed to the provider; for the permission handler
@@ -250,7 +251,8 @@ export class SessionManager extends EventEmitter {
       const level = this.sessionPermissions.get(opts.sessionId) ?? 'acceptEdits';
       const sandboxed = this.sessionSandboxed.get(opts.sessionId) ?? false;
 
-      const cardBuilder = existing?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.streamId);
+      const cardBuilder = existing?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.streamId, opts.cwd);
+      await cardBuilder.snapshotCutoff();
       const callbacks = this.makeCallbacks(opts.sessionId);
 
       const { sessionId, session: providerSession } = await this.provider.resumeSession(
@@ -423,26 +425,18 @@ export class SessionManager extends EventEmitter {
   }
 
   async getCards(sessionId: string, cwd: string, offset = 0, limit = 50): Promise<CardHistoryResponse> {
-    const result = await buildCardsFromHistory(sessionId, cwd, offset, limit);
     const ps = this.sessions.get(sessionId);
+    const cutoff = ps?.cardBuilder?.jsonlCutoff ?? undefined;
 
-    // For active streaming sessions, append in-memory cards from cardBuilder.
+    // Read JSONL history up to the cutoff (excludes the active turn's messages).
+    const result = await buildCardsFromHistory(sessionId, cwd, offset, limit, cutoff);
+
+    // Append in-memory cards for the active turn — no overlap, no dedup needed.
     if (ps?.cardBuilder) {
       const streamingCards = ps.cardBuilder.getCards();
       if (streamingCards.length > 0) {
-        const existingToolUseIds = new Set<string>();
-        const existingTexts = new Set<string>();
-        for (const c of result.cards) {
-          if ((c as any).toolUseId) existingToolUseIds.add((c as any).toolUseId);
-          if (c.type === 'assistant_text' || c.type === 'user' || c.type === 'thinking') existingTexts.add(c.text);
-        }
-        const newCards = streamingCards.filter(c => {
-          if ((c as any).toolUseId && existingToolUseIds.has((c as any).toolUseId)) return false;
-          if ((c.type === 'assistant_text' || c.type === 'user' || c.type === 'thinking') && existingTexts.has(c.text)) return false;
-          return true;
-        });
-        result.cards.push(...newCards);
-        result.total += newCards.length;
+        result.cards.push(...streamingCards);
+        result.total += streamingCards.length;
       }
     }
 
