@@ -2,9 +2,12 @@ import { create } from 'zustand';
 import type { Card, CardEvent, ClaudeSessionSummary, ConfigValue } from '@sumicom/quicksave-shared';
 import { DEFAULT_MODEL, DEFAULT_PERMISSION_MODE, DEFAULT_REASONING_EFFORT } from '@sumicom/quicksave-shared';
 
+/** Sessions keyed by sessionId for O(1) lookup. */
+type SessionMap = Record<string, ClaudeSessionSummary>;
+
 interface ClaudeStore {
   // Session list
-  sessions: ClaudeSessionSummary[];
+  sessions: SessionMap;
   isLoadingSessions: boolean;
 
   // Active session
@@ -35,6 +38,8 @@ interface ClaudeStore {
 
   // Actions — sessions
   setSessions: (sessions: ClaudeSessionSummary[]) => void;
+  mergeSessions: (incoming: ClaudeSessionSummary[]) => void;
+  upsertSession: (session: Partial<ClaudeSessionSummary> & { sessionId: string }) => void;
   setLoadingSessions: (loading: boolean) => void;
 
   // Actions — active session
@@ -75,7 +80,7 @@ interface ClaudeStore {
 
 export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   // Initial state
-  sessions: [],
+  sessions: {},
   isLoadingSessions: false,
   activeSessionId: null,
   activeStreamIds: [],
@@ -94,12 +99,29 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   sessionConfigs: {},
 
   // Sessions
-  setSessions: (sessions) => set({ sessions }),
+  setSessions: (sessions) => {
+    const map: SessionMap = {};
+    for (const s of sessions) map[s.sessionId] = s;
+    set({ sessions: map });
+  },
+  mergeSessions: (incoming: ClaudeSessionSummary[]) =>
+    set((state) => {
+      const merged = { ...state.sessions };
+      for (const s of incoming) merged[s.sessionId] = s;
+      return { sessions: merged };
+    }),
+  upsertSession: (partial) =>
+    set((state) => ({
+      sessions: {
+        ...state.sessions,
+        [partial.sessionId]: { ...state.sessions[partial.sessionId], ...partial } as ClaudeSessionSummary,
+      },
+    })),
   setLoadingSessions: (loading) => set({ isLoadingSessions: loading }),
 
   // Active session
   setActiveSession: (sessionId, streamId = null) => {
-    const session = sessionId ? get().sessions.find((s) => s.sessionId === sessionId) : null;
+    const session = sessionId ? get().sessions[sessionId] : null;
     set({
       activeSessionId: sessionId,
       activeStreamIds: streamId ? [streamId] : [],
@@ -197,12 +219,22 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       },
     })),
   applySessionConfig: (sessionId, config) =>
-    set((state) => ({
-      sessionConfigs: {
-        ...state.sessionConfigs,
-        [sessionId]: { ...state.sessionConfigs[sessionId], ...config },
-      },
-    })),
+    set((state) => {
+      const next: Partial<ClaudeStore> = {
+        sessionConfigs: {
+          ...state.sessionConfigs,
+          [sessionId]: { ...state.sessionConfigs[sessionId], ...config },
+        },
+      };
+      // Sync title into session map so status bar picks it up immediately
+      if (typeof config.title === 'string' && state.sessions[sessionId]) {
+        next.sessions = {
+          ...state.sessions,
+          [sessionId]: { ...state.sessions[sessionId], summary: config.title as string },
+        };
+      }
+      return next;
+    }),
 
   // UI
   setPromptInput: (input) => set({ promptInput: input }),
@@ -211,7 +243,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   // Reset
   reset: () =>
     set({
-      sessions: [],
+      sessions: {},
       isLoadingSessions: false,
       activeSessionId: null,
       activeStreamIds: [],

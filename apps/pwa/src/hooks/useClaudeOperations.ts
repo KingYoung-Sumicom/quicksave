@@ -32,7 +32,8 @@ type PendingRequest = {
 export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient | null>) {
   const pendingRequests = useRef<Map<string, PendingRequest>>(new Map());
   const {
-    setSessions,
+    mergeSessions,
+    upsertSession,
     setLoadingSessions,
     setActiveSession,
     setStreaming,
@@ -154,28 +155,18 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     }
 
     if (message.type === 'claude:user-input-request') {
-      // Also set hasPendingInput on the session as a reliable fallback
-      // in case the session-updated push is missed.
       const payload = message.payload as { sessionId: string };
       if (payload.sessionId) {
-        const { sessions } = useClaudeStore.getState();
-        setSessions(sessions.map((s) =>
-          s.sessionId === payload.sessionId ? { ...s, hasPendingInput: true } : s
-        ));
+        upsertSession({ sessionId: payload.sessionId, hasPendingInput: true });
       }
-      // TODO: trigger notification sound/vibration here
       return true;
     }
 
     if (message.type === 'claude:user-input-resolved') {
       const payload = message.payload as { requestId: string; sessionId: string };
       clearPendingInput(payload.requestId);
-      // Also clear hasPendingInput on the session
       if (payload.sessionId) {
-        const { sessions } = useClaudeStore.getState();
-        setSessions(sessions.map((s) =>
-          s.sessionId === payload.sessionId ? { ...s, hasPendingInput: false } : s
-        ));
+        upsertSession({ sessionId: payload.sessionId, hasPendingInput: false });
       }
       return true;
     }
@@ -183,33 +174,19 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     if (message.type === 'claude:session-updated') {
       const payload = message.payload as { sessionId: string; isActive: boolean; isStreaming: boolean; hasPendingInput: boolean; permissionMode?: string; sandboxed?: boolean };
       const { sessions, activeSessionId } = useClaudeStore.getState();
-      const current = sessions.find((s) => s.sessionId === payload.sessionId);
+      const current = sessions[payload.sessionId];
       if (current &&
         current.isActive === payload.isActive &&
         current.isStreaming === payload.isStreaming &&
         current.hasPendingInput === payload.hasPendingInput &&
         current.permissionMode === payload.permissionMode) return true;
-      let updated;
-      if (current) {
-        updated = sessions.map((s) =>
-          s.sessionId === payload.sessionId
-            ? { ...s, isActive: payload.isActive, isStreaming: payload.isStreaming, hasPendingInput: payload.hasPendingInput, permissionMode: payload.permissionMode }
-            : s
-        );
-      } else {
-        // Upsert: session not in list yet (just created) — add a stub entry
-        updated = [...sessions, {
-          sessionId: payload.sessionId,
-          summary: '',
-          lastModified: Date.now(),
-          createdAt: Date.now(),
-          isActive: payload.isActive,
-          isStreaming: payload.isStreaming,
-          hasPendingInput: payload.hasPendingInput,
-          permissionMode: payload.permissionMode,
-        } as any];
-      }
-      setSessions(updated);
+      upsertSession({
+        sessionId: payload.sessionId,
+        isActive: payload.isActive,
+        isStreaming: payload.isStreaming,
+        hasPendingInput: payload.hasPendingInput,
+        permissionMode: payload.permissionMode,
+      });
       if (payload.sessionId === activeSessionId) {
         setStreaming(payload.isStreaming);
         if (payload.permissionMode) setSelectedPermissionMode(payload.permissionMode);
@@ -229,7 +206,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     }
 
     return false;
-  }, [handleCardEvent, setStreaming, setStreamError, appendCard, clearPendingInput, setSessions, applyPreferences, applySessionConfig, setSelectedPermissionMode]);
+  }, [handleCardEvent, setStreaming, setStreamError, appendCard, clearPendingInput, upsertSession, applyPreferences, applySessionConfig, setSelectedPermissionMode]);
 
   // Combined message handler
   const handleMessage = useCallback((message: Message): boolean => {
@@ -245,25 +222,14 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       if (response.error) {
         throw new Error(response.error);
       }
-      // Merge instead of replace: update existing sessions and add new ones,
-      // so sessions from other cwds aren't lost (e.g. when NavigationDrawer
-      // fetches sessions per-project sequentially).
-      const { sessions: existing } = useClaudeStore.getState();
-      const incoming = new Map(response.sessions.map((s) => [s.sessionId, s]));
-      const merged = existing.map((s) => incoming.get(s.sessionId) ?? s);
-      // Add any new sessions not already in the list
-      for (const s of response.sessions) {
-        if (!existing.some((e) => e.sessionId === s.sessionId)) {
-          merged.push(s);
-        }
-      }
-      setSessions(merged);
+      // Merge into map: preserves sessions from other cwds
+      mergeSessions(response.sessions);
     } catch (error) {
       console.error('Failed to list sessions:', error);
     } finally {
       setLoadingSessions(false);
     }
-  }, [sendRequest, setSessions, setLoadingSessions]);
+  }, [sendRequest, mergeSessions, setLoadingSessions]);
 
   const getSessionCards = useCallback(
     async (sessionId: string, offset = 0, limit = 50, cwd?: string) => {
@@ -277,6 +243,10 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
 
         if (offset === 0) {
           setCards(response.cards);
+          // Apply title from getCards response (available on initial load / reconnect)
+          if (response.title) {
+            applySessionConfig(sessionId, { title: response.title });
+          }
         } else {
           prependCards(response.cards);
         }
@@ -287,7 +257,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
         setLoadingHistory(false);
       }
     },
-    [sendRequest, setCards, prependCards, setHistoryMeta, setLoadingHistory]
+    [sendRequest, setCards, prependCards, setHistoryMeta, setLoadingHistory, applySessionConfig]
   );
 
   const startSession = useCallback(

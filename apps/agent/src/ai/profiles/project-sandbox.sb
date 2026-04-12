@@ -1,0 +1,26 @@
+(version 1)
+(deny default)
+(import "system.sb")
+
+;; Allow all file reads
+(allow file-read*)
+
+;; Deny all file writes by default
+(deny file-write*)
+
+;; Allow writes ONLY within the project directory (excluding .git/)
+(allow file-write* (subpath (param "CWD")))
+(deny file-write* (subpath (string-append (param "CWD") "/.git")))
+
+;; Allow process execution
+(allow process-fork)
+(allow process-exec)
+
+;; Allow signals to own process
+(allow signal (target self))
+
+;; Allow sysctl reads (needed by many tools)
+(allow sysctl-read)
+
+;; Allow network access (builds may need to fetch dependencies)
+(allow network*)

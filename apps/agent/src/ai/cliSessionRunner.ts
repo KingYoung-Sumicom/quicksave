@@ -17,7 +17,7 @@ import type {
 } from '@sumicom/quicksave-shared';
 import { DEFAULT_MODEL, matchAllowPattern } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder, buildCardsFromHistory } from './cardBuilder.js';
-import { SANDBOX_MCP_NAME, SANDBOX_MCP_PREFIX } from './sandboxMcp.js';
+import { SANDBOX_MCP_NAME, SANDBOX_MCP_PREFIX, SET_TITLE_TOOL } from './sandboxMcp.js';
 import { getSessionRegistry } from './sessionRegistry.js';
 
 /**
@@ -330,6 +330,24 @@ export class CLISessionRunner extends EventEmitter {
     return this.sessions.size;
   }
 
+  /** Update session title (triggered by SetTitle MCP tool). */
+  private updateSessionTitle(sessionId: string, title: string): void {
+    // Update in-memory session summary
+    const config = this.sessionConfigs.get(sessionId) ?? {};
+    this.sessionConfigs.set(sessionId, { ...config, title });
+    this.emit('session-config-updated', { sessionId, config: this.sessionConfigs.get(sessionId) });
+
+    // Update session registry so it persists across restarts
+    const ps = this.sessions.get(sessionId);
+    if (ps?.cwd) {
+      const registry = getSessionRegistry();
+      const entry = registry.getEntry(ps.cwd, sessionId);
+      if (entry) {
+        registry.upsertEntry({ ...entry, title, lastAccessedAt: Date.now() });
+      }
+    }
+  }
+
   getCardBuilder(sessionId: string): StreamCardBuilder | null {
     return this.sessions.get(sessionId)?.cardBuilder ?? null;
   }
@@ -375,11 +393,11 @@ export class CLISessionRunner extends EventEmitter {
         const existingTexts = new Set<string>();
         for (const c of result.cards) {
           if ((c as any).toolUseId) existingToolUseIds.add((c as any).toolUseId);
-          if (c.type === 'assistant_text' || c.type === 'user') existingTexts.add(c.text);
+          if (c.type === 'assistant_text' || c.type === 'user' || c.type === 'thinking') existingTexts.add(c.text);
         }
         const newCards = streamingCards.filter(c => {
           if ((c as any).toolUseId && existingToolUseIds.has((c as any).toolUseId)) return false;
-          if ((c.type === 'assistant_text' || c.type === 'user') && existingTexts.has(c.text)) return false;
+          if ((c.type === 'assistant_text' || c.type === 'user' || c.type === 'thinking') && existingTexts.has(c.text)) return false;
           return true;
         });
         result.cards.push(...newCards);
@@ -413,6 +431,16 @@ export class CLISessionRunner extends EventEmitter {
           }
         }
       }
+    }
+
+    // Attach session title from config or registry
+    const configTitle = this.sessionConfigs.get(sessionId)?.title as string | undefined;
+    if (configTitle) {
+      result.title = configTitle;
+    } else {
+      const registry = getSessionRegistry();
+      const entry = registry.getEntry(cwd, sessionId);
+      if (entry?.title) result.title = entry.title;
     }
 
     return result;
@@ -482,24 +510,22 @@ export class CLISessionRunner extends EventEmitter {
       args.push('--resume', opts.resumeSessionId);
     }
 
-    // Build MCP config for sandbox if enabled — passed as inline JSON string
-    if (opts.sandboxed) {
-      const tsPath = join(__ownDir, 'sandboxMcpStdio.ts');
-      const jsPath = join(__ownDir, 'sandboxMcpStdio.js');
-      const hasTsPath = existsSync(tsPath);
-      const mcpConfig = {
-        mcpServers: {
-          [SANDBOX_MCP_NAME]: {
-            type: 'stdio',
-            command: hasTsPath ? 'npx' : 'node',
-            args: hasTsPath
-              ? ['tsx', tsPath, '--cwd', opts.cwd]
-              : [jsPath, '--cwd', opts.cwd],
-          },
+    // Always inject sandbox MCP server — approve/deny controlled by sandboxed flag at runtime
+    const tsPath = join(__ownDir, 'sandboxMcpStdio.ts');
+    const jsPath = join(__ownDir, 'sandboxMcpStdio.js');
+    const hasTsPath = existsSync(tsPath);
+    const mcpConfig = {
+      mcpServers: {
+        [SANDBOX_MCP_NAME]: {
+          type: 'stdio',
+          command: hasTsPath ? 'npx' : 'node',
+          args: hasTsPath
+            ? ['tsx', tsPath, '--cwd', opts.cwd]
+            : [jsPath, '--cwd', opts.cwd],
         },
-      };
-      args.push('--mcp-config', JSON.stringify(mcpConfig));
-    }
+      },
+    };
+    args.push('--mcp-config', JSON.stringify(mcpConfig));
 
     return args;
   }
@@ -736,10 +762,18 @@ export class CLISessionRunner extends EventEmitter {
         } else if (block.type === 'redacted_thinking') {
           emitCard(cb.thinkingBlock('[Redacted thinking]'));
         } else if (block.type === 'text' && block.text) {
-          emitCard(cb.assistantText(block.text));
+          // If text was already streamed via stream_event deltas, finalize
+          // the existing card instead of doubling the content.
+          const finalizeEvt = cb.finalizeAssistantText();
+          if (finalizeEvt) {
+            emitCard(finalizeEvt);
+          } else {
+            // No active streaming card — emit text normally (e.g. no stream_events preceded this)
+            emitCard(cb.assistantText(block.text));
+          }
         } else if (block.type === 'tool_use') {
           if (block.name !== 'Agent') {
-            emitCard(cb.toolUse(block.name, block.input ?? {}, block.id));
+              emitCard(cb.toolUse(block.name, block.input ?? {}, block.id));
           }
         } else if (block.type === 'server_tool_use' || block.type === 'mcp_tool_use') {
           emitCard(cb.toolUse(block.name ?? block.type, block.input ?? {}, block.id ?? ''));
@@ -915,10 +949,15 @@ export class CLISessionRunner extends EventEmitter {
   }
 
   private shouldAutoApprove(sessionId: string, toolName: string, input: Record<string, unknown>): boolean {
-    // Sandbox MCP tools
+    // Sandbox MCP tools (SandboxBash, SetTitle) — always approve.
+    // SandboxBash enforces restrictions at kernel level (sandbox-exec / bwrap),
+    // so no additional permission gate is needed.
     if (toolName.startsWith(SANDBOX_MCP_PREFIX)) {
-      const ps = this.sessions.get(sessionId);
-      return ps?.sandboxed ?? this.sessionSandboxed.get(sessionId) ?? false;
+      // Intercept SetTitle: extract title from input and update session
+      if (toolName === SET_TITLE_TOOL && input.title) {
+        this.updateSessionTitle(sessionId, input.title as string);
+      }
+      return true;
     }
 
     // Check permission level auto-approve set

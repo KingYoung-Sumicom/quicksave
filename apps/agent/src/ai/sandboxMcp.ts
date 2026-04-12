@@ -8,3 +8,4 @@
 /** MCP server name — tool names appear as `mcp__quicksave-sandbox__<tool>` in canUseTool. */
 export const SANDBOX_MCP_NAME = 'quicksave-sandbox';
 export const SANDBOX_MCP_PREFIX = `mcp__${SANDBOX_MCP_NAME}__`;
+export const SET_TITLE_TOOL = `${SANDBOX_MCP_PREFIX}SetTitle`;

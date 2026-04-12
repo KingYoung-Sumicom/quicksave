@@ -64,7 +64,7 @@ export function NavigationDrawer({
           if (!cancelled) {
             setSessionsByPath((prev) => {
               const next = new Map(prev);
-              next.set(cp.path, sessions.filter((s) => s.cwd === cp.path || !s.cwd));
+              next.set(cp.path, Object.values(sessions).filter((s) => s.cwd === cp.path || !s.cwd));
               return next;
             });
           }
@@ -185,9 +185,8 @@ export function NavigationDrawer({
           {availableCodingPaths.map((cp) => {
             const baseSessions = sessionsByPath.get(cp.path) || [];
             // Merge live state from store (push-updated) into fetched sessions
-            const storeMap = new Map(storeSessions.map((s) => [s.sessionId, s]));
             const sessions = baseSessions.map((s) => {
-              const live = storeMap.get(s.sessionId);
+              const live = storeSessions[s.sessionId];
               return live ? { ...s, isActive: live.isActive, isStreaming: live.isStreaming, hasPendingInput: live.hasPendingInput } : s;
             });
             const sorted = [...sessions].sort((a, b) => {
@@ -331,9 +330,8 @@ export function NavigationDrawer({
           {availableCodingPaths.map((cp) => {
             const baseSessions = sessionsByPath.get(cp.path) || [];
             // Merge live state from store (push-updated) into fetched sessions
-            const storeMap = new Map(storeSessions.map((s) => [s.sessionId, s]));
             const sessions = baseSessions.map((s) => {
-              const live = storeMap.get(s.sessionId);
+              const live = storeSessions[s.sessionId];
               return live ? { ...s, isActive: live.isActive, isStreaming: live.isStreaming, hasPendingInput: live.hasPendingInput } : s;
             });
             const sorted = [...sessions].sort((a, b) => {

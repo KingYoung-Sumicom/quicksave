@@ -94,19 +94,21 @@ function SessionStatusIndicator() {
   const isOnSessionPage = !!useMatch('/agent/:agentId/coding/:pathHash/:sessionId');
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
   const sessions = useClaudeStore((s) => s.sessions);
+  const sessionConfigs = useClaudeStore((s) => s.sessionConfigs);
 
   if (!isOnSessionPage || !activeSessionId) return null;
 
-  const session = sessions.find((s) => s.sessionId === activeSessionId);
-  if (!session) return null;
-
-  const statusKey: SessionStatusKey = sessionStatusKey(session);
+  const session = sessions[activeSessionId];
+  const statusKey: SessionStatusKey = session ? sessionStatusKey(session) : 'thinking';
+  // Prefer config title (arrives instantly via push / getCards)
+  // over session.summary (populated by listSessions, may be stale or absent on mobile deep link)
+  const title = (sessionConfigs[activeSessionId]?.title as string) || session?.summary;
 
   return (
     <div className="flex items-center justify-center gap-2">
       <StatusDot statusKey={statusKey} />
-      {session.summary && (
-        <span className="text-sm text-slate-300 line-clamp-2 min-w-0">{session.summary}</span>
+      {title && (
+        <span className="text-sm text-slate-300 line-clamp-2 min-w-0">{title}</span>
       )}
     </div>
   );

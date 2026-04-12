@@ -67,7 +67,7 @@ export function ClaudePanel({
     clearCards,
   } = useClaudeStore();
 
-  const activeSession = sessions.find((s) => s.sessionId === activeSessionId);
+  const activeSession = activeSessionId ? sessions[activeSessionId] : undefined;
   const isInactiveRaw = !!activeSessionId && !!activeSession && activeSession.isActive === false;
   // Stabilize: only update isInactive when the session is actually found in the list.
   // Prevents flicker during session list refresh (where activeSession is briefly undefined).
@@ -407,7 +407,7 @@ export function ClaudePanel({
         </>
       ) : (
         <SessionList
-          sessions={sessions}
+          sessions={Object.values(sessions)}
           isLoading={isLoadingSessions}
           onSelect={handleSelectSession}
           onNewSession={handleNewSession}
