@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { SwipeableDrawer } from './SwipeableDrawer';
+import { Spinner } from './ui/Spinner';
+import { ErrorBox } from './ui/ErrorBox';
 import { exportMasterSecret, importMasterSecret, saveApiKey as saveApiKeyToStorage, hasApiKey, getApiKey } from '../lib/secureStorage';
 import { useMachineStore } from '../stores/machineStore';
 import type { Machine } from '../stores/machineStore';
@@ -270,9 +272,7 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAge
             </p>
 
             {keyError && (
-              <div className="p-2 bg-red-500/20 border border-red-500/50 rounded text-sm text-red-400">
-                {keyError}
-              </div>
+              <ErrorBox>{keyError}</ErrorBox>
             )}
 
             {keySuccess && (
@@ -288,7 +288,7 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAge
             >
               {isSavingKey ? (
                 <>
-                  <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <Spinner color="border-white" />
                   Saving...
                 </>
               ) : (
@@ -419,9 +419,7 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAge
             </div>
 
             {importError && (
-              <div className="p-2 bg-red-500/20 border border-red-500/50 rounded text-sm text-red-400">
-                {importError}
-              </div>
+              <ErrorBox>{importError}</ErrorBox>
             )}
 
             {importSuccess && (
@@ -479,7 +477,7 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAge
                       <p className="text-sm text-slate-300">Latest</p>
                       <span className="text-sm font-mono text-slate-400 flex items-center gap-2">
                         {isCheckingUpdate ? (
-                          <span className="inline-block w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
+                          <Spinner size="w-3 h-3" />
                         ) : (
                           latestVersionFromStore || '—'
                         )}
@@ -555,7 +553,7 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAge
                     >
                       {isUpdating ? (
                         <>
-                          <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          <Spinner color="border-white" />
                           Updating...
                         </>
                       ) : (

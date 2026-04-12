@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { Spinner } from './ui/Spinner';
+import { ErrorBox } from './ui/ErrorBox';
 import { useGitStore } from '../stores/gitStore';
 
 interface SettingsProps {
@@ -101,9 +103,7 @@ export function Settings({ isOpen, onClose, onSaveApiKey }: SettingsProps) {
             </p>
 
             {error && (
-              <div className="p-2 bg-red-500/20 border border-red-500/50 rounded text-sm text-red-400">
-                {error}
-              </div>
+              <ErrorBox>{error}</ErrorBox>
             )}
 
             {success && (
@@ -119,7 +119,7 @@ export function Settings({ isOpen, onClose, onSaveApiKey }: SettingsProps) {
             >
               {isSaving ? (
                 <>
-                  <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <Spinner color="border-white" />
                   Saving...
                 </>
               ) : (

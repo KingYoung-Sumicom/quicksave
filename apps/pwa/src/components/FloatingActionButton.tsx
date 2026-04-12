@@ -1,4 +1,5 @@
 import { clsx } from 'clsx';
+import { Spinner } from './ui/Spinner';
 import type { SelectionSource } from '../stores/gitStore';
 
 interface FloatingActionButtonProps {
@@ -63,7 +64,7 @@ export function FloatingActionButton({
       >
         {isLoading ? (
           <>
-            <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            <Spinner color="border-white" />
             Processing...
           </>
         ) : (

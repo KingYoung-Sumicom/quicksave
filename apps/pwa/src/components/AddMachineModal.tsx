@@ -3,6 +3,7 @@ import { useMachineStore } from '../stores/machineStore';
 import { useConnectionStore } from '../stores/connectionStore';
 import { QRScanner } from './QRScanner';
 import { Modal } from './ui/Modal';
+import { ErrorBox } from './ui/ErrorBox';
 
 interface AddMachineModalProps {
   onClose: () => void;
@@ -168,9 +169,7 @@ export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
 
               {/* Error */}
               {error && (
-                <div className="p-3 bg-red-500/20 border border-red-500/50 rounded-md">
-                  <p className="text-sm text-red-400">{error}</p>
-                </div>
+                <ErrorBox className="p-3">{error}</ErrorBox>
               )}
 
               {/* Actions */}

@@ -3,6 +3,7 @@ import { clsx } from 'clsx';
 import type { Machine } from '../stores/machineStore';
 import { useLongPress } from '../hooks/useLongPress';
 import { ChevronIcon } from './ui/ChevronIcon';
+import { Spinner } from './ui/Spinner';
 
 interface MachineCardProps {
   machine: Machine;
@@ -121,7 +122,7 @@ export function MachineCard({
         {/* Connecting indicator */}
         {isConnecting && (
           <div className="flex-shrink-0">
-            <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            <Spinner size="w-5 h-5" color="border-blue-500" />
           </div>
         )}
 

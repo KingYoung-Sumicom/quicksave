@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ErrorBox } from './ui/ErrorBox';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useMachineStore } from '../stores/machineStore';
 import { QRScanner } from './QRScanner';
@@ -117,9 +118,7 @@ export function ConnectionSetup({ onConnect, onSendApiKeyToAgent, onCheckAgentUp
               </div>
 
               {error && (
-                <div className="p-3 bg-red-500/20 border border-red-500/50 rounded-md">
-                  <p className="text-sm text-red-400">{error}</p>
-                </div>
+                <ErrorBox className="p-3">{error}</ErrorBox>
               )}
 
               <button
@@ -153,9 +152,7 @@ export function ConnectionSetup({ onConnect, onSendApiKeyToAgent, onCheckAgentUp
                 }}
               />
               {error && (
-                <div className="mt-4 p-3 bg-red-500/20 border border-red-500/50 rounded-md">
-                  <p className="text-sm text-red-400">{error}</p>
-                </div>
+                <ErrorBox className="mt-4 p-3">{error}</ErrorBox>
               )}
             </div>
           )}

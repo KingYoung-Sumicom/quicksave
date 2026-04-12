@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Spinner } from './ui/Spinner';
 
 interface GitignoreEditorProps {
   isOpen: boolean;
@@ -91,7 +92,7 @@ export function GitignoreEditor({ isOpen, onClose, onRead, onWrite }: GitignoreE
         <div className="flex-1 overflow-auto">
           {isLoading ? (
             <div className="flex items-center justify-center h-full">
-              <span className="inline-block w-5 h-5 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
+              <Spinner size="w-5 h-5" />
             </div>
           ) : (
             <textarea

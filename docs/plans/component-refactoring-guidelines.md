@@ -129,7 +129,12 @@
 
 ---
 
-### 4. Loading / Error / Empty 狀態元件
+### 4. Loading / Error / Empty 狀態元件 [部分完成]
+
+> **已完成：**
+> - `components/ui/Spinner.tsx` — 替換 13 個檔案中的 border spinner（FileList, MachineCard, GitignoreEditor, FloatingActionButton, CommitForm, Settings, AgentSettingsDrawer×2, DevicePairingSection, SettingsPanel×3, PathBrowser×2, QRScanner, ClaudePanel）
+> - `components/ui/ErrorBox.tsx` — 替換 8 個檔案中的 error box（CommitForm, RepoView, AddMachineModal, ConnectionSetup×2, DevicePairingSection×2, SettingsPanel×2, Settings）
+> **未替換：** SVG spinner（CommitForm, ClaudePanel）和 bouncing dots 為不同 pattern，保留原樣
 
 **Pattern:** 10+ 組件以不同方式重複 loading spinner、error box、empty state。目前有 4+ 種不同的 spinner 樣式。
 

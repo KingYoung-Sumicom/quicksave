@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
+import { Spinner } from './ui/Spinner';
 
 interface QRScannerProps {
   onScan: (agentId: string, publicKey: string, name?: string) => void;
@@ -159,7 +160,7 @@ export function QRScanner({ onScan, onPairingScan, onError }: QRScannerProps) {
             {/* Loading overlay */}
             {isStarting && (
               <div className="absolute inset-0 bg-slate-700 rounded-lg flex items-center justify-center z-10">
-                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500" />
+                <Spinner size="w-12 h-12" color="border-blue-500" />
               </div>
             )}
 

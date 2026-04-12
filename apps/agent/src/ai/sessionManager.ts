@@ -13,7 +13,7 @@ import type {
 } from '@sumicom/quicksave-shared';
 import { DEFAULT_MODEL, matchAllowPattern } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder, buildCardsFromHistory } from './cardBuilder.js';
-import { SANDBOX_MCP_PREFIX, SET_TITLE_TOOL } from './sandboxMcp.js';
+import { SANDBOX_BASH_TOOL, SET_TITLE_TOOL } from './sandboxMcp.js';
 import { getSessionRegistry } from './sessionRegistry.js';
 import type {
   PermissionLevel,
@@ -47,6 +47,15 @@ const AUTO_APPROVE: Record<PermissionLevel, Set<string>> = {
   default:     new Set(['TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent', 'EnterPlanMode']),
   plan:        new Set(['EnterPlanMode']),
 };
+
+const DEFAULT_SYSTEM_PROMPT = [
+  'For non-destructive shell commands (ls, cat, find, git log, git status, git diff, etc.), prefer SandboxBash over Bash. SandboxBash runs in a sandboxed environment. Use Bash only for commands that modify state.',
+  'Call SetTitle to set a descriptive session title when you start a new task or switch context. Keep titles short (e.g. "Fixing auth middleware", "Adding unit tests for UserService"). Update it when the focus changes.',
+].join('\n\n');
+
+function buildSystemPrompt(extra?: string): string {
+  return extra ? `${DEFAULT_SYSTEM_PROMPT}\n\n${extra}` : DEFAULT_SYSTEM_PROMPT;
+}
 
 export interface ManagedSession {
   sessionId: string;
@@ -158,12 +167,7 @@ export class SessionManager extends EventEmitter {
       ? (opts.permissionMode as PermissionLevel) : 'acceptEdits';
 
     const sandboxed = !!opts.sandboxed;
-
-    const sandboxNote = sandboxed
-      ? '[Sandbox mode: ON — use SandboxBash from quicksave-sandbox MCP for shell commands.]'
-      : '[Sandbox mode: OFF — SandboxBash is available but disabled.]';
-    const systemParts = [sandboxNote, opts.systemPrompt].filter(Boolean).join('\n');
-    const systemPrompt = systemParts;
+    const systemPrompt = buildSystemPrompt(opts.systemPrompt);
 
     // Create cardBuilder with 'pending' sessionId — will be updated after provider returns real one
     const cardBuilder = new StreamCardBuilder('pending', opts.streamId, opts.cwd);
@@ -263,6 +267,7 @@ export class SessionManager extends EventEmitter {
           streamId: opts.streamId,
           permissionLevel: level,
           sandboxed,
+          systemPrompt: buildSystemPrompt(),
         },
         cardBuilder,
         callbacks,
@@ -621,13 +626,16 @@ export class SessionManager extends EventEmitter {
   }
 
   private shouldAutoApprove(sessionId: string, toolName: string, input: Record<string, unknown>): boolean {
-    // Sandbox MCP tools (SandboxBash, SetTitle) — always approve.
-    if (toolName.startsWith(SANDBOX_MCP_PREFIX)) {
-      // Intercept SetTitle: extract title from input and update session
-      if (toolName === SET_TITLE_TOOL && input.title) {
-        this.updateSessionTitle(sessionId, input.title as string);
-      }
+    // SetTitle — always approve
+    if (toolName === SET_TITLE_TOOL) {
+      if (input.title) this.updateSessionTitle(sessionId, input.title as string);
       return true;
+    }
+
+    // SandboxBash: auto-approve when sandboxed, otherwise check as Bash
+    if (toolName === SANDBOX_BASH_TOOL) {
+      if (this.sessions.get(sessionId)?.sandboxed) return true;
+      toolName = 'Bash';  // fall through to permission check as Bash
     }
 
     // Check permission level auto-approve set

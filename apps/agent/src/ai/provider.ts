@@ -43,6 +43,7 @@ export interface ResumeSessionOpts {
   streamId: string;
   permissionLevel: PermissionLevel;
   sandboxed: boolean;
+  systemPrompt?: string;
 }
 
 export interface CodingAgentProvider {

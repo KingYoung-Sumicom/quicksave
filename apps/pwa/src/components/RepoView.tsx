@@ -1,4 +1,5 @@
 import { useEffect, useCallback, useState, useMemo } from 'react';
+import { ErrorBox } from './ui/ErrorBox';
 import {
   useGitStore,
   selectStagedFiles,
@@ -255,9 +256,7 @@ export function RepoView({
       <div className="p-4 space-y-4">
         {/* Error Display */}
         {error && (
-          <div className="p-3 bg-red-500/20 border border-red-500/50 rounded-lg">
-            <p className="text-sm text-red-400">{error}</p>
-          </div>
+          <ErrorBox className="p-3">{error}</ErrorBox>
         )}
 
         {/* Loading Indicator */}

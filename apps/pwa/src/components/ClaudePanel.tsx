@@ -8,6 +8,7 @@ import { CardRenderer } from './chat/CardRenderer';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
 import { MODELS, PERMISSION_MODES, AGENT_TYPES, type AgentType } from '../lib/claudePresets';
 import { ButtonGroup } from './ui/ButtonGroup';
+import { Spinner } from './ui/Spinner';
 import { ToggleSwitch } from './ui/ToggleSwitch';
 
 const REASONING_EFFORTS = [
@@ -470,7 +471,7 @@ function SessionList({
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center py-12">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
+        <Spinner size="w-8 h-8" color="border-blue-500" />
       </div>
     );
   }

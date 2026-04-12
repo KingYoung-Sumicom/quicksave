@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
+import { Spinner } from './ui/Spinner';
+import { ErrorBox } from './ui/ErrorBox';
 import { useGitStore, selectCanCommit } from '../stores/gitStore';
 import { CLAUDE_MODELS, type ClaudeModel } from '@sumicom/quicksave-shared';
 import { clsx } from 'clsx';
@@ -145,7 +147,7 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
                   title="Regenerate"
                 >
                   {isGeneratingAiSummary ? (
-                    <span className="inline-block w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin" />
+                    <Spinner size="w-3 h-3" borderWidth="border" />
                   ) : (
                     '↻'
                   )}
@@ -189,9 +191,7 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
 
         {/* AI Error Display */}
         {aiSummaryError && (
-          <div className="p-2 bg-red-500/20 border border-red-500/50 rounded text-sm text-red-400">
-            {aiSummaryError}
-          </div>
+          <ErrorBox>{aiSummaryError}</ErrorBox>
         )}
 
         {/* Commit Message */}

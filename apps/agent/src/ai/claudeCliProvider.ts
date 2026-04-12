@@ -87,21 +87,15 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     cardBuilder: StreamCardBuilder,
     callbacks: ProviderCallbacks,
   ): Promise<{ sessionId: string; session: ProviderSession }> {
-    const sandboxNote = opts.sandboxed
-      ? '[Sandbox mode: ON — use SandboxBash from quicksave-sandbox MCP for shell commands.]'
-      : '[Sandbox mode: OFF — SandboxBash is available but disabled.]';
-    const systemParts = [sandboxNote, opts.systemPrompt].filter(Boolean).join('\n');
-    const prompt = `[System context: ${systemParts}]\n\n${opts.prompt}`;
-
     const args = this.buildCliArgs({
-      prompt,
+      prompt: opts.prompt,
       cwd: opts.cwd,
       model: opts.model,
       permissionMode: opts.permissionLevel,
-      sandboxed: opts.sandboxed,
+      systemPrompt: opts.systemPrompt,
     });
 
-    return this.spawnAndConsume(args, opts.cwd, opts.streamId, opts.permissionLevel, opts.sandboxed, prompt, cardBuilder, callbacks, opts.model);
+    return this.spawnAndConsume(args, opts.cwd, opts.streamId, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model);
   }
 
   async resumeSession(
@@ -113,7 +107,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       prompt: opts.prompt,
       cwd: opts.cwd,
       permissionMode: opts.permissionLevel,
-      sandboxed: opts.sandboxed,
+      systemPrompt: opts.systemPrompt,
       resumeSessionId: opts.sessionId,
     });
 
@@ -127,7 +121,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     cwd: string;
     model?: string;
     permissionMode?: PermissionLevel;
-    sandboxed?: boolean;
+    systemPrompt?: string;
     resumeSessionId?: string;
   }): string[] {
     const args: string[] = [
@@ -137,6 +131,10 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       '--verbose',
       '-p', '',  // empty print flag — prompt sent via stdin
     ];
+
+    if (opts.systemPrompt) {
+      args.push('--append-system-prompt', opts.systemPrompt);
+    }
 
     if (opts.model) {
       args.push('--model', opts.model);

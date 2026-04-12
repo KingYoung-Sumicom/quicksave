@@ -1,4 +1,6 @@
 import { useState, useMemo } from 'react';
+import { Spinner } from './ui/Spinner';
+import { ErrorBox } from './ui/ErrorBox';
 import { useIdentityStore } from '../stores/identityStore';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useMachineStore } from '../stores/machineStore';
@@ -214,9 +216,7 @@ export function DevicePairingSection() {
         </p>
 
         {pairError && (
-          <div className="p-2 bg-red-500/20 border border-red-500/50 rounded text-sm text-red-400">
-            {pairError}
-          </div>
+          <ErrorBox>{pairError}</ErrorBox>
         )}
         {pairSuccess && (
           <div className="p-2 bg-green-500/20 border border-green-500/50 rounded text-sm text-green-400">
@@ -266,9 +266,7 @@ export function DevicePairingSection() {
           </div>
         )}
         {rotateError && (
-          <div className="p-2 bg-red-500/20 border border-red-500/50 rounded text-sm text-red-400">
-            {rotateError}
-          </div>
+          <ErrorBox>{rotateError}</ErrorBox>
         )}
         <button
           onClick={() => setShowRotateConfirm(true)}
@@ -311,7 +309,7 @@ export function DevicePairingSection() {
                   >
                     {isRotating ? (
                       <>
-                        <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        <Spinner color="border-white" />
                         Rotating...
                       </>
                     ) : (

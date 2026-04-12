@@ -2,6 +2,7 @@ import { clsx } from 'clsx';
 import { useState, useMemo } from 'react';
 import type { FileChange, FileStatus, FileDiff } from '@sumicom/quicksave-shared';
 import { DiffViewer } from './DiffViewer';
+import { Spinner } from './ui/Spinner';
 import type { SelectionSource, LineSelection, SelectionKey } from '../stores/gitStore';
 import { makeSelectionKey } from '../stores/gitStore';
 
@@ -256,7 +257,7 @@ export function FileList({
             {/* Expand/Collapse Icon */}
             <span className="text-slate-400 w-4 flex-shrink-0 text-xs">
               {isLoading ? (
-                <span className="inline-block w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin" />
+                <Spinner size="w-3 h-3" borderWidth="border" />
               ) : isExpanded ? '▼' : '▶'}
             </span>
 

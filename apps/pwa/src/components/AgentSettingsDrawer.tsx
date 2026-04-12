@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { SwipeableDrawer } from './SwipeableDrawer';
+import { Spinner } from './ui/Spinner';
 import type { ConfigValue } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
 import { useConnectionStore } from '../stores/connectionStore';
@@ -127,7 +128,7 @@ export function AgentSettingsDrawer({
                   <p className="text-sm text-slate-300">Latest</p>
                   <span className="text-sm font-mono text-slate-400 flex items-center gap-2">
                     {isCheckingUpdate ? (
-                      <span className="inline-block w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
+                      <Spinner size="w-3 h-3" />
                     ) : (
                       latestVersion || '—'
                     )}
@@ -203,7 +204,7 @@ export function AgentSettingsDrawer({
                 >
                   {isUpdating ? (
                     <>
-                      <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <Spinner color="border-white" />
                       Updating...
                     </>
                   ) : (
