@@ -122,13 +122,7 @@ export async function runDaemon(): Promise<void> {
   // Pub/sub: ClaudeCodeService emits card events → send only to peers subscribed to that session
   const claudeService = messageHandler.getClaudeService();
   claudeService.on('card-event', (event) => {
-    const msg = createMessage('claude:card-event', event);
-    const sent = connection.sendToSession(event.sessionId, msg);
-    // Defense-in-depth: broadcast permission card events if no peer is subscribed yet
-    if (sent === 0 && event.type === 'add' && event.card.pendingInput) {
-      console.warn(`[card-event] fallback broadcast for permission card session=${event.sessionId.slice(0, 8)}`);
-      connection.broadcast(msg);
-    }
+    connection.sendToSession(event.sessionId, createMessage('claude:card-event', event));
   });
   claudeService.on('card-stream-end', (result) => {
     connection.sendToSession(result.sessionId, createMessage('claude:card-stream-end', result));
@@ -148,13 +142,7 @@ export async function runDaemon(): Promise<void> {
     }
   });
   claudeService.on('user-input-request', (request) => {
-    const msg = createMessage('claude:user-input-request', request);
-    const sent = connection.sendToSession(request.sessionId, msg);
-    if (sent === 0) {
-      // Defense-in-depth: broadcast if no peer is subscribed to this session
-      console.warn(`[user-input-request] fallback broadcast for session=${request.sessionId.slice(0, 8)}`);
-      connection.broadcast(msg);
-    }
+    connection.sendToSession(request.sessionId, createMessage('claude:user-input-request', request));
   });
   claudeService.on('user-input-resolved', (info) => {
     connection.sendToSession(info.sessionId, createMessage('claude:user-input-resolved', info));
