@@ -409,12 +409,20 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       return false;
     }
 
-    // ── User messages (tool results) ──
+    // ── User messages (prompts + tool results) ──
     if (msg.type === 'user') {
       if (msg.agentId) return false;  // sidechain
       const content = msg.message?.content;
+      if (typeof content === 'string' && content) {
+        flushText();
+        emitCard(cb.userMessage(content));
+      }
       if (Array.isArray(content)) {
         for (const block of content) {
+          if (block.type === 'text' && block.text) {
+            flushText();
+            emitCard(cb.userMessage(block.text));
+          }
           if (block.type === 'tool_result') {
             const resultContent = extractToolResultText(block.content);
             const cardEvt = cb.toolResult(block.tool_use_id, resultContent, !!block.is_error);
