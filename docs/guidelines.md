@@ -18,7 +18,7 @@ Before designing or implementing any feature, check the relevant guidelines belo
 - 新增/移除 app 或 package
 - 變更 WebSocket message type（`packages/shared/src/types.ts`）
 - 變更 `MessageHandler` 路由邏輯
-- 變更 `ClaudeCodeService` session 生命週期或事件
+- 變更 `CLISessionRunner` session 生命週期或事件
 - 變更 `AgentConnection` 加密或 PubSub 機制
 - 變更 PWA store 狀態結構或 hook API
 - 新增或移除 AI provider

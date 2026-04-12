@@ -181,7 +181,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     }
 
     if (message.type === 'claude:session-updated') {
-      const payload = message.payload as { sessionId: string; isActive: boolean; isStreaming: boolean; hasPendingInput: boolean; permissionMode?: string };
+      const payload = message.payload as { sessionId: string; isActive: boolean; isStreaming: boolean; hasPendingInput: boolean; permissionMode?: string; sandboxed?: boolean };
       const { sessions, activeSessionId } = useClaudeStore.getState();
       const current = sessions.find((s) => s.sessionId === payload.sessionId);
       if (current &&
@@ -189,11 +189,26 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
         current.isStreaming === payload.isStreaming &&
         current.hasPendingInput === payload.hasPendingInput &&
         current.permissionMode === payload.permissionMode) return true;
-      const updated = sessions.map((s) =>
-        s.sessionId === payload.sessionId
-          ? { ...s, isActive: payload.isActive, isStreaming: payload.isStreaming, hasPendingInput: payload.hasPendingInput, permissionMode: payload.permissionMode }
-          : s
-      );
+      let updated;
+      if (current) {
+        updated = sessions.map((s) =>
+          s.sessionId === payload.sessionId
+            ? { ...s, isActive: payload.isActive, isStreaming: payload.isStreaming, hasPendingInput: payload.hasPendingInput, permissionMode: payload.permissionMode }
+            : s
+        );
+      } else {
+        // Upsert: session not in list yet (just created) — add a stub entry
+        updated = [...sessions, {
+          sessionId: payload.sessionId,
+          summary: '',
+          lastModified: Date.now(),
+          createdAt: Date.now(),
+          isActive: payload.isActive,
+          isStreaming: payload.isStreaming,
+          hasPendingInput: payload.hasPendingInput,
+          permissionMode: payload.permissionMode,
+        } as any];
+      }
       setSessions(updated);
       if (payload.sessionId === activeSessionId) {
         setStreaming(payload.isStreaming);
@@ -309,11 +324,6 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
   const resumeSession = useCallback(
     async (sessionId: string, prompt: string, cwd?: string) => {
       const wasAlreadyStreaming = useClaudeStore.getState().isStreaming;
-      if (wasAlreadyStreaming) {
-        // Hot resume: clear stream filter so early events from the new stream aren't dropped
-        // before we know its streamId. The response will re-add the correct IDs.
-        useClaudeStore.setState({ activeStreamIds: [] });
-      }
       setStreaming(true);
       setStreamError(null);
       appendCard({ type: 'user', id: `local-user-${Date.now()}`, timestamp: Date.now(), text: prompt });
@@ -324,7 +334,8 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
           throw new Error(response.error || 'Failed to resume session');
         }
         if (wasAlreadyStreaming) {
-          // Hot resume: set the new streamId (old stream ended or will end separately)
+          // Hot resume: ADD the new streamId alongside existing ones.
+          // Old streamIds stay until their card-stream-end arrives naturally.
           if (response.streamId) addStreamId(response.streamId);
         } else {
           // Cold resume: set as the only active streamId

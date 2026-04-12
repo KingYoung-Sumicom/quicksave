@@ -11,14 +11,45 @@ import type {
   SubagentCard,
   PendingInputAttachment,
 } from '@sumicom/quicksave-shared';
-import {
-  getSessionMessages,
-  listSubagents,
-} from '@anthropic-ai/claude-agent-sdk';
-import { readFile } from 'fs/promises';
+import { readFile, readdir } from 'fs/promises';
 import { join } from 'path';
+import { existsSync } from 'fs';
+import { homedir } from 'os';
 
 const TOOL_RESULT_TRUNCATE_LENGTH = 500;
+
+// ── Direct JSONL file reading (replaces SDK getSessionMessages/listSubagents) ──
+
+function encodeCwdPath(cwd: string): string {
+  return cwd.replace(/\//g, '-');
+}
+
+function claudeProjectDir(cwd: string): string {
+  return join(homedir(), '.claude', 'projects', encodeCwdPath(cwd));
+}
+
+async function readMessagesFromJSONL(sessionId: string, cwd: string): Promise<any[]> {
+  const p = join(claudeProjectDir(cwd), sessionId + '.jsonl');
+  if (!existsSync(p)) return [];
+  const content = await readFile(p, 'utf-8');
+  const msgs: any[] = [];
+  for (const line of content.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const m = JSON.parse(line);
+      if (m.type === 'user' || m.type === 'assistant' || m.type === 'system') msgs.push(m);
+    } catch { /* skip */ }
+  }
+  return msgs;
+}
+
+async function listSubagentIdsFromDisk(sessionId: string, cwd: string): Promise<string[]> {
+  const d = join(claudeProjectDir(cwd), sessionId, 'subagents');
+  if (!existsSync(d)) return [];
+  try {
+    return (await readdir(d)).filter(f => f.endsWith('.meta.json')).map(f => f.replace('.meta.json', ''));
+  } catch { return []; }
+}
 
 /** Extract readable text from tool_result content (string or array of blocks). */
 function extractToolResultText(content: unknown): string {
@@ -297,7 +328,7 @@ export async function buildCardsFromHistory(
   offset = 0,
   limit = 50,
 ): Promise<CardHistoryResponse> {
-  const allMessages = (await getSessionMessages(sessionId, { dir: cwd, includeSystemMessages: true }) as any[])
+  const allMessages = (await readMessagesFromJSONL(sessionId, cwd))
     .filter((m: any) => !m.isSidechain);
 
   const total = allMessages.length;
@@ -346,24 +377,12 @@ export async function buildCardsFromHistory(
 
   const toolUseIdToAgentId = new Map<string, string>();
   try {
-    const agentIds = await listSubagents(sessionId, { dir: cwd });
-    // Read each subagent's meta.json to get description, then match to toolUseId
-    // SDK stores subagent meta at ~/.claude/projects/<cwd-hash>/<sessionId>/subagents/<agentId>.meta.json
-    const cwdHash = cwd.replace(/\//g, '-').replace(/^-/, '');
-    const subagentsDir = join(process.env.HOME ?? '', '.claude', 'projects', cwdHash, sessionId, 'subagents');
+    const agentIds = await listSubagentIdsFromDisk(sessionId, cwd);
+    const subagentsDir = join(claudeProjectDir(cwd), sessionId, 'subagents');
 
     for (const agentId of agentIds) {
       try {
-        const possiblePaths = [
-          join(subagentsDir, `${agentId}.meta.json`),
-        ];
-        let meta: { description?: string } | null = null;
-        for (const p of possiblePaths) {
-          try {
-            meta = JSON.parse(await readFile(p, 'utf-8'));
-            break;
-          } catch { /* try next */ }
-        }
+        const meta = JSON.parse(await readFile(join(subagentsDir, `${agentId}.meta.json`), 'utf-8'));
         if (meta?.description && descToToolUseId.has(meta.description)) {
           toolUseIdToAgentId.set(descToToolUseId.get(meta.description)!, agentId);
         }

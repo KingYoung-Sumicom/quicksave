@@ -4,7 +4,7 @@
 > - 新增或移除 `apps/`、`packages/` 的子模組
 > - 變更 WebSocket message type（`packages/shared/src/types.ts`）
 > - 變更 `MessageHandler` 的路由邏輯
-> - 變更 `ClaudeCodeService` 的 session 生命週期或事件
+> - 變更 `CLISessionRunner` 的 session 生命週期或事件
 > - 變更 `AgentConnection` 的加密或 PubSub 機制
 > - 變更 PWA store 的狀態結構或 hook API
 > - 新增或移除 AI provider
@@ -49,8 +49,8 @@ apps/agent/src/
 │   ├── pubsub.ts           # Topic-based PubSub（session + broadcast 路由）
 │   └── pubsub.test.ts      # PubSub 單元測試
 ├── ai/
-│   ├── claudeCodeService.ts  # Claude Agent SDK 包裝層
-│   ├── cardBuilder.ts        # StreamCardBuilder：SDK 事件 → CardEvent
+│   ├── cliSessionRunner.ts   # Claude CLI wrapper（stdin/stdout control protocol）
+│   ├── cardBuilder.ts        # StreamCardBuilder：stream-json 事件 → CardEvent
 │   └── sessionStore.ts       # Session 持久化（JSONL）
 └── git/
     └── operations.ts         # Git 指令執行
@@ -71,47 +71,60 @@ acquireLock()
 
 ### Session 生命週期
 
+架構使用 CLI wrapper（`cliSessionRunner.ts`），透過 `claude` CLI 的 stdin/stdout control protocol 驅動：
+
 ```
 claude:start → MessageHandler.handle_claude_start()
-  → claudeCodeService.startSession(opts)
-    → AsyncQueue<SDKUserMessage> inputQueue = new AsyncQueue()
-    → query(inputQueue, { resume: null })          [Claude Agent SDK]
-    → inputQueue.push({ type: 'text', text: prompt })
-    → consumeQueryStream(sessionId, query):
-        for await (msg of query):
-          if (msg.type === 'result'): continue      [next turn]
-          else: StreamCardBuilder.processSDKMessage(msg) → CardEvent
-               emit('card-event', event)
+  → cliSessionRunner.startSession(opts)
+    → spawn('claude', ['--output-format', 'stream-json', '--input-format', 'stream-json',
+                        '--permission-prompt-tool', 'stdio', '-p', '', ...])
+    → 等待 stdout 的 system:init 事件取得 session_id
+    → stdin 寫入 { type: 'user', message: { role: 'user', content: prompt } }
+    → consumeStream(sessionId, streamId):
+        for await (line of stdout):
+          if control_request: handleControlRequest → 自動核准 or emit card + 等使用者回應
+          if stream_event/assistant/user/system: routeMessage → CardBuilder → CardEvent
+          if result: emit('card-stream-end')
   ← sessionId
 
 claude:resume → resumeSession(sessionId, prompt)
-  → find PersistentSession by sessionId
-  → if (session.cold): new query() with resume: sessionId
-  → else (hot): inputQueue.push({ type: 'text', text: prompt })
+  → if (session.streaming && session.process):
+      hot resume: stdin 寫入 user message JSON
+  → else:
+      cold resume: spawn('claude', [..., '--resume', sessionId])
 
 claude:cancel → cancelSession(sessionId)
-  → query.interrupt()              [SDK built-in]
+  → stdin 寫入 { type: 'control_request', request: { subtype: 'interrupt' } }
 
 claude:close → closeSession(sessionId)
-  → inputQueue.end() + query.close()
+  → process.kill('SIGTERM')
 ```
 
-**PersistentSession 資料結構：**
+**Permission 處理 — control_request/control_response protocol：**
+```
+CLI stdout: { type: 'control_request', request_id: 'uuid', request: { subtype: 'can_use_tool', tool_name, input, tool_use_id } }
+  → shouldAutoApprove(toolName)? → stdin: { type: 'control_response', response: { subtype: 'success', request_id, response: { behavior: 'allow' } } }
+  → 否則: 建立 ToolCallCard with pendingInput → emit → PWA 顯示 Allow/Deny
+  → 使用者回應後: stdin: control_response with allow/deny
+```
+
+**ActiveSession 資料結構：**
 ```typescript
-interface PersistentSession {
-  query: Query;                    // Streaming AsyncGenerator<SDKMessage>
-  inputQueue: AsyncQueue<SDKUserMessage>;  // Feeds prompts to query
+interface ActiveSession {
   sessionId: string;
+  process: ChildProcess | null;   // 長期運行的 claude 進程
   cwd: string;
   streaming: boolean;
   permissionLevel: PermissionLevel;
+  sandboxed: boolean;
   cardBuilder: StreamCardBuilder | null;
+  pendingControlRequests: Map<string, { requestId, toolName, toolInput, toolUseId }>;
 }
 ```
 
 ### AI Provider 事件
 
-`ClaudeCodeService` 繼承 `EventEmitter`，發出以下事件：
+`CLISessionRunner` 繼承 `EventEmitter`，發出以下事件：
 
 | 事件名稱 | Payload 型別 | 時機 |
 |---|---|---|
@@ -276,7 +289,7 @@ interface Message {
 
 ### Card 資料模型
 
-Card 是 PWA 顯示的最小單位，由 `StreamCardBuilder` 從 SDK 事件組裝：
+Card 是 PWA 顯示的最小單位，由 `StreamCardBuilder` 從 CLI stream-json 事件組裝：
 
 ```typescript
 // packages/shared/src/cards.ts
@@ -376,7 +389,7 @@ CLI (index.ts)
 | `shutdown` / `restart` | 關閉/重啟 daemon | — |
 | `debug` | 完整內部狀態快照 | `DebugResult` |
 | `resolve-input` | 強制解決卡住的權限請求 | `{ resolved: boolean }` |
-| `list-sessions` | 列出 SDK sessions（含 live state） | `{ sessions: [...] }` |
+| `list-sessions` | 列出 CLI sessions（含 live state） | `{ sessions: [...] }` |
 | `get-cards` | 取得 session card history | `CardHistoryResponse` |
 
 ### Debug CLI 指令
@@ -387,7 +400,7 @@ CLI (index.ts)
 | CLI 指令 | IPC 方法 | 用途 |
 |---|---|---|
 | `service debug` | `debug` | Peers、PubSub subscriptions、pending permissions、active sessions |
-| `service sessions [--cwd]` | `list-sessions` | 所有 sessions 列表（SDK + live state） |
+| `service sessions [--cwd]` | `list-sessions` | 所有 sessions 列表（JSONL + live state） |
 | `service cards <id> [--cwd] [--limit]` | `get-cards` | Session card history + pending inputs |
 | `service resolve <id> [--deny]` | `resolve-input` | 手動 resolve 卡住的 permission |
 
@@ -414,20 +427,19 @@ interface DebugResult {
   ↓ sendRequest('claude:start', payload)
   ↓ [加密] → WebRTC → [解密]
   ↓ MessageHandler.handle_claude_start()
-  ↓ ClaudeCodeService.startSession()
-  ↓ inputQueue = new AsyncQueue<SDKUserMessage>()
-  ↓ query = query(inputQueue, { resume: null })   [Claude Agent SDK]
-  ↓ inputQueue.push({ type: 'text', text: prompt })
-  ↓ consumeQueryStream() loop:
-     for await (msg of query)
-       if msg !== 'result':
-         StreamCardBuilder.processSDKMessage() → CardEvent
-         emit('card-event')
+  ↓ CLISessionRunner.startSession()
+  ↓ spawn('claude', ['--input-format', 'stream-json', '--output-format', 'stream-json',
+  ↓                    '--permission-prompt-tool', 'stdio', ...])
+  ↓ stdin.write({ type: 'user', message: { role: 'user', content: prompt } })
+  ↓ consumeStream() loop:
+     for await (line of readline(proc.stdout))
+       if control_request → handleControlRequest() → emit card → wait user → sendControlResponse()
+       else → routeMessage() → StreamCardBuilder → CardEvent → emit('card-event')
   ↓ connection.sendToSession() → [加密] → WebRTC → [解密]
   ↓ useClaudeOperations → 收到 'claude:card-event' push
   ↓ claudeStore.handleCardEvent()
   ↓ React re-render → CardRenderer
-  ↓ on 'result': loop continues, waiting for next inputQueue.push()
+  ↓ on 'result': turn complete, process stays alive for next stdin message
 ```
 
 ---
@@ -436,7 +448,7 @@ interface DebugResult {
 
 | 模式 | 位置 | 用途 |
 |---|---|---|
-| EventEmitter | `ClaudeCodeService` | AI 事件廣播 |
+| EventEmitter | `CLISessionRunner` | AI 事件廣播 |
 | PubSub | `AgentConnection` + `pubsub.ts` | Session 級別訊息路由 |
 | Request-Response | `useClaudeOperations` | 訊息 ID 配對等待 |
 | Zustand Store | `claudeStore.ts` | 集中式 PWA 狀態 |
@@ -449,7 +461,6 @@ interface DebugResult {
 
 | 文件 | 說明 |
 |---|---|
-| `docs/references/claude-agent-sdk-message-types.md` | Claude SDK `getSessionMessages` 型別 |
-| `docs/references/openai-codex-sdk-types.md` | OpenAI Codex SDK 型別 |
+| `docs/references/claude-agent-sdk-message-types.md` | Claude CLI stream-json 事件型別參考 |
 | `docs/plans/codex-integration-plan.md` | Codex 整合計劃書 |
 | `docs/plans/ui-design-rules.md` | PWA UI 設計規則 |
