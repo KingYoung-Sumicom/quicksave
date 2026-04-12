@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useConnectionStore } from '../stores/connectionStore';
 import type { Repository, CodingPath, ClaudeSessionSummary } from '@sumicom/quicksave-shared';
 import { agentUrl } from '../lib/pathHash';
+import { ChevronIcon } from './ui/ChevronIcon';
 import { StatusDot, sessionStatusKey } from './SessionStatusBadge';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
 
@@ -108,9 +109,7 @@ export function AgentDashboard({
                   {repo.currentBranch && (
                     <span className="text-xs text-slate-400 flex-shrink-0">{repo.currentBranch}</span>
                   )}
-                  <svg className="w-4 h-4 text-slate-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
+                  <ChevronIcon size="w-4 h-4" className="text-slate-500" />
                 </button>
               ))}
             </div>

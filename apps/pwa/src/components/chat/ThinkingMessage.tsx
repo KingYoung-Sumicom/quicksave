@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ChevronIcon } from '../ui/ChevronIcon';
 
 export function ThinkingMessage({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -11,12 +12,7 @@ export function ThinkingMessage({ content }: { content: string }) {
         className="text-left bg-slate-800/40 border-l-2 border-slate-600/40 rounded-r-lg pl-2.5 pr-3 py-1.5 max-w-full text-xs text-slate-500 hover:text-slate-400 transition-colors overflow-hidden"
       >
         <div className="flex items-center gap-1.5">
-          <svg
-            className={`w-3 h-3 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
-            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
+          <ChevronIcon expanded={expanded} />
           <span className="italic truncate">
             {expanded ? 'Thinking' : preview + (content.length > 80 ? '...' : '')}
           </span>

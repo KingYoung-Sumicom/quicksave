@@ -1,6 +1,8 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { clsx } from 'clsx';
 import type { Machine } from '../stores/machineStore';
+import { useLongPress } from '../hooks/useLongPress';
+import { ChevronIcon } from './ui/ChevronIcon';
 
 interface MachineCardProps {
   machine: Machine;
@@ -10,8 +12,6 @@ interface MachineCardProps {
   variant?: 'compact' | 'full';
   isConnecting?: boolean;
 }
-
-const LONG_PRESS_MS = 500;
 
 export function MachineCard({
   machine,
@@ -23,11 +23,13 @@ export function MachineCard({
 }: MachineCardProps) {
   const [showMenu, setShowMenu] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const didLongPress = useRef(false);
 
   const hasRepos = machine.knownRepos && machine.knownRepos.length > 0;
   const hasMenu = (onEdit || onRemove) && !isConnecting;
+
+  const { handlers: longPressHandlers, wasLongPress } = useLongPress(
+    useCallback(() => setShowMenu(true), []),
+  );
 
   const formatLastConnected = (timestamp: number | null): string => {
     if (!timestamp) return 'Never connected';
@@ -47,30 +49,6 @@ export function MachineCard({
 
   const repoName = (path: string) => path.split('/').pop() || path;
 
-  const cancelLongPress = useCallback(() => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-  }, []);
-
-  const handleTouchStart = useCallback(() => {
-    if (!hasMenu) return;
-    didLongPress.current = false;
-    longPressTimer.current = setTimeout(() => {
-      didLongPress.current = true;
-      setShowMenu(true);
-    }, LONG_PRESS_MS);
-  }, [hasMenu]);
-
-  const handleTouchEnd = useCallback(() => {
-    cancelLongPress();
-  }, [cancelLongPress]);
-
-  const handleTouchMove = useCallback(() => {
-    cancelLongPress();
-  }, [cancelLongPress]);
-
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     if (!hasMenu) return;
     e.preventDefault();
@@ -79,10 +57,7 @@ export function MachineCard({
 
   const handleCardClick = (e: React.MouseEvent) => {
     // Don't trigger if long press just fired
-    if (didLongPress.current) {
-      didLongPress.current = false;
-      return;
-    }
+    if (wasLongPress()) return;
     // Don't trigger if clicking expand button
     if ((e.target as HTMLElement).closest('[data-expand]')) {
       return;
@@ -109,9 +84,7 @@ export function MachineCard({
       {/* Main card row */}
       <div
         onClick={handleCardClick}
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
-        onTouchMove={handleTouchMove}
+        {...(hasMenu ? longPressHandlers : {})}
         onContextMenu={handleContextMenu}
         className={clsx(
           'p-4 flex items-center gap-4 relative transition-colors select-none',
@@ -177,9 +150,7 @@ export function MachineCard({
         {/* Chevron for navigation hint (compact variant) */}
         {!isConnecting && variant === 'compact' && (
           <div className="flex-shrink-0 text-slate-500">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
+            <ChevronIcon size="w-5 h-5" />
           </div>
         )}
       </div>
@@ -227,9 +198,7 @@ export function MachineCard({
                 )}
 
                 {/* Chevron */}
-                <svg className="w-4 h-4 text-slate-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
+                <ChevronIcon size="w-4 h-4" className="text-slate-500" />
               </button>
             );
           })}

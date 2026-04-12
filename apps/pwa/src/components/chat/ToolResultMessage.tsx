@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ChevronIcon } from '../ui/ChevronIcon';
 
 // Tool-result accent colors (slightly dimmer than tool-call colors)
 const RESULT_COLORS: Record<string, string> = {
@@ -146,12 +147,7 @@ function CollapsibleResult({ content, accentColor }: { content: string; accentCo
           onClick={() => setExpanded(v => !v)}
           className="flex items-center gap-1.5 w-full text-left text-slate-500 hover:text-slate-400 transition-colors mb-1"
         >
-          <svg
-            className={`w-3 h-3 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
-            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
+          <ChevronIcon expanded={expanded} strokeWidth={2.5} />
           <span className="text-[10px] uppercase tracking-wide">{lineCount} line{lineCount !== 1 ? 's' : ''}</span>
         </button>
         {expanded ? (

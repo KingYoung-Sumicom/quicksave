@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';
+import { ChevronIcon } from '../ui/ChevronIcon';
 
 const STATUS_STYLES: Record<string, { dot: string; label: string }> = {
   running:   { dot: 'bg-blue-400 animate-pulse', label: 'Running' },
@@ -36,12 +37,7 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
           onClick={() => setExpanded((v) => !v)}
           className="w-full text-left flex items-center gap-2 px-2.5 py-1.5 hover:bg-slate-700/30 transition-colors"
         >
-          <svg
-            className={`w-3 h-3 shrink-0 text-slate-500 transition-transform ${expanded ? 'rotate-90' : ''}`}
-            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
+          <ChevronIcon expanded={expanded} className="text-slate-500" />
 
           <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${status.dot}`} />
           <span className="text-xs text-slate-400 flex-1 min-w-0 truncate">{headerLine}</span>

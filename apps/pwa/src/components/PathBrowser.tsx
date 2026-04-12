@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { clsx } from 'clsx';
 import type { Repository, CodingPath, BrowseDirectoryResponsePayload, DirectoryEntry } from '@sumicom/quicksave-shared';
 import { useConnectionStore } from '../stores/connectionStore';
+import { ChevronIcon } from './ui/ChevronIcon';
 
 interface PathBrowserProps {
   isOpen: boolean;
@@ -275,9 +276,7 @@ export function PathBrowser({
 
                       {/* Chevron for navigable directories */}
                       {entry.isDirectory && !(isRepoMode && entry.isGitRepo) && (
-                        <svg className="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                        </svg>
+                        <ChevronIcon size="w-4 h-4" className="text-slate-500" />
                       )}
 
                       {/* Checkmark for added repos */}

@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect } from 'react';
+import { ChevronIcon } from '../../ui/ChevronIcon';
 
 const SIDE_BY_SIDE_MIN_WIDTH = 640;
 const AUTO_EXPAND_THRESHOLD = 2; // lines
@@ -82,12 +83,7 @@ export function EditToolView({ input }: { input: Record<string, unknown> }) {
             onClick={() => setExpanded(v => !v)}
             className="flex items-center gap-1 shrink-0 bg-slate-700/60 hover:bg-slate-600/60 text-slate-400 hover:text-slate-300 rounded px-1.5 py-0.5 transition-colors"
           >
-            <svg
-              className={`w-2.5 h-2.5 transition-transform ${expanded ? 'rotate-90' : ''}`}
-              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-            </svg>
+            <ChevronIcon expanded={expanded} size="w-2.5 h-2.5" strokeWidth={2.5} />
             <span className="text-[10px]">{maxLines} lines</span>
           </button>
         )}

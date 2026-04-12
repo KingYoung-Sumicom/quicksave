@@ -50,7 +50,11 @@
 
 ## 高優先拆分目標
 
-### 1. Collapsible 展開/收合元件
+### 1. ~~Collapsible 展開/收合元件~~ → ChevronIcon [已完成]
+
+> **實際拆分：** 各組件的展開/收合 UI 差異太大（preview text / line count / "Show more"），不適合做完整 Collapsible 元件。改為抽取 `ChevronIcon` 統一 SVG 部分。
+> **檔案：** `components/ui/ChevronIcon.tsx`
+> **已替換 9 個檔案** 中的 chevron SVG（ThinkingMessage, SubagentBlockMessage, ToolResultMessage, ToolCallMessage, EditToolView, MachineCard×2, AgentDashboard, PathBrowser）
 
 **Pattern:** 8+ 組件重複相同的 expand/collapse 邏輯：`useState(false)` 控制展開、點擊切換、chevron SVG 旋轉 90 度。
 
@@ -81,7 +85,11 @@
 
 ---
 
-### 2. Modal 對話框外殼
+### 2. Modal 對話框外殼 [已完成]
+
+> **檔案：** `components/ui/Modal.tsx`
+> **已替換：** AddMachineModal, EditMachineModal, WildcardEditorModal（3 個檔案）
+> **待替換：** GitignoreEditor, SettingsPanel 確認框, DevicePairingSection 確認框, MachineCard 刪除確認（結構略有差異，需個別調整）
 
 **Pattern:** 5+ 組件重複相同的 modal 結構：`fixed inset-0 z-50` 定位、`bg-black/60` 背景遮罩、`bg-slate-800 rounded-lg` 內容區、標題 + 關閉 X 按鈕。
 
@@ -111,18 +119,13 @@
 
 ---
 
-### 3. useLongPress hook
+### 3. useLongPress hook [已完成]
+
+> **檔案：** `hooks/useLongPress.ts`
+> **已替換：** PermissionPrompt, ToolCallMessage (InlinePermissionActions), MachineCard（3 個檔案）
+> **附帶修復：** MachineCard 原本缺少 `didLongPress` guard，統一 hook 後行為一致；新增 `onTouchMove` 取消避免拖動誤觸
 
 **Pattern:** 3 組件重複完全相同的 timer-based long-press 邏輯：`useRef<ReturnType<typeof setTimeout>>`、`setTimeout(callback, 500)`、mouse/touch end 時清理。
-
-**受影響檔案：**
-- `chat/ToolCallMessage.tsx` — `InlinePermissionActions` 長按開啟 wildcard 編輯器
-- `chat/PermissionPrompt.tsx` — Allow 按鈕長按
-- `MachineCard.tsx` — 長按開啟選單
-
-**目標：** 建立 `hooks/useLongPress.ts`，回傳 `{ onMouseDown, onMouseUp, onMouseLeave, onTouchStart, onTouchEnd, onTouchCancel }` handlers，接受 `callback` 和 `delay`（預設 500ms）。
-
-**Why:** 邏輯完全重複，且 `didLongPress` guard pattern 在 ToolCallMessage 中有但 MachineCard 中缺少。統一 hook 能確保所有使用處行為一致。
 
 ---
 

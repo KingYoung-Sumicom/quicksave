@@ -1,8 +1,9 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import type { ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';
 import { generateAllowPattern } from '@sumicom/quicksave-shared';
 import { WildcardEditorModal } from './WildcardEditorModal';
 import { ActionButtons } from '../ui/ActionButtons';
+import { useLongPress } from '../../hooks/useLongPress';
 
 interface PermissionPromptProps {
   request: ClaudeUserInputRequestPayload;
@@ -12,31 +13,17 @@ interface PermissionPromptProps {
 export function PermissionPrompt({ request, onRespond }: PermissionPromptProps) {
   const [textInput, setTextInput] = useState('');
   const [showWildcardEditor, setShowWildcardEditor] = useState(false);
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const didLongPress = useRef(false);
   const isPermission = request.inputType === 'permission';
 
-  const startLongPress = useCallback(() => {
-    didLongPress.current = false;
-    longPressTimer.current = setTimeout(() => {
-      didLongPress.current = true;
-      setShowWildcardEditor(true);
-    }, 500);
-  }, []);
-
-  const cancelLongPress = useCallback(() => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-  }, []);
+  const { handlers: longPressHandlers, wasLongPress } = useLongPress(
+    useCallback(() => setShowWildcardEditor(true), []),
+  );
 
   const handleAllowClick = useCallback(() => {
-    cancelLongPress();
-    if (!didLongPress.current) {
+    if (!wasLongPress()) {
       onRespond('allow');
     }
-  }, [cancelLongPress, onRespond]);
+  }, [wasLongPress, onRespond]);
 
   return (
     <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 space-y-2">
@@ -110,12 +97,7 @@ export function PermissionPrompt({ request, onRespond }: PermissionPromptProps) 
             label: 'Allow',
             variant: 'confirm',
             onClick: handleAllowClick,
-            onMouseDown: startLongPress,
-            onMouseUp: handleAllowClick,
-            onMouseLeave: cancelLongPress,
-            onTouchStart: startLongPress,
-            onTouchEnd: handleAllowClick,
-            onTouchCancel: cancelLongPress,
+            ...longPressHandlers,
           },
           { label: 'Deny', variant: 'danger', onClick: () => onRespond('deny') },
         ]} />

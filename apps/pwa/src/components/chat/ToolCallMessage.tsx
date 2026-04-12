@@ -1,8 +1,10 @@
-import { useState, useRef, useCallback, type ComponentType, type ReactNode } from 'react';
+import { useState, useCallback, type ComponentType, type ReactNode } from 'react';
 import { parseToolUseError } from './ToolResultMessage';
 import type { ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';
 import { generateAllowPattern } from '@sumicom/quicksave-shared';
 import { WildcardEditorModal } from './WildcardEditorModal';
+import { useLongPress } from '../../hooks/useLongPress';
+import { ChevronIcon } from '../ui/ChevronIcon';
 import { ReadToolView } from './toolViews/ReadToolView';
 import { EditToolView } from './toolViews/EditToolView';
 import { WriteToolView } from './toolViews/WriteToolView';
@@ -67,30 +69,16 @@ function InlinePermissionActions({ request, onRespond }: {
   const [showDenyReason, setShowDenyReason] = useState(false);
   const [denyReason, setDenyReason] = useState('');
   const [showWildcardEditor, setShowWildcardEditor] = useState(false);
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const didLongPress = useRef(false);
 
-  const startLongPress = useCallback(() => {
-    didLongPress.current = false;
-    longPressTimer.current = setTimeout(() => {
-      didLongPress.current = true;
-      setShowWildcardEditor(true);
-    }, 500);
-  }, []);
-
-  const cancelLongPress = useCallback(() => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-  }, []);
+  const { handlers: longPressHandlers, wasLongPress } = useLongPress(
+    useCallback(() => setShowWildcardEditor(true), []),
+  );
 
   const handleAllowClick = useCallback(() => {
-    cancelLongPress();
-    if (!didLongPress.current) {
+    if (!wasLongPress()) {
       onRespond('allow');
     }
-  }, [cancelLongPress, onRespond]);
+  }, [wasLongPress, onRespond]);
 
   return (
     <div className="mt-2 pt-2 border-t border-amber-500/20">
@@ -134,12 +122,8 @@ function InlinePermissionActions({ request, onRespond }: {
             Deny
           </button>
           <button
-            onMouseDown={startLongPress}
-            onMouseUp={handleAllowClick}
-            onMouseLeave={cancelLongPress}
-            onTouchStart={startLongPress}
-            onTouchEnd={handleAllowClick}
-            onTouchCancel={cancelLongPress}
+            onClick={handleAllowClick}
+            {...longPressHandlers}
             className="flex-1 text-sm px-3 py-1.5 bg-green-600/80 hover:bg-green-500 rounded-lg transition-colors font-medium"
           >
             Allow
@@ -567,12 +551,7 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
       onClick={() => setResultExpanded(v => !v)}
       className="flex items-center gap-1 shrink-0 bg-slate-700/60 hover:bg-slate-600/60 text-slate-400 hover:text-slate-300 rounded px-1.5 py-0.5 transition-colors"
     >
-      <svg
-        className={`w-2.5 h-2.5 transition-transform ${resultExpanded ? 'rotate-90' : ''}`}
-        fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
-      >
-        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-      </svg>
+      <ChevronIcon expanded={resultExpanded} size="w-2.5 h-2.5" strokeWidth={2.5} />
       <span className="text-[10px]">{resultLineCount} lines</span>
     </button>
   ) : null;
