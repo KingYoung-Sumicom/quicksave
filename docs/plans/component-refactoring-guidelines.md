@@ -12,6 +12,25 @@
 
 **Why:** 重複 2 次可以容忍，3 次代表這是穩定的 pattern，值得抽象。過早抽象（只出現 1-2 次）會增加不必要的間接層。
 
+### 優先級判斷：改動擴散度
+
+拆分的優先級不看「省了多少行」，而看**改動擴散度**：當這個 pattern 需要修改時，有多少個檔案需要同步改動。
+
+**Why:** 在 AI 輔助開發中，每一處改動都是一次 edit tool call，消耗 token。一個散佈在 8 個檔案的 pattern 改一次就要 8 次 edit；抽取後只需改 1 個檔案。擴散度直接決定維護成本和 token 消耗速度。
+
+**判斷方式：** 數「受影響檔案」數量，而非計算省下的行數。下表列出各拆分目標的擴散度：
+
+| 拆分目標 | 擴散度（檔案數） | 改動頻率 |
+|----------|-----------------|----------|
+| Collapsible | 8 | 中（樣式、動畫調整） |
+| Modal | 7 | 中（z-index、backdrop、關閉行為） |
+| Loading/Error/Empty | 10+ | 低（但一改就要改全部） |
+| ToolViewHeader | 8 | 高（新增 tool view 時必觸及） |
+| FormField | 6 | 低 |
+| StatusBadge | 5 | 中 |
+| IconButton | 15+ | 低（樣式穩定後很少改） |
+| useLongPress | 3 | 低（但行為不一致是 bug 來源） |
+
 ### 檔案組織
 
 - 通用 UI 元件放 `components/ui/`（已有 `ActionButtons.tsx`、`ButtonGroup.tsx`、`ToggleSwitch.tsx`）
@@ -58,7 +77,7 @@
 - `CollapsibleTrigger` — 渲染 chevron + children
 - `CollapsibleContent` — 條件渲染 children
 
-**Why:** 最高頻重複 pattern。每個實例複製相同 SVG、相同旋轉 class、相同 useState，抽取後每處減少 ~15 行。
+**Why:** 擴散度 8 — 修改 chevron 樣式或展開行為時需同步改 8 個檔案。抽取後只改 `Collapsible.tsx` 一處。
 
 ---
 
@@ -88,7 +107,7 @@
 - `children: ReactNode`
 - `maxWidth?: string`（預設 `max-w-md`）
 
-**Why:** 每個 modal 重複 15-20 行 boilerplate。更重要的是統一 z-index（目前有 `z-50` 和 `z-[60]` 不一致）和關閉行為，確保 UX 一致性。
+**Why:** 擴散度 7 — 調整 z-index、backdrop 透明度或關閉行為時需改 7 個檔案。目前已有 `z-50` vs `z-[60]` 不一致的問題，正是因為缺乏單一來源。
 
 ---
 
@@ -129,7 +148,7 @@
 - `ErrorBox.tsx` — 統一 error 訊息容器
 - `EmptyState.tsx` — 通用 empty state（icon + 標題 + 描述 + 可選 action）
 
-**Why:** 統一 loading UX，避免同一 app 內使用者看到多種不一致的 loading 視覺。
+**Why:** 擴散度 10+ — 改 spinner 動畫或 error 樣式時需觸及 10+ 個檔案。目前 4 種不同 spinner 也代表統一時的改動量極大。
 
 ---
 
