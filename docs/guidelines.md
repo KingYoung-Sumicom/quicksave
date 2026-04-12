@@ -36,3 +36,16 @@ Before designing or implementing any feature, check the relevant guidelines belo
 - All Enter-to-submit must guard IME composition (`!e.nativeEvent.isComposing`)
 
 ---
+
+## 組件設計與重構
+
+**`docs/plans/component-refactoring-guidelines.md`** — 可重用組件拆分目標與規則。涵蓋：
+- 何時拆分（Rule of Three、300+ 行門檻）
+- 檔案組織（`ui/`、`hooks/`、`chat/`）
+- 高優先：Collapsible、Modal、useLongPress、loading 狀態元件
+- 中優先：FormField、StatusBadge、IconButton、ToolViewHeader
+- 大型組件拆分目標（ToolCallMessage、SettingsPanel、ClaudePanel、NavigationDrawer、FileList）
+
+**維護規則**：完成任一拆分後，更新指南文件標記完成狀態與實際檔案路徑。
+
+---
