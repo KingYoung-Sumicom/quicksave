@@ -431,6 +431,31 @@ export class GitOperations {
   }
 
   /**
+   * Read commit convention files (CONTRIBUTING.md, .github/COMMIT_CONVENTION.md, etc.)
+   * Returns the first found convention content, truncated to avoid bloating prompts.
+   */
+  async readCommitConventions(): Promise<string | undefined> {
+    const gitRoot = await this.getGitRoot();
+    const candidates = [
+      '.github/COMMIT_CONVENTION.md',
+      '.github/commit-convention.md',
+      'CONTRIBUTING.md',
+      'contributing.md',
+    ];
+
+    for (const candidate of candidates) {
+      try {
+        const content = await readFile(join(gitRoot, candidate), 'utf-8');
+        // Truncate to keep prompt reasonable
+        return content.slice(0, 2000);
+      } catch {
+        // File not found, try next
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Write .gitignore content
    */
   async writeGitignore(content: string): Promise<void> {

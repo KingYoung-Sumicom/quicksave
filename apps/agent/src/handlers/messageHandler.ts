@@ -730,14 +730,25 @@ export class MessageHandler {
         return response;
       }
 
-      // Collect diffs for all staged files
-      const diffs = await Promise.all(status.staged.map((file) => git.getDiff(file.path, true)));
+      // Collect diffs and context in parallel
+      const [diffs, recentLog, branchInfo, conventions] = await Promise.all([
+        Promise.all(status.staged.map((file) => git.getDiff(file.path, true))),
+        git.getLog(10).catch(() => []),
+        git.getBranches().catch(() => ({ current: '' })),
+        git.readCommitConventions().catch(() => undefined),
+      ]);
+
+      const recentCommits = recentLog.map((c) => c.message);
+      const branchName = branchInfo.current;
 
       // Generate summary (uses internal queue and cache)
       const result = await aiService.generateSummary({
         diffs,
         context: message.payload.context,
         model: message.payload.model,
+        recentCommits: recentCommits.length > 0 ? recentCommits : undefined,
+        branchName: branchName || undefined,
+        conventions,
       });
 
       const response = createMessage<GenerateCommitSummaryResponsePayload>(

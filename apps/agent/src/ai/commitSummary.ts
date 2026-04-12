@@ -6,6 +6,9 @@ export interface GenerateSummaryOptions {
   diffs: FileDiff[];
   context?: string;
   model?: ClaudeModel;
+  recentCommits?: string[];
+  branchName?: string;
+  conventions?: string;
 }
 
 export interface GenerateSummaryResult {
@@ -21,6 +24,25 @@ interface CacheEntry {
 }
 
 const DEFAULT_MODEL: ClaudeModel = 'claude-haiku-4-5';
+
+const COMMIT_MESSAGE_TOOL: Anthropic.Tool = {
+  name: 'commit_message',
+  description: 'Generate a structured git commit message',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      summary: {
+        type: 'string',
+        description: 'The commit summary line (under 72 characters, conventional commit format)',
+      },
+      description: {
+        type: 'string',
+        description: 'Optional extended description for complex changes',
+      },
+    },
+    required: ['summary'],
+  },
+};
 // Max characters per file diff for AI generation (roughly 1KB)
 const MAX_DIFF_CHARS_PER_FILE = 1000;
 // Max total characters for all diffs combined
@@ -38,7 +60,7 @@ export class CommitSummaryService {
   }
 
   async generateSummary(options: GenerateSummaryOptions): Promise<GenerateSummaryResult> {
-    const { diffs, context, model = DEFAULT_MODEL } = options;
+    const { diffs, context, model = DEFAULT_MODEL, recentCommits, branchName, conventions } = options;
 
     const diffText = this.formatDiffsForPrompt(diffs);
 
@@ -46,7 +68,7 @@ export class CommitSummaryService {
       return { summary: 'Update files' };
     }
 
-    // Generate cache key from diff content and model
+    // Generate cache key from diff content, model, and context
     const cacheKey = this.getCacheKey(diffText, context, model);
 
     // Check cache first
@@ -63,7 +85,11 @@ export class CommitSummaryService {
     }
 
     // Create the request promise and store it
-    const requestPromise = this.executeGeneration(diffText, context, model, cacheKey);
+    const requestPromise = this.executeGeneration(diffText, context, model, cacheKey, {
+      recentCommits,
+      branchName,
+      conventions,
+    });
     this.pendingRequests.set(cacheKey, requestPromise);
 
     try {
@@ -77,14 +103,17 @@ export class CommitSummaryService {
     diffText: string,
     context: string | undefined,
     model: ClaudeModel,
-    cacheKey: string
+    cacheKey: string,
+    extra: { recentCommits?: string[]; branchName?: string; conventions?: string }
   ): Promise<GenerateSummaryResult> {
-    const prompt = this.buildPrompt(diffText, context);
+    const prompt = this.buildPrompt(diffText, context, extra);
 
     const response = await this.client.messages.create({
       model,
       max_tokens: 500,
       messages: [{ role: 'user', content: prompt }],
+      tools: [COMMIT_MESSAGE_TOOL],
+      tool_choice: { type: 'tool', name: 'commit_message' },
     });
 
     const result = this.parseResponse(response);
@@ -149,51 +178,79 @@ export class CommitSummaryService {
     return formattedDiffs.join('\n\n---\n\n');
   }
 
-  private buildPrompt(diffText: string, context?: string): string {
-    return `You are a helpful assistant that generates concise, descriptive git commit messages.
+  private buildPrompt(
+    diffText: string,
+    context?: string,
+    extra?: { recentCommits?: string[]; branchName?: string; conventions?: string }
+  ): string {
+    const sections: string[] = [
+      'Generate a concise, descriptive git commit message for the following changes.',
+      '',
+      'Guidelines:',
+      '- Use conventional commit format (feat:, fix:, docs:, refactor:, chore:, test:, style:, perf:, ci:, build:)',
+      '- Keep the summary line under 72 characters',
+      '- Focus on WHAT changed and WHY, not HOW',
+      '- Be specific but concise',
+    ];
 
-Analyze the following git diff and generate a commit message following these guidelines:
-- Use conventional commit format when appropriate (feat:, fix:, docs:, refactor:, etc.)
-- Keep the summary line under 72 characters
-- Focus on WHAT changed and WHY, not HOW
-- Be specific but concise
+    if (extra?.conventions) {
+      sections.push('', 'Project commit conventions:', extra.conventions);
+    }
 
-${context ? `Additional context from the user: ${context}\n\n` : ''}
-Git diff:
-\`\`\`
-${diffText}
-\`\`\`
+    if (extra?.recentCommits?.length) {
+      sections.push(
+        '',
+        'Recent commits (match this style):',
+        ...extra.recentCommits.map((msg) => `- ${msg}`)
+      );
+    }
 
-Respond in this exact JSON format:
-{
-  "summary": "the commit summary line",
-  "description": "optional extended description if the changes are complex"
-}`;
+    if (extra?.branchName) {
+      sections.push('', `Branch: ${extra.branchName}`);
+    }
+
+    if (context) {
+      sections.push('', `User context: ${context}`);
+    }
+
+    sections.push('', 'Git diff:', '```', diffText, '```');
+
+    return sections.join('\n');
   }
 
   private parseResponse(response: Anthropic.Message): GenerateSummaryResult {
-    const content = response.content[0];
-    if (content.type !== 'text') {
-      throw new Error('Unexpected response format');
-    }
-
     const tokenUsage: TokenUsage = {
       inputTokens: response.usage.input_tokens,
       outputTokens: response.usage.output_tokens,
     };
 
-    // Parse JSON from response
-    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      // Fallback: use the raw text as summary
-      return { summary: content.text.trim().slice(0, 72), tokenUsage };
+    // Extract from tool_use block (structured output)
+    const toolUse = response.content.find(
+      (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
+    );
+
+    if (toolUse) {
+      const input = toolUse.input as { summary: string; description?: string };
+      return {
+        summary: input.summary || 'Update code',
+        description: input.description,
+        tokenUsage,
+      };
     }
 
-    const parsed = JSON.parse(jsonMatch[0]);
-    return {
-      summary: parsed.summary || 'Update code',
-      description: parsed.description,
-      tokenUsage,
-    };
+    // Fallback: parse from text if tool_use not present
+    const textBlock = response.content.find(
+      (block): block is Anthropic.TextBlock => block.type === 'text'
+    );
+    if (textBlock) {
+      const jsonMatch = textBlock.text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return { summary: parsed.summary || 'Update code', description: parsed.description, tokenUsage };
+      }
+      return { summary: textBlock.text.trim().slice(0, 72), tokenUsage };
+    }
+
+    return { summary: 'Update code', tokenUsage };
   }
 }
