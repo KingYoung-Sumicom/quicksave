@@ -28,6 +28,8 @@ interface FileListProps {
   onToggleFileSelection: (key: SelectionKey, source: SelectionSource) => void;
   onToggleLineSelection: (key: SelectionKey, line: LineSelection, source: SelectionSource) => void;
   onSelectAllFiles: (keys: SelectionKey[], source: SelectionSource) => void;
+  /** Per-file source overrides (e.g. untracked files mixed into an unstaged list). */
+  sourceOverrides?: Map<string, SelectionSource>;
 }
 
 // Tree node structure
@@ -120,6 +122,7 @@ export function FileList({
   onToggleFileSelection,
   onToggleLineSelection,
   onSelectAllFiles,
+  sourceOverrides,
 }: FileListProps) {
   const primaryAction = actions.find(a => a.primary) || actions[0];
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
@@ -175,7 +178,8 @@ export function FileList({
   };
 
   const allPaths = getPaths();
-  const allKeys = allPaths.map((p) => makeSelectionKey(p, type));
+  const fileSourceFor = (p: string) => sourceOverrides?.get(p) ?? type;
+  const allKeys = allPaths.map((p) => makeSelectionKey(p, fileSourceFor(p)));
   const allSelected = allKeys.length > 0 && allKeys.every((k) => selectedFiles.has(k));
   const someSelected = allKeys.some((k) => selectedFiles.has(k));
 
@@ -200,7 +204,8 @@ export function FileList({
   const renderNode = (node: TreeNode, depth: number = 0): React.ReactNode => {
     if (node.isFile) {
       const path = node.path;
-      const selectionKey = makeSelectionKey(path, type);
+      const fileSource = sourceOverrides?.get(path) ?? type;
+      const selectionKey = makeSelectionKey(path, fileSource);
       const diffKey = selectionKey; // Use same composite key for diffs
       const status = node.status;
       const isExpanded = diffKey in expandedDiffs;
@@ -208,10 +213,11 @@ export function FileList({
       const diff = expandedDiffs[diffKey];
       const isSelected = selectedFiles.has(selectionKey);
       const fileSelectedLines = selectedLines.get(selectionKey) || [];
+      const isUntracked = fileSource === 'untracked';
 
       const handleCheckboxClick = (e: React.MouseEvent) => {
         e.stopPropagation();
-        onToggleFileSelection(selectionKey, type);
+        onToggleFileSelection(selectionKey, fileSource);
       };
 
       return (
@@ -256,7 +262,7 @@ export function FileList({
 
             {/* Status Icon */}
             <span className={clsx('font-mono text-sm w-4 flex-shrink-0', getStatusColor(status))}>
-              {type === 'untracked' ? '+' : getStatusIcon(status)}
+              {isUntracked ? '+' : getStatusIcon(status)}
             </span>
 
             {/* File Name (just the filename, not full path) */}
@@ -271,9 +277,9 @@ export function FileList({
                 diff={diff}
                 onClose={() => onCloseDiff(diffKey)}
                 showHeader={false}
-                selectedLines={type !== 'untracked' ? fileSelectedLines : undefined}
-                onToggleLineSelection={type !== 'untracked' ? (line) => onToggleLineSelection(selectionKey, line, type) : undefined}
-                selectable={type !== 'untracked'}
+                selectedLines={!isUntracked ? fileSelectedLines : undefined}
+                onToggleLineSelection={!isUntracked ? (line) => onToggleLineSelection(selectionKey, line, fileSource) : undefined}
+                selectable={!isUntracked}
                 fileSelected={isSelected}
               />
             </div>
@@ -285,26 +291,21 @@ export function FileList({
     // Directory node
     const isCollapsed = collapsedDirs.has(node.path);
     const dirPaths = getFilePaths(node);
-    const dirKeys = dirPaths.map((p) => makeSelectionKey(p, type));
+    const dirKeys = dirPaths.map((p) => makeSelectionKey(p, fileSourceFor(p)));
     const dirAllSelected = dirKeys.length > 0 && dirKeys.every((k) => selectedFiles.has(k));
     const dirSomeSelected = dirKeys.some((k) => selectedFiles.has(k));
 
     const handleDirCheckboxClick = (e: React.MouseEvent) => {
       e.stopPropagation();
-      // Select/deselect all files in this directory
       if (dirAllSelected) {
-        // Deselect all
-        dirKeys.forEach((k) => {
-          if (selectedFiles.has(k)) {
-            onToggleFileSelection(k, type);
-          }
+        dirPaths.forEach((p) => {
+          const k = makeSelectionKey(p, fileSourceFor(p));
+          if (selectedFiles.has(k)) onToggleFileSelection(k, fileSourceFor(p));
         });
       } else {
-        // Select all
-        dirKeys.forEach((k) => {
-          if (!selectedFiles.has(k)) {
-            onToggleFileSelection(k, type);
-          }
+        dirPaths.forEach((p) => {
+          const k = makeSelectionKey(p, fileSourceFor(p));
+          if (!selectedFiles.has(k)) onToggleFileSelection(k, fileSourceFor(p));
         });
       }
     };

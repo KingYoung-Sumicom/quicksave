@@ -27,15 +27,21 @@ export function DiffViewer({
   const containerRef = useRef<HTMLDivElement>(null);
   const [sideBySide, setSideBySide] = useState(false);
 
+  // Force unified view for pure-add diffs (untracked/new files) — side-by-side left column would be empty
+  const allAdded = diff.hunks.length > 0 && diff.hunks.every(h => {
+    const lines = h.content.split('\n');
+    return lines.every(l => l.startsWith('+') || l.startsWith('@@') || l === '');
+  });
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const obs = new ResizeObserver(([entry]) => {
-      setSideBySide(entry.contentRect.width >= SIDE_BY_SIDE_MIN_WIDTH);
+      setSideBySide(!allAdded && entry.contentRect.width >= SIDE_BY_SIDE_MIN_WIDTH);
     });
     obs.observe(el);
     return () => obs.disconnect();
-  }, []);
+  }, [allAdded]);
 
   if (diff.isBinary) {
     return (

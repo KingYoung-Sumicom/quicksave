@@ -2,7 +2,7 @@
  * Sandbox MCP constants.
  *
  * The actual MCP server is in `sandboxMcpStdio.ts`.
- * These constants are used by `cliSessionRunner.ts` for tool-name matching.
+ * These constants are used by `claudeCliProvider.ts` for tool-name matching.
  */
 
 /** MCP server name — tool names appear as `mcp__quicksave-sandbox__<tool>` in canUseTool. */

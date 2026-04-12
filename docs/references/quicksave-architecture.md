@@ -4,10 +4,10 @@
 > - 新增或移除 `apps/`、`packages/` 的子模組
 > - 變更 WebSocket message type（`packages/shared/src/types.ts`）
 > - 變更 `MessageHandler` 的路由邏輯
-> - 變更 `CLISessionRunner` 的 session 生命週期或事件
+> - 變更 `SessionManager` 或 `CodingAgentProvider` 的介面或生命週期
 > - 變更 `AgentConnection` 的加密或 PubSub 機制
 > - 變更 PWA store 的狀態結構或 hook API
-> - 新增或移除 AI provider
+> - 新增或移除 AI provider 實作（例：`ClaudeCliProvider`）
 
 ---
 
@@ -49,7 +49,9 @@ apps/agent/src/
 │   ├── pubsub.ts           # Topic-based PubSub（session + broadcast 路由）
 │   └── pubsub.test.ts      # PubSub 單元測試
 ├── ai/
-│   ├── cliSessionRunner.ts   # Claude CLI wrapper（stdin/stdout control protocol）
+│   ├── provider.ts           # CodingAgentProvider 介面 + 型別定義
+│   ├── sessionManager.ts     # SessionManager：通用 session 協調層（extends EventEmitter）
+│   ├── claudeCliProvider.ts  # ClaudeCliProvider：Claude CLI 實作
 │   ├── cardBuilder.ts        # StreamCardBuilder：stream-json 事件 → CardEvent
 │   └── sessionStore.ts       # Session 持久化（JSONL）
 └── git/
@@ -60,26 +62,48 @@ apps/agent/src/
 
 ```
 acquireLock()
-  → ipcServer.start()          # 監聽 Unix Socket（IPC）
-  → loadConfig()               # 讀取 ~/.quicksave/config.json
-  → new AgentConnection(...)   # 建立信令連線
-  → new MessageHandler(...)    # 初始化路由器
-  → claudeService.on('card-event', ...)   # 串接 AI 事件 → WebSocket push
-  → writeServiceState()        # 寫入 service.json（ready）
-  → heartbeatLoop(30s)         # 心跳迴圈
+  → ipcServer.start()                                # 監聽 Unix Socket（IPC）
+  → loadConfig()                                     # 讀取 ~/.quicksave/config.json
+  → new AgentConnection(...)                         # 建立信令連線
+  → claudeService = new SessionManager(new ClaudeCliProvider())  # 初始化 session 協調層
+  → new MessageHandler(claudeService, ...)          # 初始化路由器
+  → claudeService.on('card-event', ...)             # 串接 AI 事件 → WebSocket push
+  → writeServiceState()                              # 寫入 service.json（ready）
+  → heartbeatLoop(30s)                              # 心跳迴圈
 ```
 
-### Session 生命週期
+### Session 生命週期（分層架構）
 
-架構使用 CLI wrapper（`cliSessionRunner.ts`），透過 `claude` CLI 的 stdin/stdout control protocol 驅動：
+架構採用分層設計，由 `SessionManager` 統一協調，由 `ClaudeCliProvider` 實作 CLI 細節：
+
+#### 層級劃分
+
+1. **`ClaudeCliProvider`** — Claude CLI 實作細節
+   - 透過 stdin/stdout 與 `claude` CLI 通訊
+   - 解析 stream-json protocol（stream_event, assistant, user, system, result, control_request）
+   - 管理 ChildProcess 生命週期
+   - 繼承 `CodingAgentProvider` 介面
+
+2. **`SessionManager`** — 通用協調層（extends EventEmitter）
+   - Session 狀態管理（lifecycle coordination）
+   - Card 組裝與歷史（StreamCardBuilder、buildCardsFromHistory）
+   - Permission flow（auto-approve table、runtime allow patterns、PWA forwarding）
+   - 偏好與 per-session 設定
+   - 事件發射（card-event、card-stream-end、session-updated 等）
+   - Session registry 整合
+
+#### Session 操作流程
 
 ```
 claude:start → MessageHandler.handle_claude_start()
-  → cliSessionRunner.startSession(opts)
-    → spawn('claude', ['--output-format', 'stream-json', '--input-format', 'stream-json',
-                        '--permission-prompt-tool', 'stdio', '-p', '', ...])
-    → 等待 stdout 的 system:init 事件取得 session_id
-    → stdin 寫入 { type: 'user', message: { role: 'user', content: prompt } }
+  → SessionManager.startSession(opts)
+    → ClaudeCliProvider.startSession()
+      → spawn('claude', ['--output-format', 'stream-json', '--input-format', 'stream-json',
+                          '--permission-prompt-tool', 'stdio', '-p', '', ...])
+      → 等待 stdout 的 system:init 事件取得 session_id
+      → stdin 寫入 { type: 'user', message: { role: 'user', content: prompt } }
+      → return ProviderSession { sessionId, streamId, abort() }
+    → SessionManager.startSession() 建立 card builder、permission table
     → consumeStream(sessionId, streamId):
         for await (line of stdout):
           if control_request: handleControlRequest → 自動核准 or emit card + 等使用者回應
@@ -87,32 +111,37 @@ claude:start → MessageHandler.handle_claude_start()
           if result: emit('card-stream-end')
   ← sessionId
 
-claude:resume → resumeSession(sessionId, prompt)
-  → if (session.streaming && session.process):
-      hot resume: stdin 寫入 user message JSON
-  → else:
-      cold resume: spawn('claude', [..., '--resume', sessionId])
+claude:resume → SessionManager.resumeSession(sessionId, prompt)
+  → ClaudeCliProvider.resumeSession()
+    → if (session.streaming && session.process):
+        hot resume: stdin 寫入 user message JSON
+    → else:
+        cold resume: spawn('claude', [..., '--resume', sessionId])
+    → return ProviderSession
 
-claude:cancel → cancelSession(sessionId)
-  → stdin 寫入 { type: 'control_request', request: { subtype: 'interrupt' } }
+claude:cancel → SessionManager.cancelSession(sessionId)
+  → ClaudeCliProvider.cancelSession()
+    → stdin 寫入 { type: 'control_request', request: { subtype: 'interrupt' } }
 
-claude:close → closeSession(sessionId)
-  → process.kill('SIGTERM')
+claude:close → SessionManager.closeSession(sessionId)
+  → ClaudeCliProvider.closeSession()
+    → process.kill('SIGTERM')
 ```
 
 **Permission 處理 — control_request/control_response protocol：**
 ```
 CLI stdout: { type: 'control_request', request_id: 'uuid', request: { subtype: 'can_use_tool', tool_name, input, tool_use_id } }
-  → shouldAutoApprove(toolName)? → stdin: { type: 'control_response', response: { subtype: 'success', request_id, response: { behavior: 'allow' } } }
-  → 否則: 建立 ToolCallCard with pendingInput → emit → PWA 顯示 Allow/Deny
-  → 使用者回應後: stdin: control_response with allow/deny
+  → SessionManager.shouldAutoApprove(toolName)? 
+    → stdin: { type: 'control_response', response: { subtype: 'success', request_id, response: { behavior: 'allow' } } }
+  → 否則: 建立 ToolCallCard with pendingInput → emit card-event → PWA 顯示 Allow/Deny
+  → 使用者回應後: sessionManager.handleUserInputResponse() → stdin: control_response with allow/deny
 ```
 
 **ActiveSession 資料結構：**
 ```typescript
 interface ActiveSession {
   sessionId: string;
-  process: ChildProcess | null;   // 長期運行的 claude 進程
+  providerSession: ProviderSession;   // Provider-specific handle（包含 abort()）
   cwd: string;
   streaming: boolean;
   permissionLevel: PermissionLevel;
@@ -120,11 +149,17 @@ interface ActiveSession {
   cardBuilder: StreamCardBuilder | null;
   pendingControlRequests: Map<string, { requestId, toolName, toolInput, toolUseId }>;
 }
+
+interface ProviderSession {
+  sessionId: string;
+  streamId: string;
+  abort(): Promise<void>;
+}
 ```
 
 ### AI Provider 事件
 
-`CLISessionRunner` 繼承 `EventEmitter`，發出以下事件：
+`SessionManager` 繼承 `EventEmitter`，發出以下事件（由 `ClaudeCliProvider` 驅動）：
 
 | 事件名稱 | Payload 型別 | 時機 |
 |---|---|---|
@@ -132,6 +167,21 @@ interface ActiveSession {
 | `card-stream-end` | `CardStreamEnd` | turn 結束或錯誤 |
 | `user-input-request` | `ClaudeUserInputRequestPayload` | 需要使用者核准工具時 |
 | `session-updated` | `SessionUpdatedEvent` | session 狀態變更（active/idle） |
+
+**Provider 介面：**
+```typescript
+interface CodingAgentProvider {
+  startSession(opts: StartSessionOpts): Promise<ProviderSession>;
+  resumeSession(sessionId: string, prompt: string, opts?: ResumeSessionOpts): Promise<ProviderSession>;
+  cancelSession(sessionId: string): Promise<void>;
+  closeSession(sessionId: string): Promise<void>;
+}
+```
+
+新增 provider 時，實作此介面並傳入 `SessionManager` 建構子：
+```typescript
+const sessionManager = new SessionManager(new MyCustomProvider());
+```
 
 ### 權限模式
 
@@ -427,14 +477,17 @@ interface DebugResult {
   ↓ sendRequest('claude:start', payload)
   ↓ [加密] → WebRTC → [解密]
   ↓ MessageHandler.handle_claude_start()
-  ↓ CLISessionRunner.startSession()
-  ↓ spawn('claude', ['--input-format', 'stream-json', '--output-format', 'stream-json',
-  ↓                    '--permission-prompt-tool', 'stdio', ...])
-  ↓ stdin.write({ type: 'user', message: { role: 'user', content: prompt } })
-  ↓ consumeStream() loop:
-     for await (line of readline(proc.stdout))
-       if control_request → handleControlRequest() → emit card → wait user → sendControlResponse()
-       else → routeMessage() → StreamCardBuilder → CardEvent → emit('card-event')
+  ↓ SessionManager.startSession()
+    ↓ ClaudeCliProvider.startSession()
+      ↓ spawn('claude', ['--input-format', 'stream-json', '--output-format', 'stream-json',
+      ↓                    '--permission-prompt-tool', 'stdio', ...])
+      ↓ stdin.write({ type: 'user', message: { role: 'user', content: prompt } })
+      ↓ return ProviderSession { sessionId, streamId, abort() }
+    ↓ SessionManager.startSession() 建立 card builder、permission table
+    ↓ consumeStream() loop:
+       for await (line of readline(proc.stdout))
+         if control_request → handleControlRequest() → emit card → wait user → sendControlResponse()
+         else → routeMessage() → StreamCardBuilder → CardEvent → emit('card-event')
   ↓ connection.sendToSession() → [加密] → WebRTC → [解密]
   ↓ useClaudeOperations → 收到 'claude:card-event' push
   ↓ claudeStore.handleCardEvent()
@@ -448,7 +501,8 @@ interface DebugResult {
 
 | 模式 | 位置 | 用途 |
 |---|---|---|
-| EventEmitter | `CLISessionRunner` | AI 事件廣播 |
+| EventEmitter | `SessionManager` | AI 事件廣播 |
+| Strategy Pattern | `CodingAgentProvider` 介面 | 可插拔 AI provider 實作 |
 | PubSub | `AgentConnection` + `pubsub.ts` | Session 級別訊息路由 |
 | Request-Response | `useClaudeOperations` | 訊息 ID 配對等待 |
 | Zustand Store | `claudeStore.ts` | 集中式 PWA 狀態 |

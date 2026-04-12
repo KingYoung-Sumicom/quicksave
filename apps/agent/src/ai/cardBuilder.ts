@@ -96,6 +96,15 @@ export class StreamCardBuilder {
     this.currentTextCardId = null;
   }
 
+  /** Clear all accumulated cards. Call after a turn completes and JSONL is flushed. */
+  clearCards(): void {
+    this.cards.clear();
+    this.toolUseIdToCardId.clear();
+    this.agentIdToCardId.clear();
+    this.ephemeralCards.clear();
+    this.currentTextCardId = null;
+  }
+
   private nextId(): CardId {
     return `${this.sessionId}:${this.streamId}:${++this.seq}`;
   }

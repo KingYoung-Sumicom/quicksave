@@ -88,7 +88,8 @@ import {
 import { GitOperations } from '../git/operations.js';
 import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, addManagedCodingPath } from '../config.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';
-import { CLISessionRunner } from '../ai/cliSessionRunner.js';
+import { SessionManager } from '../ai/sessionManager.js';
+import { ClaudeCliProvider } from '../ai/claudeCliProvider.js';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { readdir, stat } from 'fs/promises';
 import { join, dirname, basename } from 'path';
@@ -105,7 +106,7 @@ export class MessageHandler {
   private availableRepos: Repository[];
   private codingPaths: Map<string, CodingPath> = new Map(); // path -> CodingPath
   private aiService: CommitSummaryService | null = null;
-  private claudeService: CLISessionRunner = new CLISessionRunner();
+  private claudeService: SessionManager = new SessionManager(new ClaudeCliProvider());
   private latestVersionCache: { version: string; checkedAt: number } | null = null;
   private versionCheckInFlight: Promise<string | null> | null = null;
   onPeerSubscribed?: (peerAddress: string, sessionId: string) => void;
@@ -231,7 +232,7 @@ export class MessageHandler {
     return this.claudeService.getActiveSessionCount();
   }
 
-  getClaudeService(): CLISessionRunner {
+  getClaudeService(): SessionManager {
     return this.claudeService;
   }
 

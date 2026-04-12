@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState } from 'react';
+import { useEffect, useCallback, useState, useMemo } from 'react';
 import {
   useGitStore,
   selectStagedFiles,
@@ -318,32 +318,23 @@ export function RepoView({
           onSelectAllFiles={selectAllFiles}
         />
 
-        {/* Unstaged Files */}
+        {/* Changed + Untracked Files */}
         <FileList
-          title="Changed"
-          files={unstaged}
-          type="unstaged"
-          onFileClick={(path) => handleFileClick(path, 'unstaged')}
-          actions={[
-            { label: 'Stage', onAction: onStage, primary: true },
-            { label: 'Untrack', onAction: onUntrack },
+          title="Changes"
+          files={[
+            ...unstaged,
+            ...untracked.map((path) => ({ path, status: 'added' as const })),
           ]}
-          expandedDiffs={expandedDiffs}
-          loadingDiffs={loadingDiffs}
-          onCloseDiff={handleCloseDiff}
-          selectedFiles={selectedFiles}
-          selectedLines={selectedLines}
-          onToggleFileSelection={toggleFileSelection}
-          onToggleLineSelection={toggleLineSelection}
-          onSelectAllFiles={selectAllFiles}
-        />
-
-        {/* Untracked Files */}
-        <FileList
-          title="Untracked"
-          files={untracked.map((path) => ({ path, status: 'added' as const }))}
-          type="untracked"
-          onFileClick={(path) => handleFileClick(path, 'untracked')}
+          type="unstaged"
+          sourceOverrides={useMemo(() => {
+            const m = new Map<string, 'untracked'>();
+            for (const p of untracked) m.set(p, 'untracked');
+            return m;
+          }, [untracked])}
+          onFileClick={(path) => {
+            const isUnt = untracked.includes(path);
+            handleFileClick(path, isUnt ? 'untracked' : 'unstaged');
+          }}
           actions={[
             { label: 'Stage', onAction: onStage, primary: true },
             { label: 'Ignore', onAction: (paths) => paths.forEach(p => onAddToGitignore(p)) },
