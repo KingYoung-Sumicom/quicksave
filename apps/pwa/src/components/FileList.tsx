@@ -80,12 +80,12 @@ function flattenTree(node: TreeNode): TreeNode {
   }
   node.children = newChildren;
 
-  // If this is a directory with exactly one child that is also a directory, flatten
-  if (!node.isFile && node.children.size === 1) {
-    const [childKey, child] = [...node.children.entries()][0];
+  // If this is a non-root directory with exactly one child that is also a directory, flatten
+  if (!node.isFile && node.children.size === 1 && node.name !== '') {
+    const [, child] = [...node.children.entries()][0];
     if (!child.isFile) {
-      // Merge with child
-      const mergedName = node.name ? `${node.name}/${childKey}` : childKey;
+      // Merge with child — use child.name (already flattened) instead of map key
+      const mergedName = node.name ? `${node.name}/${child.name}` : child.name;
       return {
         ...child,
         name: mergedName,
