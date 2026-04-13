@@ -275,10 +275,10 @@ export class ClaudeCliProvider implements CodingAgentProvider {
 
     cb.startNewTurn(streamId);
 
-    // Emit user prompt card — CLI doesn't echo the initial user message in stream-json,
-    // so we create it here to ensure it appears in cardBuilder (and survives page refresh).
+    // Add user prompt to cardBuilder (for getCards on reconnect) but don't emit
+    // as a card-event — the PWA already shows an optimistic user card.
     if (prompt) {
-      emitCard(cb.userMessage(prompt));
+      cb.userMessage(prompt); // adds to cardBuilder.cards internally, no emit
     }
 
     const flushText = () => {

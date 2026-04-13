@@ -234,6 +234,10 @@ export class SessionManager extends EventEmitter {
     // Hot resume: session is streaming and provider session is alive
     if (existing?.streaming && existing.providerSession?.alive) {
       console.log(`[session-manager] hot resume session=${opts.sessionId.slice(0, 8)} streaming=true`);
+      // Add user prompt to cardBuilder for getCards on reconnect
+      if (existing.cardBuilder) {
+        existing.cardBuilder.userMessage(opts.prompt);
+      }
       existing.providerSession.sendUserMessage(opts.prompt);
       return opts.sessionId;
     }
