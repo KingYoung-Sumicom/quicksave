@@ -28,12 +28,54 @@ function claudeProjectDir(cwd: string): string {
   return join(homedir(), '.claude', 'projects', encodeCwdPath(cwd));
 }
 
-async function readMessagesFromJSONL(sessionId: string, cwd: string): Promise<any[]> {
+/** Read the last `tailLines` lines from a file (or all if file is small). */
+async function readTailLines(filePath: string, tailLines: number): Promise<string[]> {
+  const { open, stat } = await import('fs/promises');
+
+  const { size } = await stat(filePath);
+  if (size === 0) return [];
+
+  // For small files, just read the whole thing
+  if (size < 256 * 1024) {
+    const content = await readFile(filePath, 'utf-8');
+    return content.split('\n');
+  }
+
+  // Read from the end in chunks until we have enough lines
+  const chunkSize = Math.min(size, 512 * 1024); // 512KB chunks
+  const fh = await open(filePath, 'r');
+  try {
+    let collected = '';
+    let pos = size;
+
+    while (pos > 0) {
+      const readSize = Math.min(chunkSize, pos);
+      pos -= readSize;
+      const buf = Buffer.alloc(readSize);
+      await fh.read(buf, 0, readSize, pos);
+      collected = buf.toString('utf-8') + collected;
+
+      // Count newlines — stop when we have enough
+      const lineCount = collected.split('\n').length;
+      if (lineCount > tailLines + 10) break; // +10 margin for filtered lines
+    }
+
+    return collected.split('\n');
+  } finally {
+    await fh.close();
+  }
+}
+
+async function readMessagesFromJSONL(sessionId: string, cwd: string, tail?: number): Promise<any[]> {
   const p = join(claudeProjectDir(cwd), sessionId + '.jsonl');
   if (!existsSync(p)) return [];
-  const content = await readFile(p, 'utf-8');
+
+  const lines = tail != null
+    ? await readTailLines(p, tail)
+    : (await readFile(p, 'utf-8')).split('\n');
+
   const msgs: any[] = [];
-  for (const line of content.split('\n')) {
+  for (const line of lines) {
     if (!line.trim()) continue;
     try {
       const m = JSON.parse(line);
@@ -357,7 +399,13 @@ export async function buildCardsFromHistory(
   limit = 50,
   maxMessages?: number,
 ): Promise<CardHistoryResponse> {
-  let allMessages = (await readMessagesFromJSONL(sessionId, cwd))
+  // For initial load (offset=0), read only the tail of the JSONL to avoid parsing
+  // multi-MB files. We read extra lines for tool_result pairing (Pass 1 index).
+  // For pagination (offset>0), read more to reach earlier messages.
+  const neededMessages = (maxMessages != null) ? maxMessages : undefined;
+  const tailCount = neededMessages ?? (offset + limit) * 3; // 3x for index building margin
+
+  let allMessages = (await readMessagesFromJSONL(sessionId, cwd, tailCount))
     .filter((m: any) => !m.isSidechain);
 
   if (maxMessages != null) {
