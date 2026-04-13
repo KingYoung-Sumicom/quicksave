@@ -82,13 +82,24 @@ export class SessionManager extends EventEmitter {
   private runtimeAllowPatterns: string[] = [];
   private preferences: ClaudePreferences = { model: DEFAULT_MODEL };
   private provider: CodingAgentProvider;
+  /** SDK-based provider (alternative to CLI). Selected by QUICKSAVE_PROVIDER=sdk env var. */
+  private sdkProvider: CodingAgentProvider | undefined;
 
   /** Guards against concurrent cold resumes. Queues prompts arriving while a spawn is in flight. */
   private coldResumeInFlight: Map<string, { queuedPrompts: string[] }> = new Map();
 
-  constructor(provider: CodingAgentProvider) {
+  constructor(provider: CodingAgentProvider, sdkProvider?: CodingAgentProvider) {
     super();
     this.provider = provider;
+    this.sdkProvider = sdkProvider;
+  }
+
+  /** Select provider based on QUICKSAVE_PROVIDER env var. Default: CLI. */
+  private getActiveProvider(): CodingAgentProvider {
+    if (process.env.QUICKSAVE_PROVIDER === 'sdk' && this.sdkProvider) {
+      return this.sdkProvider;
+    }
+    return this.provider;
   }
 
   // ── Preferences ──
@@ -174,7 +185,7 @@ export class SessionManager extends EventEmitter {
 
     const callbacks = this.makeCallbacks('pending');
 
-    const { sessionId, session: providerSession } = await this.provider.startSession(
+    const { sessionId, session: providerSession } = await this.getActiveProvider().startSession(
       {
         prompt: opts.prompt,
         cwd: opts.cwd,
@@ -268,7 +279,7 @@ export class SessionManager extends EventEmitter {
       await cardBuilder.snapshotCutoff();
       const callbacks = this.makeCallbacks(opts.sessionId);
 
-      const { sessionId, session: providerSession } = await this.provider.resumeSession(
+      const { sessionId, session: providerSession } = await this.getActiveProvider().resumeSession(
         {
           sessionId: opts.sessionId,
           prompt: opts.prompt,

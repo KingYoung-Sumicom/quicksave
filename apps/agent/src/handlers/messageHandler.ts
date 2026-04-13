@@ -90,6 +90,7 @@ import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedR
 import { CommitSummaryService } from '../ai/commitSummary.js';
 import { SessionManager } from '../ai/sessionManager.js';
 import { ClaudeCliProvider } from '../ai/claudeCliProvider.js';
+import { ClaudeSdkProvider } from '../ai/claudeSdkProvider.js';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { readdir, stat } from 'fs/promises';
 import { join, dirname, basename } from 'path';
@@ -106,7 +107,7 @@ export class MessageHandler {
   private availableRepos: Repository[];
   private codingPaths: Map<string, CodingPath> = new Map(); // path -> CodingPath
   private aiService: CommitSummaryService | null = null;
-  private claudeService: SessionManager = new SessionManager(new ClaudeCliProvider());
+  private claudeService: SessionManager = new SessionManager(new ClaudeCliProvider(), new ClaudeSdkProvider());
   private latestVersionCache: { version: string; checkedAt: number } | null = null;
   private versionCheckInFlight: Promise<string | null> | null = null;
   onPeerSubscribed?: (peerAddress: string, sessionId: string) => void;
