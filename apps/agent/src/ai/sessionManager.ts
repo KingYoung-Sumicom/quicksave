@@ -238,6 +238,11 @@ export class SessionManager extends EventEmitter {
       if (existing.cardBuilder) {
         existing.cardBuilder.userMessage(opts.prompt);
       }
+      // Queue the streamId so consumeStream picks it up after the current turn's result
+      const ps = existing.providerSession as any;
+      if (ps.pendingStreamIds) {
+        ps.pendingStreamIds.push(opts.streamId);
+      }
       existing.providerSession.sendUserMessage(opts.prompt);
       return opts.sessionId;
     }

@@ -35,6 +35,8 @@ function extractToolResultText(content: unknown): string {
 
 class CliProviderSession implements ProviderSession {
   public process: ChildProcess | null;
+  /** StreamIds queued by hot resume — consumeStream pops after each result. */
+  public pendingStreamIds: string[] = [];
 
   constructor(proc: ChildProcess) {
     this.process = proc;
@@ -259,7 +261,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
 
   private async consumeStream(
     sessionId: string,
-    streamId: string,
+    initialStreamId: string,
     rl: ReturnType<typeof createInterface>,
     bufferedLines: string[],
     cliSession: CliProviderSession,
@@ -267,6 +269,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     callbacks: ProviderCallbacks,
     prompt?: string,
   ): Promise<void> {
+    let streamId = initialStreamId;
     let textBuffer = '';
     let bufferTimer: ReturnType<typeof setTimeout> | null = null;
     let resultEmitted = false;
@@ -479,10 +482,16 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       callbacks.emitStreamEnd(streamEnd);
 
       // Clear accumulated cards — the JSONL now has the full history for this turn.
-      // cardBuilder should only hold cards for the next in-progress turn.
       cb.clearCards();
       // Update cutoff so the next turn's getCards() reads JSONL up to here.
       await cb.snapshotCutoff();
+
+      // Hot resume: if there's a pending streamId, start a new turn for it
+      const nextStreamId = cliSession.pendingStreamIds.shift();
+      if (nextStreamId) {
+        streamId = nextStreamId;
+        cb.startNewTurn(streamId);
+      }
 
       return true;
     }
