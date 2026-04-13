@@ -5,6 +5,7 @@ import { DiffViewer } from './DiffViewer';
 import { Spinner } from './ui/Spinner';
 import type { SelectionSource, LineSelection, SelectionKey } from '../stores/gitStore';
 import { makeSelectionKey } from '../stores/gitStore';
+import { buildFileTree, flattenTree, getFilePaths, type TreeNode } from '../lib/fileTree';
 
 type DiffKey = SelectionKey;
 
@@ -23,90 +24,12 @@ interface FileListProps {
   expandedDiffs: Record<DiffKey, FileDiff>;
   loadingDiffs: Set<DiffKey>;
   onCloseDiff: (key: DiffKey) => void;
-  // Selection props - use composite keys (path:source)
   selectedFiles: Set<SelectionKey>;
   selectedLines: Map<SelectionKey, LineSelection[]>;
   onToggleFileSelection: (key: SelectionKey, source: SelectionSource) => void;
   onToggleLineSelection: (key: SelectionKey, line: LineSelection, source: SelectionSource) => void;
   onSelectAllFiles: (keys: SelectionKey[], source: SelectionSource) => void;
-  /** Per-file source overrides (e.g. untracked files mixed into an unstaged list). */
   sourceOverrides?: Map<string, SelectionSource>;
-}
-
-// Tree node structure
-interface TreeNode {
-  name: string;
-  path: string;
-  isFile: boolean;
-  status?: FileStatus;
-  children: Map<string, TreeNode>;
-}
-
-// Build a tree from flat file paths
-function buildFileTree(files: Array<{ path: string; status?: FileStatus }>): TreeNode {
-  const root: TreeNode = { name: '', path: '', isFile: false, children: new Map() };
-
-  for (const file of files) {
-    const parts = file.path.split('/');
-    let current = root;
-    let currentPath = '';
-
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      currentPath = currentPath ? `${currentPath}/${part}` : part;
-      const isLast = i === parts.length - 1;
-
-      if (!current.children.has(part)) {
-        current.children.set(part, {
-          name: part,
-          path: currentPath,
-          isFile: isLast,
-          status: isLast ? file.status : undefined,
-          children: new Map(),
-        });
-      }
-      current = current.children.get(part)!;
-    }
-  }
-
-  return root;
-}
-
-// Flatten single-child directories (e.g., src/components -> src/components)
-function flattenTree(node: TreeNode): TreeNode {
-  // Process children first
-  const newChildren = new Map<string, TreeNode>();
-  for (const [key, child] of node.children) {
-    newChildren.set(key, flattenTree(child));
-  }
-  node.children = newChildren;
-
-  // If this is a non-root directory with exactly one child that is also a directory, flatten
-  if (!node.isFile && node.children.size === 1 && node.name !== '') {
-    const [, child] = [...node.children.entries()][0];
-    if (!child.isFile) {
-      // Merge with child — use child.name (already flattened) instead of map key
-      const mergedName = node.name ? `${node.name}/${child.name}` : child.name;
-      return {
-        ...child,
-        name: mergedName,
-      };
-    }
-  }
-
-  return node;
-}
-
-// Get all file paths under a tree node
-function getFilePaths(node: TreeNode): string[] {
-  if (node.isFile) {
-    return [node.path];
-  }
-  const paths: string[] = [];
-  for (const child of node.children.values()) {
-    paths.push(...getFilePaths(child));
-  }
-  return paths;
 }
 
 export function FileList({
