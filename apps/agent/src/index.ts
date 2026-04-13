@@ -82,42 +82,7 @@ program
       console.error('Failed to get pairing info:', (err as Error).message);
     }
 
-    // Subscribe to live events
-    await client.request('subscribe-events');
-    client.onNotification((method, params) => {
-      if (method === 'event.peerConnected') {
-        const p = params as { peerId: string; peerCount: number };
-        console.log(`\n+ PWA connected: ${p.peerId}... (${p.peerCount} peer${p.peerCount !== 1 ? 's' : ''})`);
-      } else if (method === 'event.peerDisconnected') {
-        const p = params as { peerId: string; peerCount: number };
-        console.log(`\n- PWA disconnected: ${p.peerId}... (${p.peerCount} peer${p.peerCount !== 1 ? 's' : ''})`);
-      } else if (method === 'event.repoAdded') {
-        const p = params as { repo: { name: string; path: string } };
-        console.log(`\n+ Repo added: ${p.repo.name} (${p.repo.path})`);
-      } else if (method === 'event.repoRemoved') {
-        const p = params as { path: string };
-        console.log(`\n- Repo removed: ${p.path}`);
-      } else if (method === 'event.daemonStatus') {
-        // Daemon status change (e.g., shutting down)
-        if ((params as any).shutting_down) {
-          console.log('\nDaemon is shutting down...');
-          client.close();
-          process.exit(0);
-        }
-      }
-    });
-
-    // Ctrl+C detaches (leaves daemon running)
-    process.on('SIGINT', () => {
-      console.log('\nDetaching (daemon still running)...');
-      client.close();
-      process.exit(0);
-    });
-
-    process.on('SIGTERM', () => {
-      client.close();
-      process.exit(0);
-    });
+    client.close();
   });
 
 function displayPairingInfo(info: PairingInfoResult, showQr: boolean): void {

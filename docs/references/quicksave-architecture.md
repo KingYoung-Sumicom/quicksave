@@ -99,7 +99,8 @@ claude:start → MessageHandler.handle_claude_start()
   → SessionManager.startSession(opts)
     → ClaudeCliProvider.startSession()
       → spawn('claude', ['--output-format', 'stream-json', '--input-format', 'stream-json',
-                          '--permission-prompt-tool', 'stdio', '-p', '', ...])
+                          '--permission-prompt-tool', 'stdio', '--append-system-prompt', '...',
+                          '-p', '', ...])
       → 等待 stdout 的 system:init 事件取得 session_id
       → stdin 寫入 { type: 'user', message: { role: 'user', content: prompt } }
       → return ProviderSession { sessionId, streamId, abort() }
@@ -191,6 +192,18 @@ const sessionManager = new SessionManager(new MyCustomProvider());
 | `acceptEdits` | 接受編輯 | Edit, Write, TodoWrite, Agent, ... |
 | `default` | 標準 | TodoWrite, EnterWorktree, Agent |
 | `plan` | 純規劃 | 無（不執行任何工具） |
+
+**Sandbox MCP 工具權限：**
+- `SetTitle` — 永遠自動核准
+- `SandboxBash`（sandbox ON）— 自動核准，在 kernel sandbox 內執行
+- `SandboxBash`（sandbox OFF）— 視為 `Bash`，依 permissionMode 的 auto-approve 規則處理
+
+### System Prompt
+
+透過 `--append-system-prompt` CLI 參數注入，start 和 resume 都帶。固定內容：
+- 引導 Claude 偏好 `SandboxBash` 做 read-only commands
+- 引導 Claude 在新 task/context 切換時呼叫 `SetTitle`
+- PWA agent type 可附加自定義 system prompt
 
 ---
 
@@ -480,7 +493,7 @@ interface DebugResult {
   ↓ SessionManager.startSession()
     ↓ ClaudeCliProvider.startSession()
       ↓ spawn('claude', ['--input-format', 'stream-json', '--output-format', 'stream-json',
-      ↓                    '--permission-prompt-tool', 'stdio', ...])
+      ↓                    '--permission-prompt-tool', 'stdio', '--append-system-prompt', '...', ...])
       ↓ stdin.write({ type: 'user', message: { role: 'user', content: prompt } })
       ↓ return ProviderSession { sessionId, streamId, abort() }
     ↓ SessionManager.startSession() 建立 card builder、permission table

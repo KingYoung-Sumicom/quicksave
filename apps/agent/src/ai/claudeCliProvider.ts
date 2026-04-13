@@ -250,7 +250,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     cardBuilder.updateSessionId(sessionId);
 
     // Fire and forget the stream consumer — pass the same readline interface
-    this.consumeStream(sessionId, streamId, rl, bufferedLines, cliSession, cardBuilder, callbacks);
+    this.consumeStream(sessionId, streamId, rl, bufferedLines, cliSession, cardBuilder, callbacks, prompt);
 
     return { sessionId, session: cliSession };
   }
@@ -265,6 +265,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     cliSession: CliProviderSession,
     cb: StreamCardBuilder,
     callbacks: ProviderCallbacks,
+    prompt?: string,
   ): Promise<void> {
     let textBuffer = '';
     let bufferTimer: ReturnType<typeof setTimeout> | null = null;
@@ -273,6 +274,12 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     const emitCard = (event: CardEvent) => { callbacks.emitCardEvent(event); };
 
     cb.startNewTurn(streamId);
+
+    // Emit user prompt card — CLI doesn't echo the initial user message in stream-json,
+    // so we create it here to ensure it appears in cardBuilder (and survives page refresh).
+    if (prompt) {
+      emitCard(cb.userMessage(prompt));
+    }
 
     const flushText = () => {
       if (textBuffer) {
