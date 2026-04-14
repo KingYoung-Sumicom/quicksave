@@ -416,6 +416,30 @@ describe('SessionManager', () => {
       expect(result.action).toBe('allow');
     });
 
+    it('should NOT auto-approve SandboxBash with empty sessionId (pre-init race)', async () => {
+      // Simulates the SDK calling canUseTool before the session is registered
+      const promise = callbacks.handlePermissionRequest('', {
+        toolName: 'mcp__quicksave-sandbox__SandboxBash',
+        toolInput: { command: 'ls' },
+        toolUseId: 'tu-sandbox-race',
+      });
+
+      // Should fall through to user prompt (not auto-approve)
+      const pendingInputs = manager.getPendingInputRequests();
+      expect(pendingInputs.length).toBeGreaterThanOrEqual(1);
+      const req = pendingInputs.find(p => p.toolUseId === 'tu-sandbox-race');
+      expect(req).toBeDefined();
+
+      // Resolve it to unblock the promise
+      manager.resolveUserInput({
+        sessionId: '',
+        requestId: req!.requestId,
+        action: 'allow',
+      });
+      const result = await promise;
+      expect(result.action).toBe('allow');
+    });
+
     it('should only auto-approve EnterPlanMode in plan permission level', async () => {
       manager.setPermissionLevel(sessionId, 'plan');
 
@@ -974,6 +998,156 @@ describe('SessionManager', () => {
       const state = manager.getDebugState();
       expect(state.activeSessions).toHaveLength(1);
       expect(state.pendingInputs).toHaveLength(0);
+    });
+  });
+
+  // ── Multi-provider routing (Codex) ──
+
+  describe('multi-provider routing', () => {
+    let codexProvider: CodingAgentProvider;
+    let multiManager: SessionManager;
+
+    beforeEach(() => {
+      codexProvider = createMockProvider('codex', 'memory');
+      multiManager = new SessionManager([provider, codexProvider]);
+    });
+
+    it('should route to codex provider when agent=codex on start', async () => {
+      const sessionId = 'codex-session-1';
+      (codexProvider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+
+      await multiManager.startSession({
+        prompt: 'Fix the bug',
+        cwd: '/tmp/test',
+        streamId: 'stream-1',
+        agent: 'codex' as any,
+      });
+
+      expect(codexProvider.startSession).toHaveBeenCalled();
+      expect(provider.startSession).not.toHaveBeenCalled();
+    });
+
+    it('should route to claude provider when agent=claude-code on start', async () => {
+      const sessionId = 'claude-session-1';
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+
+      await multiManager.startSession({
+        prompt: 'Fix the bug',
+        cwd: '/tmp/test',
+        streamId: 'stream-1',
+        agent: 'claude-code' as any,
+      });
+
+      expect(provider.startSession).toHaveBeenCalled();
+      expect(codexProvider.startSession).not.toHaveBeenCalled();
+    });
+
+    it('should remember agent per session and use it on resume', async () => {
+      const sessionId = 'codex-resume-1';
+      const mockSession = createMockProviderSession();
+      (codexProvider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: mockSession,
+      });
+      (codexProvider.resumeSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+
+      // Start with codex
+      await multiManager.startSession({
+        prompt: 'Start',
+        cwd: '/tmp/test',
+        streamId: 'stream-1',
+        agent: 'codex' as any,
+      });
+
+      // Close to simulate disconnect
+      multiManager.closeSession(sessionId);
+
+      // Resume without specifying agent — should use codex (remembered)
+      await multiManager.resumeSession({
+        sessionId,
+        prompt: 'Continue',
+        cwd: '/tmp/test',
+        streamId: 'stream-2',
+      });
+
+      expect(codexProvider.resumeSession).toHaveBeenCalled();
+      expect(provider.resumeSession).not.toHaveBeenCalled();
+    });
+
+    it('should include agent in session-updated events', async () => {
+      const sessionId = 'codex-event-1';
+      (codexProvider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+
+      const events: any[] = [];
+      multiManager.on('session-updated', (e) => events.push(e));
+
+      await multiManager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        streamId: 'stream-1',
+        agent: 'codex' as any,
+      });
+
+      const startEvent = events.find(e => e.sessionId === sessionId);
+      expect(startEvent).toBeDefined();
+      expect(startEvent.agent).toBe('codex');
+    });
+
+    it('should report agent in getActiveSessions', async () => {
+      const sessionId = 'codex-active-1';
+      (codexProvider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+
+      await multiManager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        streamId: 'stream-1',
+        agent: 'codex' as any,
+      });
+
+      const sessions = multiManager.getActiveSessions();
+      expect(sessions).toHaveLength(1);
+      expect((sessions[0] as any).agent).toBe('codex');
+    });
+
+    it('should use memory-mode getCards for codex sessions', async () => {
+      const sessionId = 'codex-cards-1';
+      (codexProvider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+
+      const { loadPersistedCards } = await import('./cardBuilder.js');
+      (loadPersistedCards as Mock).mockResolvedValue([
+        { type: 'user', id: 'p1', text: 'hello from codex' },
+        { type: 'assistant_text', id: 'p2', text: 'response', streaming: false },
+      ]);
+
+      // Start session to set agent
+      await multiManager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        streamId: 'stream-1',
+        agent: 'codex' as any,
+      });
+
+      const result = await multiManager.getCards(sessionId, '/tmp/test');
+      expect(loadPersistedCards).toHaveBeenCalledWith(sessionId);
+      expect(result.cards.length).toBeGreaterThanOrEqual(2);
     });
   });
 });

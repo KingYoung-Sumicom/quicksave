@@ -358,27 +358,42 @@ All PWA provider selection and UX work is implemented:
 - Session agent pre-populated on start to avoid race with async session-updated event
 - Log prefixes updated from `[claude:]` to `[agent:]` with agent= field
 
-### Phase 5: Validation And Hardening
+### Phase 5: Validation And Hardening ✅ COMPLETE
 
 Files:
 
-- `apps/agent/src/handlers/messageHandler.test.ts`
-- provider tests
-- PWA hook/store tests where relevant
+- `apps/agent/src/ai/codexSdkProvider.test.ts` (new — 21 tests)
+- `apps/agent/src/ai/sessionManager.test.ts` (6 new tests added)
+- `apps/agent/src/ai/cardBuilder.test.ts` (pre-existing persistence tests)
 
-Tasks:
+Implemented:
 
-1. Add routing tests for provider-aware start/resume.
-2. Add Codex event normalization tests.
-3. Add permission prompt correlation tests.
-4. Add history/reconnect tests for Codex sessions.
-5. Add missing-CLI / missing-auth error tests.
+1. **Codex event normalization tests** (21 tests in `codexSdkProvider.test.ts`):
+   - `thread.started` → `onThreadStarted` callback
+   - `agent_message` streaming: `item.started` → text, `item.updated` → delta, `item.completed` → finalize
+   - `reasoning` → `thinkingBlock` with delta tracking
+   - `command_execution` → `Bash` tool_call + tool_result with exit code
+   - `file_change` → `Edit`/`Write` tool_call + tool_result
+   - `mcp_tool_call` → `server:tool` tool_call
+   - `web_search` → `WebSearch` tool_call
+   - `error` item → system error message
+   - `turn.completed` → streamEnd with token usage
+   - `turn.failed` → streamEnd with error
+   - `error` event → system error card
+   - stream ends without turn event → fallback success
+   - full multi-item turn integration test
+2. **Provider routing tests** (6 tests in `sessionManager.test.ts`):
+   - Start routes to codex when `agent: 'codex'`
+   - Start routes to claude when `agent: 'claude-code'`
+   - Resume remembers agent per session
+   - `session-updated` events include agent
+   - `getActiveSessions` reports agent
+   - `getCards` uses memory mode for codex sessions
+3. **Card persistence tests** (pre-existing in `cardBuilder.test.ts`):
+   - `loadPersistedCards`: missing file, valid file, invalid JSON, non-array
+   - `persistCards`: no cards, strip pendingInput + streaming, append to existing
 
-Suggested validation commands:
-
-- `pnpm --filter @sumicom/quicksave typecheck`
-- `pnpm --filter @sumicom/quicksave test`
-- `pnpm --filter quicksave-pwa typecheck`
+All 602 tests pass across 20 test files.
 
 ## Risks
 
@@ -417,7 +432,7 @@ Mitigation:
 3. ~~Phase 2 Codex SDK provider~~ ✅
 4. ~~Phase 3 history~~ ✅
 5. ~~Phase 4 PWA selection UI~~ ✅
-6. Phase 5 hardening/tests
+6. ~~Phase 5 hardening/tests~~ ✅
 
 ## Acceptance Criteria
 

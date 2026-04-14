@@ -50,7 +50,8 @@ interface TurnContext {
  * Consume all events from a Codex runStreamed() call and emit card events.
  * Returns when the event stream is exhausted.
  */
-async function consumeCodexStream(
+/** @internal Exported for testing. */
+export async function consumeCodexStream(
   events: AsyncGenerator<ThreadEvent>,
   thread: Thread,
   ctx: TurnContext,

@@ -12,7 +12,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import type { CardEvent, CardStreamEnd } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
-import { SANDBOX_MCP_NAME } from './sandboxMcp.js';
+import { SANDBOX_MCP_NAME, SANDBOX_BASH_TOOL } from './sandboxMcp.js';
 import { AsyncQueue } from './asyncQueue.js';
 import type {
   CodingAgentProvider,
@@ -175,11 +175,20 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
   ): Options {
     const permissionMode = this.mapPermissionMode(opts.permissionLevel);
 
+    const { sandboxed } = opts;
+
     const canUseTool = async (
       toolName: string,
       toolInput: Record<string, unknown>,
       permOpts: { signal: AbortSignal; toolUseID: string; agentID?: string; title?: string; [key: string]: any },
     ): Promise<PermissionResult> => {
+      // SandboxBash runs inside a kernel sandbox — auto-approve when session is sandboxed.
+      // Check here (not only in sessionManager) because the SDK may call canUseTool
+      // before the session is registered (e.g. during MCP tool discovery).
+      if (sandboxed && toolName === SANDBOX_BASH_TOOL) {
+        return { behavior: 'allow' };
+      }
+
       const decision = await callbacks.handlePermissionRequest(sessionIdRef.current, {
         toolName,
         toolInput,
