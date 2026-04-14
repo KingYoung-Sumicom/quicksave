@@ -6,6 +6,7 @@ import { agentUrl } from '../lib/pathHash';
 import { ChevronIcon } from './ui/ChevronIcon';
 import { StatusDot, sessionStatusKey } from './SessionStatusBadge';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
+import { ConfirmModal } from './ui/ConfirmModal';
 
 interface AgentDashboardProps {
   agentId: string;
@@ -97,29 +98,49 @@ export function AgentDashboard({
     navigate(agentUrl(agentId, 'coding', cp.path, sessionId));
   }, [agentId, navigate, editing]);
 
-  const handleRemoveRepo = useCallback(async (e: React.MouseEvent, repo: Repository) => {
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string;
+    message: string;
+    label: string;
+    onConfirm: () => void;
+  } | null>(null);
+
+  const handleRemoveRepo = useCallback((e: React.MouseEvent, repo: Repository) => {
     e.stopPropagation();
-    if (confirm(`Remove "${repo.name}" from tracked repositories?\n\nThis only removes it from the tracking list — the repo itself is not deleted.`)) {
-      await onRemoveRepo(repo.path);
-    }
+    setConfirmAction({
+      title: `Remove "${repo.name}"?`,
+      message: 'This only removes it from the tracking list — the repo itself is not deleted.',
+      label: 'Remove',
+      onConfirm: () => { onRemoveRepo(repo.path); setConfirmAction(null); },
+    });
   }, [onRemoveRepo]);
 
-  const handleRemoveCodingPath = useCallback(async (e: React.MouseEvent, cp: CodingPath) => {
+  const handleRemoveCodingPath = useCallback((e: React.MouseEvent, cp: CodingPath) => {
     e.stopPropagation();
-    if (confirm(`Remove "${cp.name}" from coding workspaces?\n\nThis only removes it from the tracking list — the directory itself is not deleted.`)) {
-      await onRemoveCodingPath(cp.path);
-    }
+    setConfirmAction({
+      title: `Remove "${cp.name}"?`,
+      message: 'This only removes it from the tracking list — the directory itself is not deleted.',
+      label: 'Remove',
+      onConfirm: () => { onRemoveCodingPath(cp.path); setConfirmAction(null); },
+    });
   }, [onRemoveCodingPath]);
 
-  const handleArchiveSession = useCallback(async (e: React.MouseEvent, cp: CodingPath, session: ClaudeSessionSummary) => {
+  const handleArchiveSession = useCallback((e: React.MouseEvent, cp: CodingPath, session: ClaudeSessionSummary) => {
     e.stopPropagation();
-    await onArchiveSession(session.sessionId, cp.path);
-    // Remove from local state
-    setSessionsByPath((prev) => {
-      const next = new Map(prev);
-      const sessions = next.get(cp.path) || [];
-      next.set(cp.path, sessions.filter((s) => s.sessionId !== session.sessionId));
-      return next;
+    setConfirmAction({
+      title: 'Archive session?',
+      message: `"${session.summary || session.sessionId.slice(0, 12)}" will be archived.`,
+      label: 'Archive',
+      onConfirm: () => {
+        onArchiveSession(session.sessionId, cp.path);
+        setSessionsByPath((prev) => {
+          const next = new Map(prev);
+          const sessions = next.get(cp.path) || [];
+          next.set(cp.path, sessions.filter((s) => s.sessionId !== session.sessionId));
+          return next;
+        });
+        setConfirmAction(null);
+      },
     });
   }, [onArchiveSession]);
 
@@ -263,6 +284,16 @@ export function AgentDashboard({
         </section>
 
       </div>
+
+      {confirmAction && (
+        <ConfirmModal
+          title={confirmAction.title}
+          message={confirmAction.message}
+          confirmLabel={confirmAction.label}
+          onConfirm={confirmAction.onConfirm}
+          onCancel={() => setConfirmAction(null)}
+        />
+      )}
     </div>
   );
 }

@@ -714,7 +714,7 @@ function AppContent() {
         </div>
       </div>
     );
-  }, [isConnected, isReconnecting, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, commit, generateCommitSummary, setApiKey, showNavDrawer, isDesktop, switchRepo, listSessions, getSessionCards, startSession, resumeSession, cancelSession, closeSession, navigate, addCodingPath, showAgentSettings]);
+  }, [isConnected, isReconnecting, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, commit, generateCommitSummary, setApiKey, showNavDrawer, isDesktop, switchRepo, listSessions, getSessionCards, startSession, resumeSession, cancelSession, closeSession, navigate, addCodingPath, showAgentSettings, dashboardEditing]);
 
   // Show connecting overlay globally (covers any page)
   const showOverlay = state === 'connecting' || state === 'reconnecting' || (state === 'error' && !!useConnectionStore.getState().error);

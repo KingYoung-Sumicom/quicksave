@@ -13,7 +13,7 @@ interface BaseStatusBarProps {
  */
 export function BaseStatusBar({ left, center, right, below }: BaseStatusBarProps) {
   return (
-    <header className="sticky top-0 z-30 bg-slate-800 border-b border-slate-700 safe-area-top touch-none">
+    <header className="sticky top-0 z-30 bg-slate-800 border-b border-slate-700 safe-area-top touch-manipulation">
       <div className="relative flex items-center px-4 py-3 min-h-[52px]">
         {/* Left slot */}
         <div className="flex items-center w-10 shrink-0">
@@ -21,12 +21,12 @@ export function BaseStatusBar({ left, center, right, below }: BaseStatusBarProps
         </div>
 
         {/* Center slot — absolute so it doesn't push left/right */}
-        <div className="absolute left-14 right-20 inset-y-0 flex items-center justify-center py-2 overflow-hidden">
-          {center}
+        <div className="absolute left-14 right-14 inset-y-0 flex items-center justify-center py-2 overflow-hidden pointer-events-none">
+          <div className="pointer-events-auto">{center}</div>
         </div>
 
-        {/* Right slot */}
-        <div className="ml-auto shrink-0 flex items-center gap-1">
+        {/* Right slot — z-10 so it sits above the absolute center */}
+        <div className="relative z-10 ml-auto shrink-0 flex items-center gap-1">
           {right}
         </div>
       </div>
