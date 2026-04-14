@@ -305,7 +305,7 @@ interface Message {
 |---|---|
 | `claude:` | AI session 控制（33+ types） |
 | `git:` | Git 操作（status/diff/stage/commit/...） |
-| `agent:` | Daemon 管理（list-repos/add-repo/...） |
+| `agent:` | Daemon 管理（list-repos/add-repo/clone-repo/...） |
 | `ai:` | AI 工具（generate-commit-summary/set-api-key/...） |
 | `ping`/`pong` | 心跳 |
 | `handshake`/`handshake:ack` | 連線建立 |

@@ -15,10 +15,12 @@ import {
   type ClaudePreferences,
   type ClaudeSetPreferencesResponsePayload,
   type ClaudeSetSessionPermissionResponsePayload,
+  type AgentId,
   type ConfigValue,
   type SessionGetConfigResponsePayload,
   type SessionSetConfigResponsePayload,
   type SessionConfigUpdatedPayload,
+  type SessionUpdateHistoryResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
 import { WebSocketClient } from '../lib/websocket';
@@ -44,9 +46,11 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     handleCardEvent,
     setHistoryMeta,
     setLoadingHistory,
+    setHistoryError,
     clearCards,
     clearPendingInput,
     setSelectedModel,
+    setSelectedAgent,
     setSelectedPermissionMode,
     setSelectedReasoningEffort,
     setSessionConfigKey,
@@ -78,7 +82,13 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
           timeout,
         });
 
-        clientRef.current.send(message);
+        try {
+          clientRef.current.send(message);
+        } catch (err) {
+          clearTimeout(timeout);
+          pendingRequests.current.delete(message.id);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
       });
     },
     [clientRef]
@@ -106,9 +116,14 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     // Card-based protocol
     if (message.type === 'claude:card-event') {
       const event = message.payload as CardEvent;
-      const { activeSessionId, activeStreamIds } = useClaudeStore.getState();
-      // Ignore events for sessions we are not viewing
+      const { activeSessionId, activeStreamIds, isStreaming } = useClaudeStore.getState();
+      // Ignore events for sessions we are not viewing.
+      // When isStreaming && !activeSessionId, a new session is starting up —
+      // activeSessionId will be set once the start response arrives, so let events through.
       if (activeSessionId && event.sessionId !== activeSessionId) {
+        return true;
+      }
+      if (!activeSessionId && !isStreaming) {
         return true;
       }
       if (activeStreamIds.length > 0 && event.streamId && !activeStreamIds.includes(event.streamId)) {
@@ -120,8 +135,11 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
 
     if (message.type === 'claude:card-stream-end') {
       const payload = message.payload as CardStreamEnd;
-      const { activeSessionId, activeStreamIds } = useClaudeStore.getState();
+      const { activeSessionId, activeStreamIds, isStreaming } = useClaudeStore.getState();
       if (activeSessionId && payload.sessionId !== activeSessionId) {
+        return true;
+      }
+      if (!activeSessionId && !isStreaming) {
         return true;
       }
       // Remove this streamId; only stop streaming if no other streams are active
@@ -172,23 +190,27 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     }
 
     if (message.type === 'claude:session-updated') {
-      const payload = message.payload as { sessionId: string; isActive: boolean; isStreaming: boolean; hasPendingInput: boolean; permissionMode?: string; sandboxed?: boolean };
+      const payload = message.payload as { sessionId: string; isActive: boolean; isStreaming: boolean; hasPendingInput: boolean; agent?: AgentId; permissionMode?: string; sandboxed?: boolean; provider?: string };
+      const agent = payload.agent ?? (payload.provider === 'codex-mcp' ? 'codex' : payload.provider ? 'claude-code' : undefined);
       const { sessions, activeSessionId } = useClaudeStore.getState();
       const current = sessions[payload.sessionId];
       if (current &&
         current.isActive === payload.isActive &&
         current.isStreaming === payload.isStreaming &&
         current.hasPendingInput === payload.hasPendingInput &&
+        current.agent === agent &&
         current.permissionMode === payload.permissionMode) return true;
       upsertSession({
         sessionId: payload.sessionId,
         isActive: payload.isActive,
         isStreaming: payload.isStreaming,
         hasPendingInput: payload.hasPendingInput,
+        agent,
         permissionMode: payload.permissionMode,
       });
       if (payload.sessionId === activeSessionId) {
         setStreaming(payload.isStreaming);
+        if (agent) setSelectedAgent(agent);
         if (payload.permissionMode) setSelectedPermissionMode(payload.permissionMode);
       }
       return true;
@@ -206,7 +228,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     }
 
     return false;
-  }, [handleCardEvent, setStreaming, setStreamError, appendCard, clearPendingInput, upsertSession, applyPreferences, applySessionConfig, setSelectedPermissionMode]);
+  }, [handleCardEvent, setStreaming, setStreamError, appendCard, clearPendingInput, upsertSession, applyPreferences, applySessionConfig, setSelectedPermissionMode, setSelectedAgent]);
 
   // Combined message handler
   const handleMessage = useCallback((message: Message): boolean => {
@@ -234,6 +256,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
   const getSessionCards = useCallback(
     async (sessionId: string, offset = 0, limit = 50, cwd?: string) => {
       setLoadingHistory(true);
+      setHistoryError(null);
       try {
         const message = createMessage<ClaudeGetMessagesRequestPayload>('claude:get-cards', { sessionId, offset, limit, ...(cwd ? { cwd } : {}) });
         const response = await sendRequest<CardHistoryResponse>(message);
@@ -253,15 +276,16 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
         setHistoryMeta(response.total, response.hasMore);
       } catch (error) {
         console.error('Failed to get session cards:', error);
+        setHistoryError(error instanceof Error ? error.message : 'Failed to load history');
       } finally {
         setLoadingHistory(false);
       }
     },
-    [sendRequest, setCards, prependCards, setHistoryMeta, setLoadingHistory, applySessionConfig]
+    [sendRequest, setCards, prependCards, setHistoryMeta, setLoadingHistory, setHistoryError, applySessionConfig]
   );
 
   const startSession = useCallback(
-    async (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string; sandboxed?: boolean }) => {
+    async (prompt: string, opts?: { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string; sandboxed?: boolean }) => {
       clearCards();
       setStreaming(true);
       setStreamError(null);
@@ -270,6 +294,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       try {
         const message = createMessage('claude:start', {
           prompt,
+          agent: opts?.agent,
           allowedTools: opts?.allowedTools,
           systemPrompt: opts?.systemPrompt,
           model: opts?.model,
@@ -281,13 +306,18 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
         if (!response.success) {
           throw new Error(response.error || 'Failed to start session');
         }
+        // Pre-populate session with the requested agent so setActiveSession
+        // picks it up before the async session-updated event arrives.
+        if (response.sessionId && opts?.agent) {
+          upsertSession({ sessionId: response.sessionId, agent: opts.agent });
+        }
         setActiveSession(response.sessionId ?? null, response.streamId ?? null);
       } catch (error) {
         setStreaming(false);
         setStreamError(error instanceof Error ? error.message : 'Failed to start session');
       }
     },
-    [sendRequest, clearCards, setStreaming, setStreamError, setActiveSession, appendCard]
+    [sendRequest, clearCards, setStreaming, setStreamError, setActiveSession, appendCard, upsertSession]
   );
 
   const { addStreamId } = useClaudeStore.getState();
@@ -343,6 +373,18 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       }
     },
     [sendRequest, setStreaming]
+  );
+
+  const archiveSession = useCallback(
+    async (sessionId: string, cwd: string) => {
+      try {
+        const message = createMessage('session:update-history', { sessionId, cwd, updates: { archived: true } });
+        await sendRequest<SessionUpdateHistoryResponsePayload>(message);
+      } catch (error) {
+        console.error('Failed to archive session:', error);
+      }
+    },
+    [sendRequest],
   );
 
   const setPreferences = useCallback(
@@ -412,6 +454,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     resumeSession,
     cancelSession,
     closeSession,
+    archiveSession,
     respondToUserInput,
     setPreferences,
     setSessionPermission,

@@ -92,6 +92,8 @@ class SdkProviderSession implements ProviderSession {
 // ============================================================================
 
 export class ClaudeSdkProvider implements CodingAgentProvider {
+  readonly id = 'claude-code' as const;
+  readonly historyMode = 'claude-jsonl' as const;
 
   async startSession(
     opts: StartSessionOpts,
@@ -510,9 +512,10 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
       };
       callbacks.emitStreamEnd(streamEnd);
 
-      // Clear accumulated cards — JSONL now has the full history for this turn
-      cb.clearCards();
+      // Update cutoff BEFORE clearing cards — if getCards() is called between
+      // these two operations, it needs the new cutoff to read the full JSONL.
       await cb.snapshotCutoff();
+      cb.clearCards();
 
       return true;
     }

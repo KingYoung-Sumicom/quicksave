@@ -40,6 +40,12 @@ export type MessageType =
   | 'git:untrack:response'
   | 'git:gitignore-add'
   | 'git:gitignore-add:response'
+  | 'git:submodules'
+  | 'git:submodules:response'
+  | 'git:config-get'
+  | 'git:config-get:response'
+  | 'git:config-set'
+  | 'git:config-set:response'
   | 'git:gitignore-read'
   | 'git:gitignore-read:response'
   | 'git:gitignore-write'
@@ -58,14 +64,22 @@ export type MessageType =
   | 'agent:browse-directory:response'
   | 'agent:add-repo'
   | 'agent:add-repo:response'
+  | 'agent:remove-repo'
+  | 'agent:remove-repo:response'
+  | 'agent:clone-repo'
+  | 'agent:clone-repo:response'
   | 'agent:list-coding-paths'
   | 'agent:list-coding-paths:response'
   | 'agent:add-coding-path'
   | 'agent:add-coding-path:response'
+  | 'agent:remove-coding-path'
+  | 'agent:remove-coding-path:response'
   | 'agent:check-update'
   | 'agent:check-update:response'
   | 'agent:update'
   | 'agent:update:response'
+  | 'agent:restart'
+  | 'agent:restart:response'
   // Claude Code SDK Remote Control
   | 'claude:list-sessions'
   | 'claude:list-sessions:response'
@@ -181,6 +195,12 @@ export interface Repository {
   currentBranch?: string;
 }
 
+export interface Submodule {
+  name: string;
+  path: string;
+  branch?: string;
+}
+
 export interface CodingPath {
   path: string;
   name: string; // basename
@@ -233,6 +253,8 @@ export interface ClaudeSetSessionPermissionResponsePayload {
 /** Any JSON-primitive value that can be stored as a session config entry. */
 export type ConfigValue = string | number | boolean | null;
 
+export type AgentId = 'claude-code' | 'codex';
+
 /** PWA → Agent: get the full config for a session */
 export interface SessionGetConfigRequestPayload {
   sessionId: string;
@@ -272,6 +294,7 @@ export interface SessionConfigUpdatedPayload {
 export interface SessionRegistryEntry {
   sessionId: string;
   cwd: string;
+  agent?: AgentId;
   repoName?: string;
   gitBranch?: string;
   title?: string;
@@ -324,6 +347,7 @@ export interface SessionHistoryUpdatedPayload {
 export interface ClaudeActiveSession {
   sessionId: string;
   cwd: string;
+  agent?: AgentId;
   isStreaming: boolean;
   hasPendingInput: boolean;
   permissionMode: string;
@@ -351,6 +375,19 @@ export interface HandshakeAckPayload {
   preferences?: ClaudePreferences;
   latestVersion?: string; // Cached npm registry check (agent-side, 12h dedup)
   devBuild?: boolean; // true when running from source (non-production build)
+  codexModels?: CodexModelInfo[]; // Cached OpenAI /v1/models (agent-side, 12h dedup)
+}
+
+// Codex / OpenAI model discovery
+export interface CodexModelInfo {
+  id: string;
+  name: string;
+  reasoningEfforts?: string[]; // e.g. ['low', 'medium', 'high', 'xhigh']
+}
+
+export interface CodexListModelsResponsePayload {
+  models: CodexModelInfo[];
+  error?: string;
 }
 
 // Status
@@ -455,6 +492,31 @@ export interface UntrackResponsePayload {
   error?: string;
 }
 
+// Submodules
+export type SubmodulesRequestPayload = Record<string, never>;
+
+export interface SubmodulesResponsePayload {
+  submodules: Submodule[];
+}
+
+// Git Config (identity)
+export type GitConfigGetRequestPayload = Record<string, never>;
+
+export interface GitConfigGetResponsePayload {
+  name?: string;
+  email?: string;
+}
+
+export interface GitConfigSetRequestPayload {
+  name: string;
+  email: string;
+}
+
+export interface GitConfigSetResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
 // Gitignore - Add pattern
 export interface GitignoreAddRequestPayload {
   pattern: string;
@@ -539,6 +601,29 @@ export interface AddRepoResponsePayload {
   error?: string;
 }
 
+// Remove Repo
+export interface RemoveRepoRequestPayload {
+  path: string;
+}
+
+export interface RemoveRepoResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+// Clone Repo
+export interface CloneRepoRequestPayload {
+  url: string;
+  targetDir: string;
+}
+
+export interface CloneRepoResponsePayload {
+  success: boolean;
+  repo?: Repository;
+  clonedPath?: string;
+  error?: string;
+}
+
 // List Coding Paths
 export type ListCodingPathsRequestPayload = Record<string, never>;
 
@@ -554,6 +639,16 @@ export interface AddCodingPathRequestPayload {
 export interface AddCodingPathResponsePayload {
   success: boolean;
   path?: CodingPath;
+  error?: string;
+}
+
+// Remove Coding Path
+export interface RemoveCodingPathRequestPayload {
+  path: string;
+}
+
+export interface RemoveCodingPathResponsePayload {
+  success: boolean;
   error?: string;
 }
 
@@ -575,6 +670,14 @@ export interface AgentUpdateResponsePayload {
   previousVersion: string;
   newVersion?: string;  // npm install output parsed version
   restarting: boolean;  // true if daemon will restart automatically
+  error?: string;
+}
+
+// Agent Restart (dev builds only)
+export type AgentRestartRequestPayload = Record<string, never>;
+
+export interface AgentRestartResponsePayload {
+  success: boolean;
   error?: string;
 }
 
@@ -748,6 +851,7 @@ export interface ClaudeSessionSummary {
   lastModified: number;
   createdAt?: number;
   cwd?: string;
+  agent?: AgentId;
   gitBranch?: string;
   messageCount?: number;
   isActive?: boolean;
@@ -770,6 +874,7 @@ export interface ClaudeListSessionsResponsePayload {
 export interface ClaudeStartRequestPayload {
   prompt: string;
   cwd?: string;
+  agent?: AgentId;
   allowedTools?: string[];
   systemPrompt?: string;
   model?: string;
@@ -789,6 +894,7 @@ export interface ClaudeResumeRequestPayload {
   sessionId: string;
   prompt: string;
   cwd?: string;
+  agent?: AgentId;
 }
 
 export interface ClaudeResumeResponsePayload {

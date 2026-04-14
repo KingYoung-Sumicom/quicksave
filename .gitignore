@@ -28,6 +28,11 @@ pnpm-debug.log*
 # Test coverage
 coverage/
 
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+
 # Quicksave config (contains secrets)
 .quicksave/
 

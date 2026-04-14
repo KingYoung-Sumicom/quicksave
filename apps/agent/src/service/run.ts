@@ -11,6 +11,7 @@
  */
 
 import { basename, join, resolve, dirname } from 'path';
+import { existsSync } from 'fs';
 import { hostname } from 'os';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
@@ -452,7 +453,13 @@ function registerDaemonMethods(
 
 async function validateRepos(paths: string[]): Promise<Repository[]> {
   const repos: Repository[] = [];
+  const removed: string[] = [];
   for (const repoPath of paths) {
+    if (!existsSync(repoPath)) {
+      console.warn(`  Removing missing repo: ${repoPath}`);
+      removed.push(repoPath);
+      continue;
+    }
     const git = new GitOperations(repoPath);
     const valid = await git.isValidRepo();
     if (!valid) {
@@ -467,5 +474,6 @@ async function validateRepos(paths: string[]): Promise<Repository[]> {
       console.warn(`  Failed to read repo: ${repoPath}`, err);
     }
   }
+  for (const p of removed) removeManagedRepo(p);
   return repos;
 }

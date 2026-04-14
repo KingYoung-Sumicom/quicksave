@@ -49,3 +49,16 @@ Before designing or implementing any feature, check the relevant guidelines belo
 **維護規則**：完成任一拆分後，更新指南文件標記完成狀態與實際檔案路徑。
 
 ---
+
+## Testing
+
+**`docs/guidelines/testing.md`** — Testing guidelines and procedures. Covers:
+- Core principle: write tests alongside code, not as a separate batch
+- Agent test structure, running, and mocking patterns
+- Adversarial / edge-case testing for race conditions and reconnect bugs
+- Continuous process refinement: evolve testing practices when bugs are found
+- Coverage targets and priority modules
+
+**維護規則**：發現新的 bug pattern 時，更新 testing guidelines 以記錄對應的測試策略。
+
+---

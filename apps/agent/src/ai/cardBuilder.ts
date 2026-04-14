@@ -11,12 +11,39 @@ import type {
   SubagentCard,
   PendingInputAttachment,
 } from '@sumicom/quicksave-shared';
-import { readFile, readdir } from 'fs/promises';
+import { readFile, readdir, writeFile, mkdir, stat, open } from 'fs/promises';
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { createReadStream, existsSync } from 'fs';
+import { createInterface } from 'readline';
 import { homedir } from 'os';
 
 const TOOL_RESULT_TRUNCATE_LENGTH = 500;
+
+// ── Card history persistence (for memory-mode providers like Codex) ──
+
+function cardHistoryDir(): string {
+  return join(homedir(), '.quicksave', 'state', 'card-history');
+}
+
+function cardHistoryPath(sessionId: string): string {
+  return join(cardHistoryDir(), `${sessionId}.json`);
+}
+
+/**
+ * Load persisted card history for a memory-mode session.
+ * Returns cards in insertion order, or empty array if none exist.
+ */
+export async function loadPersistedCards(sessionId: string): Promise<Card[]> {
+  const p = cardHistoryPath(sessionId);
+  if (!existsSync(p)) return [];
+  try {
+    const raw = await readFile(p, 'utf-8');
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
 
 // ── Direct JSONL file reading (replaces SDK getSessionMessages/listSubagents) ──
 
@@ -28,61 +55,98 @@ function claudeProjectDir(cwd: string): string {
   return join(homedir(), '.claude', 'projects', encodeCwdPath(cwd));
 }
 
-/** Read the last `tailLines` lines from a file (or all if file is small). */
-async function readTailLines(filePath: string, tailLines: number): Promise<string[]> {
-  const { open, stat } = await import('fs/promises');
+function jsonlPath(sessionId: string, cwd: string): string {
+  return join(claudeProjectDir(cwd), sessionId + '.jsonl');
+}
 
-  const { size } = await stat(filePath);
-  if (size === 0) return [];
-
-  // For small files, just read the whole thing
-  if (size < 256 * 1024) {
-    const content = await readFile(filePath, 'utf-8');
-    return content.split('\n');
+function parseJSONLContent(content: string): any[] {
+  const msgs: any[] = [];
+  for (const line of content.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const m = JSON.parse(line);
+      if (m.type === 'user' || m.type === 'assistant' || m.type === 'system') msgs.push(m);
+    } catch { /* skip malformed lines */ }
   }
+  return msgs;
+}
 
-  // Read from the end in chunks until we have enough lines
-  const chunkSize = Math.min(size, 512 * 1024); // 512KB chunks
+/** Count valid non-sidechain messages by streaming the file (constant memory). */
+async function countMessagesInJSONL(filePath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let count = 0;
+    const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity });
+    rl.on('line', (line) => {
+      if (!line || line[0] !== '{') return;
+      try {
+        const m = JSON.parse(line);
+        if ((m.type === 'user' || m.type === 'assistant' || m.type === 'system') && !m.isSidechain) count++;
+      } catch { /* skip */ }
+    });
+    rl.on('close', () => resolve(count));
+    rl.on('error', reject);
+  });
+}
+
+/** Read the tail of a file, dropping the first partial line at the cut boundary. */
+async function readTailContent(filePath: string, bytes: number): Promise<string> {
+  const { size } = await stat(filePath);
+  if (size <= bytes) return await readFile(filePath, 'utf-8');
+
   const fh = await open(filePath, 'r');
   try {
-    let collected = '';
-    let pos = size;
-
-    while (pos > 0) {
-      const readSize = Math.min(chunkSize, pos);
-      pos -= readSize;
-      const buf = Buffer.alloc(readSize);
-      await fh.read(buf, 0, readSize, pos);
-      collected = buf.toString('utf-8') + collected;
-
-      // Count newlines — stop when we have enough
-      const lineCount = collected.split('\n').length;
-      if (lineCount > tailLines + 10) break; // +10 margin for filtered lines
-    }
-
-    return collected.split('\n');
+    const start = size - bytes;
+    const buf = Buffer.alloc(bytes);
+    const { bytesRead } = await fh.read(buf, 0, bytes, start);
+    let content = buf.toString('utf-8', 0, bytesRead);
+    // Drop leading partial line (may also be mid-UTF-8)
+    const firstNl = content.indexOf('\n');
+    if (firstNl >= 0) content = content.slice(firstNl + 1);
+    return content;
   } finally {
     await fh.close();
   }
 }
 
-async function readMessagesFromJSONL(sessionId: string, cwd: string, tail?: number): Promise<any[]> {
-  const p = join(claudeProjectDir(cwd), sessionId + '.jsonl');
+/**
+ * Read messages from a session JSONL file.
+ *
+ * Modes:
+ *  - `headBytes` — read only the first N bytes (for active-turn cutoff).
+ *  - `tailBytes` — read only the last N bytes (for large-file pagination).
+ *  - neither      — read the entire file.
+ */
+async function readMessagesFromJSONL(
+  sessionId: string,
+  cwd: string,
+  opts?: { headBytes?: number; tailBytes?: number },
+): Promise<any[]> {
+  const p = jsonlPath(sessionId, cwd);
   if (!existsSync(p)) return [];
 
-  const lines = tail != null
-    ? await readTailLines(p, tail)
-    : (await readFile(p, 'utf-8')).split('\n');
-
-  const msgs: any[] = [];
-  for (const line of lines) {
-    if (!line.trim()) continue;
+  if (opts?.headBytes != null) {
+    const fh = await open(p, 'r');
     try {
-      const m = JSON.parse(line);
-      if (m.type === 'user' || m.type === 'assistant' || m.type === 'system') msgs.push(m);
-    } catch { /* skip */ }
+      const buf = Buffer.alloc(opts.headBytes);
+      const { bytesRead } = await fh.read(buf, 0, opts.headBytes, 0);
+      let raw = buf.toString('utf-8', 0, bytesRead);
+      const lastNewline = raw.lastIndexOf('\n');
+      if (lastNewline >= 0 && lastNewline < raw.length - 1) {
+        raw = raw.slice(0, lastNewline + 1);
+      }
+      return parseJSONLContent(raw);
+    } finally {
+      await fh.close();
+    }
   }
-  return msgs;
+
+  if (opts?.tailBytes != null) {
+    const content = await readTailContent(p, opts.tailBytes);
+    return parseJSONLContent(content);
+  }
+
+  const content = await readFile(p, 'utf-8');
+  return parseJSONLContent(content);
 }
 
 async function listSubagentIdsFromDisk(sessionId: string, cwd: string): Promise<string[]> {
@@ -123,7 +187,7 @@ export class StreamCardBuilder {
   private ephemeralCards = new Set<CardId>();
   /** Current streaming assistant_text card (for append_text events) */
   private currentTextCardId: CardId | null = null;
-  /** JSONL message count at the start of the current turn — history reads stop here. */
+  /** JSONL file byte offset at the start of the current turn — history reads stop here. */
   private _jsonlCutoff: number | null = null;
 
   constructor(sessionId: string, streamId: string, cwd: string) {
@@ -151,11 +215,51 @@ export class StreamCardBuilder {
     this.currentTextCardId = null;
   }
 
-  /** Snapshot current JSONL message count so history reads stop before the active turn. */
+  /**
+   * Append current in-memory cards to the persisted card history file.
+   * Used by memory-mode providers (Codex) to survive reconnects.
+   * Call before clearCards() at the end of each turn.
+   */
+  async persistCards(): Promise<void> {
+    const cards = this.getCards();
+    if (cards.length === 0) return;
+
+    // Strip transient fields before persisting
+    const cleaned = cards.map(c => {
+      const { pendingInput, ...rest } = c;
+      if (rest.type === 'assistant_text') {
+        return { ...rest, streaming: false };
+      }
+      return rest;
+    });
+
+    const dir = cardHistoryDir();
+    const p = cardHistoryPath(this.sessionId);
+
+    // Append to existing history
+    let existing: Card[] = [];
+    try {
+      if (existsSync(p)) {
+        const raw = await readFile(p, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) existing = parsed;
+      }
+    } catch { /* start fresh */ }
+
+    const merged = [...existing, ...cleaned];
+    await mkdir(dir, { recursive: true });
+    await writeFile(p, JSON.stringify(merged) + '\n');
+  }
+
+  /** Snapshot current JSONL byte size so history reads stop before the active turn. */
   async snapshotCutoff(): Promise<void> {
-    const msgs = (await readMessagesFromJSONL(this.sessionId, this.cwd))
-      .filter((m: any) => !m.isSidechain);
-    this._jsonlCutoff = msgs.length;
+    const p = jsonlPath(this.sessionId, this.cwd);
+    try {
+      const { size } = await stat(p);
+      this._jsonlCutoff = size;
+    } catch {
+      this._jsonlCutoff = null;
+    }
   }
 
   get jsonlCutoff(): number | null {
@@ -397,25 +501,55 @@ export async function buildCardsFromHistory(
   cwd: string,
   offset = 0,
   limit = 50,
-  maxMessages?: number,
+  cutoffBytes?: number,
 ): Promise<CardHistoryResponse> {
-  // For initial load (offset=0), read only the tail of the JSONL to avoid parsing
-  // multi-MB files. We read extra lines for tool_result pairing (Pass 1 index).
-  // For pagination (offset>0), read more to reach earlier messages.
-  const neededMessages = (maxMessages != null) ? maxMessages : undefined;
-  const tailCount = neededMessages ?? (offset + limit) * 3; // 3x for index building margin
+  const p = jsonlPath(sessionId, cwd);
+  if (!existsSync(p)) return { cards: [], total: 0, hasMore: false };
 
-  let allMessages = (await readMessagesFromJSONL(sessionId, cwd, tailCount))
-    .filter((m: any) => !m.isSidechain);
+  let allMessages: any[];
+  let total: number;
 
-  if (maxMessages != null) {
-    allMessages = allMessages.slice(0, maxMessages);
+  if (cutoffBytes != null) {
+    // Active turn: read head of file up to the snapshot byte offset.
+    allMessages = (await readMessagesFromJSONL(sessionId, cwd, { headBytes: cutoffBytes }))
+      .filter((m: any) => !m.isSidechain);
+    total = allMessages.length;
+  } else {
+    const { size: fileSize } = await stat(p);
+    // Estimate: (offset + limit) messages × 3 margin × ~4 KB each
+    const tailBytes = (offset + limit) * 3 * 4096;
+
+    if (tailBytes < fileSize) {
+      // Large file: streaming count for stable total + tail read for cards
+      const [counted, tailMsgs] = await Promise.all([
+        countMessagesInJSONL(p),
+        readMessagesFromJSONL(sessionId, cwd, { tailBytes }),
+      ]);
+      const filtered = tailMsgs.filter((m: any) => !m.isSidechain);
+      total = counted;
+
+      if (filtered.length >= offset + limit) {
+        allMessages = filtered;
+      } else {
+        // Tail wasn't enough — fall back to full read
+        allMessages = (await readMessagesFromJSONL(sessionId, cwd))
+          .filter((m: any) => !m.isSidechain);
+        total = allMessages.length;
+      }
+    } else {
+      // Small file: read whole thing
+      allMessages = (await readMessagesFromJSONL(sessionId, cwd))
+        .filter((m: any) => !m.isSidechain);
+      total = allMessages.length;
+    }
   }
 
-  const total = allMessages.length;
-  const tailStart = Math.max(0, total - offset - limit);
-  const tailEnd = Math.max(0, total - offset);
-  const sliced = allMessages.slice(tailStart, tailEnd);
+  // allMessages may be a tail subset — map page positions to local indices.
+  // Page wants global positions [total-offset-limit, total-offset].
+  // allMessages holds the last `allMessages.length` messages of the file.
+  const pageStart = Math.max(0, allMessages.length - offset - limit);
+  const pageEnd = Math.max(0, allMessages.length - offset);
+  const sliced = allMessages.slice(pageStart, pageEnd);
 
   // ── Pass 1: Build indexes from ALL messages ────────────────────────────
 
@@ -484,7 +618,7 @@ export async function buildCardsFromHistory(
 
   // ── Pass 2: Build Cards from sliced messages ───────────────────────────
 
-  let seq = tailStart;
+  let seq = Math.max(0, total - offset - limit);
   const nextId = () => `${sessionId}:h:${++seq}`;
   const cards: Card[] = [];
 
@@ -669,6 +803,6 @@ export async function buildCardsFromHistory(
   return {
     cards,
     total,
-    hasMore: tailStart > 0,
+    hasMore: total - offset - limit > 0,
   };
 }

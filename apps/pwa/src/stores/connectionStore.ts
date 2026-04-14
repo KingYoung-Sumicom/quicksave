@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ConnectionState, Repository, CodingPath } from '@sumicom/quicksave-shared';
+import type { ConnectionState, Repository, CodingPath, CodexModelInfo } from '@sumicom/quicksave-shared';
 
 export type ConnectionStep = 'signaling' | 'waiting-for-agent' | 'key-exchange' | 'handshake';
 
@@ -17,6 +17,7 @@ interface ConnectionStore {
   isPro: boolean;
   agentVersion: string | null;
   latestVersion: string | null;
+  codexModels: CodexModelInfo[];
   devBuild: boolean;
   reconnectAttempt: number | null;
   maxReconnectAttempts: number | null;
@@ -30,6 +31,7 @@ interface ConnectionStore {
   setConnected: (repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string, latestVersion?: string, devBuild?: boolean) => void;
   setAgentVersion: (version: string) => void;
   setLatestVersion: (version: string) => void;
+  setCodexModels: (models: CodexModelInfo[]) => void;
   setRepoPath: (repoPath: string) => void;
   setPendingRepoPath: (repoPath: string | null) => void;
   setAvailableRepos: (repos: Repository[]) => void;
@@ -71,6 +73,7 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
   isPro: false,
   agentVersion: null,
   latestVersion: null,
+  codexModels: [],
   devBuild: false,
   reconnectAttempt: null,
   maxReconnectAttempts: null,
@@ -113,6 +116,9 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
 
   setLatestVersion: (version) =>
     set({ latestVersion: version }),
+
+  setCodexModels: (models) =>
+    set({ codexModels: models }),
 
   setRepoPath: (repoPath) =>
     set({
@@ -187,6 +193,7 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
       isPro: false,
       agentVersion: null,
       latestVersion: null,
+      codexModels: [],
       devBuild: false,
       reconnectAttempt: null,
       maxReconnectAttempts: null,

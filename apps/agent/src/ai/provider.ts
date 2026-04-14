@@ -1,7 +1,8 @@
-import type { CardEvent, CardStreamEnd } from '@sumicom/quicksave-shared';
+import type { AgentId, CardEvent, CardStreamEnd } from '@sumicom/quicksave-shared';
 import type { StreamCardBuilder } from './cardBuilder.js';
 
 export type PermissionLevel = 'bypassPermissions' | 'acceptEdits' | 'default' | 'plan';
+export type ProviderHistoryMode = 'claude-jsonl' | 'memory';
 
 /** Represents a running provider session. */
 export interface ProviderSession {
@@ -47,6 +48,9 @@ export interface ResumeSessionOpts {
 }
 
 export interface CodingAgentProvider {
+  readonly id: AgentId;
+  readonly historyMode: ProviderHistoryMode;
+
   startSession(
     opts: StartSessionOpts,
     cardBuilder: StreamCardBuilder,

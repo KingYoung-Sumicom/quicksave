@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { resolve, join } from 'path';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import type {
+  AgentId,
   ClaudeSessionSummary,
   ClaudeUserInputRequestPayload,
   ClaudeUserInputResponsePayload,
@@ -11,8 +12,12 @@ import type {
   CardHistoryResponse,
   CardStreamEnd,
 } from '@sumicom/quicksave-shared';
-import { DEFAULT_MODEL, matchAllowPattern } from '@sumicom/quicksave-shared';
-import { StreamCardBuilder, buildCardsFromHistory } from './cardBuilder.js';
+import {
+  DEFAULT_AGENT,
+  DEFAULT_MODEL,
+  matchAllowPattern,
+} from '@sumicom/quicksave-shared';
+import { StreamCardBuilder, buildCardsFromHistory, loadPersistedCards } from './cardBuilder.js';
 import { SANDBOX_BASH_TOOL, SET_TITLE_TOOL } from './sandboxMcp.js';
 import { getSessionRegistry } from './sessionRegistry.js';
 import type {
@@ -57,8 +62,19 @@ function buildSystemPrompt(extra?: string): string {
   return extra ? `${DEFAULT_SYSTEM_PROMPT}\n\n${extra}` : DEFAULT_SYSTEM_PROMPT;
 }
 
+function normalizeAgentId(value: unknown): AgentId | undefined {
+  if (value === 'claude-code' || value === 'claude-cli' || value === 'claude-sdk') {
+    return 'claude-code';
+  }
+  if (value === 'codex' || value === 'codex-mcp') {
+    return 'codex';
+  }
+  return undefined;
+}
+
 export interface ManagedSession {
   sessionId: string;
+  agentId: AgentId;
   providerSession: ProviderSession | null;
   cwd: string;
   streaming: boolean;
@@ -74,6 +90,7 @@ interface PendingUserInput {
 
 export class SessionManager extends EventEmitter {
   private sessions: Map<string, ManagedSession> = new Map();
+  private sessionAgents: Map<string, AgentId> = new Map();
   private sessionPermissions: Map<string, PermissionLevel> = new Map();
   private sessionSandboxed: Map<string, boolean> = new Map();
   private sessionConfigs: Map<string, Record<string, ConfigValue>> = new Map();
@@ -81,25 +98,65 @@ export class SessionManager extends EventEmitter {
   private requestCounter = 0;
   private runtimeAllowPatterns: string[] = [];
   private preferences: ClaudePreferences = { model: DEFAULT_MODEL };
-  private provider: CodingAgentProvider;
-  /** SDK-based provider (alternative to CLI). Selected by QUICKSAVE_PROVIDER=sdk env var. */
-  private sdkProvider: CodingAgentProvider | undefined;
+  private providers: Map<AgentId, CodingAgentProvider>;
+  private defaultAgentId: AgentId;
 
   /** Guards against concurrent cold resumes. Queues prompts arriving while a spawn is in flight. */
   private coldResumeInFlight: Map<string, { queuedPrompts: string[] }> = new Map();
 
-  constructor(provider: CodingAgentProvider, sdkProvider?: CodingAgentProvider) {
+  constructor(providers: CodingAgentProvider[], defaultAgentId: AgentId = DEFAULT_AGENT) {
     super();
-    this.provider = provider;
-    this.sdkProvider = sdkProvider;
+    this.providers = new Map(providers.map((provider) => [provider.id, provider]));
+    this.defaultAgentId = this.providers.has(defaultAgentId)
+      ? defaultAgentId
+      : providers[0]?.id ?? DEFAULT_AGENT;
   }
 
-  /** Select provider based on QUICKSAVE_PROVIDER env var. Default: CLI. */
-  private getActiveProvider(): CodingAgentProvider {
-    if (process.env.QUICKSAVE_PROVIDER === 'sdk' && this.sdkProvider) {
-      return this.sdkProvider;
+  private getProvider(agentId?: AgentId): CodingAgentProvider {
+    const resolved = agentId && this.providers.has(agentId)
+      ? agentId
+      : this.defaultAgentId;
+    const provider = this.providers.get(resolved);
+    if (!provider) {
+      throw new Error(`Unknown agent: ${agentId ?? resolved}`);
     }
-    return this.provider;
+    return provider;
+  }
+
+  private resolveAgentId(
+    sessionId: string,
+    cwd?: string,
+    requestedAgent?: AgentId,
+  ): AgentId {
+    const activeAgent = this.sessions.get(sessionId)?.agentId;
+    if (activeAgent) return activeAgent;
+
+    const rememberedAgent = this.sessionAgents.get(sessionId);
+    if (rememberedAgent) return rememberedAgent;
+
+    const rawConfig = this.sessionConfigs.get(sessionId);
+    const configAgent = normalizeAgentId(rawConfig?.agent ?? rawConfig?.provider);
+    if (configAgent && this.providers.has(configAgent)) {
+      return configAgent;
+    }
+
+    if (cwd) {
+      const registryEntry = getSessionRegistry().getEntry(cwd, sessionId);
+      const registryAgent = normalizeAgentId(
+        registryEntry?.agent
+          ?? ((registryEntry as { provider?: string } | undefined)?.provider),
+      );
+      if (registryAgent && this.providers.has(registryAgent)) {
+        return registryAgent;
+      }
+    }
+
+    const normalizedRequest = normalizeAgentId(requestedAgent);
+    if (normalizedRequest && this.providers.has(normalizedRequest)) {
+      return normalizedRequest;
+    }
+
+    return this.defaultAgentId;
   }
 
   // ── Preferences ──
@@ -155,6 +212,19 @@ export class SessionManager extends EventEmitter {
       this.sessionSandboxed.set(sessionId, value);
       const ps = this.sessions.get(sessionId);
       if (ps) ps.sandboxed = value;
+    } else if (key === 'agent' || key === 'provider') {
+      // Reject agent changes on active sessions — agent type is immutable once spawned
+      const ps = this.sessions.get(sessionId);
+      if (ps) {
+        this.emit('session-config-updated', { sessionId, config: next });
+        return next;
+      }
+      const agentId = normalizeAgentId(value);
+      if (!agentId || !this.providers.has(agentId)) {
+        this.emit('session-config-updated', { sessionId, config: next });
+        return next;
+      }
+      this.sessionAgents.set(sessionId, agentId);
     }
 
     this.emit('session-config-updated', { sessionId, config: next });
@@ -167,6 +237,7 @@ export class SessionManager extends EventEmitter {
     prompt: string;
     cwd: string;
     streamId: string;
+    agent?: AgentId;
     allowedTools?: string[];
     systemPrompt?: string;
     model?: string;
@@ -179,13 +250,14 @@ export class SessionManager extends EventEmitter {
 
     const sandboxed = !!opts.sandboxed;
     const systemPrompt = buildSystemPrompt(opts.systemPrompt);
+    const provider = this.getProvider(opts.agent);
 
     // Create cardBuilder with 'pending' sessionId — will be updated after provider returns real one
     const cardBuilder = new StreamCardBuilder('pending', opts.streamId, opts.cwd);
 
-    const callbacks = this.makeCallbacks('pending');
+    const callbacks = this.makeCallbacks(provider.id);
 
-    const { sessionId, session: providerSession } = await this.getActiveProvider().startSession(
+    const { sessionId, session: providerSession } = await provider.startSession(
       {
         prompt: opts.prompt,
         cwd: opts.cwd,
@@ -208,19 +280,26 @@ export class SessionManager extends EventEmitter {
     // we capture `sessionId` from the request parameter, so this is safe.
 
     // Register session
+    this.sessionAgents.set(sessionId, provider.id);
     this.sessionPermissions.set(sessionId, level);
     if (sandboxed) this.sessionSandboxed.set(sessionId, true);
 
     const prevConfig = this.sessionConfigs.get(sessionId) ?? {};
     this.sessionConfigs.set(sessionId, {
       ...prevConfig,
-      model: opts.model ?? DEFAULT_MODEL,
+      agent: provider.id,
+      ...((provider.id !== 'codex' && opts.model)
+        ? { model: opts.model }
+        : (provider.id !== 'codex' && !prevConfig.model)
+          ? { model: DEFAULT_MODEL }
+          : {}),
       permissionMode: level,
       sandboxed,
     });
 
     const managed: ManagedSession = {
       sessionId,
+      agentId: provider.id,
       providerSession,
       cwd: opts.cwd,
       streaming: true,
@@ -239,8 +318,10 @@ export class SessionManager extends EventEmitter {
     prompt: string;
     cwd: string;
     streamId: string;
+    agent?: AgentId;
   }): Promise<string> {
     const existing = this.sessions.get(opts.sessionId);
+    const agentId = this.resolveAgentId(opts.sessionId, opts.cwd, opts.agent);
 
     // Hot resume: session is streaming and provider session is alive
     if (existing?.streaming && existing.providerSession?.alive) {
@@ -274,12 +355,13 @@ export class SessionManager extends EventEmitter {
     try {
       const level = this.sessionPermissions.get(opts.sessionId) ?? 'acceptEdits';
       const sandboxed = this.sessionSandboxed.get(opts.sessionId) ?? false;
+      const provider = this.getProvider(agentId);
 
       const cardBuilder = existing?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.streamId, opts.cwd);
       await cardBuilder.snapshotCutoff();
-      const callbacks = this.makeCallbacks(opts.sessionId);
+      const callbacks = this.makeCallbacks(provider.id);
 
-      const { sessionId, session: providerSession } = await this.getActiveProvider().resumeSession(
+      const { sessionId, session: providerSession } = await provider.resumeSession(
         {
           sessionId: opts.sessionId,
           prompt: opts.prompt,
@@ -294,12 +376,15 @@ export class SessionManager extends EventEmitter {
       );
 
       // Update or create session entry
+      this.sessionAgents.set(sessionId, provider.id);
       if (existing) {
+        existing.agentId = provider.id;
         existing.providerSession = providerSession;
         existing.streaming = true;
       } else {
         const managed: ManagedSession = {
           sessionId,
+          agentId: provider.id,
           providerSession,
           cwd: opts.cwd,
           streaming: true,
@@ -398,6 +483,7 @@ export class SessionManager extends EventEmitter {
     return Array.from(this.sessions.entries()).map(([id, ps]) => ({
       sessionId: id,
       cwd: ps.cwd,
+      agent: ps.agentId,
       isStreaming: ps.streaming,
       hasPendingInput: pendingSessionIds.has(id),
       permissionMode: ps.permissionLevel,
@@ -415,6 +501,10 @@ export class SessionManager extends EventEmitter {
 
   getSessionCwd(sessionId: string): string | undefined {
     return this.sessions.get(sessionId)?.cwd;
+  }
+
+  getSessionAgent(sessionId: string, cwd?: string): AgentId {
+    return this.resolveAgentId(sessionId, cwd);
   }
 
   getActiveSessionCount(): number {
@@ -439,6 +529,10 @@ export class SessionManager extends EventEmitter {
       lastModified: entry.lastAccessedAt,
       createdAt: entry.createdAt,
       cwd: entry.cwd,
+      agent: this.sessions.get(entry.sessionId)?.agentId
+        ?? this.sessionAgents.get(entry.sessionId)
+        ?? entry.agent
+        ?? ((entry as { provider?: string }).provider === 'codex-mcp' ? 'codex' : (entry as { provider?: string }).provider ? 'claude-code' : undefined),
       gitBranch: entry.gitBranch,
       messageCount: entry.messageCount,
       isActive: this.sessions.has(entry.sessionId),
@@ -451,13 +545,31 @@ export class SessionManager extends EventEmitter {
 
   async getCards(sessionId: string, cwd: string, offset = 0, limit = 50): Promise<CardHistoryResponse> {
     const ps = this.sessions.get(sessionId);
+    const provider = this.getProvider(this.resolveAgentId(sessionId, cwd));
     const cutoff = ps?.cardBuilder?.jsonlCutoff ?? undefined;
+    let result: CardHistoryResponse;
 
-    // Read JSONL history up to the cutoff (excludes the active turn's messages).
-    const result = await buildCardsFromHistory(sessionId, cwd, offset, limit, cutoff);
+    if (provider.historyMode === 'claude-jsonl') {
+      // Read JSONL history up to the cutoff (excludes the active turn's messages).
+      result = await buildCardsFromHistory(sessionId, cwd, offset, limit, cutoff);
+    } else {
+      // Memory-mode: use in-memory cards from active turn, falling back to persisted history
+      const streamCards = ps?.cardBuilder?.getCards() ?? [];
+      const persisted = await loadPersistedCards(sessionId);
+      const cards = [...persisted, ...streamCards];
+      const total = cards.length;
+      const start = Math.max(0, total - offset - limit);
+      const end = Math.max(0, total - offset);
+      result = {
+        cards: cards.slice(start, end),
+        total,
+        hasMore: start > 0,
+      };
+    }
 
-    // Append in-memory cards for the active turn — no overlap, no dedup needed.
-    if (ps?.cardBuilder) {
+    // Append in-memory cards for the active turn (initial load only — pagination
+    // already has these cards in the PWA's array, so appending them again would duplicate).
+    if (offset === 0 && provider.historyMode === 'claude-jsonl' && ps?.cardBuilder) {
       const streamingCards = ps.cardBuilder.getCards();
       if (streamingCards.length > 0) {
         result.cards.push(...streamingCards);
@@ -536,7 +648,7 @@ export class SessionManager extends EventEmitter {
 
   // ── Private: Callbacks Factory ──
 
-  makeCallbacks(_initialSessionId: string): ProviderCallbacks {
+  makeCallbacks(agentId: AgentId): ProviderCallbacks {
     return {
       emitCardEvent: (event: CardEvent) => {
         this.emit('card-event', event);
@@ -557,7 +669,9 @@ export class SessionManager extends EventEmitter {
         return this.handlePermissionRequest(sessionId, req);
       },
       onModelDetected: (model: string) => {
-        this.preferences.model = model;
+        if (agentId === 'claude-code') {
+          this.preferences.model = model;
+        }
       },
     };
   }
@@ -703,6 +817,7 @@ export class SessionManager extends EventEmitter {
     this.emit('session-updated', {
       sessionId,
       isActive: !!ps,
+      agent: ps?.agentId ?? this.sessionAgents.get(sessionId),
       isStreaming: ps?.streaming ?? false,
       hasPendingInput,
       permissionMode: ps?.permissionLevel ?? this.sessionPermissions.get(sessionId),

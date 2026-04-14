@@ -23,8 +23,15 @@ import {
   type BrowseDirectoryResponsePayload,
   type AddRepoResponsePayload,
   type AddCodingPathResponsePayload,
+  type RemoveRepoResponsePayload,
+  type RemoveCodingPathResponsePayload,
+  type CloneRepoResponsePayload,
+  type SubmodulesResponsePayload,
   type AgentCheckUpdateResponsePayload,
   type AgentUpdateResponsePayload,
+  type AgentRestartResponsePayload,
+  type GitConfigGetResponsePayload,
+  type GitConfigSetResponsePayload,
   type Repository,
   type CodingPath,
   type ClaudeModel,
@@ -488,6 +495,24 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     [sendRequest, listRepos, setError]
   );
 
+  const cloneRepo = useCallback(
+    async (url: string, targetDir: string): Promise<Repository | null> => {
+      try {
+        const message = createMessage('agent:clone-repo', { url, targetDir });
+        const response = await sendRequest<CloneRepoResponsePayload>(message, 120000);
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to clone repository');
+        }
+        await listRepos();
+        return response.repo ?? null;
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Failed to clone repository');
+        return null;
+      }
+    },
+    [sendRequest, listRepos, setError]
+  );
+
   const addCodingPath = useCallback(
     async (path: string): Promise<CodingPath | null> => {
       try {
@@ -507,6 +532,52 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     },
     [sendRequest, setAvailableCodingPaths, availableCodingPaths, setError]
   );
+
+  const removeRepo = useCallback(
+    async (path: string): Promise<boolean> => {
+      try {
+        const message = createMessage('agent:remove-repo', { path });
+        const response = await sendRequest<RemoveRepoResponsePayload>(message, 10000);
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to remove repository');
+        }
+        await listRepos();
+        return true;
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Failed to remove repository');
+        return false;
+      }
+    },
+    [sendRequest, listRepos, setError]
+  );
+
+  const removeCodingPath = useCallback(
+    async (path: string): Promise<boolean> => {
+      try {
+        const message = createMessage('agent:remove-coding-path', { path });
+        const response = await sendRequest<RemoveCodingPathResponsePayload>(message, 10000);
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to remove workspace');
+        }
+        setAvailableCodingPaths(availableCodingPaths.filter((cp) => cp.path !== path));
+        return true;
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Failed to remove workspace');
+        return false;
+      }
+    },
+    [sendRequest, setAvailableCodingPaths, availableCodingPaths, setError]
+  );
+
+  const listSubmodules = useCallback(async () => {
+    try {
+      const message = createMessage('git:submodules', {});
+      const response = await sendRequest<SubmodulesResponsePayload>(message, 10000);
+      return response.submodules;
+    } catch {
+      return [];
+    }
+  }, [sendRequest]);
 
   const checkAgentUpdate = useCallback(async () => {
     try {
@@ -535,6 +606,44 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     }
   }, [sendRequest]);
 
+  const getGitIdentity = useCallback(async () => {
+    try {
+      const message = createMessage('git:config-get', {});
+      return await sendRequest<GitConfigGetResponsePayload>(message, 5000);
+    } catch {
+      return { name: undefined, email: undefined };
+    }
+  }, [sendRequest]);
+
+  const setGitIdentity = useCallback(
+    async (name: string, email: string) => {
+      try {
+        const message = createMessage('git:config-set', { name, email });
+        const response = await sendRequest<GitConfigSetResponsePayload>(message, 10000);
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to set git identity');
+        }
+        return true;
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Failed to set git identity');
+        return false;
+      }
+    },
+    [sendRequest, setError]
+  );
+
+  const restartAgent = useCallback(async () => {
+    try {
+      const message = createMessage('agent:restart', {});
+      return await sendRequest<AgentRestartResponsePayload>(message, 30000);
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to restart agent',
+      };
+    }
+  }, [sendRequest]);
+
   return {
     handleResponse,
     fetchStatus,
@@ -559,8 +668,15 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     switchRepo,
     browseDirectory,
     addRepo,
+    removeRepo,
+    cloneRepo,
     addCodingPath,
+    removeCodingPath,
+    listSubmodules,
+    getGitIdentity,
+    setGitIdentity,
     checkAgentUpdate,
     updateAgent,
+    restartAgent,
   };
 }

@@ -141,6 +141,18 @@ export function addManagedCodingPath(path: string): void {
   }
 }
 
+export function removeManagedCodingPath(path: string): void {
+  const config = loadConfig();
+  if (!config) return;
+  const paths = config.managedCodingPaths ?? [];
+  const idx = paths.indexOf(path);
+  if (idx !== -1) {
+    paths.splice(idx, 1);
+    config.managedCodingPaths = paths;
+    saveConfig(config);
+  }
+}
+
 /**
  * Rotate the agent's key pair (keeps the same agentId).
  * This invalidates all existing PWA connections.

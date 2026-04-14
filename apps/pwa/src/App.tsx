@@ -12,13 +12,16 @@ import { ConnectionSetup } from './components/ConnectionSetup';
 import { FleetDashboard } from './components/FleetDashboard';
 import { ConnectingOverlay } from './components/ConnectingOverlay';
 import { FleetStatusBar } from './components/FleetStatusBar';
-import { AgentStatusBar } from './components/AgentStatusBar';
+import { DashboardAppBar } from './components/DashboardAppBar';
+import { RepoAppBar } from './components/RepoAppBar';
+import { SessionAppBar } from './components/SessionAppBar';
 import { RepoView } from './components/RepoView';
 import { PathBrowser } from './components/PathBrowser';
 import { GitignoreEditor } from './components/GitignoreEditor';
 import { ClaudePanel } from './components/ClaudePanel';
 import type { ClaudeUserInputResponsePayload } from '@sumicom/quicksave-shared';
 import { AgentDashboard } from './components/AgentDashboard';
+import { GitIdentityModal } from './components/GitIdentityModal';
 import { NavigationDrawer } from './components/NavigationDrawer';
 import { getApiKey, saveApiKey as saveApiKeyToStorage, exportMasterSecret, importMasterSecret } from './lib/secureStorage';
 import { SyncClient } from './lib/syncClient';
@@ -73,9 +76,16 @@ function AppContent() {
     switchRepo,
     browseDirectory,
     addRepo,
+    removeRepo,
+    cloneRepo,
     addCodingPath,
+    removeCodingPath,
+    listSubmodules,
+    getGitIdentity,
+    setGitIdentity,
     checkAgentUpdate,
     updateAgent,
+    restartAgent,
   } = useGitOperations(clientRef);
 
   const {
@@ -86,6 +96,7 @@ function AppContent() {
     resumeSession,
     cancelSession,
     closeSession,
+    archiveSession,
     respondToUserInput,
     getSessionConfig,
     setSessionConfig,
@@ -99,6 +110,8 @@ function AppContent() {
   const [showNavDrawer, setShowNavDrawer] = useState(isDesktop);
   const [showFleetSettings, setShowFleetSettings] = useState(false);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
+  const [dashboardEditing, setDashboardEditing] = useState(false);
+  const [showGitIdentityModal, setShowGitIdentityModal] = useState(false);
 
 
   // Track visualViewport height → CSS variable so #root shrinks when keyboard opens.
@@ -285,10 +298,13 @@ function AppContent() {
     if (clientRef.current) return;
 
     const client = new WebSocketClient(signalingServer, identityPublicKey, {
-      onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences, agentVersion, latestVersion, devBuild) => {
+      onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences, agentVersion, latestVersion, devBuild, codexModels) => {
         agentIdRef.current = agentId;
         if (preferences) {
           useClaudeStore.getState().setSelectedModel(preferences.model);
+        }
+        if (codexModels?.length) {
+          useConnectionStore.getState().setCodexModels(codexModels);
         }
         handlersRef.current.setConnected(path, pro, availableRepos, availableCodingPaths, agentVersion, latestVersion, devBuild);
         handlersRef.current.setCurrentRepoPath(path);
@@ -566,7 +582,6 @@ function AppContent() {
           persistent={isDesktop}
           onClose={() => setShowNavDrawer(false)}
           agentId={currentAgentId}
-          currentRepoPath={repoPath}
           onAddRepo={() => openPathBrowser('repo')}
           onAddWorkspace={() => openPathBrowser('workspace')}
           onListSessions={listSessions}
@@ -575,83 +590,123 @@ function AppContent() {
           onOpen={() => setShowNavDrawer(true)}
         />
         <div className="flex flex-col flex-1 min-h-0 min-w-0">
-          <AgentStatusBar
-            branch={status?.branch}
-            ahead={status?.ahead}
-            behind={status?.behind}
-            repoPath={repoPath}
-            showSettings={showAgentSettings}
-            onOpenSettings={() => setShowAgentSettings(true)}
-            onCloseSettings={() => setShowAgentSettings(false)}
-            onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
-            onSwitchRepo={() => openPathBrowser('repo')}
-            onOpenGitignore={() => setShowGitignoreEditor(true)}
-            onSetSessionConfig={(key, value) => {
-              const sid = useClaudeStore.getState().activeSessionId;
-              if (sid) setSessionConfig(sid, key, value);
-            }}
-            onCloseSession={() => {
-              const sid = useClaudeStore.getState().activeSessionId;
-              if (sid) closeSession(sid);
-            }}
-            onCancelSession={() => {
-              const sid = useClaudeStore.getState().activeSessionId;
-              if (sid) cancelSession(sid);
-            }}
-            onCheckAgentUpdate={checkAgentUpdate}
-            onUpdateAgent={updateAgent}
-          />
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
             {isConnected && (
               <Routes>
                 <Route index element={
-                  <AgentDashboard
-                    agentId={currentAgentId}
-                    onListSessions={listSessions}
-                    onAddRepo={() => openPathBrowser('repo')}
-                  />
+                  <>
+                    <DashboardAppBar
+                      editing={dashboardEditing}
+                      onToggleEdit={() => setDashboardEditing((prev) => !prev)}
+                      onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
+                    />
+                    <AgentDashboard
+                      agentId={currentAgentId}
+                      editing={dashboardEditing}
+                      onListSessions={listSessions}
+                      onAddRepo={() => openPathBrowser('repo')}
+                      onRemoveRepo={removeRepo}
+                      onRemoveCodingPath={removeCodingPath}
+                      onArchiveSession={archiveSession}
+                    />
+                  </>
                 } />
                 <Route path="/repo/:pathHash" element={
-                  <RepoViewWithHash
-                    agentId={currentAgentId}
-                    onSwitchRepo={switchRepo}
-                    onRefresh={fetchStatus}
-                    onFetchDiff={fetchDiff}
-                    onStage={stageFiles}
-                    onUnstage={unstageFiles}
-                    onStagePatch={stagePatch}
-                    onUnstagePatch={unstagePatch}
-                    onDiscard={discardChanges}
-                    onUntrack={untrackFiles}
-                    onAddToGitignore={addToGitignore}
-                    onCommit={async (msg, desc) => { await commit(msg, desc); }}
-                    onGenerateAiSummary={generateCommitSummary}
-                    onSetApiKey={setApiKey}
-                  />
+                  <>
+                    <RepoAppBar
+                      branch={status?.branch}
+                      ahead={status?.ahead}
+                      behind={status?.behind}
+                      repoPath={repoPath}
+                      onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
+                      onSwitchRepo={switchRepo}
+                      onListSubmodules={listSubmodules}
+                      onOpenGitignore={() => setShowGitignoreEditor(true)}
+                    />
+                    <RepoViewWithHash
+                      agentId={currentAgentId}
+                      onSwitchRepo={switchRepo}
+                      onRefresh={fetchStatus}
+                      onFetchDiff={fetchDiff}
+                      onStage={stageFiles}
+                      onUnstage={unstageFiles}
+                      onStagePatch={stagePatch}
+                      onUnstagePatch={unstagePatch}
+                      onDiscard={discardChanges}
+                      onUntrack={untrackFiles}
+                      onAddToGitignore={addToGitignore}
+                      onCommit={async (msg, desc) => {
+                        try {
+                          await commit(msg, desc);
+                        } catch (err) {
+                          const errMsg = err instanceof Error ? err.message : '';
+                          if (errMsg.includes('empty ident') || errMsg.includes('Please tell me who you are')) {
+                            setShowGitIdentityModal(true);
+                          }
+                        }
+                      }}
+                      onGenerateAiSummary={generateCommitSummary}
+                      onSetApiKey={setApiKey}
+                    />
+                  </>
                 } />
                 <Route path="/coding/:pathHash" element={
-                  <ClaudePanelWithHash
-                    agentId={currentAgentId}
-                    onListSessions={listSessions}
-                    onGetSessionCards={getSessionCards}
-                    onGetSessionConfig={getSessionConfig}
-                    onStartSession={startSession}
-                    onResumeSession={resumeSession}
-                    onRespondToUserInput={respondToUserInput}
-                    onUnsubscribeSession={unsubscribeSession}
-                  />
+                  <>
+                    <DashboardAppBar
+                      editing={dashboardEditing}
+                      onToggleEdit={() => setDashboardEditing((prev) => !prev)}
+                      onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
+                    />
+                    <ClaudePanelWithHash
+                      agentId={currentAgentId}
+                      onListSessions={listSessions}
+                      onGetSessionCards={getSessionCards}
+                      onGetSessionConfig={getSessionConfig}
+                      onStartSession={startSession}
+                      onResumeSession={resumeSession}
+                      onRespondToUserInput={respondToUserInput}
+                      onUnsubscribeSession={unsubscribeSession}
+                    />
+                  </>
                 } />
                 <Route path="/coding/:pathHash/:sessionId" element={
-                  <ClaudePanelWithHash
-                    agentId={currentAgentId}
-                    onListSessions={listSessions}
-                    onGetSessionCards={getSessionCards}
-                    onGetSessionConfig={getSessionConfig}
-                    onStartSession={startSession}
-                    onResumeSession={resumeSession}
-                    onRespondToUserInput={respondToUserInput}
-                    onUnsubscribeSession={unsubscribeSession}
-                  />
+                  <>
+                    <SessionAppBar
+                      showSettings={showAgentSettings}
+                      onOpenSettings={() => setShowAgentSettings(true)}
+                      onCloseSettings={() => setShowAgentSettings(false)}
+                      onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
+                      onSetSessionConfig={(key, value) => {
+                        const sid = useClaudeStore.getState().activeSessionId;
+                        if (sid) setSessionConfig(sid, key, value);
+                      }}
+                      onCloseSession={() => {
+                        const sid = useClaudeStore.getState().activeSessionId;
+                        if (sid) closeSession(sid);
+                      }}
+                      onArchiveSession={() => {
+                        const sid = useClaudeStore.getState().activeSessionId;
+                        if (sid && repoPath) archiveSession(sid, repoPath);
+                      }}
+                      onCancelSession={() => {
+                        const sid = useClaudeStore.getState().activeSessionId;
+                        if (sid) cancelSession(sid);
+                      }}
+                      onCheckAgentUpdate={checkAgentUpdate}
+                      onUpdateAgent={updateAgent}
+                      onRestartAgent={restartAgent}
+                    />
+                    <ClaudePanelWithHash
+                      agentId={currentAgentId}
+                      onListSessions={listSessions}
+                      onGetSessionCards={getSessionCards}
+                      onGetSessionConfig={getSessionConfig}
+                      onStartSession={startSession}
+                      onResumeSession={resumeSession}
+                      onRespondToUserInput={respondToUserInput}
+                      onUnsubscribeSession={unsubscribeSession}
+                    />
+                  </>
                 } />
               </Routes>
             )}
@@ -679,6 +734,7 @@ function AppContent() {
         onSwitchRepo={switchRepo}
         onBrowseDirectory={browseDirectory}
         onAddRepo={addRepo}
+        onCloneRepo={cloneRepo}
         onAddCodingPath={addCodingPath}
       />
       <GitignoreEditor
@@ -687,6 +743,13 @@ function AppContent() {
         onRead={readGitignore}
         onWrite={writeGitignore}
       />
+      {showGitIdentityModal && (
+        <GitIdentityModal
+          onClose={() => setShowGitIdentityModal(false)}
+          onSave={setGitIdentity}
+          onGetIdentity={getGitIdentity}
+        />
+      )}
     </div>
   );
 }
@@ -726,7 +789,7 @@ function ClaudePanelWithHash({
   onListSessions: (cwd?: string) => Promise<void>;
   onGetSessionCards: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
   onGetSessionConfig?: (sessionId: string) => Promise<void>;
-  onStartSession: (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
+  onStartSession: (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
   onUnsubscribeSession?: (sessionId: string) => void;
@@ -758,7 +821,7 @@ function ClaudePanelWithHash({
     [onGetSessionCards, cwd]
   );
   const boundStartSession = useCallback(
-    (prompt: string, opts?: { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string }) =>
+    (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string }) =>
       onStartSession(prompt, { ...opts, cwd }),
     [onStartSession, cwd]
   );

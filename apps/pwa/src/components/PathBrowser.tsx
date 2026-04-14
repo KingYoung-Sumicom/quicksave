@@ -12,6 +12,7 @@ interface PathBrowserProps {
   onSwitchRepo: (path: string) => Promise<boolean>;
   onBrowseDirectory: (path?: string) => Promise<BrowseDirectoryResponsePayload | null>;
   onAddRepo: (path: string) => Promise<Repository | null>;
+  onCloneRepo?: (url: string, targetDir: string) => Promise<Repository | null>;
   onAddCodingPath?: (path: string) => Promise<CodingPath | null>;
 }
 
@@ -22,11 +23,17 @@ export function PathBrowser({
   onSwitchRepo,
   onBrowseDirectory,
   onAddRepo,
+  onCloneRepo,
   onAddCodingPath,
 }: PathBrowserProps) {
   const { repoPath, availableRepos } = useConnectionStore();
   const [isAdding, setIsAdding] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Clone state
+  const [showCloneForm, setShowCloneForm] = useState(false);
+  const [cloneUrl, setCloneUrl] = useState('');
+  const [cloning, setCloning] = useState(false);
 
   // Browser state
   const [currentPath, setCurrentPath] = useState<string>('');
@@ -38,6 +45,9 @@ export function PathBrowser({
   useEffect(() => {
     if (!isOpen) {
       setError(null);
+      setShowCloneForm(false);
+      setCloneUrl('');
+      setCloning(false);
     }
   }, [isOpen]);
 
@@ -114,9 +124,31 @@ export function PathBrowser({
     setIsAdding(null);
   };
 
+  const handleClone = async () => {
+    if (!onCloneRepo || !cloneUrl.trim() || !currentPath) return;
+    setCloning(true);
+    setError(null);
+
+    // Derive folder name from URL (e.g. "my-repo" from "https://github.com/user/my-repo.git")
+    const urlTrimmed = cloneUrl.trim().replace(/\/+$/, '');
+    const repoName = urlTrimmed.split('/').pop()?.replace(/\.git$/, '') || 'repo';
+    const targetDir = currentPath + '/' + repoName;
+
+    const repo = await onCloneRepo(urlTrimmed, targetDir);
+    if (repo) {
+      const success = await onSwitchRepo(repo.path);
+      if (success) {
+        onClose();
+      }
+    } else if (!error) {
+      setError('Failed to clone repository');
+    }
+    setCloning(false);
+  };
+
   const handleEntryClick = (entry: DirectoryEntry) => {
-    if (mode === 'workspace') {
-      // In workspace mode, navigate into directories
+    if (mode === 'workspace' || showCloneForm) {
+      // In workspace/clone mode, navigate into directories only
       if (entry.isDirectory) {
         loadDirectory(entry.path);
       }
@@ -151,13 +183,52 @@ export function PathBrowser({
 
         {/* Header */}
         <div className="px-4 pb-3 border-b border-slate-700">
-          <h2 className="text-lg font-semibold mb-1">
-            {mode === 'workspace' ? 'Add Workspace' : 'Add Repository'}
-          </h2>
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="text-lg font-semibold">
+              {mode === 'workspace' ? 'Add Workspace' : showCloneForm ? 'Clone Repository' : 'Add Repository'}
+            </h2>
+            {mode === 'repo' && onCloneRepo && (
+              <button
+                onClick={() => setShowCloneForm(!showCloneForm)}
+                className={clsx(
+                  'text-xs px-2.5 py-1 rounded-md font-medium transition-colors',
+                  showCloneForm
+                    ? 'bg-slate-600 text-white'
+                    : 'bg-blue-600 hover:bg-blue-500 text-white'
+                )}
+              >
+                {showCloneForm ? 'Browse' : 'Clone'}
+              </button>
+            )}
+          </div>
           <p className="text-sm text-slate-400">
-            {mode === 'workspace' ? 'Browse to select a working directory' : 'Browse to find a git repository'}
+            {mode === 'workspace'
+              ? 'Browse to select a working directory'
+              : showCloneForm
+                ? 'Clone a remote repository into the current directory'
+                : 'Browse to find a git repository'}
           </p>
         </div>
+
+        {/* Clone URL Input */}
+        {showCloneForm && mode === 'repo' && (
+          <div className="px-4 py-3 border-b border-slate-700">
+            <input
+              type="text"
+              value={cloneUrl}
+              onChange={(e) => setCloneUrl(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  handleClone();
+                }
+              }}
+              placeholder="https://github.com/user/repo.git"
+              className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              disabled={cloning}
+              autoFocus
+            />
+          </div>
+        )}
 
         {/* Error */}
         {error && (
@@ -178,6 +249,22 @@ export function PathBrowser({
                 className="flex-shrink-0 px-3 py-1 text-xs font-medium bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded transition-colors"
               >
                 {isAdding === currentPath ? 'Adding...' : 'Select'}
+              </button>
+            )}
+            {showCloneForm && currentPath && (
+              <button
+                onClick={handleClone}
+                disabled={cloning || !cloneUrl.trim()}
+                className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1 text-xs font-medium bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded transition-colors"
+              >
+                {cloning ? (
+                  <Spinner color="border-white" />
+                ) : (
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                )}
+                {cloning ? 'Cloning...' : 'Clone to here'}
               </button>
             )}
           </div>

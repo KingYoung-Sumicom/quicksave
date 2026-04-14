@@ -30,7 +30,26 @@ program
   .option('-c, --coding-path <path>', 'Path for Claude Code sessions (can specify multiple, non-git dirs OK)', collectValues, [])
   .option('-s, --signaling <url>', 'Signaling server URL')
   .option('--no-qr', 'Disable QR code display')
+  .option('--restart', 'Shut down existing daemon and start a fresh one')
   .action(async (options) => {
+    // Restart mode: wait for old daemon to finish responding, then force-restart
+    if (options.restart) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const { readServiceState } = await import('./service/stateStore.js');
+      const { cleanStaleRuntime } = await import('./service/singleton.js');
+      const { IpcClient } = await import('./service/ipcClient.js');
+      const state = readServiceState();
+      if (state) {
+        try {
+          const client = new IpcClient();
+          await client.connect(state.socketPath);
+          await client.request('shutdown');
+          client.close();
+        } catch { /* already gone */ }
+        await new Promise((r) => setTimeout(r, 500));
+        cleanStaleRuntime();
+      }
+    }
     // Persist any CLI-provided repos/coding paths to config
     const repoPaths: string[] = options.repo;
     for (const p of repoPaths) {

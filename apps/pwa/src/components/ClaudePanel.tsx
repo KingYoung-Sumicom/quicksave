@@ -6,9 +6,9 @@ import type { ClaudeSessionSummary, ClaudeUserInputResponsePayload } from '@sumi
 import { CardRenderer } from './chat/CardRenderer';
 import { SessionList } from './chat/SessionList';
 import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
-import { AGENT_TYPES, type AgentType } from '../lib/claudePresets';
+import { getAgentType } from '../lib/claudePresets';
 
-type StartSessionOpts = { allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean };
+type StartSessionOpts = { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean };
 
 interface ClaudePanelProps {
   onSelectSession?: (sessionId: string) => void;
@@ -49,10 +49,13 @@ export function ClaudePanel({
     cards,
     historyHasMore,
     isLoadingHistory,
+    historyError,
     promptInput,
+    selectedAgent,
     selectedModel,
     selectedPermissionMode,
     sandboxEnabled,
+    setSelectedAgent,
     setPromptInput,
     setActiveSession,
     clearCards,
@@ -80,8 +83,7 @@ export function ClaudePanel({
     }
   }, [isResuming, cards]);
 
-  // Agent type for new sessions (local — doesn't persist after session starts)
-  const [selectedAgentType, setSelectedAgentType] = useState<AgentType>(AGENT_TYPES[0]);
+  const selectedAgentType = getAgentType(selectedAgent);
 
   // View is determined by URL: sessionId present = chat, ?new = new session, absent = sessions list
   const isChat = !!urlSessionId || !!newSession;
@@ -109,29 +111,44 @@ export function ClaudePanel({
   }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const connectionState = useConnectionStore((s) => s.state);
+  const agentOnline = useConnectionStore((s) => s.agentOnline);
 
-  // Load session messages when navigating to a different session
+  // Load session messages when navigating to a different session (or away from one)
   useEffect(() => {
-    if (urlSessionId && urlSessionId !== activeSessionId) {
-      // Unsubscribe from previous session before switching
-      if (activeSessionId) {
-        onUnsubscribeSession?.(activeSessionId);
-      }
-      setActiveSession(urlSessionId);
-      clearCards();
+    if (urlSessionId === activeSessionId) return;
+    if (activeSessionId) {
+      onUnsubscribeSession?.(activeSessionId);
+    }
+    setActiveSession(urlSessionId ?? null);
+    clearCards();
+    if (urlSessionId) {
       isAtBottomRef.current = true;
       onGetSessionCards(urlSessionId);
       onGetSessionConfig?.(urlSessionId);
     }
   }, [urlSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Retry loading cards after reconnect (e.g. page reload before WS was ready)
+  // Re-subscribe after agent reconnect: the relay drops all pubsub subscriptions
+  // when the agent's WebSocket disconnects. When the agent comes back online and
+  // key exchange completes, we must call getCards (which re-subscribes the peer).
+  // This covers both full PWA reconnects (connectionState change) and agent-only
+  // relay blips (agentOnline flips false→true while connectionState stays 'connected').
+  const prevOnlineRef = useRef(agentOnline);
   useEffect(() => {
-    if (connectionState === 'connected' && urlSessionId && cards.length === 0 && !isLoadingHistory) {
+    const wasOnline = prevOnlineRef.current;
+    prevOnlineRef.current = agentOnline;
+    if (!urlSessionId || connectionState !== 'connected') return;
+    // Agent came back online (was offline or null → true)
+    if (agentOnline === true && wasOnline === false) {
       onGetSessionCards(urlSessionId);
       onGetSessionConfig?.(urlSessionId);
     }
-  }, [connectionState]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Initial load: no cards yet
+    if (agentOnline === true && wasOnline === null && cards.length === 0) {
+      onGetSessionCards(urlSessionId);
+      onGetSessionConfig?.(urlSessionId);
+    }
+  }, [agentOnline, connectionState]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Unsubscribe when leaving session view (navigating to session list)
   useEffect(() => {
@@ -213,6 +230,7 @@ export function ClaudePanel({
       await onResumeSession(activeSessionId, prompt);
     } else {
       await onStartSession(prompt, {
+        agent: selectedAgent,
         model: selectedModel,
         permissionMode: selectedPermissionMode,
         sandboxed: sandboxEnabled || undefined,
@@ -220,7 +238,7 @@ export function ClaudePanel({
         ...(selectedAgentType.systemPrompt ? { systemPrompt: selectedAgentType.systemPrompt } : {}),
       });
     }
-  }, [promptInput, isStreaming, activeSessionId, selectedModel, selectedPermissionMode, sandboxEnabled, selectedAgentType, setPromptInput, onResumeSession, onStartSession]);
+  }, [promptInput, isStreaming, activeSessionId, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedAgentType, setPromptInput, onResumeSession, onStartSession]);
 
   const handleRespondToInput = useCallback((requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string) => {
     if (!onRespondToUserInput) return;
@@ -236,7 +254,9 @@ export function ClaudePanel({
   }, [cards, onRespondToUserInput]);
 
   const handleLoadMore = useCallback(async () => {
-    if (!activeSessionId || isLoadingHistory || !historyHasMore) return;
+    // Read isLoadingHistory from live store state (not stale closure) to prevent
+    // the IntersectionObserver from firing duplicate requests before React re-renders.
+    if (!activeSessionId || useClaudeStore.getState().isLoadingHistory || !historyHasMore) return;
     const container = chatContainerRef.current;
     const prevScrollHeight = container?.scrollHeight ?? 0;
     await onGetSessionCards(activeSessionId, cards.length);
@@ -244,7 +264,7 @@ export function ClaudePanel({
     if (container) {
       container.scrollTop = container.scrollHeight - prevScrollHeight;
     }
-  }, [activeSessionId, isLoadingHistory, historyHasMore, cards.length, onGetSessionCards]);
+  }, [activeSessionId, historyHasMore, cards.length, onGetSessionCards]);
 
   // Auto-load older messages when sentinel scrolls into view
   const topSentinelRef = useRef<HTMLDivElement>(null);
@@ -308,6 +328,27 @@ export function ClaudePanel({
                 )}
               </div>
             )}
+            {/* Initial history loading spinner (before any cards arrive) */}
+            {!newSession && cards.length === 0 && isLoadingHistory && !historyError && (
+              <div className="flex items-center justify-center py-12">
+                <svg className="w-6 h-6 text-slate-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                </svg>
+              </div>
+            )}
+            {/* History load error with retry */}
+            {historyError && cards.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-12 gap-3">
+                <p className="text-sm text-slate-400">{historyError}</p>
+                <button
+                  onClick={() => urlSessionId && onGetSessionCards(urlSessionId)}
+                  className="text-sm text-blue-400 hover:text-blue-300 transition-colors"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
             {cards.map((card, i) => (
               <div key={card.id} data-card-id={card.id}>
                 <CardRenderer
@@ -337,11 +378,7 @@ export function ClaudePanel({
             })()}
             {/* New session empty state — inside scrollable container */}
             {newSession && cards.length === 0 && (
-              <NewSessionEmptyState
-                cwd={cwd}
-                selectedAgentType={selectedAgentType}
-                onSelectAgentType={setSelectedAgentType}
-              />
+              <NewSessionEmptyState cwd={cwd} />
             )}
             <div ref={messagesEndRef} />
           </div>
@@ -407,5 +444,3 @@ export function ClaudePanel({
     </div>
   );
 }
-
-

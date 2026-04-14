@@ -65,6 +65,31 @@ export class GitOperations {
   }
 
   /**
+   * List git submodules with their paths and current status.
+   */
+  async getSubmodules(): Promise<Array<{ name: string; path: string; hash: string; branch?: string }>> {
+    await this.ensureInitialized();
+    const root = await this.getGitRoot();
+    try {
+      const result = await this.git.raw(['submodule', 'status', '--recursive']);
+      if (!result.trim()) return [];
+      return result.trim().split('\n').map((line) => {
+        // Format: " <hash> <path> (<branch>)" or "+<hash> <path> (<branch>)" or "-<hash> <path>"
+        const match = line.match(/^[\s+-]?([0-9a-f]+)\s+(\S+)(?:\s+\((.+)\))?/);
+        if (!match) return null;
+        return {
+          name: match[2].split('/').pop() || match[2],
+          path: join(root, match[2]),
+          hash: match[1],
+          branch: match[3],
+        };
+      }).filter((s): s is NonNullable<typeof s> => s !== null);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Get the current git status
    */
   async getStatus(): Promise<GitStatus> {
@@ -479,6 +504,31 @@ export class GitOperations {
     const prefix = content.length > 0 && !content.endsWith('\n') ? '\n' : '';
     const newContent = content + prefix + pattern + '\n';
     await this.writeGitignore(newContent);
+  }
+
+  /**
+   * Get the current git user identity (user.name and user.email)
+   */
+  async getIdentity(): Promise<{ name?: string; email?: string }> {
+    await this.ensureInitialized();
+    let name: string | undefined;
+    let email: string | undefined;
+    try {
+      name = (await this.git.getConfig('user.name')).value || undefined;
+    } catch { /* not configured */ }
+    try {
+      email = (await this.git.getConfig('user.email')).value || undefined;
+    } catch { /* not configured */ }
+    return { name, email };
+  }
+
+  /**
+   * Set git user identity (user.name and user.email) at the local repo level
+   */
+  async setIdentity(name: string, email: string): Promise<void> {
+    await this.ensureInitialized();
+    await this.git.addConfig('user.name', name);
+    await this.git.addConfig('user.email', email);
   }
 
   /**

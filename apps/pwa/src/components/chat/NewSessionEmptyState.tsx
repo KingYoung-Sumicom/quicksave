@@ -1,5 +1,6 @@
 import { useClaudeStore } from '../../stores/claudeStore';
-import { MODELS, PERMISSION_MODES, AGENT_TYPES, type AgentType } from '../../lib/claudePresets';
+import { useConnectionStore } from '../../stores/connectionStore';
+import { PERMISSION_MODES, AGENT_TYPES, getModelsForAgent } from '../../lib/claudePresets';
 import { ButtonGroup } from '../ui/ButtonGroup';
 import { ToggleSwitch } from '../ui/ToggleSwitch';
 
@@ -10,12 +11,23 @@ const REASONING_EFFORTS = [
   { value: 'max', label: 'Max' },
 ];
 
-export function NewSessionEmptyState({ cwd, selectedAgentType, onSelectAgentType }: {
-  cwd?: string;
-  selectedAgentType: AgentType;
-  onSelectAgentType: (agent: AgentType) => void;
-}) {
-  const { selectedModel, selectedPermissionMode, selectedReasoningEffort, sandboxEnabled, setSelectedModel, setSelectedPermissionMode, setSelectedReasoningEffort, setSandboxEnabled } = useClaudeStore();
+export function NewSessionEmptyState({ cwd }: { cwd?: string }) {
+  const {
+    selectedAgent,
+    selectedModel,
+    selectedPermissionMode,
+    selectedReasoningEffort,
+    sandboxEnabled,
+    setSelectedAgent,
+    setSelectedModel,
+    setSelectedPermissionMode,
+    setSelectedReasoningEffort,
+    setSandboxEnabled,
+  } = useClaudeStore();
+  const codexModels = useConnectionStore((s) => s.codexModels);
+  const isClaudeAgent = selectedAgent === 'claude-code';
+  const models = getModelsForAgent(selectedAgent, codexModels);
+  const supportsReasoning = isClaudeAgent || selectedAgent === 'codex';
 
   return (
     <div className="px-4 pt-4 pb-2 flex justify-start">
@@ -34,9 +46,11 @@ export function NewSessionEmptyState({ cwd, selectedAgentType, onSelectAgentType
         </div>
 
         {/* Selectors */}
-        <ButtonGroup label="Agent" options={AGENT_TYPES} value={selectedAgentType.value} onSelect={onSelectAgentType} size="sm" />
-        <ButtonGroup label="Model" options={MODELS} value={selectedModel} onSelect={(m) => setSelectedModel(m.value)} size="sm" />
-        <ButtonGroup label="Reasoning Effort" options={REASONING_EFFORTS} value={selectedReasoningEffort} onSelect={(e) => setSelectedReasoningEffort(e.value as 'low' | 'medium' | 'high' | 'max')} size="sm" />
+        <ButtonGroup label="Agent" options={AGENT_TYPES} value={selectedAgent} onSelect={(agent) => setSelectedAgent(agent.value)} size="sm" />
+        <ButtonGroup label="Model" options={models} value={selectedModel} onSelect={(m) => setSelectedModel(m.value)} size="sm" />
+        {supportsReasoning && (
+          <ButtonGroup label="Reasoning Effort" options={REASONING_EFFORTS} value={selectedReasoningEffort} onSelect={(e) => setSelectedReasoningEffort(e.value as 'low' | 'medium' | 'high' | 'max')} size="sm" />
+        )}
         <ButtonGroup label="Permission" options={PERMISSION_MODES} value={selectedPermissionMode} onSelect={(p) => setSelectedPermissionMode(p.value)} size="sm" />
         <ToggleSwitch label="Sandbox" enabled={sandboxEnabled} onChange={setSandboxEnabled} compact />
 

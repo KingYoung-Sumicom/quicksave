@@ -1,0 +1,269 @@
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { homedir } from 'os';
+import type { AgentConfig } from './config.js';
+
+vi.mock('fs');
+vi.mock('os', () => ({ homedir: vi.fn(() => '/fake/home') }));
+vi.mock('./connection/connection.js', () => ({
+  generateAgentKeyPair: () => ({ publicKey: 'mock-pk', secretKey: 'mock-sk' }),
+}));
+vi.mock('@sumicom/quicksave-shared', () => ({
+  generateAgentId: () => 'mock-agent-id',
+}));
+
+const mockedExistsSync = vi.mocked(existsSync);
+const mockedReadFileSync = vi.mocked(readFileSync);
+const mockedWriteFileSync = vi.mocked(writeFileSync);
+const mockedMkdirSync = vi.mocked(mkdirSync);
+
+const {
+  loadConfig,
+  saveConfig,
+  ensureConfigDir,
+  createDefaultConfig,
+  getOrCreateConfig,
+  getConfigPath,
+  getAnthropicApiKey,
+  setAnthropicApiKey,
+  hasAnthropicApiKey,
+  getManagedRepos,
+  addManagedRepo,
+  removeManagedRepo,
+  getManagedCodingPaths,
+  addManagedCodingPath,
+  rotateKeyPair,
+  addLicense,
+} = await import('./config.js');
+
+const CONFIG_DIR = '/fake/home/.quicksave';
+const CONFIG_FILE = '/fake/home/.quicksave/agent.json';
+
+const baseConfig: AgentConfig = {
+  agentId: 'test-agent',
+  keyPair: { publicKey: 'pk', secretKey: 'sk' },
+  signalingServer: 'wss://signal.quicksave.dev',
+};
+
+function mockConfigFile(config: AgentConfig | null) {
+  if (config) {
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockReturnValue(JSON.stringify(config));
+  } else {
+    mockedExistsSync.mockReturnValue(false);
+  }
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+describe('getConfigPath', () => {
+  it('returns the config file path under ~/.quicksave', () => {
+    expect(getConfigPath()).toBe(CONFIG_FILE);
+  });
+});
+
+describe('ensureConfigDir', () => {
+  it('creates the config directory if it does not exist', () => {
+    mockedExistsSync.mockReturnValue(false);
+    ensureConfigDir();
+    expect(mockedMkdirSync).toHaveBeenCalledWith(CONFIG_DIR, { recursive: true });
+  });
+
+  it('does not create the directory if it already exists', () => {
+    mockedExistsSync.mockReturnValue(true);
+    ensureConfigDir();
+    expect(mockedMkdirSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('loadConfig', () => {
+  it('returns null when config file does not exist', () => {
+    mockConfigFile(null);
+    expect(loadConfig()).toBeNull();
+  });
+
+  it('parses and returns the config when file exists', () => {
+    mockConfigFile(baseConfig);
+    expect(loadConfig()).toEqual(baseConfig);
+  });
+
+  it('returns null on parse error', () => {
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockReturnValue('bad json');
+    expect(loadConfig()).toBeNull();
+  });
+});
+
+describe('saveConfig', () => {
+  it('ensures config dir and writes pretty-printed JSON', () => {
+    // ensureConfigDir checks existsSync for CONFIG_DIR
+    mockedExistsSync.mockReturnValue(true);
+    saveConfig(baseConfig);
+    expect(mockedWriteFileSync).toHaveBeenCalledWith(
+      CONFIG_FILE,
+      JSON.stringify(baseConfig, null, 2),
+    );
+  });
+});
+
+describe('createDefaultConfig', () => {
+  it('generates a config with mocked id and keypair, then saves it', () => {
+    mockedExistsSync.mockReturnValue(true);
+    const config = createDefaultConfig('wss://signal.example.com');
+    expect(config.agentId).toBe('mock-agent-id');
+    expect(config.keyPair).toEqual({ publicKey: 'mock-pk', secretKey: 'mock-sk' });
+    expect(config.signalingServer).toBe('wss://signal.example.com');
+    expect(mockedWriteFileSync).toHaveBeenCalled();
+  });
+});
+
+describe('getOrCreateConfig', () => {
+  it('creates a new config when none exists', () => {
+    mockedExistsSync.mockReturnValue(false);
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const config = getOrCreateConfig('wss://signal.quicksave.dev');
+    expect(config.agentId).toBe('mock-agent-id');
+    consoleSpy.mockRestore();
+  });
+
+  it('returns existing config when signaling server matches', () => {
+    mockConfigFile(baseConfig);
+    const config = getOrCreateConfig('wss://signal.quicksave.dev');
+    expect(config).toEqual(baseConfig);
+    // Should not re-save since server is the same
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it('updates signaling server when it has changed', () => {
+    mockConfigFile(baseConfig);
+    const config = getOrCreateConfig('wss://new-signal.example.com');
+    expect(config.signalingServer).toBe('wss://new-signal.example.com');
+    expect(mockedWriteFileSync).toHaveBeenCalled();
+  });
+});
+
+describe('addLicense', () => {
+  it('adds a license to existing config', () => {
+    mockConfigFile(baseConfig);
+    const license = { key: 'lic-123', tier: 'pro' } as any;
+    addLicense(license);
+    const savedJson = mockedWriteFileSync.mock.calls[0]?.[1] as string;
+    const saved = JSON.parse(savedJson);
+    expect(saved.license).toEqual(license);
+  });
+
+  it('does nothing when no config exists', () => {
+    mockConfigFile(null);
+    addLicense({ key: 'lic-123' } as any);
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('Anthropic API key helpers', () => {
+  it('getAnthropicApiKey returns undefined when no config', () => {
+    mockConfigFile(null);
+    expect(getAnthropicApiKey()).toBeUndefined();
+  });
+
+  it('getAnthropicApiKey returns the key from config', () => {
+    mockConfigFile({ ...baseConfig, anthropicApiKey: 'sk-test' });
+    expect(getAnthropicApiKey()).toBe('sk-test');
+  });
+
+  it('setAnthropicApiKey updates the config', () => {
+    mockConfigFile(baseConfig);
+    setAnthropicApiKey('sk-new');
+    const savedJson = mockedWriteFileSync.mock.calls[0]?.[1] as string;
+    expect(JSON.parse(savedJson).anthropicApiKey).toBe('sk-new');
+  });
+
+  it('hasAnthropicApiKey returns false when no key', () => {
+    mockConfigFile(baseConfig);
+    expect(hasAnthropicApiKey()).toBe(false);
+  });
+
+  it('hasAnthropicApiKey returns true when key exists', () => {
+    mockConfigFile({ ...baseConfig, anthropicApiKey: 'sk-test' });
+    expect(hasAnthropicApiKey()).toBe(true);
+  });
+});
+
+describe('managed repos helpers', () => {
+  it('getManagedRepos returns empty array when no config', () => {
+    mockConfigFile(null);
+    expect(getManagedRepos()).toEqual([]);
+  });
+
+  it('getManagedRepos returns repos from config', () => {
+    mockConfigFile({ ...baseConfig, managedRepos: ['/repo/a', '/repo/b'] });
+    expect(getManagedRepos()).toEqual(['/repo/a', '/repo/b']);
+  });
+
+  it('addManagedRepo adds a new repo path', () => {
+    mockConfigFile(baseConfig);
+    addManagedRepo('/repo/new');
+    const savedJson = mockedWriteFileSync.mock.calls[0]?.[1] as string;
+    expect(JSON.parse(savedJson).managedRepos).toEqual(['/repo/new']);
+  });
+
+  it('addManagedRepo does not add duplicates', () => {
+    mockConfigFile({ ...baseConfig, managedRepos: ['/repo/a'] });
+    addManagedRepo('/repo/a');
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it('removeManagedRepo removes a repo', () => {
+    mockConfigFile({ ...baseConfig, managedRepos: ['/repo/a', '/repo/b'] });
+    removeManagedRepo('/repo/a');
+    const savedJson = mockedWriteFileSync.mock.calls[0]?.[1] as string;
+    expect(JSON.parse(savedJson).managedRepos).toEqual(['/repo/b']);
+  });
+
+  it('removeManagedRepo does nothing when repo not found', () => {
+    mockConfigFile({ ...baseConfig, managedRepos: ['/repo/a'] });
+    removeManagedRepo('/repo/missing');
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it('removeManagedRepo does nothing when no config', () => {
+    mockConfigFile(null);
+    removeManagedRepo('/repo/a');
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('managed coding paths helpers', () => {
+  it('getManagedCodingPaths returns empty array when no config', () => {
+    mockConfigFile(null);
+    expect(getManagedCodingPaths()).toEqual([]);
+  });
+
+  it('addManagedCodingPath adds a new path', () => {
+    mockConfigFile(baseConfig);
+    addManagedCodingPath('/code/project');
+    const savedJson = mockedWriteFileSync.mock.calls[0]?.[1] as string;
+    expect(JSON.parse(savedJson).managedCodingPaths).toEqual(['/code/project']);
+  });
+
+  it('addManagedCodingPath does not add duplicates', () => {
+    mockConfigFile({ ...baseConfig, managedCodingPaths: ['/code/x'] });
+    addManagedCodingPath('/code/x');
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('rotateKeyPair', () => {
+  it('generates a new key pair and saves it', () => {
+    mockConfigFile(baseConfig);
+    const result = rotateKeyPair();
+    expect(result.keyPair).toEqual({ publicKey: 'mock-pk', secretKey: 'mock-sk' });
+    expect(result.agentId).toBe(baseConfig.agentId); // agentId preserved
+    expect(mockedWriteFileSync).toHaveBeenCalled();
+  });
+
+  it('throws when no config exists', () => {
+    mockConfigFile(null);
+    expect(() => rotateKeyPair()).toThrow('No config found');
+  });
+});

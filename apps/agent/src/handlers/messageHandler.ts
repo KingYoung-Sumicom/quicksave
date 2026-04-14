@@ -24,6 +24,10 @@ import {
   DiscardResponsePayload,
   UntrackRequestPayload,
   UntrackResponsePayload,
+  SubmodulesResponsePayload,
+  GitConfigGetResponsePayload,
+  GitConfigSetRequestPayload,
+  GitConfigSetResponsePayload,
   GitignoreAddRequestPayload,
   GitignoreAddResponsePayload,
   GitignoreReadResponsePayload,
@@ -47,12 +51,19 @@ import {
   DirectoryEntry,
   AddRepoRequestPayload,
   AddRepoResponsePayload,
+  CloneRepoRequestPayload,
+  CloneRepoResponsePayload,
   CodingPath,
   ListCodingPathsResponsePayload,
   AddCodingPathRequestPayload,
   AddCodingPathResponsePayload,
+  RemoveRepoRequestPayload,
+  RemoveRepoResponsePayload,
+  RemoveCodingPathRequestPayload,
+  RemoveCodingPathResponsePayload,
   AgentCheckUpdateResponsePayload,
   AgentUpdateResponsePayload,
+  AgentRestartResponsePayload,
   ClaudeListSessionsRequestPayload,
   ClaudeListSessionsResponsePayload,
   ClaudeStartRequestPayload,
@@ -84,19 +95,22 @@ import {
   SessionUpdateHistoryResponsePayload,
   SessionDeleteHistoryRequestPayload,
   SessionDeleteHistoryResponsePayload,
+  CodexModelInfo,
+  CodexListModelsResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { GitOperations } from '../git/operations.js';
-import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, addManagedCodingPath } from '../config.js';
+import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, removeManagedRepo, addManagedCodingPath, removeManagedCodingPath } from '../config.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';
 import { SessionManager } from '../ai/sessionManager.js';
-import { ClaudeCliProvider } from '../ai/claudeCliProvider.js';
-import { ClaudeSdkProvider } from '../ai/claudeSdkProvider.js';
+import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
+import { CodexSdkProvider } from '../ai/codexSdkProvider.js';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
-import { readdir, stat } from 'fs/promises';
+import { readdir, stat, readFile } from 'fs/promises';
 import { join, dirname, basename } from 'path';
 import { homedir } from 'os';
 
 const VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
+const CODEX_MODELS_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 export class MessageHandler {
   private repos: Map<string, GitOperations>;
@@ -107,9 +121,14 @@ export class MessageHandler {
   private availableRepos: Repository[];
   private codingPaths: Map<string, CodingPath> = new Map(); // path -> CodingPath
   private aiService: CommitSummaryService | null = null;
-  private claudeService: SessionManager = new SessionManager(new ClaudeCliProvider(), new ClaudeSdkProvider());
+  private claudeService: SessionManager = new SessionManager([
+    new ClaudeCodeProvider(),
+    new CodexSdkProvider(),
+  ]);
   private latestVersionCache: { version: string; checkedAt: number } | null = null;
   private versionCheckInFlight: Promise<string | null> | null = null;
+  private codexModelsCache: { models: CodexModelInfo[]; checkedAt: number } | null = null;
+  private codexModelsCheckInFlight: Promise<CodexModelInfo[] | null> | null = null;
   onPeerSubscribed?: (peerAddress: string, sessionId: string) => void;
   onPeerUnsubscribed?: (peerAddress: string, sessionId: string) => void;
   onHistoryUpdated?: (cwd: string, entry: SessionRegistryEntry, action: 'upsert' | 'delete') => void;
@@ -167,6 +186,62 @@ export class MessageHandler {
     })();
 
     return this.versionCheckInFlight;
+  }
+
+  /**
+   * Fetch available Codex models from OpenAI /v1/models. Reads API key from
+   * ~/.codex/auth.json (ChatGPT OAuth token or OPENAI_API_KEY). Cached for 12h
+   * with concurrent-request dedup — same pattern as checkLatestVersion.
+   */
+  private async fetchCodexModels(force = false): Promise<CodexModelInfo[] | null> {
+    if (!force && this.codexModelsCache &&
+        Date.now() - this.codexModelsCache.checkedAt < CODEX_MODELS_CHECK_INTERVAL_MS) {
+      return this.codexModelsCache.models;
+    }
+
+    if (this.codexModelsCheckInFlight) return this.codexModelsCheckInFlight;
+
+    this.codexModelsCheckInFlight = (async () => {
+      try {
+        // Resolve API key: env var first, then ~/.codex/auth.json
+        let apiKey = process.env.OPENAI_API_KEY;
+        if (!apiKey) {
+          try {
+            const authPath = join(homedir(), '.codex', 'auth.json');
+            const raw = await readFile(authPath, 'utf-8');
+            const auth = JSON.parse(raw) as {
+              OPENAI_API_KEY?: string;
+              tokens?: { access_token?: string };
+            };
+            apiKey = auth.OPENAI_API_KEY || auth.tokens?.access_token;
+          } catch { /* no auth file */ }
+        }
+        if (!apiKey) return null;
+
+        const res = await fetch('https://api.openai.com/v1/models', {
+          headers: { Authorization: `Bearer ${apiKey}` },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!res.ok) return null;
+        const data = await res.json() as { data?: Array<{ id: string }> };
+        if (!Array.isArray(data.data)) return null;
+
+        // Filter to chat-capable models (gpt-*, o*) and sort descending
+        const models: CodexModelInfo[] = data.data
+          .filter((m) => /^(gpt-|o\d)/.test(m.id))
+          .map((m) => ({ id: m.id, name: m.id }))
+          .sort((a, b) => b.id.localeCompare(a.id));
+
+        this.codexModelsCache = { models, checkedAt: Date.now() };
+        return models;
+      } catch {
+        return null;
+      } finally {
+        this.codexModelsCheckInFlight = null;
+      }
+    })();
+
+    return this.codexModelsCheckInFlight;
   }
 
   addRepo(repo: Repository): void {
@@ -286,6 +361,12 @@ export class MessageHandler {
           return this.handleDiscard(message as Message<DiscardRequestPayload>, peerAddress);
         case 'git:untrack':
           return this.handleUntrack(message as Message<UntrackRequestPayload>, peerAddress);
+        case 'git:submodules':
+          return this.handleSubmodules(message, peerAddress);
+        case 'git:config-get':
+          return this.handleGitConfigGet(message, peerAddress);
+        case 'git:config-set':
+          return this.handleGitConfigSet(message as Message<GitConfigSetRequestPayload>, peerAddress);
         case 'git:gitignore-add':
           return this.handleGitignoreAdd(message as Message<GitignoreAddRequestPayload>, peerAddress);
         case 'git:gitignore-read':
@@ -306,14 +387,24 @@ export class MessageHandler {
           return this.handleBrowseDirectory(message as Message<BrowseDirectoryRequestPayload>);
         case 'agent:add-repo':
           return this.handleAddRepo(message as Message<AddRepoRequestPayload>);
+        case 'agent:remove-repo':
+          return this.handleRemoveRepo(message as Message<RemoveRepoRequestPayload>);
+        case 'agent:clone-repo':
+          return this.handleCloneRepo(message as Message<CloneRepoRequestPayload>);
         case 'agent:list-coding-paths':
           return this.handleListCodingPaths(message);
         case 'agent:add-coding-path':
           return this.handleAddCodingPath(message as Message<AddCodingPathRequestPayload>);
+        case 'agent:remove-coding-path':
+          return this.handleRemoveCodingPath(message as Message<RemoveCodingPathRequestPayload>);
         case 'agent:check-update':
           return this.handleAgentCheckUpdate(message);
         case 'agent:update':
           return this.handleAgentUpdate(message);
+        case 'agent:restart':
+          return this.handleAgentRestart(message);
+        case 'codex:list-models':
+          return this.handleCodexListModels(message);
         // Claude Code SDK
         case 'claude:list-sessions':
           return this.handleClaudeListSessions(message as Message<ClaudeListSessionsRequestPayload>, peerAddress);
@@ -365,8 +456,9 @@ export class MessageHandler {
     message: Message<HandshakePayload>,
     peerAddress: string,
   ): Message<HandshakeAckPayload> {
-    // Fire-and-forget: check npm registry for latest version (12h dedup, production only)
+    // Fire-and-forget: check npm registry + OpenAI models (12h dedup each)
     this.checkLatestVersion().catch(() => {});
+    this.fetchCodexModels().catch(() => {});
 
     const response = createMessage<HandshakeAckPayload>('handshake:ack', {
       success: true,
@@ -377,6 +469,7 @@ export class MessageHandler {
       preferences: this.claudeService.getPreferences(),
       latestVersion: this.latestVersionCache?.version,
       devBuild: !this.productionBuild || undefined,
+      codexModels: this.codexModelsCache?.models,
     });
     response.id = message.id;
 
@@ -632,6 +725,47 @@ export class MessageHandler {
       return response;
     } finally {
       this.releaseRepoLock(repoPath, peerAddress);
+    }
+  }
+
+  private async handleSubmodules(message: Message, peerAddress: string): Promise<Message<SubmodulesResponsePayload>> {
+    const git = this.getGit(peerAddress);
+    const subs = await git.getSubmodules();
+    // Auto-register submodule paths so switch-repo works
+    for (const sub of subs) {
+      if (!this.repos.has(sub.path)) {
+        this.repos.set(sub.path, new GitOperations(sub.path));
+        this.availableRepos.push({ path: sub.path, name: sub.name, currentBranch: sub.branch });
+      }
+    }
+    const response = createMessage<SubmodulesResponsePayload>('git:submodules:response', {
+      submodules: subs.map((s) => ({ name: s.name, path: s.path, branch: s.branch })),
+    });
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleGitConfigGet(message: Message, peerAddress: string): Promise<Message<GitConfigGetResponsePayload>> {
+    const identity = await this.getGit(peerAddress).getIdentity();
+    const response = createMessage<GitConfigGetResponsePayload>('git:config-get:response', identity);
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleGitConfigSet(message: Message<GitConfigSetRequestPayload>, peerAddress: string): Promise<Message<GitConfigSetResponsePayload>> {
+    try {
+      const { name, email } = message.payload;
+      await this.getGit(peerAddress).setIdentity(name, email);
+      const response = createMessage<GitConfigSetResponsePayload>('git:config-set:response', { success: true });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<GitConfigSetResponsePayload>('git:config-set:response', {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to set git identity',
+      });
+      response.id = message.id;
+      return response;
     }
   }
 
@@ -974,6 +1108,96 @@ export class MessageHandler {
     }
   }
 
+  private handleRemoveRepo(
+    message: Message<RemoveRepoRequestPayload>
+  ): Message<RemoveRepoResponsePayload> {
+    const { path: repoPath } = message.payload;
+
+    if (!this.repos.has(repoPath)) {
+      const response = createMessage<RemoveRepoResponsePayload>('agent:remove-repo:response', {
+        success: false,
+        error: 'Repository not found',
+      });
+      response.id = message.id;
+      return response;
+    }
+
+    this.removeRepo(repoPath);
+    removeManagedRepo(repoPath);
+
+    const response = createMessage<RemoveRepoResponsePayload>('agent:remove-repo:response', {
+      success: true,
+    });
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleCloneRepo(
+    message: Message<CloneRepoRequestPayload>
+  ): Promise<Message<CloneRepoResponsePayload>> {
+    const { url, targetDir } = message.payload;
+
+    if (!url || !url.trim()) {
+      const response = createMessage<CloneRepoResponsePayload>('agent:clone-repo:response', {
+        success: false,
+        error: 'Repository URL is required',
+      });
+      response.id = message.id;
+      return response;
+    }
+
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+
+      // Clone into the target directory
+      await execFileAsync('git', ['clone', url.trim(), targetDir], {
+        timeout: 120_000,
+      });
+
+      // Verify it's a valid git repo and add it
+      const git = new GitOperations(targetDir);
+      const { current } = await git.getBranches();
+      const rootPath = await git.getGitRoot();
+
+      // Check if already added (by resolved root path)
+      if (this.repos.has(rootPath)) {
+        const response = createMessage<CloneRepoResponsePayload>('agent:clone-repo:response', {
+          success: false,
+          error: 'Repository already added',
+        });
+        response.id = message.id;
+        return response;
+      }
+
+      // Add to maps and persist
+      this.repos.set(rootPath, git);
+      const newRepo: Repository = {
+        path: rootPath,
+        name: basename(rootPath),
+        currentBranch: current,
+      };
+      this.availableRepos.push(newRepo);
+      addManagedRepo(rootPath);
+
+      const response = createMessage<CloneRepoResponsePayload>('agent:clone-repo:response', {
+        success: true,
+        repo: newRepo,
+        clonedPath: rootPath,
+      });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<CloneRepoResponsePayload>('agent:clone-repo:response', {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to clone repository',
+      });
+      response.id = message.id;
+      return response;
+    }
+  }
+
   // ============================================================================
   // Coding Path Handlers
   // ============================================================================
@@ -1031,6 +1255,31 @@ export class MessageHandler {
       response.id = message.id;
       return response;
     }
+  }
+
+  private handleRemoveCodingPath(
+    message: Message<RemoveCodingPathRequestPayload>
+  ): Message<RemoveCodingPathResponsePayload> {
+    const { path: codingPath } = message.payload;
+
+    if (!this.codingPaths.has(codingPath)) {
+      const response = createMessage<RemoveCodingPathResponsePayload>(
+        'agent:remove-coding-path:response',
+        { success: false, error: 'Coding path not found' }
+      );
+      response.id = message.id;
+      return response;
+    }
+
+    this.codingPaths.delete(codingPath);
+    removeManagedCodingPath(codingPath);
+
+    const response = createMessage<RemoveCodingPathResponsePayload>(
+      'agent:remove-coding-path:response',
+      { success: true }
+    );
+    response.id = message.id;
+    return response;
   }
 
   // ============================================================================
@@ -1137,6 +1386,73 @@ export class MessageHandler {
     }
   }
 
+  private async handleAgentRestart(
+    message: Message,
+  ): Promise<Message<AgentRestartResponsePayload>> {
+    if (this.productionBuild) {
+      const response = createMessage<AgentRestartResponsePayload>(
+        'agent:restart:response',
+        { success: false, error: 'Restart is only available for dev builds' },
+      );
+      response.id = message.id;
+      return response;
+    }
+
+    try {
+      const { spawn } = await import('child_process');
+      const { fileURLToPath } = await import('url');
+      const { resolve: resolvePath } = await import('path');
+
+      const thisFile = fileURLToPath(import.meta.url);
+      const isTs = thisFile.endsWith('.ts');
+      const entryPath = resolvePath(dirname(thisFile), isTs ? '../index.ts' : '../../index.js');
+      const agentRoot = resolvePath(dirname(thisFile), isTs ? '..' : '..');
+      const node = process.execPath;
+      const execArgv = isTs ? ['--import', 'tsx'] : [];
+
+      spawn(node, [...execArgv, entryPath, '--restart'], {
+        detached: true,
+        stdio: 'ignore',
+        cwd: agentRoot,
+      }).unref();
+
+      const response = createMessage<AgentRestartResponsePayload>(
+        'agent:restart:response',
+        { success: true },
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<AgentRestartResponsePayload>(
+        'agent:restart:response',
+        { success: false, error: error instanceof Error ? error.message : 'Failed to restart agent' },
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleCodexListModels(
+    message: Message,
+  ): Promise<Message<CodexListModelsResponsePayload>> {
+    try {
+      const models = await this.fetchCodexModels(/* force */ true);
+      const response = createMessage<CodexListModelsResponsePayload>(
+        'codex:list-models:response',
+        { models: models ?? [] },
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<CodexListModelsResponsePayload>(
+        'codex:list-models:response',
+        { models: [], error: error instanceof Error ? error.message : 'Failed to fetch models' },
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
   // ============================================================================
   // Claude Code SDK Handlers
   // ============================================================================
@@ -1168,25 +1484,37 @@ export class MessageHandler {
     message: Message<ClaudeStartRequestPayload>,
     peerAddress: string,
   ): Promise<Message<ClaudeStartResponsePayload>> {
-    const { prompt, cwd: payloadCwd, allowedTools, systemPrompt, model, permissionMode, sandboxed } = message.payload;
+    const { prompt, cwd: payloadCwd, agent, allowedTools, systemPrompt, model, permissionMode, sandboxed } = message.payload;
+    const legacyProvider = (message.payload as { provider?: 'claude-cli' | 'claude-sdk' | 'codex-mcp' }).provider;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const streamId = generateMessageId();
-    console.log(`[claude:start] cwd=${cwd} prompt=${prompt.slice(0, 80)}${sandboxed ? ' [sandboxed]' : ''}`);
+    const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
+    console.log(`[agent:start] agent=${resolvedAgent ?? 'default'} cwd=${cwd} prompt=${prompt.slice(0, 80)}${sandboxed ? ' [sandboxed]' : ''}`);
 
     try {
       const sessionId = await this.claudeService.startSession({
-        prompt, cwd, streamId, allowedTools, systemPrompt, model, permissionMode, sandboxed,
+        prompt,
+        cwd,
+        streamId,
+        agent: resolvedAgent,
+        allowedTools,
+        systemPrompt,
+        model,
+        permissionMode,
+        sandboxed,
       });
 
-      console.log(`[claude:start] session created: ${sessionId}`);
+      console.log(`[agent:start] session created: ${sessionId} agent=${resolvedAgent ?? 'default'}`);
       this.onPeerSubscribed?.(peerAddress, sessionId);
 
       // Register in session history
       const now = Date.now();
       const registry = getSessionRegistry();
       const gitBranch = await this.getGitBranchQuiet(cwd);
+      const actualAgent = this.claudeService.getSessionAgent(sessionId, cwd);
       registry.upsertEntry({
         sessionId, cwd,
+        agent: actualAgent,
         repoName: basename(cwd),
         gitBranch,
         firstPrompt: prompt.slice(0, 100),
@@ -1202,7 +1530,7 @@ export class MessageHandler {
       response.id = message.id;
       return response;
     } catch (error) {
-      console.error(`[claude:start] error:`, error);
+      console.error(`[agent:start] error:`, error);
       const response = createMessage<ClaudeStartResponsePayload>(
         'claude:start:response',
         { success: false, error: error instanceof Error ? error.message : 'Failed to start session' }
@@ -1216,10 +1544,12 @@ export class MessageHandler {
     message: Message<ClaudeResumeRequestPayload>,
     peerAddress: string,
   ): Promise<Message<ClaudeResumeResponsePayload>> {
-    const { sessionId: requestedId, prompt, cwd: payloadCwd } = message.payload;
+    const { sessionId: requestedId, prompt, cwd: payloadCwd, agent } = message.payload;
+    const legacyProvider = (message.payload as { provider?: 'claude-cli' | 'claude-sdk' | 'codex-mcp' }).provider;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const streamId = generateMessageId();
-    console.log(`[claude:resume] session=${requestedId} cwd=${cwd} prompt=${prompt.slice(0, 80)}`);
+    const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
+    console.log(`[agent:resume] session=${requestedId} agent=${resolvedAgent ?? 'stored'} cwd=${cwd} prompt=${prompt.slice(0, 80)}`);
 
     // Subscribe before resumeSession starts streaming — hot resume emits events
     // immediately (user_message, then assistant turns), so we must be subscribed
@@ -1228,10 +1558,14 @@ export class MessageHandler {
 
     try {
       const actualSessionId = await this.claudeService.resumeSession({
-        sessionId: requestedId, prompt, cwd, streamId,
+        sessionId: requestedId,
+        prompt,
+        cwd,
+        streamId,
+        agent: resolvedAgent,
       });
 
-      console.log(`[claude:resume] session resumed: ${actualSessionId}`);
+      console.log(`[agent:resume] session resumed: ${actualSessionId}`);
       // Re-subscribe with actual session ID (cold resume may return a different ID)
       if (actualSessionId !== requestedId) {
         this.onPeerSubscribed?.(peerAddress, actualSessionId);
@@ -1241,9 +1575,11 @@ export class MessageHandler {
       const registry = getSessionRegistry();
       const existing = registry.getEntry(cwd, requestedId) ?? registry.getEntry(cwd, actualSessionId);
       const gitBranch = await this.getGitBranchQuiet(cwd);
+      const actualAgent = this.claudeService.getSessionAgent(actualSessionId, cwd);
       registry.upsertEntry({
         ...(existing ?? { sessionId: actualSessionId, cwd, repoName: basename(cwd), createdAt: Date.now() }),
         sessionId: actualSessionId,
+        agent: actualAgent,
         lastAccessedAt: Date.now(),
         gitBranch,
       });
@@ -1256,7 +1592,7 @@ export class MessageHandler {
       response.id = message.id;
       return response;
     } catch (error) {
-      console.error(`[claude:resume] error:`, error);
+      console.error(`[agent:resume] error:`, error);
       const response = createMessage<ClaudeResumeResponsePayload>(
         'claude:resume:response',
         { success: false, error: error instanceof Error ? error.message : 'Failed to resume session' }
@@ -1284,7 +1620,7 @@ export class MessageHandler {
   ): Message<ClaudeCloseResponsePayload> {
     const { sessionId } = message.payload;
     const success = this.claudeService.closeSession(sessionId);
-    console.log(`[claude:close] session=${sessionId} success=${success}`);
+    console.log(`[agent:close] session=${sessionId} success=${success}`);
     const response = createMessage<ClaudeCloseResponsePayload>(
       'claude:close:response',
       { success, error: success ? undefined : 'Session not found or already closed' }
@@ -1297,7 +1633,7 @@ export class MessageHandler {
     message: Message<ClaudeUserInputResponsePayload>
   ): Message {
     const resolved = this.claudeService.resolveUserInput(message.payload);
-    console.log(`[claude:user-input-response] requestId=${message.payload.requestId} action=${message.payload.action} resolved=${resolved}`);
+    console.log(`[agent:user-input-response] requestId=${message.payload.requestId} action=${message.payload.action} resolved=${resolved}`);
     // No dedicated response type — just acknowledge
     const response = createMessage('claude:user-input-response', { success: resolved });
     response.id = message.id;

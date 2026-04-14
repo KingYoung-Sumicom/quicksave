@@ -1,6 +1,48 @@
 import { create } from 'zustand';
-import type { Card, CardEvent, ClaudeSessionSummary, ConfigValue } from '@sumicom/quicksave-shared';
-import { DEFAULT_MODEL, DEFAULT_PERMISSION_MODE, DEFAULT_REASONING_EFFORT } from '@sumicom/quicksave-shared';
+import type { AgentId, Card, CardEvent, ClaudeSessionSummary, ConfigValue } from '@sumicom/quicksave-shared';
+import {
+  DEFAULT_AGENT,
+  DEFAULT_MODEL,
+  DEFAULT_PERMISSION_MODE,
+  DEFAULT_REASONING_EFFORT,
+} from '@sumicom/quicksave-shared';
+import { getModelsForAgent } from '../lib/claudePresets';
+
+// --- localStorage persistence for new-session defaults ---
+const PREFS_KEY = 'quicksave:session-prefs';
+
+interface SessionPrefs {
+  selectedModel: string;
+  selectedAgent: AgentId;
+  selectedPermissionMode: string;
+  selectedReasoningEffort: 'low' | 'medium' | 'high' | 'max';
+  sandboxEnabled: boolean;
+}
+
+function loadPrefs(): Partial<SessionPrefs> {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function savePrefs(prefs: SessionPrefs) {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  } catch { /* quota exceeded — ignore */ }
+}
+
+const savedPrefs = loadPrefs();
+
+// Validate that the saved model is compatible with the saved agent
+if (savedPrefs.selectedAgent && savedPrefs.selectedModel) {
+  const models = getModelsForAgent(savedPrefs.selectedAgent);
+  if (!models.some((m) => m.value === savedPrefs.selectedModel)) {
+    savedPrefs.selectedModel = models[0]?.value ?? DEFAULT_MODEL;
+  }
+}
 
 /** Sessions keyed by sessionId for O(1) lookup. */
 type SessionMap = Record<string, ClaudeSessionSummary>;
@@ -21,6 +63,7 @@ interface ClaudeStore {
   historyTotal: number;
   historyHasMore: boolean;
   isLoadingHistory: boolean;
+  historyError: string | null;
 
 
   // UI
@@ -29,6 +72,7 @@ interface ClaudeStore {
 
   // Session preferences (defaults for new sessions)
   selectedModel: string;
+  selectedAgent: AgentId;
   selectedPermissionMode: string;
   selectedReasoningEffort: 'low' | 'medium' | 'high' | 'max';
   sandboxEnabled: boolean;
@@ -55,6 +99,7 @@ interface ClaudeStore {
   handleCardEvent: (event: CardEvent) => void;
   setHistoryMeta: (total: number, hasMore: boolean) => void;
   setLoadingHistory: (loading: boolean) => void;
+  setHistoryError: (error: string | null) => void;
   clearCards: () => void;
 
   // Actions — pending input
@@ -62,6 +107,7 @@ interface ClaudeStore {
 
   // Actions — session preferences (new session defaults)
   setSelectedModel: (model: string) => void;
+  setSelectedAgent: (agent: AgentId) => void;
   setSelectedPermissionMode: (mode: string) => void;
   setSelectedReasoningEffort: (effort: 'low' | 'medium' | 'high' | 'max') => void;
   setSandboxEnabled: (enabled: boolean) => void;
@@ -90,12 +136,14 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   historyTotal: 0,
   historyHasMore: false,
   isLoadingHistory: false,
+  historyError: null,
   promptInput: '',
   isVisible: false,
-  selectedModel: DEFAULT_MODEL,
-  selectedPermissionMode: DEFAULT_PERMISSION_MODE,
-  selectedReasoningEffort: DEFAULT_REASONING_EFFORT,
-  sandboxEnabled: false,
+  selectedModel: savedPrefs.selectedModel ?? DEFAULT_MODEL,
+  selectedAgent: savedPrefs.selectedAgent ?? DEFAULT_AGENT,
+  selectedPermissionMode: savedPrefs.selectedPermissionMode ?? DEFAULT_PERMISSION_MODE,
+  selectedReasoningEffort: savedPrefs.selectedReasoningEffort ?? DEFAULT_REASONING_EFFORT,
+  sandboxEnabled: savedPrefs.sandboxEnabled ?? false,
   sessionConfigs: {},
 
   // Sessions
@@ -122,10 +170,13 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   // Active session
   setActiveSession: (sessionId, streamId = null) => {
     const session = sessionId ? get().sessions[sessionId] : null;
+    const legacyProvider = (session as { provider?: string } | null)?.provider;
     set({
       activeSessionId: sessionId,
       activeStreamIds: streamId ? [streamId] : [],
       streamError: null,
+      selectedAgent: (session?.agent as AgentId | undefined)
+        ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : DEFAULT_AGENT),
       selectedPermissionMode: session?.permissionMode ?? 'acceptEdits',
     });
   },
@@ -141,7 +192,11 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   // Cards — server returns cards with pendingInput already attached
   setCards: (cards) => set({ cards }),
   prependCards: (newCards) =>
-    set((state) => ({ cards: [...newCards, ...state.cards] })),
+    set((state) => {
+      const existingIds = new Set(state.cards.map((c) => c.id));
+      const deduped = newCards.filter((c) => !existingIds.has(c.id));
+      return { cards: [...deduped, ...state.cards] };
+    }),
   appendCard: (card) =>
     set((state) => ({ cards: [...state.cards, card] })),
 
@@ -191,7 +246,8 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
 
   setHistoryMeta: (total, hasMore) => set({ historyTotal: total, historyHasMore: hasMore }),
   setLoadingHistory: (loading) => set({ isLoadingHistory: loading }),
-  clearCards: () => set({ cards: [], historyTotal: 0, historyHasMore: false }),
+  setHistoryError: (error) => set({ historyError: error }),
+  clearCards: () => set({ cards: [], historyTotal: 0, historyHasMore: false, historyError: null }),
 
   clearPendingInput: (requestId) =>
     set((state) => {
@@ -204,11 +260,31 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       return { cards };
     }),
 
-  // Session preferences (new session defaults)
-  setSelectedModel: (model) => set({ selectedModel: model }),
-  setSelectedPermissionMode: (mode) => set({ selectedPermissionMode: mode }),
-  setSelectedReasoningEffort: (effort) => set({ selectedReasoningEffort: effort }),
-  setSandboxEnabled: (enabled) => set({ sandboxEnabled: enabled }),
+  // Session preferences (new session defaults) — persisted to localStorage
+  setSelectedModel: (model) => {
+    set({ selectedModel: model });
+    savePrefs({ ...get(), selectedModel: model });
+  },
+  setSelectedAgent: (agent) => {
+    const state = get();
+    const models = getModelsForAgent(agent);
+    const modelValid = models.some((m) => m.value === state.selectedModel);
+    const nextModel = modelValid ? state.selectedModel : models[0]?.value ?? DEFAULT_MODEL;
+    set({ selectedAgent: agent, selectedModel: nextModel });
+    savePrefs({ ...state, selectedAgent: agent, selectedModel: nextModel });
+  },
+  setSelectedPermissionMode: (mode) => {
+    set({ selectedPermissionMode: mode });
+    savePrefs({ ...get(), selectedPermissionMode: mode });
+  },
+  setSelectedReasoningEffort: (effort) => {
+    set({ selectedReasoningEffort: effort });
+    savePrefs({ ...get(), selectedReasoningEffort: effort });
+  },
+  setSandboxEnabled: (enabled) => {
+    set({ sandboxEnabled: enabled });
+    savePrefs({ ...get(), sandboxEnabled: enabled });
+  },
 
   // Per-session runtime config
   setSessionConfigKey: (sessionId, key, value) =>
@@ -233,6 +309,18 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
           [sessionId]: { ...state.sessions[sessionId], summary: config.title as string },
         };
       }
+      const configAgent = typeof config.agent === 'string'
+        ? config.agent
+        : typeof (config as Record<string, ConfigValue>).provider === 'string'
+          ? (config as Record<string, ConfigValue>).provider
+          : undefined;
+      if (configAgent && state.activeSessionId === sessionId) {
+        next.selectedAgent = (
+          configAgent === 'codex-mcp' || configAgent === 'codex'
+            ? 'codex'
+            : 'claude-code'
+        ) as AgentId;
+      }
       return next;
     }),
 
@@ -253,6 +341,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       historyTotal: 0,
       historyHasMore: false,
       isLoadingHistory: false,
+      historyError: null,
       promptInput: '',
       isVisible: false,
     }),

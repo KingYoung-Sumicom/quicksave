@@ -1,6 +1,11 @@
 import { useClaudeStore } from '../stores/claudeStore';
 import type { ConfigValue } from '@sumicom/quicksave-shared';
-import { DEFAULT_MODEL, DEFAULT_PERMISSION_MODE, DEFAULT_REASONING_EFFORT } from '@sumicom/quicksave-shared';
+import {
+  DEFAULT_AGENT,
+  DEFAULT_MODEL,
+  DEFAULT_PERMISSION_MODE,
+  DEFAULT_REASONING_EFFORT,
+} from '@sumicom/quicksave-shared';
 
 /**
  * Returns the runtime config for an active session.
@@ -9,23 +14,37 @@ import { DEFAULT_MODEL, DEFAULT_PERMISSION_MODE, DEFAULT_REASONING_EFFORT } from
 export function useSessionConfig(sessionId: string | null): Record<string, ConfigValue> {
   const sessionConfigs = useClaudeStore((s) => s.sessionConfigs);
   const selectedModel = useClaudeStore((s) => s.selectedModel);
+  const selectedAgent = useClaudeStore((s) => s.selectedAgent);
   const selectedPermissionMode = useClaudeStore((s) => s.selectedPermissionMode);
   const selectedReasoningEffort = useClaudeStore((s) => s.selectedReasoningEffort);
+  const sandboxEnabled = useClaudeStore((s) => s.sandboxEnabled);
 
   if (!sessionId) {
     // New session — return store defaults (falling back to shared defaults)
     return {
+      agent: selectedAgent ?? DEFAULT_AGENT,
       model: selectedModel ?? DEFAULT_MODEL,
       permissionMode: selectedPermissionMode ?? DEFAULT_PERMISSION_MODE,
       reasoningEffort: selectedReasoningEffort ?? DEFAULT_REASONING_EFFORT,
+      sandboxed: sandboxEnabled,
     };
   }
 
+  const sessionConfig = sessionConfigs[sessionId] ?? {};
+  const rawSessionAgent = (sessionConfig['agent'] as string | undefined)
+    ?? (((sessionConfig as Record<string, ConfigValue>)['provider']) as string | undefined);
+  const sessionAgent = rawSessionAgent
+    ? (rawSessionAgent === 'codex' || rawSessionAgent === 'codex-mcp' ? 'codex' : 'claude-code')
+    : undefined;
+
   // Active session — merge defaults with session-specific overrides
   return {
+    agent: selectedAgent ?? DEFAULT_AGENT,
     model: selectedModel,
     permissionMode: selectedPermissionMode,
     reasoningEffort: selectedReasoningEffort,
-    ...sessionConfigs[sessionId],
+    sandboxed: sandboxEnabled,
+    ...sessionConfig,
+    ...(sessionAgent ? { agent: sessionAgent } : {}),
   };
 }

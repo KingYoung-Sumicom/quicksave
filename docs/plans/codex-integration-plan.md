@@ -1,318 +1,429 @@
-# OpenAI Codex Agent 整合計劃書
+# Codex Integration Plan
 
-## 背景與目標
+**Date:** 2026-04-13  
+**Status:** Proposed
 
-Quicksave 目前只支援 Anthropic Claude（透過 `@anthropic-ai/claude-agent-sdk`）。本計劃書說明如何整合 OpenAI Codex，讓使用者可以選擇使用 Codex agent 執行 session。
+## Summary
 
-**目標：**
-- 不破壞現有 Claude 功能
-- PWA 端不感知 provider 差異（相同的 card/message 格式）
-- 最小化重複程式碼
+Quicksave should integrate Codex as another `CodingAgentProvider`, not as a parallel service stack.
 
-**相關參考文件：**
-- 現有架構：`docs/references/quicksave-architecture.md`
-- Claude SDK 型別：`docs/references/claude-agent-sdk-message-types.md`
-- Codex SDK 型別：`docs/references/openai-codex-sdk-types.md`
+The old plan in this repo assumed:
 
----
+- no provider abstraction yet
+- a dedicated `CodexService`
+- provider selection handled outside the shared session layer
 
-## Happy Coder 的接法（參考）
+That is no longer true. The current codebase already has:
 
-> 來源：https://github.com/slopus/happy-cli（MIT open source）
+- `CodingAgentProvider` in `apps/agent/src/ai/provider.ts`
+- shared orchestration in `apps/agent/src/ai/sessionManager.ts`
+- two Claude backends (`ClaudeCliProvider`, `ClaudeSdkProvider`)
+- a provider-agnostic `Card` rendering pipeline in the PWA
 
-Happy Coder 是目前最成熟的 Codex mobile client，他們的做法提供了重要參考。
+So the right plan now is:
 
-### 關鍵發現：不用 `@openai/codex-sdk`，改走 MCP
+1. add a Codex provider implementation
+2. make provider choice session-scoped instead of process-scoped
+3. add provider metadata to shared types, registry, and UI
+4. normalize Codex events into the existing `Card` model
+5. introduce a provider-aware history strategy
 
-Happy Coder **完全不使用** `@openai/codex-sdk` npm 套件。他們透過 Codex CLI 內建的 **MCP server**（`codex mcp-server`）來驅動 Codex，使用 `@modelcontextprotocol/sdk` 的 `StdioClientTransport` 與其通訊：
+## What Changed Since The Previous Plan
 
-```typescript
-// happy-cli: src/codex/codexMcpClient.ts
-this.transport = new StdioClientTransport({
-  command: 'codex',
-  args: ['mcp-server'],  // >=0.43.0-alpha.5，舊版用 'mcp'
-  env: process.env,
-});
-await this.client.connect(this.transport);
+The previous version of this document is outdated in four important ways.
 
-// 啟動 session（第一條 prompt）
-await this.client.callTool({ name: 'codex', arguments: config });
+### 1. Provider abstraction already exists
 
-// 繼續 session（後續 prompt）
-await this.client.callTool({
-  name: 'codex-reply',
-  arguments: { sessionId, conversationId, prompt },
-});
+We do not need a separate `CodexService` with its own lifecycle, event bus, and registry logic. That would duplicate `SessionManager`.
+
+### 2. PWA card rendering is already generic enough
+
+The PWA does not fundamentally care whether a turn came from Claude or Codex. It renders:
+
+- `assistant_text`
+- `thinking`
+- `tool_call`
+- `subagent`
+- `system`
+
+As long as the agent normalizes Codex events into these existing card types, the renderer mostly stays unchanged.
+
+### 3. The current external protocol is still `claude:*`
+
+Even though the internal architecture is now more generic, the WebSocket/shared message layer is still Claude-named (`claude:start`, `claude:get-cards`, `claude:session-updated`, etc.).
+
+For the first Codex rollout, we should keep these wire message names to avoid a large compatibility migration. We add provider metadata inside the payloads instead.
+
+### 4. `SessionManager` currently chooses provider by env var
+
+Today, provider selection is process-wide via `QUICKSAVE_PROVIDER=sdk`. That is useful for development, but it is the wrong shape for real multi-provider support. Codex needs provider choice to be:
+
+- chosen per new session
+- persisted with the session
+- respected on resume/history/listing
+
+## External References
+
+Official Codex docs worth treating as source-of-truth:
+
+- Codex MCP server guide: https://developers.openai.com/codex/guides/agents-sdk
+- Codex CLI flags: https://developers.openai.com/codex/cli/reference
+- Codex auth: https://developers.openai.com/codex/auth
+
+Key points confirmed from the official docs:
+
+- `codex mcp-server` is an officially supported integration path
+- the MCP server exposes `codex` and `codex-reply`
+- current approval values are `untrusted`, `on-request`, and `never`
+- `on-failure` is deprecated
+- sandbox values are `read-only`, `workspace-write`, and `danger-full-access`
+- API key auth is the recommended mode for programmatic Codex workflows
+
+Local repo references to keep aligned:
+
+- `docs/superpowers/plans/2026-04-13-provider-abstraction.md`
+- `docs/references/openai-codex-sdk-types.md`
+- `docs/references/quicksave-architecture.md`
+
+## Scope
+
+### In Scope
+
+- start/resume/list/use Codex sessions from Quicksave
+- render Codex turns through the existing card UI
+- support Codex permission prompts through the existing pending-input flow
+- persist provider choice in session config and history
+- keep Claude behavior unchanged
+
+### Out Of Scope
+
+- renaming the public wire protocol from `claude:*` to `coding:*`
+- in-app OpenAI API key management UI
+- cross-provider unified model presets
+- migrating Claude history off its current JSONL source
+
+## Decision
+
+### ~~Primary backend: `CodexMcpProvider`~~ (rejected)
+
+~~The first implementation should target a new provider via `codex mcp-server`.~~
+
+**Outcome (2026-04-14):** A working `CodexMcpProvider` was built and tested. The MCP path is **rejected** due to:
+
+- **No streaming** — `callTool` is request/response; no incremental text deltas
+- **No persistent sessions** — MCP transport is torn down after each turn batch; cold resume has nothing to reconnect to
+- **No approval flow** — `handlePermissionRequest` callback is never triggered; codex MCP doesn't send approval requests through the MCP notification channel
+- **No interrupt** — no mechanism to cancel an in-flight `callTool`
+- **Notification dead code** — `codex/event` notifications either don't arrive or arrive too late (after `activeTurn` is cleared)
+
+The existing `codexMcpProvider.ts` remains in the repo as reference but should be replaced.
+
+### Primary backend: `@openai/codex-sdk` (confirmed)
+
+The implementation should use `@openai/codex-sdk` (`npm: @openai/codex-sdk`).
+
+`apps/agent/src/ai/codexSdkProvider.ts`
+
+Reasons:
+
+- `startThread()` / `resumeThread(threadId)` — proper session persistence in `~/.codex/sessions`
+- `runStreamed()` — async generator of `ThreadEvent` for real-time card updates
+- `item.started` / `item.updated` / `item.completed` — maps directly to tool_call and assistant_text cards
+- Approval requests (`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`) map to existing `handlePermissionRequest`
+- `TurnOptions.signal` (AbortSignal) — clean interrupt semantics
+- Thread stays alive between turns — no transport teardown
+- Architecture mirrors `ClaudeCliProvider` closely (long-lived process, event stream, session persistence)
+
+Type reference: `docs/references/openai-codex-sdk-types.md`
+
+## Architecture
+
+### 1. Shared provider identity
+
+Add a shared provider identifier type, for example:
+
+```ts
+export type AgentProviderId = 'claude-cli' | 'claude-sdk' | 'codex-mcp';
 ```
 
-### MCP 接法的優點
+This should be stored in:
 
-1. **不綁定 SDK 版本**：MCP 是穩定介面，`@openai/codex-sdk` 才是 experimental
-2. **Codex CLI 自己管工具執行**：bash、file patch 都在 CLI 側完成，host process 不需要處理
-3. **審批走 MCP elicitation**：標準化協議，不需要自訂 callback
+- `ClaudeStartRequestPayload`
+- `ClaudeSessionSummary`
+- `ClaudeActiveSession`
+- `SessionRegistryEntry`
+- session config (`config.provider`)
 
-### Happy Coder 的 MCP 事件格式
+### 2. SessionManager becomes provider-routed
 
-Codex 透過 MCP notification（`codex/event`）推送事件，`msg.type` 的值：
+Replace the current constructor pattern:
 
-| `msg.type` | 說明 |
-|---|---|
-| `task_started` | Turn 開始 |
-| `task_complete` | Turn 完成 |
-| `turn_aborted` | Turn 被取消 |
-| `agent_message` | 最終 assistant 文字 |
-| `agent_reasoning_delta` | 推理 token（streaming） |
-| `agent_reasoning` | 完整推理塊 |
-| `agent_reasoning_section_break` | 推理段落分隔 |
-| `exec_command_begin` | Bash 指令開始 |
-| `exec_approval_request` | Bash 指令需要審批 |
-| `exec_command_end` | Bash 指令結果 |
-| `patch_apply_begin` | 檔案 patch 開始 |
-| `patch_apply_end` | 檔案 patch 結果 |
-| `turn_diff` | 本次 turn 的 unified diff |
-| `token_count` | Token 用量 |
-
-### Happy Coder 的事件 → Card 對應
-
-```
-agent_message        → type: 'message'    { message }
-exec_command_begin   → type: 'tool-call'  { name: 'CodexBash', callId, input: { command[], cwd } }
-exec_command_end     → type: 'tool-call-result' { callId, output }
-patch_apply_begin    → type: 'tool-call'  { name: 'CodexPatch', callId, input: { changes } }
-patch_apply_end      → type: 'tool-call-result' { callId, output }
-agent_reasoning_*    → type: 'tool-call'  { name: 'CodexReasoning' }（由 ReasoningProcessor 組合）
-turn_diff            → type: 'tool-call'  { name: 'CodexDiff', input: { unified_diff } }
+```ts
+new SessionManager(new ClaudeCliProvider(), new ClaudeSdkProvider())
 ```
 
-Claude 和 Codex 的訊息共用同一個 `NormalizedMessage` 格式，`MessageView → ToolView` 管線統一渲染。
+with a provider registry shape:
 
-### Happy Coder 的審批機制（最重要）
-
-**這就是「pre-rendered card」做法：**
-
-1. Codex 送出 `exec_approval_request` MCP notification
-2. Happy CLI 同時：
-   - 對 mobile app 推送 `tool-call` card（name: `CodexBash`，含 command）
-   - 掛起 MCP elicitation handler（`ElicitRequestSchema`），等待 Promise resolve
-3. Mobile app 渲染卡片，使用者點按鈕
-4. Mobile app 透過 WebSocket 回傳 RPC response 給 CLI
-5. CLI 的 Promise resolve，回傳 `{ decision: 'approved' | 'approved_for_session' | 'denied' | 'abort' }` 給 Codex MCP
-6. Codex 繼續執行
-
-**關鍵：** Mobile app 不做任何 pattern matching。CLI 已把意圖 encode 進 card type（`CodexBash`），client 只需查 `knownTools` 表渲染即可。
-
-### permissionMode → Codex 設定映射（來自 Happy Coder）
-
-| Quicksave `permissionMode` | Codex `approval-policy` | Codex `sandbox` |
-|---|---|---|
-| `default` | `untrusted` | `workspace-write` |
-| `acceptEdits` | `on-request` | `workspace-write` |
-| `bypassPermissions` | `on-failure` | `danger-full-access` |
-| `plan` | `untrusted` | `workspace-write` |
-
-### Session Resume（Happy Coder 的做法）
-
-Codex 自己的 session transcript 存在 `~/.codex/sessions/...-{sessionId}.jsonl`。Resume 時找到對應 JSONL 並傳入 `config.experimental_resume`，等於重新啟動但帶入舊歷史。這是 experimental 做法，不穩定。
-
----
-
-## 現況分析
-
-### 問題點
-
-目前 `ClaudeCodeService`（`apps/agent/src/ai/claudeCodeService.ts`）直接硬耦合 Anthropic SDK，`MessageHandler` 也直接持有 `ClaudeCodeService` 實例，且 message type 全部命名為 `claude:xxx`。
-
-### Claude 與 Codex 接法對比
-
-| 功能 | Claude（SDK） | Codex（MCP via CLI） |
-|---|---|---|
-| 建立 session | `unstable_v2_createSession()` | `mcp.callTool('codex', config)` |
-| 繼續 session | `unstable_v2_resumeSession()` | `mcp.callTool('codex-reply', { sessionId, prompt })` |
-| Streaming | `SDKMessage` union（20+ types） | MCP notification `codex/event`（~12 types） |
-| 工具執行 | Host process 回傳 `tool_result` | CLI 內部自動執行 |
-| 審批 | `canUseTool` callback | MCP `ElicitRequest` handler |
-| 歷史讀取 | `getSessionMessages()` | 讀 `~/.codex/sessions/*.jsonl`（experimental） |
-| 列出 sessions | `listSessions()` | 讀 `~/.codex/sessions/` 目錄 |
-| Subagent | `listSubagents()` + sidechain | `collabAgentToolCall` item |
-
----
-
-## 整合架構設計
-
-### 1. Provider 介面
-
-在 `apps/agent/src/ai/` 新增：
-
-```
-apps/agent/src/ai/
-├── claudeCodeService.ts   # 現有（加上 implements AgentProvider）
-├── codexService.ts        # 新增：MCP-based Codex provider
-├── agentProvider.ts       # 新增：共用介面
-└── cardBuilder.ts         # 現有（Claude 用，Codex 另建）
+```ts
+new SessionManager({
+  'claude-cli': new ClaudeCliProvider(),
+  'claude-sdk': new ClaudeSdkProvider(),
+  'codex-mcp': new CodexMcpProvider(),
+})
 ```
 
-```typescript
-// agentProvider.ts
-export interface AgentProvider extends EventEmitter {
-  startSession(opts: StartSessionOpts): Promise<string>;
-  resumeSession(sessionId: string, prompt: string): Promise<void>;
-  cancelSession(sessionId: string): Promise<void>;
-  closeSession(sessionId: string): void;
-  listSessions(cwd: string): Promise<AgentSessionSummary[]>;
-  getMessages(sessionId: string, cwd: string, offset?: number, limit?: number): Promise<GetMessagesResult>;
-  getActiveSessionIds(): string[];
+`SessionManager` should:
+
+- choose provider from start payload or new-session config
+- persist provider per session
+- use that provider for resume
+- include provider in session-updated/list/history responses
+
+The env var can remain as a debug override, but it should stop being the primary product path.
+
+### 3. Codex event normalization
+
+Codex-specific transport events must be normalized into the existing `Card` model.
+
+Target mapping:
+
+- assistant text -> `assistant_text`
+- reasoning -> `thinking`
+- shell execution -> `tool_call` with `toolName: 'Bash'`
+- file edit / patch -> `tool_call` with `toolName: 'Edit'` or `Write`
+- web search/fetch -> existing web tool names when distinguishable
+- approval wait -> existing `pendingInput` attachment
+- turn end -> existing `card-stream-end`
+
+Important rule: the PWA should not need a Codex-only renderer. Unknown Codex-specific tools may temporarily fall back to `FallbackToolView`, but the common tools should render through existing tool views.
+
+### 4. Provider-aware history
+
+This is the main architecture gap in the current design.
+
+Right now `SessionManager.getCards()` assumes Claude JSONL via `buildCardsFromHistory(sessionId, cwd, ...)`.
+
+That will not work for Codex.
+
+We should add a history abstraction, either:
+
+- `provider.getCardHistory(...)`, or
+- a provider-owned history adapter registered alongside the provider
+
+Recommended direction:
+
+```ts
+interface CodingAgentProvider {
+  startSession(...)
+  resumeSession(...)
+  getHistory?(opts: ProviderHistoryOpts): Promise<CardHistoryResponse>
 }
 ```
 
-### 2. `CodexService` — MCP 接法
+For v1 Codex, prefer Quicksave-owned normalized persistence over parsing internal Codex transcript files. That gives us:
 
-```typescript
-// apps/agent/src/ai/codexService.ts
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+- one stable history format regardless of provider internals
+- full control over pending-input correlation
+- simpler PWA recovery after reconnect
 
-export class CodexService extends EventEmitter implements AgentProvider {
-  private client: Client;
+This can start as Codex-only if we want to minimize scope, but the abstraction should not hard-code Claude JSONL inside `SessionManager`.
 
-  async connect() {
-    const transport = new StdioClientTransport({
-      command: 'codex',
-      args: ['mcp-server'],
-      env: process.env,
-    });
-    await this.client.connect(transport);
+### 5. Permission and sandbox mapping
 
-    // 註冊 streaming 事件
-    this.client.setNotificationHandler(
-      z.object({ method: z.literal('codex/event'), params: z.object({ msg: z.any() }) }).passthrough(),
-      ({ params }) => this._handleCodexEvent(params.msg),
-    );
+Update the old mapping. The previous plan used `on-failure`; official Codex docs now mark that as deprecated.
 
-    // 審批（MCP elicitation）
-    this.client.setRequestHandler(ElicitRequestSchema, async (req) => {
-      const decision = await this._requestApproval(req.params);
-      return { decision };
-    });
-  }
+Recommended mapping:
 
-  async startSession(opts: StartSessionOpts): Promise<string> {
-    const res = await this.client.callTool({
-      name: 'codex',
-      arguments: {
-        prompt: opts.prompt,
-        cwd: opts.cwd,
-        model: opts.model,
-        'approval-policy': permissionModeToApprovalPolicy(opts.permissionMode),
-        sandbox: permissionModeToSandbox(opts.permissionMode),
-      },
-    });
-    return res.sessionId;
-  }
-
-  async resumeSession(sessionId: string, prompt: string): Promise<void> {
-    await this.client.callTool({
-      name: 'codex-reply',
-      arguments: { sessionId, prompt },
-    });
-  }
-}
-```
-
-### 3. Codex MCP Event → CardEvent 對應
-
-```
-exec_approval_request → user-input-request 事件（同時在 client 掛起 Promise）
-task_started         → （記錄 sessionId）
-agent_message        → add card { type: 'assistant_text', text }
-agent_reasoning_*    → add/append card { type: 'thinking' }
-exec_command_begin   → add card { type: 'tool_call', toolName: 'Bash', toolInput: command }
-exec_command_end     → update card（加入 output、exit_code）
-patch_apply_begin    → add card { type: 'tool_call', toolName: 'Edit', toolInput: changes }
-patch_apply_end      → update card（加入 result）
-turn_diff            → add card { type: 'tool_call', toolName: 'Diff', toolInput: { unified_diff } }
-task_complete        → card-stream-end
-turn_aborted         → card-stream-end（cancelled）
-```
-
-### 4. 審批卡片 — Pre-rendered card 做法
-
-與 Happy Coder 相同，`exec_approval_request` 到來時：
-
-1. `CodexService` emit `user-input-request`（現有格式，加入 `provider: 'codex'`）
-2. `MessageHandler` 推送給 PWA（現有 `claude:user-input-request` channel）
-3. PWA 渲染審批卡片（已有 `PermissionPrompt` 元件）
-4. 使用者點按後 PWA 送 `claude:user-input-response`
-5. `CodexService` resolve elicitation Promise，回傳 `decision` 給 Codex
-
-PWA 端**不需要修改**，因為使用現有的 `user-input-request` 格式。
-
-### 5. MessageHandler 多 Provider 支援
-
-```typescript
-class MessageHandler {
-  private claudeService: ClaudeCodeService;
-  private codexService: CodexService;
-  private sessionProviders = new Map<string, 'claude' | 'codex'>();
-
-  private getProvider(sessionId: string): AgentProvider {
-    return this.sessionProviders.get(sessionId) === 'codex'
-      ? this.codexService
-      : this.claudeService;
-  }
-}
-```
-
-`claude:start` payload 加入 `provider?: 'claude' | 'codex'`（預設 `'claude'`）。
-
----
-
-## 實作步驟
-
-### Phase 1：抽象層
-
-1. 新增 `agentProvider.ts`，定義 `AgentProvider` 介面
-2. `ClaudeCodeService implements AgentProvider`
-
-### Phase 2：CodexService
-
-1. 安裝依賴：`@modelcontextprotocol/sdk`（已有？）、確認 `codex` CLI 可執行
-2. 實作 `CodexService`（MCP 接法）：
-   - `connect()` → StdioClientTransport + 註冊 notification/elicitation handler
-   - `startSession()` → `callTool('codex', ...)`
-   - `resumeSession()` → `callTool('codex-reply', ...)`
-   - `cancelSession()` → AbortController + `turn_aborted` event
-   - `listSessions()` → 讀 `~/.codex/sessions/` 目錄
-   - `getMessages()` → 讀 Codex JSONL transcript（或從 CardEvent 快取）
-3. `MessageHandler` 整合 `CodexService`
-
-### Phase 3：PWA UI
-
-1. `ClaudeStartRequestPayload` 加入 `provider?` 欄位
-2. `ClaudeSessionSummary` 加入 `provider?` 欄位
-3. `NewSessionEmptyState` 加入 Provider 選擇器
-4. Session list 加入 provider badge（Claude / Codex）
-
-### Phase 4：歷史讀取
-
-- 讀取 Codex JSONL transcript（`~/.codex/sessions/`）並轉換為 `Card[]`
-- 或：`startSession` 結束後把 cards 快取，`getMessages` 從快取讀
-
----
-
-## 風險與注意事項
-
-| 風險 | 說明 | 緩解方案 |
+| Quicksave `permissionMode` | Codex approval | Codex sandbox |
 |---|---|---|
-| MCP server 指令版本差異 | `>=0.43.0-alpha.5` 用 `mcp-server`，舊版用 `mcp` | 啟動時偵測版本，自動選擇 |
-| Codex transcript 格式是 experimental | `experimental_resume` 可能在 Codex 更新後失效 | 從 CardEvent 自建快取，不依賴 Codex JSONL |
-| MCP elicitation 非標準 | `ElicitRequestSchema` 是 MCP 的 draft spec | 同 Happy Coder 做法，接受此風險 |
-| `codex` CLI 需要獨立安裝 | 不是 npm 依賴，需用戶手動安裝 | `npm i -g @openai/codex`，daemon 啟動時檢查 |
-| Session ID 格式衝突 | Codex session ID 格式未知 | 加前綴 `codex:` |
+| `default` | `untrusted` | `workspace-write` if sandboxed, otherwise `danger-full-access` |
+| `acceptEdits` | `on-request` | `workspace-write` if sandboxed, otherwise `danger-full-access` |
+| `bypassPermissions` | `never` | `workspace-write` if sandboxed, otherwise `danger-full-access` |
+| `plan` | `untrusted` | `read-only` |
 
----
+Notes:
 
-## 不在本次範圍
+- `plan` should force `read-only` regardless of the sandbox toggle
+- the existing sandbox toggle means "restrict writes to project directory", so `sandboxed=false` should not silently downgrade to `workspace-write`
+- if Codex exposes a dedicated planning mode or plan tool flag, wire it only after the basic turn lifecycle is stable
 
-- 使用者 OpenAI API key 管理 UI
-- Codex 的 `experimental_resume` 跨機器同步
-- 跨 provider session 歷史合併顯示
+### 6. Auth and health checks
+
+Codex requires local CLI availability and authentication.
+
+For v1:
+
+- do not build API key entry UI
+- do add explicit preflight checks
+- return actionable errors when `codex` is missing or unauthenticated
+
+Minimum checks:
+
+- `codex` executable exists on `PATH`
+- one of:
+  - Codex has a valid local login session
+  - `OPENAI_API_KEY` is present
+
+## Implementation Plan
+
+### Phase 0: Transport Spike ✅ COMPLETE
+
+Goal: validate whether MCP is sufficient for Quicksave's stream/card model.
+
+**Result:** MCP is insufficient. Switched to `@openai/codex-sdk`. See Decision section above.
+
+### Phase 1: Shared Type And Routing Changes ✅ COMPLETE
+
+All shared types, routing, and PWA UI for multi-provider support are implemented:
+
+- `AgentId = 'claude-code' | 'codex'` in shared types
+- `SessionManager` routes by agent ID per session
+- Provider persisted in session config, registry, and session-updated events
+- PWA agent selector in new-session panel and settings drawer
+- Agent selector locked on active sessions (can't switch mid-session)
+- Dynamic Codex model list via OpenAI `/v1/models` API (12h cache)
+- Per-agent model and reasoning effort UI
+
+### Phase 2: Implement `CodexSdkProvider` ✅ COMPLETE
+
+Files:
+
+- `apps/agent/src/ai/codexSdkProvider.ts` (new — replaces `codexMcpProvider.ts`)
+- `apps/agent/src/handlers/messageHandler.ts`
+
+Implemented:
+
+1. Installed `@openai/codex-sdk` (v0.120.0).
+2. `startSession()` using `codex.startThread()` + `thread.runStreamed()`.
+3. `resumeSession()` using `codex.resumeThread(threadId)` + `thread.runStreamed()`.
+4. Full `ThreadEvent` → `CardEvent` mapping:
+   - `item.started/updated` (`agent_message`) → `assistantText` (streaming with delta tracking)
+   - `item.started/completed` (`command_execution`) → `toolUse('Bash')` + `toolResult`
+   - `item.started/completed` (`file_change`) → `toolUse('Edit'/'Write')` + `toolResult`
+   - `item.started/updated` (`reasoning`) → `thinkingBlock` (delta streaming)
+   - `item.started/completed` (`mcp_tool_call`) → `toolUse` + `toolResult`
+   - `item.started/completed` (`web_search`) → `toolUse('WebSearch')` + `toolResult`
+   - `turn.completed` → `emitStreamEnd` with usage
+   - `turn.failed` → `emitStreamEnd` with error
+   - `error` → `systemMessage`
+5. Approval: delegated to Codex CLI via `approvalPolicy` mapping (SDK v0.120.0 does not expose approval callbacks — interactive approval will require a future SDK version).
+6. `interrupt()` via `AbortController.abort()` on `TurnOptions.signal`.
+7. `kill()` by aborting + marking session closed.
+8. `thread_id` from `thread.started` event reported as sessionId (first turn awaits it before returning).
+9. Thread stays alive between turns — `sendUserMessage` calls `thread.runStreamed()` again on the same Thread instance.
+10. Text buffering (150ms / 2KB threshold) for smooth streaming.
+11. Shared `consumeCodexStream()` function with extracted item routing to avoid duplication between first turn and subsequent turns.
+
+Known limitation:
+
+- Codex SDK v0.120.0 does not expose approval request callbacks. The `approvalPolicy` CLI flag controls approval behavior. Interactive approval bridging (Phase 2 task 5) will need a future SDK version that exposes `requestApproval` events.
+
+Exit criteria:
+
+- a Codex session can be started, continued, interrupted, and resumed through the same card stream UI as Claude
+
+### Phase 3: Provider-Aware History ✅ COMPLETE
+
+Files:
+
+- `apps/agent/src/ai/cardBuilder.ts`
+- `apps/agent/src/ai/codexSdkProvider.ts`
+- `apps/agent/src/ai/sessionManager.ts`
+
+Implemented:
+
+1. `persistCards()` method on `StreamCardBuilder` — appends current in-memory cards to `~/.quicksave/state/card-history/{sessionId}.json` before clearing.
+2. `loadPersistedCards(sessionId)` function — loads persisted card history from disk.
+3. `CodexSdkProvider` calls `persistCards()` before `clearCards()` at end of each turn (both initial and subsequent).
+4. `SessionManager.getCards()` for memory-mode providers now loads persisted history + active streaming cards, supporting reconnect.
+5. Pending-input overlays continue to work — they are applied after card loading regardless of provider mode.
+
+Storage: `~/.quicksave/state/card-history/{sessionId}.json` — flat JSON array of Card objects, appended after each turn.
+
+Exit criteria:
+
+- reconnecting to an existing Codex session returns the expected cards
+- history does not depend on undocumented Codex internal transcript files
+
+### Phase 4: PWA Provider Selection And Minimal UX ✅ COMPLETE
+
+All PWA provider selection and UX work is implemented:
+
+- Agent selector (ButtonGroup) in NewSessionEmptyState and settings drawer
+- Agent locked on active sessions (disabled ButtonGroup)
+- Per-agent model lists (Claude: Haiku/Sonnet/Opus, Codex: dynamic from OpenAI API)
+- Reasoning effort visible for both agents
+- Provider badge in session list
+- Archive session button in settings drawer
+- Session agent pre-populated on start to avoid race with async session-updated event
+- Log prefixes updated from `[claude:]` to `[agent:]` with agent= field
+
+### Phase 5: Validation And Hardening
+
+Files:
+
+- `apps/agent/src/handlers/messageHandler.test.ts`
+- provider tests
+- PWA hook/store tests where relevant
+
+Tasks:
+
+1. Add routing tests for provider-aware start/resume.
+2. Add Codex event normalization tests.
+3. Add permission prompt correlation tests.
+4. Add history/reconnect tests for Codex sessions.
+5. Add missing-CLI / missing-auth error tests.
+
+Suggested validation commands:
+
+- `pnpm --filter @sumicom/quicksave typecheck`
+- `pnpm --filter @sumicom/quicksave test`
+- `pnpm --filter quicksave-pwa typecheck`
+
+## Risks
+
+### 1. ~~MCP event surface may be too thin~~ (confirmed — switched to SDK)
+
+~~Mitigation: do Phase 0 first; keep SDK fallback available~~
+
+**Outcome:** Confirmed. MCP was too thin. Now using `@openai/codex-sdk`.
+
+### 2. Current provider abstraction is lifecycle-only
+
+Codex exposes that history is provider-specific.
+
+Mitigation:
+
+- extend the abstraction in a narrow, explicit way
+- do not branch on provider everywhere inside `SessionManager`
+
+### 3. `claude:*` wire naming is now misleading
+
+Mitigation:
+
+- tolerate it for v1
+- track a later protocol rename as separate work
+
+### 4. Codex auth/install failures will look like product bugs if not surfaced cleanly
+
+Mitigation:
+
+- add preflight checks and actionable start errors early
+
+## Recommended Order
+
+1. ~~Phase 0 transport spike~~ ✅
+2. ~~Phase 1 shared routing/types~~ ✅
+3. ~~Phase 2 Codex SDK provider~~ ✅
+4. ~~Phase 3 history~~ ✅
+5. ~~Phase 4 PWA selection UI~~ ✅
+6. Phase 5 hardening/tests
+
+## Acceptance Criteria
+
+- a user can start a new session with provider `codex-mcp`
+- the agent remembers that provider and resumes correctly
+- Codex output appears through the existing card UI
+- Codex approval prompts use the existing pending-input flow
+- existing Claude sessions still work without behavior regressions
+- reconnect/history for Codex sessions works through Quicksave-owned state

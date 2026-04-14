@@ -36,6 +36,21 @@ export function BaseStatusBar({ left, center, right, below }: BaseStatusBarProps
   );
 }
 
+/** Reusable hamburger menu button */
+export function MenuButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="p-2 -ml-2 hover:bg-slate-700 rounded-md transition-colors"
+      aria-label="Menu"
+    >
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+      </svg>
+    </button>
+  );
+}
+
 /** Reusable settings gear button */
 export function SettingsGearButton({ onClick }: { onClick: () => void }) {
   return (

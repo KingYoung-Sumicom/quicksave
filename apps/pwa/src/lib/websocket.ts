@@ -15,12 +15,14 @@ import {
   type Repository,
   type CodingPath,
   type ClaudePreferences,
+  type CodexModelInfo,
+  type HandshakeAckPayload,
 } from '@sumicom/quicksave-shared';
 
 export type ConnectionStep = 'signaling' | 'waiting-for-agent' | 'key-exchange' | 'handshake';
 
 export type ConnectionEventHandler = {
-  onConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], preferences?: ClaudePreferences, agentVersion?: string, latestVersion?: string, devBuild?: boolean) => void;
+  onConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], preferences?: ClaudePreferences, agentVersion?: string, latestVersion?: string, devBuild?: boolean, codexModels?: CodexModelInfo[]) => void;
   onDisconnected: (agentId?: string) => void;
   onReconnecting: (attempt: number, maxAttempts: number) => void;
   onMessage: (message: Message) => void;
@@ -445,9 +447,9 @@ export class WebSocketClient {
 
       // Handle handshake response
       if (message.type === 'handshake:ack') {
-        const payload = message.payload as { repoPath: string; agentVersion?: string; latestVersion?: string; devBuild?: boolean; license?: License; availableRepos?: Repository[]; availableCodingPaths?: CodingPath[]; preferences?: ClaudePreferences };
+        const payload = message.payload as HandshakeAckPayload & { license?: License };
         const isPro = payload.license ? verifyLicense(payload.license) : false;
-        this.eventHandlers.onConnected(session.agentId, payload.repoPath, isPro, payload.availableRepos, payload.availableCodingPaths, payload.preferences, payload.agentVersion, payload.latestVersion, payload.devBuild);
+        this.eventHandlers.onConnected(session.agentId, payload.repoPath, isPro, payload.availableRepos, payload.availableCodingPaths, payload.preferences, payload.agentVersion, payload.latestVersion, payload.devBuild, payload.codexModels);
         return;
       }
 
@@ -483,8 +485,7 @@ export class WebSocketClient {
    */
   send(message: Message): void {
     if (!this.activeAgentId) {
-      console.error('No active agent set');
-      return;
+      throw new Error('No active agent set');
     }
     this.sendToAgent(this.activeAgentId, message);
   }
@@ -495,13 +496,11 @@ export class WebSocketClient {
   private sendToAgent(agentId: string, message: Message): void {
     const session = this.sessions.get(agentId);
     if (!session) {
-      console.error(`No session for agent ${agentId}`);
-      return;
+      throw new Error(`No session for agent ${agentId}`);
     }
 
     if (!session.sessionDEK) {
-      console.error('No encryption key available');
-      return;
+      throw new Error('No encryption key available — key exchange may not be complete');
     }
 
     // Compress before encryption for better compression ratio

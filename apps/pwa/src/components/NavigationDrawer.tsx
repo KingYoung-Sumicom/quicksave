@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { clsx } from 'clsx';
 import { SESSION_STATUS, sessionStatusKey } from './SessionStatusBadge';
 import { useConnectionStore } from '../stores/connectionStore';
 import { SwipeableDrawer } from './SwipeableDrawer';
 import { useClaudeStore } from '../stores/claudeStore';
 import { useMachineStore, selectSortedMachines } from '../stores/machineStore';
-import { agentUrl } from '../lib/pathHash';
+import { agentUrl, pathToHash } from '../lib/pathHash';
 import { formatRelativeTimeCompact as formatRelativeTime } from '../lib/formatRelativeTime';
 import type { Repository, CodingPath, ClaudeSessionSummary } from '@sumicom/quicksave-shared';
 
@@ -15,7 +15,6 @@ interface NavigationDrawerProps {
   persistent?: boolean;
   onClose: () => void;
   agentId: string;
-  currentRepoPath: string | null;
   onAddRepo: () => void;
   onAddWorkspace: () => void;
   onListSessions: (cwd?: string) => Promise<void>;
@@ -29,7 +28,6 @@ export function NavigationDrawer({
   persistent,
   onClose,
   agentId,
-  currentRepoPath,
   onAddRepo,
   onAddWorkspace,
   onListSessions,
@@ -38,12 +36,16 @@ export function NavigationDrawer({
   onOpen,
 }: NavigationDrawerProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   const { availableRepos, availableCodingPaths } = useConnectionStore();
   const { agentId: connectedAgentId } = useConnectionStore();
   const machines = useMachineStore(selectSortedMachines);
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
   const storeSessions = useClaudeStore((s) => s.sessions);
   const [sessionsByPath, setSessionsByPath] = useState<Map<string, ClaudeSessionSummary[]>>(new Map());
+
+  // Parse current URL to determine active item
+  const currentPath = location.pathname;
 
   const currentMachine = machines.find((m) => m.agentId === connectedAgentId);
   const hasMultipleMachines = machines.length > 1;
@@ -109,14 +111,17 @@ export function NavigationDrawer({
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto py-3">
         <SectionHeader title="Repositories" onAdd={onAddRepo} />
-        {availableRepos.map((repo) => (
-          <RepoItem
-            key={repo.path}
-            repo={repo}
-            active={repo.path === currentRepoPath}
-            onClick={() => handleNavigate(agentUrl(agentId, 'repo', repo.path))}
-          />
-        ))}
+        {availableRepos.map((repo) => {
+          const repoUrl = agentUrl(agentId, 'repo', repo.path);
+          return (
+            <RepoItem
+              key={repo.path}
+              repo={repo}
+              active={currentPath === repoUrl}
+              onClick={() => handleNavigate(repoUrl)}
+            />
+          );
+        })}
         {availableRepos.length === 0 && (
           <p className="px-4 py-2 text-xs text-slate-500">No repos</p>
         )}
@@ -132,20 +137,33 @@ export function NavigationDrawer({
             const rank = (ss: ClaudeSessionSummary) => ss.isStreaming ? 2 : ss.isActive ? 1 : 0;
             return rank(b) - rank(a);
           });
+          const codingUrl = agentUrl(agentId, 'coding', cp.path);
+          // Active if on this coding path's session list (exact match) or any session under it
+          const codingPathHash = pathToHash(cp.path);
+          const isCodingActive = currentPath === codingUrl
+            || currentPath.startsWith(`/agent/${agentId}/coding/${codingPathHash}/`);
           return (
             <div key={cp.path}>
               <CodingItem
                 codingPath={cp}
-                onClick={() => handleNavigate(agentUrl(agentId, 'coding', cp.path))}
+                active={isCodingActive && sorted.every((s) => {
+                  const sessionUrl = agentUrl(agentId, 'coding', cp.path, s.sessionId);
+                  return currentPath !== sessionUrl;
+                })}
+                onClick={() => handleNavigate(codingUrl)}
                 onNewSession={() => handleNewSession(cp.path)}
               />
-              {sorted.slice(0, 5).map((session) => (
-                <SessionItem
-                  key={session.sessionId}
-                  session={session}
-                  onClick={() => handleNavigate(agentUrl(agentId, 'coding', cp.path, session.sessionId))}
-                />
-              ))}
+              {sorted.slice(0, 5).map((session) => {
+                const sessionUrl = agentUrl(agentId, 'coding', cp.path, session.sessionId);
+                return (
+                  <SessionItem
+                    key={session.sessionId}
+                    session={session}
+                    active={currentPath === sessionUrl}
+                    onClick={() => handleNavigate(sessionUrl)}
+                  />
+                );
+              })}
             </div>
           );
         })}
@@ -320,12 +338,12 @@ function RepoItem({ repo, active, onClick }: { repo: Repository; active: boolean
   );
 }
 
-function CodingItem({ codingPath, onClick, onNewSession }: { codingPath: CodingPath; onClick: () => void; onNewSession: () => void }) {
+function CodingItem({ codingPath, active, onClick, onNewSession }: { codingPath: CodingPath; active?: boolean; onClick: () => void; onNewSession: () => void }) {
   return (
-    <div className="flex items-center hover:bg-slate-700 transition-colors">
+    <div className={clsx('flex items-center hover:bg-slate-700 transition-colors', active && 'bg-slate-700/60')}>
       <button
         onClick={onClick}
-        className="flex-1 flex items-center gap-2 px-4 py-2 text-left text-sm text-slate-300 min-w-0"
+        className={clsx('flex-1 flex items-center gap-2 px-4 py-2 text-left text-sm min-w-0', active ? 'text-white' : 'text-slate-300')}
       >
         <svg className="w-4 h-4 text-purple-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -345,7 +363,7 @@ function CodingItem({ codingPath, onClick, onNewSession }: { codingPath: CodingP
   );
 }
 
-function SessionItem({ session, onClick }: { session: ClaudeSessionSummary; onClick: () => void }) {
+function SessionItem({ session, active, onClick }: { session: ClaudeSessionSummary; active?: boolean; onClick: () => void }) {
   const statusKey = sessionStatusKey(session);
   const dotColor = SESSION_STATUS[statusKey].dotColor;
   const pulse = SESSION_STATUS[statusKey].pulse;
@@ -353,9 +371,10 @@ function SessionItem({ session, onClick }: { session: ClaudeSessionSummary; onCl
   return (
     <button
       onClick={onClick}
-      className={`w-full flex items-center gap-2 pl-10 pr-4 py-1.5 text-left text-xs hover:bg-slate-700 transition-colors ${
-        session.isActive ? 'text-white' : 'text-slate-400'
-      }`}
+      className={clsx(
+        'w-full flex items-center gap-2 pl-10 pr-4 py-1.5 text-left text-xs hover:bg-slate-700 transition-colors',
+        active ? 'bg-slate-700/60 text-white' : session.isActive ? 'text-white' : 'text-slate-400',
+      )}
     >
       <span className={clsx('w-1.5 h-1.5 rounded-full flex-shrink-0', dotColor, pulse && 'animate-pulse')} />
       <span className="truncate flex-1 min-w-0">

@@ -46,6 +46,10 @@ export class AgentConnection extends EventEmitter {
   private peers: Map<string, PeerSession> = new Map();
   private pubsub = new PubSub();
 
+  // Saved session topics per peer — restored after relay reconnect so the peer
+  // doesn't lose its pubsub subscriptions during a brief relay blip.
+  private savedPeerTopics: Map<string, Set<string>> = new Map();
+
   // Key exchange replay protection
   private static readonly KEY_EXCHANGE_MAX_AGE_MS = 60000; // 60 seconds
 
@@ -81,8 +85,12 @@ export class AgentConnection extends EventEmitter {
 
     // Reset encryption state when WebSocket reconnects (before peer-disconnected)
     this.signaling.on('disconnected', () => {
-      // Clear all peers and their pubsub subscriptions
+      // Save each peer's session topics so we can restore them after reconnect
       for (const [address] of this.peers) {
+        const topics = this.pubsub.topicsOf(address);
+        if (topics.size > 0) {
+          this.savedPeerTopics.set(address, new Set(topics));
+        }
         this.pubsub.unsubscribeAll(address);
         this.emit('disconnected', address);
       }
@@ -184,6 +192,18 @@ export class AgentConnection extends EventEmitter {
 
       // Auto-subscribe new peers to broadcast topic
       this.pubsub.subscribe(peerAddress, BROADCAST_TOPIC);
+
+      // Restore saved session topics from before relay disconnect
+      const savedTopics = this.savedPeerTopics.get(peerAddress);
+      if (savedTopics) {
+        for (const topic of savedTopics) {
+          if (topic !== BROADCAST_TOPIC) {
+            this.pubsub.subscribe(peerAddress, topic);
+          }
+        }
+        this.savedPeerTopics.delete(peerAddress);
+        console.log(`[reconnect] restored ${savedTopics.size} topic(s) for ${peerAddress.slice(0, 12)}`);
+      }
 
       // V2: Send acknowledgment
       const ack = JSON.stringify({

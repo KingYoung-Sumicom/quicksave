@@ -83,6 +83,8 @@ class CliProviderSession implements ProviderSession {
 // ============================================================================
 
 export class ClaudeCliProvider implements CodingAgentProvider {
+  readonly id = 'claude-code' as const;
+  readonly historyMode = 'claude-jsonl' as const;
 
   async startSession(
     opts: StartSessionOpts,
@@ -303,7 +305,19 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       try { msg = JSON.parse(line); } catch { return; }
 
       const emittedResult = await this.routeMessage(sessionId, streamId, msg, cliSession, cb, callbacks, emitCard, flushText, bufferText);
-      if (emittedResult) resultEmitted = true;
+      if (emittedResult) {
+        resultEmitted = true;
+
+        // Hot resume: if there's a pending streamId, start a new turn for it.
+        // This must live here (not in routeMessage) so the outer `streamId`
+        // variable is updated — routeMessage receives it by value.
+        const nextStreamId = cliSession.pendingStreamIds.shift();
+        if (nextStreamId) {
+          streamId = nextStreamId;
+          cb.startNewTurn(streamId);
+          resultEmitted = false; // Reset for next turn
+        }
+      }
     };
 
     try {
@@ -481,17 +495,10 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       };
       callbacks.emitStreamEnd(streamEnd);
 
-      // Clear accumulated cards — the JSONL now has the full history for this turn.
-      cb.clearCards();
-      // Update cutoff so the next turn's getCards() reads JSONL up to here.
+      // Update cutoff BEFORE clearing cards — if getCards() is called between
+      // these two operations, it needs the new cutoff to read the full JSONL.
       await cb.snapshotCutoff();
-
-      // Hot resume: if there's a pending streamId, start a new turn for it
-      const nextStreamId = cliSession.pendingStreamIds.shift();
-      if (nextStreamId) {
-        streamId = nextStreamId;
-        cb.startNewTurn(streamId);
-      }
+      cb.clearCards();
 
       return true;
     }

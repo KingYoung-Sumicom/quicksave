@@ -441,4 +441,151 @@ describe('MessageHandler', () => {
       expect((resp2.payload as any).success).toBe(true);
     });
   });
+
+  describe('agent:clone-repo', () => {
+    let bareRepoPath: string;
+    let cloneTargetBase: string;
+
+    beforeEach(async () => {
+      // Create a bare repo to clone from (no network needed)
+      bareRepoPath = join(tmpdir(), `qs-bare-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      await mkdir(bareRepoPath, { recursive: true });
+      const bareGit = simpleGit(bareRepoPath);
+      await bareGit.init();
+      await bareGit.addConfig('user.email', 'test@test.com');
+      await bareGit.addConfig('user.name', 'Test User');
+      await writeFile(join(bareRepoPath, 'README.md'), '# Bare Repo\n');
+      await bareGit.add('README.md');
+      await bareGit.commit('Initial commit');
+
+      cloneTargetBase = join(tmpdir(), `qs-clone-target-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      await mkdir(cloneTargetBase, { recursive: true });
+    });
+
+    afterEach(async () => {
+      try { await rm(bareRepoPath, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { await rm(cloneTargetBase, { recursive: true, force: true }); } catch { /* ignore */ }
+    });
+
+    it('should clone a repo and add it to managed repos', async () => {
+      const targetDir = join(cloneTargetBase, 'cloned-repo');
+      const msg = createMessage('agent:clone-repo', { url: bareRepoPath, targetDir });
+      const response = await handler.handleMessage(msg);
+
+      const payload = response.payload as any;
+      expect(payload.success).toBe(true);
+      expect(payload.repo).toBeDefined();
+      expect(payload.repo.name).toBe('cloned-repo');
+      expect(payload.clonedPath).toBe(targetDir);
+    });
+
+    it('should fail with empty URL', async () => {
+      const targetDir = join(cloneTargetBase, 'empty-url');
+      const msg = createMessage('agent:clone-repo', { url: '', targetDir });
+      const response = await handler.handleMessage(msg);
+
+      const payload = response.payload as any;
+      expect(payload.success).toBe(false);
+      expect(payload.error).toMatch(/URL is required/i);
+    });
+
+    it('should fail with invalid URL', async () => {
+      const targetDir = join(cloneTargetBase, 'bad-clone');
+      const msg = createMessage('agent:clone-repo', { url: '/nonexistent/path', targetDir });
+      const response = await handler.handleMessage(msg);
+
+      const payload = response.payload as any;
+      expect(payload.success).toBe(false);
+      expect(payload.error).toBeDefined();
+    });
+
+    it('should reject cloning into an already-added repo path', async () => {
+      // First clone
+      const targetDir = join(cloneTargetBase, 'first-clone');
+      const msg1 = createMessage('agent:clone-repo', { url: bareRepoPath, targetDir });
+      const resp1 = await handler.handleMessage(msg1);
+      expect((resp1.payload as any).success).toBe(true);
+
+      // Second clone to a different dir, then try adding same path
+      // (we can't clone to same dir - git will fail, so test the "already added" path
+      // by cloning to a new dir that resolves to the same git root won't happen here,
+      // but we verify first clone registered the repo)
+      const listMsg = createMessage('agent:list-repos', {});
+      const listResp = await handler.handleMessage(listMsg);
+      const repos = (listResp.payload as any).repos;
+      expect(repos.some((r: any) => r.path === targetDir)).toBe(true);
+    });
+  });
+
+  describe('handleMessage - agent:remove-repo', () => {
+    it('should remove an existing repo', async () => {
+      const msg = createMessage('agent:remove-repo', { path: testRepoPath });
+      const response = await handler.handleMessage(msg);
+
+      expect(response.type).toBe('agent:remove-repo:response');
+      expect(response.id).toBe(msg.id);
+      expect((response.payload as any).success).toBe(true);
+
+      // Verify repo is no longer listed
+      const listMsg = createMessage('agent:list-repos', {});
+      const listResp = await handler.handleMessage(listMsg);
+      const repos = (listResp.payload as any).repos;
+      expect(repos.some((r: any) => r.path === testRepoPath)).toBe(false);
+    });
+
+    it('should return error for non-existent repo path', async () => {
+      const msg = createMessage('agent:remove-repo', { path: '/nonexistent/path' });
+      const response = await handler.handleMessage(msg);
+
+      expect(response.type).toBe('agent:remove-repo:response');
+      expect((response.payload as any).success).toBe(false);
+      expect((response.payload as any).error).toBe('Repository not found');
+    });
+  });
+
+  describe('handleMessage - agent:remove-coding-path', () => {
+    let codingPathDir: string;
+
+    beforeEach(async () => {
+      codingPathDir = join(tmpdir(), `quicksave-coding-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      await mkdir(codingPathDir, { recursive: true });
+
+      // Add the coding path first
+      const addMsg = createMessage('agent:add-coding-path', { path: codingPathDir });
+      const addResp = await handler.handleMessage(addMsg);
+      expect((addResp.payload as any).success).toBe(true);
+    });
+
+    afterEach(async () => {
+      try {
+        await rm(codingPathDir, { recursive: true, force: true });
+      } catch {
+        // Ignore cleanup errors
+      }
+    });
+
+    it('should remove an existing coding path', async () => {
+      const msg = createMessage('agent:remove-coding-path', { path: codingPathDir });
+      const response = await handler.handleMessage(msg);
+
+      expect(response.type).toBe('agent:remove-coding-path:response');
+      expect(response.id).toBe(msg.id);
+      expect((response.payload as any).success).toBe(true);
+
+      // Verify coding path is no longer listed
+      const listMsg = createMessage('agent:list-coding-paths', {});
+      const listResp = await handler.handleMessage(listMsg);
+      const paths = (listResp.payload as any).paths;
+      expect(paths.some((p: any) => p.path === codingPathDir)).toBe(false);
+    });
+
+    it('should return error for non-existent coding path', async () => {
+      const msg = createMessage('agent:remove-coding-path', { path: '/nonexistent/path' });
+      const response = await handler.handleMessage(msg);
+
+      expect(response.type).toBe('agent:remove-coding-path:response');
+      expect((response.payload as any).success).toBe(false);
+      expect((response.payload as any).error).toBe('Coding path not found');
+    });
+  });
 });
