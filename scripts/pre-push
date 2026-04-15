@@ -1,0 +1,69 @@
+#!/bin/bash
+# Pre-push hook: run the same checks as CI before pushing.
+# Installed automatically by `pnpm install` via the prepare script.
+#
+# Protected branches (main, stable, staging, tags):
+#   Full clean-worktree build+test (matches CI exactly).
+# Other branches:
+#   Fast local build+test (uses existing node_modules).
+set -e
+
+PROTECTED_BRANCHES="main stable staging"
+
+# pre-push receives lines on stdin: <local ref> <local sha> <remote ref> <remote sha>
+needs_full_check=false
+has_real_push=false
+
+while read -r local_ref local_sha remote_ref _remote_sha; do
+  # Skip deletes (local_sha is all zeros)
+  [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+  has_real_push=true
+
+  # Check if pushing a tag (any tag triggers full check)
+  case "$remote_ref" in refs/tags/*) needs_full_check=true ;; esac
+
+  # Check if pushing to a protected branch
+  branch="${remote_ref#refs/heads/}"
+  for pb in $PROTECTED_BRANCHES; do
+    [ "$branch" = "$pb" ] && needs_full_check=true
+  done
+done
+
+if [ "$has_real_push" = false ]; then
+  exit 0
+fi
+
+# Load nvm/node/pnpm into PATH (git hooks run in minimal shell)
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+if [ "$needs_full_check" = true ]; then
+  echo "Pre-push: clean worktree check (protected branch or tag)..."
+
+  WORKTREE_DIR=$(mktemp -d)
+  trap 'git worktree remove --force "$WORKTREE_DIR" 2>/dev/null; rm -rf "$WORKTREE_DIR"' EXIT
+
+  git worktree add --detach "$WORKTREE_DIR" HEAD --quiet
+  cd "$WORKTREE_DIR"
+
+  echo "→ pnpm install"
+  pnpm install --frozen-lockfile
+
+  echo "→ pnpm build"
+  pnpm build
+
+  echo "→ pnpm test"
+  pnpm test
+
+  echo "✓ All checks passed (clean worktree)"
+else
+  echo "Pre-push: fast local check..."
+
+  echo "→ pnpm build"
+  pnpm build
+
+  echo "→ pnpm test"
+  pnpm test
+
+  echo "✓ All checks passed"
+fi

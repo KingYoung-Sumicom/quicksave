@@ -244,8 +244,8 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       if (response.error) {
         throw new Error(response.error);
       }
-      // Merge into map: preserves sessions from other cwds
-      mergeSessions(response.sessions);
+      // Merge into map: preserves sessions from other cwds, removes stale ones for this cwd
+      mergeSessions(response.sessions, cwd);
     } catch (error) {
       console.error('Failed to list sessions:', error);
     } finally {
@@ -253,8 +253,17 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     }
   }, [sendRequest, mergeSessions, setLoadingSessions]);
 
+  // Dedup initial subscribe (offset=0): skip if already in-flight for same session.
+  // Prevents double-fire from React StrictMode or competing effects.
+  const subscribeInFlightRef = useRef<string | null>(null);
+
   const getSessionCards = useCallback(
     async (sessionId: string, offset = 0, limit = 50, cwd?: string) => {
+      if (offset === 0 && subscribeInFlightRef.current === sessionId) {
+        console.log(`[sub] get-cards → deduped session=${sessionId.slice(0, 8)}`);
+        return;
+      }
+      if (offset === 0) subscribeInFlightRef.current = sessionId;
       setLoadingHistory(true);
       setHistoryError(null);
       try {
@@ -279,6 +288,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
         console.error('Failed to get session cards:', error);
         setHistoryError(error instanceof Error ? error.message : 'Failed to load history');
       } finally {
+        if (offset === 0) subscribeInFlightRef.current = null;
         setLoadingHistory(false);
       }
     },

@@ -397,14 +397,39 @@ describe('claudeStore', () => {
       expect(sessions['s1'].summary).toBe('A');
     });
 
-    it('mergeSessions adds without removing', () => {
+    it('mergeSessions adds without removing sessions from other cwds', () => {
       useClaudeStore.getState().setSessions([
-        { sessionId: 's1', summary: 'A', lastModified: 1 } as any,
+        { sessionId: 's1', summary: 'A', lastModified: 1, cwd: '/a' } as any,
       ]);
       useClaudeStore.getState().mergeSessions([
-        { sessionId: 's2', summary: 'B', lastModified: 2 } as any,
+        { sessionId: 's2', summary: 'B', lastModified: 2, cwd: '/b' } as any,
+      ], '/b');
+      expect(Object.keys(useClaudeStore.getState().sessions).sort()).toEqual(['s1', 's2']);
+    });
+
+    it('mergeSessions removes stale sessions from same cwd', () => {
+      useClaudeStore.getState().setSessions([
+        { sessionId: 's1', summary: 'A', lastModified: 1, cwd: '/a' } as any,
+        { sessionId: 's2', summary: 'B', lastModified: 2, cwd: '/a' } as any,
+        { sessionId: 's3', summary: 'C', lastModified: 3, cwd: '/b' } as any,
       ]);
-      expect(Object.keys(useClaudeStore.getState().sessions)).toEqual(['s1', 's2']);
+      // s2 was archived, agent no longer returns it for cwd /a
+      useClaudeStore.getState().mergeSessions([
+        { sessionId: 's1', summary: 'A updated', lastModified: 4, cwd: '/a' } as any,
+      ], '/a');
+      const sessions = useClaudeStore.getState().sessions;
+      expect(Object.keys(sessions).sort()).toEqual(['s1', 's3']);
+      expect(sessions['s1'].summary).toBe('A updated');
+    });
+
+    it('mergeSessions without cwd does not remove anything', () => {
+      useClaudeStore.getState().setSessions([
+        { sessionId: 's1', summary: 'A', lastModified: 1, cwd: '/a' } as any,
+      ]);
+      useClaudeStore.getState().mergeSessions([
+        { sessionId: 's2', summary: 'B', lastModified: 2, cwd: '/a' } as any,
+      ]);
+      expect(Object.keys(useClaudeStore.getState().sessions).sort()).toEqual(['s1', 's2']);
     });
 
     it('upsertSession merges partial into existing', () => {

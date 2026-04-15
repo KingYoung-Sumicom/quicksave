@@ -870,7 +870,9 @@ function SessionRouteWithHash({
   onUnsubscribeSession?: (sessionId: string) => void;
 }) {
   const { pathHash, sessionId: urlSessionId } = useParams<{ pathHash: string; sessionId: string }>();
+  const navigate = useNavigate();
   const cwd = pathHash ? resolveHash(pathHash, getAllKnownPaths(agentId)) : undefined;
+  const basePath = `/agent/${agentId}/coding/${pathHash}`;
 
   // Use activeSessionId if set, otherwise fall back to URL param
   const getSessionId = () => useClaudeStore.getState().activeSessionId || urlSessionId;
@@ -891,9 +893,18 @@ function SessionRouteWithHash({
           const sid = getSessionId();
           if (sid) onCloseSession(sid);
         }}
-        onArchiveSession={() => {
+        onArchiveSession={async () => {
           const sid = getSessionId();
-          if (sid && cwd) onArchiveSession(sid, cwd);
+          if (sid && cwd) {
+            await onArchiveSession(sid, cwd);
+            // Clear active session state and navigate back to workspace
+            const { setActiveSession, clearCards } = useClaudeStore.getState();
+            setActiveSession(null);
+            clearCards();
+            navigate(basePath, { replace: true });
+            // Refresh session list so nav drawer updates
+            claudeProps.onListSessions(cwd);
+          }
         }}
         onCancelSession={() => {
           const sid = getSessionId();

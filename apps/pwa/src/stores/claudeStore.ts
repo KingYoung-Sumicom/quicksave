@@ -82,7 +82,7 @@ interface ClaudeStore {
 
   // Actions — sessions
   setSessions: (sessions: ClaudeSessionSummary[]) => void;
-  mergeSessions: (incoming: ClaudeSessionSummary[]) => void;
+  mergeSessions: (incoming: ClaudeSessionSummary[], cwd?: string) => void;
   upsertSession: (session: Partial<ClaudeSessionSummary> & { sessionId: string }) => void;
   setLoadingSessions: (loading: boolean) => void;
 
@@ -152,9 +152,16 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     for (const s of sessions) map[s.sessionId] = s;
     set({ sessions: map });
   },
-  mergeSessions: (incoming: ClaudeSessionSummary[]) =>
+  mergeSessions: (incoming: ClaudeSessionSummary[], cwd?: string) =>
     set((state) => {
       const merged = { ...state.sessions };
+      // Remove stale sessions for this cwd (e.g. archived ones no longer returned)
+      if (cwd) {
+        const incomingIds = new Set(incoming.map(s => s.sessionId));
+        for (const [id, s] of Object.entries(merged)) {
+          if (s.cwd === cwd && !incomingIds.has(id)) delete merged[id];
+        }
+      }
       for (const s of incoming) merged[s.sessionId] = s;
       return { sessions: merged };
     }),

@@ -1740,7 +1740,8 @@ export class MessageHandler {
     peerAddress: string,
   ): Message<SessionListHistoryResponsePayload> {
     const cwd = message.payload.cwd || this.getClientRepoPath(peerAddress);
-    const entries = getSessionRegistry().getEntriesForProject(cwd);
+    const entries = getSessionRegistry().getEntriesForProject(cwd)
+      .filter(e => !e.archived);
     const response = createMessage<SessionListHistoryResponsePayload>(
       'session:list-history:response',
       { entries },
