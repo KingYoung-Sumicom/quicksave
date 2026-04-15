@@ -9,6 +9,8 @@ interface SessionAppBarProps {
   onOpenSettings: () => void;
   onCloseSettings: () => void;
   onOpenMenu: () => void;
+  /** Session ID from URL — used as fallback when activeSessionId is null (inactive session) */
+  sessionId?: string;
   onSetSessionConfig?: (key: string, value: ConfigValue) => void;
   onCloseSession?: () => void;
   onArchiveSession?: () => void;
@@ -23,6 +25,7 @@ export function SessionAppBar({
   onOpenSettings,
   onCloseSettings,
   onOpenMenu,
+  sessionId,
   onSetSessionConfig,
   onCloseSession,
   onArchiveSession,
@@ -42,6 +45,7 @@ export function SessionAppBar({
       <AgentSettingsDrawer
         isOpen={showSettings}
         onClose={onCloseSettings}
+        sessionId={sessionId}
         onSetSessionConfig={onSetSessionConfig}
         onCancelSession={onCancelSession}
         onCloseSession={onCloseSession}

@@ -259,6 +259,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       setHistoryError(null);
       try {
         const message = createMessage<ClaudeGetMessagesRequestPayload>('claude:get-cards', { sessionId, offset, limit, ...(cwd ? { cwd } : {}) });
+        console.log(`[sub] get-cards → implicit subscribe session=${sessionId.slice(0, 8)} offset=${offset}`);
         const response = await sendRequest<CardHistoryResponse>(message);
         if (response.error) {
           throw new Error(response.error);
@@ -292,6 +293,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       // Add user card immediately (optimistic)
       appendCard({ type: 'user', id: `local-user-${Date.now()}`, timestamp: Date.now(), text: prompt });
       try {
+        console.log(`[sub] start → implicit subscribe (new session)`);
         const message = createMessage('claude:start', {
           prompt,
           agent: opts?.agent,
@@ -328,6 +330,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       setStreamError(null);
       appendCard({ type: 'user', id: `local-user-${Date.now()}`, timestamp: Date.now(), text: prompt });
       try {
+        console.log(`[sub] resume → implicit subscribe session=${sessionId.slice(0, 8)}`);
         const message = createMessage('claude:resume', { sessionId, prompt, ...(cwd ? { cwd } : {}) });
         const response = await sendRequest<ClaudeResumeResponsePayload>(message, 120000);
         if (!response.success) {
@@ -440,6 +443,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
 
   const unsubscribeSession = useCallback(
     (sessionId: string) => {
+      console.log(`[unsub] unsubscribe session=${sessionId.slice(0, 8)}`);
       const message = createMessage('claude:unsubscribe', { sessionId });
       clientRef.current?.send(message);
     },

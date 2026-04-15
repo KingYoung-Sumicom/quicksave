@@ -869,8 +869,11 @@ function SessionRouteWithHash({
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
   onUnsubscribeSession?: (sessionId: string) => void;
 }) {
-  const { pathHash } = useParams<{ pathHash: string }>();
+  const { pathHash, sessionId: urlSessionId } = useParams<{ pathHash: string; sessionId: string }>();
   const cwd = pathHash ? resolveHash(pathHash, getAllKnownPaths(agentId)) : undefined;
+
+  // Use activeSessionId if set, otherwise fall back to URL param
+  const getSessionId = () => useClaudeStore.getState().activeSessionId || urlSessionId;
 
   return (
     <>
@@ -879,20 +882,21 @@ function SessionRouteWithHash({
         onOpenSettings={onOpenSettings}
         onCloseSettings={onCloseSettings}
         onOpenMenu={onOpenMenu}
+        sessionId={urlSessionId}
         onSetSessionConfig={(key, value) => {
-          const sid = useClaudeStore.getState().activeSessionId;
+          const sid = getSessionId();
           if (sid) onSetSessionConfig(sid, key, value);
         }}
         onCloseSession={() => {
-          const sid = useClaudeStore.getState().activeSessionId;
+          const sid = getSessionId();
           if (sid) onCloseSession(sid);
         }}
         onArchiveSession={() => {
-          const sid = useClaudeStore.getState().activeSessionId;
+          const sid = getSessionId();
           if (sid && cwd) onArchiveSession(sid, cwd);
         }}
         onCancelSession={() => {
-          const sid = useClaudeStore.getState().activeSessionId;
+          const sid = getSessionId();
           if (sid) onCancelSession(sid);
         }}
         onCheckAgentUpdate={onCheckAgentUpdate}

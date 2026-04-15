@@ -745,6 +745,18 @@ export async function buildCardsFromHistory(
             const toolInput = typeof block.input === 'object' && block.input !== null
               ? block.input
               : {};
+            const result = block.id ? toolResults.get(block.id) : undefined;
+            let pairedResult: ToolCallCard['result'] | undefined;
+            if (result) {
+              const truncated = result.content.length > TOOL_RESULT_TRUNCATE_LENGTH;
+              pairedResult = {
+                content: truncated
+                  ? result.content.slice(0, TOOL_RESULT_TRUNCATE_LENGTH) + ' [truncated]'
+                  : result.content,
+                isError: result.isError,
+                truncated,
+              };
+            }
             cards.push({
               type: 'tool_call',
               id: nextId(),
@@ -752,6 +764,7 @@ export async function buildCardsFromHistory(
               toolName: block.name ?? block.type,
               toolInput,
               toolUseId: block.id ?? nextId(),
+              result: pairedResult,
             });
             break;
           }

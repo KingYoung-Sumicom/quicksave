@@ -9,6 +9,8 @@ import { ClaudeSettingsSection } from './settings/ClaudeSettingsSection';
 interface AgentSettingsDrawerProps {
   isOpen: boolean;
   onClose: () => void;
+  /** Session ID from URL — fallback when store activeSessionId is null (inactive session) */
+  sessionId?: string;
   onSetSessionConfig?: (key: string, value: ConfigValue) => void;
   onCancelSession?: () => void;
   onCloseSession?: () => void;
@@ -21,6 +23,7 @@ interface AgentSettingsDrawerProps {
 export function AgentSettingsDrawer({
   isOpen,
   onClose,
+  sessionId: sessionIdProp,
   onSetSessionConfig,
   onCancelSession,
   onCloseSession,
@@ -29,7 +32,8 @@ export function AgentSettingsDrawer({
   onUpdateAgent,
   onRestartAgent,
 }: AgentSettingsDrawerProps) {
-  const activeSessionId = useClaudeStore((s) => s.activeSessionId);
+  const storeSessionId = useClaudeStore((s) => s.activeSessionId);
+  const activeSessionId = storeSessionId || sessionIdProp || null;
   const localIsStreaming = useClaudeStore((s) => s.isStreaming);
   const sessions = useClaudeStore((s) => s.sessions);
   const activeSession = activeSessionId ? sessions[activeSessionId] : undefined;

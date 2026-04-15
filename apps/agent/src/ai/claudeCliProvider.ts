@@ -38,6 +38,8 @@ class CliProviderSession implements ProviderSession {
   public process: ChildProcess | null;
   /** StreamIds queued by hot resume — consumeStream pops after each result. */
   public pendingStreamIds: string[] = [];
+  /** Debug logger — attached after spawn so stdin writes are captured too. */
+  public debugLog?: DebugLogger;
 
   constructor(proc: ChildProcess) {
     this.process = proc;
@@ -49,6 +51,7 @@ class CliProviderSession implements ProviderSession {
       type: 'user',
       message: { role: 'user', content: prompt },
     };
+    this.debugLog?.logRawEvent({ ...userMsg, _direction: 'stdin' });
     this.process.stdin!.write(JSON.stringify(userMsg) + '\n');
   }
 
@@ -60,6 +63,7 @@ class CliProviderSession implements ProviderSession {
         request_id: crypto.randomUUID(),
         request: { subtype: 'interrupt' },
       };
+      this.debugLog?.logRawEvent({ ...interruptReq, _direction: 'stdin' });
       this.process.stdin!.write(JSON.stringify(interruptReq) + '\n');
     } catch {
       // If stdin write fails, kill the process
@@ -271,6 +275,10 @@ export class ClaudeCliProvider implements CodingAgentProvider {
 
     const cliSession = new CliProviderSession(proc);
     const debugLog = new DebugLogger(sessionId);
+    cliSession.debugLog = debugLog;
+
+    // Log the initial stdin prompt that was sent before init
+    debugLog.logRawEvent({ ...userMsg, _direction: 'stdin' });
 
     // Update the cardBuilder sessionId (it may have been created with a placeholder)
     cardBuilder.updateSessionId(sessionId);
@@ -309,7 +317,8 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     // Add user prompt to cardBuilder (for getCards on reconnect) but don't emit
     // as a card-event — the PWA already shows an optimistic user card.
     if (prompt) {
-      cb.userMessage(prompt); // adds to cardBuilder.cards internally, no emit
+      const userCardEvent = cb.userMessage(prompt);
+      debugLog?.logCardEvent(userCardEvent); // log to debug cards JSONL even though not emitted to PWA
     }
 
     const flushText = () => {
@@ -341,6 +350,9 @@ export class ClaudeCliProvider implements CodingAgentProvider {
         // variable is updated — routeMessage receives it by value.
         const nextStreamId = cliSession.pendingStreamIds.shift();
         if (nextStreamId) {
+          // Hot resume: re-snapshot cutoff now that the turn is committed to JSONL,
+          // so getCards() doesn't duplicate the new turn's messages.
+          await cb.snapshotCutoff();
           streamId = nextStreamId;
           cb.startNewTurn(streamId);
           resultEmitted = false; // Reset for next turn
@@ -454,6 +466,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
             emitCard(cb.toolUse(block.name, block.input ?? {}, block.id));
           }
         } else if (block.type === 'server_tool_use' || block.type === 'mcp_tool_use') {
+          console.log(`[cli:debug] mcp_tool_use name=${block.name} id=${block.id}`);
           emitCard(cb.toolUse(block.name ?? block.type, block.input ?? {}, block.id ?? ''));
         }
       }
@@ -484,8 +497,10 @@ export class ClaudeCliProvider implements CodingAgentProvider {
               block.type === 'tool_search_tool_result') {
             const resultContent = extractToolResultText(block.content ?? block.text ?? '');
             const parentId = block.tool_use_id;
+            console.log(`[cli:debug] ${block.type} tool_use_id=${parentId} content=${resultContent.slice(0, 80)}`);
             if (parentId) {
               const cardEvt = cb.toolResult(parentId, resultContent, !!block.is_error);
+              console.log(`[cli:debug] toolResult cardEvt=${cardEvt ? 'emitted' : 'NULL (no matching tool_use)'}`);
               if (cardEvt) emitCard(cardEvt);
             }
           }
@@ -524,11 +539,14 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       };
       callbacks.emitStreamEnd(streamEnd);
 
-      // Update cutoff BEFORE clearing cards — if getCards() is called between
-      // these two operations, it needs the new cutoff to read the full JSONL.
-      await cb.snapshotCutoff();
+      // Snapshot and clear in-memory cards. After clearCards(), set cutoff to
+      // null so getCards() reads the full JSONL — the active turn is now part
+      // of the persisted history. snapshotCutoff() alone is unreliable here
+      // because Claude Code may not have flushed all messages to the JSONL by
+      // the time the result arrives on stdout (race condition).
       debugLog?.logCardBuilderSnapshot(cb.getCards());
       cb.clearCards();
+      cb.jsonlCutoff = null;
 
       return true;
     }
@@ -559,12 +577,12 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       this.sendControlResponse(cliSession.process, controlRequestId, {
         behavior: 'deny',
         message: decision.response || 'Denied',
-      });
+      }, cliSession.debugLog);
     } else {
       this.sendControlResponse(cliSession.process, controlRequestId, {
         behavior: 'allow',
         updatedInput: decision.updatedInput,
-      });
+      }, cliSession.debugLog);
     }
   }
 
@@ -572,6 +590,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     proc: ChildProcess,
     controlRequestId: string,
     result: { behavior: 'allow'; updatedInput?: Record<string, unknown> } | { behavior: 'deny'; message: string },
+    debugLog?: DebugLogger,
   ): void {
     // CLI's nu6() does Object.keys(result.updatedInput) without null check,
     // so always include updatedInput when allowing.
@@ -586,6 +605,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
         response: safeResult,
       },
     };
+    debugLog?.logRawEvent({ ...response, _direction: 'stdin' });
     try {
       proc.stdin!.write(JSON.stringify(response) + '\n');
     } catch (err) {

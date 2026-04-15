@@ -117,6 +117,7 @@ export function ClaudePanel({
   useEffect(() => {
     if (urlSessionId === activeSessionId) return;
     if (activeSessionId) {
+      console.log(`[sub:panel] switching session: unsub ${activeSessionId.slice(0, 8)} → sub ${urlSessionId?.slice(0, 8) ?? 'null'}`);
       onUnsubscribeSession?.(activeSessionId);
     }
     setActiveSession(urlSessionId ?? null);
@@ -140,11 +141,13 @@ export function ClaudePanel({
     if (!urlSessionId || connectionState !== 'connected') return;
     // Agent came back online (was offline or null → true)
     if (agentOnline === true && wasOnline === false) {
+      console.log(`[sub:panel] agent reconnected: re-subscribe session=${urlSessionId.slice(0, 8)}`);
       onGetSessionCards(urlSessionId);
       onGetSessionConfig?.(urlSessionId);
     }
     // Initial load: no cards yet
     if (agentOnline === true && wasOnline === null && cards.length === 0) {
+      console.log(`[sub:panel] initial load: subscribe session=${urlSessionId.slice(0, 8)}`);
       onGetSessionCards(urlSessionId);
       onGetSessionConfig?.(urlSessionId);
     }
@@ -153,6 +156,7 @@ export function ClaudePanel({
   // Unsubscribe when leaving session view (navigating to session list)
   useEffect(() => {
     if (!isChat && activeSessionId) {
+      console.log(`[sub:panel] leaving chat view: unsub session=${activeSessionId.slice(0, 8)}`);
       onUnsubscribeSession?.(activeSessionId);
     }
     if (!isChat) {
@@ -203,6 +207,7 @@ export function ClaudePanel({
 
   const handleNewSession = useCallback(() => {
     if (activeSessionId) {
+      console.log(`[sub:panel] new session: unsub session=${activeSessionId.slice(0, 8)}`);
       onUnsubscribeSession?.(activeSessionId);
     }
     setActiveSession(null);

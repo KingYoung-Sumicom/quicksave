@@ -1,10 +1,25 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { MessageHandler } from './messageHandler.js';
 import { createMessage } from '@sumicom/quicksave-shared';
 import { mkdir, writeFile, rm, readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { simpleGit } from 'simple-git';
+
+// Prevent tests from reading/writing the real ~/.quicksave/agent.json
+vi.mock('../config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config.js')>();
+  return {
+    ...actual,
+    addManagedRepo: vi.fn(),
+    removeManagedRepo: vi.fn(),
+    addManagedCodingPath: vi.fn(),
+    removeManagedCodingPath: vi.fn(),
+    getAnthropicApiKey: vi.fn(() => undefined),
+    setAnthropicApiKey: vi.fn(),
+    hasAnthropicApiKey: vi.fn(() => false),
+  };
+});
 
 describe('MessageHandler', () => {
   let testRepoPath: string;
