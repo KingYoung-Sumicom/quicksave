@@ -439,7 +439,7 @@ export function ClaudePanel({
         </>
       ) : (
         <SessionList
-          sessions={Object.values(sessions)}
+          sessions={Object.values(sessions).filter((s) => s.cwd === cwd)}
           isLoading={isLoadingSessions}
           onSelect={handleSelectSession}
           onNewSession={handleNewSession}

@@ -64,7 +64,7 @@ export function NavigationDrawer({
           if (!cancelled) {
             setSessionsByPath((prev) => {
               const next = new Map(prev);
-              next.set(cp.path, Object.values(sessions).filter((s) => s.cwd === cp.path || !s.cwd));
+              next.set(cp.path, Object.values(sessions).filter((s) => s.cwd === cp.path));
               return next;
             });
           }

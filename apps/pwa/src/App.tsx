@@ -15,6 +15,7 @@ import { FleetStatusBar } from './components/FleetStatusBar';
 import { DashboardAppBar } from './components/DashboardAppBar';
 import { RepoAppBar } from './components/RepoAppBar';
 import { SessionAppBar } from './components/SessionAppBar';
+import { NewSessionAppBar } from './components/NewSessionAppBar';
 import { RepoView } from './components/RepoView';
 import { PathBrowser } from './components/PathBrowser';
 import { GitignoreEditor } from './components/GitignoreEditor';
@@ -651,23 +652,19 @@ function AppContent() {
                   </>
                 } />
                 <Route path="/coding/:pathHash" element={
-                  <>
-                    <DashboardAppBar
-                      editing={dashboardEditing}
-                      onToggleEdit={() => setDashboardEditing((prev) => !prev)}
-                      onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
-                    />
-                    <ClaudePanelWithHash
-                      agentId={currentAgentId}
-                      onListSessions={listSessions}
-                      onGetSessionCards={getSessionCards}
-                      onGetSessionConfig={getSessionConfig}
-                      onStartSession={startSession}
-                      onResumeSession={resumeSession}
-                      onRespondToUserInput={respondToUserInput}
-                      onUnsubscribeSession={unsubscribeSession}
-                    />
-                  </>
+                  <CodingRouteWithAppBar
+                    agentId={currentAgentId}
+                    dashboardEditing={dashboardEditing}
+                    onToggleEdit={() => setDashboardEditing((prev) => !prev)}
+                    onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
+                    onListSessions={listSessions}
+                    onGetSessionCards={getSessionCards}
+                    onGetSessionConfig={getSessionConfig}
+                    onStartSession={startSession}
+                    onResumeSession={resumeSession}
+                    onRespondToUserInput={respondToUserInput}
+                    onUnsubscribeSession={unsubscribeSession}
+                  />
                 } />
                 <Route path="/coding/:pathHash/:sessionId" element={
                   <SessionRouteWithHash
@@ -756,6 +753,65 @@ function RepoViewWithHash({
   }, [pathHash, agentId, repoPath, onSwitchRepo]);
 
   return <RepoView {...repoViewProps} />;
+}
+
+// Wrapper that picks the right App Bar for the coding route:
+// - New session (?new): NewSessionAppBar showing cwd
+// - Session list: DashboardAppBar with edit toggle
+function CodingRouteWithAppBar({
+  agentId,
+  dashboardEditing,
+  onToggleEdit,
+  onOpenMenu,
+  onListSessions,
+  onGetSessionCards,
+  onGetSessionConfig,
+  onStartSession,
+  onResumeSession,
+  onRespondToUserInput,
+  onUnsubscribeSession,
+}: {
+  agentId: string;
+  dashboardEditing: boolean;
+  onToggleEdit: () => void;
+  onOpenMenu: () => void;
+  onListSessions: (cwd?: string) => Promise<void>;
+  onGetSessionCards: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
+  onGetSessionConfig?: (sessionId: string) => Promise<void>;
+  onStartSession: (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
+  onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
+  onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
+  onUnsubscribeSession?: (sessionId: string) => void;
+}) {
+  const { pathHash } = useParams<{ pathHash: string }>();
+  const [searchParams] = useSearchParams();
+  const isNewSession = searchParams.has('new');
+  const activeSessionId = useClaudeStore((s) => s.activeSessionId);
+  const cwd = pathHash ? resolveHash(pathHash, getAllKnownPaths(agentId)) : undefined;
+
+  return (
+    <>
+      {isNewSession && !activeSessionId ? (
+        <NewSessionAppBar cwd={cwd} onOpenMenu={onOpenMenu} />
+      ) : (
+        <DashboardAppBar
+          editing={dashboardEditing}
+          onToggleEdit={onToggleEdit}
+          onOpenMenu={onOpenMenu}
+        />
+      )}
+      <ClaudePanelWithHash
+        agentId={agentId}
+        onListSessions={onListSessions}
+        onGetSessionCards={onGetSessionCards}
+        onGetSessionConfig={onGetSessionConfig}
+        onStartSession={onStartSession}
+        onResumeSession={onResumeSession}
+        onRespondToUserInput={onRespondToUserInput}
+        onUnsubscribeSession={onUnsubscribeSession}
+      />
+    </>
+  );
 }
 
 // Wrapper that resolves :pathHash → cwd and binds it to Claude operations
@@ -896,6 +952,8 @@ function SessionRouteWithHash({
         onArchiveSession={async () => {
           const sid = getSessionId();
           if (sid && cwd) {
+            // Terminate the session first, then archive
+            await onCloseSession(sid);
             await onArchiveSession(sid, cwd);
             // Clear active session state and navigate back to workspace
             const { setActiveSession, clearCards } = useClaudeStore.getState();

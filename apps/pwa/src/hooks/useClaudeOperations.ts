@@ -258,38 +258,44 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
   const subscribeInFlightRef = useRef<string | null>(null);
 
   const getSessionCards = useCallback(
-    async (sessionId: string, offset = 0, limit = 50, cwd?: string) => {
+    async (sessionId: string, offset = 0, limit = 50, cwd?: string, subscribeOnly = false) => {
       if (offset === 0 && subscribeInFlightRef.current === sessionId) {
         console.log(`[sub] get-cards → deduped session=${sessionId.slice(0, 8)}`);
         return;
       }
       if (offset === 0) subscribeInFlightRef.current = sessionId;
-      setLoadingHistory(true);
-      setHistoryError(null);
+      if (!subscribeOnly) {
+        setLoadingHistory(true);
+        setHistoryError(null);
+      }
       try {
         const message = createMessage<ClaudeGetMessagesRequestPayload>('claude:get-cards', { sessionId, offset, limit, ...(cwd ? { cwd } : {}) });
-        console.log(`[sub] get-cards → implicit subscribe session=${sessionId.slice(0, 8)} offset=${offset}`);
+        console.log(`[sub] get-cards → implicit subscribe session=${sessionId.slice(0, 8)} offset=${offset}${subscribeOnly ? ' (subscribe-only)' : ''}`);
         const response = await sendRequest<CardHistoryResponse>(message);
         if (response.error) {
           throw new Error(response.error);
         }
 
-        if (offset === 0) {
-          setCards(response.cards);
-          // Apply title from getCards response (available on initial load / reconnect)
-          if (response.title) {
-            applySessionConfig(sessionId, { title: response.title });
+        if (!subscribeOnly) {
+          if (offset === 0) {
+            setCards(response.cards);
+            // Apply title from getCards response (available on initial load / reconnect)
+            if (response.title) {
+              applySessionConfig(sessionId, { title: response.title });
+            }
+          } else {
+            prependCards(response.cards);
           }
-        } else {
-          prependCards(response.cards);
+          setHistoryMeta(response.total, response.hasMore);
         }
-        setHistoryMeta(response.total, response.hasMore);
       } catch (error) {
         console.error('Failed to get session cards:', error);
-        setHistoryError(error instanceof Error ? error.message : 'Failed to load history');
+        if (!subscribeOnly) {
+          setHistoryError(error instanceof Error ? error.message : 'Failed to load history');
+        }
       } finally {
         if (offset === 0) subscribeInFlightRef.current = null;
-        setLoadingHistory(false);
+        if (!subscribeOnly) setLoadingHistory(false);
       }
     },
     [sendRequest, setCards, prependCards, setHistoryMeta, setLoadingHistory, setHistoryError, applySessionConfig]
@@ -324,12 +330,19 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
           upsertSession({ sessionId: response.sessionId, agent: opts.agent });
         }
         setActiveSession(response.sessionId ?? null, response.streamId ?? null);
+        // Subscribe to card events for the new session immediately.
+        // The ClaudePanel navigation effect skips subscription when
+        // urlSessionId already equals activeSessionId, so we must
+        // subscribe here to avoid missing streamed cards.
+        if (response.sessionId) {
+          getSessionCards(response.sessionId, 0, 50, opts?.cwd, /* subscribeOnly */ true);
+        }
       } catch (error) {
         setStreaming(false);
         setStreamError(error instanceof Error ? error.message : 'Failed to start session');
       }
     },
-    [sendRequest, clearCards, setStreaming, setStreamError, setActiveSession, appendCard, upsertSession]
+    [sendRequest, clearCards, setStreaming, setStreamError, setActiveSession, appendCard, upsertSession, getSessionCards]
   );
 
   const { addStreamId } = useClaudeStore.getState();
