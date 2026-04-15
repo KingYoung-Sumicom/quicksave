@@ -468,6 +468,11 @@ export class ClaudeCliProvider implements CodingAgentProvider {
         } else if (block.type === 'server_tool_use' || block.type === 'mcp_tool_use') {
           console.log(`[cli:debug] mcp_tool_use name=${block.name} id=${block.id}`);
           emitCard(cb.toolUse(block.name ?? block.type, block.input ?? {}, block.id ?? ''));
+        } else if (block.type && block.type !== 'tool_use') {
+          // Unknown block type — surface as info card so it's visible
+          const preview = block.text ?? block.content ?? '';
+          const previewStr = typeof preview === 'string' ? preview.slice(0, 200) : JSON.stringify(preview).slice(0, 200);
+          emitCard(cb.systemMessage(`[${block.type}] ${previewStr}`, 'info'));
         }
       }
       return false;
@@ -503,6 +508,11 @@ export class ClaudeCliProvider implements CodingAgentProvider {
               console.log(`[cli:debug] toolResult cardEvt=${cardEvt ? 'emitted' : 'NULL (no matching tool_use)'}`);
               if (cardEvt) emitCard(cardEvt);
             }
+          } else if (block.type !== 'text' && block.type !== 'tool_result') {
+            // Unknown user block type — surface as info card
+            const preview = block.text ?? block.content ?? '';
+            const previewStr = typeof preview === 'string' ? preview.slice(0, 200) : JSON.stringify(preview).slice(0, 200);
+            emitCard(cb.systemMessage(`[${block.type}] ${previewStr}`, 'info'));
           }
         }
       }

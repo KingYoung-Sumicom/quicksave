@@ -805,9 +805,15 @@ export async function buildCardsFromHistory(
             cards.push({ type: 'system', id: nextId(), timestamp: Date.now(), text: 'Container upload', subtype: 'info' });
             break;
 
-          // Unknown block types — skip silently
-          default:
+          // Unknown block types — surface as info card so they're visible
+          default: {
+            const preview = block.text ?? block.content ?? '';
+            const previewStr = typeof preview === 'string' ? preview.slice(0, 200) : JSON.stringify(preview).slice(0, 200);
+            if (block.type && previewStr) {
+              cards.push({ type: 'system', id: nextId(), timestamp: Date.now(), text: `[${block.type}] ${previewStr}`, subtype: 'info' });
+            }
             break;
+          }
         }
       }
     }
