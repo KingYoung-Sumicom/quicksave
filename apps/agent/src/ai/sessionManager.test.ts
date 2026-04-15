@@ -38,6 +38,7 @@ vi.mock('./sessionRegistry.js', () => ({
     getEntry: vi.fn().mockReturnValue(null),
     getEntriesForProject: vi.fn().mockReturnValue([]),
     upsertEntry: vi.fn(),
+    updateEntry: vi.fn(),
   }),
 }));
 

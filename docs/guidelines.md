@@ -62,3 +62,17 @@ Before designing or implementing any feature, check the relevant guidelines belo
 **維護規則**：發現新的 bug pattern 時，更新 testing guidelines 以記錄對應的測試策略。
 
 ---
+
+## Session Settings Persistence
+
+All user-facing session settings (e.g. `permissionMode`, `sandboxed`) **must** be persisted in `SessionRegistryEntry` so they survive daemon restarts.
+
+**Rule**: When adding a new session setting:
+1. Add the field to `SessionRegistryEntry` in `packages/shared/src/types.ts`
+2. Persist it in `messageHandler.ts` when creating the registry entry (both `handleClaudeStart` and `handleClaudeResume`)
+3. In `sessionManager.resumeSession`, fall back to the registry value when the in-memory map is empty
+4. In `sessionManager.setSessionConfig`, persist changes via `persistRegistryField`
+
+**Why**: In-memory maps (`sessionPermissions`, `sessionSandboxed`, `sessionConfigs`) are cleared on daemon restart. Without registry persistence, resumed sessions lose their settings.
+
+---

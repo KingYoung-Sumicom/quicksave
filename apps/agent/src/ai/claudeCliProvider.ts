@@ -5,7 +5,8 @@ import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import type { CardEvent, CardStreamEnd } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
-import { SANDBOX_MCP_NAME } from './sandboxMcp.js';
+import { SANDBOX_MCP_NAME, SANDBOX_BASH_TOOL } from './sandboxMcp.js';
+import { DebugLogger } from './debugLogger.js';
 import type {
   CodingAgentProvider,
   ProviderSession,
@@ -97,6 +98,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       model: opts.model,
       permissionMode: opts.permissionLevel,
       systemPrompt: opts.systemPrompt,
+      sandboxed: opts.sandboxed,
     });
 
     return this.spawnAndConsume(args, opts.cwd, opts.streamId, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model);
@@ -113,6 +115,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       permissionMode: opts.permissionLevel,
       systemPrompt: opts.systemPrompt,
       resumeSessionId: opts.sessionId,
+      sandboxed: opts.sandboxed,
     });
 
     return this.spawnAndConsume(args, opts.cwd, opts.streamId, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks);
@@ -127,6 +130,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     permissionMode?: PermissionLevel;
     systemPrompt?: string;
     resumeSessionId?: string;
+    sandboxed?: boolean;
   }): string[] {
     const args: string[] = [
       '--output-format', 'stream-json',
@@ -154,6 +158,23 @@ export class ClaudeCliProvider implements CodingAgentProvider {
 
     if (opts.resumeSessionId) {
       args.push('--resume', opts.resumeSessionId);
+    }
+
+    // When sandboxed, inject a PermissionRequest hook that auto-approves SandboxBash.
+    // This works in any project directory — no project-level settings needed.
+    if (opts.sandboxed) {
+      const hookSettings = {
+        hooks: {
+          PermissionRequest: [{
+            matcher: SANDBOX_BASH_TOOL,
+            hooks: [{
+              type: 'command',
+              command: `printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'`,
+            }],
+          }],
+        },
+      };
+      args.push('--settings', JSON.stringify(hookSettings));
     }
 
     // Always inject sandbox MCP server — approve/deny controlled by sandboxed flag at runtime
@@ -249,12 +270,13 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     });
 
     const cliSession = new CliProviderSession(proc);
+    const debugLog = new DebugLogger(sessionId);
 
     // Update the cardBuilder sessionId (it may have been created with a placeholder)
     cardBuilder.updateSessionId(sessionId);
 
     // Fire and forget the stream consumer — pass the same readline interface
-    this.consumeStream(sessionId, streamId, rl, bufferedLines, cliSession, cardBuilder, callbacks, prompt);
+    this.consumeStream(sessionId, streamId, rl, bufferedLines, cliSession, cardBuilder, callbacks, prompt, debugLog);
 
     return { sessionId, session: cliSession };
   }
@@ -270,13 +292,17 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     cb: StreamCardBuilder,
     callbacks: ProviderCallbacks,
     prompt?: string,
+    debugLog?: DebugLogger,
   ): Promise<void> {
     let streamId = initialStreamId;
     let textBuffer = '';
     let bufferTimer: ReturnType<typeof setTimeout> | null = null;
     let resultEmitted = false;
 
-    const emitCard = (event: CardEvent) => { callbacks.emitCardEvent(event); };
+    const emitCard = (event: CardEvent) => {
+      debugLog?.logCardEvent(event);
+      callbacks.emitCardEvent(event);
+    };
 
     cb.startNewTurn(streamId);
 
@@ -304,7 +330,9 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       let msg: any;
       try { msg = JSON.parse(line); } catch { return; }
 
-      const emittedResult = await this.routeMessage(sessionId, streamId, msg, cliSession, cb, callbacks, emitCard, flushText, bufferText);
+      debugLog?.logRawEvent(msg);
+
+      const emittedResult = await this.routeMessage(sessionId, streamId, msg, cliSession, cb, callbacks, emitCard, flushText, bufferText, debugLog);
       if (emittedResult) {
         resultEmitted = true;
 
@@ -360,6 +388,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     emitCard: (event: CardEvent) => void,
     flushText: () => void,
     bufferText: (text: string) => void,
+    debugLog?: DebugLogger,
   ): Promise<boolean> {
     // ── Control requests (permissions) ──
     if (msg.type === 'control_request' && msg.request?.subtype === 'can_use_tool') {
@@ -498,6 +527,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       // Update cutoff BEFORE clearing cards — if getCards() is called between
       // these two operations, it needs the new cutoff to read the full JSONL.
       await cb.snapshotCutoff();
+      debugLog?.logCardBuilderSnapshot(cb.getCards());
       cb.clearCards();
 
       return true;

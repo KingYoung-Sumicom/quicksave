@@ -305,6 +305,9 @@ export interface SessionRegistryEntry {
   totalCostUsd?: number;
   pinned?: boolean;
   archived?: boolean;
+  // Session settings — persisted so they survive daemon restarts
+  permissionMode?: string;
+  sandboxed?: boolean;
 }
 
 export interface SessionListHistoryRequestPayload {

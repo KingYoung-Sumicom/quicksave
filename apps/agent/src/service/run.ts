@@ -21,6 +21,7 @@ import { AgentConnection } from '../connection/connection.js';
 import { MessageHandler } from '../handlers/messageHandler.js';
 import { GitOperations } from '../git/operations.js';
 import { IpcServer } from './ipcServer.js';
+import { DebugHttpServer } from './debugHttpServer.js';
 import {
   acquireLock,
   ensureDirectories,
@@ -224,6 +225,15 @@ export async function runDaemon(): Promise<void> {
 
   registerDaemonMethods(ipcServer, connection, messageHandler, config);
 
+  // Start debug HTTP server (local-only, gated by debug mode)
+  let debugHttpServer: DebugHttpServer | null = null;
+  if (isDebugEnabled()) {
+    debugHttpServer = new DebugHttpServer(claudeService);
+    debugHttpServer.start().catch((err) => {
+      console.warn('Failed to start debug HTTP server:', err);
+    });
+  }
+
   // Wire peer events
   connection.on('connected', (peerAddress: string) => {
     const peerKey = peerAddress.replace('pwa:', '');
@@ -293,6 +303,7 @@ export async function runDaemon(): Promise<void> {
 
     messageHandler.cleanup();
     connection.disconnect();
+    if (debugHttpServer) await debugHttpServer.close();
     await ipcServer.close();
     removeServiceState();
     cleanStaleRuntime();

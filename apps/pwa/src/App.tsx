@@ -670,43 +670,27 @@ function AppContent() {
                   </>
                 } />
                 <Route path="/coding/:pathHash/:sessionId" element={
-                  <>
-                    <SessionAppBar
-                      showSettings={showAgentSettings}
-                      onOpenSettings={() => setShowAgentSettings(true)}
-                      onCloseSettings={() => setShowAgentSettings(false)}
-                      onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
-                      onSetSessionConfig={(key, value) => {
-                        const sid = useClaudeStore.getState().activeSessionId;
-                        if (sid) setSessionConfig(sid, key, value);
-                      }}
-                      onCloseSession={() => {
-                        const sid = useClaudeStore.getState().activeSessionId;
-                        if (sid) closeSession(sid);
-                      }}
-                      onArchiveSession={() => {
-                        const sid = useClaudeStore.getState().activeSessionId;
-                        if (sid && repoPath) archiveSession(sid, repoPath);
-                      }}
-                      onCancelSession={() => {
-                        const sid = useClaudeStore.getState().activeSessionId;
-                        if (sid) cancelSession(sid);
-                      }}
-                      onCheckAgentUpdate={checkAgentUpdate}
-                      onUpdateAgent={updateAgent}
-                      onRestartAgent={restartAgent}
-                    />
-                    <ClaudePanelWithHash
-                      agentId={currentAgentId}
-                      onListSessions={listSessions}
-                      onGetSessionCards={getSessionCards}
-                      onGetSessionConfig={getSessionConfig}
-                      onStartSession={startSession}
-                      onResumeSession={resumeSession}
-                      onRespondToUserInput={respondToUserInput}
-                      onUnsubscribeSession={unsubscribeSession}
-                    />
-                  </>
+                  <SessionRouteWithHash
+                    agentId={currentAgentId}
+                    showSettings={showAgentSettings}
+                    onOpenSettings={() => setShowAgentSettings(true)}
+                    onCloseSettings={() => setShowAgentSettings(false)}
+                    onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
+                    onSetSessionConfig={setSessionConfig}
+                    onCloseSession={closeSession}
+                    onArchiveSession={archiveSession}
+                    onCancelSession={cancelSession}
+                    onCheckAgentUpdate={checkAgentUpdate}
+                    onUpdateAgent={updateAgent}
+                    onRestartAgent={restartAgent}
+                    onListSessions={listSessions}
+                    onGetSessionCards={getSessionCards}
+                    onGetSessionConfig={getSessionConfig}
+                    onStartSession={startSession}
+                    onResumeSession={resumeSession}
+                    onRespondToUserInput={respondToUserInput}
+                    onUnsubscribeSession={unsubscribeSession}
+                  />
                 } />
               </Routes>
             )}
@@ -848,6 +832,80 @@ function ClaudePanelWithHash({
   );
 }
 
+
+// Wrapper that gives SessionAppBar access to route params for cwd resolution
+function SessionRouteWithHash({
+  agentId,
+  showSettings,
+  onOpenSettings,
+  onCloseSettings,
+  onOpenMenu,
+  onSetSessionConfig,
+  onCloseSession,
+  onArchiveSession,
+  onCancelSession,
+  onCheckAgentUpdate,
+  onUpdateAgent,
+  onRestartAgent,
+  ...claudeProps
+}: {
+  agentId: string;
+  showSettings: boolean;
+  onOpenSettings: () => void;
+  onCloseSettings: () => void;
+  onOpenMenu: () => void;
+  onSetSessionConfig: (sessionId: string, key: string, value: import('@sumicom/quicksave-shared').ConfigValue) => void;
+  onCloseSession: (sessionId: string) => void;
+  onArchiveSession: (sessionId: string, cwd: string) => Promise<void>;
+  onCancelSession: (sessionId: string) => void;
+  onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
+  onUpdateAgent?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; restarting: boolean; error?: string }>;
+  onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
+  onListSessions: (cwd?: string) => Promise<void>;
+  onGetSessionCards: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
+  onGetSessionConfig?: (sessionId: string) => Promise<void>;
+  onStartSession: (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
+  onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
+  onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
+  onUnsubscribeSession?: (sessionId: string) => void;
+}) {
+  const { pathHash } = useParams<{ pathHash: string }>();
+  const cwd = pathHash ? resolveHash(pathHash, getAllKnownPaths(agentId)) : undefined;
+
+  return (
+    <>
+      <SessionAppBar
+        showSettings={showSettings}
+        onOpenSettings={onOpenSettings}
+        onCloseSettings={onCloseSettings}
+        onOpenMenu={onOpenMenu}
+        onSetSessionConfig={(key, value) => {
+          const sid = useClaudeStore.getState().activeSessionId;
+          if (sid) onSetSessionConfig(sid, key, value);
+        }}
+        onCloseSession={() => {
+          const sid = useClaudeStore.getState().activeSessionId;
+          if (sid) onCloseSession(sid);
+        }}
+        onArchiveSession={() => {
+          const sid = useClaudeStore.getState().activeSessionId;
+          if (sid && cwd) onArchiveSession(sid, cwd);
+        }}
+        onCancelSession={() => {
+          const sid = useClaudeStore.getState().activeSessionId;
+          if (sid) onCancelSession(sid);
+        }}
+        onCheckAgentUpdate={onCheckAgentUpdate}
+        onUpdateAgent={onUpdateAgent}
+        onRestartAgent={onRestartAgent}
+      />
+      <ClaudePanelWithHash
+        agentId={agentId}
+        {...claudeProps}
+      />
+    </>
+  );
+}
 
 // Lightweight handler for QR code / shared link connections (/connect/:agentId?pk=...&name=...)
 // Adds machine if new, triggers connection, and redirects — no UI of its own.

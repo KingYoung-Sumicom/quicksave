@@ -1520,6 +1520,8 @@ export class MessageHandler {
         firstPrompt: prompt.slice(0, 100),
         createdAt: now,
         lastAccessedAt: now,
+        permissionMode,
+        sandboxed: sandboxed || undefined,
       });
       this.onHistoryUpdated?.(cwd, registry.getEntry(cwd, sessionId)!, 'upsert');
 

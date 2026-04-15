@@ -208,10 +208,12 @@ export class SessionManager extends EventEmitter {
       this.setPreferences({ reasoningEffort: value as ClaudePreferences['reasoningEffort'] });
     } else if (key === 'permissionMode' && typeof value === 'string') {
       this.setPermissionLevel(sessionId, value as PermissionLevel);
+      this.persistRegistryField(sessionId, 'permissionMode', value);
     } else if (key === 'sandboxed' && typeof value === 'boolean') {
       this.sessionSandboxed.set(sessionId, value);
       const ps = this.sessions.get(sessionId);
       if (ps) ps.sandboxed = value;
+      this.persistRegistryField(sessionId, 'sandboxed', value || undefined);
     } else if (key === 'agent' || key === 'provider') {
       // Reject agent changes on active sessions — agent type is immutable once spawned
       const ps = this.sessions.get(sessionId);
@@ -353,8 +355,14 @@ export class SessionManager extends EventEmitter {
     this.coldResumeInFlight.set(opts.sessionId, flight);
 
     try {
-      const level = this.sessionPermissions.get(opts.sessionId) ?? 'acceptEdits';
-      const sandboxed = this.sessionSandboxed.get(opts.sessionId) ?? false;
+      // Restore session settings from in-memory maps, falling back to persisted
+      // registry (survives daemon restarts).
+      const registryEntry = getSessionRegistry().getEntry(opts.cwd, opts.sessionId);
+      const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
+      const restoredLevel = this.sessionPermissions.get(opts.sessionId)
+        ?? (validModes.includes(registryEntry?.permissionMode as any) ? registryEntry!.permissionMode as PermissionLevel : undefined);
+      const level: PermissionLevel = restoredLevel ?? 'acceptEdits';
+      const sandboxed = this.sessionSandboxed.get(opts.sessionId) ?? registryEntry?.sandboxed ?? false;
       const provider = this.getProvider(agentId);
 
       const cardBuilder = existing?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.streamId, opts.cwd);
@@ -823,6 +831,23 @@ export class SessionManager extends EventEmitter {
       permissionMode: ps?.permissionLevel ?? this.sessionPermissions.get(sessionId),
       sandboxed: ps?.sandboxed ?? this.sessionSandboxed.get(sessionId) ?? false,
     });
+  }
+
+  private persistRegistryField(sessionId: string, key: string, value: unknown): void {
+    const registry = getSessionRegistry();
+    // Active session — cwd is in memory
+    const cwd = this.sessions.get(sessionId)?.cwd;
+    if (cwd) {
+      registry.updateEntry(cwd, sessionId, { [key]: value } as any);
+      return;
+    }
+    // Inactive session — scan registry for the entry
+    for (const entry of registry.getEntriesForProject()) {
+      if (entry.sessionId === sessionId) {
+        registry.updateEntry(entry.cwd, sessionId, { [key]: value } as any);
+        return;
+      }
+    }
   }
 
   private async persistAllowPattern(cwd: string, pattern: string): Promise<void> {
