@@ -1,12 +1,13 @@
 import { appendFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
+import { isDebugEnabled } from '../service/types.js';
 
 const DEBUG_DIR = join(homedir(), '.quicksave', 'debug');
 
 /**
  * Per-session debug logger that writes JSONL files under ~/.quicksave/debug/.
- * Only active when QUICKSAVE_DEBUG=1.
+ * Active when QUICKSAVE_DEBUG=1 or in dev mode (same gate as debug CLI commands).
  *
  * Files per session:
  *  - <sessionId>-raw.jsonl      — every raw message from the CLI process
@@ -14,7 +15,7 @@ const DEBUG_DIR = join(homedir(), '.quicksave', 'debug');
  *  - <sessionId>-snapshots.jsonl — card builder state snapshots (on clearCards)
  */
 export class DebugLogger {
-  private static enabled = process.env.QUICKSAVE_DEBUG === '1';
+  private static enabled = isDebugEnabled();
   private static dirReady = false;
 
   private sessionId: string;

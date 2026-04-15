@@ -128,6 +128,9 @@ export type MessageType =
   | 'session:delete-history'         // pwa-request: delete session history entry
   | 'session:delete-history:response' // agent-response: delete ack
   | 'session:history-updated'        // agent-push: session history changed
+  // Codex
+  | 'codex:list-models'
+  | 'codex:list-models:response'
   | 'error';
 
 // ============================================================================

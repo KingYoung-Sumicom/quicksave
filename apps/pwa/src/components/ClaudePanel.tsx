@@ -55,7 +55,6 @@ export function ClaudePanel({
     selectedModel,
     selectedPermissionMode,
     sandboxEnabled,
-    setSelectedAgent,
     setPromptInput,
     setActiveSession,
     clearCards,
