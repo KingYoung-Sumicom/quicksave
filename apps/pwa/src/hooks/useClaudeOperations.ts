@@ -21,6 +21,8 @@ import {
   type SessionSetConfigResponsePayload,
   type SessionConfigUpdatedPayload,
   type SessionUpdateHistoryResponsePayload,
+  type ProjectListSummariesResponsePayload,
+  type ProjectListReposResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
 import { WebSocketClient } from '../lib/websocket';
@@ -224,6 +226,26 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     if (message.type === 'session:config-updated') {
       const { sessionId, config } = message.payload as SessionConfigUpdatedPayload;
       applySessionConfig(sessionId, config);
+      return true;
+    }
+
+    // Reconcile active sessions after reconnect
+    if (message.type === 'claude:active-sessions:response') {
+      const { sessions: activeSessions } = message.payload as { sessions: Array<{ sessionId: string }> };
+      const activeIds = new Set(activeSessions.map(s => s.sessionId));
+      useClaudeStore.getState().reconcileActiveSessions(activeIds);
+      // Also update individual session states from the response
+      for (const s of activeSessions) {
+        const full = s as { sessionId: string; isStreaming?: boolean; hasPendingInput?: boolean; agent?: AgentId; permissionMode?: string };
+        upsertSession({
+          sessionId: full.sessionId,
+          isActive: true,
+          isStreaming: full.isStreaming,
+          hasPendingInput: full.hasPendingInput,
+          agent: full.agent,
+          permissionMode: full.permissionMode,
+        });
+      }
       return true;
     }
 
@@ -473,6 +495,36 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     [clientRef]
   );
 
+  const listProjectRepos = useCallback(async (cwd: string) => {
+    try {
+      const message = createMessage('project:list-repos', { cwd });
+      const response = await sendRequest<ProjectListReposResponsePayload>(message);
+      if (response.error) {
+        console.error('Failed to list project repos:', response.error);
+        return null;
+      }
+      return response.repos;
+    } catch (error) {
+      console.error('Failed to list project repos:', error);
+      return null;
+    }
+  }, [sendRequest]);
+
+  const listProjectSummaries = useCallback(async () => {
+    try {
+      const message = createMessage('project:list-summaries', {});
+      const response = await sendRequest<ProjectListSummariesResponsePayload>(message);
+      if (response.error) {
+        console.error('Failed to list project summaries:', response.error);
+        return null;
+      }
+      return response.projects;
+    } catch (error) {
+      console.error('Failed to list project summaries:', error);
+      return null;
+    }
+  }, [sendRequest]);
+
   return {
     handleMessage,
     listSessions,
@@ -488,5 +540,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     getSessionConfig,
     setSessionConfig,
     unsubscribeSession,
+    listProjectSummaries,
+    listProjectRepos,
   };
 }

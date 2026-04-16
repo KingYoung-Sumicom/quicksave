@@ -85,6 +85,16 @@ html, body {
   color: #8b5cf6;
 }
 
+/* Status indicator pulse — min opacity 60% so colored dots don't look gray */
+@keyframes pulse-bright {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
 /* Loading animation */
 @keyframes pulse-dot {
   0%, 80%, 100% {

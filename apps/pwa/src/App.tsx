@@ -9,7 +9,6 @@ import { useGitOperations } from './hooks/useGitOperations';
 import { useClaudeOperations } from './hooks/useClaudeOperations';
 import { WebSocketClient } from './lib/websocket';
 import { ConnectionSetup } from './components/ConnectionSetup';
-import { FleetDashboard } from './components/FleetDashboard';
 import { ConnectingOverlay } from './components/ConnectingOverlay';
 import { FleetStatusBar } from './components/FleetStatusBar';
 import { DashboardAppBar } from './components/DashboardAppBar';
@@ -17,13 +16,18 @@ import { RepoAppBar } from './components/RepoAppBar';
 import { SessionAppBar } from './components/SessionAppBar';
 import { NewSessionAppBar } from './components/NewSessionAppBar';
 import { RepoView } from './components/RepoView';
+import { BaseStatusBar, BackButton } from './components/BaseStatusBar';
+import { Spinner } from './components/ui/Spinner';
 import { PathBrowser } from './components/PathBrowser';
 import { GitignoreEditor } from './components/GitignoreEditor';
 import { ClaudePanel } from './components/ClaudePanel';
-import type { ClaudeUserInputResponsePayload } from '@sumicom/quicksave-shared';
+import { createMessage, type ClaudeUserInputResponsePayload } from '@sumicom/quicksave-shared';
 import { AgentDashboard } from './components/AgentDashboard';
 import { GitIdentityModal } from './components/GitIdentityModal';
 import { NavigationDrawer } from './components/NavigationDrawer';
+import { ProjectList } from './components/ProjectList';
+import { ProjectDetail } from './components/ProjectDetail';
+import { useProjectConnection } from './hooks/useProjectConnection';
 import { getApiKey, saveApiKey as saveApiKeyToStorage, exportMasterSecret, importMasterSecret } from './lib/secureStorage';
 import { SyncClient } from './lib/syncClient';
 import { resolveHash, getAllKnownPaths } from './lib/pathHash';
@@ -102,6 +106,8 @@ function AppContent() {
     getSessionConfig,
     setSessionConfig,
     unsubscribeSession,
+    listProjectSummaries,
+    listProjectRepos,
   } = useClaudeOperations(clientRef);
 
   const [showPathBrowser, setShowPathBrowser] = useState(false);
@@ -109,7 +115,7 @@ function AppContent() {
   const [showGitignoreEditor, setShowGitignoreEditor] = useState(false);
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const [showNavDrawer, setShowNavDrawer] = useState(isDesktop);
-  const [showFleetSettings, setShowFleetSettings] = useState(false);
+  const [_showFleetSettings, setShowFleetSettings] = useState(false);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
   const [dashboardEditing, setDashboardEditing] = useState(false);
   const [showGitIdentityModal, setShowGitIdentityModal] = useState(false);
@@ -307,13 +313,29 @@ function AppContent() {
         if (codexModels?.length) {
           useConnectionStore.getState().setCodexModels(codexModels);
         }
+        // Update legacy single-agent state
         handlersRef.current.setConnected(path, pro, availableRepos, availableCodingPaths, agentVersion, latestVersion, devBuild);
         handlersRef.current.setCurrentRepoPath(path);
+        // Update multi-agent connection map
+        useConnectionStore.getState().setAgentConnected(agentId, path, pro, availableRepos, availableCodingPaths, agentVersion);
         const repoPaths = availableRepos?.map((r) => r.path);
         const codingPaths = availableCodingPaths?.map((p) => p.path);
         handlersRef.current.recordConnection(agentId, path, pro, repoPaths, codingPaths);
-        // Only navigate on initial connection, not reconnect
-        if (!locationRef.current.pathname.startsWith(`/agent/${agentId}`)) {
+        // Reconcile session states: fetch actual active sessions from agent
+        // and mark locally-active sessions that are no longer active (e.g. after agent restart).
+        // This is safe on both initial connect and reconnect.
+        setTimeout(() => {
+          if (!clientRef.current) return;
+          clientRef.current.setActiveAgent(agentId);
+          const msg = createMessage('claude:active-sessions', {});
+          clientRef.current.send(msg);
+        }, 500);
+
+        // Only navigate on initial connection, not reconnect.
+        // Skip navigation if we're already on a project route (/p/) — the project
+        // route components manage their own navigation after connection.
+        const currentPath = locationRef.current.pathname;
+        if (!currentPath.startsWith(`/agent/${agentId}`) && !currentPath.startsWith('/p/')) {
           // Check for a saved returnPath (e.g. from memory recovery or disconnect redirect)
           const returnPath = sessionStorage.getItem('quicksave:returnPath');
           sessionStorage.removeItem('quicksave:returnPath');
@@ -324,7 +346,10 @@ function AppContent() {
           }
         }
       },
-      onDisconnected: () => {
+      onDisconnected: (disconnectedAgentId) => {
+        if (disconnectedAgentId) {
+          useConnectionStore.getState().setAgentDisconnected(disconnectedAgentId);
+        }
         handlersRef.current.setDisconnected();
       },
       onReconnecting: (attempt, maxAttempts) => {
@@ -374,13 +399,17 @@ function AppContent() {
 
   const handleConnect = useCallback(
     async (newAgentId: string, publicKey: string) => {
-      // Skip if already connecting to this agent
-      if (agentIdRef.current === newAgentId && clientRef.current?.getActiveAgentId() === newAgentId) {
+      // Skip if already connected or connecting to this agent
+      if (clientRef.current?.hasSession(newAgentId)) {
+        // Already connected — just set as active
+        clientRef.current.setActiveAgent(newAgentId);
+        agentIdRef.current = newAgentId;
         return;
       }
 
       agentIdRef.current = newAgentId;
       setConnecting(newAgentId);
+      useConnectionStore.getState().setAgentConnecting(newAgentId);
 
       if (!clientRef.current) {
         setError('WebSocket not connected yet');
@@ -428,20 +457,14 @@ function AppContent() {
   }, [handleAbortConnection, navigate]);
 
   const handleSwitchMachine = useCallback((targetAgentId: string) => {
-    if (clientRef.current && agentIdRef.current) {
-      clientRef.current.disconnectFromAgent(agentIdRef.current);
-    }
-    agentIdRef.current = null;
-    reset();
-    resetGit();
-    // Look up machine and connect directly (overlay will appear)
+    // In multi-agent mode, we keep existing connections alive and just add the new one
     const machine = useMachineStore.getState().getMachine(targetAgentId);
     if (machine) {
       handleConnect(targetAgentId, machine.publicKey);
     } else {
       navigate('/', { replace: true });
     }
-  }, [reset, resetGit, navigate, handleConnect]);
+  }, [navigate, handleConnect]);
 
   // Fetch status and sync API key when connected
   useEffect(() => {
@@ -483,55 +506,8 @@ function AppContent() {
   const isConnected = state === 'connected';
   const isReconnecting = state === 'reconnecting';
 
-  // Home page - redirect to repo if connected
-  const homeElement = useMemo(() => {
-    if (isConnected && agentIdRef.current) {
-      // Already connected, will redirect via effect
-    }
-    const saveApiKey = isConnected ? setApiKey : undefined;
-    const handleCheckUpdate = isConnected ? checkAgentUpdate : undefined;
-    const handleUpdateAgent = isConnected ? updateAgent : undefined;
-    const inner = machines.length > 0 ? (
-      <FleetDashboard
-        onNavigate={(agentId) => {
-          intentionalDisconnectRef.current = false;
-          const machine = useMachineStore.getState().getMachine(agentId);
-          if (machine) handleConnect(agentId, machine.publicKey);
-          navigate(`/agent/${agentId}`);
-        }}
-        onConnect={handleConnect}
-        onSendApiKeyToAgent={saveApiKey}
-        onCheckAgentUpdate={handleCheckUpdate}
-        onUpdateAgent={handleUpdateAgent}
-        showSettings={showFleetSettings}
-        onCloseSettings={() => setShowFleetSettings(false)}
-      />
-    ) : (
-      <ConnectionSetup onConnect={handleConnect} onSendApiKeyToAgent={saveApiKey} onCheckAgentUpdate={handleCheckUpdate} onUpdateAgent={handleUpdateAgent} />
-    );
-    return (
-      <div className="flex flex-col h-screen overflow-hidden">
-        <FleetStatusBar
-          title="Quicksave"
-          onOpenSettings={() => setShowFleetSettings(true)}
-        />
-        {inner}
-      </div>
-    );
-  }, [machines.length, handleConnect, isConnected, setApiKey, checkAgentUpdate, updateAgent, state, showFleetSettings, navigate]);
-
-  // Redirect to repo if connected on home page
-  // Note: We check clientRef.current to ensure we have an active connection,
-  // not just state that might be stale during disconnect
-  useEffect(() => {
-    // Don't redirect if user intentionally disconnected
-    if (intentionalDisconnectRef.current) {
-      return;
-    }
-    if (location.pathname === '/' && isConnected && agentIdRef.current && clientRef.current) {
-      navigate(`/agent/${agentIdRef.current}`, { replace: true });
-    }
-  }, [location.pathname, isConnected, navigate]);
+  // NOTE: No longer auto-redirect from / to /agent/:agentId.
+  // The home page is now the project list which stays visible regardless of connection state.
 
   // Auto-connect when on agent page but disconnected
   const autoConnectRef = useRef(false);
@@ -564,6 +540,21 @@ function AppContent() {
       autoConnectRef.current = false;
     }
   }, [location.pathname]);
+
+  // Auto-connect to ALL known machines on startup
+  const autoConnectAllRef = useRef(false);
+  useEffect(() => {
+    if (autoConnectAllRef.current) return;
+    if (!clientRef.current) return;
+    if (intentionalDisconnectRef.current) return;
+    autoConnectAllRef.current = true;
+
+    const allMachines = useMachineStore.getState().machines;
+    for (const machine of allMachines) {
+      // handleConnect will skip if already connected
+      handleConnect(machine.agentId, machine.publicKey);
+    }
+  }, [handleConnect, identityPublicKey]);
 
   // Repo page content
   const repoElement = useMemo(() => {
@@ -700,16 +691,142 @@ function AppContent() {
     );
   }, [isConnected, isReconnecting, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, commit, generateCommitSummary, setApiKey, showNavDrawer, isDesktop, switchRepo, listSessions, getSessionCards, startSession, resumeSession, cancelSession, closeSession, navigate, addCodingPath, showAgentSettings, dashboardEditing]);
 
-  // Show connecting overlay globally (covers any page)
-  const showOverlay = state === 'connecting' || state === 'reconnecting' || (state === 'error' && !!useConnectionStore.getState().error);
+  // Fetch project summaries + session lists from each agent as they connect
+  const fetchedSummariesRef = useRef<Set<string>>(new Set());
+  const agentConnections = useConnectionStore((s) => s.agentConnections);
+  useEffect(() => {
+    for (const [agentId, conn] of Object.entries(agentConnections)) {
+      if (conn.state === 'connected' && !fetchedSummariesRef.current.has(agentId)) {
+        fetchedSummariesRef.current.add(agentId);
+        // Set active agent to route requests to this agent
+        clientRef.current?.setActiveAgent(agentId);
+        listProjectSummaries().then(async (projects) => {
+          if (!projects) return;
+          // Cache project summaries and prune stale knownCodingPaths
+          const agentConn = useConnectionStore.getState().agentConnections[agentId];
+          const managedPaths = agentConn?.availableCodingPaths?.map((p) => p.path);
+          useMachineStore.getState().cacheAllProjects(agentId, projects, managedPaths);
+          // Fetch session lists for each project so inline sessions show on home page
+          for (const project of projects) {
+            clientRef.current?.setActiveAgent(agentId);
+            await listSessions(project.cwd);
+          }
+        });
+      }
+    }
+  }, [agentConnections, listProjectSummaries, listSessions]);
+
+  // Show connecting overlay only for /connect routes (QR/deep link) — not for project routes
+  const showOverlay = !location.pathname.startsWith('/p/') && (
+    state === 'connecting' || state === 'reconnecting' || (state === 'error' && !!useConnectionStore.getState().error)
+  );
+
+  const projectRepoElement = (
+    <ProjectRouteRepo
+      onConnect={handleConnect}
+      onSwitchMachine={handleSwitchMachine}
+      onSwitchRepo={switchRepo}
+      onRefresh={fetchStatus}
+      onFetchDiff={fetchDiff}
+      onStage={stageFiles}
+      onUnstage={unstageFiles}
+      onStagePatch={stagePatch}
+      onUnstagePatch={unstagePatch}
+      onDiscard={discardChanges}
+      onUntrack={untrackFiles}
+      onAddToGitignore={addToGitignore}
+      onCommit={async (msg, desc) => {
+        try {
+          await commit(msg, desc);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : '';
+          if (errMsg.includes('empty ident') || errMsg.includes('Please tell me who you are')) {
+            setShowGitIdentityModal(true);
+          }
+        }
+      }}
+      onGenerateAiSummary={generateCommitSummary}
+      onSetApiKey={setApiKey}
+    />
+  );
+
+  const projectDetailElement = (
+    <ProjectRouteDetail
+      onConnect={handleConnect}
+      onSwitchMachine={handleSwitchMachine}
+      onListSessions={listSessions}
+      onListProjectRepos={listProjectRepos}
+      onRemoveCodingPath={removeCodingPath}
+      onRestartAgent={restartAgent}
+    />
+  );
+
+  const projectSessionElement = (
+    <ProjectRouteSession
+            onConnect={handleConnect}
+            onSwitchMachine={handleSwitchMachine}
+            showSettings={showAgentSettings}
+            onOpenSettings={() => setShowAgentSettings(true)}
+            onCloseSettings={() => setShowAgentSettings(false)}
+            onSetSessionConfig={setSessionConfig}
+            onCloseSession={closeSession}
+            onArchiveSession={archiveSession}
+            onCancelSession={cancelSession}
+            onCheckAgentUpdate={checkAgentUpdate}
+            onUpdateAgent={updateAgent}
+            onRestartAgent={restartAgent}
+            onListSessions={listSessions}
+            onGetSessionCards={getSessionCards}
+            onGetSessionConfig={getSessionConfig}
+            onStartSession={startSession}
+            onResumeSession={resumeSession}
+            onRespondToUserInput={respondToUserInput}
+            onUnsubscribeSession={unsubscribeSession}
+            onSetActiveAgent={(agentId) => clientRef.current?.setActiveAgent(agentId)}
+  />
+  );
+
+  const homeElement = machines.length > 0 ? (
+    <ProjectList
+      onOpenSettings={() => setShowFleetSettings(true)}
+      onAddMachine={() => {/* TODO: wire add machine modal */}}
+    />
+  ) : (
+    <div className="flex flex-col h-screen overflow-hidden">
+      <FleetStatusBar title="Quicksave" onOpenSettings={() => setShowFleetSettings(true)} />
+      <ConnectionSetup onConnect={handleConnect} onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onCheckAgentUpdate={isConnected ? checkAgentUpdate : undefined} onUpdateAgent={isConnected ? updateAgent : undefined} />
+    </div>
+  );
 
   return (
     <div className="flex flex-col bg-slate-900 text-slate-100 overflow-hidden h-full">
-      <Routes>
-        <Route path="/" element={homeElement} />
-        <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
-        <Route path="/agent/:agentId/*" element={repoElement} />
-      </Routes>
+      {isDesktop ? (
+        // Desktop: two-column layout with persistent project sidebar
+        <div className="flex h-full overflow-hidden">
+          <div className="w-72 shrink-0 border-r border-slate-700 bg-slate-800/50">
+            <ProjectList compact onOpenSettings={() => setShowFleetSettings(true)} />
+          </div>
+          <div className="flex-1 min-w-0 flex flex-col">
+            <Routes>
+              <Route path="/" element={homeElement} />
+              <Route path="/p/:projectId" element={projectDetailElement} />
+              <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
+              <Route path="/p/:projectId/repo" element={projectRepoElement} />
+              <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
+              <Route path="/agent/:agentId/*" element={repoElement} />
+            </Routes>
+          </div>
+        </div>
+      ) : (
+        // Mobile: full-screen pages with back navigation
+        <Routes>
+          <Route path="/" element={homeElement} />
+          <Route path="/p/:projectId" element={projectDetailElement} />
+          <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
+          <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
+          <Route path="/agent/:agentId/*" element={repoElement} />
+        </Routes>
+      )}
       {showOverlay && <ConnectingOverlay onAbort={handleAbortConnection} onRetry={handleRetryConnection} />}
       <PathBrowser
         isOpen={showPathBrowser}
@@ -978,6 +1095,290 @@ function SessionRouteWithHash({
       <ClaudePanelWithHash
         agentId={agentId}
         {...claudeProps}
+      />
+    </>
+  );
+}
+
+// ── Project route wrappers ──────────────────────────────────────────────────
+
+/** Project repo view — git status/staging/commit within a project */
+function ProjectRouteRepo({
+  onConnect,
+  onSwitchMachine,
+  onSwitchRepo,
+  onRefresh,
+  onFetchDiff,
+  onStage,
+  onUnstage,
+  onStagePatch,
+  onUnstagePatch,
+  onDiscard,
+  onUntrack,
+  onAddToGitignore,
+  onCommit,
+  onGenerateAiSummary,
+  onSetApiKey,
+}: {
+  onConnect: (agentId: string, publicKey: string) => void;
+  onSwitchMachine: (agentId: string) => void;
+  onSwitchRepo: (path: string) => void;
+} & Omit<React.ComponentProps<typeof RepoView>, 'onSwitchRepo'> & {
+  onSwitchRepo: (path: string) => void;
+}) {
+  const { projectId } = useParams<{ projectId: string }>();
+  const navigate = useNavigate();
+  const { isReady, isConnecting, cwd } = useProjectConnection(projectId, onConnect, onSwitchMachine);
+  const status = useGitStore((s) => s.status);
+  const repoPath = useConnectionStore((s) => s.repoPath);
+
+  // Switch to project's repo when connected
+  useEffect(() => {
+    if (isReady && cwd && cwd !== repoPath) {
+      onSwitchRepo(cwd);
+    }
+  }, [isReady, cwd, repoPath, onSwitchRepo]);
+
+  if (!isReady) {
+    return (
+      <div className="flex flex-col h-full overflow-hidden">
+        <BaseStatusBar
+          left={<BackButton onClick={() => navigate(`/p/${projectId}`)} />}
+          center={<span className="text-sm font-medium text-slate-300">Repo</span>}
+        />
+        <div className="flex-1 flex items-center justify-center">
+          {isConnecting && <Spinner size="w-8 h-8" color="border-blue-500" />}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <BaseStatusBar
+        left={<BackButton onClick={() => navigate(`/p/${projectId}`)} />}
+        center={
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-slate-300 truncate">
+              {cwd?.split('/').pop() || 'Repo'}
+            </span>
+            {status?.branch && (
+              <span className="text-xs text-slate-500 truncate">
+                {status.branch}
+                {(status.ahead ?? 0) > 0 && ` ↑${status.ahead}`}
+                {(status.behind ?? 0) > 0 && ` ↓${status.behind}`}
+              </span>
+            )}
+          </div>
+        }
+      />
+      <RepoView
+        onRefresh={onRefresh}
+        onFetchDiff={onFetchDiff}
+        onStage={onStage}
+        onUnstage={onUnstage}
+        onStagePatch={onStagePatch}
+        onUnstagePatch={onUnstagePatch}
+        onDiscard={onDiscard}
+        onUntrack={onUntrack}
+        onAddToGitignore={onAddToGitignore}
+        onCommit={onCommit}
+        onGenerateAiSummary={onGenerateAiSummary}
+        onSetApiKey={onSetApiKey}
+      />
+    </>
+  );
+}
+
+/** Project detail page — shows session list for a project */
+function ProjectRouteDetail({
+  onConnect,
+  onSwitchMachine,
+  onListSessions,
+  onListProjectRepos,
+  onRemoveCodingPath,
+  onRestartAgent,
+}: {
+  onConnect: (agentId: string, publicKey: string) => void;
+  onSwitchMachine: (agentId: string) => void;
+  onListSessions: (cwd?: string) => Promise<void>;
+  onListProjectRepos?: (cwd: string) => Promise<import('@sumicom/quicksave-shared').ProjectRepo[] | null>;
+  onRemoveCodingPath?: (path: string) => void;
+  onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
+}) {
+  const { projectId } = useParams<{ projectId: string }>();
+  const { isReady, isConnecting, isError, cwd, agentId } = useProjectConnection(projectId, onConnect, onSwitchMachine);
+
+  return (
+    <ProjectDetail
+      isReady={isReady}
+      isConnecting={isConnecting}
+      isError={isError}
+      cwd={cwd}
+      agentId={agentId}
+      onListSessions={onListSessions}
+      onListProjectRepos={onListProjectRepos}
+      onRemoveCodingPath={onRemoveCodingPath}
+      onRestartAgent={onRestartAgent}
+    />
+  );
+}
+
+/** Project session page — shows chat session within a project */
+function ProjectRouteSession({
+  onConnect,
+  onSwitchMachine,
+  showSettings,
+  onOpenSettings,
+  onCloseSettings,
+  onSetSessionConfig,
+  onCloseSession,
+  onArchiveSession,
+  onCancelSession,
+  onCheckAgentUpdate,
+  onUpdateAgent,
+  onRestartAgent,
+  onListSessions,
+  onGetSessionCards,
+  onGetSessionConfig,
+  onStartSession,
+  onResumeSession,
+  onRespondToUserInput,
+  onUnsubscribeSession,
+  onSetActiveAgent,
+}: {
+  onConnect: (agentId: string, publicKey: string) => void;
+  onSwitchMachine: (agentId: string) => void;
+  showSettings: boolean;
+  onOpenSettings: () => void;
+  onCloseSettings: () => void;
+  onSetSessionConfig: (sessionId: string, key: string, value: import('@sumicom/quicksave-shared').ConfigValue) => void;
+  onCloseSession: (sessionId: string) => void;
+  onArchiveSession: (sessionId: string, cwd: string) => Promise<void>;
+  onCancelSession: (sessionId: string) => void;
+  onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
+  onUpdateAgent?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; restarting: boolean; error?: string }>;
+  onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
+  onListSessions: (cwd?: string) => Promise<void>;
+  onGetSessionCards: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
+  onGetSessionConfig?: (sessionId: string) => Promise<void>;
+  onStartSession: (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
+  onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
+  onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
+  onUnsubscribeSession?: (sessionId: string) => void;
+  onSetActiveAgent?: (agentId: string) => void;
+}) {
+  const { projectId, sessionId: urlSessionId } = useParams<{ projectId: string; sessionId: string }>();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const isNewSession = searchParams.has('new');
+  const activeSessionId = useClaudeStore((s) => s.activeSessionId);
+
+  const { isReady, isConnecting, cwd, agentId: targetAgentId } = useProjectConnection(projectId, onConnect, onSwitchMachine);
+
+  const projectBasePath = `/p/${projectId}`;
+
+  // Ensure this agent is active before any send() — critical for multi-agent
+  const ensureActiveAgent = useCallback(() => {
+    if (targetAgentId) {
+      onSetActiveAgent?.(targetAgentId);
+    }
+  }, [targetAgentId, onSetActiveAgent]);
+
+  // When a session starts, update URL
+  const prevActiveRef = useRef(activeSessionId);
+  useEffect(() => {
+    if (activeSessionId && activeSessionId !== prevActiveRef.current) {
+      navigate(`${projectBasePath}/s/${activeSessionId}`, { replace: true });
+    }
+    prevActiveRef.current = activeSessionId;
+  }, [activeSessionId, projectBasePath, navigate]);
+
+  const getSessionId = () => useClaudeStore.getState().activeSessionId || urlSessionId;
+
+  // Bind cwd + agent routing into callbacks
+  const boundListSessions = useCallback(() => { ensureActiveAgent(); return onListSessions(cwd); }, [onListSessions, cwd, ensureActiveAgent]);
+  const boundGetCards = useCallback(
+    (sid: string, offset?: number, limit?: number) => { ensureActiveAgent(); return onGetSessionCards(sid, offset, limit, cwd); },
+    [onGetSessionCards, cwd, ensureActiveAgent]
+  );
+  const boundStartSession = useCallback(
+    (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string }) => {
+      ensureActiveAgent(); return onStartSession(prompt, { ...opts, cwd });
+    },
+    [onStartSession, cwd, ensureActiveAgent]
+  );
+  const boundResumeSession = useCallback(
+    (sid: string, prompt: string) => { ensureActiveAgent(); return onResumeSession(sid, prompt, cwd); },
+    [onResumeSession, cwd, ensureActiveAgent]
+  );
+
+  if (!isReady) {
+    // Show connecting/loading state
+    return (
+      <div className="flex flex-col h-full overflow-hidden">
+        <NewSessionAppBar cwd={cwd} onOpenMenu={() => {}} backTo={projectBasePath} />
+        <div className="flex-1 flex items-center justify-center">
+          {isConnecting && <div className="text-sm text-slate-400">Connecting...</div>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {isNewSession && !activeSessionId ? (
+        <NewSessionAppBar cwd={cwd} onOpenMenu={() => {}} backTo={projectBasePath} />
+      ) : (
+        <SessionAppBar
+          showSettings={showSettings}
+          onOpenSettings={onOpenSettings}
+          onCloseSettings={onCloseSettings}
+          onOpenMenu={() => {}}
+          backTo={projectBasePath}
+          sessionId={urlSessionId}
+          onSetSessionConfig={(key, value) => {
+            const sid = getSessionId();
+            if (sid) onSetSessionConfig(sid, key, value);
+          }}
+          onCloseSession={() => {
+            const sid = getSessionId();
+            if (sid) onCloseSession(sid);
+          }}
+          onArchiveSession={async () => {
+            const sid = getSessionId();
+            if (sid && cwd) {
+              await onCloseSession(sid);
+              await onArchiveSession(sid, cwd);
+              const { setActiveSession, clearCards } = useClaudeStore.getState();
+              setActiveSession(null);
+              clearCards();
+              navigate(projectBasePath, { replace: true });
+              onListSessions(cwd);
+            }
+          }}
+          onCancelSession={() => {
+            const sid = getSessionId();
+            if (sid) onCancelSession(sid);
+          }}
+          onCheckAgentUpdate={onCheckAgentUpdate}
+          onUpdateAgent={onUpdateAgent}
+          onRestartAgent={onRestartAgent}
+        />
+      )}
+      <ClaudePanel
+        sessionId={urlSessionId === 'new' ? undefined : urlSessionId}
+        newSession={isNewSession && !activeSessionId}
+        cwd={cwd}
+        onSelectSession={(sid) => navigate(`${projectBasePath}/s/${sid}`)}
+        onNewSession={() => navigate(`${projectBasePath}/s/new?new`)}
+        onListSessions={boundListSessions}
+        onGetSessionCards={boundGetCards}
+        onGetSessionConfig={onGetSessionConfig}
+        onUnsubscribeSession={onUnsubscribeSession}
+        onStartSession={boundStartSession}
+        onResumeSession={boundResumeSession}
+        onRespondToUserInput={onRespondToUserInput}
       />
     </>
   );

@@ -1,7 +1,7 @@
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, execSync, ChildProcess } from 'child_process';
 import { createInterface } from 'readline';
 import { join, dirname } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import type { CardEvent, CardStreamEnd } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
@@ -17,6 +17,56 @@ import type {
 } from './provider.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Resolve the absolute path to the `claude` CLI binary.
+ * When the daemon runs as a background service, PATH may not include the
+ * directory where `claude` is installed, causing spawn ENOENT errors.
+ * We resolve once and cache the result.
+ */
+let _claudeBin: string | undefined;
+function getClaudeBin(): string {
+  if (_claudeBin) return _claudeBin;
+
+  // 1. Try `which` — works when PATH is correct
+  try {
+    const resolved = execSync('which claude', { encoding: 'utf-8', timeout: 5_000 }).trim();
+    if (resolved && existsSync(resolved)) {
+      _claudeBin = resolved;
+      return _claudeBin;
+    }
+  } catch { /* not in PATH */ }
+
+  // 2. Check common install locations
+  const home = process.env.HOME ?? '';
+  const candidates = [
+    join(home, '.npm-global', 'bin', 'claude'),
+    join(home, '.local', 'bin', 'claude'),
+    join(home, '.claude', 'local', 'claude'),
+    '/usr/local/bin/claude',
+  ];
+  // Also check nvm versions if present
+  try {
+    const nvmDir = join(home, '.nvm', 'versions', 'node');
+    if (existsSync(nvmDir)) {
+      for (const ver of readdirSync(nvmDir)) {
+        candidates.push(join(nvmDir, ver, 'bin', 'claude'));
+      }
+    }
+  } catch { /* ignore */ }
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      _claudeBin = candidate;
+      return _claudeBin;
+    }
+  }
+
+  // 3. Fallback to bare name — will ENOENT if still not in PATH,
+  //    but at least the error message is clear
+  _claudeBin = 'claude';
+  return _claudeBin;
+}
 
 /** Extract readable text from tool_result content (string or array of blocks). */
 function extractToolResultText(content: unknown): string {
@@ -214,7 +264,8 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     callbacks: ProviderCallbacks,
     _model?: string,
   ): Promise<{ sessionId: string; session: ProviderSession }> {
-    const proc = spawn('claude', args, {
+    const claudeBin = getClaudeBin();
+    const proc = spawn(claudeBin, args, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env },

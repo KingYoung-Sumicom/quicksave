@@ -171,3 +171,8 @@ export function getSessionRegistry(): SessionRegistry {
   }
   return instance;
 }
+
+/** Reset the singleton — only for tests. */
+export function resetSessionRegistry(): void {
+  instance = null;
+}

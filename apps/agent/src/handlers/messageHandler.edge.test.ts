@@ -11,6 +11,8 @@ import { mkdir, writeFile, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { simpleGit } from 'simple-git';
+import { resetSessionRegistry } from '../ai/sessionRegistry.js';
+import { setQuicksaveDir } from '../service/singleton.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,21 +40,30 @@ async function createTestRepo(suffix = ''): Promise<string> {
 
 describe('MessageHandler — edge cases', () => {
   let repoPath: string;
+  let testQuicksaveDir: string;
   let handler: MessageHandler;
   const peerA = 'pwa:peerA';
   const peerB = 'pwa:peerB';
 
   beforeEach(async () => {
+    testQuicksaveDir = join(tmpdir(), `qs-edge-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(testQuicksaveDir, { recursive: true });
+    setQuicksaveDir(testQuicksaveDir);
+    resetSessionRegistry();
     repoPath = await createTestRepo('main');
     handler = new MessageHandler([{ path: repoPath, name: 'test-repo' }]);
   });
 
   afterEach(async () => {
+    resetSessionRegistry();
     try {
       handler.cleanup();
     } catch { /* ignore */ }
     try {
       await rm(repoPath, { recursive: true, force: true });
+    } catch { /* ignore */ }
+    try {
+      await rm(testQuicksaveDir, { recursive: true, force: true });
     } catch { /* ignore */ }
   });
 

@@ -131,6 +131,11 @@ export type MessageType =
   // Codex
   | 'codex:list-models'
   | 'codex:list-models:response'
+  // Project summaries
+  | 'project:list-summaries'
+  | 'project:list-summaries:response'
+  | 'project:list-repos'
+  | 'project:list-repos:response'
   | 'error';
 
 // ============================================================================
@@ -348,6 +353,41 @@ export interface SessionHistoryUpdatedPayload {
   cwd: string;
   entry: SessionRegistryEntry;
   action: 'upsert' | 'delete';
+}
+
+// ============================================================================
+// Project Summaries
+// ============================================================================
+
+export interface ProjectSummary {
+  cwd: string;
+  sessionCount: number;
+  lastActivityAt: number;
+  lastSessionTitle?: string;
+  hasActiveSession?: boolean;
+  /** Whether cwd itself is a git repo (quick check, not a full scan) */
+  isGitRepo?: boolean;
+}
+
+export interface ProjectListSummariesResponsePayload {
+  projects: ProjectSummary[];
+  error?: string;
+}
+
+export interface ProjectRepo {
+  path: string;
+  name: string;
+  currentBranch?: string;
+  isSubmodule?: boolean;
+}
+
+export interface ProjectListReposRequestPayload {
+  cwd: string;
+}
+
+export interface ProjectListReposResponsePayload {
+  repos: ProjectRepo[];
+  error?: string;
 }
 
 export interface ClaudeActiveSession {

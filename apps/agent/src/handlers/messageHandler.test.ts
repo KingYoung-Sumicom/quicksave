@@ -5,6 +5,8 @@ import { mkdir, writeFile, rm, readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { simpleGit } from 'simple-git';
+import { resetSessionRegistry } from '../ai/sessionRegistry.js';
+import { setQuicksaveDir } from '../service/singleton.js';
 
 // Prevent tests from reading/writing the real ~/.quicksave/agent.json
 vi.mock('../config.js', async (importOriginal) => {
@@ -23,10 +25,17 @@ vi.mock('../config.js', async (importOriginal) => {
 
 describe('MessageHandler', () => {
   let testRepoPath: string;
+  let testQuicksaveDir: string;
   let handler: MessageHandler;
   let defaultBranch: string;
 
   beforeEach(async () => {
+    // Redirect all quicksave paths to a temp dir so tests don't pollute ~/.quicksave
+    testQuicksaveDir = join(tmpdir(), `qs-test-home-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(testQuicksaveDir, { recursive: true });
+    setQuicksaveDir(testQuicksaveDir);
+    resetSessionRegistry();
+
     // Create temporary test repo
     testRepoPath = join(tmpdir(), `quicksave-handler-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     await mkdir(testRepoPath, { recursive: true });
@@ -50,8 +59,14 @@ describe('MessageHandler', () => {
   });
 
   afterEach(async () => {
+    resetSessionRegistry();
     try {
       await rm(testRepoPath, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+    try {
+      await rm(testQuicksaveDir, { recursive: true, force: true });
     } catch {
       // Ignore cleanup errors
     }

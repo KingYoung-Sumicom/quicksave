@@ -255,6 +255,23 @@ export class WebSocketClient {
     return this.activeAgentId;
   }
 
+  /**
+   * Check if a session exists for a given agent ID.
+   */
+  hasSession(agentId: string): boolean {
+    const session = this.sessions.get(agentId);
+    return !!session?.keyExchangeComplete;
+  }
+
+  /**
+   * Get all connected agent IDs.
+   */
+  getConnectedAgentIds(): string[] {
+    return Array.from(this.sessions.entries())
+      .filter(([_, s]) => s.keyExchangeComplete)
+      .map(([id]) => id);
+  }
+
   // =========================================================================
   // Message handling
   // =========================================================================
@@ -510,7 +527,7 @@ export class WebSocketClient {
   /**
    * Send a Message to a specific agent by ID.
    */
-  private sendToAgent(agentId: string, message: Message): void {
+  sendToAgent(agentId: string, message: Message): void {
     const session = this.sessions.get(agentId);
     if (!session) {
       throw new Error(`No session for agent ${agentId}`);

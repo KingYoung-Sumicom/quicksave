@@ -97,6 +97,11 @@ import {
   SessionDeleteHistoryResponsePayload,
   CodexModelInfo,
   CodexListModelsResponsePayload,
+  ProjectListSummariesResponsePayload,
+  ProjectSummary,
+  ProjectListReposRequestPayload,
+  ProjectListReposResponsePayload,
+  ProjectRepo,
 } from '@sumicom/quicksave-shared';
 import { GitOperations } from '../git/operations.js';
 import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, removeManagedRepo, addManagedCodingPath, removeManagedCodingPath } from '../config.js';
@@ -106,6 +111,7 @@ import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
 import { CodexSdkProvider } from '../ai/codexSdkProvider.js';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { readdir, stat, readFile } from 'fs/promises';
+import { existsSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { homedir } from 'os';
 
@@ -443,6 +449,10 @@ export class MessageHandler {
           return this.handleUpdateHistory(message as Message<SessionUpdateHistoryRequestPayload>);
         case 'session:delete-history':
           return this.handleDeleteHistory(message as Message<SessionDeleteHistoryRequestPayload>);
+        case 'project:list-summaries':
+          return this.handleListProjectSummaries(message);
+        case 'project:list-repos':
+          return await this.handleListProjectRepos(message as Message<ProjectListReposRequestPayload>);
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
       }
@@ -1780,6 +1790,142 @@ export class MessageHandler {
     if (success && entry) {
       this.onHistoryUpdated?.(cwd, entry, 'delete');
     }
+    return response;
+  }
+
+  private handleListProjectSummaries(
+    message: Message,
+  ): Message<ProjectListSummariesResponsePayload> {
+    const allEntries = getSessionRegistry().getEntriesForProject()
+      .filter(e => !e.archived);
+
+    // Group by cwd
+    const byCwd = new Map<string, SessionRegistryEntry[]>();
+    for (const entry of allEntries) {
+      let group = byCwd.get(entry.cwd);
+      if (!group) {
+        group = [];
+        byCwd.set(entry.cwd, group);
+      }
+      group.push(entry);
+    }
+
+    // Build active session set from session manager
+    const activeSessions = this.claudeService.getActiveSessions();
+    const activeCwds = new Set<string>();
+    for (const s of activeSessions) {
+      activeCwds.add(s.cwd);
+    }
+
+    const projects: ProjectSummary[] = [];
+    for (const [cwd, entries] of byCwd) {
+      // entries are already sorted by lastAccessedAt desc from getEntriesForProject
+      const latest = entries[0];
+      projects.push({
+        cwd,
+        sessionCount: entries.length,
+        lastActivityAt: latest.lastAccessedAt,
+        lastSessionTitle: latest.title ?? latest.firstPrompt?.slice(0, 100),
+        hasActiveSession: activeCwds.has(cwd),
+        isGitRepo: existsSync(join(cwd, '.git')),
+      });
+    }
+
+    // Sort by lastActivityAt desc
+    projects.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+
+    const response = createMessage<ProjectListSummariesResponsePayload>(
+      'project:list-summaries:response',
+      { projects },
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleListProjectRepos(
+    message: Message<ProjectListReposRequestPayload>,
+  ): Promise<Message<ProjectListReposResponsePayload>> {
+    const { cwd } = message.payload;
+    const repos: ProjectRepo[] = [];
+    const seen = new Set<string>();
+
+    try {
+      // 1. Check if cwd itself is a git repo
+      const rootBranch = await this.getGitBranchQuiet(cwd);
+      if (rootBranch !== undefined) {
+        repos.push({
+          path: cwd,
+          name: basename(cwd),
+          currentBranch: rootBranch || undefined,
+        });
+        seen.add(cwd);
+      }
+
+      // 2. Find submodules via git
+      if (rootBranch !== undefined) {
+        try {
+          const git = new GitOperations(cwd);
+          const submodules = await git.getSubmodules();
+          for (const sub of submodules) {
+            const subPath = join(cwd, sub.path);
+            if (seen.has(subPath)) continue;
+            seen.add(subPath);
+            const branch = await this.getGitBranchQuiet(subPath);
+            repos.push({
+              path: subPath,
+              name: sub.path,
+              currentBranch: branch || undefined,
+              isSubmodule: true,
+            });
+          }
+        } catch {
+          // git submodule may fail — ignore
+        }
+      }
+
+      // 3. Scan for nested git repos (depth-limited, skips node_modules etc.)
+      const MAX_DEPTH = 3;
+      const SKIP_DIRS = new Set(['node_modules', '.git', 'vendor', 'dist', 'build', '.next', '__pycache__']);
+      const scan = async (dir: string, depth: number) => {
+        if (depth > MAX_DEPTH) return;
+        let names: string[];
+        try {
+          names = await readdir(dir) as string[];
+        } catch { return; }
+        for (const name of names) {
+          if (name.startsWith('.') || SKIP_DIRS.has(name)) continue;
+          const full = join(dir, name);
+          try {
+            const s = await stat(full);
+            if (!s.isDirectory()) continue;
+          } catch { continue; }
+          if (existsSync(join(full, '.git')) && !seen.has(full)) {
+            seen.add(full);
+            const branch = await this.getGitBranchQuiet(full);
+            repos.push({
+              path: full,
+              name: full.slice(cwd.length + 1),
+              currentBranch: branch || undefined,
+            });
+          }
+          await scan(full, depth + 1);
+        }
+      };
+      await scan(cwd, 0);
+    } catch (error) {
+      const response = createMessage<ProjectListReposResponsePayload>(
+        'project:list-repos:response',
+        { repos: [], error: error instanceof Error ? error.message : 'Failed to scan repos' },
+      );
+      response.id = message.id;
+      return response;
+    }
+
+    const response = createMessage<ProjectListReposResponsePayload>(
+      'project:list-repos:response',
+      { repos },
+    );
+    response.id = message.id;
     return response;
   }
 

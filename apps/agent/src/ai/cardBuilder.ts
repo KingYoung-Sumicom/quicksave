@@ -16,17 +16,14 @@ import { join } from 'path';
 import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
 import { homedir } from 'os';
+import { getCardHistoryDir } from '../service/singleton.js';
 
 const TOOL_RESULT_TRUNCATE_LENGTH = 500;
 
 // ── Card history persistence (for memory-mode providers like Codex) ──
 
-function cardHistoryDir(): string {
-  return join(homedir(), '.quicksave', 'state', 'card-history');
-}
-
 function cardHistoryPath(sessionId: string): string {
-  return join(cardHistoryDir(), `${sessionId}.json`);
+  return join(getCardHistoryDir(), `${sessionId}.json`);
 }
 
 /**
@@ -233,7 +230,7 @@ export class StreamCardBuilder {
       return rest;
     });
 
-    const dir = cardHistoryDir();
+    const dir = getCardHistoryDir();
     const p = cardHistoryPath(this.sessionId);
 
     // Append to existing history

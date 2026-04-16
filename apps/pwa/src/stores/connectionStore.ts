@@ -3,13 +3,25 @@ import type { ConnectionState, Repository, CodingPath, CodexModelInfo } from '@s
 
 export type ConnectionStep = 'signaling' | 'waiting-for-agent' | 'key-exchange' | 'handshake';
 
+/** Per-agent connection state for multi-agent tracking */
+export interface AgentConnectionState {
+  state: ConnectionState;
+  repoPath: string | null;
+  availableRepos: Repository[];
+  availableCodingPaths: CodingPath[];
+  isPro: boolean;
+  agentVersion: string | null;
+  connectedAt: number | null;
+  error: string | null;
+}
+
 interface ConnectionStore {
-  // State
+  // Legacy single-agent state (used by old /agent/* routes)
   state: ConnectionState;
   agentId: string | null;
   signalingServer: string;
   repoPath: string | null;
-  pendingRepoPath: string | null; // Repo to switch to after connecting
+  pendingRepoPath: string | null;
   availableRepos: Repository[];
   availableCodingPaths: CodingPath[];
   connectedAt: number | null;
@@ -25,7 +37,10 @@ interface ConnectionStore {
   keyExchangeAttempt: number | null;
   agentOnline: boolean | null;
 
-  // Actions
+  // Multi-agent connection tracking
+  agentConnections: Record<string, AgentConnectionState>;
+
+  // Legacy single-agent actions (still used by old routes)
   setConnecting: (agentId: string) => void;
   setSignaling: () => void;
   setConnected: (repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string, latestVersion?: string, devBuild?: boolean) => void;
@@ -43,6 +58,14 @@ interface ConnectionStore {
   setConnectionStep: (step: ConnectionStep, attempt?: number) => void;
   setAgentOnline: (online: boolean) => void;
   reset: () => void;
+
+  // Multi-agent actions
+  setAgentConnecting: (agentId: string) => void;
+  setAgentConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string) => void;
+  setAgentDisconnected: (agentId: string) => void;
+  setAgentError: (agentId: string, error: string) => void;
+  getAgentState: (agentId: string) => AgentConnectionState | undefined;
+  isAgentConnected: (agentId: string) => boolean;
 }
 
 // In dev mode, use the same host as the page (signaling is embedded in Vite dev server)
@@ -59,7 +82,7 @@ const getDefaultSignalingServer = () => {
 
 const DEFAULT_SIGNALING_SERVER = getDefaultSignalingServer();
 
-export const useConnectionStore = create<ConnectionStore>((set) => ({
+export const useConnectionStore = create<ConnectionStore>((set, get) => ({
   // Initial state
   state: 'disconnected',
   agentId: null,
@@ -80,8 +103,9 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
   connectionStep: null,
   keyExchangeAttempt: null,
   agentOnline: null,
+  agentConnections: {},
 
-  // Actions
+  // Legacy single-agent actions
   setConnecting: (agentId) =>
     set({
       state: 'connecting',
@@ -89,7 +113,6 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
       error: null,
     }),
 
-  // Note: 'signaling' state was removed - this now just keeps state as 'connecting'
   setSignaling: () =>
     set({
       state: 'connecting',
@@ -121,24 +144,16 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
     set({ codexModels: models }),
 
   setRepoPath: (repoPath) =>
-    set({
-      repoPath,
-    }),
+    set({ repoPath }),
 
   setPendingRepoPath: (repoPath) =>
-    set({
-      pendingRepoPath: repoPath,
-    }),
+    set({ pendingRepoPath: repoPath }),
 
   setAvailableRepos: (repos) =>
-    set({
-      availableRepos: repos,
-    }),
+    set({ availableRepos: repos }),
 
   setAvailableCodingPaths: (paths) =>
-    set({
-      availableCodingPaths: paths,
-    }),
+    set({ availableCodingPaths: paths }),
 
   setDisconnected: () =>
     set({
@@ -165,9 +180,7 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
     }),
 
   setSignalingServer: (server) =>
-    set({
-      signalingServer: server,
-    }),
+    set({ signalingServer: server }),
 
   setConnectionStep: (step, attempt) =>
     set({
@@ -176,9 +189,7 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
     }),
 
   setAgentOnline: (online) =>
-    set({
-      agentOnline: online,
-    }),
+    set({ agentOnline: online }),
 
   reset: () =>
     set({
@@ -201,4 +212,64 @@ export const useConnectionStore = create<ConnectionStore>((set) => ({
       keyExchangeAttempt: null,
       agentOnline: null,
     }),
+
+  // Multi-agent actions
+  setAgentConnecting: (agentId) =>
+    set((state) => ({
+      agentConnections: {
+        ...state.agentConnections,
+        [agentId]: {
+          state: 'connecting',
+          repoPath: null,
+          availableRepos: [],
+          availableCodingPaths: [],
+          isPro: false,
+          agentVersion: null,
+          connectedAt: null,
+          error: null,
+        },
+      },
+    })),
+
+  setAgentConnected: (agentId, repoPath, isPro, availableRepos, availableCodingPaths, agentVersion) =>
+    set((state) => ({
+      agentConnections: {
+        ...state.agentConnections,
+        [agentId]: {
+          state: 'connected',
+          repoPath: repoPath || null,
+          availableRepos: availableRepos || [],
+          availableCodingPaths: availableCodingPaths || [],
+          isPro,
+          agentVersion: agentVersion || null,
+          connectedAt: Date.now(),
+          error: null,
+        },
+      },
+    })),
+
+  setAgentDisconnected: (agentId) =>
+    set((state) => {
+      const { [agentId]: _, ...rest } = state.agentConnections;
+      return { agentConnections: rest };
+    }),
+
+  setAgentError: (agentId, error) =>
+    set((state) => ({
+      agentConnections: {
+        ...state.agentConnections,
+        [agentId]: {
+          ...(state.agentConnections[agentId] || {
+            state: 'error', repoPath: null, availableRepos: [],
+            availableCodingPaths: [], isPro: false, agentVersion: null, connectedAt: null,
+          }),
+          state: 'error',
+          error,
+        },
+      },
+    })),
+
+  getAgentState: (agentId) => get().agentConnections[agentId],
+
+  isAgentConnected: (agentId) => get().agentConnections[agentId]?.state === 'connected',
 }));

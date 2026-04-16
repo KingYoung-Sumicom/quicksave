@@ -1,8 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
 import { generateAgentKeyPair } from './connection/connection.js';
 import { generateAgentId, type License } from '@sumicom/quicksave-shared';
+import { getQuicksaveDir, getConfigFile } from './service/singleton.js';
 
 export interface AgentConfig {
   agentId: string;
@@ -17,20 +16,19 @@ export interface AgentConfig {
   managedCodingPaths?: string[];
 }
 
-const CONFIG_DIR = join(homedir(), '.quicksave');
-const CONFIG_FILE = join(CONFIG_DIR, 'agent.json');
 const DEFAULT_SIGNALING_SERVER = 'wss://signal.quicksave.dev';
 
 export function ensureConfigDir(): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
+  const dir = getQuicksaveDir();
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
   }
 }
 
 export function loadConfig(): AgentConfig | null {
   try {
-    if (existsSync(CONFIG_FILE)) {
-      const data = readFileSync(CONFIG_FILE, 'utf-8');
+    if (existsSync(getConfigFile())) {
+      const data = readFileSync(getConfigFile(), 'utf-8');
       return JSON.parse(data) as AgentConfig;
     }
   } catch (error) {
@@ -41,7 +39,7 @@ export function loadConfig(): AgentConfig | null {
 
 export function saveConfig(config: AgentConfig): void {
   ensureConfigDir();
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+  writeFileSync(getConfigFile(), JSON.stringify(config, null, 2));
 }
 
 export function createDefaultConfig(signalingServer: string): AgentConfig {
@@ -79,7 +77,7 @@ export function addLicense(license: License): void {
 }
 
 export function getConfigPath(): string {
-  return CONFIG_FILE;
+  return getConfigFile();
 }
 
 // Anthropic API Key helpers

@@ -1,7 +1,8 @@
+import { useNavigate } from 'react-router-dom';
 import type { ConfigValue } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
 import { StatusDot, sessionStatusKey, type SessionStatusKey } from './SessionStatusBadge';
-import { BaseStatusBar, MenuButton, SettingsGearButton } from './BaseStatusBar';
+import { BaseStatusBar, MenuButton, BackButton, SettingsGearButton } from './BaseStatusBar';
 import { AgentSettingsDrawer } from './AgentSettingsDrawer';
 
 interface SessionAppBarProps {
@@ -11,6 +12,8 @@ interface SessionAppBarProps {
   onOpenMenu: () => void;
   /** Session ID from URL — used as fallback when activeSessionId is null (inactive session) */
   sessionId?: string;
+  /** When set, show back arrow navigating to this path instead of hamburger menu */
+  backTo?: string;
   onSetSessionConfig?: (key: string, value: ConfigValue) => void;
   onCloseSession?: () => void;
   onArchiveSession?: () => void;
@@ -26,6 +29,7 @@ export function SessionAppBar({
   onCloseSettings,
   onOpenMenu,
   sessionId,
+  backTo,
   onSetSessionConfig,
   onCloseSession,
   onArchiveSession,
@@ -34,10 +38,15 @@ export function SessionAppBar({
   onUpdateAgent,
   onRestartAgent,
 }: SessionAppBarProps) {
+  const navigate = useNavigate();
+
   return (
     <>
       <BaseStatusBar
-        left={<MenuButton onClick={onOpenMenu} />}
+        left={backTo
+          ? <BackButton onClick={() => navigate(backTo)} />
+          : <MenuButton onClick={onOpenMenu} />
+        }
         center={<SessionStatusIndicator />}
         right={<SettingsGearButton onClick={onOpenSettings} />}
       />

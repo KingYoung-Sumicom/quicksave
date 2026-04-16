@@ -84,6 +84,8 @@ interface ClaudeStore {
   setSessions: (sessions: ClaudeSessionSummary[]) => void;
   mergeSessions: (incoming: ClaudeSessionSummary[], cwd?: string) => void;
   upsertSession: (session: Partial<ClaudeSessionSummary> & { sessionId: string }) => void;
+  /** Reconcile session states with agent's actual active sessions after reconnect */
+  reconcileActiveSessions: (activeSessionIds: Set<string>) => void;
   setLoadingSessions: (loading: boolean) => void;
 
   // Actions — active session
@@ -172,6 +174,16 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         [partial.sessionId]: { ...state.sessions[partial.sessionId], ...partial } as ClaudeSessionSummary,
       },
     })),
+  reconcileActiveSessions: (activeSessionIds) =>
+    set((state) => {
+      const updated = { ...state.sessions };
+      for (const [id, session] of Object.entries(updated)) {
+        if (session.isActive && !activeSessionIds.has(id)) {
+          updated[id] = { ...session, isActive: false, isStreaming: false, hasPendingInput: false };
+        }
+      }
+      return { sessions: updated };
+    }),
   setLoadingSessions: (loading) => set({ isLoadingSessions: loading }),
 
   // Active session

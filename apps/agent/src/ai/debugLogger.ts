@@ -1,9 +1,7 @@
 import { appendFile, mkdir } from 'fs/promises';
 import { join } from 'path';
-import { homedir } from 'os';
 import { isDebugEnabled } from '../service/types.js';
-
-const DEBUG_DIR = join(homedir(), '.quicksave', 'debug');
+import { getDebugDir } from '../service/singleton.js';
 
 /**
  * Per-session debug logger that writes JSONL files under ~/.quicksave/debug/.
@@ -47,11 +45,11 @@ export class DebugLogger {
     if (!DebugLogger.enabled) return;
     try {
       if (!DebugLogger.dirReady) {
-        await mkdir(DEBUG_DIR, { recursive: true });
+        await mkdir(getDebugDir(), { recursive: true });
         DebugLogger.dirReady = true;
       }
       const shortId = this.sessionId.length > 12 ? this.sessionId.slice(0, 12) : this.sessionId;
-      const filePath = join(DEBUG_DIR, `${shortId}-${suffix}.jsonl`);
+      const filePath = join(getDebugDir(), `${shortId}-${suffix}.jsonl`);
       const line = JSON.stringify(data) + '\n';
       await appendFile(filePath, line);
     } catch {

@@ -1,6 +1,20 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+export interface CachedRepoInfo {
+  path: string;
+  name: string;
+  currentBranch?: string;
+  isSubmodule?: boolean;
+}
+
+export interface CachedProjectData {
+  lastActivityAt: number;
+  sessionCount: number;
+  lastSessionTitle?: string;
+  repos?: CachedRepoInfo[];
+}
+
 export interface Machine {
   // Core identity
   agentId: string;
@@ -17,11 +31,15 @@ export interface Machine {
   knownRepos: string[];
   knownCodingPaths: string[];
   isPro: boolean;
+
+  // Cached project summaries (keyed by cwd)
+  cachedProjects: Record<string, CachedProjectData>;
 }
 
 interface MachineStore {
   // State
   machines: Machine[];
+  pinnedProjects: string[]; // array of projectIds
 
   // Actions
   addMachine: (machine: Pick<Machine, 'agentId' | 'publicKey' | 'nickname' | 'icon'>) => void;
@@ -33,12 +51,19 @@ interface MachineStore {
   overwriteMachines: (machines: Machine[]) => void;
   getMachine: (agentId: string) => Machine | undefined;
   hasMachine: (agentId: string) => boolean;
+  cacheProjectData: (agentId: string, cwd: string, data: CachedProjectData) => void;
+  cacheAllProjects: (agentId: string, projects: Array<{ cwd: string } & CachedProjectData>, managedPaths?: string[]) => void;
+  cacheProjectRepos: (agentId: string, cwd: string, repos: CachedRepoInfo[]) => void;
+  pinProject: (projectId: string) => void;
+  unpinProject: (projectId: string) => void;
+  removeProject: (agentId: string, cwd: string) => void;
 }
 
 export const useMachineStore = create<MachineStore>()(
   persist(
     (set, get) => ({
       machines: [],
+      pinnedProjects: [],
 
       addMachine: (machine) =>
         set((state) => {
@@ -57,6 +82,7 @@ export const useMachineStore = create<MachineStore>()(
                 knownRepos: [],
                 knownCodingPaths: [],
                 isPro: false,
+                cachedProjects: {},
               },
             ],
           };
@@ -124,18 +150,98 @@ export const useMachineStore = create<MachineStore>()(
       getMachine: (agentId) => get().machines.find((m) => m.agentId === agentId),
 
       hasMachine: (agentId) => get().machines.some((m) => m.agentId === agentId),
+
+      cacheProjectData: (agentId, cwd, data) =>
+        set((state) => ({
+          machines: state.machines.map((m) => {
+            if (m.agentId !== agentId) return m;
+            return {
+              ...m,
+              cachedProjects: { ...m.cachedProjects, [cwd]: data },
+            };
+          }),
+        })),
+
+      cacheAllProjects: (agentId, projects, managedPaths) =>
+        set((state) => ({
+          machines: state.machines.map((m) => {
+            if (m.agentId !== agentId) return m;
+            const cached: Record<string, CachedProjectData> = {};
+            for (const p of projects) {
+              cached[p.cwd] = {
+                lastActivityAt: p.lastActivityAt,
+                sessionCount: p.sessionCount,
+                lastSessionTitle: p.lastSessionTitle,
+              };
+            }
+            // Rebuild knownCodingPaths: only keep managed paths + paths with sessions.
+            // This cleans up stale entries (e.g. test temp dirs no longer on the agent).
+            const projectCwds = new Set(projects.map((p) => p.cwd));
+            const managed = new Set(managedPaths || []);
+            const allPaths = [...new Set([...projectCwds, ...managed])];
+            return { ...m, cachedProjects: cached, knownCodingPaths: allPaths };
+          }),
+        })),
+
+      cacheProjectRepos: (agentId, cwd, repos) =>
+        set((state) => ({
+          machines: state.machines.map((m) => {
+            if (m.agentId !== agentId) return m;
+            const existing = m.cachedProjects[cwd];
+            return {
+              ...m,
+              cachedProjects: {
+                ...m.cachedProjects,
+                [cwd]: { ...existing, repos },
+              },
+            };
+          }),
+        })),
+
+      pinProject: (projectId) =>
+        set((state) => ({
+          pinnedProjects: state.pinnedProjects.includes(projectId)
+            ? state.pinnedProjects
+            : [...state.pinnedProjects, projectId],
+        })),
+
+      unpinProject: (projectId) =>
+        set((state) => ({
+          pinnedProjects: state.pinnedProjects.filter((id) => id !== projectId),
+        })),
+
+      removeProject: (agentId, cwd) =>
+        set((state) => ({
+          machines: state.machines.map((m) => {
+            if (m.agentId !== agentId) return m;
+            const { [cwd]: _, ...remainingProjects } = m.cachedProjects;
+            return {
+              ...m,
+              knownCodingPaths: m.knownCodingPaths.filter((p) => p !== cwd),
+              cachedProjects: remainingProjects,
+            };
+          }),
+        })),
     }),
     {
       name: 'quicksave-machines',
-      version: 2,
+      version: 3,
       migrate: (persisted: unknown, version: number) => {
-        const state = persisted as { machines: Machine[] };
+        const state = persisted as { machines: Machine[]; pinnedProjects?: string[] };
         if (version < 2) {
           // Add knownCodingPaths to existing machines
           state.machines = state.machines.map((m) => ({
             ...m,
             knownCodingPaths: (m as Machine).knownCodingPaths || [],
           }));
+        }
+        if (version < 3) {
+          // Add cachedProjects to existing machines + pinnedProjects to store
+          state.machines = state.machines.map((m) => ({
+            ...m,
+            cachedProjects: (m as Machine).cachedProjects || {},
+          }));
+          state.pinnedProjects = state.pinnedProjects || [];
         }
         return state;
       },
