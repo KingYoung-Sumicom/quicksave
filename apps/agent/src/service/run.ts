@@ -36,7 +36,7 @@ import { createMessage, type Message, type Repository } from '@sumicom/quicksave
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
-const PACKAGE_VERSION = '0.6.2';
+const PACKAGE_VERSION = '0.6.3';
 
 export async function runDaemon(): Promise<void> {
   ensureDirectories();

@@ -236,7 +236,7 @@ export class MockRelay {
       case 'handshake': {
         const ackPayload: HandshakeAckPayload = {
           success: true,
-          agentVersion: '0.6.2-mock',
+          agentVersion: '0.6.3-mock',
           repoPath: this.repoPath,
           availableRepos: [{ path: this.repoPath, name: 'project' }],
           availableCodingPaths: [{ path: this.repoPath, name: 'project' }],
