@@ -138,6 +138,10 @@ export class WebSocketClient {
    * Connect the single persistent WebSocket to /pwa/key/{identityPublicKey}
    */
   async connect(): Promise<void> {
+    // Re-enable auto-reconnect in case it was stopped by stopReconnecting()
+    this.autoReconnect = true;
+    this.isManualDisconnect = false;
+
     const wsUrl = `${this.signalingServer}/pwa/${encodeURIComponent(this.connectionId)}`;
     this.ws = new WebSocket(wsUrl);
 
@@ -218,6 +222,19 @@ export class WebSocketClient {
     if (this.activeAgentId === agentId) {
       this.activeAgentId = null;
     }
+  }
+
+  /**
+   * Stop auto-reconnection attempts without closing the WebSocket.
+   * Used when the user manually aborts a connection.
+   */
+  stopReconnecting(): void {
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    this.reconnectAttempts = 0;
+    this.autoReconnect = false;
   }
 
   /**

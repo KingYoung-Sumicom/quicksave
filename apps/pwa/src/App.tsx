@@ -394,8 +394,11 @@ function AppContent() {
   );
 
   const handleAbortConnection = useCallback(() => {
-    if (clientRef.current && agentIdRef.current) {
-      clientRef.current.disconnectFromAgent(agentIdRef.current);
+    if (clientRef.current) {
+      if (agentIdRef.current) {
+        clientRef.current.disconnectFromAgent(agentIdRef.current);
+      }
+      clientRef.current.stopReconnecting();
     }
     agentIdRef.current = null;
     reset();
