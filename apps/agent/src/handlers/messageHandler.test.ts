@@ -472,6 +472,102 @@ describe('MessageHandler', () => {
     });
   });
 
+  describe('repo-scoped envelope (REPO_MISMATCH)', () => {
+    let secondRepoPath: string;
+
+    beforeEach(async () => {
+      secondRepoPath = join(tmpdir(), `quicksave-handler-test-rmm-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      await mkdir(secondRepoPath, { recursive: true });
+      const git2 = simpleGit(secondRepoPath);
+      await git2.init();
+      await git2.addConfig('user.email', 'test@test.com');
+      await git2.addConfig('user.name', 'Test User');
+      await writeFile(join(secondRepoPath, 'README.md'), '# Second Repo\n');
+      await git2.add('README.md');
+      await git2.commit('Initial commit');
+
+      handler = new MessageHandler([
+        { path: testRepoPath, name: 'test-repo' },
+        { path: secondRepoPath, name: 'second-repo' },
+      ]);
+    });
+
+    afterEach(async () => {
+      try { await rm(secondRepoPath, { recursive: true, force: true }); } catch { /* ignore */ }
+    });
+
+    it('stamps git: response envelope with the peer\'s current repoPath', async () => {
+      const message = createMessage('git:status', {});
+      const response = await handler.handleMessage(message);
+
+      expect(response.type).toBe('git:status:response');
+      expect(response.repoPath).toBe(testRepoPath);
+    });
+
+    it('rejects git: request when envelope repoPath does not match peer repo', async () => {
+      // Peer is on testRepoPath but stamps the request for secondRepoPath
+      const message = createMessage('git:status', {});
+      message.repoPath = secondRepoPath;
+
+      const response = await handler.handleMessage(message);
+
+      expect(response.type).toBe('error');
+      expect((response.payload as any).code).toBe('REPO_MISMATCH');
+      // Error envelope reports the agent's actual current repo for this peer
+      expect(response.repoPath).toBe(testRepoPath);
+    });
+
+    it('accepts git: request when envelope repoPath matches peer repo', async () => {
+      const message = createMessage('git:status', {});
+      message.repoPath = testRepoPath;
+
+      const response = await handler.handleMessage(message);
+
+      expect(response.type).toBe('git:status:response');
+      expect(response.repoPath).toBe(testRepoPath);
+    });
+
+    it('accepts git: request when envelope omits repoPath (back-compat)', async () => {
+      const message = createMessage('git:status', {});
+      // No envelope repoPath set — older clients still work.
+      const response = await handler.handleMessage(message);
+
+      expect(response.type).toBe('git:status:response');
+      expect(response.repoPath).toBe(testRepoPath);
+    });
+
+    it('does not stamp non-git responses with repoPath', async () => {
+      const message = createMessage('ping', { timestamp: Date.now() });
+      const response = await handler.handleMessage(message);
+
+      expect(response.type).toBe('pong');
+      expect(response.repoPath).toBeUndefined();
+    });
+
+    it('validates per-peer state: same envelope path may pass for one peer and fail for another', async () => {
+      const peerA = 'pwa:peerA';
+      const peerB = 'pwa:peerB';
+
+      // peerA switches to secondRepoPath; peerB stays on default
+      const switchMsg = createMessage('agent:switch-repo', { path: secondRepoPath });
+      await handler.handleMessage(switchMsg, peerA);
+
+      // Same envelope (secondRepoPath) — accepted for peerA, rejected for peerB
+      const reqA = createMessage('git:status', {});
+      reqA.repoPath = secondRepoPath;
+      const respA = await handler.handleMessage(reqA, peerA);
+      expect(respA.type).toBe('git:status:response');
+      expect(respA.repoPath).toBe(secondRepoPath);
+
+      const reqB = createMessage('git:status', {});
+      reqB.repoPath = secondRepoPath;
+      const respB = await handler.handleMessage(reqB, peerB);
+      expect(respB.type).toBe('error');
+      expect((respB.payload as any).code).toBe('REPO_MISMATCH');
+      expect(respB.repoPath).toBe(testRepoPath);
+    });
+  });
+
   describe('agent:clone-repo', () => {
     let bareRepoPath: string;
     let cloneTargetBase: string;

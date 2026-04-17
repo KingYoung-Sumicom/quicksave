@@ -57,6 +57,7 @@ function AppContent() {
 
   const {
     handleResponse,
+    cancelPendingGit,
     fetchStatus,
     fetchDiff,
     stageFiles,
@@ -87,6 +88,17 @@ function AppContent() {
     updateAgent,
     restartAgent,
   } = useGitOperations(clientRef);
+
+  /**
+   * Switch the active agent and drop any in-flight git:* responses for the
+   * previous agent. Without the cancel, a late status/diff response from the
+   * old agent would overwrite the gitStore right after the user navigates
+   * to a different workspace.
+   */
+  const setActiveAgent = useCallback((agentId: string) => {
+    cancelPendingGit();
+    clientRef.current?.setActiveAgent(agentId);
+  }, [cancelPendingGit]);
 
   const {
     handleMessage: handleClaudeMessage,
@@ -262,6 +274,7 @@ function AppContent() {
     setConnectionStep,
     setAgentOnline,
     refreshCommitSummary,
+    setActiveAgent,
   });
   useEffect(() => {
     handlersRef.current = {
@@ -277,6 +290,7 @@ function AppContent() {
       setConnectionStep,
       setAgentOnline,
       refreshCommitSummary,
+      setActiveAgent,
     };
   });
 
@@ -321,7 +335,7 @@ function AppContent() {
         // This is safe on both initial connect and reconnect.
         setTimeout(() => {
           if (!clientRef.current) return;
-          clientRef.current.setActiveAgent(agentId);
+          handlersRef.current.setActiveAgent(agentId);
           const msg = createMessage('claude:active-sessions', {});
           clientRef.current.send(msg);
         }, 500);
@@ -391,7 +405,7 @@ function AppContent() {
       // Skip if already connected or connecting to this agent
       if (clientRef.current?.hasSession(newAgentId)) {
         // Already connected — just set as active
-        clientRef.current.setActiveAgent(newAgentId);
+        setActiveAgent(newAgentId);
         agentIdRef.current = newAgentId;
         return;
       }
@@ -408,7 +422,7 @@ function AppContent() {
       setSignaling();
       clientRef.current.connectToAgent(newAgentId, publicKey);
     },
-    [setConnecting, setSignaling, setError]
+    [setConnecting, setSignaling, setError, setActiveAgent]
   );
 
   const handleAbortConnection = useCallback(() => {
@@ -511,7 +525,7 @@ function AppContent() {
       if (conn.state === 'connected' && !fetchedSummariesRef.current.has(agentId)) {
         fetchedSummariesRef.current.add(agentId);
         // Set active agent to route requests to this agent
-        clientRef.current?.setActiveAgent(agentId);
+        setActiveAgent(agentId);
         listProjectSummaries().then(async (projects) => {
           if (!projects) return;
           // Cache project summaries and prune stale knownCodingPaths
@@ -520,13 +534,13 @@ function AppContent() {
           useMachineStore.getState().cacheAllProjects(agentId, projects, managedPaths);
           // Fetch session lists for each project so inline sessions show on home page
           for (const project of projects) {
-            clientRef.current?.setActiveAgent(agentId);
+            setActiveAgent(agentId);
             await listSessions(project.cwd);
           }
         });
       }
     }
-  }, [agentConnections, listProjectSummaries, listSessions]);
+  }, [agentConnections, listProjectSummaries, listSessions, setActiveAgent]);
 
   // Show connecting overlay only for /connect routes (QR/deep link) — not for project routes
   const showOverlay = !location.pathname.startsWith('/p/') && (
@@ -597,7 +611,7 @@ function AppContent() {
             onResumeSession={resumeSession}
             onRespondToUserInput={respondToUserInput}
             onUnsubscribeSession={unsubscribeSession}
-            onSetActiveAgent={(agentId) => clientRef.current?.setActiveAgent(agentId)}
+            onSetActiveAgent={setActiveAgent}
   />
   );
 

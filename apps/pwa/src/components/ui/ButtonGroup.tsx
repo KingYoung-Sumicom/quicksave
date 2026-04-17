@@ -50,7 +50,7 @@ export function ButtonGroup<T extends ButtonGroupOption>({
             disabled={disabled}
             title={opt.description}
             className={clsx(
-              'rounded-md transition-colors',
+              'rounded-md focus:outline-none',
               isSmall
                 ? 'text-xs px-2.5 py-1 rounded-lg border'
                 : 'flex-1 text-sm px-3 py-2',
@@ -63,7 +63,7 @@ export function ButtonGroup<T extends ButtonGroupOption>({
                     ? 'bg-blue-600/30 border-blue-500/60 text-blue-300'
                     : 'bg-blue-600/20 text-blue-300 border border-blue-500/30'
                   : isSmall
-                    ? 'bg-slate-700/60 border-slate-600/50 text-slate-400 hover:border-slate-500 hover:text-slate-300'
+                    ? 'bg-slate-700/60 border-slate-600/50 text-slate-400 hover:bg-slate-700 hover:text-slate-300'
                     : 'text-slate-300 hover:bg-slate-700',
             )}
           >

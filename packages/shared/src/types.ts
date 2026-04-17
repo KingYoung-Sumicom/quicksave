@@ -7,6 +7,16 @@ export interface Message<T = unknown> {
   type: MessageType;
   payload: T;
   timestamp: number;
+  /**
+   * Repo scope for git:* messages.
+   * - Request: repo the client expects to operate on. Agent rejects with
+   *   `error` (code `REPO_MISMATCH`) if its current repo for the requesting
+   *   peer does not match.
+   * - Response: repo the agent actually used. Client validates against its
+   *   active repo before applying the result to the store.
+   * Other message types ignore this field.
+   */
+  repoPath?: string;
 }
 
 export type MessageType =

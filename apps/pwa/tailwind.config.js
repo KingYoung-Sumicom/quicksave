@@ -1,6 +1,10 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
+  future: {
+    // Scope `hover:` to pointer devices so mobile taps don't leave sticky hover states.
+    hoverOnlyWhenSupported: true,
+  },
   theme: {
     extend: {
       colors: {

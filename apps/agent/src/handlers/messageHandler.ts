@@ -356,8 +356,41 @@ export class MessageHandler {
     if (isVerbose) {
       console.log(`[msg] ${message.type} from ${peerAddress.slice(0, 12)}`);
     }
-    try {
-      switch (message.type) {
+
+    // Repo-scoped guard for git:* requests. The PWA stamps `repoPath` on
+    // each request so a response can't be misapplied if the user has since
+    // switched repos. If the envelope's repoPath differs from the peer's
+    // current repo, reject with REPO_MISMATCH so the client can discard
+    // rather than render stale data.
+    if (
+      message.type.startsWith('git:') &&
+      !message.type.endsWith(':response') &&
+      typeof message.repoPath === 'string'
+    ) {
+      const currentRepo = this.getClientRepoPath(peerAddress);
+      if (message.repoPath !== currentRepo) {
+        const err = this.createErrorResponse(
+          message.id,
+          'REPO_MISMATCH',
+          `Repo mismatch: request expected ${message.repoPath}, peer is on ${currentRepo}`,
+        );
+        err.repoPath = currentRepo;
+        return err;
+      }
+    }
+
+    const response = await this.dispatch(message, peerAddress);
+
+    // Stamp git:* responses with the repo the agent actually used so the
+    // PWA can validate before applying to the store.
+    if (response.type.startsWith('git:') && response.type.endsWith(':response')) {
+      response.repoPath = this.getClientRepoPath(peerAddress);
+    }
+    return response;
+  }
+
+  private async dispatch(message: Message, peerAddress: string): Promise<Message> {
+    switch (message.type) {
         case 'handshake':
           return this.handleHandshake(message as Message<HandshakePayload>, peerAddress);
         case 'ping':
@@ -480,10 +513,6 @@ export class MessageHandler {
           return await this.handleListProjectRepos(message as Message<ProjectListReposRequestPayload>);
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
-      }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      return this.createErrorResponse(message.id, 'HANDLER_ERROR', errorMessage);
     }
   }
 
