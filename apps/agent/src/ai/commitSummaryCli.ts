@@ -199,17 +199,12 @@ export class CommitSummaryCliService {
   }
 
   private extractCommitMessage(result: string): { summary: string; description?: string } {
-    const text = stripMarkdownFences(result).trim();
-
-    // Try to parse the whole thing as JSON first.
-    const direct = tryParseCommitJson(text);
-    if (direct) return direct;
-
-    // Find the last {...} block — model may prefix with chatter.
-    const match = text.match(/\{[\s\S]*\}\s*$/);
-    if (match) {
-      const extracted = tryParseCommitJson(match[0]);
-      if (extracted) return extracted;
+    // Models often wrap or surround the JSON with markdown fences and chatter.
+    // Try every plausible candidate (whole text, fence bodies, balanced
+    // brace blocks scanned right-to-left) and return the first that parses.
+    for (const candidate of jsonCandidates(result)) {
+      const parsed = tryParseCommitJson(candidate);
+      if (parsed) return parsed;
     }
 
     throw new CommitSummaryCliError(
@@ -226,15 +221,17 @@ export class CommitSummaryCliService {
       '1. Run `git diff --cached` to inspect staged changes.',
       '2. If staged changes touch a function, type, or component that is referenced elsewhere, briefly inspect those call sites (Grep + Read) to understand intent.',
       '3. If recent commits show a clear style, match it (`git log --oneline -20`).',
-      '4. Output ONLY a JSON object on the final line:',
-      '   {"summary": "<conventional-commit summary, <=72 chars>", "description": "<optional body or omit>"}',
+      '4. Your VERY LAST line of output must be a single JSON object — no markdown fences, no commentary after it:',
+      '   {"summary": "<conventional-commit summary, <=72 chars>", "description": "<body explaining the why>"}',
       '',
       'Guidelines:',
       '- Conventional commits prefixes: feat:, fix:, docs:, refactor:, chore:, test:, style:, perf:, ci:, build:',
       '- Keep the summary under 72 characters',
       '- Focus on WHAT changed and WHY, not HOW',
       '- Be specific but concise',
-      '- Do NOT write anything after the JSON object',
+      '- Include a `description` body whenever the change has non-obvious motivation, touches multiple modules, or alters behavior. Use `\\n` for line breaks within the JSON string.',
+      '- Omit `description` only for truly trivial changes (typo, single-line tweak, dependency bump).',
+      '- Do NOT wrap the JSON in markdown fences. Do NOT write anything after the JSON object.',
     ];
 
     if (opts.conventions) {
@@ -327,9 +324,72 @@ function interpretStreamEvent(event: unknown): StreamInterpretation {
   return null;
 }
 
-function stripMarkdownFences(text: string): string {
-  const fence = text.match(/^```(?:json)?\s*\n([\s\S]*?)\n```\s*$/);
-  return fence ? fence[1] : text;
+/**
+ * Yield JSON candidate strings to try, in priority order:
+ *   1. The trimmed whole text.
+ *   2. Each ```...``` fence body (last fence first — LLMs usually put the
+ *      "real answer" fence at the end of any preamble).
+ *   3. Every balanced {...} block scanned right-to-left, ignoring braces
+ *      inside JSON string literals.
+ *
+ * Yields lazily so callers can stop at the first parsable candidate.
+ */
+function* jsonCandidates(raw: string): Generator<string> {
+  const trimmed = raw.trim();
+  if (!trimmed) return;
+  yield trimmed;
+
+  // Pull each fence body. We accept ```json, ```JSON, or bare ```.
+  const fenceBodies: string[] = [];
+  const fenceRe = /```(?:[a-zA-Z]+)?\s*\n?([\s\S]*?)```/g;
+  let m: RegExpExecArray | null;
+  while ((m = fenceRe.exec(trimmed)) !== null) {
+    const body = m[1].trim();
+    if (body) fenceBodies.push(body);
+  }
+  for (let i = fenceBodies.length - 1; i >= 0; i--) {
+    yield fenceBodies[i];
+  }
+
+  // Walk right-to-left, finding balanced {...} blocks. We respect JSON string
+  // literals so a `}` inside `"foo}"` doesn't throw off the brace count.
+  for (const block of balancedBraceBlocks(trimmed)) {
+    yield block;
+  }
+}
+
+function* balancedBraceBlocks(text: string): Generator<string> {
+  // Forward-scan once to find every `{`/`}` that is NOT inside a JSON string
+  // literal. Then pair them with a depth stack so each close-brace knows its
+  // matching open. We yield slices from the rightmost close first, so a
+  // trailing real JSON wins over any earlier example block in the chatter.
+  type Brace = { idx: number; kind: '{' | '}' };
+  const braces: Brace[] = [];
+  let inString = false;
+  let escape = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (escape) { escape = false; continue; }
+    if (c === '\\') { escape = true; continue; }
+    if (c === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (c === '{' || c === '}') braces.push({ idx: i, kind: c });
+  }
+
+  const pairs: Array<[number, number]> = [];
+  const stack: number[] = [];
+  for (const b of braces) {
+    if (b.kind === '{') stack.push(b.idx);
+    else if (stack.length > 0) {
+      const open = stack.pop()!;
+      pairs.push([open, b.idx]);
+    }
+  }
+  // Sort by close index descending — rightmost (likely final) JSON first.
+  pairs.sort((a, b) => b[1] - a[1]);
+  for (const [open, close] of pairs) {
+    yield text.slice(open, close + 1);
+  }
 }
 
 function tryParseCommitJson(text: string): { summary: string; description?: string } | null {
@@ -382,4 +442,4 @@ function classifyCliFailure(hint: string, _exitCode: number | null): CommitSumma
 }
 
 // Exposed for testing
-export const __testing = { interpretStreamEvent };
+export const __testing = { interpretStreamEvent, jsonCandidates };

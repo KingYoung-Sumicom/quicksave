@@ -97,6 +97,64 @@ describe('CommitSummaryCliService', () => {
       expect(out.description).toBeUndefined();
     });
 
+    it('extracts JSON when chatter follows it', async () => {
+      const mixed = '{"summary":"fix: edge","description":"covers the empty case"}\n\nLet me know if you want changes.';
+      (spawn as any).mockReturnValue(makeFakeChild({
+        stdout: makeEnvelope({ result: mixed }),
+      }));
+      const svc = new CommitSummaryCliService();
+      const out = await svc.generateSummary({ repoPath: '/r', attribution: false });
+      expect(out.summary).toBe('fix: edge');
+      expect(out.description).toBe('covers the empty case');
+    });
+
+    it('extracts fenced JSON sandwiched between preamble and trailing prose', async () => {
+      const mixed = [
+        'Here is the message:',
+        '',
+        '```json',
+        '{"summary":"feat: ship it","description":"because reasons"}',
+        '```',
+        '',
+        'Hope this helps!',
+      ].join('\n');
+      (spawn as any).mockReturnValue(makeFakeChild({
+        stdout: makeEnvelope({ result: mixed }),
+      }));
+      const svc = new CommitSummaryCliService();
+      const out = await svc.generateSummary({ repoPath: '/r', attribution: false });
+      expect(out.summary).toBe('feat: ship it');
+      expect(out.description).toBe('because reasons');
+    });
+
+    it('prefers the trailing JSON when an example block appears earlier', async () => {
+      const mixed = [
+        'For reference, the format is:',
+        '{"summary": "example", "description": "this is an example"}',
+        '',
+        'And here is the real one:',
+        '{"summary":"refactor: split modules","description":"untangle deps"}',
+      ].join('\n');
+      (spawn as any).mockReturnValue(makeFakeChild({
+        stdout: makeEnvelope({ result: mixed }),
+      }));
+      const svc = new CommitSummaryCliService();
+      const out = await svc.generateSummary({ repoPath: '/r', attribution: false });
+      expect(out.summary).toBe('refactor: split modules');
+      expect(out.description).toBe('untangle deps');
+    });
+
+    it('handles JSON whose description contains a literal `}` inside a string', async () => {
+      const tricky = '{"summary":"fix: braces","description":"interface{} parser breaks here"}';
+      (spawn as any).mockReturnValue(makeFakeChild({
+        stdout: makeEnvelope({ result: tricky }),
+      }));
+      const svc = new CommitSummaryCliService();
+      const out = await svc.generateSummary({ repoPath: '/r', attribution: false });
+      expect(out.summary).toBe('fix: braces');
+      expect(out.description).toBe('interface{} parser breaks here');
+    });
+
     it('returns token usage from envelope', async () => {
       (spawn as any).mockReturnValue(makeFakeChild({ stdout: makeEnvelope() }));
       const svc = new CommitSummaryCliService();
