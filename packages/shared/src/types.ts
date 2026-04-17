@@ -145,6 +145,9 @@ export type MessageType =
   | 'session:delete-history'         // pwa-request: delete session history entry
   | 'session:delete-history:response' // agent-response: delete ack
   | 'session:history-updated'        // agent-push: session history changed
+  // Push notifications (PWA → agent: hand off a web-push subscription for relay-side delivery)
+  | 'push:subscription-offer'
+  | 'push:subscription-offer:response'
   // Codex
   | 'codex:list-models'
   | 'codex:list-models:response'
@@ -269,6 +272,34 @@ export interface ClaudeSetSessionPermissionResponsePayload {
   success: boolean;
   sessionId: string;
   permissionMode: string;
+}
+
+// ============================================================================
+// Push notifications (PWA → agent): the PWA hands off a browser push
+// subscription so the agent can register it with the relay and later trigger
+// server-sent notifications (delivery target = the signaling relay, auth via
+// agent Ed25519 key).
+// ============================================================================
+
+export interface PushSubscriptionOfferPayload {
+  /** The browser's push subscription — verbatim from PushSubscription.toJSON(). */
+  subscription: {
+    endpoint: string;
+    keys: {
+      p256dh: string;
+      auth: string;
+    };
+  };
+  /**
+   * URL of the relay that should hold the subscription. The agent uses its
+   * configured signaling URL's HTTP origin when null/undefined.
+   */
+  relayHttpUrl?: string;
+}
+
+export interface PushSubscriptionOfferResponsePayload {
+  success: boolean;
+  error?: string;
 }
 
 // ============================================================================

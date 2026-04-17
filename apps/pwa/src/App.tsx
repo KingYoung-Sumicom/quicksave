@@ -19,8 +19,12 @@ import { Spinner } from './components/ui/Spinner';
 import { PathBrowser } from './components/PathBrowser';
 import { GitignoreEditor } from './components/GitignoreEditor';
 import { ClaudePanel } from './components/ClaudePanel';
-import { createMessage, type ClaudeUserInputResponsePayload } from '@sumicom/quicksave-shared';
+import { createMessage, type ClaudeUserInputResponsePayload, type Message, type PushSubscriptionOfferPayload } from '@sumicom/quicksave-shared';
+import { NotificationPrompt } from './components/NotificationPrompt';
+import { buildOfferMessage, getCurrentSubscription, notificationPermission } from './lib/pushSubscription';
 import { GitIdentityModal } from './components/GitIdentityModal';
+import { SettingsPanel } from './components/SettingsPanel';
+import { AddNewPage } from './components/AddNewPage';
 import { ProjectList } from './components/ProjectList';
 import { ProjectDetail } from './components/ProjectDetail';
 import { useProjectConnection } from './hooks/useProjectConnection';
@@ -122,7 +126,7 @@ function AppContent() {
   const [showPathBrowser, setShowPathBrowser] = useState(false);
   const [showGitignoreEditor, setShowGitignoreEditor] = useState(false);
   const isDesktop = useMediaQuery('(min-width: 768px)');
-  const [_showFleetSettings, setShowFleetSettings] = useState(false);
+  const [showFleetSettings, setShowFleetSettings] = useState(false);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
   const [showGitIdentityModal, setShowGitIdentityModal] = useState(false);
 
@@ -345,6 +349,24 @@ function AppContent() {
         // suggestion survives PWA reloads/reconnects.
         if (path) {
           void handlersRef.current.refreshCommitSummary(path);
+        }
+
+        // Auto-offer push subscription: if the user has already granted
+        // notification permission in a past session, re-send the offer so the
+        // agent can refresh the relay registration (browsers may rotate the
+        // endpoint). No-op if permission isn't granted yet — the
+        // NotificationPrompt banner handles the first-time flow.
+        if (notificationPermission() === 'granted') {
+          void (async () => {
+            try {
+              const sub = await getCurrentSubscription();
+              if (sub && clientRef.current) {
+                clientRef.current.sendToAgent(agentId, buildOfferMessage(sub));
+              }
+            } catch (err) {
+              console.warn('[push] auto-offer failed', err);
+            }
+          })();
         }
 
         // Project route components (/p/) manage their own navigation after connection.
@@ -619,6 +641,7 @@ function AppContent() {
   const homeElement = machines.length > 0 ? (
     <ProjectList
       onOpenSettings={() => setShowFleetSettings(true)}
+      onOpenAddNew={() => navigate('/add')}
       onAddMachine={() => {/* TODO: wire add machine modal */}}
     />
   ) : (
@@ -628,24 +651,43 @@ function AppContent() {
     </div>
   );
 
+  const handlePushOffer = useCallback((msg: Message<PushSubscriptionOfferPayload>) => {
+    const client = clientRef.current;
+    if (!client) return;
+    try {
+      client.send(msg);
+    } catch (err) {
+      console.warn('[push] failed to send subscription offer', err);
+    }
+  }, []);
+
   return (
     <div className="flex flex-col bg-slate-900 text-slate-100 overflow-hidden h-full">
+      {isConnected && <NotificationPrompt onOffer={handlePushOffer} />}
       {isDesktop ? (
-        // Desktop: two-column layout with persistent project sidebar
-        <div className="flex h-full overflow-hidden">
-          <div className="w-72 shrink-0 border-r border-slate-700 bg-slate-800/50">
-            <ProjectList compact onOpenSettings={() => setShowFleetSettings(true)} />
+        machines.length === 0 ? (
+          // Pre-pair: full-width connection setup, no sidebar yet
+          <div className="flex flex-col h-full overflow-hidden">
+            <FleetStatusBar title="Quicksave" onOpenSettings={() => setShowFleetSettings(true)} />
+            <ConnectionSetup onConnect={handleConnect} onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onCheckAgentUpdate={isConnected ? checkAgentUpdate : undefined} onUpdateAgent={isConnected ? updateAgent : undefined} />
           </div>
-          <div className="flex-1 min-w-0 flex flex-col">
-            <Routes>
-              <Route path="/" element={homeElement} />
-              <Route path="/p/:projectId" element={projectDetailElement} />
-              <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
-              <Route path="/p/:projectId/r/:repoId" element={projectRepoElement} />
-              <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
-            </Routes>
+        ) : (
+          // Desktop: two-column layout — sidebar owns the home app bar, main area only renders project routes
+          <div className="flex h-full overflow-hidden">
+            <div className="w-72 shrink-0 border-r border-slate-700 bg-slate-800/50">
+              <ProjectList compact onOpenSettings={() => setShowFleetSettings(true)} onOpenAddNew={() => navigate('/add')} />
+            </div>
+            <div className="flex-1 min-w-0 flex flex-col">
+              <Routes>
+                <Route path="/p/:projectId" element={projectDetailElement} />
+                <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
+                <Route path="/p/:projectId/r/:repoId" element={projectRepoElement} />
+                <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onAddRepo={addRepo} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} />} />
+                <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
+              </Routes>
+            </div>
           </div>
-        </div>
+        )
       ) : (
         // Mobile: full-screen pages with back navigation
         <Routes>
@@ -653,6 +695,7 @@ function AppContent() {
           <Route path="/p/:projectId" element={projectDetailElement} />
           <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
           <Route path="/p/:projectId/r/:repoId" element={projectRepoElement} />
+          <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onAddRepo={addRepo} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} />} />
           <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
         </Routes>
       )}
@@ -680,6 +723,14 @@ function AppContent() {
           onGetIdentity={getGitIdentity}
         />
       )}
+      <SettingsPanel
+        isOpen={showFleetSettings}
+        onClose={() => setShowFleetSettings(false)}
+        onSendApiKeyToAgent={isConnected ? setApiKey : undefined}
+        onCheckAgentUpdate={isConnected ? checkAgentUpdate : undefined}
+        onUpdateAgent={isConnected ? updateAgent : undefined}
+        onPushOffer={handlePushOffer}
+      />
     </div>
   );
 }
@@ -998,6 +1049,7 @@ function ConnectHandler({ onConnect }: { onConnect: (agentId: string, publicKey:
     initiated.current = true;
 
     const pk = searchParams.get('pk');
+    const spk = searchParams.get('spk') || undefined;
     const name = searchParams.get('name');
     const repo = searchParams.get('repo');
 
@@ -1006,7 +1058,7 @@ function ConnectHandler({ onConnect }: { onConnect: (agentId: string, publicKey:
     if (pk) {
       // New machine from QR code
       if (!getMachine(agentId)) {
-        addMachine({ agentId, publicKey: pk, nickname: name || `Machine ${agentId.slice(0, 8)}`, icon: '💻' });
+        addMachine({ agentId, publicKey: pk, signPublicKey: spk, nickname: name || `Machine ${agentId.slice(0, 8)}`, icon: '💻' });
       }
       onConnect(agentId, pk);
     } else {

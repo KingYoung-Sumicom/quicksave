@@ -312,6 +312,48 @@ claudeService.emit('session-updated', ...)
 **防禦措施：** Permission card events 若 `sendToSession` 返回 0（無訂閱者），
 fallback 到 `broadcast` 確保不遺失。
 
+### Web Push 側通道（signed HTTP）
+
+當 PWA 未連線（tab 關閉、背景）但 session 需要注意時，agent 透過 relay 的簽章 HTTP 路由觸發 Web Push 通知。
+
+**鑰匙**（與既有 box keypair 並存）：
+- **Agent Ed25519 signing keypair**（`config.signKeyPair`）— 簽 HTTP 請求的身份
+- **Relay VAPID keypair** — 證明 relay 身份給 FCM/APNs／Mozilla autopush
+
+**端點**：
+| Route | 觸發者 | 用途 |
+|---|---|---|
+| `POST /push/{signPubKey}/register` | Agent | 新增一個 PushSubscription 到 relay store |
+| `POST /push/{signPubKey}/unregister` | Agent | 移除一個 endpoint |
+| `POST /push/{signPubKey}/notify` | Agent | 對該 agent 所有訂閱發送通知 |
+
+**簽章協議**（`apps/relay/src/sigVerify.ts`）：
+- Canonical body：`${action}|${signPubKey}|${ts}|${nonce}|${extra.join('|')}`
+- Ed25519 self-signed（無 server-issued challenge）→ 避免 pending-channel DoS
+- Replay 防護：`ts` 60s window + `nonce` 120s TTL cache；`NONCE_TTL_MS >= TS_WINDOW_MS` 為不變量
+
+**資料流**：
+```
+PWA ──[browser subscribe()]──▶ FCM/APNs
+ │  PushSubscription {endpoint, p256dh, auth}
+ │
+ │ [E2E WS: push:subscription-offer]
+ ▼
+Agent ──[POST /push/{signPubKey}/register, signed]──▶ Relay store（in-memory + JSON 快照）
+Agent ──[POST /push/{signPubKey}/notify,   signed]──▶ Relay → web-push (VAPID+ECE) → FCM/APNs
+```
+
+**Agent 觸發條件**（`run.ts` 事件掛鉤）：
+- `user-input-request`，且 `sendToSession(...) === 0`（無 peer 訂閱）→ 通知
+- `card-stream-end`，且無 peer 訂閱、未 interrupted、且 `hasPendingInputForSession` 為 false → 通知
+
+兩種觸發產生同 `{title, body, sessionId, tag, agentId}` 結構；`tag: sessionId` 讓後續訊息在瀏覽器端自動摺疊成單一通知。
+
+**PWA 側**（`apps/pwa/src/lib/pushSubscription.ts` + `components/NotificationPrompt.tsx`）：
+- Service Worker：`apps/pwa/src/sw.ts`（`injectManifest` 策略）處理 `push` 與 `notificationclick`
+- 授權提示：首次連線後若 `Notification.permission === 'default'` 顯示 Banner
+- 自動 offer：每次連線完成且權限已 `granted`，由 `App.tsx` 重送 `push:subscription-offer`（agent 的 register 是 upsert，等冪）
+
 ### Message 請求-回應模式
 
 ```typescript
@@ -373,6 +415,8 @@ interface Message {
 | `claude:set-session-permission` | PWA→Agent | 變更 session 權限模式 |
 | `claude:unsubscribe` | PWA→Agent | 取消訂閱 session |
 | `claude:preferences-updated` | Agent→PWA（push） | 全域偏好廣播 |
+| `push:subscription-offer` | PWA→Agent | 轉交 browser PushSubscription（E2E 加密） |
+| `push:subscription-offer:response` | Agent→PWA | 註冊結果 `{success, error?}` |
 
 ---
 

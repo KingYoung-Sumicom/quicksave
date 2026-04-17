@@ -87,7 +87,7 @@ export function RepoAppBar({
       {showDropdown && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setShowDropdown(false)} />
-          <div className="absolute left-4 right-4 top-[52px] z-50 bg-slate-700 rounded-lg shadow-lg border border-slate-600 overflow-hidden safe-area-top">
+          <div className="absolute left-4 right-4 top-[var(--app-bar-height)] z-50 bg-slate-700 rounded-lg shadow-lg border border-slate-600 overflow-hidden safe-area-top">
             {/* Root repo */}
             <button
               onClick={() => handleSwitch(rootPath!)}

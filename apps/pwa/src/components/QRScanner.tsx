@@ -3,7 +3,7 @@ import { Html5Qrcode } from 'html5-qrcode';
 import { Spinner } from './ui/Spinner';
 
 interface QRScannerProps {
-  onScan: (agentId: string, publicKey: string, name?: string) => void;
+  onScan: (agentId: string, publicKey: string, name?: string, signPublicKey?: string) => void;
   onPairingScan?: (publicKey: string) => void;
   onError?: (error: string) => void;
 }
@@ -29,8 +29,8 @@ export function QRScanner({ onScan, onPairingScan, onError }: QRScannerProps) {
     try {
       const url = new URL(decodedText);
 
-      // Agent URL format: https://quicksave.dev/#/connect/{agentId}?pk={key}&name={name}
-      const hash = url.hash; // e.g. "#/connect/abc123?pk=xyz&name=MyPC"
+      // Agent URL format: https://quicksave.dev/#/connect/{agentId}?pk={key}&spk={signKey}&name={name}
+      const hash = url.hash; // e.g. "#/connect/abc123?pk=xyz&spk=abc&name=MyPC"
       const connectMatch = hash.match(/^#\/connect\/([^?]+)\??(.*)/);
       if (connectMatch) {
         const agentId = connectMatch[1];
@@ -38,7 +38,8 @@ export function QRScanner({ onScan, onPairingScan, onError }: QRScannerProps) {
         const pk = hashParams.get('pk');
         if (agentId && pk) {
           const name = hashParams.get('name') || undefined;
-          stopAndCall(() => onScan(agentId, pk, name));
+          const spk = hashParams.get('spk') || undefined;
+          stopAndCall(() => onScan(agentId, pk, name, spk));
           return;
         }
       }
@@ -48,7 +49,8 @@ export function QRScanner({ onScan, onPairingScan, onError }: QRScannerProps) {
       const pk = url.searchParams.get('pk');
       if (id && pk) {
         const name = url.searchParams.get('name') || undefined;
-        stopAndCall(() => onScan(id, pk, name));
+        const spk = url.searchParams.get('spk') || undefined;
+        stopAndCall(() => onScan(id, pk, name, spk));
         return;
       }
 

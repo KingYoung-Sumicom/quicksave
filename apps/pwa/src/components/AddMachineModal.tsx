@@ -15,6 +15,7 @@ const MACHINE_ICONS = ['💻', '🖥️', '💼', '🏠', '🏢', '🔧', '⚡',
 export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
   const [agentId, setAgentId] = useState('');
   const [publicKey, setPublicKey] = useState('');
+  const [signPublicKey, setSignPublicKey] = useState<string | undefined>(undefined);
   const [nickname, setNickname] = useState('');
   const [icon, setIcon] = useState('💻');
   const [mode, setMode] = useState<'scan' | 'manual'>('manual');
@@ -23,9 +24,10 @@ export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
   const { addMachine, hasMachine } = useMachineStore();
   const { state, error } = useConnectionStore();
 
-  const handleQRScan = (scannedAgentId: string, scannedPublicKey: string, name?: string) => {
+  const handleQRScan = (scannedAgentId: string, scannedPublicKey: string, name?: string, scannedSignPk?: string) => {
     setAgentId(scannedAgentId);
     setPublicKey(scannedPublicKey);
+    setSignPublicKey(scannedSignPk);
     if (name && !nickname) {
       setNickname(name);
     }
@@ -48,6 +50,7 @@ export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
     addMachine({
       agentId: agentId.trim(),
       publicKey: publicKey.trim(),
+      signPublicKey: signPublicKey?.trim() || undefined,
       nickname: machineName,
       icon,
     });

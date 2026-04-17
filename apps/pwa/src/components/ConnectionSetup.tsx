@@ -140,11 +140,12 @@ export function ConnectionSetup({ onConnect, onSendApiKeyToAgent, onCheckAgentUp
           ) : (
             <div className="py-4">
               <QRScanner
-                onScan={(id, pk) => {
+                onScan={(id, pk, _name, spk) => {
                   // Save machine and connect
                   addMachine({
                     agentId: id,
                     publicKey: pk,
+                    signPublicKey: spk,
                     nickname: `Machine ${id.slice(0, 8)}`,
                     icon: '💻',
                   });

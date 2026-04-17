@@ -1,11 +1,15 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { generateAgentKeyPair } from './connection/connection.js';
-import { generateAgentId, type License } from '@sumicom/quicksave-shared';
+import { generateAgentId, generateSigningKeyPair, encodeKeyPair, type License } from '@sumicom/quicksave-shared';
 import { getQuicksaveDir, getConfigFile } from './service/singleton.js';
 
 export interface AgentConfig {
   agentId: string;
   keyPair: {
+    publicKey: string;
+    secretKey: string;
+  };
+  signKeyPair: {
     publicKey: string;
     secretKey: string;
   };
@@ -46,6 +50,7 @@ export function createDefaultConfig(signalingServer: string): AgentConfig {
   const config: AgentConfig = {
     agentId: generateAgentId(),
     keyPair: generateAgentKeyPair(),
+    signKeyPair: encodeKeyPair(generateSigningKeyPair()),
     signalingServer,
   };
   saveConfig(config);
@@ -59,10 +64,18 @@ export function getOrCreateConfig(signalingServer: string): AgentConfig {
     console.log('No existing config found, generating new identity...');
     config = createDefaultConfig(signalingServer);
     console.log('New agent identity created');
-  } else if (config.signalingServer !== signalingServer) {
-    // Update signaling server if changed
-    config.signalingServer = signalingServer;
-    saveConfig(config);
+  } else {
+    let dirty = false;
+    // Backfill signing keypair for configs created before Ed25519 push auth.
+    if (!config.signKeyPair) {
+      config.signKeyPair = encodeKeyPair(generateSigningKeyPair());
+      dirty = true;
+    }
+    if (config.signalingServer !== signalingServer) {
+      config.signalingServer = signalingServer;
+      dirty = true;
+    }
+    if (dirty) saveConfig(config);
   }
 
   return config;

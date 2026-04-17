@@ -33,22 +33,25 @@ export function useProjects(): ProjectEntry[] {
   return useMemo(() => {
     const pinnedSet = new Set(pinnedProjects);
 
-    // Pre-compute live session stats per cwd from all sessions
+    // Pre-compute live session stats per cwd from all sessions.
+    // Use lastPromptAt (stable during execution) in preference to lastModified
+    // (updates on every streaming event — causes projects to jump in the list).
     const liveStats = new Map<string, { lastActivityAt: number; sessionCount: number; lastSessionTitle?: string; hasActiveSession: boolean }>();
     for (const session of Object.values(sessions)) {
       if (!session.cwd) continue;
+      const ts = session.lastPromptAt ?? session.lastModified;
       const existing = liveStats.get(session.cwd);
       if (!existing) {
         liveStats.set(session.cwd, {
-          lastActivityAt: session.lastModified,
+          lastActivityAt: ts,
           sessionCount: 1,
           lastSessionTitle: session.summary,
           hasActiveSession: !!session.isActive,
         });
       } else {
         existing.sessionCount++;
-        if (session.lastModified > existing.lastActivityAt) {
-          existing.lastActivityAt = session.lastModified;
+        if (ts > existing.lastActivityAt) {
+          existing.lastActivityAt = ts;
           existing.lastSessionTitle = session.summary;
         }
         if (session.isActive) existing.hasActiveSession = true;

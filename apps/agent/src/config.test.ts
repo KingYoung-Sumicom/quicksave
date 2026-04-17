@@ -9,6 +9,11 @@ vi.mock('./connection/connection.js', () => ({
 }));
 vi.mock('@sumicom/quicksave-shared', () => ({
   generateAgentId: () => 'mock-agent-id',
+  generateSigningKeyPair: () => ({
+    publicKey: new Uint8Array([1, 2, 3]),
+    secretKey: new Uint8Array([4, 5, 6]),
+  }),
+  encodeKeyPair: () => ({ publicKey: 'mock-sign-pk', secretKey: 'mock-sign-sk' }),
 }));
 
 const mockedExistsSync = vi.mocked(existsSync);
@@ -41,6 +46,7 @@ const CONFIG_FILE = '/fake/home/.quicksave/agent.json';
 const baseConfig: AgentConfig = {
   agentId: 'test-agent',
   keyPair: { publicKey: 'pk', secretKey: 'sk' },
+  signKeyPair: { publicKey: 'sign-pk', secretKey: 'sign-sk' },
   signalingServer: 'wss://signal.quicksave.dev',
 };
 
@@ -108,11 +114,12 @@ describe('saveConfig', () => {
 });
 
 describe('createDefaultConfig', () => {
-  it('generates a config with mocked id and keypair, then saves it', () => {
+  it('generates a config with mocked id and keypairs, then saves it', () => {
     mockedExistsSync.mockReturnValue(true);
     const config = createDefaultConfig('wss://signal.example.com');
     expect(config.agentId).toBe('mock-agent-id');
     expect(config.keyPair).toEqual({ publicKey: 'mock-pk', secretKey: 'mock-sk' });
+    expect(config.signKeyPair).toEqual({ publicKey: 'mock-sign-pk', secretKey: 'mock-sign-sk' });
     expect(config.signalingServer).toBe('wss://signal.example.com');
     expect(mockedWriteFileSync).toHaveBeenCalled();
   });
@@ -139,6 +146,15 @@ describe('getOrCreateConfig', () => {
     mockConfigFile(baseConfig);
     const config = getOrCreateConfig('wss://new-signal.example.com');
     expect(config.signalingServer).toBe('wss://new-signal.example.com');
+    expect(mockedWriteFileSync).toHaveBeenCalled();
+  });
+
+  it('backfills signKeyPair when missing from an older config', () => {
+    const legacyConfig = { ...baseConfig } as any;
+    delete legacyConfig.signKeyPair;
+    mockConfigFile(legacyConfig);
+    const config = getOrCreateConfig('wss://signal.quicksave.dev');
+    expect(config.signKeyPair).toEqual({ publicKey: 'mock-sign-pk', secretKey: 'mock-sign-sk' });
     expect(mockedWriteFileSync).toHaveBeenCalled();
   });
 });

@@ -14,7 +14,7 @@ interface BaseStatusBarProps {
 export function BaseStatusBar({ left, center, right, below }: BaseStatusBarProps) {
   return (
     <header className="sticky top-0 z-30 bg-slate-800 border-b border-slate-700 safe-area-top touch-manipulation">
-      <div className="relative flex items-center px-4 py-3 min-h-[52px]">
+      <div className="relative flex items-center px-4 h-[var(--app-bar-height)]">
         {/* Left slot */}
         <div className="flex items-center w-10 shrink-0">
           {left}
@@ -61,6 +61,21 @@ export function BackButton({ onClick }: { onClick: () => void }) {
     >
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+      </svg>
+    </button>
+  );
+}
+
+/** Reusable plus / "add" button — pairs with SettingsGearButton in status bars. */
+export function PlusButton({ onClick, label = 'Add' }: { onClick: () => void; label?: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className="p-1.5 rounded-md transition-colors hover:bg-slate-700 text-slate-400"
+      aria-label={label}
+    >
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
       </svg>
     </button>
   );

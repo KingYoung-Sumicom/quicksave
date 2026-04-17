@@ -38,6 +38,18 @@ html, body {
   flex-direction: column;
 }
 
+/* Shared app bar height — kept in sync across all status bars.
+   Mobile is taller so a two-line session title can fit. */
+:root {
+  --app-bar-height: 64px;
+}
+
+@media (min-width: 768px) {
+  :root {
+    --app-bar-height: 52px;
+  }
+}
+
 /* Safe area padding for notched devices */
 .safe-area-top {
   padding-top: env(safe-area-inset-top);

@@ -3,6 +3,9 @@ import type { RelayInstance, Peer, PeerRegistryInterface } from '@sumicom/ws-rel
 import { WebSocket } from 'ws';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { SyncStore } from './syncStore.js';
+import { PushStore } from './pushStore.js';
+import { PushService } from './pushService.js';
+import { createPushRoutes, type PushRoutes } from './pushRoutes.js';
 
 // Injected by esbuild at build time from package.json
 declare const VERSION: string;
@@ -10,6 +13,23 @@ declare const VERSION: string;
 const PORT = parseInt(process.env.PORT || '8080', 10);
 
 const syncStore = new SyncStore();
+
+// Push notifications are optional: only initialised when VAPID keys are set.
+let pushRoutes: PushRoutes | null = null;
+const vapidPublicKey = process.env.VAPID_PUBLIC_KEY;
+const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY;
+if (vapidPublicKey && vapidPrivateKey) {
+  const pushStore = new PushStore({ path: process.env.PUSH_STORE_PATH });
+  const pushService = new PushService({
+    vapidPublicKey,
+    vapidPrivateKey,
+    vapidSubject: process.env.VAPID_SUBJECT ?? 'mailto:admin@quicksave.dev',
+  });
+  pushRoutes = createPushRoutes({ store: pushStore, service: pushService });
+  console.log('[push] web-push enabled');
+} else {
+  console.log('[push] web-push disabled (VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY not set)');
+}
 
 // Quicksave-specific agent watcher tracking
 // agentId → Set of pwa peer addresses ('pwa:{pwaKey}') watching that agent
@@ -185,11 +205,15 @@ relay = createRelay({
         return;
       }
 
-      // Override /stats to include syncStore stats
+      // Override /stats to include syncStore + push stats
       if (req.url === '/stats') {
         const stats = relay.registry.getStats();
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ...stats, syncStore: syncStore.stats }));
+        res.end(JSON.stringify({
+          ...stats,
+          syncStore: syncStore.stats,
+          push: pushRoutes?.stats() ?? null,
+        }));
         return;
       }
 
@@ -198,6 +222,14 @@ relay = createRelay({
       if (syncMatch) {
         handleSyncRequest(req, res, syncMatch[1], !!syncMatch[2]);
         return;
+      }
+
+      // Handle /push/:signPubKey/:action routes
+      if (pushRoutes && req.url) {
+        const pushMatch = req.url.match(/^\/push\/([A-Za-z0-9_-]{10,120})\/(register|unregister|notify)$/);
+        if (pushMatch && pushRoutes.handle(req, res, pushMatch[1], pushMatch[2])) {
+          return;
+        }
       }
 
       next();
@@ -209,6 +241,7 @@ console.log(`Quicksave Signaling Server v${typeof VERSION !== 'undefined' ? VERS
 console.log(`  Agent: ws://localhost:${PORT}/agent/{agentId}`);
 console.log(`  PWA:   ws://localhost:${PORT}/pwa/{encodedPublicKey}`);
 console.log(`  Sync:  http://localhost:${PORT}/sync/{keyHash}`);
+if (pushRoutes) console.log(`  Push:  http://localhost:${PORT}/push/{signPubKey}/{register|unregister|notify}`);
 
 process.on('SIGINT', () => {
   console.log('\nShutting down...');

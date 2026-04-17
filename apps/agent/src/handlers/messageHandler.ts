@@ -109,8 +109,11 @@ import {
   ProjectListReposRequestPayload,
   ProjectListReposResponsePayload,
   ProjectRepo,
+  PushSubscriptionOfferPayload,
+  PushSubscriptionOfferResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { GitOperations } from '../git/operations.js';
+import type { PushClient } from '../service/pushClient.js';
 import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, removeManagedRepo, addManagedCodingPath, removeManagedCodingPath } from '../config.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';
 import { CommitSummaryCliService, CommitSummaryCliError } from '../ai/commitSummaryCli.js';
@@ -145,6 +148,7 @@ export class MessageHandler {
     new ClaudeCodeProvider(),
     new CodexSdkProvider(),
   ]);
+  private pushClient: PushClient | null = null;
   private latestVersionCache: { version: string; checkedAt: number } | null = null;
   private versionCheckInFlight: Promise<string | null> | null = null;
   private codexModelsCache: { models: CodexModelInfo[]; checkedAt: number } | null = null;
@@ -337,6 +341,17 @@ export class MessageHandler {
     return this.claudeService;
   }
 
+  /** Daemon wires this after construction so push:subscription-offer can
+   *  forward to the relay. Absent in tests or when VAPID/signaling aren't
+   *  configured — offer responses will report an error in that case. */
+  setPushClient(client: PushClient | null): void {
+    this.pushClient = client;
+  }
+
+  getPushClient(): PushClient | null {
+    return this.pushClient;
+  }
+
   private getAiService(): CommitSummaryService | null {
     const apiKey = getAnthropicApiKey();
     if (!apiKey) return null;
@@ -511,6 +526,8 @@ export class MessageHandler {
           return this.handleListProjectSummaries(message);
         case 'project:list-repos':
           return await this.handleListProjectRepos(message as Message<ProjectListReposRequestPayload>);
+        case 'push:subscription-offer':
+          return this.handlePushSubscriptionOffer(message as Message<PushSubscriptionOfferPayload>);
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
     }
@@ -2171,6 +2188,23 @@ export class MessageHandler {
     } catch {
       return undefined;
     }
+  }
+
+  private async handlePushSubscriptionOffer(
+    message: Message<PushSubscriptionOfferPayload>,
+  ): Promise<Message<PushSubscriptionOfferResponsePayload>> {
+    const client = this.pushClient;
+    let payload: PushSubscriptionOfferResponsePayload;
+    if (!client) {
+      payload = { success: false, error: 'push-not-configured' };
+    } else {
+      const { subscription, relayHttpUrl } = message.payload;
+      const result = await client.register(subscription, relayHttpUrl);
+      payload = result.ok ? { success: true } : { success: false, error: result.error ?? `http-${result.status}` };
+    }
+    const response = createMessage<PushSubscriptionOfferResponsePayload>('push:subscription-offer:response', payload);
+    response.id = message.id;
+    return response;
   }
 
   private createErrorResponse(id: string, code: string, message: string): Message<ErrorPayload> {

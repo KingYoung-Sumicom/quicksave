@@ -22,6 +22,7 @@ import { MessageHandler } from '../handlers/messageHandler.js';
 import { GitOperations } from '../git/operations.js';
 import { IpcServer } from './ipcServer.js';
 import { DebugHttpServer } from './debugHttpServer.js';
+import { PushClient, httpBaseFromSignalingUrl } from './pushClient.js';
 import {
   acquireLock,
   ensureDirectories,
@@ -88,6 +89,15 @@ export async function runDaemon(): Promise<void> {
   const isProduction = !BUILD_ID.startsWith('dev-');
   const messageHandler = new MessageHandler(validRepos, config.license, codingPaths, isProduction);
 
+  // Signed HTTP side-channel to the relay for Web Push. The relay's default
+  // push HTTP origin is derived from the signaling URL; PWAs may override per
+  // offer for dev/staging relays.
+  const pushClient = new PushClient({
+    signKeyPair: config.signKeyPair,
+    defaultRelayHttpUrl: httpBaseFromSignalingUrl(config.signalingServer),
+  });
+  messageHandler.setPushClient(pushClient);
+
   // Self-restart after update: spawn a detached launcher that
   // 1. sanity-checks the new binary (--version)
   // 2. only then kills the old daemon
@@ -128,7 +138,24 @@ export async function runDaemon(): Promise<void> {
     connection.sendToSession(event.sessionId, createMessage('claude:card-event', event));
   });
   claudeService.on('card-stream-end', (result) => {
-    connection.sendToSession(result.sessionId, createMessage('claude:card-stream-end', result));
+    const peersSent = connection.sendToSession(result.sessionId, createMessage('claude:card-stream-end', result));
+
+    // Web Push trigger: session went idle while no PWA is watching. Skip when
+    // the turn paused for user input — the user-input-request handler already
+    // notified (and the `tag` would collapse anyway, but the extra round-trip
+    // is wasted). Also skip when the agent was explicitly interrupted.
+    if (
+      peersSent === 0
+      && !result.interrupted
+      && !claudeService.hasPendingInputForSession(result.sessionId)
+    ) {
+      pushClient.notify(result.sessionId, {
+        title: 'Quicksave',
+        body: 'Session is ready for your next instruction',
+        tag: result.sessionId,
+        agentId: config.agentId,
+      }).catch((err) => console.warn('[push] notify (idle) failed', err));
+    }
 
     const cwd = claudeService.getSessionCwd(result.sessionId);
     const inputTokens = result.tokenUsage?.input ?? 0;
@@ -177,7 +204,21 @@ export async function runDaemon(): Promise<void> {
     });
   });
   claudeService.on('user-input-request', (request) => {
-    connection.sendToSession(request.sessionId, createMessage('claude:user-input-request', request));
+    const peersSent = connection.sendToSession(request.sessionId, createMessage('claude:user-input-request', request));
+
+    // Web Push trigger: agent is blocked on user input and nobody is watching.
+    if (peersSent === 0) {
+      const body = request.inputType === 'permission'
+        ? 'Permission required to continue'
+        : 'Input required to continue';
+      pushClient.notify(request.sessionId, {
+        title: request.title || 'Quicksave',
+        body,
+        tag: request.sessionId,
+        agentId: config.agentId,
+      }).catch((err) => console.warn('[push] notify (input-request) failed', err));
+    }
+
     getEventStore().record({
       type: 'permission_requested',
       sessionId: request.sessionId,
@@ -379,14 +420,16 @@ function registerDaemonMethods(
   ipcServer: IpcServer,
   connection: AgentConnection,
   messageHandler: MessageHandler,
-  config: { agentId: string; keyPair: { publicKey: string }; signalingServer: string },
+  config: { agentId: string; keyPair: { publicKey: string }; signKeyPair: { publicKey: string }; signalingServer: string },
 ): void {
   // get-pairing-info
   ipcServer.registerMethod('get-pairing-info', (): PairingInfoResult => {
-    const pairingUrl = `https://quicksave.dev/#/connect/${config.agentId}?pk=${encodeURIComponent(config.keyPair.publicKey)}&name=${encodeURIComponent(hostname())}`;
+    const signPk = config.signKeyPair.publicKey;
+    const pairingUrl = `https://quicksave.dev/#/connect/${config.agentId}?pk=${encodeURIComponent(config.keyPair.publicKey)}&spk=${encodeURIComponent(signPk)}&name=${encodeURIComponent(hostname())}`;
     return {
       agentId: config.agentId,
       publicKey: config.keyPair.publicKey,
+      signPublicKey: signPk,
       pairingUrl,
       connectionState: connection.hasPeers() ? 'connected' : 'disconnected',
       peerCount: connection.getPeerCount(),

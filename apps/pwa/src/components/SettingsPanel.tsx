@@ -5,6 +5,8 @@ import { DevicePairingSection } from './DevicePairingSection';
 import { ApiKeySection } from './settings/ApiKeySection';
 import { PrimaryKeySection } from './settings/PrimaryKeySection';
 import { AgentUpdateSection } from './settings/AgentUpdateSection';
+import { NotificationSection } from './settings/NotificationSection';
+import type { Message, PushSubscriptionOfferPayload } from '@sumicom/quicksave-shared';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -12,9 +14,10 @@ interface SettingsPanelProps {
   onSendApiKeyToAgent?: (apiKey: string) => Promise<boolean>;
   onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
   onUpdateAgent?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; restarting: boolean; error?: string }>;
+  onPushOffer?: (msg: Message<PushSubscriptionOfferPayload>) => void;
 }
 
-export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAgentUpdate, onUpdateAgent }: SettingsPanelProps) {
+export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAgentUpdate, onUpdateAgent, onPushOffer }: SettingsPanelProps) {
   const connectionState = useConnectionStore((s) => s.state);
 
   return (
@@ -45,6 +48,10 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAge
           <div className="border-t border-slate-700" />
 
           <DevicePairingSection />
+
+          <div className="border-t border-slate-700" />
+
+          <NotificationSection onPushOffer={onPushOffer} />
 
           {/* Git Attribution */}
           <div className="border-t border-slate-700" />

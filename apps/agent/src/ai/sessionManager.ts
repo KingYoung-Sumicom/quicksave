@@ -723,6 +723,16 @@ export class SessionManager extends EventEmitter {
     return Array.from(this.pendingInputRequests.values()).map(p => p.request);
   }
 
+  /** True when a user-input-request is outstanding for this session. Used by
+   *  the daemon to avoid firing a redundant "session idle" push when the
+   *  card-stream-end is actually a permission-prompt pause. */
+  hasPendingInputForSession(sessionId: string): boolean {
+    for (const p of this.pendingInputRequests.values()) {
+      if (p.request.sessionId === sessionId) return true;
+    }
+    return false;
+  }
+
   getDebugState() {
     const pendingInputs = Array.from(this.pendingInputRequests.values()).map(p => ({
       requestId: p.request.requestId,

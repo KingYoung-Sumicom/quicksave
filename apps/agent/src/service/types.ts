@@ -167,6 +167,7 @@ export interface ServiceState {
 export interface PairingInfoResult {
   agentId: string;
   publicKey: string;
+  signPublicKey: string;
   pairingUrl: string;
   connectionState: 'connected' | 'connecting' | 'disconnected';
   peerCount: number;

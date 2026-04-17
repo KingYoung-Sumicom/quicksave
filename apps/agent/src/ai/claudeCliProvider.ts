@@ -258,6 +258,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       '--permission-prompt-tool', 'stdio',
       '--verbose',
       '-p', '',  // empty print flag — prompt sent via stdin
+      '--replay-user-messages',  // keep CLI alive across stdin user messages (enables hot resume)
     ];
 
     if (opts.systemPrompt) {
@@ -555,8 +556,10 @@ export class ClaudeCliProvider implements CodingAgentProvider {
             pending.reject(new Error(responseBody.error ?? 'control_request failed'));
           }
         } else {
-          // Unmatched response — diagnostic for missed routing (e.g. wrong cliSession instance).
-          console.warn(`[cli] control_response with no matching pending request: request_id=${reqId} subtype=${responseBody?.subtype} session=${sessionId.slice(0, 8)} pending_keys=[${Array.from(cliSession.pendingControlResponses.keys()).join(',')}]`);
+          // Unmatched response: almost always an echo from --replay-user-messages of a
+          // control_response WE sent (e.g. permission decision). Leave a debug line rather
+          // than a warning since this is expected in replay mode.
+          console.debug(`[cli] control_response with no matching pending request (likely replay echo): request_id=${reqId} subtype=${responseBody?.subtype} session=${sessionId.slice(0, 8)}`);
         }
       }
       return false;
@@ -633,6 +636,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     // ── User messages (prompts + tool results) ──
     if (msg.type === 'user') {
       if (msg.agentId) return false;  // sidechain
+      if (msg.isReplay) return false;  // echoed back by --replay-user-messages; we already added it to cardBuilder history
       const content = msg.message?.content;
       if (typeof content === 'string' && content) {
         flushText();

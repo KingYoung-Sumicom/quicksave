@@ -19,6 +19,7 @@ export interface Machine {
   // Core identity
   agentId: string;
   publicKey: string;
+  signPublicKey?: string;
 
   // User-friendly metadata
   nickname: string;
@@ -42,7 +43,7 @@ interface MachineStore {
   pinnedProjects: string[]; // array of projectIds
 
   // Actions
-  addMachine: (machine: Pick<Machine, 'agentId' | 'publicKey' | 'nickname' | 'icon'>) => void;
+  addMachine: (machine: Pick<Machine, 'agentId' | 'publicKey' | 'nickname' | 'icon'> & { signPublicKey?: string }) => void;
   updateMachine: (agentId: string, updates: Partial<Omit<Machine, 'agentId'>>) => void;
   removeMachine: (agentId: string) => void;
   recordConnection: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: string[], availableCodingPaths?: string[]) => void;
