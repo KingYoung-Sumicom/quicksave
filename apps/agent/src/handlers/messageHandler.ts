@@ -108,6 +108,7 @@ import {
 import { GitOperations } from '../git/operations.js';
 import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, removeManagedRepo, addManagedCodingPath, removeManagedCodingPath } from '../config.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';
+import { CommitSummaryCliService, CommitSummaryCliError } from '../ai/commitSummaryCli.js';
 import { SessionManager } from '../ai/sessionManager.js';
 import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
 import { CodexSdkProvider } from '../ai/codexSdkProvider.js';
@@ -130,6 +131,7 @@ export class MessageHandler {
   private availableRepos: Repository[];
   private codingPaths: Map<string, CodingPath> = new Map(); // path -> CodingPath
   private aiService: CommitSummaryService | null = null;
+  private aiCliService: CommitSummaryCliService | null = null;
   private claudeService: SessionManager = new SessionManager([
     new ClaudeCodeProvider(),
     new CodexSdkProvider(),
@@ -849,50 +851,75 @@ export class MessageHandler {
     message: Message<GenerateCommitSummaryRequestPayload>,
     peerAddress: string
   ): Promise<Message<GenerateCommitSummaryResponsePayload>> {
-    const aiService = this.getAiService();
+    const source = message.payload.source ?? 'api';
 
-    if (!aiService) {
-      const response = createMessage<GenerateCommitSummaryResponsePayload>(
+    const respond = (payload: GenerateCommitSummaryResponsePayload) => {
+      const r = createMessage<GenerateCommitSummaryResponsePayload>(
         'ai:generate-commit-summary:response',
-        {
+        payload
+      );
+      r.id = message.id;
+      return r;
+    };
+
+    // API source requires an Anthropic key; CLI source does not.
+    let aiService: CommitSummaryService | null = null;
+    if (source === 'api') {
+      aiService = this.getAiService();
+      if (!aiService) {
+        return respond({
           success: false,
           error: 'Configure your API key in Settings',
           errorCode: 'NO_API_KEY',
-        }
-      );
-      response.id = message.id;
-      return response;
+        });
+      }
     }
 
     try {
       const git = this.getGit(peerAddress);
       const status = await git.getStatus();
       if (status.staged.length === 0) {
-        const response = createMessage<GenerateCommitSummaryResponsePayload>(
-          'ai:generate-commit-summary:response',
-          {
-            success: false,
-            error: 'No staged changes to summarize',
-            errorCode: 'NO_STAGED_CHANGES',
-          }
-        );
-        response.id = message.id;
-        return response;
+        return respond({
+          success: false,
+          error: 'No staged changes to summarize',
+          errorCode: 'NO_STAGED_CHANGES',
+        });
       }
 
-      // Collect diffs and context in parallel
-      const [diffs, recentLog, branchInfo, conventions] = await Promise.all([
-        Promise.all(status.staged.map((file) => git.getDiff(file.path, true))),
+      const [recentLog, branchInfo, conventions] = await Promise.all([
         git.getLog(10).catch(() => []),
         git.getBranches().catch(() => ({ current: '' })),
         git.readCommitConventions().catch(() => undefined),
       ]);
-
       const recentCommits = recentLog.map((c) => c.message);
       const branchName = branchInfo.current;
 
-      // Generate summary (uses internal queue and cache)
-      const result = await aiService.generateSummary({
+      if (source === 'claude-cli') {
+        const cliService = this.getAiCliService();
+        const repoPath = this.getClientRepoPath(peerAddress);
+        const result = await cliService.generateSummary({
+          repoPath,
+          context: message.payload.context,
+          model: message.payload.model,
+          recentCommits: recentCommits.length > 0 ? recentCommits : undefined,
+          branchName: branchName || undefined,
+          conventions,
+          attribution: message.payload.attribution,
+        });
+        return respond({
+          success: true,
+          summary: result.summary,
+          description: result.description,
+          tokenUsage: result.tokenUsage,
+        });
+      }
+
+      // Collect diffs for the API-key path (CLI path fetches its own).
+      const diffs = await Promise.all(
+        status.staged.map((file) => git.getDiff(file.path, true))
+      );
+
+      const result = await aiService!.generateSummary({
         diffs,
         context: message.payload.context,
         model: message.payload.model,
@@ -901,34 +928,36 @@ export class MessageHandler {
         conventions,
         attribution: message.payload.attribution,
       });
-
-      const response = createMessage<GenerateCommitSummaryResponsePayload>(
-        'ai:generate-commit-summary:response',
-        {
-          success: true,
-          summary: result.summary,
-          description: result.description,
-          tokenUsage: result.tokenUsage,
-          cached: result.cached,
-        }
-      );
-      response.id = message.id;
-      return response;
+      return respond({
+        success: true,
+        summary: result.summary,
+        description: result.description,
+        tokenUsage: result.tokenUsage,
+        cached: result.cached,
+      });
     } catch (error) {
+      if (error instanceof CommitSummaryCliError) {
+        return respond({
+          success: false,
+          error: error.message,
+          errorCode: error.errorCode,
+        });
+      }
       const errorMessage = error instanceof Error ? error.message : 'Failed to generate summary';
       const isRateLimit = errorMessage.includes('rate_limit');
-
-      const response = createMessage<GenerateCommitSummaryResponsePayload>(
-        'ai:generate-commit-summary:response',
-        {
-          success: false,
-          error: errorMessage,
-          errorCode: isRateLimit ? 'RATE_LIMITED' : 'API_ERROR',
-        }
-      );
-      response.id = message.id;
-      return response;
+      return respond({
+        success: false,
+        error: errorMessage,
+        errorCode: isRateLimit ? 'RATE_LIMITED' : 'API_ERROR',
+      });
     }
+  }
+
+  private getAiCliService(): CommitSummaryCliService {
+    if (!this.aiCliService) {
+      this.aiCliService = new CommitSummaryCliService();
+    }
+    return this.aiCliService;
   }
 
   private handleSetApiKey(message: Message<SetApiKeyRequestPayload>): Message<SetApiKeyResponsePayload> {

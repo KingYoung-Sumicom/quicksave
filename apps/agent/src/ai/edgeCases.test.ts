@@ -491,3 +491,133 @@ describe('StreamCardBuilder clearCards edge cases', () => {
     expect(cb.jsonlCutoff).toBeNull();
   });
 });
+
+// ============================================================================
+// Test Suite 6: scheduleDeferredClear — race-safe end-of-turn cleanup
+// ============================================================================
+//
+// Bug reproduction: when the CLI emits `result`, the prior synchronous
+//   clearCards() + jsonlCutoff = null
+// produces a window where getCards() has no streamingCards AND reads a JSONL
+// that hasn't received the turn's final assistant messages yet, so the PWA's
+// setCards() replaces the live view with an incomplete snapshot.
+// scheduleDeferredClear waits for JSONL size to stabilize before clearing.
+
+describe('StreamCardBuilder scheduleDeferredClear', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('waits for JSONL size to stabilize, then clears cards and updates cutoff', async () => {
+    const cb = new StreamCardBuilder('sess-defer-1', 'stream-1', '/test');
+    cb.jsonlCutoff = 1000;
+    cb.userMessage('hi');
+    cb.assistantText('streaming...');
+    cb.finalizeAssistantText();
+    expect(cb.getCards().length).toBeGreaterThan(0);
+
+    // Simulate JSONL growing for a couple of polls, then stabilizing at 4200.
+    const sizes = [3800, 4000, 4200, 4200, 4200, 4200, 4200, 4200, 4200];
+    let call = 0;
+    vi.mocked(stat).mockImplementation(async () => ({ size: sizes[Math.min(call++, sizes.length - 1)] } as any));
+
+    await cb.scheduleDeferredClear({ maxWaitMs: 500, stableMs: 30, pollMs: 5 });
+
+    expect(cb.getCards()).toEqual([]);
+    expect(cb.jsonlCutoff).toBe(4200);
+  });
+
+  it('cancelDeferredClear aborts the pending clear; cards and cutoff remain', async () => {
+    const cb = new StreamCardBuilder('sess-defer-2', 'stream-1', '/test');
+    cb.jsonlCutoff = 1000;
+    cb.userMessage('keep me');
+    cb.assistantText('dont clear');
+    cb.finalizeAssistantText();
+    const countBefore = cb.getCards().length;
+
+    // Size keeps growing so the poll never reaches stability.
+    let size = 2000;
+    vi.mocked(stat).mockImplementation(async () => ({ size: (size += 100) } as any));
+
+    const p = cb.scheduleDeferredClear({ maxWaitMs: 500, stableMs: 50, pollMs: 5 });
+    // Cancel quickly, before stability window completes.
+    await new Promise((r) => setTimeout(r, 10));
+    cb.cancelDeferredClear();
+    await p;
+
+    expect(cb.getCards().length).toBe(countBefore);
+    expect(cb.jsonlCutoff).toBe(1000); // Unchanged
+  });
+
+  it('a newer scheduleDeferredClear invalidates an older in-flight one', async () => {
+    const cb = new StreamCardBuilder('sess-defer-3', 'stream-1', '/test');
+    cb.jsonlCutoff = 500;
+    cb.userMessage('old turn');
+
+    // First call: growing, so its inner loop will keep polling.
+    let sz = 500;
+    vi.mocked(stat).mockImplementation(async () => ({ size: (sz += 50) } as any));
+
+    const older = cb.scheduleDeferredClear({ maxWaitMs: 500, stableMs: 100, pollMs: 5 });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // New call: this should invalidate the token. Use a deterministic mock
+    // that stabilizes immediately at 9000.
+    vi.mocked(stat).mockImplementation(async () => ({ size: 9000 } as any));
+    const newer = cb.scheduleDeferredClear({ maxWaitMs: 500, stableMs: 20, pollMs: 5 });
+
+    await Promise.all([older, newer]);
+
+    // The newer one should win: cards cleared, cutoff = 9000.
+    expect(cb.getCards()).toEqual([]);
+    expect(cb.jsonlCutoff).toBe(9000);
+  });
+
+  it('gives up after maxWaitMs if file never stabilizes but still clears', async () => {
+    const cb = new StreamCardBuilder('sess-defer-4', 'stream-1', '/test');
+    cb.jsonlCutoff = 100;
+    cb.userMessage('u');
+    cb.assistantText('a');
+    cb.finalizeAssistantText();
+
+    let sz = 100;
+    vi.mocked(stat).mockImplementation(async () => ({ size: (sz += 10) } as any));
+
+    const start = Date.now();
+    await cb.scheduleDeferredClear({ maxWaitMs: 60, stableMs: 500, pollMs: 5 });
+    const elapsed = Date.now() - start;
+
+    expect(elapsed).toBeGreaterThanOrEqual(55);
+    expect(cb.getCards()).toEqual([]);
+    expect(cb.jsonlCutoff).toBeGreaterThan(100);
+  });
+
+  it('getCards returns a complete view (JSONL OR streamingCards) throughout the defer window', async () => {
+    // Regression: the original bug was that getCards() between clearCards and
+    // JSONL flush returned neither. With deferred clear, getCards should always
+    // return either the in-memory cards (before clear) OR JSONL (after clear).
+    const cb = new StreamCardBuilder('sess-defer-5', 'stream-1', '/test');
+    cb.jsonlCutoff = 2000;
+    cb.userMessage('hello');
+    cb.assistantText('answer');
+    cb.finalizeAssistantText();
+    const cardsBefore = cb.getCards();
+    expect(cardsBefore.length).toBeGreaterThan(0);
+
+    // JSONL is still growing when the defer starts.
+    const sizes = [2500, 2600, 2600, 2600, 2600, 2600];
+    let i = 0;
+    vi.mocked(stat).mockImplementation(async () => ({ size: sizes[Math.min(i++, sizes.length - 1)] } as any));
+
+    const p = cb.scheduleDeferredClear({ maxWaitMs: 200, stableMs: 20, pollMs: 5 });
+
+    // Mid-flight: cards should still be available.
+    await new Promise((r) => setTimeout(r, 3));
+    expect(cb.getCards().length).toBe(cardsBefore.length);
+
+    await p;
+    // After defer completes, cards are cleared but cutoff advanced.
+    expect(cb.getCards()).toEqual([]);
+    expect(cb.jsonlCutoff).toBe(2600);
+  });
+});

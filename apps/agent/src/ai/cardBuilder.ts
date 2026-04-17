@@ -186,6 +186,9 @@ export class StreamCardBuilder {
   private currentTextCardId: CardId | null = null;
   /** JSONL file byte offset at the start of the current turn — history reads stop here. */
   private _jsonlCutoff: number | null = null;
+  /** Token identifying an in-flight deferred clear. A later call (new turn, cancel)
+   * replaces this token, causing the pending polling task to bail out. */
+  private _pendingClearToken: symbol | null = null;
 
   constructor(sessionId: string, streamId: string, cwd: string) {
     this.sessionId = sessionId;
@@ -257,6 +260,68 @@ export class StreamCardBuilder {
     } catch {
       this._jsonlCutoff = null;
     }
+  }
+
+  /**
+   * Wait for the JSONL file size to stop growing, then atomically clear in-memory
+   * cards and re-snapshot the cutoff to the final size.
+   *
+   * Why: when the `result` message arrives from the CLI on stdout, the CLI may
+   * not yet have flushed the turn's assistant messages to the session JSONL.
+   * Clearing `streamingCards` immediately and pointing getCards at the (still
+   * incomplete) JSONL produces a race window where getCards returns a snapshot
+   * that's missing the last turn's messages.
+   *
+   * By deferring the clear until the file has stopped changing, getCards always
+   * sees a consistent view: either JSONL (after flush) or in-memory cards (before).
+   *
+   * Cancel by calling `cancelDeferredClear()` — e.g. on hot resume when a new
+   * turn starts before the file has stabilized.
+   */
+  async scheduleDeferredClear(opts?: { maxWaitMs?: number; stableMs?: number; pollMs?: number }): Promise<void> {
+    const maxWaitMs = opts?.maxWaitMs ?? 3000;
+    const stableMs = opts?.stableMs ?? 300;
+    const pollMs = opts?.pollMs ?? 50;
+
+    const token = Symbol('deferred-clear');
+    this._pendingClearToken = token;
+    const p = jsonlPath(this.sessionId, this.cwd);
+
+    const getSize = async (): Promise<number> => {
+      try { return (await stat(p)).size; } catch { return -1; }
+    };
+
+    let lastSize = await getSize();
+    if (this._pendingClearToken !== token) return;
+
+    let stableFor = 0;
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs && stableFor < stableMs) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      if (this._pendingClearToken !== token) return;
+      const size = await getSize();
+      if (this._pendingClearToken !== token) return;
+      if (size >= 0 && size === lastSize) {
+        stableFor += pollMs;
+      } else {
+        stableFor = 0;
+        lastSize = size;
+      }
+    }
+    if (this._pendingClearToken !== token) return;
+    this._pendingClearToken = null;
+    this._jsonlCutoff = lastSize >= 0 ? lastSize : null;
+    this.cards.clear();
+    this.toolUseIdToCardId.clear();
+    this.agentIdToCardId.clear();
+    this.ephemeralCards.clear();
+    this.currentTextCardId = null;
+  }
+
+  /** Cancel any pending deferred clear. Called on hot resume so the queued clear
+   * doesn't wipe the next turn's cards once it completes. */
+  cancelDeferredClear(): void {
+    this._pendingClearToken = null;
   }
 
   get jsonlCutoff(): number | null {

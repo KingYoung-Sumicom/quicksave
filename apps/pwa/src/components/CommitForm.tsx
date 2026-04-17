@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { Spinner } from './ui/Spinner';
 import { ErrorBox } from './ui/ErrorBox';
 import { useGitStore, selectCanCommit } from '../stores/gitStore';
-import { CLAUDE_MODELS, type ClaudeModel } from '@sumicom/quicksave-shared';
+import { CLAUDE_MODELS, type ClaudeModel, type CommitSummarySource } from '@sumicom/quicksave-shared';
 import { clsx } from 'clsx';
 
 interface CommitFormProps {
@@ -30,9 +30,20 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
     aiTokenUsage,
     aiResultCached,
     isGeneratingAiSummary,
+    commitSummarySource,
+    setCommitSummarySource,
   } = useGitStore();
   const canCommit = useGitStore(selectCanCommit);
   const [showDescription, setShowDescription] = useState(false);
+  const messageRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-resize the single-line-but-wrapping commit message textarea to fit its content.
+  useLayoutEffect(() => {
+    const el = messageRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [commitMessage]);
 
   // Auto-show description field when commitDescription has content
   // (e.g., from AI auto-fill or localStorage restoration)
@@ -68,6 +79,13 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
     return null;
   }
 
+  const isCliSource = commitSummarySource === 'claude-cli';
+  // CLI source uses the user's Claude Code subscription, so no API key is required.
+  const canGenerate = isCliSource || apiKeyConfigured;
+  const loadingLabel = isCliSource
+    ? 'Exploring repo with Claude CLI...'
+    : 'Generating commit message...';
+
   return (
     <div className="bg-slate-800 rounded-lg p-4">
       <form onSubmit={handleSubmit} className="space-y-3">
@@ -78,24 +96,27 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
             </svg>
-            <span className="text-sm font-medium text-purple-400">Generating commit message...</span>
+            <span className="text-sm font-medium text-purple-400">{loadingLabel}</span>
           </div>
         )}
 
         {/* AI Generate Section - only show when not generating */}
         {!commitMessage && !aiSummary && !isGeneratingAiSummary && (
           <div className="space-y-2">
+            {/* Source toggle */}
+            <SourceToggle value={commitSummarySource} onChange={setCommitSummarySource} disabled={isLoading} />
+
             {/* Model Selector + Generate Button Row */}
             <div className="flex gap-2">
               <ModelDropdown
                 value={selectedModel}
                 onChange={setSelectedModel}
-                disabled={isLoading || !apiKeyConfigured}
+                disabled={isLoading || !canGenerate}
               />
 
               <button
                 type="button"
-                onClick={apiKeyConfigured ? handleGenerateClick : onOpenSettings}
+                onClick={canGenerate ? handleGenerateClick : onOpenSettings}
                 disabled={isLoading}
                 className="flex-1 py-2 px-4 rounded-md font-medium text-white transition-colors flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed"
               >
@@ -112,7 +133,7 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
                     d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
                   />
                 </svg>
-                Generate
+                {isCliSource ? 'Generate (agentic)' : 'Generate'}
               </button>
             </div>
           </div>
@@ -194,14 +215,27 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
           <ErrorBox>{aiSummaryError}</ErrorBox>
         )}
 
-        {/* Commit Message */}
+        {/* Commit Message — soft-wraps visually but stays logically a single line */}
         <div>
-          <input
-            type="text"
+          <textarea
+            ref={messageRef}
             value={commitMessage}
-            onChange={(e) => setCommitMessage(e.target.value)}
+            onChange={(e) => {
+              // Collapse any hard newlines pasted in — the summary line stays single-line.
+              const value = e.target.value.replace(/\r?\n+/g, ' ');
+              setCommitMessage(value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                if (canCommit && !isLoading) {
+                  void handleSubmit(e as unknown as React.FormEvent);
+                }
+              }
+            }}
             placeholder="Commit message"
-            className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            rows={1}
+            className="w-full px-3 py-3 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none overflow-hidden leading-relaxed"
             disabled={isLoading}
           />
         </div>
@@ -225,7 +259,7 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
               onChange={(e) => setCommitDescription(e.target.value)}
               placeholder="Extended description (optional)"
               rows={3}
-              className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+              className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none min-h-[12rem] md:min-h-0"
               disabled={isLoading}
             />
           </div>
@@ -320,6 +354,45 @@ function ModelDropdown({ value, onChange, disabled }: ModelDropdownProps) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+interface SourceToggleProps {
+  value: CommitSummarySource;
+  onChange: (source: CommitSummarySource) => void;
+  disabled?: boolean;
+}
+
+function SourceToggle({ value, onChange, disabled }: SourceToggleProps) {
+  const options: { id: CommitSummarySource; label: string; hint: string }[] = [
+    { id: 'api', label: 'API', hint: 'Fast · uses your Anthropic API key' },
+    { id: 'claude-cli', label: 'Claude CLI', hint: 'Agentic · reads related files · uses your Claude subscription' },
+  ];
+  const active = options.find((o) => o.id === value) ?? options[0];
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="inline-flex rounded-md border border-slate-600 bg-slate-900/60 p-0.5 self-start">
+        {options.map((opt) => (
+          <button
+            key={opt.id}
+            type="button"
+            onClick={() => !disabled && onChange(opt.id)}
+            disabled={disabled}
+            className={clsx(
+              'px-2.5 py-1 text-xs font-medium rounded transition-colors',
+              opt.id === value
+                ? 'bg-purple-600 text-white'
+                : 'text-slate-300 hover:text-white hover:bg-slate-700',
+              disabled && 'opacity-50 cursor-not-allowed'
+            )}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+      <p className="text-xs text-slate-500">{active.hint}</p>
     </div>
   );
 }

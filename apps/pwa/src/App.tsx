@@ -624,6 +624,7 @@ function AppContent() {
           <Route path="/" element={homeElement} />
           <Route path="/p/:projectId" element={projectDetailElement} />
           <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
+          <Route path="/p/:projectId/repo" element={projectRepoElement} />
           <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
         </Routes>
       )}

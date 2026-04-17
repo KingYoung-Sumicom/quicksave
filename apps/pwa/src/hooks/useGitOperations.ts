@@ -65,6 +65,7 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     clearSelection,
     selectedModel,
     attributionEnabled,
+    commitSummarySource,
   } = useGitStore();
   const { setRepoPath, setAvailableRepos, setAvailableCodingPaths, availableCodingPaths } = useConnectionStore();
 
@@ -374,12 +375,15 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
       setGeneratingAiSummary(true);
       setAiSummaryError(null);
       try {
+        // Claude CLI path is agentic and can take up to ~2 minutes; give the API path the existing 60s budget.
+        const timeoutMs = commitSummarySource === 'claude-cli' ? 180_000 : 60_000;
         const message = createMessage('ai:generate-commit-summary', {
           context,
           model: model ?? selectedModel,
           attribution: attributionEnabled,
+          source: commitSummarySource,
         });
-        const response = await sendRequest<GenerateCommitSummaryResponsePayload>(message, 60000);
+        const response = await sendRequest<GenerateCommitSummaryResponsePayload>(message, timeoutMs);
 
         if (!response.success) {
           throw new Error(response.error || 'Failed to generate summary');
@@ -392,7 +396,7 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setGeneratingAiSummary(false);
       }
     },
-    [sendRequest, selectedModel, attributionEnabled, setAiSummary, setGeneratingAiSummary, setAiSummaryError]
+    [sendRequest, selectedModel, attributionEnabled, commitSummarySource, setAiSummary, setGeneratingAiSummary, setAiSummaryError]
   );
 
   const setApiKey = useCallback(

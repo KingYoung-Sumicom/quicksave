@@ -530,10 +530,12 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
       };
       callbacks.emitStreamEnd(streamEnd);
 
-      // Update cutoff BEFORE clearing cards — if getCards() is called between
-      // these two operations, it needs the new cutoff to read the full JSONL.
-      await cb.snapshotCutoff();
-      cb.clearCards();
+      // Defer clearing in-memory cards until JSONL has stabilized: the SDK may
+      // not have flushed the turn's assistant messages to the session JSONL by
+      // the time the result message lands. scheduleDeferredClear waits for the
+      // file to stop growing, then atomically clears streamingCards and resets
+      // cutoff to the final size.
+      void cb.scheduleDeferredClear();
 
       return true;
     }

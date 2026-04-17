@@ -873,10 +873,13 @@ export const CLAUDE_MODELS: { id: ClaudeModel; name: string; label: string; desc
 ];
 
 // Generate Commit Summary
+export type CommitSummarySource = 'api' | 'claude-cli';
+
 export interface GenerateCommitSummaryRequestPayload {
   context?: string;
   model?: ClaudeModel;
   attribution?: boolean;
+  source?: CommitSummarySource;
 }
 
 export interface TokenUsage {
@@ -884,12 +887,23 @@ export interface TokenUsage {
   outputTokens: number;
 }
 
+export type GenerateCommitSummaryErrorCode =
+  | 'NO_API_KEY'
+  | 'NO_STAGED_CHANGES'
+  | 'API_ERROR'
+  | 'RATE_LIMITED'
+  | 'NO_CLI_BINARY'
+  | 'NO_CLI_AUTH'
+  | 'CLI_TIMEOUT'
+  | 'CLI_PARSE_ERROR'
+  | 'CLI_ERROR';
+
 export interface GenerateCommitSummaryResponsePayload {
   success: boolean;
   summary?: string;
   description?: string;
   error?: string;
-  errorCode?: 'NO_API_KEY' | 'NO_STAGED_CHANGES' | 'API_ERROR' | 'RATE_LIMITED';
+  errorCode?: GenerateCommitSummaryErrorCode;
   tokenUsage?: TokenUsage;
   cached?: boolean;
 }

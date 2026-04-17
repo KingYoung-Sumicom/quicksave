@@ -25,7 +25,7 @@ const __ownDir = dirname(fileURLToPath(import.meta.url));
  * We resolve once and cache the result.
  */
 let _claudeBin: string | undefined;
-function getClaudeBin(): string {
+export function getClaudeBin(): string {
   if (_claudeBin) return _claudeBin;
 
   // 1. Try `which` — works when PATH is correct
@@ -469,9 +469,13 @@ export class ClaudeCliProvider implements CodingAgentProvider {
         // variable is updated — routeMessage receives it by value.
         const nextStreamId = cliSession.pendingStreamIds.shift();
         if (nextStreamId) {
-          // Hot resume: re-snapshot cutoff now that the turn is committed to JSONL,
-          // so getCards() doesn't duplicate the new turn's messages.
-          await cb.snapshotCutoff();
+          // Hot resume: cancel the prior turn's deferred clear so the pending
+          // poll doesn't wipe the next turn. Do NOT snapshotCutoff or clearCards
+          // here — the prior turn's messages may not be flushed to JSONL yet,
+          // and advancing cutoff past them while they're already in JSONL
+          // produces duplicates. Keep streamingCards as-is; the final turn's
+          // scheduleDeferredClear sweeps everything once the chain commits.
+          cb.cancelDeferredClear();
           streamId = nextStreamId;
           cb.startNewTurn(streamId);
           cliSession.activeTurn = true;
@@ -706,14 +710,12 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       };
       callbacks.emitStreamEnd(streamEnd);
 
-      // Snapshot and clear in-memory cards. After clearCards(), set cutoff to
-      // null so getCards() reads the full JSONL — the active turn is now part
-      // of the persisted history. snapshotCutoff() alone is unreliable here
-      // because Claude Code may not have flushed all messages to the JSONL by
-      // the time the result arrives on stdout (race condition).
+      // Defer clearing in-memory cards until JSONL has stabilized: the CLI may
+      // not have flushed all messages to JSONL by the time `result` arrives on
+      // stdout. Clearing synchronously creates a window where getCards() sees
+      // neither the streamingCards (cleared) nor the final turn (not flushed).
       debugLog?.logCardBuilderSnapshot(cb.getCards());
-      cb.clearCards();
-      cb.jsonlCutoff = null;
+      void cb.scheduleDeferredClear();
 
       return true;
     }

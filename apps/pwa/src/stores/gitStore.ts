@@ -1,15 +1,23 @@
 import { create } from 'zustand';
-import type { GitStatus, FileDiff, Commit, Branch, FileChange, ClaudeModel, TokenUsage } from '@sumicom/quicksave-shared';
+import type { GitStatus, FileDiff, Commit, Branch, FileChange, ClaudeModel, TokenUsage, CommitSummarySource } from '@sumicom/quicksave-shared';
 
 // localStorage helpers
 const COMMIT_DRAFT_PREFIX = 'quicksave:commit-draft:';
 const ATTRIBUTION_KEY = 'quicksave:attribution-enabled';
+const COMMIT_SUMMARY_SOURCE_KEY = 'quicksave:commit-summary-source';
 
 function loadAttributionEnabled(): boolean {
   try {
     const v = localStorage.getItem(ATTRIBUTION_KEY);
     return v === null ? true : v === 'true';
   } catch { return true; }
+}
+
+function loadCommitSummarySource(): CommitSummarySource {
+  try {
+    const v = localStorage.getItem(COMMIT_SUMMARY_SOURCE_KEY);
+    return v === 'claude-cli' ? 'claude-cli' : 'api';
+  } catch { return 'api'; }
 }
 
 interface CommitDraft {
@@ -113,6 +121,7 @@ interface GitStore {
   apiKeyConfigured: boolean;
   aiTokenUsage: TokenUsage | null;
   aiResultCached: boolean;
+  commitSummarySource: CommitSummarySource;
 
   // Selection state - keys are composite (path:source) to handle partially staged files
   selectedFiles: Set<SelectionKey>;
@@ -144,6 +153,7 @@ interface GitStore {
   applyAiSummary: () => void;
   setSelectedModel: (model: ClaudeModel) => void;
   setApiKeyConfigured: (configured: boolean) => void;
+  setCommitSummarySource: (source: CommitSummarySource) => void;
 
   // Selection actions - use composite keys internally
   toggleFileSelection: (key: SelectionKey, source: SelectionSource) => void;
@@ -182,6 +192,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
   apiKeyConfigured: false,
   aiTokenUsage: null,
   aiResultCached: false,
+  commitSummarySource: loadCommitSummarySource(),
 
   // Selection state
   selectedFiles: new Set(),
@@ -349,6 +360,11 @@ export const useGitStore = create<GitStore>((set, get) => ({
   setSelectedModel: (model) => set({ selectedModel: model }),
 
   setApiKeyConfigured: (configured) => set({ apiKeyConfigured: configured }),
+
+  setCommitSummarySource: (source) => {
+    set({ commitSummarySource: source });
+    try { localStorage.setItem(COMMIT_SUMMARY_SOURCE_KEY, source); } catch { /* */ }
+  },
 
   // Selection actions - now use composite keys (path:source)
   toggleFileSelection: (key, source) => {

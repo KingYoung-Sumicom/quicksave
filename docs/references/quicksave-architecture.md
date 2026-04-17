@@ -51,9 +51,11 @@ apps/agent/src/
 ├── ai/
 │   ├── provider.ts           # CodingAgentProvider 介面 + 型別定義
 │   ├── sessionManager.ts     # SessionManager：通用 session 協調層（extends EventEmitter）
-│   ├── claudeCliProvider.ts  # ClaudeCliProvider：Claude CLI 實作
+│   ├── claudeCliProvider.ts  # ClaudeCliProvider：Claude CLI 實作（互動式 session）
 │   ├── cardBuilder.ts        # StreamCardBuilder：stream-json 事件 → CardEvent
-│   └── sessionStore.ts       # Session 持久化（JSONL）
+│   ├── sessionStore.ts       # Session 持久化（JSONL）
+│   ├── commitSummary.ts      # CommitSummaryService：commit message via Anthropic SDK（需 API key）
+│   └── commitSummaryCli.ts   # CommitSummaryCliService：commit message via `claude -p`（agentic，用 Claude 訂閱）
 └── git/
     └── operations.ts         # Git 指令執行
 ```
@@ -209,6 +211,22 @@ const sessionManager = new SessionManager(new MyCustomProvider());
 - 引導 Claude 偏好 `SandboxBash` 做 read-only commands
 - 引導 Claude 在新 task/context 切換時呼叫 `SetTitle`
 - PWA agent type 可附加自定義 system prompt
+
+### Commit Message 生成（兩條路徑）
+
+`ai:generate-commit-summary` 的 payload 帶 `source: 'api' | 'claude-cli'`（預設 `'api'`）。`handleGenerateCommitSummary` 依此分流：
+
+- **`source: 'api'`** → `CommitSummaryService`（`commitSummary.ts`）
+  - 透過 Anthropic SDK 直接打 API（需使用者在 Settings 設定 Anthropic API key）
+  - 把 staged diff 截斷後塞進單一 prompt，快速但看不到跨檔案 context
+  - 有 in-memory cache（5 分鐘 TTL，按 diff + model + context 做 key）
+
+- **`source: 'claude-cli'`** → `CommitSummaryCliService`（`commitSummaryCli.ts`）
+  - 一次性 spawn `claude -p "<prompt>"`，`--output-format json --no-session-persistence`
+  - 只 whitelist 只讀工具：`Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Bash(git show:*),Bash(git blame:*)`
+  - 走使用者本地 Claude Code 訂閱／登入，**不需要** Anthropic API key
+  - Agentic loop：Claude 自行跑 `git diff --cached`、grep 相關 caller、讀周邊檔案後再寫訊息
+  - 不快取（輸出非決定性）；timeout 120s；exit code / stderr 會 map 成 `NO_CLI_BINARY` / `NO_CLI_AUTH` / `CLI_TIMEOUT` / `CLI_PARSE_ERROR` / `CLI_ERROR` 傳回 UI
 
 ---
 
