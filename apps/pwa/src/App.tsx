@@ -694,7 +694,7 @@ function AppContent() {
                 <Route path="/p/:projectId" element={projectDetailElement} />
                 <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
                 <Route path="/p/:projectId/r/:repoId" element={projectRepoElement} />
-                <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} />} />
+                <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} onConnect={handleConnect} />} />
                 <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />} />
                 <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
               </Routes>
@@ -708,7 +708,7 @@ function AppContent() {
           <Route path="/p/:projectId" element={projectDetailElement} />
           <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
           <Route path="/p/:projectId/r/:repoId" element={projectRepoElement} />
-          <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} />} />
+          <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} onConnect={handleConnect} />} />
           <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />} />
           <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
         </Routes>

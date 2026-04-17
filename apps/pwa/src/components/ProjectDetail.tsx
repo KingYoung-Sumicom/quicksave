@@ -5,6 +5,7 @@ import { useMachineStore } from '../stores/machineStore';
 import { useConnectionStore } from '../stores/connectionStore';
 import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { Spinner } from './ui/Spinner';
+import { ConfirmModal } from './ui/ConfirmModal';
 import { StatusDot, sessionStatusKey } from './SessionStatusBadge';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
 import { pathToHash } from '../lib/pathHash';
@@ -40,6 +41,7 @@ export function ProjectDetail({
   const error = useConnectionStore((s) => s.error);
   const removeProject = useMachineStore((s) => s.removeProject);
   const [showMenu, setShowMenu] = useState(false);
+  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [isLoadingRepos, setIsLoadingRepos] = useState(false);
   const cacheProjectRepos = useMachineStore((s) => s.cacheProjectRepos);
 
@@ -87,11 +89,10 @@ export function ProjectDetail({
 
   const handleRemoveProject = useCallback(() => {
     if (!cwd || !agentId) return;
-    if (!confirm(`Remove "${displayName}" from your project list?`)) return;
     onRemoveCodingPath?.(cwd);
     removeProject(agentId, cwd);
     navigate('/', { replace: true });
-  }, [cwd, agentId, displayName, onRemoveCodingPath, removeProject, navigate]);
+  }, [cwd, agentId, onRemoveCodingPath, removeProject, navigate]);
 
   // Filter sessions for this cwd
   const cwdSessions = Object.values(sessions)
@@ -142,7 +143,7 @@ export function ProjectDetail({
                     </button>
                   )}
                   <button
-                    onClick={() => { setShowMenu(false); handleRemoveProject(); }}
+                    onClick={() => { setShowMenu(false); setShowRemoveConfirm(true); }}
                     className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-slate-600 transition-colors"
                   >
                     Remove Project
@@ -326,6 +327,19 @@ export function ProjectDetail({
             </div>
           </div>
         </div>
+      )}
+
+      {showRemoveConfirm && (
+        <ConfirmModal
+          title="Remove Project?"
+          message={`Remove "${displayName}" from your project list?`}
+          confirmLabel="Remove"
+          onConfirm={() => {
+            setShowRemoveConfirm(false);
+            handleRemoveProject();
+          }}
+          onCancel={() => setShowRemoveConfirm(false)}
+        />
       )}
     </div>
   );

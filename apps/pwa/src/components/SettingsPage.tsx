@@ -5,6 +5,7 @@ import { DevicePairingSection } from './DevicePairingSection';
 import { ApiKeySection } from './settings/ApiKeySection';
 import { PrimaryKeySection } from './settings/PrimaryKeySection';
 import { NotificationSection } from './settings/NotificationSection';
+import { MachinesSection } from './settings/MachinesSection';
 import type { Message, PushSubscriptionOfferPayload } from '@sumicom/quicksave-shared';
 
 interface SettingsPageProps {
@@ -33,6 +34,10 @@ export function SettingsPage({ onSendApiKeyToAgent, onPushOffer }: SettingsPageP
           <div className="border-t border-slate-700" />
 
           <DevicePairingSection />
+
+          <div className="border-t border-slate-700" />
+
+          <MachinesSection />
 
           <div className="border-t border-slate-700" />
 

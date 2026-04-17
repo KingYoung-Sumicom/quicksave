@@ -15,15 +15,17 @@ import { ChevronIcon } from './ui/ChevronIcon';
 import { Spinner } from './ui/Spinner';
 import { Modal } from './ui/Modal';
 import { ErrorBox } from './ui/ErrorBox';
+import { QRScanner } from './QRScanner';
 import { toProjectId } from '../lib/projectId';
 
-type TabKey = 'project' | 'session';
+type TabKey = 'project' | 'session' | 'machine';
 
 interface AddNewPageProps {
   onSetActiveAgent: (agentId: string) => void;
   onBrowseDirectory: (path?: string) => Promise<BrowseDirectoryResponsePayload | null>;
   onCloneRepo: (url: string, targetDir: string) => Promise<Repository | null>;
   onAddCodingPath: (path: string) => Promise<CodingPath | null>;
+  onConnect: (agentId: string, publicKey: string) => void;
 }
 
 export function AddNewPage({
@@ -31,6 +33,7 @@ export function AddNewPage({
   onBrowseDirectory,
   onCloneRepo,
   onAddCodingPath,
+  onConnect,
 }: AddNewPageProps) {
   const navigate = useNavigate();
   const [tab, setTab] = useState<TabKey>('project');
@@ -99,7 +102,7 @@ export function AddNewPage({
       />
 
       <div className="flex border-b border-slate-700 px-2">
-        {(['project', 'session'] as const).map((key) => (
+        {(['project', 'session', 'machine'] as const).map((key) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -110,7 +113,7 @@ export function AddNewPage({
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             )}
           >
-            {key === 'project' ? 'Project' : 'Session'}
+            {key === 'project' ? 'Project' : key === 'session' ? 'Session' : 'Machine'}
           </button>
         ))}
       </div>
@@ -152,6 +155,14 @@ export function AddNewPage({
           />
         )}
         {tab === 'session' && <SessionTab />}
+        {tab === 'machine' && (
+          <MachineTab
+            onConnect={(agentId, publicKey) => {
+              onConnect(agentId, publicKey);
+              navigate('/');
+            }}
+          />
+        )}
       </div>
     </div>
   );
@@ -407,6 +418,124 @@ function CloneRepoModal({
         </div>
       </div>
     </Modal>
+  );
+}
+
+// ── Machine Tab ─────────────────────────────────────────────────────────────
+
+function MachineTab({
+  onConnect,
+}: {
+  onConnect: (agentId: string, publicKey: string) => void;
+}) {
+  const [mode, setMode] = useState<'scan' | 'manual'>('scan');
+  const [agentId, setAgentId] = useState('');
+  const [publicKey, setPublicKey] = useState('');
+  const { addMachine } = useMachineStore();
+  const error = useConnectionStore((s) => s.error);
+  const state = useConnectionStore((s) => s.state);
+  const isConnecting = state === 'connecting';
+
+  const handleManualSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const id = agentId.trim();
+    const pk = publicKey.trim();
+    if (!id || !pk) return;
+    addMachine({
+      agentId: id,
+      publicKey: pk,
+      nickname: `Machine ${id.slice(0, 8)}`,
+      icon: '💻',
+    });
+    onConnect(id, pk);
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex mb-4 bg-slate-700 rounded-lg p-1">
+        <button
+          type="button"
+          className={clsx(
+            'flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors',
+            mode === 'scan' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-white'
+          )}
+          onClick={() => setMode('scan')}
+        >
+          Scan QR
+        </button>
+        <button
+          type="button"
+          className={clsx(
+            'flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors',
+            mode === 'manual' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-white'
+          )}
+          onClick={() => setMode('manual')}
+        >
+          Manual Entry
+        </button>
+      </div>
+
+      {mode === 'scan' ? (
+        <>
+          <QRScanner
+            onScan={(id, pk, _name, spk) => {
+              addMachine({
+                agentId: id,
+                publicKey: pk,
+                signPublicKey: spk,
+                nickname: `Machine ${id.slice(0, 8)}`,
+                icon: '💻',
+              });
+              onConnect(id, pk);
+            }}
+          />
+          {error && <ErrorBox className="mt-4 p-3">{error}</ErrorBox>}
+        </>
+      ) : (
+        <form onSubmit={handleManualSubmit} className="space-y-4">
+          <div>
+            <label htmlFor="add-agent-id" className="block text-sm font-medium text-slate-300 mb-1">
+              Agent ID
+            </label>
+            <input
+              id="add-agent-id"
+              type="text"
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+              placeholder="Enter agent ID"
+              className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={isConnecting}
+            />
+          </div>
+          <div>
+            <label htmlFor="add-public-key" className="block text-sm font-medium text-slate-300 mb-1">
+              Public Key
+            </label>
+            <textarea
+              id="add-public-key"
+              value={publicKey}
+              onChange={(e) => setPublicKey(e.target.value)}
+              placeholder="Enter agent public key"
+              rows={3}
+              className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none font-mono text-sm"
+              disabled={isConnecting}
+            />
+          </div>
+          {error && <ErrorBox className="p-3">{error}</ErrorBox>}
+          <button
+            type="submit"
+            disabled={!agentId.trim() || !publicKey.trim() || isConnecting}
+            className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors"
+          >
+            {isConnecting ? 'Connecting…' : 'Add & Connect'}
+          </button>
+        </form>
+      )}
+
+      <p className="mt-4 text-center text-xs text-slate-500">
+        Run <code className="text-slate-400">quicksave</code> on your computer to get connection details.
+      </p>
+    </div>
   );
 }
 
