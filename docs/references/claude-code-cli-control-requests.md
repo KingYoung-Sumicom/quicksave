@@ -22,6 +22,33 @@ When you need a new piece of CLI behavior:
 
 When verifying, **always** re-check the bundle at the path above — the CLI version advances frequently and new subtypes appear without changelog notes.
 
+## Spawning the CLI for multi-turn stdio
+
+**The invocation matters.** `-p` / `--print` is documented as "Print response and exit" — without the right flags the CLI terminates after the first `result` message even if stdin stays open. Our adapter in `claudeCliProvider.ts` uses:
+
+```
+--output-format stream-json
+--input-format stream-json
+--verbose
+--permission-prompt-tool stdio
+-p ''
+--replay-user-messages   ← required to keep CLI alive across multiple stdin user messages
+```
+
+Bundle validation (v2.1.111): `--replay-user-messages requires both --input-format=stream-json and --output-format=stream-json`. Without it, hot-resume is impossible — you'd be forced to cold-respawn with `--resume <sessionId>` on every turn.
+
+### Side effects of `--replay-user-messages`
+
+Enabling this flag changes what the CLI emits on stdout:
+
+1. **User message echoes** — every `{type:"user", message:{role:"user", content:"..."}}` we write to stdin gets emitted back on stdout with `isReplay: true`. Filter these in your `type === 'user'` branch (see `claudeCliProvider.ts` — `if (msg.isReplay) return false;`) or you'll double-render the user card.
+
+2. **`control_response` echoes** — `control_response`s WE send to the CLI (e.g. permission decisions for `can_use_tool`) get echoed back on stdout too. There's no `isReplay` flag on these — distinguish them by checking whether `request_id` matches a locally-tracked pending request. Unmatched ones are echoes; log at debug level, not warn.
+
+3. **`keep_alive` message type** — the CLI accepts `{type:"keep_alive"}` on stdin and silently consumes it. Useful if you need to detect CLI liveness without triggering a turn.
+
+4. **`inputClosed` semantics** — the streaming input processor (`BY8` in v2.1.111) marks `inputClosed=true` only when stdin EOFs. Rejected pending tool-permission requests get `"Tool permission stream closed before response received"` at that point.
+
 ## The wire format
 
 Every frame on the CLI's stdio is a single JSON line. The client→CLI control frame looks like:

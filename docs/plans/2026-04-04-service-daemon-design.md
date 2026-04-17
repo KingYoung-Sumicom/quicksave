@@ -5,7 +5,7 @@
 
 Related reference:
 
-- `docs/references/2026-04-05-service-daemon-external-reference.md`
+- `docs/research/2026-04-05-service-daemon-external-reference.md`
 
 ## Implementation Status (2026-04-06)
 
