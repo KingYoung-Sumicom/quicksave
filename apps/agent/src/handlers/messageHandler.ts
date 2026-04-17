@@ -39,6 +39,11 @@ import {
   License,
   GenerateCommitSummaryRequestPayload,
   GenerateCommitSummaryResponsePayload,
+  GetCommitSummaryRequestPayload,
+  GetCommitSummaryResponsePayload,
+  ClearCommitSummaryRequestPayload,
+  ClearCommitSummaryResponsePayload,
+  CommitSummaryState,
   SetApiKeyRequestPayload,
   SetApiKeyResponsePayload,
   GetApiKeyStatusResponsePayload,
@@ -109,6 +114,7 @@ import { GitOperations } from '../git/operations.js';
 import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, removeManagedRepo, addManagedCodingPath, removeManagedCodingPath } from '../config.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';
 import { CommitSummaryCliService, CommitSummaryCliError } from '../ai/commitSummaryCli.js';
+import { CommitSummaryStateStore } from '../ai/commitSummaryStore.js';
 import { SessionManager } from '../ai/sessionManager.js';
 import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
 import { CodexSdkProvider } from '../ai/codexSdkProvider.js';
@@ -132,6 +138,9 @@ export class MessageHandler {
   private codingPaths: Map<string, CodingPath> = new Map(); // path -> CodingPath
   private aiService: CommitSummaryService | null = null;
   private aiCliService: CommitSummaryCliService | null = null;
+  /** Per-repo agent-owned commit summary state. The daemon wires the
+   *  `state-updated` event to `connection.broadcast` (see service/run.ts). */
+  private commitSummaryStore: CommitSummaryStateStore = new CommitSummaryStateStore();
   private claudeService: SessionManager = new SessionManager([
     new ClaudeCodeProvider(),
     new CodexSdkProvider(),
@@ -319,6 +328,11 @@ export class MessageHandler {
     return this.claudeService.getActiveSessionCount();
   }
 
+  /** Exposed so the daemon can wire state-updated events to broadcasts. */
+  getCommitSummaryStore(): CommitSummaryStateStore {
+    return this.commitSummaryStore;
+  }
+
   getClaudeService(): SessionManager {
     return this.claudeService;
   }
@@ -386,6 +400,10 @@ export class MessageHandler {
           return this.handleGitignoreWrite(message as Message<GitignoreWriteRequestPayload>, peerAddress);
         case 'ai:generate-commit-summary':
           return this.handleGenerateCommitSummary(message as Message<GenerateCommitSummaryRequestPayload>, peerAddress);
+        case 'ai:commit-summary:get':
+          return this.handleGetCommitSummary(message as Message<GetCommitSummaryRequestPayload>, peerAddress);
+        case 'ai:commit-summary:clear':
+          return this.handleClearCommitSummary(message as Message<ClearCommitSummaryRequestPayload>, peerAddress);
         case 'ai:set-api-key':
           return this.handleSetApiKey(message as Message<SetApiKeyRequestPayload>);
         case 'ai:get-api-key-status':
@@ -629,6 +647,9 @@ export class MessageHandler {
     try {
       const { message: commitMessage, description, attribution } = message.payload;
       const hash = await this.getGit(peerAddress).commit(commitMessage, description, attribution ?? true);
+      // The pending AI suggestion describes the diff we just committed, so
+      // it's stale now — clear it (also broadcasts state → idle to all peers).
+      this.commitSummaryStore.clear(repoPath);
       const response = createMessage<CommitResponsePayload>('git:commit:response', {
         success: true,
         hash,
@@ -847,11 +868,18 @@ export class MessageHandler {
     }
   }
 
+  /**
+   * Kick off AI commit-summary generation. Generation runs asynchronously and
+   * streams progress + result via the `ai:commit-summary:updated` broadcast;
+   * the request-response just confirms the kickoff (or reports a validation
+   * failure that keeps the state idle, e.g. missing API key / no staged changes).
+   */
   private async handleGenerateCommitSummary(
     message: Message<GenerateCommitSummaryRequestPayload>,
     peerAddress: string
   ): Promise<Message<GenerateCommitSummaryResponsePayload>> {
     const source = message.payload.source ?? 'api';
+    const repoPath = this.getClientRepoPath(peerAddress);
 
     const respond = (payload: GenerateCommitSummaryResponsePayload) => {
       const r = createMessage<GenerateCommitSummaryResponsePayload>(
@@ -875,9 +903,11 @@ export class MessageHandler {
       }
     }
 
+    // Validate staged changes exist before flipping the state into
+    // `generating` — we don't want to show "generating…" just to immediately
+    // error out on the same tick.
     try {
-      const git = this.getGit(peerAddress);
-      const status = await git.getStatus();
+      const status = await this.getGit(peerAddress).getStatus();
       if (status.staged.length === 0) {
         return respond({
           success: false,
@@ -885,7 +915,52 @@ export class MessageHandler {
           errorCode: 'NO_STAGED_CHANGES',
         });
       }
+    } catch (error) {
+      return respond({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to inspect working tree',
+        errorCode: 'API_ERROR',
+      });
+    }
 
+    // Register the generation with the state store. The returned token lets
+    // us detect supersession (the caller fired off a fresh generation while
+    // this one was still running, or the state was cleared).
+    let aborted = false;
+    let cliChild: { kill: (sig?: NodeJS.Signals) => void } | undefined;
+    const token = this.commitSummaryStore.startGenerating(repoPath, source, message.payload.model, () => {
+      aborted = true;
+      try { cliChild?.kill('SIGTERM'); } catch { /* ignore */ }
+    });
+
+    // Run generation asynchronously. Errors flow through the state store,
+    // NOT through the kickoff response — the response has already been sent.
+    void this.runCommitSummary(peerAddress, repoPath, token, source, message.payload, aiService, (child) => {
+      cliChild = child;
+      if (aborted) {
+        try { child.kill('SIGTERM'); } catch { /* ignore */ }
+      }
+    });
+
+    return respond({ success: true, state: this.commitSummaryStore.get(repoPath) });
+  }
+
+  /**
+   * Background worker that actually runs the generation. Reports success,
+   * progress, or failure through the CommitSummaryStateStore (which in turn
+   * broadcasts `ai:commit-summary:updated` to all peers).
+   */
+  private async runCommitSummary(
+    peerAddress: string,
+    repoPath: string,
+    token: symbol,
+    source: 'api' | 'claude-cli',
+    payload: GenerateCommitSummaryRequestPayload,
+    aiService: CommitSummaryService | null,
+    onSpawn: (child: { kill: (sig?: NodeJS.Signals) => void }) => void,
+  ): Promise<void> {
+    try {
+      const git = this.getGit(peerAddress);
       const [recentLog, branchInfo, conventions] = await Promise.all([
         git.getLog(10).catch(() => []),
         git.getBranches().catch(() => ({ current: '' })),
@@ -896,40 +971,47 @@ export class MessageHandler {
 
       if (source === 'claude-cli') {
         const cliService = this.getAiCliService();
-        const repoPath = this.getClientRepoPath(peerAddress);
         const result = await cliService.generateSummary({
           repoPath,
-          context: message.payload.context,
-          model: message.payload.model,
+          context: payload.context,
+          model: payload.model,
           recentCommits: recentCommits.length > 0 ? recentCommits : undefined,
           branchName: branchName || undefined,
           conventions,
-          attribution: message.payload.attribution,
+          attribution: payload.attribution,
+          onProgress: (progress) => {
+            this.commitSummaryStore.updateProgress(repoPath, token, progress);
+          },
+          onSpawn: (child) => {
+            onSpawn(child);
+          },
         });
-        return respond({
-          success: true,
+        this.commitSummaryStore.setResult(repoPath, token, {
           summary: result.summary,
           description: result.description,
           tokenUsage: result.tokenUsage,
         });
+        return;
       }
 
-      // Collect diffs for the API-key path (CLI path fetches its own).
+      // API path — fetch staged diffs fresh. No per-step progress today;
+      // the single Anthropic round-trip is fast enough that phase updates add
+      // little value. We still flip to `generating` so the UI shows a spinner.
+      this.commitSummaryStore.updateProgress(repoPath, token, { phase: 'generating' });
+      const status = await git.getStatus();
       const diffs = await Promise.all(
         status.staged.map((file) => git.getDiff(file.path, true))
       );
-
       const result = await aiService!.generateSummary({
         diffs,
-        context: message.payload.context,
-        model: message.payload.model,
+        context: payload.context,
+        model: payload.model,
         recentCommits: recentCommits.length > 0 ? recentCommits : undefined,
         branchName: branchName || undefined,
         conventions,
-        attribution: message.payload.attribution,
+        attribution: payload.attribution,
       });
-      return respond({
-        success: true,
+      this.commitSummaryStore.setResult(repoPath, token, {
         summary: result.summary,
         description: result.description,
         tokenUsage: result.tokenUsage,
@@ -937,20 +1019,43 @@ export class MessageHandler {
       });
     } catch (error) {
       if (error instanceof CommitSummaryCliError) {
-        return respond({
-          success: false,
-          error: error.message,
-          errorCode: error.errorCode,
-        });
+        this.commitSummaryStore.setError(repoPath, token, error.message, error.errorCode);
+        return;
       }
       const errorMessage = error instanceof Error ? error.message : 'Failed to generate summary';
       const isRateLimit = errorMessage.includes('rate_limit');
-      return respond({
-        success: false,
-        error: errorMessage,
-        errorCode: isRateLimit ? 'RATE_LIMITED' : 'API_ERROR',
-      });
+      this.commitSummaryStore.setError(
+        repoPath,
+        token,
+        errorMessage,
+        isRateLimit ? 'RATE_LIMITED' : 'API_ERROR',
+      );
     }
+  }
+
+  private handleGetCommitSummary(
+    message: Message<GetCommitSummaryRequestPayload>,
+    peerAddress: string,
+  ): Message<GetCommitSummaryResponsePayload> {
+    const repoPath = message.payload.repoPath || this.getClientRepoPath(peerAddress);
+    const state: CommitSummaryState = this.commitSummaryStore.get(repoPath);
+    const response = createMessage<GetCommitSummaryResponsePayload>('ai:commit-summary:get:response', { state });
+    response.id = message.id;
+    return response;
+  }
+
+  private handleClearCommitSummary(
+    message: Message<ClearCommitSummaryRequestPayload>,
+    peerAddress: string,
+  ): Message<ClearCommitSummaryResponsePayload> {
+    const repoPath = message.payload.repoPath || this.getClientRepoPath(peerAddress);
+    const state = this.commitSummaryStore.clear(repoPath);
+    const response = createMessage<ClearCommitSummaryResponsePayload>('ai:commit-summary:clear:response', {
+      success: true,
+      state,
+    });
+    response.id = message.id;
+    return response;
   }
 
   private getAiCliService(): CommitSummaryCliService {

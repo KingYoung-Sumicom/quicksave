@@ -464,4 +464,9 @@ export class MockRelay {
   setCards(cards: Card[]): void {
     this.cards = cards;
   }
+
+  /** Update card events emitted after claude:start resolves. */
+  setCardEventsOnStart(events: CardEvent[]): void {
+    this.cardEventsOnStart = events;
+  }
 }

@@ -1,6 +1,7 @@
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import type {
   ClaudeModel,
+  CommitSummaryProgress,
   GenerateCommitSummaryErrorCode,
   TokenUsage,
 } from '@sumicom/quicksave-shared';
@@ -14,6 +15,10 @@ export interface GenerateCliSummaryOptions {
   branchName?: string;
   conventions?: string;
   attribution?: boolean;
+  /** Called as the CLI streams progress events (stream-json). */
+  onProgress?: (progress: Partial<CommitSummaryProgress>) => void;
+  /** Registered before spawn so callers can abort the in-flight CLI process. */
+  onSpawn?: (child: ChildProcess) => void;
 }
 
 export interface GenerateCliSummaryResult {
@@ -48,15 +53,19 @@ export class CommitSummaryCliService {
   constructor(private readonly timeoutMs: number = DEFAULT_TIMEOUT_MS) {}
 
   async generateSummary(options: GenerateCliSummaryOptions): Promise<GenerateCliSummaryResult> {
-    const { repoPath, model, attribution = true } = options;
+    const { repoPath, model, attribution = true, onProgress, onSpawn } = options;
 
     const prompt = this.buildPrompt(options);
     const bin = getClaudeBin();
 
+    // stream-json + --verbose lets us observe tool_use / partial assistant
+    // text events as they arrive, so we can emit progress updates. The final
+    // `result` event still carries the full JSON payload with token usage.
     const args: string[] = [
       '-p',
       prompt,
-      '--output-format', 'json',
+      '--output-format', 'stream-json',
+      '--verbose',
       '--allowedTools', ALLOWED_TOOLS,
       '--no-session-persistence',
     ];
@@ -64,9 +73,8 @@ export class CommitSummaryCliService {
       args.push('--model', model);
     }
 
-    const raw = await this.spawnAndCollect(bin, args, repoPath);
-    const parsed = this.parseCliEnvelope(raw);
-    const { summary, description } = this.extractCommitMessage(parsed.result);
+    const final = await this.spawnAndCollect(bin, args, repoPath, onProgress, onSpawn);
+    const { summary, description } = this.extractCommitMessage(final.result);
 
     const finalDescription = attribution
       ? appendAttribution(description)
@@ -75,13 +83,19 @@ export class CommitSummaryCliService {
     return {
       summary,
       description: finalDescription,
-      tokenUsage: parsed.tokenUsage,
+      tokenUsage: final.tokenUsage,
     };
   }
 
-  private spawnAndCollect(bin: string, args: string[], cwd: string): Promise<string> {
+  private spawnAndCollect(
+    bin: string,
+    args: string[],
+    cwd: string,
+    onProgress?: (p: Partial<CommitSummaryProgress>) => void,
+    onSpawn?: (child: ChildProcess) => void,
+  ): Promise<{ result: string; tokenUsage?: TokenUsage }> {
     return new Promise((resolve, reject) => {
-      let child;
+      let child: ChildProcess;
       try {
         child = spawn(bin, args, {
           cwd,
@@ -93,9 +107,14 @@ export class CommitSummaryCliService {
         return;
       }
 
-      let stdout = '';
+      onSpawn?.(child);
+
+      let stdoutBuf = '';
       let stderr = '';
       let settled = false;
+      let finalResult: string | undefined;
+      let finalTokenUsage: TokenUsage | undefined;
+      let toolCount = 0;
 
       const timer = setTimeout(() => {
         if (settled) return;
@@ -107,7 +126,43 @@ export class CommitSummaryCliService {
         ));
       }, this.timeoutMs);
 
-      child.stdout?.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
+      child.stdout?.on('data', (chunk) => {
+        stdoutBuf += chunk.toString('utf8');
+        // Process complete lines; keep the trailing partial line in the buffer.
+        let newlineIdx: number;
+        while ((newlineIdx = stdoutBuf.indexOf('\n')) !== -1) {
+          const line = stdoutBuf.slice(0, newlineIdx).trim();
+          stdoutBuf = stdoutBuf.slice(newlineIdx + 1);
+          if (!line) continue;
+
+          let event: unknown;
+          try {
+            event = JSON.parse(line);
+          } catch {
+            continue; // not a JSON line, skip
+          }
+
+          const parsed = interpretStreamEvent(event);
+          if (parsed?.kind === 'progress' && onProgress) {
+            if (parsed.toolCountDelta) {
+              toolCount += parsed.toolCountDelta;
+              onProgress({ ...parsed.progress, toolCount });
+            } else {
+              onProgress({ ...parsed.progress, toolCount });
+            }
+          } else if (parsed?.kind === 'result') {
+            finalResult = parsed.result;
+            finalTokenUsage = parsed.tokenUsage;
+          } else if (parsed?.kind === 'error') {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            try { child.kill('SIGTERM'); } catch { /* ignore */ }
+            reject(classifyCliFailure(parsed.message, null));
+            return;
+          }
+        }
+      });
       child.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
 
       child.on('error', (err: NodeJS.ErrnoException) => {
@@ -117,57 +172,30 @@ export class CommitSummaryCliService {
         reject(mapSpawnError(err));
       });
 
-      child.on('close', (code) => {
+      child.on('close', (code, signal) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        if (signal === 'SIGTERM' && code === null) {
+          reject(new CommitSummaryCliError('Generation was cancelled', 'CLI_ERROR'));
+          return;
+        }
         if (code !== 0) {
-          const hint = stderr.trim() || stdout.trim() || `exit code ${code}`;
+          const hint = stderr.trim() || stdoutBuf.trim() || `exit code ${code}`;
           reject(classifyCliFailure(hint, code));
           return;
         }
-        resolve(stdout);
+        if (!finalResult) {
+          reject(new CommitSummaryCliError(
+            'Claude CLI produced no result event',
+            'CLI_PARSE_ERROR'
+          ));
+          return;
+        }
+        onProgress?.({ phase: 'finalizing' });
+        resolve({ result: finalResult, tokenUsage: finalTokenUsage });
       });
     });
-  }
-
-  private parseCliEnvelope(raw: string): { result: string; tokenUsage?: TokenUsage } {
-    const trimmed = raw.trim();
-    if (!trimmed) {
-      throw new CommitSummaryCliError('Claude CLI produced no output', 'CLI_PARSE_ERROR');
-    }
-
-    // --output-format json emits a single JSON object on stdout.
-    let envelope: any;
-    try {
-      envelope = JSON.parse(trimmed);
-    } catch {
-      const lastLine = trimmed.split('\n').filter(Boolean).pop() ?? '';
-      try {
-        envelope = JSON.parse(lastLine);
-      } catch {
-        throw new CommitSummaryCliError(
-          'Failed to parse Claude CLI output as JSON',
-          'CLI_PARSE_ERROR'
-        );
-      }
-    }
-
-    if (envelope?.is_error) {
-      const errText = typeof envelope.result === 'string' ? envelope.result : 'Claude CLI reported an error';
-      throw classifyCliFailure(errText, null);
-    }
-
-    const result = typeof envelope?.result === 'string' ? envelope.result : '';
-    if (!result) {
-      throw new CommitSummaryCliError(
-        'Claude CLI returned an empty result',
-        'CLI_PARSE_ERROR'
-      );
-    }
-
-    const tokenUsage = extractTokenUsage(envelope?.usage);
-    return { result, tokenUsage };
   }
 
   private extractCommitMessage(result: string): { summary: string; description?: string } {
@@ -226,6 +254,79 @@ export class CommitSummaryCliService {
   }
 }
 
+type StreamInterpretation =
+  | { kind: 'progress'; progress: Partial<CommitSummaryProgress>; toolCountDelta?: number }
+  | { kind: 'result'; result: string; tokenUsage?: TokenUsage }
+  | { kind: 'error'; message: string }
+  | null;
+
+/**
+ * Interpret a single stream-json envelope into a progress update or the final
+ * result. The CLI emits envelopes of several shapes; we read the ones we need
+ * and ignore the rest (tolerant of CLI version drift).
+ */
+function interpretStreamEvent(event: unknown): StreamInterpretation {
+  if (!event || typeof event !== 'object') return null;
+  const e = event as Record<string, unknown>;
+
+  // Terminal result envelope: `{ type: 'result', result: string, usage, is_error }`
+  if (e.type === 'result') {
+    if (e.is_error) {
+      const msg = typeof e.result === 'string' ? e.result : 'Claude CLI reported an error';
+      return { kind: 'error', message: msg };
+    }
+    const result = typeof e.result === 'string' ? e.result : '';
+    if (!result) return null;
+    return { kind: 'result', result, tokenUsage: extractTokenUsage(e.usage) };
+  }
+
+  // System init — the CLI is spinning up tools.
+  if (e.type === 'system') {
+    if (e.subtype === 'init') {
+      return { kind: 'progress', progress: { phase: 'preparing' } };
+    }
+    return null;
+  }
+
+  // Assistant turn — wraps a raw Anthropic API message under `message`.
+  if (e.type === 'assistant') {
+    const msg = e.message as Record<string, unknown> | undefined;
+    const content = msg?.content;
+    if (!Array.isArray(content)) return null;
+
+    let toolName: string | undefined;
+    let text: string | undefined;
+    let toolCountDelta = 0;
+
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const b = block as Record<string, unknown>;
+      if (b.type === 'tool_use') {
+        toolName = typeof b.name === 'string' ? b.name : toolName;
+        toolCountDelta += 1;
+      } else if (b.type === 'text') {
+        const t = typeof b.text === 'string' ? b.text : undefined;
+        if (t) text = text ? `${text}${t}` : t;
+      }
+    }
+
+    if (toolName) {
+      return {
+        kind: 'progress',
+        progress: { phase: 'inspecting', lastToolName: toolName },
+        toolCountDelta,
+      };
+    }
+    if (text) {
+      const snippet = text.length > 200 ? `${text.slice(0, 200)}…` : text;
+      return { kind: 'progress', progress: { phase: 'generating', partialText: snippet } };
+    }
+    return null;
+  }
+
+  return null;
+}
+
 function stripMarkdownFences(text: string): string {
   const fence = text.match(/^```(?:json)?\s*\n([\s\S]*?)\n```\s*$/);
   return fence ? fence[1] : text;
@@ -249,10 +350,11 @@ function appendAttribution(description: string | undefined): string {
   return description ? `${description}\n\n${trailer}` : trailer;
 }
 
-function extractTokenUsage(usage: any): TokenUsage | undefined {
-  if (!usage) return undefined;
-  const inputTokens = Number(usage.input_tokens) || 0;
-  const outputTokens = Number(usage.output_tokens) || 0;
+function extractTokenUsage(usage: unknown): TokenUsage | undefined {
+  if (!usage || typeof usage !== 'object') return undefined;
+  const u = usage as Record<string, unknown>;
+  const inputTokens = Number(u.input_tokens) || 0;
+  const outputTokens = Number(u.output_tokens) || 0;
   if (!inputTokens && !outputTokens) return undefined;
   return { inputTokens, outputTokens };
 }
@@ -278,3 +380,6 @@ function classifyCliFailure(hint: string, _exitCode: number | null): CommitSumma
   }
   return new CommitSummaryCliError(hint, 'CLI_ERROR');
 }
+
+// Exposed for testing
+export const __testing = { interpretStreamEvent };

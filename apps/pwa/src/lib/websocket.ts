@@ -60,6 +60,7 @@ interface RoutedEnvelope {
 const CROSS_TAB_MESSAGE_TYPES = new Set([
   'claude:session-updated', 'claude:preferences-updated',
   'claude:user-input-resolved', 'session:history-updated',
+  'ai:commit-summary:updated',
 ]);
 
 export class WebSocketClient {

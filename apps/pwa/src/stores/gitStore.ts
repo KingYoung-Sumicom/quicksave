@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { GitStatus, FileDiff, Commit, Branch, FileChange, ClaudeModel, TokenUsage, CommitSummarySource } from '@sumicom/quicksave-shared';
+import type { GitStatus, FileDiff, Commit, Branch, FileChange, ClaudeModel, TokenUsage, CommitSummarySource, CommitSummaryState, CommitSummaryProgress } from '@sumicom/quicksave-shared';
 
 // localStorage helpers
 const COMMIT_DRAFT_PREFIX = 'quicksave:commit-draft:';
@@ -112,11 +112,17 @@ interface GitStore {
   attributionEnabled: boolean;
   setAttributionEnabled: (enabled: boolean) => void;
 
-  // AI Summary state
+  // AI Summary state — mirrored from agent-owned per-repo CommitSummaryState.
+  // `commitSummary` is the source of truth from the agent; the individual
+  // `aiSummary`, `aiDescription`, etc. fields below are derived projections
+  // kept in sync via applyCommitSummaryState for backward compatibility with
+  // existing UI consumers.
+  commitSummary: CommitSummaryState | null;
   aiSummary: string | null;
   aiDescription: string | null;
   isGeneratingAiSummary: boolean;
   aiSummaryError: string | null;
+  aiProgress: CommitSummaryProgress | null;
   selectedModel: ClaudeModel;
   apiKeyConfigured: boolean;
   aiTokenUsage: TokenUsage | null;
@@ -146,11 +152,15 @@ interface GitStore {
   reset: () => void;
 
   // AI Summary actions
-  setAiSummary: (summary: string | null, description?: string | null, tokenUsage?: TokenUsage | null, cached?: boolean) => void;
-  setGeneratingAiSummary: (loading: boolean) => void;
-  setAiSummaryError: (error: string | null) => void;
-  clearAiSummary: () => void;
-  applyAiSummary: () => void;
+  /** Mirror a CommitSummaryState from the agent. If the state is for a repo
+   *  other than `currentRepoPath`, it is ignored. This is the primary writer
+   *  now that the agent owns this state. */
+  applyCommitSummaryState: (state: CommitSummaryState) => void;
+  /** Local-only reset (used on disconnect / repo switch before agent state arrives). */
+  resetAiSummaryLocal: () => void;
+  /** Apply the pending AI suggestion to the commit form locally. Callers are
+   *  responsible for notifying the agent (sends `ai:commit-summary:clear`). */
+  applyAiSummaryLocal: () => boolean;
   setSelectedModel: (model: ClaudeModel) => void;
   setApiKeyConfigured: (configured: boolean) => void;
   setCommitSummarySource: (source: CommitSummarySource) => void;
@@ -184,10 +194,12 @@ export const useGitStore = create<GitStore>((set, get) => ({
   },
 
   // AI Summary state
+  commitSummary: null,
   aiSummary: null,
   aiDescription: null,
   isGeneratingAiSummary: false,
   aiSummaryError: null,
+  aiProgress: null,
   selectedModel: 'claude-haiku-4-5',
   apiKeyConfigured: false,
   aiTokenUsage: null,
@@ -288,73 +300,99 @@ export const useGitStore = create<GitStore>((set, get) => ({
   },
 
   setCurrentRepoPath: (repoPath) => {
-    set({ currentRepoPath: repoPath });
+    // Clear AI summary state for the previous repo — the agent will push the
+    // new repo's state, and the caller is expected to fetch the current snapshot.
+    set({
+      currentRepoPath: repoPath,
+      commitSummary: null,
+      aiSummary: null,
+      aiDescription: null,
+      aiSummaryError: null,
+      aiProgress: null,
+      isGeneratingAiSummary: false,
+      aiTokenUsage: null,
+      aiResultCached: false,
+    });
     if (repoPath) {
       // Load persisted commit draft for this repo
       const draft = loadCommitDraft(repoPath);
       if (draft) {
         set({ commitMessage: draft.message, commitDescription: draft.description });
+      } else {
+        set({ commitMessage: '', commitDescription: '' });
       }
     }
   },
 
   // AI Summary actions
-  setAiSummary: (summary, description, tokenUsage, cached) => {
-    const { commitMessage, currentRepoPath } = get();
+  applyCommitSummaryState: (state) => {
+    const { currentRepoPath, commitMessage } = get();
+    // Ignore state for repos the user isn't currently viewing.
+    if (currentRepoPath && state.repoPath !== currentRepoPath) return;
 
-    // If commit message is empty, auto-apply the AI summary directly
-    if (!commitMessage.trim() && summary) {
+    const isReady = state.status === 'ready';
+    const isGenerating = state.status === 'generating';
+    const isError = state.status === 'error';
+
+    // Auto-apply when the commit message is still blank and a summary arrives —
+    // matches the previous behavior that merged empty drafts with AI results.
+    if (isReady && state.summary && !commitMessage.trim()) {
       set({
-        commitMessage: summary,
-        commitDescription: description ?? '',
+        commitSummary: state,
+        commitMessage: state.summary,
+        commitDescription: state.description ?? '',
         aiSummary: null,
         aiDescription: null,
         aiSummaryError: null,
-        aiTokenUsage: tokenUsage ?? null,
-        aiResultCached: cached ?? false,
+        aiProgress: null,
+        isGeneratingAiSummary: false,
+        aiTokenUsage: state.tokenUsage ?? null,
+        aiResultCached: state.cached ?? false,
       });
-      // Save to localStorage
       if (currentRepoPath) {
-        saveCommitDraft(currentRepoPath, summary, description ?? '');
+        saveCommitDraft(currentRepoPath, state.summary, state.description ?? '');
       }
-    } else {
-      // Otherwise, store as suggestion for user to review
-      set({
-        aiSummary: summary,
-        aiDescription: description ?? null,
-        aiSummaryError: null,
-        aiTokenUsage: tokenUsage ?? null,
-        aiResultCached: cached ?? false,
-      });
+      return;
     }
+
+    set({
+      commitSummary: state,
+      aiSummary: isReady ? (state.summary ?? null) : null,
+      aiDescription: isReady ? (state.description ?? null) : null,
+      aiSummaryError: isError ? (state.error ?? 'Failed to generate summary') : null,
+      aiProgress: isGenerating ? (state.progress ?? null) : null,
+      isGeneratingAiSummary: isGenerating,
+      aiTokenUsage: isReady ? (state.tokenUsage ?? null) : null,
+      aiResultCached: isReady ? (state.cached ?? false) : false,
+    });
   },
 
-  setGeneratingAiSummary: (loading) => set({ isGeneratingAiSummary: loading }),
-
-  setAiSummaryError: (error) => set({
-    aiSummaryError: error,
-    // Only stop generating if there's an actual error
-    ...(error !== null && { isGeneratingAiSummary: false })
+  resetAiSummaryLocal: () => set({
+    commitSummary: null,
+    aiSummary: null,
+    aiDescription: null,
+    aiSummaryError: null,
+    aiProgress: null,
+    isGeneratingAiSummary: false,
+    aiTokenUsage: null,
+    aiResultCached: false,
   }),
 
-  clearAiSummary: () => set({ aiSummary: null, aiDescription: null, aiSummaryError: null, aiTokenUsage: null, aiResultCached: false }),
-
-  applyAiSummary: () => {
+  applyAiSummaryLocal: () => {
     const { aiSummary, aiDescription, currentRepoPath } = get();
-    if (aiSummary) {
-      set({
-        commitMessage: aiSummary,
-        commitDescription: aiDescription ?? '',
-        aiSummary: null,
-        aiDescription: null,
-        aiTokenUsage: null,
-        aiResultCached: false,
-      });
-      // Save to localStorage
-      if (currentRepoPath) {
-        saveCommitDraft(currentRepoPath, aiSummary, aiDescription ?? '');
-      }
+    if (!aiSummary) return false;
+    set({
+      commitMessage: aiSummary,
+      commitDescription: aiDescription ?? '',
+      aiSummary: null,
+      aiDescription: null,
+      aiTokenUsage: null,
+      aiResultCached: false,
+    });
+    if (currentRepoPath) {
+      saveCommitDraft(currentRepoPath, aiSummary, aiDescription ?? '');
     }
+    return true;
   },
 
   setSelectedModel: (model) => set({ selectedModel: model }),
@@ -490,10 +528,12 @@ export const useGitStore = create<GitStore>((set, get) => ({
       currentRepoPath: null,
       commitMessage: '',
       commitDescription: '',
+      commitSummary: null,
       aiSummary: null,
       aiDescription: null,
       isGeneratingAiSummary: false,
       aiSummaryError: null,
+      aiProgress: null,
       selectedModel: 'claude-haiku-4-5',
       aiTokenUsage: null,
       aiResultCached: false,

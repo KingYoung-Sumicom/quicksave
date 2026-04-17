@@ -222,11 +222,27 @@ const sessionManager = new SessionManager(new MyCustomProvider());
   - 有 in-memory cache（5 分鐘 TTL，按 diff + model + context 做 key）
 
 - **`source: 'claude-cli'`** → `CommitSummaryCliService`（`commitSummaryCli.ts`）
-  - 一次性 spawn `claude -p "<prompt>"`，`--output-format json --no-session-persistence`
+  - 一次性 spawn `claude -p "<prompt>"`，`--output-format stream-json --verbose --no-session-persistence`
   - 只 whitelist 只讀工具：`Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Bash(git show:*),Bash(git blame:*)`
   - 走使用者本地 Claude Code 訂閱／登入，**不需要** Anthropic API key
   - Agentic loop：Claude 自行跑 `git diff --cached`、grep 相關 caller、讀周邊檔案後再寫訊息
+  - Stream-json events 用 `interpretStreamEvent()` 解析成 `CommitSummaryProgress`（`preparing` / `inspecting` / `generating` / `finalizing`）一路 push 給 PWA
   - 不快取（輸出非決定性）；timeout 120s；exit code / stderr 會 map 成 `NO_CLI_BINARY` / `NO_CLI_AUTH` / `CLI_TIMEOUT` / `CLI_PARSE_ERROR` / `CLI_ERROR` 傳回 UI
+
+#### Agent-Owned Commit Summary State
+
+Generation 可能跑 ~2 分鐘，state 住在 PWA 會被 reload / 換 tab 打斷。所以 AI-generated suggestion 的 state 搬到 agent 上由 `CommitSummaryStateStore`（`ai/commitSummaryStore.ts`）保管：
+
+- 按 `repoPath` 分桶；每桶一個 `CommitSummaryState`（status: `idle` / `generating` / `ready` / `error`）
+- `startGenerating()` 回傳一個 opaque `Symbol` token；後續 progress / result / error 寫入都要帶 token，token 不匹配就 drop（避免 stale 或 superseded 的 run 覆寫新 state）
+- 每次狀態變更 emit `state-updated`；`service/run.ts` 把事件 bridge 到 `connection.broadcast('ai:commit-summary:updated', state)`，所有連線的 peer 一起同步
+- 訊息 API：
+  - `ai:generate-commit-summary` — kickoff（同步回 kickoff response，後續靠 push）
+  - `ai:commit-summary:get` — PWA 重連時拉 snapshot
+  - `ai:commit-summary:clear` — 使用者 dismiss 或 apply 後清掉；kill 在跑的 CLI
+  - `ai:commit-summary:updated` — agent → PWA 的 state push（列在 `CROSS_TAB_MESSAGE_TYPES`，BroadcastChannel 同裝置多 tab 共用）
+- Commit 成功後 `handleCommit` 自動呼叫 `commitSummaryStore.clear(repoPath)`（suggestion 已 stale）
+- PWA gitStore 只做 mirror：收到 `ai:commit-summary:updated` → `applyCommitSummaryState()`；使用者打的 commit draft 仍是 PWA localStorage，不進 agent
 
 ---
 

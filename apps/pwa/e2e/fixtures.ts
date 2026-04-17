@@ -59,11 +59,12 @@ export const test = base.extend<TestFixtures>({
       // Navigate to the app root — the fleet dashboard should appear with our mock agent
       await page.goto('/');
 
-      // Click on the mock agent card to initiate connection
-      await page.getByText('Mock Agent').click();
+      // Click on the mock agent card to initiate connection.
+      // Desktop layout shows ProjectList both in sidebar and content pane — use .first().
+      await page.getByText('Mock Agent').first().click();
 
-      // Wait for the app to complete the handshake and navigate to the agent page
-      await page.waitForURL(/#\/agent\/mock-agent-001/, { timeout: 15_000 });
+      // Wait for the app to complete the handshake and navigate to the project page.
+      await page.waitForURL(/#\/p\//, { timeout: 15_000 });
     };
 
     await use(connect);

@@ -16,6 +16,8 @@ import {
   type GitignoreReadResponsePayload,
   type GitignoreWriteResponsePayload,
   type GenerateCommitSummaryResponsePayload,
+  type GetCommitSummaryResponsePayload,
+  type ClearCommitSummaryResponsePayload,
   type SetApiKeyResponsePayload,
   type GetApiKeyStatusResponsePayload,
   type ListReposResponsePayload,
@@ -57,9 +59,9 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     setLoading,
     setError,
     clearCommitForm,
-    setAiSummary,
-    setGeneratingAiSummary,
-    setAiSummaryError,
+    applyCommitSummaryState,
+    resetAiSummaryLocal,
+    applyAiSummaryLocal,
     setApiKeyConfigured,
     setCurrentRepoPath,
     clearSelection,
@@ -370,34 +372,86 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     [sendRequest, fetchStatus, setError]
   );
 
+  // Kick off commit-summary generation. Result + progress now flow via the
+  // agent's `ai:commit-summary:updated` broadcast — this request only confirms
+  // that the agent accepted the kickoff (or reports a validation error like a
+  // missing API key). Long-running generations survive PWA reloads because
+  // the agent owns the state.
   const generateCommitSummary = useCallback(
     async (context?: string, model?: ClaudeModel) => {
-      setGeneratingAiSummary(true);
-      setAiSummaryError(null);
       try {
-        // Claude CLI path is agentic and can take up to ~2 minutes; give the API path the existing 60s budget.
-        const timeoutMs = commitSummarySource === 'claude-cli' ? 180_000 : 60_000;
         const message = createMessage('ai:generate-commit-summary', {
           context,
           model: model ?? selectedModel,
           attribution: attributionEnabled,
           source: commitSummarySource,
         });
-        const response = await sendRequest<GenerateCommitSummaryResponsePayload>(message, timeoutMs);
+        const response = await sendRequest<GenerateCommitSummaryResponsePayload>(message, 15_000);
 
         if (!response.success) {
           throw new Error(response.error || 'Failed to generate summary');
         }
-
-        setAiSummary(response.summary ?? null, response.description, response.tokenUsage, response.cached);
+        // If the agent returned a state snapshot (post-kickoff), mirror it
+        // immediately so the UI reflects the `generating` phase without
+        // waiting for the push to arrive.
+        if (response.state) {
+          applyCommitSummaryState(response.state);
+        }
       } catch (error) {
-        setAiSummaryError(error instanceof Error ? error.message : 'Failed to generate summary');
-      } finally {
-        setGeneratingAiSummary(false);
+        // Surface kickoff-time errors (e.g. missing API key) via the store.
+        const message = error instanceof Error ? error.message : 'Failed to generate summary';
+        const { currentRepoPath } = useGitStore.getState();
+        applyCommitSummaryState({
+          repoPath: currentRepoPath ?? '',
+          status: 'error',
+          error: message,
+          completedAt: Date.now(),
+        });
       }
     },
-    [sendRequest, selectedModel, attributionEnabled, commitSummarySource, setAiSummary, setGeneratingAiSummary, setAiSummaryError]
+    [sendRequest, selectedModel, attributionEnabled, commitSummarySource, applyCommitSummaryState]
   );
+
+  // Fetch the current agent-owned commit-summary state for the active repo.
+  // Call on initial connect and after repo switch so we hydrate any pending
+  // suggestion that was produced while this PWA was disconnected.
+  const refreshCommitSummary = useCallback(
+    async (repoPath?: string) => {
+      try {
+        const message = createMessage('ai:commit-summary:get', repoPath ? { repoPath } : {});
+        const response = await sendRequest<GetCommitSummaryResponsePayload>(message, 10_000);
+        applyCommitSummaryState(response.state);
+      } catch {
+        // Non-fatal — a stale local state just won't hydrate from the agent.
+      }
+    },
+    [sendRequest, applyCommitSummaryState]
+  );
+
+  // Dismiss the pending AI suggestion: clear locally + tell the agent to drop
+  // its state so other tabs/devices see the dismissal too.
+  const dismissAiSummary = useCallback(async () => {
+    resetAiSummaryLocal();
+    try {
+      const message = createMessage('ai:commit-summary:clear', {});
+      await sendRequest<ClearCommitSummaryResponsePayload>(message, 10_000);
+    } catch {
+      // Non-fatal — the local state is already cleared.
+    }
+  }, [sendRequest, resetAiSummaryLocal]);
+
+  // Apply the pending suggestion into the commit form, and clear the agent
+  // state (it's no longer "pending" — the user used it).
+  const applyAiSuggestion = useCallback(async () => {
+    const applied = applyAiSummaryLocal();
+    if (!applied) return;
+    try {
+      const message = createMessage('ai:commit-summary:clear', {});
+      await sendRequest<ClearCommitSummaryResponsePayload>(message, 10_000);
+    } catch {
+      // Non-fatal — agent will re-clear on commit anyway.
+    }
+  }, [sendRequest, applyAiSummaryLocal]);
 
   const setApiKey = useCallback(
     async (apiKey: string) => {
@@ -455,6 +509,9 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setCurrentRepoPath(response.newPath);
         clearSelection();
         await fetchStatus();
+        // Hydrate any pending AI suggestion the agent may have for this repo.
+        // Non-blocking — the UI will update as soon as it arrives.
+        void refreshCommitSummary(response.newPath);
         return true;
       } catch (error) {
         setError(error instanceof Error ? error.message : 'Failed to switch repository');
@@ -463,7 +520,7 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setLoading(false);
       }
     },
-    [sendRequest, setRepoPath, setCurrentRepoPath, clearSelection, fetchStatus, setLoading, setError]
+    [sendRequest, setRepoPath, setCurrentRepoPath, clearSelection, fetchStatus, refreshCommitSummary, setLoading, setError]
   );
 
   const browseDirectory = useCallback(
@@ -666,6 +723,9 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     readGitignore,
     writeGitignore,
     generateCommitSummary,
+    refreshCommitSummary,
+    dismissAiSummary,
+    applyAiSuggestion,
     setApiKey,
     checkApiKeyStatus,
     listRepos,

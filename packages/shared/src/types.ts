@@ -52,6 +52,11 @@ export type MessageType =
   | 'git:gitignore-write:response'
   | 'ai:generate-commit-summary'
   | 'ai:generate-commit-summary:response'
+  | 'ai:commit-summary:get'
+  | 'ai:commit-summary:get:response'
+  | 'ai:commit-summary:clear'
+  | 'ai:commit-summary:clear:response'
+  | 'ai:commit-summary:updated'  // agent-push: per-repo commit summary state changed
   | 'ai:set-api-key'
   | 'ai:set-api-key:response'
   | 'ai:get-api-key-status'
@@ -900,13 +905,72 @@ export type GenerateCommitSummaryErrorCode =
 
 export interface GenerateCommitSummaryResponsePayload {
   success: boolean;
-  summary?: string;
-  description?: string;
+  /** Current state snapshot after kickoff (authoritative). Result delivery
+   *  happens via the `ai:commit-summary:updated` push event. */
+  state?: CommitSummaryState;
   error?: string;
   errorCode?: GenerateCommitSummaryErrorCode;
+  // Legacy fields — retained for transitional compat, mirrored from state:
+  summary?: string;
+  description?: string;
   tokenUsage?: TokenUsage;
   cached?: boolean;
 }
+
+// Agent-owned commit summary state (one entry per repoPath). The state lives
+// on the agent so that long-running agentic generations survive PWA reloads
+// and are synced across tabs/devices. PWAs read via `ai:commit-summary:get`
+// and observe `ai:commit-summary:updated` broadcasts.
+
+export type CommitSummaryStatus = 'idle' | 'generating' | 'ready' | 'error';
+
+export interface CommitSummaryProgress {
+  phase: 'preparing' | 'inspecting' | 'generating' | 'finalizing';
+  /** Monotonic elapsed time since generation started, in ms. */
+  elapsedMs?: number;
+  /** Number of tool invocations observed so far (CLI source). */
+  toolCount?: number;
+  /** Last tool invoked (CLI source — useful for UI hints like "Reading diff…"). */
+  lastToolName?: string;
+  /** Last partial assistant text observed (CLI source, stream-json). */
+  partialText?: string;
+}
+
+export interface CommitSummaryState {
+  repoPath: string;
+  status: CommitSummaryStatus;
+  startedAt?: number;
+  completedAt?: number;
+  source?: CommitSummarySource;
+  model?: ClaudeModel;
+  summary?: string;
+  description?: string;
+  tokenUsage?: TokenUsage;
+  cached?: boolean;
+  error?: string;
+  errorCode?: GenerateCommitSummaryErrorCode;
+  progress?: CommitSummaryProgress;
+}
+
+export interface GetCommitSummaryRequestPayload {
+  /** Optional repoPath override; defaults to the client's current repo. */
+  repoPath?: string;
+}
+
+export interface GetCommitSummaryResponsePayload {
+  state: CommitSummaryState;
+}
+
+export interface ClearCommitSummaryRequestPayload {
+  repoPath?: string;
+}
+
+export interface ClearCommitSummaryResponsePayload {
+  success: boolean;
+  state: CommitSummaryState;
+}
+
+export type CommitSummaryUpdatedPayload = CommitSummaryState;
 
 // API Key Management
 export interface SetApiKeyRequestPayload {

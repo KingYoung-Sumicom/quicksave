@@ -27,8 +27,10 @@ import {
   type SessionUpdateHistoryResponsePayload,
   type ProjectListSummariesResponsePayload,
   type ProjectListReposResponsePayload,
+  type CommitSummaryUpdatedPayload,
 } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
+import { useGitStore } from '../stores/gitStore';
 import { WebSocketClient } from '../lib/websocket';
 
 type PendingRequest = {
@@ -267,6 +269,13 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
     if (message.type === 'session:config-updated') {
       const { sessionId, config } = message.payload as SessionConfigUpdatedPayload;
       applySessionConfig(sessionId, config);
+      return true;
+    }
+
+    if (message.type === 'ai:commit-summary:updated') {
+      const state = message.payload as CommitSummaryUpdatedPayload;
+      // gitStore filters by currentRepoPath, so cross-repo chatter is ignored.
+      useGitStore.getState().applyCommitSummaryState(state);
       return true;
     }
 

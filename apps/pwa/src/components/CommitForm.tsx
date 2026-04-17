@@ -2,17 +2,21 @@ import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { Spinner } from './ui/Spinner';
 import { ErrorBox } from './ui/ErrorBox';
 import { useGitStore, selectCanCommit } from '../stores/gitStore';
-import { CLAUDE_MODELS, type ClaudeModel, type CommitSummarySource } from '@sumicom/quicksave-shared';
+import { CLAUDE_MODELS, type ClaudeModel, type CommitSummarySource, type CommitSummaryProgress } from '@sumicom/quicksave-shared';
 import { clsx } from 'clsx';
 
 interface CommitFormProps {
   onCommit: (message: string, description?: string) => Promise<void>;
   onGenerateAiSummary: () => Promise<void>;
+  /** Apply the pending AI suggestion (fills the form + tells the agent to drop its state). */
+  onApplyAiSuggestion: () => Promise<void>;
+  /** Dismiss the pending AI suggestion (clears local state + tells the agent to drop its state). */
+  onDismissAiSummary: () => Promise<void>;
   onOpenSettings: () => void;
   stagedCount: number;
 }
 
-export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stagedCount }: CommitFormProps) {
+export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion, onDismissAiSummary, onOpenSettings, stagedCount }: CommitFormProps) {
   const {
     commitMessage,
     commitDescription,
@@ -22,11 +26,10 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
     aiSummary,
     aiDescription,
     aiSummaryError,
+    aiProgress,
     selectedModel,
     setSelectedModel,
     apiKeyConfigured,
-    applyAiSummary,
-    clearAiSummary,
     aiTokenUsage,
     aiResultCached,
     isGeneratingAiSummary,
@@ -69,10 +72,14 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
   };
 
   const handleApplySuggestion = () => {
-    applyAiSummary();
     if (aiDescription) {
       setShowDescription(true);
     }
+    void onApplyAiSuggestion();
+  };
+
+  const handleDismissSuggestion = () => {
+    void onDismissAiSummary();
   };
 
   if (stagedCount === 0) {
@@ -82,21 +89,31 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
   const isCliSource = commitSummarySource === 'claude-cli';
   // CLI source uses the user's Claude Code subscription, so no API key is required.
   const canGenerate = isCliSource || apiKeyConfigured;
-  const loadingLabel = isCliSource
+  const defaultLoadingLabel = isCliSource
     ? 'Exploring repo with Claude CLI...'
     : 'Generating commit message...';
+  const progressLabel = describeProgress(aiProgress) ?? defaultLoadingLabel;
 
   return (
     <div className="bg-slate-800 rounded-lg p-4">
       <form onSubmit={handleSubmit} className="space-y-3">
         {/* Loading indicator - always visible when generating and no suggestion yet */}
         {isGeneratingAiSummary && !aiSummary && (
-          <div className="flex items-center justify-center gap-3 py-4 bg-purple-900/20 border border-purple-500/30 rounded-lg">
-            <svg className="w-6 h-6 animate-spin text-purple-400" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-            </svg>
-            <span className="text-sm font-medium text-purple-400">{loadingLabel}</span>
+          <div className="flex flex-col items-center gap-2 py-4 px-3 bg-purple-900/20 border border-purple-500/30 rounded-lg">
+            <div className="flex items-center gap-3">
+              <svg className="w-6 h-6 animate-spin text-purple-400" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+              <span className="text-sm font-medium text-purple-400">{progressLabel}</span>
+            </div>
+            {aiProgress && (aiProgress.toolCount || aiProgress.elapsedMs) ? (
+              <div className="text-xs text-slate-400">
+                {aiProgress.toolCount ? `${aiProgress.toolCount} tool${aiProgress.toolCount === 1 ? '' : 's'}` : null}
+                {aiProgress.toolCount && aiProgress.elapsedMs ? ' · ' : null}
+                {aiProgress.elapsedMs ? formatElapsed(aiProgress.elapsedMs) : null}
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -175,7 +192,7 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
                 </button>
                 <button
                   type="button"
-                  onClick={clearAiSummary}
+                  onClick={handleDismissSuggestion}
                   disabled={isGeneratingAiSummary}
                   className="text-xs text-slate-400 hover:text-white disabled:text-slate-600 disabled:cursor-not-allowed px-2 py-1 rounded transition-colors"
                   title="Dismiss"
@@ -284,6 +301,25 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onOpenSettings, stag
       </form>
     </div>
   );
+}
+
+function describeProgress(progress: CommitSummaryProgress | null): string | null {
+  if (!progress) return null;
+  if (progress.phase === 'preparing') return 'Preparing generation...';
+  if (progress.phase === 'inspecting') {
+    return progress.lastToolName
+      ? `Inspecting repo (${progress.lastToolName})...`
+      : 'Inspecting repo...';
+  }
+  if (progress.phase === 'generating') return 'Drafting commit message...';
+  if (progress.phase === 'finalizing') return 'Finalizing...';
+  return null;
+}
+
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
 interface ModelDropdownProps {

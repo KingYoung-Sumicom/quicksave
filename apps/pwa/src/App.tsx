@@ -70,6 +70,9 @@ function AppContent() {
     readGitignore,
     writeGitignore,
     generateCommitSummary,
+    refreshCommitSummary,
+    dismissAiSummary,
+    applyAiSuggestion,
     setApiKey,
     checkApiKeyStatus,
     switchRepo,
@@ -258,6 +261,7 @@ function AppContent() {
     setError,
     setConnectionStep,
     setAgentOnline,
+    refreshCommitSummary,
   });
   useEffect(() => {
     handlersRef.current = {
@@ -272,6 +276,7 @@ function AppContent() {
       setError,
       setConnectionStep,
       setAgentOnline,
+      refreshCommitSummary,
     };
   });
 
@@ -320,6 +325,12 @@ function AppContent() {
           const msg = createMessage('claude:active-sessions', {});
           clientRef.current.send(msg);
         }, 500);
+
+        // Hydrate agent-owned AI commit summary state so any in-flight or ready
+        // suggestion survives PWA reloads/reconnects.
+        if (path) {
+          void handlersRef.current.refreshCommitSummary(path);
+        }
 
         // Project route components (/p/) manage their own navigation after connection.
         // No need to navigate on connect — the home page and project routes handle it.
@@ -547,6 +558,8 @@ function AppContent() {
         }
       }}
       onGenerateAiSummary={generateCommitSummary}
+      onApplyAiSuggestion={applyAiSuggestion}
+      onDismissAiSummary={dismissAiSummary}
       onSetApiKey={setApiKey}
     />
   );
@@ -674,6 +687,8 @@ function ProjectRouteRepo({
   onAddToGitignore,
   onCommit,
   onGenerateAiSummary,
+  onApplyAiSuggestion,
+  onDismissAiSummary,
   onSetApiKey,
 }: {
   onConnect: (agentId: string, publicKey: string) => void;
@@ -740,6 +755,8 @@ function ProjectRouteRepo({
         onAddToGitignore={onAddToGitignore}
         onCommit={onCommit}
         onGenerateAiSummary={onGenerateAiSummary}
+        onApplyAiSuggestion={onApplyAiSuggestion}
+        onDismissAiSummary={onDismissAiSummary}
         onSetApiKey={onSetApiKey}
       />
     </>
@@ -927,7 +944,7 @@ function ProjectRouteSession({
       )}
       <ClaudePanel
         sessionId={urlSessionId === 'new' ? undefined : urlSessionId}
-        newSession={isNewSession && !activeSessionId}
+        newSession={isNewSession}
         cwd={cwd}
         onSelectSession={(sid) => navigate(`${projectBasePath}/s/${sid}`)}
         onNewSession={() => navigate(`${projectBasePath}/s/new?new`)}

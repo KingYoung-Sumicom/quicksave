@@ -109,6 +109,52 @@ test.describe('Session Flow', () => {
     await expect(page.getByText('Type a message below to start the session')).toBeVisible({ timeout: 10_000 });
   });
 
+  test('does not unsubscribe after sending the first prompt in a new session', async ({ page, mockRelay, connectToAgent }) => {
+    // Regression: the ?new → /s/:id transition briefly made isChat=false during
+    // the intermediate render where activeSessionId was set but URL hadn't yet
+    // navigated, causing ClaudePanel to fire claude:unsubscribe on the session
+    // it had just subscribed to. After the fix, newSession stays true across
+    // the transition so isChat never flips.
+    mockRelay.setSessions([]);
+    mockRelay.setCards([]);
+    mockRelay.setCardEventsOnStart([
+      {
+        type: 'add',
+        streamId: '',
+        sessionId: '',
+        card: {
+          id: 'new:0',
+          type: 'assistant_text',
+          text: 'I will help you with that.',
+          timestamp: Date.now(),
+        },
+      },
+    ]);
+
+    await connectToAgent(page);
+
+    await page.getByText('project').last().click();
+    await page.waitForURL(/#\/p\/[^/]+$/);
+
+    await page.getByText('New Session').click();
+    await page.waitForURL(/#\/p\/[^/]+\/s\/new/, { timeout: 10_000 });
+    await expect(page.getByText('Type a message below to start the session')).toBeVisible({ timeout: 10_000 });
+
+    await page.locator('textarea').fill('Hello agent');
+    await page.locator('button[title="Send"]').click();
+
+    // Wait for the URL to settle on the real session id and for the streamed
+    // assistant card to render — this guarantees the full transition has run.
+    await page.waitForURL(/#\/p\/[^/]+\/s\/mock-session-/, { timeout: 10_000 });
+    await expect(page.getByText('I will help you with that.')).toBeVisible({ timeout: 10_000 });
+
+    const startResponse = mockRelay.receivedMessages.find((m) => m.type === 'claude:start');
+    expect(startResponse, 'PWA should have sent a claude:start request').toBeTruthy();
+
+    const unsubscribes = mockRelay.receivedMessages.filter((m) => m.type === 'claude:unsubscribe');
+    expect(unsubscribes, 'no claude:unsubscribe should be sent while creating a new session').toEqual([]);
+  });
+
   test('navigating to ?new clears cards, navigating back reloads them', async ({ page, mockRelay, connectToAgent }) => {
     mockRelay.setSessions([
       {

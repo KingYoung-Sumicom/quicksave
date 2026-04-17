@@ -30,6 +30,8 @@ interface RepoViewProps {
   onAddToGitignore: (pattern: string) => void;
   onCommit: (message: string, description?: string) => Promise<void>;
   onGenerateAiSummary: () => Promise<void>;
+  onApplyAiSuggestion: () => Promise<void>;
+  onDismissAiSummary: () => Promise<void>;
   onSetApiKey: (apiKey: string) => Promise<boolean>;
 }
 
@@ -117,6 +119,8 @@ export function RepoView({
   onAddToGitignore,
   onCommit,
   onGenerateAiSummary,
+  onApplyAiSuggestion,
+  onDismissAiSummary,
   onSetApiKey,
 }: RepoViewProps) {
   void _onDiscard; // Will be used in future discard UI
@@ -352,6 +356,8 @@ export function RepoView({
         <CommitForm
           onCommit={onCommit}
           onGenerateAiSummary={onGenerateAiSummary}
+          onApplyAiSuggestion={onApplyAiSuggestion}
+          onDismissAiSummary={onDismissAiSummary}
           onOpenSettings={() => setIsSettingsOpen(true)}
           stagedCount={staged.length}
         />

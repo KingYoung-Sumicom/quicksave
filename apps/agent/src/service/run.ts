@@ -207,6 +207,13 @@ export async function runDaemon(): Promise<void> {
     connection.broadcast(createMessage('session:config-updated', payload));
   });
 
+  // Per-repo commit-summary state (agent-owned, broadcast to all peers so each
+  // PWA can mirror the pending suggestion + generation progress).
+  const commitSummaryStore = messageHandler.getCommitSummaryStore();
+  commitSummaryStore.on('state-updated', (state) => {
+    connection.broadcast(createMessage('ai:commit-summary:updated', state));
+  });
+
   // Init preferences from the last session's JSONL (best-effort, non-blocking)
   claudeService.initPreferences().catch(() => {});
 

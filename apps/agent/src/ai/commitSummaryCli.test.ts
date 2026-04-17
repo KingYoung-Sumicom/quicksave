@@ -8,7 +8,7 @@ vi.mock('./claudeCliProvider.js', () => ({
 }));
 
 const { spawn } = await import('child_process');
-const { CommitSummaryCliService, CommitSummaryCliError } = await import('./commitSummaryCli.js');
+const { CommitSummaryCliService, CommitSummaryCliError, __testing } = await import('./commitSummaryCli.js');
 
 // ── Fake ChildProcess helper ──
 
@@ -48,6 +48,8 @@ function makeFakeChild(opts: FakeChildOpts = {}) {
 }
 
 function makeEnvelope(overrides: Partial<Record<string, unknown>> = {}): string {
+  // The CLI emits stream-json: one JSON event per line terminated by \n.
+  // The final `type: 'result'` envelope carries the full payload.
   return JSON.stringify({
     type: 'result',
     subtype: 'success',
@@ -55,7 +57,7 @@ function makeEnvelope(overrides: Partial<Record<string, unknown>> = {}): string 
     result: '{"summary":"feat: add foo","description":"bar"}',
     usage: { input_tokens: 100, output_tokens: 50 },
     ...overrides,
-  });
+  }) + '\n';
 }
 
 // ── Tests ──
@@ -133,7 +135,8 @@ describe('CommitSummaryCliService', () => {
       // Scan args for flags
       expect(args).toContain('-p');
       expect(args).toContain('--output-format');
-      expect(args).toContain('json');
+      expect(args).toContain('stream-json');
+      expect(args).toContain('--verbose');
       expect(args).toContain('--no-session-persistence');
 
       const toolsIdx = args.indexOf('--allowedTools');
@@ -215,7 +218,10 @@ describe('CommitSummaryCliService', () => {
     });
 
     it('maps unparseable stdout to CLI_PARSE_ERROR', async () => {
-      (spawn as any).mockReturnValue(makeFakeChild({ stdout: 'not json' }));
+      // A line that parses as JSON but has no recognized `type` field: the
+      // interpreter ignores every line, the process exits 0, and we end up
+      // with no `result` event — which maps to CLI_PARSE_ERROR.
+      (spawn as any).mockReturnValue(makeFakeChild({ stdout: '{"noise":true}\n' }));
       const svc = new CommitSummaryCliService();
       await expect(svc.generateSummary({ repoPath: '/r' }))
         .rejects.toMatchObject({ errorCode: 'CLI_PARSE_ERROR' });
@@ -223,7 +229,7 @@ describe('CommitSummaryCliService', () => {
 
     it('maps envelope with is_error=true to CLI_ERROR', async () => {
       (spawn as any).mockReturnValue(makeFakeChild({
-        stdout: JSON.stringify({ is_error: true, result: 'model blew up' }),
+        stdout: JSON.stringify({ type: 'result', is_error: true, result: 'model blew up' }) + '\n',
       }));
       const svc = new CommitSummaryCliService();
       await expect(svc.generateSummary({ repoPath: '/r' }))
@@ -246,6 +252,120 @@ describe('CommitSummaryCliService', () => {
       await expect(svc.generateSummary({ repoPath: '/r' }))
         .rejects.toMatchObject({ errorCode: 'CLI_TIMEOUT' });
       expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    });
+  });
+
+  describe('interpretStreamEvent', () => {
+    const { interpretStreamEvent } = __testing;
+
+    it('returns null for non-object input', () => {
+      expect(interpretStreamEvent(null)).toBeNull();
+      expect(interpretStreamEvent('str')).toBeNull();
+      expect(interpretStreamEvent(42)).toBeNull();
+    });
+
+    it('returns null for unknown type', () => {
+      expect(interpretStreamEvent({ type: 'mystery' })).toBeNull();
+    });
+
+    it('maps system/init to a preparing progress', () => {
+      const out = interpretStreamEvent({ type: 'system', subtype: 'init' });
+      expect(out).toEqual({ kind: 'progress', progress: { phase: 'preparing' } });
+    });
+
+    it('returns null for system with unknown subtype', () => {
+      expect(interpretStreamEvent({ type: 'system', subtype: 'other' })).toBeNull();
+    });
+
+    it('maps assistant tool_use to inspecting with tool count delta', () => {
+      const event = {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', name: 'Grep' },
+            { type: 'tool_use', name: 'Read' },
+          ],
+        },
+      };
+      const out = interpretStreamEvent(event);
+      expect(out).toEqual({
+        kind: 'progress',
+        progress: { phase: 'inspecting', lastToolName: 'Read' },
+        toolCountDelta: 2,
+      });
+    });
+
+    it('maps assistant text blocks to generating progress with snippet', () => {
+      const event = {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'Here is my plan: first I will look at...' }],
+        },
+      };
+      const out = interpretStreamEvent(event);
+      expect(out?.kind).toBe('progress');
+      if (out?.kind === 'progress') {
+        expect(out.progress.phase).toBe('generating');
+        expect(out.progress.partialText).toContain('Here is my plan');
+      }
+    });
+
+    it('truncates long text snippets with ellipsis', () => {
+      const longText = 'x'.repeat(250);
+      const event = {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: longText }] },
+      };
+      const out = interpretStreamEvent(event);
+      if (out?.kind === 'progress') {
+        expect(out.progress.partialText?.length).toBeLessThanOrEqual(201);
+        expect(out.progress.partialText?.endsWith('…')).toBe(true);
+      } else {
+        throw new Error('expected progress event');
+      }
+    });
+
+    it('returns null when assistant content is empty', () => {
+      expect(interpretStreamEvent({ type: 'assistant', message: { content: [] } })).toBeNull();
+    });
+
+    it('returns null when assistant content is missing', () => {
+      expect(interpretStreamEvent({ type: 'assistant' })).toBeNull();
+    });
+
+    it('maps result envelope to kind=result with token usage', () => {
+      const event = {
+        type: 'result',
+        result: '{"summary":"feat: x"}',
+        usage: { input_tokens: 20, output_tokens: 10 },
+      };
+      const out = interpretStreamEvent(event);
+      expect(out).toEqual({
+        kind: 'result',
+        result: '{"summary":"feat: x"}',
+        tokenUsage: { inputTokens: 20, outputTokens: 10 },
+      });
+    });
+
+    it('maps result envelope with is_error=true to kind=error', () => {
+      const out = interpretStreamEvent({
+        type: 'result',
+        is_error: true,
+        result: 'model exploded',
+      });
+      expect(out).toEqual({ kind: 'error', message: 'model exploded' });
+    });
+
+    it('falls back to a generic error message when is_error has no string result', () => {
+      const out = interpretStreamEvent({ type: 'result', is_error: true });
+      expect(out).toEqual({
+        kind: 'error',
+        message: 'Claude CLI reported an error',
+      });
+    });
+
+    it('returns null for result envelope with empty result string', () => {
+      expect(interpretStreamEvent({ type: 'result', result: '' })).toBeNull();
     });
   });
 
