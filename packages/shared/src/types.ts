@@ -842,12 +842,14 @@ export interface ConnectionInfo {
 export type ClaudeModel =
   | 'claude-haiku-4-5'
   | 'claude-sonnet-4-6'
-  | 'claude-opus-4-6';
+  | 'claude-opus-4-6'
+  | 'claude-opus-4-7';
 
 export const CLAUDE_MODELS: { id: ClaudeModel; name: string; label: string; description: string }[] = [
   { id: 'claude-haiku-4-5', name: 'Haiku', label: 'Haiku 4.5', description: 'Fast & affordable' },
   { id: 'claude-sonnet-4-6', name: 'Sonnet', label: 'Sonnet 4.6', description: 'Balanced speed & quality' },
   { id: 'claude-opus-4-6', name: 'Opus', label: 'Opus 4.6', description: 'Highest quality' },
+  { id: 'claude-opus-4-7', name: 'Opus', label: 'Opus 4.7', description: 'Latest flagship' },
 ];
 
 // Generate Commit Summary

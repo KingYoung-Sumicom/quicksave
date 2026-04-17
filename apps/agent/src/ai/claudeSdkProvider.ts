@@ -495,7 +495,11 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
       const terminalReason: string | undefined = (msg as any).terminal_reason;
       const interrupted = terminalReason === 'aborted_tools' || terminalReason === 'aborted_streaming';
       const totalCost = (msg as any).total_cost_usd;
-      console.log(`[sdk] result session=${sessionId.slice(0, 8)} subtype=${msg.subtype} cost=$${totalCost?.toFixed(4) ?? '?'}`);
+      const modelUsage = (msg as any).modelUsage as Record<string, { contextWindow?: number; costUSD?: number }> | undefined;
+      const modelSummary = modelUsage
+        ? Object.entries(modelUsage).map(([m, u]) => `${m}(ctx=${u.contextWindow ?? '?'})`).join(', ')
+        : '?';
+      console.log(`[sdk] result session=${sessionId.slice(0, 8)} subtype=${msg.subtype} cost=$${totalCost?.toFixed(4) ?? '?'} models=[${modelSummary}]`);
 
       if (interrupted) {
         emitCard(cb.systemMessage('User interrupted'));

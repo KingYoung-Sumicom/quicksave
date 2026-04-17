@@ -1499,7 +1499,7 @@ export class MessageHandler {
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const streamId = generateMessageId();
     const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
-    console.log(`[agent:start] agent=${resolvedAgent ?? 'default'} cwd=${cwd} prompt=${prompt.slice(0, 80)}${sandboxed ? ' [sandboxed]' : ''}`);
+    console.log(`[agent:start] agent=${resolvedAgent ?? 'default'} model=${model ?? 'default'} cwd=${cwd} prompt=${prompt.slice(0, 80)}${sandboxed ? ' [sandboxed]' : ''}`);
 
     try {
       const sessionId = await this.claudeService.startSession({
@@ -1561,7 +1561,8 @@ export class MessageHandler {
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const streamId = generateMessageId();
     const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
-    console.log(`[agent:resume] session=${requestedId} agent=${resolvedAgent ?? 'stored'} cwd=${cwd} prompt=${prompt.slice(0, 80)}`);
+    const activeCfg = this.claudeService.getSessionConfig(requestedId);
+    console.log(`[agent:resume] session=${requestedId} agent=${resolvedAgent ?? 'stored'} model=${(activeCfg.model as string | undefined) ?? 'default'} cwd=${cwd} prompt=${prompt.slice(0, 80)}`);
 
     // Subscribe before resumeSession starts streaming — hot resume emits events
     // immediately (user_message, then assistant turns), so we must be subscribed
@@ -1724,6 +1725,7 @@ export class MessageHandler {
 
   private handleSetSessionConfig(message: Message<SessionSetConfigRequestPayload>): Message<SessionSetConfigResponsePayload> {
     const { sessionId, key, value } = message.payload;
+    console.log(`[agent:set-config] session=${sessionId.slice(0, 8)} ${key}=${String(value)}`);
     const config = this.claudeService.setSessionConfig(sessionId, key, value);
     const response = createMessage<SessionSetConfigResponsePayload>(
       'session:set-config:response',

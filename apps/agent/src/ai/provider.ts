@@ -42,6 +42,7 @@ export interface ResumeSessionOpts {
   prompt: string;
   cwd: string;
   streamId: string;
+  model?: string;
   permissionLevel: PermissionLevel;
   sandboxed: boolean;
   systemPrompt?: string;

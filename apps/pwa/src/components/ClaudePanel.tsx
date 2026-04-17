@@ -2,10 +2,11 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { clsx } from 'clsx';
 import { useClaudeStore } from '../stores/claudeStore';
 import { useConnectionStore } from '../stores/connectionStore';
-import type { ClaudeSessionSummary, ClaudeUserInputResponsePayload } from '@sumicom/quicksave-shared';
+import type { ClaudeSessionSummary, ClaudeUserInputResponsePayload, ConfigValue } from '@sumicom/quicksave-shared';
 import { CardRenderer } from './chat/CardRenderer';
 import { SessionList } from './chat/SessionList';
 import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
+import { SessionStatusBar } from './chat/SessionStatusBar';
 import { getAgentType } from '../lib/claudePresets';
 
 type StartSessionOpts = { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean };
@@ -18,6 +19,7 @@ interface ClaudePanelProps {
   onListSessions: () => Promise<void>;
   onGetSessionCards: (sessionId: string, offset?: number, limit?: number) => Promise<void>;
   onGetSessionConfig?: (sessionId: string) => Promise<void>;
+  onSetSessionConfig?: (sessionId: string, key: string, value: ConfigValue) => void;
   onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string) => Promise<void>;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
@@ -33,6 +35,7 @@ export function ClaudePanel({
   onListSessions,
   onGetSessionCards,
   onGetSessionConfig,
+  onSetSessionConfig,
   onStartSession,
   onResumeSession,
 
@@ -409,6 +412,12 @@ export function ClaudePanel({
 
           {/* Input */}
           <div className="border-t border-slate-700 px-4 pt-3 flex-shrink-0 bg-slate-900 safe-area-bottom-input touch-none">
+            {activeSessionId && (
+              <SessionStatusBar
+                sessionId={activeSessionId}
+                onSetSessionConfig={onSetSessionConfig}
+              />
+            )}
             <div className="flex items-end gap-2">
               <textarea
                 ref={inputRef}

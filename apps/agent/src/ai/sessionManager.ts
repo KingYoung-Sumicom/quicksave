@@ -81,6 +81,8 @@ export interface ManagedSession {
   permissionLevel: PermissionLevel;
   sandboxed: boolean;
   cardBuilder: StreamCardBuilder | null;
+  /** Model the current provider process was spawned with. Used to force cold resume when model changes. */
+  spawnedModel?: string;
 }
 
 interface PendingUserInput {
@@ -308,6 +310,7 @@ export class SessionManager extends EventEmitter {
       permissionLevel: level,
       sandboxed,
       cardBuilder,
+      spawnedModel: opts.model,
     };
     this.sessions.set(sessionId, managed);
     this.emitSessionUpdate(sessionId);
@@ -324,6 +327,23 @@ export class SessionManager extends EventEmitter {
   }): Promise<string> {
     const existing = this.sessions.get(opts.sessionId);
     const agentId = this.resolveAgentId(opts.sessionId, opts.cwd, opts.agent);
+
+    // Force cold resume if the user changed model since the session was spawned.
+    // The active provider process was started with `--model X`, so changing model
+    // requires killing it and respawning with the new flag.
+    const desiredModel = (this.sessionConfigs.get(opts.sessionId)?.model as string | undefined)
+      ?? this.preferences.model;
+    const modelChanged = existing?.providerSession?.alive
+      && existing.spawnedModel !== undefined
+      && desiredModel !== undefined
+      && existing.spawnedModel !== desiredModel;
+
+    if (modelChanged) {
+      console.log(`[session-manager] model changed (${existing!.spawnedModel} → ${desiredModel}) — killing provider for cold resume session=${opts.sessionId.slice(0, 8)}`);
+      existing!.providerSession!.kill();
+      existing!.streaming = false;
+      existing!.providerSession = null;
+    }
 
     // Hot resume: session is streaming and provider session is alive
     if (existing?.streaming && existing.providerSession?.alive) {
@@ -369,12 +389,16 @@ export class SessionManager extends EventEmitter {
       await cardBuilder.snapshotCutoff();
       const callbacks = this.makeCallbacks(provider.id);
 
+      const sessionConfig = this.sessionConfigs.get(opts.sessionId);
+      const resumeModel = (sessionConfig?.model as string | undefined) ?? this.preferences.model;
+
       const { sessionId, session: providerSession } = await provider.resumeSession(
         {
           sessionId: opts.sessionId,
           prompt: opts.prompt,
           cwd: opts.cwd,
           streamId: opts.streamId,
+          model: resumeModel,
           permissionLevel: level,
           sandboxed,
           systemPrompt: buildSystemPrompt(),
@@ -389,6 +413,7 @@ export class SessionManager extends EventEmitter {
         existing.agentId = provider.id;
         existing.providerSession = providerSession;
         existing.streaming = true;
+        existing.spawnedModel = resumeModel;
       } else {
         const managed: ManagedSession = {
           sessionId,
@@ -399,6 +424,7 @@ export class SessionManager extends EventEmitter {
           permissionLevel: level,
           sandboxed,
           cardBuilder,
+          spawnedModel: resumeModel,
         };
         this.sessions.set(sessionId, managed);
       }
@@ -678,6 +704,7 @@ export class SessionManager extends EventEmitter {
         return this.handlePermissionRequest(sessionId, req);
       },
       onModelDetected: (model: string) => {
+        console.log(`[session-manager] model detected: ${model} (agent=${agentId})`);
         if (agentId === 'claude-code') {
           this.preferences.model = model;
         }

@@ -1,10 +1,16 @@
 import type { AgentId, CodexModelInfo } from '@sumicom/quicksave-shared';
 
 // Agent presets for quicksave session configuration
+// Append [1m] to enable the 1M context window (Claude Code strips the suffix before API calls).
+// Without [1m], models default to 200k context.
 export const CLAUDE_MODELS = [
   { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
   { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { value: 'claude-sonnet-4-6[1m]', label: 'Sonnet 4.6 (1M)' },
   { value: 'claude-opus-4-6', label: 'Opus 4.6' },
+  { value: 'claude-opus-4-6[1m]', label: 'Opus 4.6 (1M)' },
+  { value: 'claude-opus-4-7', label: 'Opus 4.7' },
+  { value: 'claude-opus-4-7[1m]', label: 'Opus 4.7 (1M)' },
 ];
 
 /** Fallback when dynamic model list isn't available */

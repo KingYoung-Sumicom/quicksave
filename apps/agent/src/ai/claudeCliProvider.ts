@@ -166,13 +166,14 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     const args = this.buildCliArgs({
       prompt: opts.prompt,
       cwd: opts.cwd,
+      model: opts.model,
       permissionMode: opts.permissionLevel,
       systemPrompt: opts.systemPrompt,
       resumeSessionId: opts.sessionId,
       sandboxed: opts.sandboxed,
     });
 
-    return this.spawnAndConsume(args, opts.cwd, opts.streamId, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks);
+    return this.spawnAndConsume(args, opts.cwd, opts.streamId, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model);
   }
 
   // ── Private: CLI Args ──
@@ -576,7 +577,11 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       flushText();
       const terminalReason: string | undefined = msg.terminal_reason;
       const interrupted = terminalReason === 'aborted_tools' || terminalReason === 'aborted_streaming';
-      console.log(`[cli] result session=${sessionId.slice(0, 8)} subtype=${msg.subtype} cost=$${msg.total_cost_usd?.toFixed(4) ?? '?'}`);
+      const modelUsage = (msg as any).modelUsage as Record<string, { contextWindow?: number; costUSD?: number }> | undefined;
+      const modelSummary = modelUsage
+        ? Object.entries(modelUsage).map(([m, u]) => `${m}(ctx=${u.contextWindow ?? '?'})`).join(', ')
+        : '?';
+      console.log(`[cli] result session=${sessionId.slice(0, 8)} subtype=${msg.subtype} cost=$${msg.total_cost_usd?.toFixed(4) ?? '?'} models=[${modelSummary}]`);
 
       if (interrupted) {
         emitCard(cb.systemMessage('User interrupted'));

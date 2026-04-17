@@ -11,8 +11,6 @@ import { WebSocketClient } from './lib/websocket';
 import { ConnectionSetup } from './components/ConnectionSetup';
 import { ConnectingOverlay } from './components/ConnectingOverlay';
 import { FleetStatusBar } from './components/FleetStatusBar';
-import { DashboardAppBar } from './components/DashboardAppBar';
-import { RepoAppBar } from './components/RepoAppBar';
 import { SessionAppBar } from './components/SessionAppBar';
 import { NewSessionAppBar } from './components/NewSessionAppBar';
 import { RepoView } from './components/RepoView';
@@ -22,15 +20,12 @@ import { PathBrowser } from './components/PathBrowser';
 import { GitignoreEditor } from './components/GitignoreEditor';
 import { ClaudePanel } from './components/ClaudePanel';
 import { createMessage, type ClaudeUserInputResponsePayload } from '@sumicom/quicksave-shared';
-import { AgentDashboard } from './components/AgentDashboard';
 import { GitIdentityModal } from './components/GitIdentityModal';
-import { NavigationDrawer } from './components/NavigationDrawer';
 import { ProjectList } from './components/ProjectList';
 import { ProjectDetail } from './components/ProjectDetail';
 import { useProjectConnection } from './hooks/useProjectConnection';
 import { getApiKey, saveApiKey as saveApiKeyToStorage, exportMasterSecret, importMasterSecret } from './lib/secureStorage';
 import { SyncClient } from './lib/syncClient';
-import { resolveHash, getAllKnownPaths } from './lib/pathHash';
 import { useMediaQuery } from './hooks/useMediaQuery';
 
 function AppContent() {
@@ -41,7 +36,6 @@ function AppContent() {
   const {
     state,
     repoPath,
-    isPro,
     signalingServer,
     pendingRepoPath,
     setConnecting,
@@ -56,7 +50,7 @@ function AppContent() {
     reset,
   } = useConnectionStore();
 
-  const { status, reset: resetGit, setCurrentRepoPath } = useGitStore();
+  const { reset: resetGit, setCurrentRepoPath } = useGitStore();
   const { machines, recordConnection, overwriteMachines } = useMachineStore();
   const { initialize: initIdentity, publicKey: identityPublicKey, pairedDevices, isSource, getSecretKey, clearAll: clearIdentity, removePairedDevice, initialized: identityInitialized } = useIdentityStore();
   const agentIdRef = useRef<string | null>(null);
@@ -81,11 +75,9 @@ function AppContent() {
     switchRepo,
     browseDirectory,
     addRepo,
-    removeRepo,
     cloneRepo,
     addCodingPath,
     removeCodingPath,
-    listSubmodules,
     getGitIdentity,
     setGitIdentity,
     checkAgentUpdate,
@@ -111,13 +103,10 @@ function AppContent() {
   } = useClaudeOperations(clientRef);
 
   const [showPathBrowser, setShowPathBrowser] = useState(false);
-  const [pathBrowserMode, setPathBrowserMode] = useState<'repo' | 'workspace'>('repo');
   const [showGitignoreEditor, setShowGitignoreEditor] = useState(false);
   const isDesktop = useMediaQuery('(min-width: 768px)');
-  const [showNavDrawer, setShowNavDrawer] = useState(isDesktop);
   const [_showFleetSettings, setShowFleetSettings] = useState(false);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
-  const [dashboardEditing, setDashboardEditing] = useState(false);
   const [showGitIdentityModal, setShowGitIdentityModal] = useState(false);
 
 
@@ -331,20 +320,8 @@ function AppContent() {
           clientRef.current.send(msg);
         }, 500);
 
-        // Only navigate on initial connection, not reconnect.
-        // Skip navigation if we're already on a project route (/p/) — the project
-        // route components manage their own navigation after connection.
-        const currentPath = locationRef.current.pathname;
-        if (!currentPath.startsWith(`/agent/${agentId}`) && !currentPath.startsWith('/p/')) {
-          // Check for a saved returnPath (e.g. from memory recovery or disconnect redirect)
-          const returnPath = sessionStorage.getItem('quicksave:returnPath');
-          sessionStorage.removeItem('quicksave:returnPath');
-          if (returnPath && returnPath.startsWith(`/agent/${agentId}`)) {
-            handlersRef.current.navigate(returnPath, { replace: true });
-          } else {
-            handlersRef.current.navigate(`/agent/${agentId}`, { replace: true });
-          }
-        }
+        // Project route components (/p/) manage their own navigation after connection.
+        // No need to navigate on connect — the home page and project routes handle it.
       },
       onDisconnected: (disconnectedAgentId) => {
         if (disconnectedAgentId) {
@@ -450,12 +427,6 @@ function AppContent() {
     }
   }, [reset, handleConnect]);
 
-  const handleDisconnect = useCallback(() => {
-    intentionalDisconnectRef.current = true;
-    handleAbortConnection();
-    navigate('/', { replace: true });
-  }, [handleAbortConnection, navigate]);
-
   const handleSwitchMachine = useCallback((targetAgentId: string) => {
     // In multi-agent mode, we keep existing connections alive and just add the new one
     const machine = useMachineStore.getState().getMachine(targetAgentId);
@@ -504,42 +475,6 @@ function AppContent() {
   }, []);
 
   const isConnected = state === 'connected';
-  const isReconnecting = state === 'reconnecting';
-
-  // NOTE: No longer auto-redirect from / to /agent/:agentId.
-  // The home page is now the project list which stays visible regardless of connection state.
-
-  // Auto-connect when on agent page but disconnected
-  const autoConnectRef = useRef(false);
-  useEffect(() => {
-    if (intentionalDisconnectRef.current) return;
-    if (autoConnectRef.current) return;
-    // Wait for WS client to be ready (identity must initialize first)
-    if (!clientRef.current) return;
-    if (location.pathname.startsWith('/agent/') && !isConnected && !isReconnecting && state !== 'connecting') {
-      const match = location.pathname.match(/\/agent\/([^/]+)/);
-      if (match) {
-        autoConnectRef.current = true;
-        // Save current path for restoration after connect
-        sessionStorage.setItem('quicksave:returnPath', location.pathname);
-        const machine = useMachineStore.getState().getMachine(match[1]);
-        if (machine) {
-          handleConnect(machine.agentId, machine.publicKey);
-        } else {
-          navigate('/', { replace: true });
-        }
-      } else {
-        navigate('/', { replace: true });
-      }
-    }
-  }, [location.pathname, isConnected, isReconnecting, state, navigate, handleConnect, identityPublicKey]);
-
-  // Reset auto-connect ref when navigating away
-  useEffect(() => {
-    if (!location.pathname.startsWith('/agent/')) {
-      autoConnectRef.current = false;
-    }
-  }, [location.pathname]);
 
   // Auto-connect to ALL known machines on startup
   const autoConnectAllRef = useRef(false);
@@ -555,141 +490,6 @@ function AppContent() {
       handleConnect(machine.agentId, machine.publicKey);
     }
   }, [handleConnect, identityPublicKey]);
-
-  // Repo page content
-  const repoElement = useMemo(() => {
-    if (!isConnected && !isReconnecting && state !== 'connecting') {
-      return null; // Will auto-connect
-    }
-
-    const currentAgentId = agentIdRef.current || '';
-
-    const openPathBrowser = (mode: 'repo' | 'workspace' = 'repo') => {
-      if (!isDesktop) setShowNavDrawer(false);
-      setPathBrowserMode(mode);
-      setShowPathBrowser(true);
-    };
-
-    return (
-      <div className="flex flex-1 min-h-0">
-        <NavigationDrawer
-          isOpen={showNavDrawer}
-          persistent={isDesktop}
-          onClose={() => setShowNavDrawer(false)}
-          agentId={currentAgentId}
-          onAddRepo={() => openPathBrowser('repo')}
-          onAddWorkspace={() => openPathBrowser('workspace')}
-          onListSessions={listSessions}
-          onSwitchMachine={handleSwitchMachine}
-          onBackToFleet={() => { setShowNavDrawer(false); handleDisconnect(); }}
-          onOpen={() => setShowNavDrawer(true)}
-        />
-        <div className="flex flex-col flex-1 min-h-0 min-w-0">
-          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-            {isConnected && (
-              <Routes>
-                <Route index element={
-                  <>
-                    <DashboardAppBar
-                      editing={dashboardEditing}
-                      onToggleEdit={() => setDashboardEditing((prev) => !prev)}
-                      onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
-                    />
-                    <AgentDashboard
-                      agentId={currentAgentId}
-                      editing={dashboardEditing}
-                      onListSessions={listSessions}
-                      onAddRepo={() => openPathBrowser('repo')}
-                      onRemoveRepo={removeRepo}
-                      onRemoveCodingPath={removeCodingPath}
-                      onArchiveSession={archiveSession}
-                    />
-                  </>
-                } />
-                <Route path="/repo/:pathHash" element={
-                  <>
-                    <RepoAppBar
-                      branch={status?.branch}
-                      ahead={status?.ahead}
-                      behind={status?.behind}
-                      repoPath={repoPath}
-                      onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
-                      onSwitchRepo={switchRepo}
-                      onListSubmodules={listSubmodules}
-                      onOpenGitignore={() => setShowGitignoreEditor(true)}
-                    />
-                    <RepoViewWithHash
-                      agentId={currentAgentId}
-                      onSwitchRepo={switchRepo}
-                      onRefresh={fetchStatus}
-                      onFetchDiff={fetchDiff}
-                      onStage={stageFiles}
-                      onUnstage={unstageFiles}
-                      onStagePatch={stagePatch}
-                      onUnstagePatch={unstagePatch}
-                      onDiscard={discardChanges}
-                      onUntrack={untrackFiles}
-                      onAddToGitignore={addToGitignore}
-                      onCommit={async (msg, desc) => {
-                        try {
-                          await commit(msg, desc);
-                        } catch (err) {
-                          const errMsg = err instanceof Error ? err.message : '';
-                          if (errMsg.includes('empty ident') || errMsg.includes('Please tell me who you are')) {
-                            setShowGitIdentityModal(true);
-                          }
-                        }
-                      }}
-                      onGenerateAiSummary={generateCommitSummary}
-                      onSetApiKey={setApiKey}
-                    />
-                  </>
-                } />
-                <Route path="/coding/:pathHash" element={
-                  <CodingRouteWithAppBar
-                    agentId={currentAgentId}
-                    dashboardEditing={dashboardEditing}
-                    onToggleEdit={() => setDashboardEditing((prev) => !prev)}
-                    onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
-                    onListSessions={listSessions}
-                    onGetSessionCards={getSessionCards}
-                    onGetSessionConfig={getSessionConfig}
-                    onStartSession={startSession}
-                    onResumeSession={resumeSession}
-                    onRespondToUserInput={respondToUserInput}
-                    onUnsubscribeSession={unsubscribeSession}
-                  />
-                } />
-                <Route path="/coding/:pathHash/:sessionId" element={
-                  <SessionRouteWithHash
-                    agentId={currentAgentId}
-                    showSettings={showAgentSettings}
-                    onOpenSettings={() => setShowAgentSettings(true)}
-                    onCloseSettings={() => setShowAgentSettings(false)}
-                    onOpenMenu={() => setShowNavDrawer((prev) => !prev)}
-                    onSetSessionConfig={setSessionConfig}
-                    onCloseSession={closeSession}
-                    onArchiveSession={archiveSession}
-                    onCancelSession={cancelSession}
-                    onCheckAgentUpdate={checkAgentUpdate}
-                    onUpdateAgent={updateAgent}
-                    onRestartAgent={restartAgent}
-                    onListSessions={listSessions}
-                    onGetSessionCards={getSessionCards}
-                    onGetSessionConfig={getSessionConfig}
-                    onStartSession={startSession}
-                    onResumeSession={resumeSession}
-                    onRespondToUserInput={respondToUserInput}
-                    onUnsubscribeSession={unsubscribeSession}
-                  />
-                } />
-              </Routes>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  }, [isConnected, isReconnecting, state, status?.branch, status?.ahead, status?.behind, repoPath, isPro, handleDisconnect, handleSwitchMachine, fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, commit, generateCommitSummary, setApiKey, showNavDrawer, isDesktop, switchRepo, listSessions, getSessionCards, startSession, resumeSession, cancelSession, closeSession, navigate, addCodingPath, showAgentSettings, dashboardEditing]);
 
   // Fetch project summaries + session lists from each agent as they connect
   const fetchedSummariesRef = useRef<Set<string>>(new Set());
@@ -813,7 +613,6 @@ function AppContent() {
               <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
               <Route path="/p/:projectId/repo" element={projectRepoElement} />
               <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
-              <Route path="/agent/:agentId/*" element={repoElement} />
             </Routes>
           </div>
         </div>
@@ -824,13 +623,12 @@ function AppContent() {
           <Route path="/p/:projectId" element={projectDetailElement} />
           <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
           <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
-          <Route path="/agent/:agentId/*" element={repoElement} />
         </Routes>
       )}
       {showOverlay && <ConnectingOverlay onAbort={handleAbortConnection} onRetry={handleRetryConnection} />}
       <PathBrowser
         isOpen={showPathBrowser}
-        mode={pathBrowserMode}
+        mode="repo"
         onClose={() => setShowPathBrowser(false)}
         onSwitchRepo={switchRepo}
         onBrowseDirectory={browseDirectory}
@@ -852,251 +650,6 @@ function AppContent() {
         />
       )}
     </div>
-  );
-}
-
-// Wrapper that resolves :pathHash → full path and switches repo if needed
-function RepoViewWithHash({
-  agentId,
-  onSwitchRepo,
-  ...repoViewProps
-}: { agentId: string; onSwitchRepo: (path: string) => void } & React.ComponentProps<typeof RepoView>) {
-  const { pathHash } = useParams<{ pathHash: string }>();
-  const { repoPath } = useConnectionStore();
-
-  useEffect(() => {
-    if (!pathHash) return;
-    const resolved = resolveHash(pathHash, getAllKnownPaths(agentId));
-    if (resolved && resolved !== repoPath) {
-      onSwitchRepo(resolved);
-    }
-  }, [pathHash, agentId, repoPath, onSwitchRepo]);
-
-  return <RepoView {...repoViewProps} />;
-}
-
-// Wrapper that picks the right App Bar for the coding route:
-// - New session (?new): NewSessionAppBar showing cwd
-// - Session list: DashboardAppBar with edit toggle
-function CodingRouteWithAppBar({
-  agentId,
-  dashboardEditing,
-  onToggleEdit,
-  onOpenMenu,
-  onListSessions,
-  onGetSessionCards,
-  onGetSessionConfig,
-  onStartSession,
-  onResumeSession,
-  onRespondToUserInput,
-  onUnsubscribeSession,
-}: {
-  agentId: string;
-  dashboardEditing: boolean;
-  onToggleEdit: () => void;
-  onOpenMenu: () => void;
-  onListSessions: (cwd?: string) => Promise<void>;
-  onGetSessionCards: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
-  onGetSessionConfig?: (sessionId: string) => Promise<void>;
-  onStartSession: (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
-  onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
-  onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
-  onUnsubscribeSession?: (sessionId: string) => void;
-}) {
-  const { pathHash } = useParams<{ pathHash: string }>();
-  const [searchParams] = useSearchParams();
-  const isNewSession = searchParams.has('new');
-  const activeSessionId = useClaudeStore((s) => s.activeSessionId);
-  const cwd = pathHash ? resolveHash(pathHash, getAllKnownPaths(agentId)) : undefined;
-
-  return (
-    <>
-      {isNewSession && !activeSessionId ? (
-        <NewSessionAppBar cwd={cwd} onOpenMenu={onOpenMenu} />
-      ) : (
-        <DashboardAppBar
-          editing={dashboardEditing}
-          onToggleEdit={onToggleEdit}
-          onOpenMenu={onOpenMenu}
-        />
-      )}
-      <ClaudePanelWithHash
-        agentId={agentId}
-        onListSessions={onListSessions}
-        onGetSessionCards={onGetSessionCards}
-        onGetSessionConfig={onGetSessionConfig}
-        onStartSession={onStartSession}
-        onResumeSession={onResumeSession}
-        onRespondToUserInput={onRespondToUserInput}
-        onUnsubscribeSession={onUnsubscribeSession}
-      />
-    </>
-  );
-}
-
-// Wrapper that resolves :pathHash → cwd and binds it to Claude operations
-function ClaudePanelWithHash({
-  agentId,
-  onListSessions,
-  onGetSessionCards,
-  onGetSessionConfig,
-  onStartSession,
-  onResumeSession,
-  onRespondToUserInput,
-  onUnsubscribeSession,
-}: {
-  agentId: string;
-  onListSessions: (cwd?: string) => Promise<void>;
-  onGetSessionCards: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
-  onGetSessionConfig?: (sessionId: string) => Promise<void>;
-  onStartSession: (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
-  onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
-  onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
-  onUnsubscribeSession?: (sessionId: string) => void;
-}) {
-  const { pathHash, sessionId: urlSessionId } = useParams<{ pathHash: string; sessionId: string }>();
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const isNewSession = searchParams.has('new');
-  const activeSessionId = useClaudeStore((s) => s.activeSessionId);
-
-  const cwd = pathHash ? resolveHash(pathHash, getAllKnownPaths(agentId)) : undefined;
-  const basePath = pathHash ? `/agent/${agentId}/coding/${pathHash}` : `/agent/${agentId}`;
-
-  // When a session starts (activeSessionId changes), update URL to include sessionId.
-  // Only react to activeSessionId changes — including urlSessionId in deps causes a
-  // navigate→param change→re-fire loop that triggers browser throttling.
-  const prevActiveRef = useRef(activeSessionId);
-  useEffect(() => {
-    if (activeSessionId && activeSessionId !== prevActiveRef.current) {
-      navigate(`${basePath}/${activeSessionId}`, { replace: true });
-    }
-    prevActiveRef.current = activeSessionId;
-  }, [activeSessionId, basePath, navigate]);
-
-  // Bind cwd into all callbacks
-  const boundListSessions = useCallback(() => onListSessions(cwd), [onListSessions, cwd]);
-  const boundGetCards = useCallback(
-    (sid: string, offset?: number, limit?: number) => onGetSessionCards(sid, offset, limit, cwd),
-    [onGetSessionCards, cwd]
-  );
-  const boundStartSession = useCallback(
-    (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string }) =>
-      onStartSession(prompt, { ...opts, cwd }),
-    [onStartSession, cwd]
-  );
-  const boundResumeSession = useCallback(
-    (sid: string, prompt: string) => onResumeSession(sid, prompt, cwd),
-    [onResumeSession, cwd]
-  );
-
-  return (
-    <ClaudePanel
-      sessionId={urlSessionId}
-      newSession={isNewSession && !activeSessionId}
-      cwd={cwd}
-      onSelectSession={(sid) => navigate(`${basePath}/${sid}`)}
-      onNewSession={() => navigate(`${basePath}?new`)}
-      onListSessions={boundListSessions}
-      onGetSessionCards={boundGetCards}
-      onGetSessionConfig={onGetSessionConfig}
-      onUnsubscribeSession={onUnsubscribeSession}
-      onStartSession={boundStartSession}
-      onResumeSession={boundResumeSession}
-      onRespondToUserInput={onRespondToUserInput}
-    />
-  );
-}
-
-
-// Wrapper that gives SessionAppBar access to route params for cwd resolution
-function SessionRouteWithHash({
-  agentId,
-  showSettings,
-  onOpenSettings,
-  onCloseSettings,
-  onOpenMenu,
-  onSetSessionConfig,
-  onCloseSession,
-  onArchiveSession,
-  onCancelSession,
-  onCheckAgentUpdate,
-  onUpdateAgent,
-  onRestartAgent,
-  ...claudeProps
-}: {
-  agentId: string;
-  showSettings: boolean;
-  onOpenSettings: () => void;
-  onCloseSettings: () => void;
-  onOpenMenu: () => void;
-  onSetSessionConfig: (sessionId: string, key: string, value: import('@sumicom/quicksave-shared').ConfigValue) => void;
-  onCloseSession: (sessionId: string) => void;
-  onArchiveSession: (sessionId: string, cwd: string) => Promise<void>;
-  onCancelSession: (sessionId: string) => void;
-  onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
-  onUpdateAgent?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; restarting: boolean; error?: string }>;
-  onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
-  onListSessions: (cwd?: string) => Promise<void>;
-  onGetSessionCards: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
-  onGetSessionConfig?: (sessionId: string) => Promise<void>;
-  onStartSession: (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
-  onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
-  onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
-  onUnsubscribeSession?: (sessionId: string) => void;
-}) {
-  const { pathHash, sessionId: urlSessionId } = useParams<{ pathHash: string; sessionId: string }>();
-  const navigate = useNavigate();
-  const cwd = pathHash ? resolveHash(pathHash, getAllKnownPaths(agentId)) : undefined;
-  const basePath = `/agent/${agentId}/coding/${pathHash}`;
-
-  // Use activeSessionId if set, otherwise fall back to URL param
-  const getSessionId = () => useClaudeStore.getState().activeSessionId || urlSessionId;
-
-  return (
-    <>
-      <SessionAppBar
-        showSettings={showSettings}
-        onOpenSettings={onOpenSettings}
-        onCloseSettings={onCloseSettings}
-        onOpenMenu={onOpenMenu}
-        sessionId={urlSessionId}
-        onSetSessionConfig={(key, value) => {
-          const sid = getSessionId();
-          if (sid) onSetSessionConfig(sid, key, value);
-        }}
-        onCloseSession={() => {
-          const sid = getSessionId();
-          if (sid) onCloseSession(sid);
-        }}
-        onArchiveSession={async () => {
-          const sid = getSessionId();
-          if (sid && cwd) {
-            // Terminate the session first, then archive
-            await onCloseSession(sid);
-            await onArchiveSession(sid, cwd);
-            // Clear active session state and navigate back to workspace
-            const { setActiveSession, clearCards } = useClaudeStore.getState();
-            setActiveSession(null);
-            clearCards();
-            navigate(basePath, { replace: true });
-            // Refresh session list so nav drawer updates
-            claudeProps.onListSessions(cwd);
-          }
-        }}
-        onCancelSession={() => {
-          const sid = getSessionId();
-          if (sid) onCancelSession(sid);
-        }}
-        onCheckAgentUpdate={onCheckAgentUpdate}
-        onUpdateAgent={onUpdateAgent}
-        onRestartAgent={onRestartAgent}
-      />
-      <ClaudePanelWithHash
-        agentId={agentId}
-        {...claudeProps}
-      />
-    </>
   );
 }
 
@@ -1375,6 +928,7 @@ function ProjectRouteSession({
         onListSessions={boundListSessions}
         onGetSessionCards={boundGetCards}
         onGetSessionConfig={onGetSessionConfig}
+        onSetSessionConfig={(sid, key, value) => onSetSessionConfig(sid, key, value)}
         onUnsubscribeSession={onUnsubscribeSession}
         onStartSession={boundStartSession}
         onResumeSession={boundResumeSession}
@@ -1418,8 +972,8 @@ function ConnectHandler({ onConnect }: { onConnect: (agentId: string, publicKey:
       }
     }
 
-    // Redirect to agent page (overlay will show connecting)
-    navigate(`/agent/${agentId}`, { replace: true });
+    // Redirect to home (overlay will show connecting)
+    navigate('/', { replace: true });
   }, [agentId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return null;

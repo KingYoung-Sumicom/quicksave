@@ -524,7 +524,7 @@ describe('SessionManager', () => {
 
       callbacks.onModelDetected('gpt-4');
       // Model should still be the default
-      expect(mgr.getPreferences().model).toBe('claude-opus-4-6');
+      expect(mgr.getPreferences().model).toBe('claude-opus-4-7');
     });
   });
 
@@ -662,7 +662,7 @@ describe('SessionManager', () => {
   describe('preferences', () => {
     it('should return default preferences', () => {
       const prefs = manager.getPreferences();
-      expect(prefs.model).toBe('claude-opus-4-6');
+      expect(prefs.model).toBe('claude-opus-4-7');
     });
 
     it('should update preferences and emit event', () => {
@@ -679,7 +679,7 @@ describe('SessionManager', () => {
       const events: any[] = [];
       manager.on('preferences-updated', (e) => events.push(e));
 
-      manager.setPreferences({ model: 'claude-opus-4-6' });
+      manager.setPreferences({ model: 'claude-opus-4-7' });
       expect(events).toHaveLength(0);
     });
   });
