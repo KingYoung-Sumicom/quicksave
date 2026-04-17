@@ -38,7 +38,7 @@ import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { getEventStore } from '../storage/eventStore.js';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
-const PACKAGE_VERSION = '0.6.3';
+const PACKAGE_VERSION = '0.6.4';
 
 export async function runDaemon(): Promise<void> {
   ensureDirectories();

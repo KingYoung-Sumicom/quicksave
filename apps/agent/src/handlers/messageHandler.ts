@@ -133,7 +133,7 @@ const CODEX_MODELS_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 export class MessageHandler {
   private repos: Map<string, GitOperations>;
-  private agentVersion = '0.6.3';
+  private agentVersion = '0.6.4';
   private defaultRepoPath: string;
   private clientRepos: Map<string, string> = new Map(); // peerAddress -> repoPath
   private repoLocks: Map<string, string> = new Map(); // repoPath -> peerAddress holding lock
