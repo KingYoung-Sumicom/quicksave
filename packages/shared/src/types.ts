@@ -120,6 +120,8 @@ export type MessageType =
   | 'session:set-config'           // pwa-request: set a key on session config
   | 'session:set-config:response'  // agent-response: set-config ack with full config
   | 'session:config-updated'       // agent-push: session config changed
+  | 'session:control-request'        // pwa-request: send raw control_request to CLI session
+  | 'session:control-request:response' // agent-response: control response payload
   // Session registry (history)
   | 'session:list-history'           // pwa-request: list session history
   | 'session:list-history:response'  // agent-response: session history list
@@ -279,6 +281,24 @@ export interface SessionSetConfigRequestPayload {
   sessionId: string;
   key: string;
   value: ConfigValue;
+}
+
+/** PWA → Agent: send a raw control_request to the CLI/SDK session's stdin */
+export interface SessionControlRequestPayload {
+  sessionId: string;
+  /** Control request subtype, e.g. 'get_context_usage', 'set_model', 'interrupt' */
+  subtype: string;
+  /** Extra fields merged into the control_request body */
+  params?: Record<string, unknown>;
+}
+
+/** Agent → PWA: response from the CLI's control_response */
+export interface SessionControlRequestResponsePayload {
+  success: boolean;
+  sessionId: string;
+  /** The response body from the CLI (for 'success' control_response) */
+  response?: unknown;
+  error?: string;
 }
 
 /** Agent → PWA: response with the full config after update */
@@ -906,6 +926,71 @@ export interface ClaudeSessionSummary {
   isStreaming?: boolean;
   hasPendingInput?: boolean;
   permissionMode?: string;
+  /** Epoch ms of the last `prompt_sent` event for this session. */
+  lastPromptAt?: number;
+  /** Cumulative stats derived from the event store. */
+  turnCount?: number;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  totalCostUsd?: number;
+  /** Per-turn token breakdown from the most recent `turn_ended` — used to
+   * compute current context window occupancy. */
+  lastTurnInputTokens?: number;
+  lastTurnCacheCreationTokens?: number;
+  lastTurnCacheReadTokens?: number;
+  /** Full context-window breakdown from the most recent `turn_ended` — fetched
+   * via the CLI's `get_context_usage` control_request. Only populated for
+   * claude-code sessions. */
+  lastTurnContextUsage?: ContextUsageBreakdown;
+}
+
+/** Category breakdown of current context window occupancy, as returned by the
+ * Claude Code CLI's `get_context_usage` control_request. Fields mirror the
+ * CLI's own schema; see `apps/agent/src/service/run.ts` for the ingestion site. */
+export interface ContextUsageBreakdown {
+  categories: Array<{
+    name: string;
+    tokens: number;
+    color: string;
+    isDeferred?: boolean;
+  }>;
+  totalTokens: number;
+  maxTokens: number;
+  rawMaxTokens?: number;
+  autocompactSource?: string;
+  percentage: number;
+  autoCompactThreshold?: number;
+  isAutoCompactEnabled?: boolean;
+  model?: string;
+  memoryFiles?: Array<{ path: string; type: string; tokens: number }>;
+  mcpTools?: Array<{ name: string; serverName: string; tokens: number; isLoaded: boolean }>;
+  agents?: unknown[];
+  slashCommands?: { totalCommands: number; includedCommands: number; tokens: number };
+  skills?: {
+    totalSkills: number;
+    includedSkills: number;
+    tokens: number;
+    skillFrontmatter?: Array<{ name: string; source: string; tokens: number }>;
+  };
+  messageBreakdown?: {
+    toolCallTokens: number;
+    toolResultTokens: number;
+    attachmentTokens: number;
+    assistantMessageTokens: number;
+    userMessageTokens: number;
+    redirectedContextTokens?: number;
+    unattributedTokens?: number;
+    toolCallsByType?: Array<{ name: string; callTokens: number; resultTokens: number }>;
+    attachmentsByType?: Array<{ name: string; tokens: number }>;
+  };
+  apiUsage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
+  /** Captured epoch ms — set by the agent when it records the turn. */
+  capturedAt?: number;
 }
 
 // List Sessions

@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import type { ConfigValue } from '@sumicom/quicksave-shared';
+import type { ConfigValue, SessionControlRequestResponsePayload } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
 import { StatusDot, sessionStatusKey, type SessionStatusKey } from './SessionStatusBadge';
 import { BaseStatusBar, MenuButton, BackButton, SettingsGearButton } from './BaseStatusBar';
@@ -15,6 +15,7 @@ interface SessionAppBarProps {
   /** When set, show back arrow navigating to this path instead of hamburger menu */
   backTo?: string;
   onSetSessionConfig?: (key: string, value: ConfigValue) => void;
+  onSendControlRequest?: (sessionId: string, subtype: string, params?: Record<string, unknown>) => Promise<SessionControlRequestResponsePayload>;
   onCloseSession?: () => void;
   onArchiveSession?: () => void;
   onCancelSession?: () => void;
@@ -31,6 +32,7 @@ export function SessionAppBar({
   sessionId,
   backTo,
   onSetSessionConfig,
+  onSendControlRequest,
   onCloseSession,
   onArchiveSession,
   onCancelSession,
@@ -56,6 +58,7 @@ export function SessionAppBar({
         onClose={onCloseSettings}
         sessionId={sessionId}
         onSetSessionConfig={onSetSessionConfig}
+        onSendControlRequest={onSendControlRequest}
         onCancelSession={onCancelSession}
         onCloseSession={onCloseSession}
         onArchiveSession={onArchiveSession}

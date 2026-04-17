@@ -520,7 +520,12 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
         interrupted,
         totalCostUsd: totalCost,
         tokenUsage: usage
-          ? { input: usage.input_tokens, output: usage.output_tokens }
+          ? {
+              input: usage.input_tokens,
+              output: usage.output_tokens,
+              cacheCreation: usage.cache_creation_input_tokens,
+              cacheRead: usage.cache_read_input_tokens,
+            }
           : undefined,
       };
       callbacks.emitStreamEnd(streamEnd);

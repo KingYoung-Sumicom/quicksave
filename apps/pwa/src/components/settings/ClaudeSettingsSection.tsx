@@ -20,9 +20,12 @@ interface ClaudeSettingsSectionProps {
   onSetConfig?: (key: string, value: ConfigValue) => void;
   /** When true, the agent selector is read-only (e.g. active session) */
   agentLocked?: boolean;
+  /** Hide specific fields (useful when drawer delegates them to status bar) */
+  hideFields?: Array<'agent' | 'model' | 'permission' | 'reasoningEffort' | 'sandbox'>;
 }
 
-export function ClaudeSettingsSection({ sessionId, onSetConfig, agentLocked }: ClaudeSettingsSectionProps) {
+export function ClaudeSettingsSection({ sessionId, onSetConfig, agentLocked, hideFields = [] }: ClaudeSettingsSectionProps) {
+  const hide = new Set(hideFields);
   const config = useSessionConfig(sessionId);
   const codexModels = useConnectionStore((s) => s.codexModels);
 
@@ -43,22 +46,26 @@ export function ClaudeSettingsSection({ sessionId, onSetConfig, agentLocked }: C
 
   return (
     <div className="space-y-5">
+      {!hide.has('agent') && (
         <ButtonGroup
-        label="Agent"
-        options={AGENT_TYPES}
-        value={selectedAgent}
-        onSelect={agentLocked ? undefined : (agent) => onSetConfig?.('agent', agent.value)}
-        disabled={agentLocked}
-      />
+          label="Agent"
+          options={AGENT_TYPES}
+          value={selectedAgent}
+          onSelect={agentLocked ? undefined : (agent) => onSetConfig?.('agent', agent.value)}
+          disabled={agentLocked}
+        />
+      )}
 
-      <ButtonGroup
-        label="Model"
-        options={models}
-        value={selectedModel}
-        onSelect={(m) => onSetConfig?.('model', m.value)}
-      />
+      {!hide.has('model') && (
+        <ButtonGroup
+          label="Model"
+          options={models}
+          value={selectedModel}
+          onSelect={(m) => onSetConfig?.('model', m.value)}
+        />
+      )}
 
-      {supportsReasoning && (
+      {!hide.has('reasoningEffort') && supportsReasoning && (
         <ButtonGroup
           label="Reasoning effort"
           options={REASONING_EFFORT_OPTIONS}
@@ -67,20 +74,24 @@ export function ClaudeSettingsSection({ sessionId, onSetConfig, agentLocked }: C
         />
       )}
 
-      <ButtonGroup
-        label="Permission"
-        options={PERMISSION_MODES}
-        value={selectedPermissionMode}
-        onSelect={(p) => onSetConfig?.('permissionMode', p.value)}
-        layout="grid-2"
-      />
+      {!hide.has('permission') && (
+        <ButtonGroup
+          label="Permission"
+          options={PERMISSION_MODES}
+          value={selectedPermissionMode}
+          onSelect={(p) => onSetConfig?.('permissionMode', p.value)}
+          layout="grid-2"
+        />
+      )}
 
-      <ToggleSwitch
-        label="Sandbox"
-        description={selectedAgent === 'codex' ? 'Workspace-write sandbox for Codex' : 'Restrict writes to project directory'}
-        enabled={sandboxed}
-        onChange={(v) => onSetConfig?.('sandboxed', v)}
-      />
+      {!hide.has('sandbox') && (
+        <ToggleSwitch
+          label="Sandbox"
+          description={selectedAgent === 'codex' ? 'Workspace-write sandbox for Codex' : 'Restrict writes to project directory'}
+          enabled={sandboxed}
+          onChange={(v) => onSetConfig?.('sandboxed', v)}
+        />
+      )}
     </div>
   );
 }

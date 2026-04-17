@@ -42,6 +42,7 @@ export const PERMISSION_MODES = [
   { value: 'acceptEdits', label: 'Accept Edits' },
   { value: 'bypassPermissions', label: 'Bypass' },
   { value: 'plan', label: 'Plan Only' },
+  { value: 'auto', label: 'Auto' },
 ];
 
 export type AgentType = {
@@ -71,4 +72,15 @@ export function normalizeAgentId(agentId?: string): AgentId {
 
 export function getAgentType(agentId: AgentId): AgentType {
   return AGENT_TYPES.find((agent) => agent.value === agentId) ?? AGENT_TYPES[0];
+}
+
+/**
+ * Max context window (tokens) for a given model string.
+ * Claude default = 200k; `[1m]` suffix enables 1M context window.
+ * Codex/o-series fall back to 200k for a reasonable display.
+ */
+export function getModelContextLimit(model?: string): number {
+  if (!model) return 200_000;
+  if (/\[1m\]$/i.test(model)) return 1_000_000;
+  return 200_000;
 }

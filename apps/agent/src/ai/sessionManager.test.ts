@@ -1151,4 +1151,49 @@ describe('SessionManager', () => {
       expect(result.cards.length).toBeGreaterThanOrEqual(2);
     });
   });
+
+  describe('getSessionContextUsage', () => {
+    it('returns null for unknown session', async () => {
+      expect(await manager.getSessionContextUsage('unknown')).toBeNull();
+    });
+
+    it('returns null when provider session does not implement getContextUsage', async () => {
+      const sessionId = 'ctx-no-support';
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+      await manager.startSession({ prompt: 'hi', cwd: '/tmp/t', streamId: 's1' });
+      expect(await manager.getSessionContextUsage(sessionId)).toBeNull();
+    });
+
+    it('delegates to provider session when supported', async () => {
+      const sessionId = 'ctx-ok';
+      const usage = { categories: [], totalTokens: 0, maxTokens: 200000, percentage: 0 };
+      const getContextUsage = vi.fn().mockResolvedValue(usage);
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession({ getContextUsage }),
+      });
+      await manager.startSession({ prompt: 'hi', cwd: '/tmp/t', streamId: 's1' });
+
+      const result = await manager.getSessionContextUsage(sessionId);
+      expect(result).toBe(usage);
+      expect(getContextUsage).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns null when provider session is not alive', async () => {
+      const sessionId = 'ctx-dead';
+      const getContextUsage = vi.fn();
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession({ alive: false, getContextUsage }),
+      });
+      await manager.startSession({ prompt: 'hi', cwd: '/tmp/t', streamId: 's1' });
+
+      const result = await manager.getSessionContextUsage(sessionId);
+      expect(result).toBeNull();
+      expect(getContextUsage).not.toHaveBeenCalled();
+    });
+  });
 });

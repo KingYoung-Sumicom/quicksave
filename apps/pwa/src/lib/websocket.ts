@@ -59,7 +59,7 @@ interface RoutedEnvelope {
  *  to the subscribed peer via sendToSession on the agent side. */
 const CROSS_TAB_MESSAGE_TYPES = new Set([
   'claude:session-updated', 'claude:preferences-updated',
-  'claude:user-input-resolved',
+  'claude:user-input-resolved', 'session:history-updated',
 ]);
 
 export class WebSocketClient {

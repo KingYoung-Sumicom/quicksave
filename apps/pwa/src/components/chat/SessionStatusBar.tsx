@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { clsx } from 'clsx';
 import type { ConfigValue } from '@sumicom/quicksave-shared';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
@@ -8,16 +8,25 @@ import { useConnectionStore } from '../../stores/connectionStore';
 interface SessionStatusBarProps {
   sessionId: string;
   onSetSessionConfig?: (sessionId: string, key: string, value: ConfigValue) => void;
+  /** Extra chips rendered at the end of the row (e.g. context % / cache countdown). */
+  children?: ReactNode;
 }
 
-type PopoverType = 'model' | 'permission' | null;
+type PopoverType = 'model' | 'permission' | 'effort' | null;
 
 const AGENT_LABEL: Record<string, string> = {
   'claude-code': 'Claude',
   codex: 'Codex',
 };
 
-export function SessionStatusBar({ sessionId, onSetSessionConfig }: SessionStatusBarProps) {
+const REASONING_EFFORTS = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'max', label: 'Max' },
+];
+
+export function SessionStatusBar({ sessionId, onSetSessionConfig, children }: SessionStatusBarProps) {
   const config = useSessionConfig(sessionId);
   const [openPopover, setOpenPopover] = useState<PopoverType>(null);
   const barRef = useRef<HTMLDivElement>(null);
@@ -28,11 +37,16 @@ export function SessionStatusBar({ sessionId, onSetSessionConfig }: SessionStatu
 
   const currentModel = config.model as string | undefined;
   const currentPermission = config.permissionMode as string | undefined;
+  const currentEffort = (config.reasoningEffort as string | undefined) ?? 'medium';
+  const sandboxed = !!config.sandboxed;
 
   const modelLabel = models.find((m) => m.value === currentModel)?.label ?? currentModel ?? 'Unknown';
   const permissionLabel = PERMISSION_MODES.find((p) => p.value === currentPermission)?.label ?? currentPermission ?? 'Default';
+  const effortLabel = REASONING_EFFORTS.find((e) => e.value === currentEffort)?.label ?? currentEffort;
 
   const agentLabel = AGENT_LABEL[agent] ?? AGENT_LABEL['claude-code'];
+
+  const supportsReasoning = agent === 'codex' || (currentModel ?? '').startsWith('claude-');
 
   // Close popover on outside click
   useEffect(() => {
@@ -56,8 +70,17 @@ export function SessionStatusBar({ sessionId, onSetSessionConfig }: SessionStatu
     setOpenPopover(null);
   };
 
+  const handleSelectEffort = (value: string) => {
+    onSetSessionConfig?.(sessionId, 'reasoningEffort', value);
+    setOpenPopover(null);
+  };
+
+  const handleToggleSandbox = () => {
+    onSetSessionConfig?.(sessionId, 'sandboxed', !sandboxed);
+  };
+
   return (
-    <div ref={barRef} className="relative flex items-center gap-1.5 pb-2 text-xs">
+    <div ref={barRef} className="relative flex items-center gap-1.5 pb-2 text-xs flex-wrap">
       {/* Agent badge — same style as chips but non-interactive */}
       <span className="flex items-center gap-1 px-2 py-1 rounded-md bg-slate-700/60 text-slate-400">
         {agentLabel}
@@ -101,6 +124,50 @@ export function SessionStatusBar({ sessionId, onSetSessionConfig }: SessionStatu
         </svg>
       </button>
 
+      {/* Reasoning effort chip */}
+      {supportsReasoning && (
+        <button
+          type="button"
+          onClick={() => setOpenPopover(openPopover === 'effort' ? null : 'effort')}
+          className={clsx(
+            'flex items-center gap-1 px-2 py-1 rounded-md transition-colors',
+            openPopover === 'effort'
+              ? 'bg-blue-600/20 text-blue-400'
+              : 'bg-slate-700/60 text-slate-400 hover:bg-slate-700 hover:text-slate-300'
+          )}
+        >
+          {/* Brain/bolt icon */}
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          {effortLabel}
+          <svg className="w-2.5 h-2.5 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+      )}
+
+      {/* Sandbox toggle chip */}
+      <button
+        type="button"
+        onClick={handleToggleSandbox}
+        className={clsx(
+          'flex items-center gap-1 px-2 py-1 rounded-md transition-colors',
+          sandboxed
+            ? 'bg-emerald-600/20 text-emerald-400'
+            : 'bg-slate-700/60 text-slate-400 hover:bg-slate-700 hover:text-slate-300'
+        )}
+        title={sandboxed ? 'Sandbox on — writes restricted' : 'Sandbox off'}
+      >
+        {/* Box icon */}
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+        </svg>
+        Sandbox
+      </button>
+
+      {children}
+
       {/* Popover — Model */}
       {openPopover === 'model' && (
         <div className="absolute bottom-full left-0 mb-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[180px] z-50">
@@ -138,6 +205,27 @@ export function SessionStatusBar({ sessionId, onSetSessionConfig }: SessionStatu
               )}
             >
               {p.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Popover — Reasoning effort */}
+      {openPopover === 'effort' && (
+        <div className="absolute bottom-full left-0 mb-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[180px] z-50">
+          {REASONING_EFFORTS.map((e) => (
+            <button
+              key={e.value}
+              type="button"
+              onClick={() => handleSelectEffort(e.value)}
+              className={clsx(
+                'w-full text-left px-3 py-1.5 text-xs transition-colors',
+                e.value === currentEffort
+                  ? 'bg-blue-600/20 text-blue-400'
+                  : 'text-slate-300 hover:bg-slate-700'
+              )}
+            >
+              {e.label}
             </button>
           ))}
         </div>

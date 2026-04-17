@@ -5,6 +5,7 @@ import {
   DEFAULT_MODEL,
   DEFAULT_PERMISSION_MODE,
   DEFAULT_REASONING_EFFORT,
+  DEFAULT_SANDBOXED,
 } from '@sumicom/quicksave-shared';
 import { getModelsForAgent } from '../lib/claudePresets';
 
@@ -84,6 +85,7 @@ interface ClaudeStore {
   setSessions: (sessions: ClaudeSessionSummary[]) => void;
   mergeSessions: (incoming: ClaudeSessionSummary[], cwd?: string) => void;
   upsertSession: (session: Partial<ClaudeSessionSummary> & { sessionId: string }) => void;
+  removeSession: (sessionId: string) => void;
   /** Reconcile session states with agent's actual active sessions after reconnect */
   reconcileActiveSessions: (activeSessionIds: Set<string>) => void;
   setLoadingSessions: (loading: boolean) => void;
@@ -145,7 +147,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   selectedAgent: savedPrefs.selectedAgent ?? DEFAULT_AGENT,
   selectedPermissionMode: savedPrefs.selectedPermissionMode ?? DEFAULT_PERMISSION_MODE,
   selectedReasoningEffort: savedPrefs.selectedReasoningEffort ?? DEFAULT_REASONING_EFFORT,
-  sandboxEnabled: savedPrefs.sandboxEnabled ?? false,
+  sandboxEnabled: savedPrefs.sandboxEnabled ?? DEFAULT_SANDBOXED,
   sessionConfigs: {},
 
   // Sessions
@@ -174,6 +176,13 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         [partial.sessionId]: { ...state.sessions[partial.sessionId], ...partial } as ClaudeSessionSummary,
       },
     })),
+  removeSession: (sessionId) =>
+    set((state) => {
+      if (!(sessionId in state.sessions)) return state;
+      const next = { ...state.sessions };
+      delete next[sessionId];
+      return { sessions: next };
+    }),
   reconcileActiveSessions: (activeSessionIds) =>
     set((state) => {
       const updated = { ...state.sessions };

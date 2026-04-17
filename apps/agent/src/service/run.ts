@@ -34,6 +34,7 @@ import { IPC_VERSION, BUILD_ID, isDebugEnabled } from './types.js';
 import type { ServiceState, StatusResult, PairingInfoResult, RepoInfo, DebugResult } from './types.js';
 import { createMessage, type Message, type Repository } from '@sumicom/quicksave-shared';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
+import { getEventStore } from '../storage/eventStore.js';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const PACKAGE_VERSION = '0.6.3';
@@ -129,25 +130,71 @@ export async function runDaemon(): Promise<void> {
   claudeService.on('card-stream-end', (result) => {
     connection.sendToSession(result.sessionId, createMessage('claude:card-stream-end', result));
 
-    // Update session registry with cost/message count
     const cwd = claudeService.getSessionCwd(result.sessionId);
-    if (cwd) {
-      const registry = getSessionRegistry();
-      const entry = registry.getEntry(cwd, result.sessionId);
-      if (entry) {
-        registry.updateEntry(cwd, result.sessionId, {
-          messageCount: (entry.messageCount ?? 0) + 1,
-          totalCostUsd: (entry.totalCostUsd ?? 0) + (result.totalCostUsd ?? 0),
-          lastAccessedAt: Date.now(),
-        });
+    const inputTokens = result.tokenUsage?.input ?? 0;
+    const outputTokens = result.tokenUsage?.output ?? 0;
+    const cacheCreationTokens = result.tokenUsage?.cacheCreation ?? 0;
+    const cacheReadTokens = result.tokenUsage?.cacheRead ?? 0;
+    const costUsd = result.totalCostUsd ?? 0;
+
+    // Fetch the CLI's context-window breakdown before recording the turn.
+    // Only the Claude Code CLI responds; other providers return null quickly.
+    // Fire-and-record to avoid blocking the peer notification above.
+    (async () => {
+      const contextUsage = await claudeService.getSessionContextUsage(result.sessionId).catch(() => null);
+
+      getEventStore().record({
+        type: 'turn_ended',
+        sessionId: result.sessionId,
+        cwd: cwd ?? null,
+        data: {
+          success: result.success,
+          interrupted: result.interrupted ?? false,
+          error: result.error,
+          inputTokens,
+          outputTokens,
+          cacheCreationTokens,
+          cacheReadTokens,
+          costUsd,
+          ...(contextUsage ? { contextUsage: { ...contextUsage, capturedAt: Date.now() } } : {}),
+        },
+      });
+
+      // Update session registry with cost/message count
+      if (cwd) {
+        const registry = getSessionRegistry();
+        const entry = registry.getEntry(cwd, result.sessionId);
+        if (entry) {
+          registry.updateEntry(cwd, result.sessionId, {
+            messageCount: (entry.messageCount ?? 0) + 1,
+            totalCostUsd: (entry.totalCostUsd ?? 0) + costUsd,
+            lastAccessedAt: Date.now(),
+          });
+        }
       }
-    }
+    })().catch((err) => {
+      console.error(`[turn_ended] failed to record turn for session=${result.sessionId.slice(0, 8)}:`, err);
+    });
   });
   claudeService.on('user-input-request', (request) => {
     connection.sendToSession(request.sessionId, createMessage('claude:user-input-request', request));
+    getEventStore().record({
+      type: 'permission_requested',
+      sessionId: request.sessionId,
+      data: {
+        requestId: request.requestId,
+        inputType: request.inputType,
+        title: request.title,
+      },
+    });
   });
   claudeService.on('user-input-resolved', (info) => {
     connection.sendToSession(info.sessionId, createMessage('claude:user-input-resolved', info));
+    getEventStore().record({
+      type: 'permission_resolved',
+      sessionId: info.sessionId,
+      data: { requestId: info.requestId },
+    });
   });
   claudeService.on('session-updated', (info) => {
     // session-updated goes to all peers (needed for session list status dots)

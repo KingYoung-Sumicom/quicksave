@@ -7,6 +7,7 @@ import { CardRenderer } from './chat/CardRenderer';
 import { SessionList } from './chat/SessionList';
 import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
 import { SessionStatusBar } from './chat/SessionStatusBar';
+import { SessionStatsBar } from './chat/SessionStatsBar';
 import { getAgentType } from '../lib/claudePresets';
 
 type StartSessionOpts = { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean };
@@ -416,7 +417,13 @@ export function ClaudePanel({
               <SessionStatusBar
                 sessionId={activeSessionId}
                 onSetSessionConfig={onSetSessionConfig}
-              />
+              >
+                <SessionStatsBar
+                  sessionId={activeSessionId}
+                  onCompact={() => onResumeSession(activeSessionId, '/compact')}
+                  onClear={handleNewSession}
+                />
+              </SessionStatusBar>
             )}
             <div className="flex items-end gap-2">
               <textarea

@@ -155,6 +155,11 @@ interface ProviderSession {
   sessionId: string;
   streamId: string;
   abort(): Promise<void>;
+  /** Optional — claude-code CLI only. Queries `get_context_usage`
+   * control_request and returns a category-level breakdown of the
+   * current context window. Fetched after every turn_ended and stored
+   * in the event's data blob (see `contextUsage` field). */
+  getContextUsage?(): Promise<ContextUsageBreakdown | null>;
 }
 ```
 

@@ -1,0 +1,83 @@
+import { useEffect, useState } from 'react';
+import { clsx } from 'clsx';
+import { DEFAULT_KV_CACHE_LIFETIME_MS } from '@sumicom/quicksave-shared';
+import { useClaudeStore } from '../../stores/claudeStore';
+import { ContextUsageBadge, formatTokens } from './ContextUsageBadge';
+
+interface SessionStatsBarProps {
+  sessionId: string;
+  /** Cache lifetime used for the countdown. Defaults to DEFAULT_KV_CACHE_LIFETIME_MS. */
+  cacheLifetimeMs?: number;
+  /** Sends `/compact` to the session to summarize history and reduce context. */
+  onCompact?: () => void;
+  /** Clears the active session and returns to new-session view. */
+  onClear?: () => void;
+}
+
+function formatCountdown(remainingMs: number): string {
+  const totalSec = Math.max(0, Math.floor(remainingMs / 1000));
+  const mm = Math.floor(totalSec / 60);
+  const ss = totalSec % 60;
+  return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+}
+
+export function SessionStatsBar({
+  sessionId,
+  cacheLifetimeMs = DEFAULT_KV_CACHE_LIFETIME_MS,
+  onCompact,
+  onClear,
+}: SessionStatsBarProps) {
+  const session = useClaudeStore((s) => s.sessions[sessionId]);
+  const lastPromptAt = session?.lastPromptAt;
+  const lastTurnTotal = (session?.lastTurnInputTokens ?? 0)
+    + (session?.lastTurnCacheCreationTokens ?? 0)
+    + (session?.lastTurnCacheReadTokens ?? 0);
+  const hasContextData = lastTurnTotal > 0;
+  const contextTokens = session?.lastTurnContextUsage?.totalTokens ?? lastTurnTotal;
+
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!lastPromptAt) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [lastPromptAt]);
+
+  const hasCountdown = typeof lastPromptAt === 'number';
+  if (!hasContextData && !hasCountdown) return null;
+
+  const remainingMs = hasCountdown ? Math.max(0, lastPromptAt! + cacheLifetimeMs - now) : 0;
+  const expired = hasCountdown && remainingMs <= 0;
+
+  return (
+    <>
+      {hasContextData && (
+        <ContextUsageBadge sessionId={sessionId} onCompact={onCompact} onClear={onClear} />
+      )}
+      {hasCountdown && (
+        <span
+          className={clsx(
+            'flex items-center gap-1 px-2 py-1 rounded-md font-mono tabular-nums',
+            expired
+              ? 'bg-amber-600/20 text-amber-400'
+              : 'bg-slate-700/60 text-slate-400',
+          )}
+          title={
+            expired
+              ? `Prompt cache likely expired — next turn will re-send ~${formatTokens(contextTokens)} tokens as fresh input`
+              : 'Estimated prompt cache remaining'
+          }
+        >
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="9" strokeWidth="2" />
+            <path strokeLinecap="round" strokeWidth="2" d="M12 7v5l3 2" />
+          </svg>
+          {expired
+            ? contextTokens > 0
+              ? `Expired (${formatTokens(contextTokens)} tokens)`
+              : 'Expired'
+            : formatCountdown(remainingMs)}
+        </span>
+      )}
+    </>
+  );
+}

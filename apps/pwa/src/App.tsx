@@ -97,6 +97,7 @@ function AppContent() {
     respondToUserInput,
     getSessionConfig,
     setSessionConfig,
+    sendControlRequest,
     unsubscribeSession,
     listProjectSummaries,
     listProjectRepos,
@@ -569,6 +570,7 @@ function AppContent() {
             onOpenSettings={() => setShowAgentSettings(true)}
             onCloseSettings={() => setShowAgentSettings(false)}
             onSetSessionConfig={setSessionConfig}
+            onSendControlRequest={sendControlRequest}
             onCloseSession={closeSession}
             onArchiveSession={archiveSession}
             onCancelSession={cancelSession}
@@ -785,6 +787,7 @@ function ProjectRouteSession({
   onOpenSettings,
   onCloseSettings,
   onSetSessionConfig,
+  onSendControlRequest,
   onCloseSession,
   onArchiveSession,
   onCancelSession,
@@ -806,6 +809,7 @@ function ProjectRouteSession({
   onOpenSettings: () => void;
   onCloseSettings: () => void;
   onSetSessionConfig: (sessionId: string, key: string, value: import('@sumicom/quicksave-shared').ConfigValue) => void;
+  onSendControlRequest: (sessionId: string, subtype: string, params?: Record<string, unknown>) => Promise<import('@sumicom/quicksave-shared').SessionControlRequestResponsePayload>;
   onCloseSession: (sessionId: string) => void;
   onArchiveSession: (sessionId: string, cwd: string) => Promise<void>;
   onCancelSession: (sessionId: string) => void;
@@ -894,6 +898,7 @@ function ProjectRouteSession({
             const sid = getSessionId();
             if (sid) onSetSessionConfig(sid, key, value);
           }}
+          onSendControlRequest={onSendControlRequest}
           onCloseSession={() => {
             const sid = getSessionId();
             if (sid) onCloseSession(sid);

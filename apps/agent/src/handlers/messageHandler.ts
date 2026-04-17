@@ -88,6 +88,8 @@ import {
   SessionGetConfigResponsePayload,
   SessionSetConfigRequestPayload,
   SessionSetConfigResponsePayload,
+  SessionControlRequestPayload,
+  SessionControlRequestResponsePayload,
   SessionRegistryEntry,
   SessionListHistoryRequestPayload,
   SessionListHistoryResponsePayload,
@@ -110,6 +112,7 @@ import { SessionManager } from '../ai/sessionManager.js';
 import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
 import { CodexSdkProvider } from '../ai/codexSdkProvider.js';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
+import { getEventStore } from '../storage/eventStore.js';
 import { readdir, stat, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, dirname, basename } from 'path';
@@ -443,6 +446,8 @@ export class MessageHandler {
           return this.handleGetSessionConfig(message as Message<SessionGetConfigRequestPayload>);
         case 'session:set-config':
           return this.handleSetSessionConfig(message as Message<SessionSetConfigRequestPayload>);
+        case 'session:control-request':
+          return this.handleControlRequest(message as Message<SessionControlRequestPayload>);
         case 'session:list-history':
           return this.handleListHistory(message as Message<SessionListHistoryRequestPayload>, peerAddress);
         case 'session:update-history':
@@ -1519,6 +1524,13 @@ export class MessageHandler {
 
       // Register in session history
       const now = Date.now();
+      getEventStore().record({
+        type: 'prompt_sent',
+        sessionId,
+        cwd,
+        time: now,
+        data: { kind: 'start', promptLength: prompt.length, model, agent: resolvedAgent },
+      });
       const registry = getSessionRegistry();
       const gitBranch = await this.getGitBranchQuiet(cwd);
       const actualAgent = this.claudeService.getSessionAgent(sessionId, cwd);
@@ -1584,6 +1596,13 @@ export class MessageHandler {
         this.onPeerSubscribed?.(peerAddress, actualSessionId);
       }
 
+      getEventStore().record({
+        type: 'prompt_sent',
+        sessionId: actualSessionId,
+        cwd,
+        data: { kind: 'resume', promptLength: prompt.length, agent: resolvedAgent },
+      });
+
       // Update session history
       const registry = getSessionRegistry();
       const existing = registry.getEntry(cwd, requestedId) ?? registry.getEntry(cwd, actualSessionId);
@@ -1620,6 +1639,9 @@ export class MessageHandler {
   ): Promise<Message<ClaudeCancelResponsePayload>> {
     const { sessionId } = message.payload;
     const success = await this.claudeService.cancelSession(sessionId);
+    if (success) {
+      getEventStore().record({ type: 'session_cancelled', sessionId });
+    }
     const response = createMessage<ClaudeCancelResponsePayload>(
       'claude:cancel:response',
       { success, error: success ? undefined : 'Session not found or already ended' }
@@ -1702,7 +1724,7 @@ export class MessageHandler {
 
   private handleSetSessionPermission(message: Message<ClaudeSetSessionPermissionRequestPayload>): Message<ClaudeSetSessionPermissionResponsePayload> {
     const { sessionId, permissionMode } = message.payload;
-    const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan'];
+    const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto'];
     const success = validModes.includes(permissionMode) && this.claudeService.setPermissionLevel(sessionId, permissionMode as any);
     const response = createMessage<ClaudeSetSessionPermissionResponsePayload>(
       'claude:set-session-permission:response',
@@ -1733,6 +1755,31 @@ export class MessageHandler {
     );
     response.id = message.id;
     return response;
+  }
+
+  private async handleControlRequest(
+    message: Message<SessionControlRequestPayload>,
+  ): Promise<Message<SessionControlRequestResponsePayload>> {
+    const { sessionId, subtype, params } = message.payload;
+    console.log(`[agent:control-request] session=${sessionId.slice(0, 8)} subtype=${subtype} params=${JSON.stringify(params ?? {})}`);
+    try {
+      const result = await this.claudeService.sendControlRequest(sessionId, subtype, params);
+      const response = createMessage<SessionControlRequestResponsePayload>(
+        'session:control-request:response',
+        { success: true, sessionId, response: result },
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error(`[agent:control-request] error:`, errMsg);
+      const response = createMessage<SessionControlRequestResponsePayload>(
+        'session:control-request:response',
+        { success: false, sessionId, error: errMsg },
+      );
+      response.id = message.id;
+      return response;
+    }
   }
 
   private handleGetActiveSessions(message: Message): Message<ClaudeActiveSessionsResponsePayload> {

@@ -170,5 +170,12 @@ export interface CardStreamEnd {
   /** True when the turn was stopped by user cancel/interrupt */
   interrupted?: boolean;
   totalCostUsd?: number;
-  tokenUsage?: { input: number; output: number };
+  tokenUsage?: {
+    input: number;
+    output: number;
+    /** Tokens written into the prompt cache this turn (Claude only). */
+    cacheCreation?: number;
+    /** Tokens read from the prompt cache this turn (Claude only). */
+    cacheRead?: number;
+  };
 }

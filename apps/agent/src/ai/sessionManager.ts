@@ -20,6 +20,7 @@ import {
 import { StreamCardBuilder, buildCardsFromHistory, loadPersistedCards } from './cardBuilder.js';
 import { SANDBOX_BASH_TOOL, SET_TITLE_TOOL } from './sandboxMcp.js';
 import { getSessionRegistry } from './sessionRegistry.js';
+import { getEventStore } from '../storage/eventStore.js';
 import type {
   PermissionLevel,
   ProviderSession,
@@ -51,6 +52,7 @@ const AUTO_APPROVE: Record<PermissionLevel, Set<string>> = {
   acceptEdits: new Set(['Edit', 'Write', 'NotebookEdit', 'TodoWrite', 'Agent', 'EnterWorktree', 'ExitWorktree', 'EnterPlanMode']),
   default:     new Set(['TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent', 'EnterPlanMode']),
   plan:        new Set(['EnterPlanMode']),
+  auto:        new Set(['TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent', 'EnterPlanMode']),
 };
 
 const DEFAULT_SYSTEM_PROMPT = [
@@ -248,7 +250,7 @@ export class SessionManager extends EventEmitter {
     permissionMode?: string;
     sandboxed?: boolean;
   }): Promise<string> {
-    const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
+    const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto'] as const;
     const level: PermissionLevel = validModes.includes(opts.permissionMode as any)
       ? (opts.permissionMode as PermissionLevel) : 'acceptEdits';
 
@@ -369,6 +371,17 @@ export class SessionManager extends EventEmitter {
       return opts.sessionId;
     }
 
+    // Kill any stale provider session before spawning a fresh one. Leaving the
+    // old process alive causes two CLI processes to share --resume state, and
+    // any pending control_responses routed through its stream are stranded
+    // (the new session's pendingControlResponses map doesn't know about them).
+    if (existing?.providerSession?.alive) {
+      console.log(`[session-manager] killing stale provider before cold resume session=${opts.sessionId.slice(0, 8)}`);
+      existing.providerSession.kill();
+      existing.providerSession = null;
+      existing.streaming = false;
+    }
+
     // Cold resume: mark as in-flight, then delegate to provider
     console.log(`[session-manager] cold resume session=${opts.sessionId.slice(0, 8)}`);
     const flight = { queuedPrompts: [] as string[] };
@@ -378,7 +391,7 @@ export class SessionManager extends EventEmitter {
       // Restore session settings from in-memory maps, falling back to persisted
       // registry (survives daemon restarts).
       const registryEntry = getSessionRegistry().getEntry(opts.cwd, opts.sessionId);
-      const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
+      const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto'] as const;
       const restoredLevel = this.sessionPermissions.get(opts.sessionId)
         ?? (validModes.includes(registryEntry?.permissionMode as any) ? registryEntry!.permissionMode as PermissionLevel : undefined);
       const level: PermissionLevel = restoredLevel ?? 'acceptEdits';
@@ -451,6 +464,19 @@ export class SessionManager extends EventEmitter {
     return true;
   }
 
+  /** Send a raw control_request to the active provider session (CLI only). */
+  async sendControlRequest(sessionId: string, subtype: string, params?: Record<string, unknown>): Promise<unknown> {
+    const ps = this.sessions.get(sessionId);
+    if (!ps?.providerSession?.alive) {
+      throw new Error('Session is not active');
+    }
+    const session = ps.providerSession as any;
+    if (typeof session.sendControlRequest !== 'function') {
+      throw new Error('Provider does not support raw control_request');
+    }
+    return session.sendControlRequest(subtype, params);
+  }
+
   closeSession(sessionId: string): boolean {
     const ps = this.sessions.get(sessionId);
     if (!ps) return false;
@@ -469,13 +495,7 @@ export class SessionManager extends EventEmitter {
     const ps = this.sessions.get(sessionId);
     if (ps) ps.permissionLevel = level;
     this.sessionPermissions.set(sessionId, level);
-    this.emit('session-updated', {
-      sessionId,
-      isActive: !!ps,
-      isStreaming: ps?.streaming ?? false,
-      hasPendingInput: ps ? Array.from(this.pendingInputRequests.values()).some(p => p.request.sessionId === sessionId) : false,
-      permissionMode: level,
-    });
+    this.emitSessionUpdate(sessionId);
     return true;
   }
 
@@ -537,6 +557,16 @@ export class SessionManager extends EventEmitter {
     return this.sessions.get(sessionId)?.cwd;
   }
 
+  /** Fetch a live context-window breakdown from the provider. Returns null if
+   * the session has no live provider process or the provider doesn't support
+   * `get_context_usage` (only the claude-code CLI does). */
+  async getSessionContextUsage(sessionId: string): Promise<import('@sumicom/quicksave-shared').ContextUsageBreakdown | null> {
+    const ps = this.sessions.get(sessionId);
+    if (!ps?.providerSession?.alive) return null;
+    if (typeof ps.providerSession.getContextUsage !== 'function') return null;
+    return ps.providerSession.getContextUsage();
+  }
+
   getSessionAgent(sessionId: string, cwd?: string): AgentId {
     return this.resolveAgentId(sessionId, cwd);
   }
@@ -558,24 +588,38 @@ export class SessionManager extends EventEmitter {
       Array.from(this.pendingInputRequests.values()).map(p => p.request.sessionId)
     );
 
-    return registryEntries.map(entry => ({
-      sessionId: entry.sessionId,
-      summary: entry.title ?? entry.firstPrompt ?? entry.sessionId.slice(0, 8),
-      lastModified: entry.lastAccessedAt,
-      createdAt: entry.createdAt,
-      cwd: entry.cwd,
-      agent: this.sessions.get(entry.sessionId)?.agentId
-        ?? this.sessionAgents.get(entry.sessionId)
-        ?? entry.agent
-        ?? ((entry as { provider?: string }).provider === 'codex-mcp' ? 'codex' : (entry as { provider?: string }).provider ? 'claude-code' : undefined),
-      gitBranch: entry.gitBranch,
-      messageCount: entry.messageCount,
-      isActive: this.sessions.has(entry.sessionId),
-      isStreaming: this.sessions.get(entry.sessionId)?.streaming ?? false,
-      hasPendingInput: pendingSessionIds.has(entry.sessionId),
-      permissionMode: this.sessions.get(entry.sessionId)?.permissionLevel
-        ?? this.sessionPermissions.get(entry.sessionId),
-    }));
+    const eventStore = getEventStore();
+    return registryEntries.map(entry => {
+      const stats = eventStore.getSessionStats(entry.sessionId);
+      const lastTurn = eventStore.getLastTurn(entry.sessionId);
+      return {
+        sessionId: entry.sessionId,
+        summary: entry.title ?? entry.firstPrompt ?? entry.sessionId.slice(0, 8),
+        lastModified: entry.lastAccessedAt,
+        createdAt: entry.createdAt,
+        cwd: entry.cwd,
+        agent: this.sessions.get(entry.sessionId)?.agentId
+          ?? this.sessionAgents.get(entry.sessionId)
+          ?? entry.agent
+          ?? ((entry as { provider?: string }).provider === 'codex-mcp' ? 'codex' : (entry as { provider?: string }).provider ? 'claude-code' : undefined),
+        gitBranch: entry.gitBranch,
+        messageCount: entry.messageCount,
+        isActive: this.sessions.has(entry.sessionId),
+        isStreaming: this.sessions.get(entry.sessionId)?.streaming ?? false,
+        hasPendingInput: pendingSessionIds.has(entry.sessionId),
+        permissionMode: this.sessions.get(entry.sessionId)?.permissionLevel
+          ?? this.sessionPermissions.get(entry.sessionId),
+        lastPromptAt: stats.lastPromptAt ?? undefined,
+        turnCount: stats.turnCount,
+        totalInputTokens: stats.totalInputTokens,
+        totalOutputTokens: stats.totalOutputTokens,
+        totalCostUsd: stats.totalCostUsd,
+        lastTurnInputTokens: lastTurn?.inputTokens,
+        lastTurnCacheCreationTokens: lastTurn?.cacheCreationTokens,
+        lastTurnCacheReadTokens: lastTurn?.cacheReadTokens,
+        lastTurnContextUsage: lastTurn?.contextUsage as ClaudeSessionSummary['lastTurnContextUsage'],
+      };
+    });
   }
 
   async getCards(sessionId: string, cwd: string, offset = 0, limit = 50): Promise<CardHistoryResponse> {
@@ -850,6 +894,9 @@ export class SessionManager extends EventEmitter {
     const ps = this.sessions.get(sessionId);
     const hasPendingInput = Array.from(this.pendingInputRequests.values())
       .some(p => p.request.sessionId === sessionId);
+    const eventStore = getEventStore();
+    const stats = eventStore.getSessionStats(sessionId);
+    const lastTurn = eventStore.getLastTurn(sessionId);
     this.emit('session-updated', {
       sessionId,
       isActive: !!ps,
@@ -858,6 +905,15 @@ export class SessionManager extends EventEmitter {
       hasPendingInput,
       permissionMode: ps?.permissionLevel ?? this.sessionPermissions.get(sessionId),
       sandboxed: ps?.sandboxed ?? this.sessionSandboxed.get(sessionId) ?? false,
+      lastPromptAt: stats.lastPromptAt ?? undefined,
+      turnCount: stats.turnCount,
+      totalInputTokens: stats.totalInputTokens,
+      totalOutputTokens: stats.totalOutputTokens,
+      totalCostUsd: stats.totalCostUsd,
+      lastTurnInputTokens: lastTurn?.inputTokens,
+      lastTurnCacheCreationTokens: lastTurn?.cacheCreationTokens,
+      lastTurnCacheReadTokens: lastTurn?.cacheReadTokens,
+      lastTurnContextUsage: lastTurn?.contextUsage,
     });
   }
 

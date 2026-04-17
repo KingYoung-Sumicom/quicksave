@@ -1,7 +1,7 @@
-import type { AgentId, CardEvent, CardStreamEnd } from '@sumicom/quicksave-shared';
+import type { AgentId, CardEvent, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
 import type { StreamCardBuilder } from './cardBuilder.js';
 
-export type PermissionLevel = 'bypassPermissions' | 'acceptEdits' | 'default' | 'plan';
+export type PermissionLevel = 'bypassPermissions' | 'acceptEdits' | 'default' | 'plan' | 'auto';
 export type ProviderHistoryMode = 'claude-jsonl' | 'memory';
 
 /** Represents a running provider session. */
@@ -10,6 +10,10 @@ export interface ProviderSession {
   interrupt(): void;
   kill(): void;
   readonly alive: boolean;
+  /** Optional — ask the provider for a breakdown of current context window
+   * usage. Only supported by the Claude Code CLI (via `get_context_usage`
+   * control_request). Returns null on providers that don't support it. */
+  getContextUsage?(): Promise<ContextUsageBreakdown | null>;
 }
 
 /** Callbacks the provider uses to communicate back to SessionManager. */

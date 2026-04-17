@@ -3,7 +3,7 @@ import { createInterface } from 'readline';
 import { join, dirname } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
-import type { CardEvent, CardStreamEnd } from '@sumicom/quicksave-shared';
+import type { CardEvent, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
 import { SANDBOX_MCP_NAME, SANDBOX_BASH_TOOL } from './sandboxMcp.js';
 import { DebugLogger } from './debugLogger.js';
@@ -90,13 +90,61 @@ class CliProviderSession implements ProviderSession {
   public pendingStreamIds: string[] = [];
   /** Debug logger — attached after spawn so stdin writes are captured too. */
   public debugLog?: DebugLogger;
+  /** Pending control_requests awaiting a control_response from the CLI. */
+  public pendingControlResponses: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }> = new Map();
+  /** True while a turn (prompt/compaction/tool loop) is in flight — control_requests may be queued by CLI. */
+  public activeTurn: boolean = false;
 
   constructor(proc: ChildProcess) {
     this.process = proc;
   }
 
+  /**
+   * Send a generic control_request and await the response from the CLI.
+   * Timeout counts only idle time: while `activeTurn` is true the clock is
+   * paused, so a compaction or long tool loop will not expire the request.
+   */
+  sendControlRequest(subtype: string, params?: Record<string, unknown>, idleTimeoutMs = 15_000): Promise<unknown> {
+    if (!this.process || this.process.killed) {
+      return Promise.reject(new Error('CLI process is not alive'));
+    }
+    const requestId = crypto.randomUUID();
+    const request = { subtype, ...(params ?? {}) };
+    const msg = { type: 'control_request', request_id: requestId, request };
+
+    return new Promise((resolve, reject) => {
+      const tickMs = 500;
+      let idleAccumulated = 0;
+      const timer = setInterval(() => {
+        if (!this.activeTurn) idleAccumulated += tickMs;
+        if (idleAccumulated >= idleTimeoutMs) {
+          clearInterval(timer);
+          this.pendingControlResponses.delete(requestId);
+          reject(new Error(`Control request ${subtype} timed out after ${idleTimeoutMs}ms idle`));
+        }
+      }, tickMs);
+
+      this.pendingControlResponses.set(requestId, {
+        resolve: (v) => { clearInterval(timer); resolve(v); },
+        reject: (e) => { clearInterval(timer); reject(e); },
+      });
+
+      try {
+        this.debugLog?.logRawEvent({ ...msg, _direction: 'stdin' });
+        this.process!.stdin!.write(JSON.stringify(msg) + '\n');
+      } catch (err) {
+        this.pendingControlResponses.delete(requestId);
+        clearInterval(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+
   sendUserMessage(prompt: string): void {
     if (!this.process || this.process.killed) return;
+    // Pause the idle clock immediately — CLI will start a new turn once it
+    // reads this stdin, even before it emits the first stream event.
+    this.activeTurn = true;
     const userMsg = {
       type: 'user',
       message: { role: 'user', content: prompt },
@@ -118,6 +166,23 @@ class CliProviderSession implements ProviderSession {
     } catch {
       // If stdin write fails, kill the process
       this.process?.kill('SIGTERM');
+    }
+  }
+
+  async getContextUsage(): Promise<ContextUsageBreakdown | null> {
+    if (!this.process || this.process.killed) return null;
+    // Wall-clock cap: sendControlRequest's idle clock pauses while another
+    // turn is in flight, so without a hard ceiling this could hang across
+    // back-to-back turns. 10s is plenty — the CLI normally answers in <100ms.
+    const wallTimeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000));
+    try {
+      const response = await Promise.race([
+        this.sendControlRequest('get_context_usage', undefined, 10_000),
+        wallTimeout,
+      ]);
+      return (response as ContextUsageBreakdown | null) ?? null;
+    } catch {
+      return null;
     }
   }
 
@@ -207,6 +272,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       const cliMode = opts.permissionMode === 'bypassPermissions' ? 'bypassPermissions'
         : opts.permissionMode === 'acceptEdits' ? 'acceptEdits'
         : opts.permissionMode === 'plan' ? 'plan'
+        : opts.permissionMode === 'auto' ? 'auto'
         : 'default';
       args.push('--permission-mode', cliMode);
     }
@@ -365,6 +431,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     };
 
     cb.startNewTurn(streamId);
+    cliSession.activeTurn = true;
 
     // Add user prompt to cardBuilder (for getCards on reconnect) but don't emit
     // as a card-event — the PWA already shows an optimistic user card.
@@ -407,7 +474,10 @@ export class ClaudeCliProvider implements CodingAgentProvider {
           await cb.snapshotCutoff();
           streamId = nextStreamId;
           cb.startNewTurn(streamId);
+          cliSession.activeTurn = true;
           resultEmitted = false; // Reset for next turn
+        } else {
+          cliSession.activeTurn = false;
         }
       }
     };
@@ -431,6 +501,13 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       if (bufferTimer) clearTimeout(bufferTimer);
       // Process exited — clean up
       cliSession.process = null;
+      cliSession.activeTurn = false;
+
+      // Fail any still-pending control_requests — no response will ever arrive.
+      for (const [reqId, pending] of cliSession.pendingControlResponses) {
+        cliSession.pendingControlResponses.delete(reqId);
+        pending.reject(new Error('CLI process exited before control_response'));
+      }
 
       if (!resultEmitted) {
         // Process died without result — emit error
@@ -460,8 +537,27 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       return false;
     }
 
-    // Skip control echoes
-    if (msg.type === 'control_response' || msg.type === 'control_cancel_request') return false;
+    // Route control_response to a pending request if we have one
+    if (msg.type === 'control_response') {
+      const responseBody = msg.response;
+      const reqId: string | undefined = responseBody?.request_id;
+      if (reqId) {
+        const pending = cliSession.pendingControlResponses.get(reqId);
+        if (pending) {
+          cliSession.pendingControlResponses.delete(reqId);
+          if (responseBody.subtype === 'success') {
+            pending.resolve(responseBody.response);
+          } else {
+            pending.reject(new Error(responseBody.error ?? 'control_request failed'));
+          }
+        } else {
+          // Unmatched response — diagnostic for missed routing (e.g. wrong cliSession instance).
+          console.warn(`[cli] control_response with no matching pending request: request_id=${reqId} subtype=${responseBody?.subtype} session=${sessionId.slice(0, 8)} pending_keys=[${Array.from(cliSession.pendingControlResponses.keys()).join(',')}]`);
+        }
+      }
+      return false;
+    }
+    if (msg.type === 'control_cancel_request') return false;
 
     // ── System events ──
     if (msg.type === 'system') {
@@ -600,7 +696,12 @@ export class ClaudeCliProvider implements CodingAgentProvider {
         interrupted,
         totalCostUsd: msg.total_cost_usd,
         tokenUsage: msg.usage
-          ? { input: msg.usage.input_tokens, output: msg.usage.output_tokens }
+          ? {
+              input: msg.usage.input_tokens,
+              output: msg.usage.output_tokens,
+              cacheCreation: (msg.usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens,
+              cacheRead: (msg.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens,
+            }
           : undefined,
       };
       callbacks.emitStreamEnd(streamEnd);

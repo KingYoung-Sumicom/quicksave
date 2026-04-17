@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
 import { SwipeableDrawer } from './SwipeableDrawer';
 import { Spinner } from './ui/Spinner';
-import type { ConfigValue } from '@sumicom/quicksave-shared';
+import { Modal } from './ui/Modal';
+import type { ConfigValue, SessionControlRequestResponsePayload } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
 import { useConnectionStore } from '../stores/connectionStore';
 import { ClaudeSettingsSection } from './settings/ClaudeSettingsSection';
+import { ControlRequestPalette } from './settings/ControlRequestPalette';
 
 interface AgentSettingsDrawerProps {
   isOpen: boolean;
@@ -12,6 +14,7 @@ interface AgentSettingsDrawerProps {
   /** Session ID from URL — fallback when store activeSessionId is null (inactive session) */
   sessionId?: string;
   onSetSessionConfig?: (key: string, value: ConfigValue) => void;
+  onSendControlRequest?: (sessionId: string, subtype: string, params?: Record<string, unknown>) => Promise<SessionControlRequestResponsePayload>;
   onCancelSession?: () => void;
   onCloseSession?: () => void;
   onArchiveSession?: () => void;
@@ -25,6 +28,7 @@ export function AgentSettingsDrawer({
   onClose,
   sessionId: sessionIdProp,
   onSetSessionConfig,
+  onSendControlRequest,
   onCancelSession,
   onCloseSession,
   onArchiveSession,
@@ -32,6 +36,7 @@ export function AgentSettingsDrawer({
   onUpdateAgent,
   onRestartAgent,
 }: AgentSettingsDrawerProps) {
+  const [showControlPalette, setShowControlPalette] = useState(false);
   const storeSessionId = useClaudeStore((s) => s.activeSessionId);
   const activeSessionId = storeSessionId || sessionIdProp || null;
   const localIsStreaming = useClaudeStore((s) => s.isStreaming);
@@ -73,17 +78,18 @@ export function AgentSettingsDrawer({
         {/* Scrollable content */}
         <div className="flex-1 overflow-y-auto p-4 space-y-6">
 
-          {/* Section: Agent — model, reasoning effort, permission */}
-          <div className="space-y-3">
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
-              Agent
-            </h3>
-            <ClaudeSettingsSection
-              sessionId={activeSessionId}
-              onSetConfig={onSetSessionConfig}
-              agentLocked={!!activeSessionId}
-            />
-          </div>
+          {/* Section: Agent — only shown for new sessions; active-session fields live in the status bar */}
+          {!activeSessionId && (
+            <div className="space-y-3">
+              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                Agent
+              </h3>
+              <ClaudeSettingsSection
+                sessionId={null}
+                onSetConfig={onSetSessionConfig}
+              />
+            </div>
+          )}
 
           {/* Section: Session Controls — only when there's an active session */}
           {activeSessionId && (onCancelSession || onCloseSession || onArchiveSession) && (
@@ -119,6 +125,28 @@ export function AgentSettingsDrawer({
                 )}
               </div>
             </div>
+          )}
+
+          {/* Section: Control Request Palette — opens modal */}
+          {activeSessionId && onSendControlRequest && (
+            <>
+              <div className="border-t border-slate-700" />
+              <div className="space-y-3">
+                <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                  Advanced
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setShowControlPalette(true)}
+                  className="w-full flex items-center justify-between py-2 px-3 bg-slate-700 hover:bg-slate-600 rounded-md text-sm font-medium text-slate-200 transition-colors"
+                >
+                  <span>Control Request Palette</span>
+                  <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </div>
+            </>
           )}
 
           {/* Divider */}
@@ -272,6 +300,22 @@ export function AgentSettingsDrawer({
             )}
           </div>
         </div>
+
+        {/* Control Request Palette Modal */}
+        {showControlPalette && activeSessionId && onSendControlRequest && (
+          <Modal
+            title="Control Request Palette"
+            onClose={() => setShowControlPalette(false)}
+            maxWidth="max-w-2xl"
+          >
+            <div className="p-4">
+              <ControlRequestPalette
+                sessionId={activeSessionId}
+                onSendControlRequest={onSendControlRequest}
+              />
+            </div>
+          </Modal>
+        )}
     </SwipeableDrawer>
   );
 }
