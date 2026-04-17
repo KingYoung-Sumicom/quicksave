@@ -106,7 +106,7 @@ export function ProjectDetail({
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <BaseStatusBar
-        left={<BackButton onClick={() => navigate('/')} />}
+        left={<BackButton onClick={() => navigate(-1)} />}
         center={
           <span className="text-sm font-medium text-slate-300 truncate" title={cwd}>
             {displayName}
@@ -209,10 +209,10 @@ export function ProjectDetail({
                   >
                     <StatusDot statusKey={sessionStatusKey(session)} />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-slate-200 line-clamp-2">
+                      <p className="list-title text-sm line-clamp-2">
                         {session.summary || session.sessionId.slice(0, 12)}
                       </p>
-                      <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-500">
+                      <div className="list-meta flex items-center gap-2 mt-0.5 text-[11px]">
                         {session.gitBranch && (
                           <span>{session.gitBranch}</span>
                         )}
@@ -269,10 +269,10 @@ export function ProjectDetail({
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
                     </svg>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-slate-200">{repo.name}</p>
-                      <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-slate-500">
+                      <p className="list-title text-sm">{repo.name}</p>
+                      <div className="list-meta flex items-center gap-1.5 mt-0.5 text-[11px]">
                         {repo.currentBranch && <span>{repo.currentBranch}</span>}
-                        {repo.isSubmodule && <span className="text-slate-600">(submodule)</span>}
+                        {repo.isSubmodule && <span className="opacity-70">(submodule)</span>}
                       </div>
                     </div>
                     <svg className="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -178,6 +178,17 @@ html, body {
   user-select: text;
 }
 
+/* List item text scale — shared across all list-style rows */
+.list-title {
+  @apply text-white;
+}
+.list-subtitle {
+  @apply text-slate-300;
+}
+.list-meta {
+  @apply text-slate-400;
+}
+
 /* Markdown rendering in chat messages */
 .chat-markdown {
   @apply text-sm text-slate-200 leading-relaxed break-words;

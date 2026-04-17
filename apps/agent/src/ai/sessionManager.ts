@@ -201,7 +201,7 @@ export class SessionManager extends EventEmitter {
     return { ...this.sessionConfigs.get(sessionId) };
   }
 
-  setSessionConfig(sessionId: string, key: string, value: ConfigValue): Record<string, ConfigValue> {
+  async setSessionConfig(sessionId: string, key: string, value: ConfigValue): Promise<Record<string, ConfigValue>> {
     const prev = this.sessionConfigs.get(sessionId) ?? {};
     const next = { ...prev, [key]: value };
     this.sessionConfigs.set(sessionId, next);
@@ -211,7 +211,15 @@ export class SessionManager extends EventEmitter {
     } else if (key === 'reasoningEffort' && (typeof value === 'string' || value === null)) {
       this.setPreferences({ reasoningEffort: value as ClaudePreferences['reasoningEffort'] });
     } else if (key === 'permissionMode' && typeof value === 'string') {
-      this.setPermissionLevel(sessionId, value as PermissionLevel);
+      try {
+        await this.setPermissionLevel(sessionId, value as PermissionLevel);
+      } catch (err) {
+        // CLI rejected the mode (e.g. auto mode not supported for this model/plan).
+        // Roll back the optimistic config change and rethrow.
+        this.sessionConfigs.set(sessionId, prev);
+        this.emit('session-config-updated', { sessionId, config: prev });
+        throw err;
+      }
       this.persistRegistryField(sessionId, 'permissionMode', value);
     } else if (key === 'sandboxed' && typeof value === 'boolean') {
       this.sessionSandboxed.set(sessionId, value);
@@ -491,10 +499,26 @@ export class SessionManager extends EventEmitter {
 
   // ── Permission ──
 
-  setPermissionLevel(sessionId: string, level: PermissionLevel): boolean {
+  async setPermissionLevel(sessionId: string, level: PermissionLevel): Promise<boolean> {
     const ps = this.sessions.get(sessionId);
+    const prevLevel = ps?.permissionLevel ?? this.sessionPermissions.get(sessionId) ?? 'acceptEdits';
+
     if (ps) ps.permissionLevel = level;
     this.sessionPermissions.set(sessionId, level);
+
+    const session = ps?.providerSession as any;
+    if (session?.alive && typeof session.sendControlRequest === 'function') {
+      try {
+        await session.sendControlRequest('set_permission_mode', { mode: level });
+      } catch (err) {
+        // CLI rejected — roll back in-memory state so config stays consistent with the CLI.
+        if (ps) ps.permissionLevel = prevLevel;
+        this.sessionPermissions.set(sessionId, prevLevel);
+        this.emitSessionUpdate(sessionId);
+        throw err;
+      }
+    }
+
     this.emitSessionUpdate(sessionId);
     return true;
   }

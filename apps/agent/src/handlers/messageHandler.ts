@@ -1885,10 +1885,17 @@ export class MessageHandler {
     return response;
   }
 
-  private handleSetSessionPermission(message: Message<ClaudeSetSessionPermissionRequestPayload>): Message<ClaudeSetSessionPermissionResponsePayload> {
+  private async handleSetSessionPermission(message: Message<ClaudeSetSessionPermissionRequestPayload>): Promise<Message<ClaudeSetSessionPermissionResponsePayload>> {
     const { sessionId, permissionMode } = message.payload;
     const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto'];
-    const success = validModes.includes(permissionMode) && this.claudeService.setPermissionLevel(sessionId, permissionMode as any);
+    let success = false;
+    if (validModes.includes(permissionMode)) {
+      try {
+        success = await this.claudeService.setPermissionLevel(sessionId, permissionMode as any);
+      } catch {
+        success = false;
+      }
+    }
     const response = createMessage<ClaudeSetSessionPermissionResponsePayload>(
       'claude:set-session-permission:response',
       { success, sessionId, permissionMode },
@@ -1908,16 +1915,31 @@ export class MessageHandler {
     return response;
   }
 
-  private handleSetSessionConfig(message: Message<SessionSetConfigRequestPayload>): Message<SessionSetConfigResponsePayload> {
+  private async handleSetSessionConfig(message: Message<SessionSetConfigRequestPayload>): Promise<Message<SessionSetConfigResponsePayload>> {
     const { sessionId, key, value } = message.payload;
     console.log(`[agent:set-config] session=${sessionId.slice(0, 8)} ${key}=${String(value)}`);
-    const config = this.claudeService.setSessionConfig(sessionId, key, value);
-    const response = createMessage<SessionSetConfigResponsePayload>(
-      'session:set-config:response',
-      { success: true, sessionId, config },
-    );
-    response.id = message.id;
-    return response;
+    try {
+      const config = await this.claudeService.setSessionConfig(sessionId, key, value);
+      const response = createMessage<SessionSetConfigResponsePayload>(
+        'session:set-config:response',
+        { success: true, sessionId, config },
+      );
+      response.id = message.id;
+      return response;
+    } catch (err) {
+      const config = this.claudeService.getSessionConfig(sessionId);
+      const response = createMessage<SessionSetConfigResponsePayload>(
+        'session:set-config:response',
+        {
+          success: false,
+          sessionId,
+          config,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+      response.id = message.id;
+      return response;
+    }
   }
 
   private async handleControlRequest(

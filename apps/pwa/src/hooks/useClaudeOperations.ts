@@ -551,7 +551,13 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       setSessionConfigKey(sessionId, key, value); // optimistic
       const message = createMessage<{ sessionId: string; key: string; value: ConfigValue }>('session:set-config', { sessionId, key, value });
       sendRequest<SessionSetConfigResponsePayload>(message).then((response) => {
-        applySessionConfig(sessionId, response.config); // confirm with actual applied config
+        applySessionConfig(sessionId, response.config); // confirm with actual applied config (rolled back on failure)
+        if (response.success === false && response.error) {
+          // The CLI rejected the change (e.g. set_permission_mode 'auto' not supported for this model/plan).
+          // The agent has already rolled back its state and returned the actual current config;
+          // applySessionConfig above reconciles the UI. Warn the user so they know why their change was reverted.
+          window.alert(`Can't set ${key} to "${String(value)}": ${response.error}`);
+        }
       }).catch(() => {});
     },
     [sendRequest, setSessionConfigKey, applySessionConfig],

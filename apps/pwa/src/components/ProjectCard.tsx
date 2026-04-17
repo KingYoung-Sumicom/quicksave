@@ -45,25 +45,27 @@ export function ProjectCard({ project, sessions, onClick, onSessionClick, isActi
           isActive && 'bg-slate-700/40',
         )}
       >
+        {/* Connection indicator — leftmost, vertically centered */}
+        <span
+          className={clsx(
+            'w-1.5 h-1.5 rounded-full shrink-0',
+            project.isConnected ? 'bg-emerald-400' : 'bg-red-500',
+          )}
+        />
+
         {/* Text content */}
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2">
-            <span className="text-[17px] font-medium text-slate-100 truncate">
+            <span className="list-title text-[17px] font-medium truncate">
               {project.displayName}
             </span>
             {project.isPinned && (
               <span className="text-[10px] text-amber-400/60 shrink-0">pinned</span>
             )}
           </div>
-          <div className="flex items-center gap-1.5 mt-0.5 ml-[1em]">
-            <span
-              className={clsx(
-                'w-1.5 h-1.5 rounded-full shrink-0',
-                project.isConnected ? 'bg-emerald-400' : 'bg-slate-600',
-              )}
-            />
-            <span className="text-[12px] text-slate-500 truncate">
-              {project.machineIcon} {project.machineName}
+          <div className="mt-0.5">
+            <span className="list-subtitle text-[12px] truncate">
+              {project.machineName}
             </span>
           </div>
         </div>
@@ -93,11 +95,11 @@ export function ProjectCard({ project, sessions, onClick, onSessionClick, isActi
             <div className="flex-1 min-w-0">
               <span className={clsx(
                 'text-[14px] line-clamp-2',
-                isSessionActive ? 'text-blue-300' : session.isActive ? 'text-slate-300' : 'text-slate-400',
+                isSessionActive ? 'text-blue-300' : 'list-title',
               )}>
                 {session.summary || session.sessionId.slice(0, 12)}
               </span>
-              <span className="text-[11px] text-slate-600 mt-0.5 block">
+              <span className="list-meta text-[11px] mt-0.5 block">
                 {formatRelativeTime(session.lastModified)}
               </span>
             </div>

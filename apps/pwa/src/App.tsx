@@ -736,7 +736,7 @@ function ProjectRouteRepo({
     return (
       <div className="flex flex-col h-full overflow-hidden">
         <BaseStatusBar
-          left={<BackButton onClick={() => navigate(`/p/${projectId}`)} />}
+          left={<BackButton onClick={() => navigate(-1)} />}
           center={<span className="text-sm font-medium text-slate-300">Repo</span>}
         />
         <div className="flex-1 flex items-center justify-center">
@@ -749,7 +749,7 @@ function ProjectRouteRepo({
   return (
     <>
       <BaseStatusBar
-        left={<BackButton onClick={() => navigate(`/p/${projectId}`)} />}
+        left={<BackButton onClick={() => navigate(-1)} />}
         center={
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-slate-300 truncate">

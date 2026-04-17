@@ -100,20 +100,20 @@ export function MachineCard({
         {/* Machine Info */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <h3 className="font-medium truncate">{machine.nickname}</h3>
+            <h3 className="list-title font-medium truncate">{machine.nickname}</h3>
             {machine.isPro && (
               <span className="text-xs bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded flex-shrink-0">
                 Pro
               </span>
             )}
           </div>
-          <p className="text-sm text-slate-400 truncate">
+          <p className="list-subtitle text-sm truncate">
             {hasRepos
               ? `${machine.knownRepos.length} repo${machine.knownRepos.length > 1 ? 's' : ''}`
               : machine.lastRepoPath || 'No repo connected yet'}
           </p>
           {variant === 'full' && (
-            <p className="text-xs text-slate-500">
+            <p className="list-meta text-xs">
               {formatLastConnected(machine.lastConnectedAt)}
             </p>
           )}
@@ -189,8 +189,8 @@ export function MachineCard({
 
                 {/* Repo info */}
                 <div className="flex-1 min-w-0 text-left">
-                  <p className="font-medium truncate text-sm">{repoName(repoPath)}</p>
-                  <p className="text-xs text-slate-500 truncate">{repoPath}</p>
+                  <p className="list-title font-medium truncate text-sm">{repoName(repoPath)}</p>
+                  <p className="list-meta text-xs truncate">{repoPath}</p>
                 </div>
 
                 {/* Last connected indicator */}

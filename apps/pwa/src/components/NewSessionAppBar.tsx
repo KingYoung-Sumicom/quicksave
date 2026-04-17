@@ -15,7 +15,7 @@ export function NewSessionAppBar({ cwd, onOpenMenu, backTo }: NewSessionAppBarPr
   return (
     <BaseStatusBar
       left={backTo
-        ? <BackButton onClick={() => navigate(backTo)} />
+        ? <BackButton onClick={() => navigate(-1)} />
         : <MenuButton onClick={onOpenMenu} />
       }
       center={
