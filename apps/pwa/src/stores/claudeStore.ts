@@ -197,7 +197,20 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
 
   // Active session
   setActiveSession: (sessionId, streamId = null) => {
-    const session = sessionId ? get().sessions[sessionId] : null;
+    if (!sessionId) {
+      // New Session: restore saved defaults from localStorage so prior
+      // selections on this screen persist across navigation.
+      const prefs = loadPrefs();
+      set({
+        activeSessionId: null,
+        activeStreamIds: [],
+        streamError: null,
+        selectedAgent: prefs.selectedAgent ?? DEFAULT_AGENT,
+        selectedPermissionMode: prefs.selectedPermissionMode ?? DEFAULT_PERMISSION_MODE,
+      });
+      return;
+    }
+    const session = get().sessions[sessionId];
     const legacyProvider = (session as { provider?: string } | null)?.provider;
     set({
       activeSessionId: sessionId,
@@ -205,7 +218,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       streamError: null,
       selectedAgent: (session?.agent as AgentId | undefined)
         ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : DEFAULT_AGENT),
-      selectedPermissionMode: session?.permissionMode ?? 'acceptEdits',
+      selectedPermissionMode: session?.permissionMode ?? DEFAULT_PERMISSION_MODE,
     });
   },
   addStreamId: (streamId: string) => {

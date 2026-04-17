@@ -219,6 +219,28 @@ describe('claudeStore', () => {
       useClaudeStore.getState().setActiveSession('sess1');
       expect(useClaudeStore.getState().streamError).toBeNull();
     });
+
+    it('restores saved permission/agent defaults when switching to New Session', () => {
+      localStorageMock.setItem(
+        'quicksave:session-prefs',
+        JSON.stringify({ selectedAgent: 'codex', selectedPermissionMode: 'bypassPermissions' })
+      );
+      // Simulate opening an existing session that overrides current selections.
+      useClaudeStore.setState({
+        sessions: {
+          sess1: { sessionId: 'sess1', agent: 'claude-code', permissionMode: 'plan' } as any,
+        },
+      });
+      useClaudeStore.getState().setActiveSession('sess1');
+      expect(useClaudeStore.getState().selectedPermissionMode).toBe('plan');
+      expect(useClaudeStore.getState().selectedAgent).toBe('claude-code');
+
+      useClaudeStore.getState().setActiveSession(null);
+      expect(useClaudeStore.getState().selectedPermissionMode).toBe('bypassPermissions');
+      expect(useClaudeStore.getState().selectedAgent).toBe('codex');
+
+      localStorageMock.removeItem('quicksave:session-prefs');
+    });
   });
 
   // ── setStreaming ───────────────────────────────────────────────────────
