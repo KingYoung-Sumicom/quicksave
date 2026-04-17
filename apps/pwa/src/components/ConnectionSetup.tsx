@@ -1,22 +1,19 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { ErrorBox } from './ui/ErrorBox';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useMachineStore } from '../stores/machineStore';
 import { QRScanner } from './QRScanner';
-import { SettingsPanel } from './SettingsPanel';
 
 interface Props {
   onConnect: (agentId: string, publicKey: string) => void;
-  onSendApiKeyToAgent?: (apiKey: string) => Promise<boolean>;
-  onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
-  onUpdateAgent?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; restarting: boolean; error?: string }>;
 }
 
-export function ConnectionSetup({ onConnect, onSendApiKeyToAgent, onCheckAgentUpdate, onUpdateAgent }: Props) {
+export function ConnectionSetup({ onConnect }: Props) {
+  const navigate = useNavigate();
   const [agentId, setAgentId] = useState('');
   const [publicKey, setPublicKey] = useState('');
   const [mode, setMode] = useState<'scan' | 'manual'>('scan');
-  const [showSettings, setShowSettings] = useState(false);
   const { state, error } = useConnectionStore();
   const { addMachine } = useMachineStore();
 
@@ -42,7 +39,7 @@ export function ConnectionSetup({ onConnect, onSendApiKeyToAgent, onCheckAgentUp
         {/* Logo */}
         <div className="text-center mb-8 relative">
           <button
-            onClick={() => setShowSettings(true)}
+            onClick={() => navigate('/settings')}
             className="absolute right-0 top-0 p-2 text-slate-400 hover:text-white transition-colors"
             aria-label="Settings"
           >
@@ -167,14 +164,6 @@ export function ConnectionSetup({ onConnect, onSendApiKeyToAgent, onCheckAgentUp
         </div>
       </div>
 
-      {/* Settings Panel */}
-      <SettingsPanel
-        isOpen={showSettings}
-        onClose={() => setShowSettings(false)}
-        onSendApiKeyToAgent={onSendApiKeyToAgent}
-        onCheckAgentUpdate={onCheckAgentUpdate}
-        onUpdateAgent={onUpdateAgent}
-      />
     </div>
   );
 }

@@ -13,6 +13,10 @@ export interface AgentConnectionState {
   agentVersion: string | null;
   connectedAt: number | null;
   error: string | null;
+  /** Relay's view of whether the agent is reachable.
+   *  undefined = unknown; true/false = last known. Flips to false when the
+   *  relay loses the agent WebSocket even while this peer's WebRTC stays up. */
+  online?: boolean;
 }
 
 interface ConnectionStore {
@@ -66,6 +70,9 @@ interface ConnectionStore {
   setAgentConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string) => void;
   setAgentDisconnected: (agentId: string) => void;
   setAgentError: (agentId: string, error: string) => void;
+  setAgentOnlineFor: (agentId: string, online: boolean) => void;
+  addAgentCodingPath: (agentId: string, codingPath: CodingPath) => void;
+  addAgentRepo: (agentId: string, repo: Repository) => void;
   getAgentState: (agentId: string) => AgentConnectionState | undefined;
   isAgentConnected: (agentId: string) => boolean;
 }
@@ -270,6 +277,50 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
         },
       },
     })),
+
+  setAgentOnlineFor: (agentId, online) =>
+    set((state) => {
+      const existing = state.agentConnections[agentId];
+      if (!existing) return state;
+      return {
+        agentConnections: {
+          ...state.agentConnections,
+          [agentId]: { ...existing, online },
+        },
+      };
+    }),
+
+  addAgentCodingPath: (agentId, codingPath) =>
+    set((state) => {
+      const existing = state.agentConnections[agentId];
+      if (!existing) return state;
+      if (existing.availableCodingPaths.some((p) => p.path === codingPath.path)) return state;
+      return {
+        agentConnections: {
+          ...state.agentConnections,
+          [agentId]: {
+            ...existing,
+            availableCodingPaths: [...existing.availableCodingPaths, codingPath],
+          },
+        },
+      };
+    }),
+
+  addAgentRepo: (agentId, repo) =>
+    set((state) => {
+      const existing = state.agentConnections[agentId];
+      if (!existing) return state;
+      if (existing.availableRepos.some((r) => r.path === repo.path)) return state;
+      return {
+        agentConnections: {
+          ...state.agentConnections,
+          [agentId]: {
+            ...existing,
+            availableRepos: [...existing.availableRepos, repo],
+          },
+        },
+      };
+    }),
 
   getAgentState: (agentId) => get().agentConnections[agentId],
 

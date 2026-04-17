@@ -23,7 +23,7 @@ import { createMessage, type ClaudeUserInputResponsePayload, type Message, type 
 import { NotificationPrompt } from './components/NotificationPrompt';
 import { buildOfferMessage, getCurrentSubscription, notificationPermission } from './lib/pushSubscription';
 import { GitIdentityModal } from './components/GitIdentityModal';
-import { SettingsPanel } from './components/SettingsPanel';
+import { SettingsPage } from './components/SettingsPage';
 import { AddNewPage } from './components/AddNewPage';
 import { ProjectList } from './components/ProjectList';
 import { ProjectDetail } from './components/ProjectDetail';
@@ -126,7 +126,6 @@ function AppContent() {
   const [showPathBrowser, setShowPathBrowser] = useState(false);
   const [showGitignoreEditor, setShowGitignoreEditor] = useState(false);
   const isDesktop = useMediaQuery('(min-width: 768px)');
-  const [showFleetSettings, setShowFleetSettings] = useState(false);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
   const [showGitIdentityModal, setShowGitIdentityModal] = useState(false);
 
@@ -398,8 +397,9 @@ function AppContent() {
       onConnectionStep: (step, attempt) => {
         handlersRef.current.setConnectionStep(step, attempt);
       },
-      onAgentStatus: (_agentId, online) => {
+      onAgentStatus: (agentId, online) => {
         handlersRef.current.setAgentOnline(online);
+        useConnectionStore.getState().setAgentOnlineFor(agentId, online);
       },
     });
 
@@ -640,14 +640,14 @@ function AppContent() {
 
   const homeElement = machines.length > 0 ? (
     <ProjectList
-      onOpenSettings={() => setShowFleetSettings(true)}
+      onOpenSettings={() => navigate('/settings')}
       onOpenAddNew={() => navigate('/add')}
       onAddMachine={() => {/* TODO: wire add machine modal */}}
     />
   ) : (
     <div className="flex flex-col h-screen overflow-hidden">
-      <FleetStatusBar title="Quicksave" onOpenSettings={() => setShowFleetSettings(true)} />
-      <ConnectionSetup onConnect={handleConnect} onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onCheckAgentUpdate={isConnected ? checkAgentUpdate : undefined} onUpdateAgent={isConnected ? updateAgent : undefined} />
+      <FleetStatusBar title="Quicksave" onOpenSettings={() => navigate('/settings')} />
+      <ConnectionSetup onConnect={handleConnect} />
     </div>
   );
 
@@ -666,23 +666,36 @@ function AppContent() {
       {isConnected && <NotificationPrompt onOffer={handlePushOffer} />}
       {isDesktop ? (
         machines.length === 0 ? (
-          // Pre-pair: full-width connection setup, no sidebar yet
-          <div className="flex flex-col h-full overflow-hidden">
-            <FleetStatusBar title="Quicksave" onOpenSettings={() => setShowFleetSettings(true)} />
-            <ConnectionSetup onConnect={handleConnect} onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onCheckAgentUpdate={isConnected ? checkAgentUpdate : undefined} onUpdateAgent={isConnected ? updateAgent : undefined} />
-          </div>
+          // Pre-pair: full-width connection setup, no sidebar yet.
+          // Still wrap in Routes so /settings works from the gear icon.
+          <Routes>
+            <Route
+              path="/settings"
+              element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />}
+            />
+            <Route
+              path="*"
+              element={
+                <div className="flex flex-col h-full overflow-hidden">
+                  <FleetStatusBar title="Quicksave" onOpenSettings={() => navigate('/settings')} />
+                  <ConnectionSetup onConnect={handleConnect} />
+                </div>
+              }
+            />
+          </Routes>
         ) : (
           // Desktop: two-column layout — sidebar owns the home app bar, main area only renders project routes
           <div className="flex h-full overflow-hidden">
             <div className="w-72 shrink-0 border-r border-slate-700 bg-slate-800/50">
-              <ProjectList compact onOpenSettings={() => setShowFleetSettings(true)} onOpenAddNew={() => navigate('/add')} />
+              <ProjectList compact onOpenSettings={() => navigate('/settings')} onOpenAddNew={() => navigate('/add')} />
             </div>
             <div className="flex-1 min-w-0 flex flex-col">
               <Routes>
                 <Route path="/p/:projectId" element={projectDetailElement} />
                 <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
                 <Route path="/p/:projectId/r/:repoId" element={projectRepoElement} />
-                <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onAddRepo={addRepo} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} />} />
+                <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} />} />
+                <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />} />
                 <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
               </Routes>
             </div>
@@ -695,7 +708,8 @@ function AppContent() {
           <Route path="/p/:projectId" element={projectDetailElement} />
           <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
           <Route path="/p/:projectId/r/:repoId" element={projectRepoElement} />
-          <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onAddRepo={addRepo} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} />} />
+          <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} />} />
+          <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />} />
           <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
         </Routes>
       )}
@@ -723,14 +737,6 @@ function AppContent() {
           onGetIdentity={getGitIdentity}
         />
       )}
-      <SettingsPanel
-        isOpen={showFleetSettings}
-        onClose={() => setShowFleetSettings(false)}
-        onSendApiKeyToAgent={isConnected ? setApiKey : undefined}
-        onCheckAgentUpdate={isConnected ? checkAgentUpdate : undefined}
-        onUpdateAgent={isConnected ? updateAgent : undefined}
-        onPushOffer={handlePushOffer}
-      />
     </div>
   );
 }

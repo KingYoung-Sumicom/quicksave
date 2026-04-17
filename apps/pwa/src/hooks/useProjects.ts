@@ -61,7 +61,11 @@ export function useProjects(): ProjectEntry[] {
     const entries: ProjectEntry[] = [];
 
     for (const machine of machines) {
-      const machineIsConnected = agentConnections[machine.agentId]?.state === 'connected';
+      const conn = agentConnections[machine.agentId];
+      // Treat relay-reported offline as disconnected even if the peer state
+      // is still 'connected' — the WebRTC peer can stay up after the agent
+      // loses its relay socket.
+      const machineIsConnected = conn?.state === 'connected' && conn?.online !== false;
 
       // Build from cachedProjects (richer data) first
       const seenCwds = new Set<string>();

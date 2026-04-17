@@ -1,45 +1,30 @@
-import { SwipeableDrawer } from './SwipeableDrawer';
-import { useConnectionStore } from '../stores/connectionStore';
+import { useNavigate } from 'react-router-dom';
 import { useGitStore } from '../stores/gitStore';
+import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { DevicePairingSection } from './DevicePairingSection';
 import { ApiKeySection } from './settings/ApiKeySection';
 import { PrimaryKeySection } from './settings/PrimaryKeySection';
-import { AgentUpdateSection } from './settings/AgentUpdateSection';
 import { NotificationSection } from './settings/NotificationSection';
 import type { Message, PushSubscriptionOfferPayload } from '@sumicom/quicksave-shared';
 
-interface SettingsPanelProps {
-  isOpen: boolean;
-  onClose: () => void;
+interface SettingsPageProps {
   onSendApiKeyToAgent?: (apiKey: string) => Promise<boolean>;
-  onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
-  onUpdateAgent?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; restarting: boolean; error?: string }>;
   onPushOffer?: (msg: Message<PushSubscriptionOfferPayload>) => void;
 }
 
-export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAgentUpdate, onUpdateAgent, onPushOffer }: SettingsPanelProps) {
-  const connectionState = useConnectionStore((s) => s.state);
+export function SettingsPage({ onSendApiKeyToAgent, onPushOffer }: SettingsPageProps) {
+  const navigate = useNavigate();
 
   return (
-    <SwipeableDrawer isOpen={isOpen} onClose={onClose} side="right" drawerWidth={400} className="w-[90%] max-w-[400px] bg-slate-800 flex flex-col shadow-xl">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-slate-700">
-          <h2 className="text-lg font-semibold text-white">Settings</h2>
-          <button
-            onClick={onClose}
-            className="p-1 hover:bg-slate-700 rounded-md transition-colors"
-            aria-label="Close"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
+    <div className="flex flex-col h-full overflow-hidden">
+      <BaseStatusBar
+        left={<BackButton onClick={() => navigate(-1)} />}
+        center={<span className="text-sm font-medium text-slate-300">Settings</span>}
+      />
 
-        {/* Scrollable content */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-6">
-
-          <ApiKeySection isOpen={isOpen} onSendApiKeyToAgent={onSendApiKeyToAgent} />
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-lg mx-auto p-4 space-y-6">
+          <ApiKeySection isOpen onSendApiKeyToAgent={onSendApiKeyToAgent} />
 
           <div className="border-t border-slate-700" />
 
@@ -53,7 +38,6 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAge
 
           <NotificationSection onPushOffer={onPushOffer} />
 
-          {/* Git Attribution */}
           <div className="border-t border-slate-700" />
           <div className="space-y-3">
             <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
@@ -68,19 +52,9 @@ export function SettingsPanel({ isOpen, onClose, onSendApiKeyToAgent, onCheckAge
             </label>
           </div>
 
-          {/* Agent Update — only when connected */}
-          {connectionState === 'connected' && (
-            <>
-              <div className="border-t border-slate-700" />
-              <AgentUpdateSection
-                isOpen={isOpen}
-                onCheckAgentUpdate={onCheckAgentUpdate}
-                onUpdateAgent={onUpdateAgent}
-              />
-            </>
-          )}
         </div>
-    </SwipeableDrawer>
+      </div>
+    </div>
   );
 }
 

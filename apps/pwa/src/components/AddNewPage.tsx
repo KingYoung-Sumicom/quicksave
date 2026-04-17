@@ -13,14 +13,15 @@ import { useProjects } from '../hooks/useProjects';
 import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { ChevronIcon } from './ui/ChevronIcon';
 import { Spinner } from './ui/Spinner';
+import { Modal } from './ui/Modal';
+import { ErrorBox } from './ui/ErrorBox';
 import { toProjectId } from '../lib/projectId';
 
-type TabKey = 'project' | 'repo' | 'session';
+type TabKey = 'project' | 'session';
 
 interface AddNewPageProps {
   onSetActiveAgent: (agentId: string) => void;
   onBrowseDirectory: (path?: string) => Promise<BrowseDirectoryResponsePayload | null>;
-  onAddRepo: (path: string) => Promise<Repository | null>;
   onCloneRepo: (url: string, targetDir: string) => Promise<Repository | null>;
   onAddCodingPath: (path: string) => Promise<CodingPath | null>;
 }
@@ -28,7 +29,6 @@ interface AddNewPageProps {
 export function AddNewPage({
   onSetActiveAgent,
   onBrowseDirectory,
-  onAddRepo,
   onCloneRepo,
   onAddCodingPath,
 }: AddNewPageProps) {
@@ -52,10 +52,40 @@ export function AddNewPage({
     setSelectedAgentId(connectedMachines[0]?.agentId ?? null);
   }, [connectedMachines, selectedAgentId]);
 
-  // Route subsequent browse/add calls to the picked agent.
-  useEffect(() => {
-    if (selectedAgentId) onSetActiveAgent(selectedAgentId);
-  }, [selectedAgentId, onSetActiveAgent]);
+  // Bind agent routing into each request. A useEffect won't work here: child
+  // effects (the browse request fired by useDirectoryBrowser on resetKey change)
+  // flush before the parent's, so setActiveAgent would race the send. Instead,
+  // call setActiveAgent synchronously before each agent-bound call.
+  const withAgent = useCallback(
+    (agentId: string | null) => {
+      if (agentId) onSetActiveAgent(agentId);
+    },
+    [onSetActiveAgent]
+  );
+
+  const boundBrowseDirectory = useCallback(
+    (path?: string) => {
+      withAgent(selectedAgentId);
+      return onBrowseDirectory(path);
+    },
+    [withAgent, selectedAgentId, onBrowseDirectory]
+  );
+
+  const boundCloneRepo = useCallback(
+    (url: string, targetDir: string) => {
+      withAgent(selectedAgentId);
+      return onCloneRepo(url, targetDir);
+    },
+    [withAgent, selectedAgentId, onCloneRepo]
+  );
+
+  const boundAddCodingPath = useCallback(
+    (path: string) => {
+      withAgent(selectedAgentId);
+      return onAddCodingPath(path);
+    },
+    [withAgent, selectedAgentId, onAddCodingPath]
+  );
 
   const goBack = useCallback(() => {
     navigate(-1);
@@ -69,7 +99,7 @@ export function AddNewPage({
       />
 
       <div className="flex border-b border-slate-700 px-2">
-        {(['project', 'repo', 'session'] as const).map((key) => (
+        {(['project', 'session'] as const).map((key) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -80,28 +110,28 @@ export function AddNewPage({
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             )}
           >
-            {key === 'project' ? 'Project' : key === 'repo' ? 'Git Repo' : 'Session'}
+            {key === 'project' ? 'Project' : 'Session'}
           </button>
         ))}
       </div>
 
-      {(tab === 'project' || tab === 'repo') && connectedMachines.length > 1 && (
-        <div className="px-4 py-3 border-b border-slate-700 flex flex-wrap gap-2">
-          {connectedMachines.map((m) => (
-            <button
-              key={m.agentId}
-              onClick={() => setSelectedAgentId(m.agentId)}
-              className={clsx(
-                'px-2.5 py-1 rounded-full text-xs font-medium transition-colors flex items-center gap-1.5',
-                selectedAgentId === m.agentId
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-              )}
-            >
-              <span>{m.icon}</span>
-              <span>{m.nickname}</span>
-            </button>
-          ))}
+      {tab === 'project' && connectedMachines.length > 1 && (
+        <div className="px-4 py-3 border-b border-slate-700 flex items-center gap-2">
+          <label htmlFor="add-machine-select" className="text-xs text-slate-400 shrink-0">
+            Machine
+          </label>
+          <select
+            id="add-machine-select"
+            value={selectedAgentId ?? ''}
+            onChange={(e) => setSelectedAgentId(e.target.value || null)}
+            className="flex-1 min-w-0 bg-slate-700 text-slate-200 text-sm rounded-md px-2.5 py-1.5 border border-slate-600 focus:outline-none focus:border-blue-500"
+          >
+            {connectedMachines.map((m) => (
+              <option key={m.agentId} value={m.agentId}>
+                {m.icon} {m.nickname}
+              </option>
+            ))}
+          </select>
         </div>
       )}
 
@@ -109,8 +139,9 @@ export function AddNewPage({
         {tab === 'project' && (
           <ProjectTab
             selectedAgentId={selectedAgentId}
-            onBrowseDirectory={onBrowseDirectory}
-            onAddCodingPath={onAddCodingPath}
+            onBrowseDirectory={boundBrowseDirectory}
+            onAddCodingPath={boundAddCodingPath}
+            onCloneRepo={boundCloneRepo}
             onDone={(agentId, path) => {
               if (agentId && path) {
                 navigate(`/p/${toProjectId(agentId, path)}`);
@@ -118,15 +149,6 @@ export function AddNewPage({
                 goBack();
               }
             }}
-          />
-        )}
-        {tab === 'repo' && (
-          <RepoTab
-            selectedAgentId={selectedAgentId}
-            onBrowseDirectory={onBrowseDirectory}
-            onAddRepo={onAddRepo}
-            onCloneRepo={onCloneRepo}
-            onDone={goBack}
           />
         )}
         {tab === 'session' && <SessionTab />}
@@ -189,44 +211,64 @@ function ProjectTab({
   selectedAgentId,
   onBrowseDirectory,
   onAddCodingPath,
+  onCloneRepo,
   onDone,
 }: {
   selectedAgentId: string | null;
   onBrowseDirectory: (path?: string) => Promise<BrowseDirectoryResponsePayload | null>;
   onAddCodingPath: (path: string) => Promise<CodingPath | null>;
+  onCloneRepo: (url: string, targetDir: string) => Promise<Repository | null>;
   onDone: (agentId: string | null, path: string | null) => void;
 }) {
   const { currentPath, parentPath, entries, loading, error, setError, load } =
     useDirectoryBrowser(selectedAgentId, onBrowseDirectory);
   const [adding, setAdding] = useState(false);
+  const [showClone, setShowClone] = useState(false);
 
   if (!selectedAgentId) {
     return <EmptyAgentNotice message="Connect to a machine to add a project." />;
   }
 
   const handleSelect = async () => {
-    if (!currentPath) return;
+    if (!currentPath || !selectedAgentId) return;
     setAdding(true);
     setError(null);
     const result = await onAddCodingPath(currentPath);
     setAdding(false);
     if (result) {
+      // Broadcast: propagate the new coding path to per-agent connection state
+      // and the persisted machine cache so the home project list and hash
+      // resolver pick it up immediately, without waiting for reconnect.
+      useConnectionStore.getState().addAgentCodingPath(selectedAgentId, result);
+      useMachineStore.getState().addKnownCodingPath(selectedAgentId, result.path);
       onDone(selectedAgentId, result.path);
     } else {
       setError('Failed to add project');
     }
   };
 
+  const existingNames = useMemo(
+    () => new Set(entries.map((e) => e.name)),
+    [entries]
+  );
+
   return (
     <>
       <div className="px-4 py-2 bg-slate-700/50 border-b border-slate-700 flex items-center gap-2">
         <p className="text-sm text-slate-300 truncate font-mono flex-1">{currentPath || '~'}</p>
         <button
+          onClick={() => setShowClone(true)}
+          disabled={!currentPath}
+          className="flex-shrink-0 px-3 py-1 text-xs font-medium bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded transition-colors"
+        >
+          Clone…
+        </button>
+        <button
           onClick={handleSelect}
           disabled={adding || !currentPath}
           className="flex-shrink-0 px-3 py-1 text-xs font-medium bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded transition-colors"
         >
-          {adding ? 'Adding...' : 'Select'}
+          {adding ? 'Adding...' : 'Add as Project'}
         </button>
       </div>
       {error && <ErrorBar message={error} />}
@@ -238,92 +280,77 @@ function ProjectTab({
         onSelectEntry={(entry) => entry.isDirectory && load(entry.path)}
         highlightRepos={false}
       />
+
+      {showClone && currentPath && (
+        <CloneRepoModal
+          currentPath={currentPath}
+          existingNames={existingNames}
+          onClone={onCloneRepo}
+          onClose={() => setShowClone(false)}
+          onCloned={() => {
+            setShowClone(false);
+            load(currentPath);
+          }}
+        />
+      )}
     </>
   );
 }
 
-// ── Repo Tab ────────────────────────────────────────────────────────────────
+// ── Clone Repo Modal ────────────────────────────────────────────────────────
 
-function RepoTab({
-  selectedAgentId,
-  onBrowseDirectory,
-  onAddRepo,
-  onCloneRepo,
-  onDone,
+function CloneRepoModal({
+  currentPath,
+  existingNames,
+  onClone,
+  onClose,
+  onCloned,
 }: {
-  selectedAgentId: string | null;
-  onBrowseDirectory: (path?: string) => Promise<BrowseDirectoryResponsePayload | null>;
-  onAddRepo: (path: string) => Promise<Repository | null>;
-  onCloneRepo: (url: string, targetDir: string) => Promise<Repository | null>;
-  onDone: () => void;
+  currentPath: string;
+  existingNames: Set<string>;
+  onClone: (url: string, targetDir: string) => Promise<Repository | null>;
+  onClose: () => void;
+  onCloned: () => void;
 }) {
-  const { currentPath, parentPath, entries, loading, error, setError, load } =
-    useDirectoryBrowser(selectedAgentId, onBrowseDirectory);
-  const availableRepos = useConnectionStore((s) => s.availableRepos);
-  const [mode, setMode] = useState<'browse' | 'clone'>('browse');
-  const [cloneUrl, setCloneUrl] = useState('');
+  const [url, setUrl] = useState('');
+  const [name, setName] = useState('');
   const [cloning, setCloning] = useState(false);
-  const [addingPath, setAddingPath] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  if (!selectedAgentId) {
-    return <EmptyAgentNotice message="Connect to a machine to add a repository." />;
-  }
+  const trimmedUrl = url.trim().replace(/\/+$/, '');
+  const defaultName = trimmedUrl.split('/').pop()?.replace(/\.git$/, '') || '';
+  const effectiveName = name.trim() || defaultName;
+  const nameConflict = !!effectiveName && existingNames.has(effectiveName);
 
-  const handleAddRepo = async (path: string) => {
-    setAddingPath(path);
-    setError(null);
-    const repo = await onAddRepo(path);
-    setAddingPath(null);
-    if (repo) {
-      onDone();
-    } else {
-      setError('Failed to add repository');
-    }
-  };
+  const canClone = !cloning && !!trimmedUrl && !!effectiveName && !nameConflict;
 
   const handleClone = async () => {
-    if (!cloneUrl.trim() || !currentPath) return;
+    if (!canClone) return;
     setCloning(true);
     setError(null);
-    const trimmed = cloneUrl.trim().replace(/\/+$/, '');
-    const repoName = trimmed.split('/').pop()?.replace(/\.git$/, '') || 'repo';
-    const target = currentPath + '/' + repoName;
-    const repo = await onCloneRepo(trimmed, target);
+    const target = currentPath + '/' + effectiveName;
+    const repo = await onClone(trimmedUrl, target);
     setCloning(false);
     if (repo) {
-      onDone();
+      onCloned();
     } else {
       setError('Failed to clone repository');
     }
   };
 
   return (
-    <>
-      <div className="px-4 py-2 border-b border-slate-700 flex items-center gap-2">
-        <div className="flex rounded-md overflow-hidden border border-slate-600">
-          {(['browse', 'clone'] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={clsx(
-                'px-3 py-1 text-xs font-medium transition-colors',
-                mode === m ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300'
-              )}
-            >
-              {m === 'browse' ? 'Browse' : 'Clone'}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {mode === 'clone' && (
-        <div className="px-4 py-3 border-b border-slate-700">
+    <Modal title="Clone Git Repository" onClose={cloning ? () => {} : onClose} backdropClose={!cloning}>
+      <div className="p-4 space-y-4">
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+            Repository URL
+          </label>
           <input
             type="text"
-            value={cloneUrl}
-            onChange={(e) => setCloneUrl(e.target.value)}
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.nativeEvent.isComposing) handleClone();
+              if (e.key === 'Enter' && !e.nativeEvent.isComposing && canClone) handleClone();
             }}
             placeholder="https://github.com/user/repo.git"
             className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
@@ -331,48 +358,55 @@ function RepoTab({
             autoFocus
           />
         </div>
-      )}
 
-      <div className="px-4 py-2 bg-slate-700/50 border-b border-slate-700 flex items-center gap-2">
-        <p className="text-sm text-slate-300 truncate font-mono flex-1">{currentPath || '~'}</p>
-        {mode === 'clone' && currentPath && (
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+            Folder Name <span className="text-slate-500 normal-case font-normal">(optional)</span>
+          </label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.nativeEvent.isComposing && canClone) handleClone();
+            }}
+            placeholder={defaultName || 'repo'}
+            className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+            disabled={cloning}
+          />
+          {effectiveName && (
+            <p className="text-xs text-slate-500 font-mono truncate">
+              → {currentPath}/{effectiveName}
+            </p>
+          )}
+          {nameConflict && (
+            <p className="text-xs text-red-400">
+              A folder named “{effectiveName}” already exists here.
+            </p>
+          )}
+        </div>
+
+        {error && <ErrorBox>{error}</ErrorBox>}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            onClick={onClose}
+            disabled={cloning}
+            className="px-3 py-1.5 text-sm text-slate-300 hover:text-white disabled:opacity-50 transition-colors"
+          >
+            Cancel
+          </button>
           <button
             onClick={handleClone}
-            disabled={cloning || !cloneUrl.trim()}
-            className="flex-shrink-0 px-3 py-1 text-xs font-medium bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded transition-colors"
+            disabled={!canClone}
+            className="px-4 py-1.5 text-sm font-medium bg-blue-600 hover:bg-blue-500 disabled:bg-slate-600 disabled:cursor-not-allowed rounded transition-colors flex items-center gap-2"
           >
-            {cloning ? 'Cloning...' : 'Clone to here'}
+            {cloning && <Spinner color="border-white" />}
+            {cloning ? 'Cloning…' : 'Clone'}
           </button>
-        )}
+        </div>
       </div>
-
-      {error && <ErrorBar message={error} />}
-
-      <BrowseList
-        loading={loading}
-        parentPath={parentPath}
-        entries={entries}
-        onNavigate={load}
-        onSelectEntry={(entry) => {
-          if (mode === 'clone') {
-            if (entry.isDirectory) load(entry.path);
-            return;
-          }
-          if (entry.isGitRepo) {
-            const alreadyAdded = availableRepos.some((r) => r.path === entry.path);
-            if (alreadyAdded) {
-              onDone();
-            } else {
-              handleAddRepo(entry.path);
-            }
-          } else if (entry.isDirectory) {
-            load(entry.path);
-          }
-        }}
-        highlightRepos={mode === 'browse'}
-        addingPath={addingPath}
-      />
-    </>
+    </Modal>
   );
 }
 
@@ -494,7 +528,7 @@ function BrowseList({
             <button
               key={entry.path}
               onClick={() => onSelectEntry(entry)}
-              disabled={!isSelectable || (addingPath !== null && !isAddingThis)}
+              disabled={!isSelectable || (addingPath != null && !isAddingThis)}
               className={clsx(
                 'w-full flex items-center gap-3 px-4 py-2.5 transition-colors',
                 highlightRepos && entry.isGitRepo

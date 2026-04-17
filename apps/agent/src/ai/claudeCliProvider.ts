@@ -602,8 +602,10 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       flushText();
       const blocks = msg.message?.content ?? [];
       for (const block of blocks) {
-        if (block.type === 'thinking' && block.thinking) {
-          emitCard(cb.thinkingBlock(block.thinking));
+        if (block.type === 'thinking') {
+          // Skip empty thinking blocks so they don't fall through to the
+          // unknown-block catch-all below and render as "[thinking] …".
+          if (block.thinking) emitCard(cb.thinkingBlock(block.thinking));
         } else if (block.type === 'redacted_thinking') {
           emitCard(cb.thinkingBlock('[Redacted thinking]'));
         } else if (block.type === 'text' && block.text) {

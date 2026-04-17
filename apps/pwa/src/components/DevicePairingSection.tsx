@@ -156,7 +156,7 @@ export function DevicePairingSection() {
       <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
         Device Sync
       </h3>
-      <div className="max-h-64 overflow-y-auto space-y-4 overscroll-contain">
+      <div className="space-y-4">
 
       {/* My Identity */}
       <div className="space-y-2">

@@ -48,6 +48,7 @@ interface MachineStore {
   removeMachine: (agentId: string) => void;
   recordConnection: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: string[], availableCodingPaths?: string[]) => void;
   addKnownRepo: (agentId: string, repoPath: string) => void;
+  addKnownCodingPath: (agentId: string, codingPath: string) => void;
   syncKnownRepos: (agentId: string, repoPaths: string[]) => void;
   overwriteMachines: (machines: Machine[]) => void;
   getMachine: (agentId: string) => Machine | undefined;
@@ -132,6 +133,15 @@ export const useMachineStore = create<MachineStore>()(
           machines: state.machines.map((m) =>
             m.agentId === agentId && !m.knownRepos?.includes(repoPath)
               ? { ...m, knownRepos: [...(m.knownRepos || []), repoPath] }
+              : m
+          ),
+        })),
+
+      addKnownCodingPath: (agentId, codingPath) =>
+        set((state) => ({
+          machines: state.machines.map((m) =>
+            m.agentId === agentId && !m.knownCodingPaths?.includes(codingPath)
+              ? { ...m, knownCodingPaths: [...(m.knownCodingPaths || []), codingPath] }
               : m
           ),
         })),
