@@ -24,6 +24,7 @@ import { GitIdentityModal } from './components/GitIdentityModal';
 import { ProjectList } from './components/ProjectList';
 import { ProjectDetail } from './components/ProjectDetail';
 import { useProjectConnection } from './hooks/useProjectConnection';
+import { resolveHash, getAllKnownPaths } from './lib/pathHash';
 import { getApiKey, saveApiKey as saveApiKeyToStorage, exportMasterSecret, importMasterSecret } from './lib/secureStorage';
 import { SyncClient } from './lib/syncClient';
 import { useMediaQuery } from './hooks/useMediaQuery';
@@ -640,7 +641,7 @@ function AppContent() {
               <Route path="/" element={homeElement} />
               <Route path="/p/:projectId" element={projectDetailElement} />
               <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
-              <Route path="/p/:projectId/repo" element={projectRepoElement} />
+              <Route path="/p/:projectId/r/:repoId" element={projectRepoElement} />
               <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
             </Routes>
           </div>
@@ -651,7 +652,7 @@ function AppContent() {
           <Route path="/" element={homeElement} />
           <Route path="/p/:projectId" element={projectDetailElement} />
           <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
-          <Route path="/p/:projectId/repo" element={projectRepoElement} />
+          <Route path="/p/:projectId/r/:repoId" element={projectRepoElement} />
           <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
         </Routes>
       )}
@@ -711,20 +712,27 @@ function ProjectRouteRepo({
 } & Omit<React.ComponentProps<typeof RepoView>, 'onSwitchRepo'> & {
   onSwitchRepo: (path: string) => void;
 }) {
-  const { projectId } = useParams<{ projectId: string }>();
+  const { projectId, repoId } = useParams<{ projectId: string; repoId: string }>();
   const navigate = useNavigate();
-  const { isReady, isConnecting, cwd } = useProjectConnection(projectId, onConnect, onSwitchMachine);
+  const { isReady, isConnecting, agentId } = useProjectConnection(projectId, onConnect, onSwitchMachine);
   const status = useGitStore((s) => s.status);
   const repoPath = useConnectionStore((s) => s.repoPath);
 
-  // Switch to project's repo when connected
-  useEffect(() => {
-    if (isReady && cwd && cwd !== repoPath) {
-      onSwitchRepo(cwd);
-    }
-  }, [isReady, cwd, repoPath, onSwitchRepo]);
+  // Resolve repoId hash → full repo path. Recompute on connect since
+  // getAllKnownPaths can grow when project repos load.
+  const targetRepoPath = useMemo(
+    () => (agentId && repoId ? resolveHash(repoId, getAllKnownPaths(agentId)) : undefined),
+    [agentId, repoId, isReady],
+  );
 
-  if (!isReady) {
+  // Switch to the URL-specified repo once connected.
+  useEffect(() => {
+    if (isReady && targetRepoPath && targetRepoPath !== repoPath) {
+      onSwitchRepo(targetRepoPath);
+    }
+  }, [isReady, targetRepoPath, repoPath, onSwitchRepo]);
+
+  if (!isReady || !targetRepoPath) {
     return (
       <div className="flex flex-col h-full overflow-hidden">
         <BaseStatusBar
@@ -732,7 +740,7 @@ function ProjectRouteRepo({
           center={<span className="text-sm font-medium text-slate-300">Repo</span>}
         />
         <div className="flex-1 flex items-center justify-center">
-          {isConnecting && <Spinner size="w-8 h-8" color="border-blue-500" />}
+          {(isConnecting || (isReady && !targetRepoPath)) && <Spinner size="w-8 h-8" color="border-blue-500" />}
         </div>
       </div>
     );
@@ -745,7 +753,7 @@ function ProjectRouteRepo({
         center={
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-slate-300 truncate">
-              {cwd?.split('/').pop() || 'Repo'}
+              {targetRepoPath.split('/').pop() || 'Repo'}
             </span>
             {status?.branch && (
               <span className="text-xs text-slate-500 truncate">

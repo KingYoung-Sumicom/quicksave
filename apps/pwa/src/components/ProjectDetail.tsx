@@ -7,6 +7,7 @@ import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { Spinner } from './ui/Spinner';
 import { StatusDot, sessionStatusKey } from './SessionStatusBadge';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
+import { pathToHash } from '../lib/pathHash';
 import type { ClaudeSessionSummary, ProjectRepo } from '@sumicom/quicksave-shared';
 
 interface ProjectDetailProps {
@@ -261,7 +262,7 @@ export function ProjectDetail({
                 {projectRepos.map((repo) => (
                   <button
                     key={repo.path}
-                    onClick={() => navigate(`/p/${projectId}/repo`)}
+                    onClick={() => navigate(`/p/${projectId}/r/${pathToHash(repo.path)}`)}
                     className="w-full text-left px-4 py-2.5 hover:bg-slate-700/50 active:bg-slate-700/60 transition-colors flex items-center gap-3"
                   >
                     <svg className="w-4 h-4 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">

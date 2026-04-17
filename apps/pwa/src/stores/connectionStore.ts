@@ -16,7 +16,9 @@ export interface AgentConnectionState {
 }
 
 interface ConnectionStore {
-  // Legacy single-agent state (used by old /agent/* routes)
+  // Active-agent connection state. Mirrors `agentConnections[activeAgentId]`
+  // for hooks/components that don't take an agentId. Multi-agent fan-out lives
+  // in `agentConnections` below.
   state: ConnectionState;
   agentId: string | null;
   signalingServer: string;
@@ -40,7 +42,7 @@ interface ConnectionStore {
   // Multi-agent connection tracking
   agentConnections: Record<string, AgentConnectionState>;
 
-  // Legacy single-agent actions (still used by old routes)
+  // Active-agent actions (mirror writes; per-agent versions live below)
   setConnecting: (agentId: string) => void;
   setSignaling: () => void;
   setConnected: (repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string, latestVersion?: string, devBuild?: boolean) => void;
@@ -105,7 +107,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
   agentOnline: null,
   agentConnections: {},
 
-  // Legacy single-agent actions
+  // Active-agent actions
   setConnecting: (agentId) =>
     set({
       state: 'connecting',

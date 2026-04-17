@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { Spinner } from './ui/Spinner';
 import { ErrorBox } from './ui/ErrorBox';
+import { ConfirmModal } from './ui/ConfirmModal';
 import { useGitStore, selectCanCommit } from '../stores/gitStore';
 import { CLAUDE_MODELS, type ClaudeModel, type CommitSummarySource, type CommitSummaryProgress } from '@sumicom/quicksave-shared';
 import { clsx } from 'clsx';
@@ -38,6 +39,7 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
   } = useGitStore();
   const canCommit = useGitStore(selectCanCommit);
   const [showDescription, setShowDescription] = useState(false);
+  const [showOverwriteConfirm, setShowOverwriteConfirm] = useState(false);
   const messageRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-resize the single-line-but-wrapping commit message textarea to fit its content.
@@ -69,6 +71,19 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
 
   const handleGenerateClick = async () => {
     await onGenerateAiSummary();
+  };
+
+  const requestGenerate = () => {
+    if (commitMessage.trim() || commitDescription.trim()) {
+      setShowOverwriteConfirm(true);
+      return;
+    }
+    void onGenerateAiSummary();
+  };
+
+  const handleConfirmOverwrite = () => {
+    setShowOverwriteConfirm(false);
+    void onGenerateAiSummary();
   };
 
   const handleApplySuggestion = () => {
@@ -118,7 +133,7 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
         )}
 
         {/* AI Generate Section - only show when not generating */}
-        {!commitMessage && !aiSummary && !isGeneratingAiSummary && (
+        {!aiSummary && !isGeneratingAiSummary && (
           <div className="space-y-2">
             {/* Source toggle */}
             <SourceToggle value={commitSummarySource} onChange={setCommitSummarySource} disabled={isLoading} />
@@ -133,7 +148,7 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
 
               <button
                 type="button"
-                onClick={canGenerate ? handleGenerateClick : onOpenSettings}
+                onClick={canGenerate ? requestGenerate : onOpenSettings}
                 disabled={isLoading}
                 className="flex-1 py-2 px-4 rounded-md font-medium text-white transition-colors flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed"
               >
@@ -299,6 +314,15 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
           )}
         </button>
       </form>
+      {showOverwriteConfirm && (
+        <ConfirmModal
+          title="Overwrite existing message?"
+          message="Generating will replace the commit message and description you've already written."
+          confirmLabel="Overwrite"
+          onConfirm={handleConfirmOverwrite}
+          onCancel={() => setShowOverwriteConfirm(false)}
+        />
+      )}
     </div>
   );
 }

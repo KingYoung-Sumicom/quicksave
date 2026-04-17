@@ -23,31 +23,26 @@ export function resolveHash(hash: string, knownPaths: string[]): string | undefi
 /**
  * Collect all known paths for an agent from persisted + in-memory stores.
  * Works before handshake (machineStore from localStorage) and after (connectionStore).
+ * Also includes per-project nested/submodule repos cached in machineStore so
+ * `/p/:projectId/r/:repoId` can resolve a repoId picked from ProjectDetail.
  */
 export function getAllKnownPaths(agentId: string): string[] {
   const machine = useMachineStore.getState().getMachine(agentId);
   const knownRepos = machine?.knownRepos || [];
   const knownCodingPaths = machine?.knownCodingPaths || [];
+  const cachedRepoPaths = machine?.cachedProjects
+    ? Object.values(machine.cachedProjects).flatMap((p) => p.repos?.map((r) => r.path) ?? [])
+    : [];
   const { availableRepos, availableCodingPaths, repoPath } = useConnectionStore.getState();
   const repoPaths = availableRepos.map((r) => r.path);
   const codingPaths = availableCodingPaths.map((p) => p.path);
-  const all = new Set([...knownRepos, ...knownCodingPaths, ...repoPaths, ...codingPaths]);
+  const all = new Set([
+    ...knownRepos,
+    ...knownCodingPaths,
+    ...cachedRepoPaths,
+    ...repoPaths,
+    ...codingPaths,
+  ]);
   if (repoPath) all.add(repoPath);
   return [...all];
-}
-
-/**
- * Build a URL path for agent routes.
- * @param section 'repo' or 'coding'
- * @param suffix optional sub-path like a sessionId
- */
-export function agentUrl(
-  agentId: string,
-  section: 'repo' | 'coding',
-  path: string | null,
-  suffix?: string,
-): string {
-  const hash = path ? pathToHash(path) : '_';
-  const base = `/agent/${agentId}/${section}/${hash}`;
-  return suffix ? `${base}/${suffix}` : base;
 }

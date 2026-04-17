@@ -34,11 +34,11 @@ const COMMIT_MESSAGE_TOOL: Anthropic.Tool = {
     properties: {
       summary: {
         type: 'string',
-        description: 'The commit summary line (under 72 characters, conventional commit format)',
+        description: 'Header line in Conventional Commits format `<type>(<scope>): <subject>` — ≤72 chars, imperative present tense, no trailing period. Scope is optional but include it when the change has a clear single area.',
       },
       description: {
         type: 'string',
-        description: 'Optional extended description for complex changes',
+        description: 'Body explaining the why and any non-obvious details. Wrap lines at ≤72 chars, blank line between paragraphs, optional `- ` bullets for multi-aspect changes. Append BREAKING CHANGE / Refs footers (separated by a blank line) only when supported by the diff or user context. Omit for truly trivial changes.',
       },
     },
     required: ['summary'],
@@ -193,17 +193,49 @@ export class CommitSummaryService {
     extra?: { recentCommits?: string[]; branchName?: string; conventions?: string }
   ): string {
     const sections: string[] = [
-      'Generate a concise, descriptive git commit message for the following changes.',
+      'Generate a git commit message for the staged diff at the bottom. Return it via the `commit_message` tool.',
       '',
-      'Guidelines:',
-      '- Use conventional commit format (feat:, fix:, docs:, refactor:, chore:, test:, style:, perf:, ci:, build:)',
-      '- Keep the summary line under 72 characters',
-      '- Focus on WHAT changed and WHY, not HOW',
-      '- Be specific but concise',
+      'Default format — Conventional Commits v1.0.0:',
+      '  <type>(<scope>): <subject>',
+      '',
+      '  [body]',
+      '',
+      '  [footers]',
+      '',
+      'Type (required): one of feat, fix, docs, refactor, chore, test, style, perf, ci, build.',
+      '  - feat: user-visible new capability  - fix: user-visible bug fix',
+      '  - refactor: behavior-preserving code change  - perf: measurable perf improvement',
+      '  - test/docs/style/chore/ci/build: as named',
+      '',
+      'Scope (optional, recommended): a single short noun naming the area of the codebase touched.',
+      '  - Infer it from the changed file paths\' common prefix (top-level dir, package, or module name).',
+      '  - If changes span multiple unrelated areas, OMIT the scope rather than inventing an umbrella term.',
+      '  - Lowercase, hyphenated; no commas, no slashes.',
+      '',
+      'Subject (the `summary` arg):',
+      '  - ≤72 chars including the `<type>(<scope>): ` prefix.',
+      '  - Imperative present tense ("add X", not "added X" / "adds X").',
+      '  - No trailing period. Lowercase first word after the colon (unless it is a proper noun).',
+      '  - Describe WHAT and WHY in one breath; details go in the body.',
+      '',
+      'Body (the `description` arg, will be rendered after a blank line):',
+      '  - Wrap each line at ≤72 chars.',
+      '  - Use blank lines between paragraphs. Use `- ` bullets when listing multiple distinct aspects.',
+      '  - Required when: behavior changes, multiple modules touched, motivation non-obvious, or migration steps needed.',
+      '  - Omit `description` ONLY for truly trivial changes (typo fix, dependency bump, single-line tweak).',
+      '',
+      'Footer (append to `description` after a blank line, one trailer per line):',
+      '  - `BREAKING CHANGE: <what broke and how to migrate>` for any breaking API/behavior change.',
+      '  - Issue refs like `Refs: #123` / `Closes: #123` only when the diff or user context provides evidence.',
+      '  - Do NOT invent issue numbers, ticket IDs, or co-author trailers.',
     ];
 
     if (extra?.conventions) {
-      sections.push('', 'Project commit conventions:', extra.conventions);
+      sections.push(
+        '',
+        'Project commit conventions (these OVERRIDE the defaults above where they conflict — e.g. allowed scope vocabulary, custom types, subject length):',
+        extra.conventions,
+      );
     }
 
     if (extra?.recentCommits?.length) {

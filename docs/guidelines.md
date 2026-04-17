@@ -50,6 +50,18 @@ Before designing or implementing any feature, check the relevant guidelines belo
 
 ---
 
+## Commit Messages
+
+**`docs/guidelines/commits.md`** — Commit message format used by the AI commit summary generator. Covers:
+- Default Conventional Commits format baked into the prompt
+- How per-project overrides plug in (`.github/COMMIT_CONVENTION.md`, `CONTRIBUTING.md`, etc.)
+- How `recentCommits` / `branchName` / `userContext` feed the prompt
+- This repo's own scope vocabulary lives in `.github/COMMIT_CONVENTION.md`
+
+**維護規則**：修改 `commitSummary.ts` / `commitSummaryCli.ts` 的 prompt、新增/變更 convention 檔案讀取路徑、或變動 attribution trailer 行為時，同步更新此文件。
+
+---
+
 ## Testing
 
 **`docs/guidelines/testing.md`** — Testing guidelines and procedures. Covers:
