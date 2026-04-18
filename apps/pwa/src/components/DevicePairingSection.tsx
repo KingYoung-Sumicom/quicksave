@@ -5,7 +5,7 @@ import { useIdentityStore } from '../stores/identityStore';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useMachineStore } from '../stores/machineStore';
 import { SyncClient } from '../lib/syncClient';
-import { exportMasterSecret, getApiKey } from '../lib/secureStorage';
+import { getMasterSecretExport, getApiKeyExport } from '../lib/secureStorage';
 
 export function DevicePairingSection() {
   const {
@@ -82,17 +82,19 @@ export function DevicePairingSection() {
         pairedAt: Date.now(),
       });
 
-      // Mark this device as source
+      // Mark this device as source (display-only; sync is now bi-directional).
       setIsSource(true);
 
-      // Push initial sync to the new device
-      const masterSecret = await exportMasterSecret();
-      const apiKey = await getApiKey();
+      // Push initial sync to the new device. Uses the v3 payload so the
+      // receiver can merge it into any existing state rather than overwrite.
+      const ms = useMachineStore.getState();
       const payload = {
-        version: 2 as const,
-        masterSecret,
-        apiKey: apiKey || undefined,
+        version: 3 as const,
+        masterSecret: await getMasterSecretExport(),
+        apiKey: await getApiKeyExport(),
         machines,
+        machineTombstones: ms.machineTombstones,
+        pinnedProjects: ms.pinnedProjects,
         exportedAt: new Date().toISOString(),
       };
 

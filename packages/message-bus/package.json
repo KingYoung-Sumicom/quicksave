@@ -1,0 +1,33 @@
+{
+  "name": "@sumicom/quicksave-message-bus",
+  "version": "0.6.4",
+  "private": true,
+  "description": "Transport-agnostic command + subscribe message bus for Quicksave",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./fake": {
+      "import": "./dist/transports/fake.js",
+      "types": "./dist/transports/fake.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0"
+  }
+}

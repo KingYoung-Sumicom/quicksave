@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { isProcessAlive } from './singleton.js';
-import { shouldRestartDaemon, IPC_VERSION, BUILD_ID } from './types.js';
+import { shouldRestartDaemon, IPC_VERSION, BUILD_ID, isDev } from './types.js';
 import type { HelloResult } from './types.js';
 
 describe('isProcessAlive', () => {
@@ -48,11 +48,23 @@ describe('shouldRestartDaemon', () => {
   });
 
   it('returns restart when buildId differs in dev mode', () => {
-    // In dev mode, BUILD_ID starts with 'dev-' so isDev() returns true
+    // vitest.setup.ts sets globalThis.__QUICKSAVE_DEV__ so isDev() returns true
     const result = shouldRestartDaemon(
       makeDaemon({ daemonBuildId: 'dev-aaa111bbb222' }),
       { ipcVersion: IPC_VERSION, buildId: 'dev-ccc333ddd444' },
     );
     expect(result.action).toBe('restart');
+  });
+});
+
+describe('isDev', () => {
+  it('returns true when globalThis.__QUICKSAVE_DEV__ is set', () => {
+    // vitest.setup.ts sets this before test modules load
+    expect((globalThis as { __QUICKSAVE_DEV__?: boolean }).__QUICKSAVE_DEV__).toBe(true);
+    expect(isDev()).toBe(true);
+  });
+
+  it('BUILD_ID starts with "dev-" under the injected global', () => {
+    expect(BUILD_ID.startsWith('dev-')).toBe(true);
   });
 });

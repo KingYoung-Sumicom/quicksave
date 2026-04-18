@@ -17,7 +17,36 @@ const DB_NAME = 'quicksave-secure';
 const DB_VERSION = 1;
 const STORE_NAME = 'secrets';
 const MASTER_SECRET_KEY = 'master-secret';
+const MASTER_SECRET_META_KEY = 'master-secret-meta';
 const API_KEY_KEY = 'anthropic-api-key';
+const API_KEY_META_KEY = 'anthropic-api-key-meta';
+
+interface SecretMeta {
+  updatedAt: number;
+}
+
+async function putRecord(key: string, value: unknown): Promise<void> {
+  const db = await openDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const req = tx.objectStore(STORE_NAME).put(value, key);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(new Error(`Failed to write ${key}`));
+  });
+  db.close();
+}
+
+async function getRecord<T>(key: string): Promise<T | undefined> {
+  const db = await openDatabase();
+  const result = await new Promise<T | undefined>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const req = tx.objectStore(STORE_NAME).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(new Error(`Failed to read ${key}`));
+  });
+  db.close();
+  return result;
+}
 
 /**
  * Open or create the IndexedDB database
@@ -114,8 +143,32 @@ export async function getMasterSecret(): Promise<Uint8Array> {
   });
 
   db.close();
+  // Record generation timestamp so merges order a freshly-generated secret
+  // correctly against a remote one.
+  await putRecord(MASTER_SECRET_META_KEY, { updatedAt: Date.now() } satisfies SecretMeta);
   console.log('Generated new master secret');
   return masterSecret;
+}
+
+/** Returns the master secret with its updatedAt, or null if not set. */
+export async function getMasterSecretExport(): Promise<{ value: string; updatedAt: number } | null> {
+  const raw = await getRecord<string>(MASTER_SECRET_KEY);
+  if (!raw) return null;
+  const meta = await getRecord<SecretMeta>(MASTER_SECRET_META_KEY);
+  return { value: raw, updatedAt: meta?.updatedAt ?? 0 };
+}
+
+/**
+ * Apply a remote master secret only if its updatedAt is newer than the local
+ * copy. Returns true if local state changed.
+ */
+export async function applyMasterSecret(value: string, updatedAt: number): Promise<boolean> {
+  const existing = await getMasterSecretExport();
+  if (existing && existing.updatedAt >= updatedAt && existing.value === value) return false;
+  if (existing && existing.updatedAt > updatedAt) return false;
+  await putRecord(MASTER_SECRET_KEY, value);
+  await putRecord(MASTER_SECRET_META_KEY, { updatedAt } satisfies SecretMeta);
+  return true;
 }
 
 /**
@@ -182,6 +235,28 @@ export async function saveApiKey(apiKey: string): Promise<void> {
   });
 
   db.close();
+  await putRecord(API_KEY_META_KEY, { updatedAt: Date.now() } satisfies SecretMeta);
+}
+
+/** Returns the API key with its updatedAt, or null if not set. */
+export async function getApiKeyExport(): Promise<{ value: string; updatedAt: number } | null> {
+  const raw = await getRecord<string>(API_KEY_KEY);
+  if (!raw) return null;
+  const meta = await getRecord<SecretMeta>(API_KEY_META_KEY);
+  return { value: raw, updatedAt: meta?.updatedAt ?? 0 };
+}
+
+/**
+ * Apply a remote API key only if its updatedAt is newer. Returns true if
+ * local state changed.
+ */
+export async function applyApiKey(value: string, updatedAt: number): Promise<boolean> {
+  const existing = await getApiKeyExport();
+  if (existing && existing.updatedAt >= updatedAt && existing.value === value) return false;
+  if (existing && existing.updatedAt > updatedAt) return false;
+  await putRecord(API_KEY_KEY, value);
+  await putRecord(API_KEY_META_KEY, { updatedAt } satisfies SecretMeta);
+  return true;
 }
 
 /**
@@ -247,6 +322,7 @@ export async function importMasterSecret(backup: string): Promise<void> {
   });
 
   db.close();
+  await putRecord(MASTER_SECRET_META_KEY, { updatedAt: Date.now() } satisfies SecretMeta);
   console.log('Master secret imported');
 }
 

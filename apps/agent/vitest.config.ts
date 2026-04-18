@@ -5,6 +5,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    setupFiles: ['./vitest.setup.ts'],
     // Multiple test files spawn real `claude` child processes (messageHandler.edge,
     // sessionManager, edgeCases, codexSdkProvider). Running them in parallel causes
     // CPU contention so init handshakes exceed the default 5s test timeout.

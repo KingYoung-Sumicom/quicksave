@@ -115,12 +115,19 @@ claude:start → MessageHandler.handle_claude_start()
   ← sessionId
 
 claude:resume → SessionManager.resumeSession(sessionId, prompt)
-  → ClaudeCliProvider.resumeSession()
-    → if (session.streaming && session.process):
-        hot resume: stdin 寫入 user message JSON
-    → else:
-        cold resume: spawn('claude', [..., '--resume', sessionId])
-    → return ProviderSession
+  → 1. Hot resume (active turn): existing.streaming && providerSession.alive
+       → 將 streamId push 到 providerSession.pendingStreamIds，stdin 寫入 user message
+         consumeStream 在當前 turn result 後消耗 pendingStreamIds 開新 turn
+  → 2. Hot resume (idle): !existing.streaming && providerSession.alive && !modelChanged
+       → 直接重用同一個 CLI process：cardBuilder.startNewTurn(newStreamId)，
+         providerSession.currentStreamId = newStreamId，resultEmitted = false，
+         stdin 寫入 user message。避免 kill+spawn 的延遲與「ghost inactive」閃爍。
+  → 3. Cold resume: providerSession 已死或 model 改變
+       → spawn('claude', [..., '--resume', sessionId])
+       → 注意：CLI 的 --resume 可能 fork 新的 session_id（由 init 事件回報）。
+         若新 id 與 opts.sessionId 不同，SessionManager 會 rekey sessions map
+         及 side maps (migrateSessionIdState)，並對舊 id emit isActive=false，
+         讓 PWA 清掉舊的 active 狀態。
 
 claude:cancel → SessionManager.cancelSession(sessionId)
   → ClaudeCliProvider.cancelSession()
@@ -129,6 +136,17 @@ claude:cancel → SessionManager.cancelSession(sessionId)
 claude:close → SessionManager.closeSession(sessionId)
   → ClaudeCliProvider.closeSession()
     → process.kill('SIGTERM')
+
+CLI process 自然退出 (stdout EOF 或 crash):
+  → consumeStream finally block:
+      - 失敗所有 pendingControlResponses
+      - 若未 emit result，補 emit streamEnd { error: 'Process exited unexpectedly' }
+      - callbacks.onSessionExited(sessionId, providerSession)
+  → SessionManager.onSessionExited:
+      - 若當前 slot 的 providerSession 仍是同一個（未被 cold resume 取代）
+        → sessions.delete(sessionId) + emitSessionUpdate(isActive=false)
+      - providerSession identity check 保護：避免 cold resume 期間舊 CLI 死掉
+        的 stale callback 誤清新 CLI 的 session
 ```
 
 **Permission 處理 — control_request/control_response protocol：**

@@ -156,6 +156,8 @@ export type MessageType =
   | 'project:list-summaries:response'
   | 'project:list-repos'
   | 'project:list-repos:response'
+  // Message bus envelope (transports opaque bus frames; see packages/message-bus)
+  | 'bus:frame'
   | 'error';
 
 // ============================================================================
@@ -1042,6 +1044,10 @@ export interface ClaudeSessionSummary {
   gitBranch?: string;
   messageCount?: number;
   isActive?: boolean;
+  /** True when the session has been removed from the daemon's in-memory map
+   * (cold-resume rekey, CLI process exit, or explicit close). Used by the
+   * PWA to navigate away from session pages whose id is no longer live. */
+  archived?: boolean;
   isStreaming?: boolean;
   hasPendingInput?: boolean;
   permissionMode?: string;

@@ -15,6 +15,7 @@
     "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
+    "@sumicom/quicksave-message-bus": "workspace:*",
     "@sumicom/quicksave-shared": "workspace:*",
     "clsx": "^2.1.0",
     "highlight.js": "^11.11.1",

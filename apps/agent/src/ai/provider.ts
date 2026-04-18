@@ -29,6 +29,12 @@ export interface ProviderCallbacks {
     updatedInput?: Record<string, unknown>;
   }>;
   onModelDetected(model: string): void;
+  /** Fired when the underlying provider process has fully exited. SessionManager
+   * uses this to remove the session from its in-memory map and emit
+   * `session-updated { isActive: false }` so the PWA's badge reflects reality.
+   * The `providerSession` reference lets the manager ignore stale callbacks
+   * from a provider that has already been replaced by cold resume. */
+  onSessionExited?(sessionId: string, providerSession: ProviderSession): void;
 }
 
 export interface StartSessionOpts {

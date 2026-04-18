@@ -16,16 +16,19 @@ export interface CachedProjectData {
 }
 
 export interface Machine {
-  // Core identity
+  // Core identity (synced)
   agentId: string;
   publicKey: string;
   signPublicKey?: string;
 
-  // User-friendly metadata
+  // User-friendly metadata (synced)
   nickname: string;
   icon: string;
 
-  // Connection metadata
+  // Last modification to synced fields. Used for LWW merge between devices.
+  updatedAt: number;
+
+  // Connection metadata (local-only, not synced)
   addedAt: number;
   lastConnectedAt: number | null;
   lastRepoPath: string | null;
@@ -33,14 +36,33 @@ export interface Machine {
   knownCodingPaths: string[];
   isPro: boolean;
 
-  // Cached project summaries (keyed by cwd)
+  // Cached project summaries keyed by cwd (local-only, not synced)
   cachedProjects: Record<string, CachedProjectData>;
 }
+
+export interface PinnedProjectState {
+  pinned: boolean;
+  updatedAt: number;
+}
+
+/** Fields that participate in device-to-device sync. Changes here bump updatedAt. */
+const SYNCED_MACHINE_FIELDS = new Set<keyof Machine>([
+  'publicKey',
+  'signPublicKey',
+  'nickname',
+  'icon',
+]);
+
+/** Keep tombstones this long before garbage-collecting. */
+const TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 interface MachineStore {
   // State
   machines: Machine[];
-  pinnedProjects: string[]; // array of projectIds
+  /** projectId → { pinned, updatedAt }. pinned=false acts as a soft tombstone. */
+  pinnedProjects: Record<string, PinnedProjectState>;
+  /** agentId → deletedAt (ms). Pruned after TOMBSTONE_TTL_MS. */
+  machineTombstones: Record<string, number>;
 
   // Actions
   addMachine: (machine: Pick<Machine, 'agentId' | 'publicKey' | 'nickname' | 'icon'> & { signPublicKey?: string }) => void;
@@ -59,26 +81,40 @@ interface MachineStore {
   pinProject: (projectId: string) => void;
   unpinProject: (projectId: string) => void;
   removeProject: (agentId: string, cwd: string) => void;
+  pruneTombstones: () => void;
+  /**
+   * Replace the synced slices (machines, machineTombstones, pinnedProjects)
+   * in one atomic update. Used after merging a remote sync payload.
+   */
+  applySyncedState: (state: {
+    machines: Machine[];
+    machineTombstones: Record<string, number>;
+    pinnedProjects: Record<string, PinnedProjectState>;
+  }) => void;
 }
 
 export const useMachineStore = create<MachineStore>()(
   persist(
     (set, get) => ({
       machines: [],
-      pinnedProjects: [],
+      pinnedProjects: {},
+      machineTombstones: {},
 
       addMachine: (machine) =>
         set((state) => {
-          // Don't add duplicate machines
           if (state.machines.some((m) => m.agentId === machine.agentId)) {
             return state;
           }
+          const now = Date.now();
+          // Clear any prior tombstone — re-adding this agentId revives it.
+          const { [machine.agentId]: _deleted, ...remainingTombstones } = state.machineTombstones;
           return {
             machines: [
               ...state.machines,
               {
                 ...machine,
-                addedAt: Date.now(),
+                addedAt: now,
+                updatedAt: now,
                 lastConnectedAt: null,
                 lastRepoPath: null,
                 knownRepos: [],
@@ -87,19 +123,31 @@ export const useMachineStore = create<MachineStore>()(
                 cachedProjects: {},
               },
             ],
+            machineTombstones: remainingTombstones,
           };
         }),
 
       updateMachine: (agentId, updates) =>
-        set((state) => ({
-          machines: state.machines.map((m) =>
-            m.agentId === agentId ? { ...m, ...updates } : m
-          ),
-        })),
+        set((state) => {
+          const touchesSynced = Object.keys(updates).some((k) =>
+            SYNCED_MACHINE_FIELDS.has(k as keyof Machine)
+          );
+          return {
+            machines: state.machines.map((m) =>
+              m.agentId === agentId
+                ? { ...m, ...updates, ...(touchesSynced ? { updatedAt: Date.now() } : {}) }
+                : m
+            ),
+          };
+        }),
 
       removeMachine: (agentId) =>
         set((state) => ({
           machines: state.machines.filter((m) => m.agentId !== agentId),
+          machineTombstones: {
+            ...state.machineTombstones,
+            [agentId]: Date.now(),
+          },
         })),
 
       recordConnection: (agentId, repoPath, isPro, availableRepos, availableCodingPaths) =>
@@ -107,12 +155,10 @@ export const useMachineStore = create<MachineStore>()(
           machines: state.machines.map((m) => {
             if (m.agentId !== agentId) return m;
 
-            // Merge available repos with existing known repos
             const existingRepos = m.knownRepos || [];
             const newRepos = availableRepos || [];
             const allRepos = [...new Set([...existingRepos, ...newRepos, repoPath])];
 
-            // Merge coding paths
             const existingCodingPaths = m.knownCodingPaths || [];
             const newCodingPaths = availableCodingPaths || [];
             const allCodingPaths = [...new Set([...existingCodingPaths, ...newCodingPaths])];
@@ -177,16 +223,22 @@ export const useMachineStore = create<MachineStore>()(
         set((state) => ({
           machines: state.machines.map((m) => {
             if (m.agentId !== agentId) return m;
+            // Only store session-bearing projects in cachedProjects. 0-session
+            // managed paths are surfaced via knownCodingPaths in useProjects.
             const cached: Record<string, CachedProjectData> = {};
             for (const p of projects) {
-              cached[p.cwd] = {
-                lastActivityAt: p.lastActivityAt,
-                sessionCount: p.sessionCount,
-                lastSessionTitle: p.lastSessionTitle,
-              };
+              if (p.sessionCount > 0) {
+                cached[p.cwd] = {
+                  lastActivityAt: p.lastActivityAt,
+                  sessionCount: p.sessionCount,
+                  lastSessionTitle: p.lastSessionTitle,
+                };
+              }
             }
-            // Rebuild knownCodingPaths: only keep managed paths + paths with sessions.
-            // This cleans up stale entries (e.g. test temp dirs no longer on the agent).
+            // Rebuild knownCodingPaths from the agent's authoritative view:
+            // every project it knows about (sessions + managed). This prunes
+            // stale paths the agent has forgotten while preserving managed
+            // paths even when they have no sessions.
             const projectCwds = new Set(projects.map((p) => p.cwd));
             const managed = new Set(managedPaths || []);
             const allPaths = [...new Set([...projectCwds, ...managed])];
@@ -211,14 +263,18 @@ export const useMachineStore = create<MachineStore>()(
 
       pinProject: (projectId) =>
         set((state) => ({
-          pinnedProjects: state.pinnedProjects.includes(projectId)
-            ? state.pinnedProjects
-            : [...state.pinnedProjects, projectId],
+          pinnedProjects: {
+            ...state.pinnedProjects,
+            [projectId]: { pinned: true, updatedAt: Date.now() },
+          },
         })),
 
       unpinProject: (projectId) =>
         set((state) => ({
-          pinnedProjects: state.pinnedProjects.filter((id) => id !== projectId),
+          pinnedProjects: {
+            ...state.pinnedProjects,
+            [projectId]: { pinned: false, updatedAt: Date.now() },
+          },
         })),
 
       removeProject: (agentId, cwd) =>
@@ -233,26 +289,67 @@ export const useMachineStore = create<MachineStore>()(
             };
           }),
         })),
+
+      applySyncedState: (next) =>
+        set(() => ({
+          machines: next.machines,
+          machineTombstones: next.machineTombstones,
+          pinnedProjects: next.pinnedProjects,
+        })),
+
+      pruneTombstones: () =>
+        set((state) => {
+          const cutoff = Date.now() - TOMBSTONE_TTL_MS;
+          const kept: Record<string, number> = {};
+          for (const [agentId, deletedAt] of Object.entries(state.machineTombstones)) {
+            if (deletedAt >= cutoff) kept[agentId] = deletedAt;
+          }
+          // Also prune soft-unpin tombstones older than TTL
+          const keptPins: Record<string, PinnedProjectState> = {};
+          for (const [id, entry] of Object.entries(state.pinnedProjects)) {
+            if (entry.pinned || entry.updatedAt >= cutoff) keptPins[id] = entry;
+          }
+          return { machineTombstones: kept, pinnedProjects: keptPins };
+        }),
     }),
     {
       name: 'quicksave-machines',
-      version: 3,
+      version: 4,
       migrate: (persisted: unknown, version: number) => {
-        const state = persisted as { machines: Machine[]; pinnedProjects?: string[] };
+        const state = persisted as {
+          machines: Machine[];
+          pinnedProjects?: string[] | Record<string, PinnedProjectState>;
+          machineTombstones?: Record<string, number>;
+        };
         if (version < 2) {
-          // Add knownCodingPaths to existing machines
           state.machines = state.machines.map((m) => ({
             ...m,
             knownCodingPaths: (m as Machine).knownCodingPaths || [],
           }));
         }
         if (version < 3) {
-          // Add cachedProjects to existing machines + pinnedProjects to store
           state.machines = state.machines.map((m) => ({
             ...m,
             cachedProjects: (m as Machine).cachedProjects || {},
           }));
-          state.pinnedProjects = state.pinnedProjects || [];
+          state.pinnedProjects = (state.pinnedProjects as string[]) || [];
+        }
+        if (version < 4) {
+          // Backfill updatedAt from addedAt (or 0 if missing).
+          state.machines = state.machines.map((m) => ({
+            ...m,
+            updatedAt: (m as Machine).updatedAt ?? m.addedAt ?? 0,
+          }));
+          // Convert pinnedProjects from string[] → Record<string, PinnedProjectState>.
+          const prev = state.pinnedProjects;
+          if (Array.isArray(prev)) {
+            const next: Record<string, PinnedProjectState> = {};
+            for (const id of prev) next[id] = { pinned: true, updatedAt: 0 };
+            state.pinnedProjects = next;
+          } else if (!prev) {
+            state.pinnedProjects = {};
+          }
+          state.machineTombstones = state.machineTombstones || {};
         }
         return state;
       },
@@ -263,7 +360,6 @@ export const useMachineStore = create<MachineStore>()(
 // Selectors
 export const selectSortedMachines = (state: MachineStore): Machine[] =>
   [...state.machines].sort((a, b) => {
-    // Sort by: recently connected first, then by name
     if (a.lastConnectedAt && b.lastConnectedAt) {
       return b.lastConnectedAt - a.lastConnectedAt;
     }
@@ -277,3 +373,9 @@ export const selectRecentMachines = (limit: number) => (state: MachineStore): Ma
     .filter((m) => m.lastConnectedAt !== null)
     .sort((a, b) => (b.lastConnectedAt ?? 0) - (a.lastConnectedAt ?? 0))
     .slice(0, limit);
+
+/** Project IDs that are currently pinned. */
+export const selectPinnedProjectIds = (state: MachineStore): string[] =>
+  Object.entries(state.pinnedProjects)
+    .filter(([, v]) => v.pinned)
+    .map(([id]) => id);

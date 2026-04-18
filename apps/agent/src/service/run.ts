@@ -31,7 +31,7 @@ import {
   cleanStaleRuntime,
 } from './singleton.js';
 import { writeServiceState, removeServiceState } from './stateStore.js';
-import { IPC_VERSION, BUILD_ID, isDebugEnabled } from './types.js';
+import { IPC_VERSION, BUILD_ID, isDebugEnabled, isDev } from './types.js';
 import type { ServiceState, StatusResult, PairingInfoResult, RepoInfo, DebugResult } from './types.js';
 import { createMessage, type Message, type Repository } from '@sumicom/quicksave-shared';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
@@ -86,7 +86,7 @@ export async function runDaemon(): Promise<void> {
     keyPair: config.keyPair,
   });
 
-  const isProduction = !BUILD_ID.startsWith('dev-');
+  const isProduction = !isDev();
   const messageHandler = new MessageHandler(validRepos, config.license, codingPaths, isProduction);
 
   // Signed HTTP side-channel to the relay for Web Push. The relay's default
@@ -340,6 +340,26 @@ export async function runDaemon(): Promise<void> {
       jsonrpc: '2.0',
       method: 'event.peerConnected',
       params: { peerId: peerKey.slice(0, 12), peerCount: connection.getPeerCount() },
+    });
+
+    // Push a fresh snapshot of every active session directly to the peer.
+    // Mobile PWAs frequently drop + reconnect (app backgrounding, network
+    // flips); relying on the PWA's request/response reconcile path leaves a
+    // visible window where session badges look stale. Sending the current
+    // state here short-circuits that window without changing the PWA-side
+    // message contract.
+    //
+    // Deferred via setImmediate so the signaling `key-exchange-ack` (sent
+    // synchronously right after this emit) hits the wire first — otherwise
+    // the PWA's handleDataMessage discards our payload because it still has
+    // keyExchangeComplete=false and only accepts the ack in that state.
+    setImmediate(() => {
+      const snapshots = claudeService.snapshotActiveSessions();
+      if (snapshots.length === 0) return;
+      console.log(`[connect] pushing ${snapshots.length} session snapshot(s) to ${peerKey.slice(0, 12)}`);
+      for (const snapshot of snapshots) {
+        connection.send(createMessage('claude:session-updated', snapshot), peerAddress);
+      }
     });
   });
 

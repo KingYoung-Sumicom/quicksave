@@ -202,6 +202,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       const payload = message.payload as {
         sessionId: string;
         isActive: boolean;
+        archived?: boolean;
         isStreaming: boolean;
         hasPendingInput: boolean;
         agent?: AgentId;
@@ -221,8 +222,10 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       const agent = payload.agent ?? (payload.provider === 'codex-mcp' ? 'codex' : payload.provider ? 'claude-code' : undefined);
       const { sessions, activeSessionId } = useClaudeStore.getState();
       const current = sessions[payload.sessionId];
+      console.log(`[session-updated] ${payload.sessionId.slice(0, 8)} incoming isActive=${payload.isActive} archived=${payload.archived} current=${current ? `isActive=${current.isActive} archived=${current.archived}` : 'none'}`);
       if (current &&
         current.isActive === payload.isActive &&
+        current.archived === payload.archived &&
         current.isStreaming === payload.isStreaming &&
         current.hasPendingInput === payload.hasPendingInput &&
         current.agent === agent &&
@@ -239,6 +242,7 @@ export function useClaudeOperations(clientRef: React.RefObject<WebSocketClient |
       upsertSession({
         sessionId: payload.sessionId,
         isActive: payload.isActive,
+        archived: payload.archived,
         isStreaming: payload.isStreaming,
         hasPendingInput: payload.hasPendingInput,
         agent,

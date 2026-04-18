@@ -30,7 +30,9 @@ fi
 # 2. Start dev daemon
 echo "Starting dev daemon from $AGENT_DIR..."
 cd "$AGENT_DIR"
-nohup node --import tsx src/index.ts service run >> "$LOG_FILE" 2>&1 &
+# --import dev-marker.mjs sets globalThis.__QUICKSAVE_DEV__, which
+# src/service/types.ts reads to gate dev-only behavior. Must precede tsx.
+nohup node --import "$AGENT_DIR/dev-marker.mjs" --import tsx src/index.ts service run >> "$LOG_FILE" 2>&1 &
 DEV_PID=$!
 echo "Spawned pid: $DEV_PID"
 

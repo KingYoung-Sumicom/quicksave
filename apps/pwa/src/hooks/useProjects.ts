@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useMachineStore } from '../stores/machineStore';
+import { useMachineStore, selectPinnedProjectIds } from '../stores/machineStore';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useClaudeStore } from '../stores/claudeStore';
 import { toProjectId } from '../lib/projectId';
@@ -26,12 +26,12 @@ export interface ProjectEntry {
  */
 export function useProjects(): ProjectEntry[] {
   const machines = useMachineStore((s) => s.machines);
-  const pinnedProjects = useMachineStore((s) => s.pinnedProjects);
+  const pinnedProjectIds = useMachineStore(selectPinnedProjectIds);
   const agentConnections = useConnectionStore((s) => s.agentConnections);
   const sessions = useClaudeStore((s) => s.sessions);
 
   return useMemo(() => {
-    const pinnedSet = new Set(pinnedProjects);
+    const pinnedSet = new Set(pinnedProjectIds);
 
     // Pre-compute live session stats per cwd from all sessions.
     // Use lastPromptAt (stable during execution) in preference to lastModified
@@ -124,5 +124,5 @@ export function useProjects(): ProjectEntry[] {
     });
 
     return entries;
-  }, [machines, pinnedProjects, agentConnections, sessions]);
+  }, [machines, pinnedProjectIds, agentConnections, sessions]);
 }

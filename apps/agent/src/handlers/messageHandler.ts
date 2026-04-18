@@ -2082,6 +2082,20 @@ export class MessageHandler {
       });
     }
 
+    // Include managed coding paths that have no sessions so the PWA can show them
+    // in the project list. Without this, a freshly-added workspace with no sessions
+    // would be pruned from the PWA's knownCodingPaths on next connect.
+    for (const cwd of this.codingPaths.keys()) {
+      if (byCwd.has(cwd)) continue;
+      projects.push({
+        cwd,
+        sessionCount: 0,
+        lastActivityAt: 0,
+        hasActiveSession: false,
+        isGitRepo: existsSync(join(cwd, '.git')),
+      });
+    }
+
     // Sort by lastActivityAt desc
     projects.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
 

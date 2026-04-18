@@ -714,4 +714,32 @@ describe('MessageHandler', () => {
       expect((response.payload as any).error).toBe('Coding path not found');
     });
   });
+
+  describe('handleMessage - project:list-summaries', () => {
+    it('should include managed coding paths with no sessions', async () => {
+      const codingPath = join(tmpdir(), `qs-list-summaries-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      await mkdir(codingPath, { recursive: true });
+      try {
+        const addMsg = createMessage('agent:add-coding-path', { path: codingPath });
+        const addResp = await handler.handleMessage(addMsg);
+        expect((addResp.payload as any).success).toBe(true);
+
+        const msg = createMessage('project:list-summaries', {});
+        const response = await handler.handleMessage(msg);
+
+        expect(response.type).toBe('project:list-summaries:response');
+        const projects = (response.payload as any).projects as Array<{
+          cwd: string;
+          sessionCount: number;
+          lastActivityAt: number;
+        }>;
+        const entry = projects.find((p) => p.cwd === codingPath);
+        expect(entry).toBeDefined();
+        expect(entry!.sessionCount).toBe(0);
+        expect(entry!.lastActivityAt).toBe(0);
+      } finally {
+        await rm(codingPath, { recursive: true, force: true });
+      }
+    });
+  });
 });

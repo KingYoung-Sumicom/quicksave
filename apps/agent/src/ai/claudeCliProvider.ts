@@ -86,14 +86,26 @@ function extractToolResultText(content: unknown): string {
 
 class CliProviderSession implements ProviderSession {
   public process: ChildProcess | null;
-  /** StreamIds queued by hot resume — consumeStream pops after each result. */
+  /** StreamIds queued by hot resume during an active turn — consumeStream
+   * pops after each result to start the next turn. Idle hot resume (CLI
+   * alive but between turns) bypasses this queue and writes `currentStreamId`
+   * directly before `sendUserMessage`. */
   public pendingStreamIds: string[] = [];
+  /** The streamId used to tag card events and stream-end for the current
+   * turn. Shared with consumeStream so the SessionManager can swap it in for
+   * idle hot resume without waiting for the next `result` event. */
+  public currentStreamId: string = '';
   /** Debug logger — attached after spawn so stdin writes are captured too. */
   public debugLog?: DebugLogger;
   /** Pending control_requests awaiting a control_response from the CLI. */
   public pendingControlResponses: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }> = new Map();
   /** True while a turn (prompt/compaction/tool loop) is in flight — control_requests may be queued by CLI. */
   public activeTurn: boolean = false;
+  /** True once a `result` event has been processed for the current turn's
+   * streamId. Consumed by consumeStream's finally block to decide whether the
+   * process death counts as an unexpected exit. Reset externally on idle hot
+   * resume (the new turn hasn't seen its result yet). */
+  public resultEmitted: boolean = false;
 
   constructor(proc: ChildProcess) {
     this.process = proc;
@@ -421,17 +433,17 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     prompt?: string,
     debugLog?: DebugLogger,
   ): Promise<void> {
-    let streamId = initialStreamId;
+    cliSession.currentStreamId = initialStreamId;
+    cliSession.resultEmitted = false;
     let textBuffer = '';
     let bufferTimer: ReturnType<typeof setTimeout> | null = null;
-    let resultEmitted = false;
 
     const emitCard = (event: CardEvent) => {
       debugLog?.logCardEvent(event);
       callbacks.emitCardEvent(event);
     };
 
-    cb.startNewTurn(streamId);
+    cb.startNewTurn(cliSession.currentStreamId);
     cliSession.activeTurn = true;
 
     // Add user prompt to cardBuilder (for getCards on reconnect) but don't emit
@@ -461,13 +473,14 @@ export class ClaudeCliProvider implements CodingAgentProvider {
 
       debugLog?.logRawEvent(msg);
 
-      const emittedResult = await this.routeMessage(sessionId, streamId, msg, cliSession, cb, callbacks, emitCard, flushText, bufferText, debugLog);
+      const emittedResult = await this.routeMessage(sessionId, cliSession.currentStreamId, msg, cliSession, cb, callbacks, emitCard, flushText, bufferText, debugLog);
       if (emittedResult) {
-        resultEmitted = true;
+        cliSession.resultEmitted = true;
 
         // Hot resume: if there's a pending streamId, start a new turn for it.
-        // This must live here (not in routeMessage) so the outer `streamId`
-        // variable is updated — routeMessage receives it by value.
+        // This must live here (not in routeMessage) so the outer
+        // `cliSession.currentStreamId` is updated — routeMessage receives it
+        // by value.
         const nextStreamId = cliSession.pendingStreamIds.shift();
         if (nextStreamId) {
           // Hot resume: cancel the prior turn's deferred clear so the pending
@@ -477,10 +490,10 @@ export class ClaudeCliProvider implements CodingAgentProvider {
           // produces duplicates. Keep streamingCards as-is; the final turn's
           // scheduleDeferredClear sweeps everything once the chain commits.
           cb.cancelDeferredClear();
-          streamId = nextStreamId;
-          cb.startNewTurn(streamId);
+          cliSession.currentStreamId = nextStreamId;
+          cb.startNewTurn(nextStreamId);
           cliSession.activeTurn = true;
-          resultEmitted = false; // Reset for next turn
+          cliSession.resultEmitted = false; // Reset for next turn
         } else {
           cliSession.activeTurn = false;
         }
@@ -500,8 +513,8 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       flushText();
       console.error(`[cli] stream error session=${sessionId.slice(0, 8)}:`, error);
       const msg = error instanceof Error ? error.message : 'Unknown error';
-      callbacks.emitStreamEnd({ streamId, sessionId, success: false, error: msg });
-      resultEmitted = true;
+      callbacks.emitStreamEnd({ streamId: cliSession.currentStreamId, sessionId, success: false, error: msg });
+      cliSession.resultEmitted = true;
     } finally {
       if (bufferTimer) clearTimeout(bufferTimer);
       // Process exited — clean up
@@ -514,10 +527,14 @@ export class ClaudeCliProvider implements CodingAgentProvider {
         pending.reject(new Error('CLI process exited before control_response'));
       }
 
-      if (!resultEmitted) {
-        // Process died without result — emit error
-        callbacks.emitStreamEnd({ streamId, sessionId, success: false, error: 'Process exited unexpectedly' });
+      if (!cliSession.resultEmitted) {
+        callbacks.emitStreamEnd({ streamId: cliSession.currentStreamId, sessionId, success: false, error: 'Process exited unexpectedly' });
       }
+
+      // Notify SessionManager so it can remove the entry and emit
+      // `session-updated { isActive: false }`. Without this the badge stays
+      // on "Standby" forever when the CLI dies between turns.
+      callbacks.onSessionExited?.(sessionId, cliSession);
     }
   }
 

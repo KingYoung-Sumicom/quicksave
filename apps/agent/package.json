@@ -43,6 +43,7 @@
     "@anthropic-ai/sdk": "^0.71.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openai/codex-sdk": "^0.120.0",
+    "@sumicom/quicksave-message-bus": "workspace:*",
     "@sumicom/quicksave-shared": "workspace:*",
     "better-sqlite3": "^12.9.0",
     "commander": "^12.0.0",

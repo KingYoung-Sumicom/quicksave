@@ -5,8 +5,14 @@ import {
   createTombstone,
 } from '@sumicom/quicksave-shared';
 import type { Machine } from '../stores/machineStore';
+import type { SyncPayloadV3, Timestamped } from './syncMerge';
 
-interface SyncPayload {
+/**
+ * Legacy v2 payload shape. Kept only so fetchMyMailbox can auto-upgrade a
+ * blob written by an older PWA version. Once all devices push v3, this path
+ * becomes dead code and can be removed.
+ */
+interface SyncPayloadV2 {
   version: 2;
   masterSecret: string;
   apiKey?: string;
@@ -14,16 +20,37 @@ interface SyncPayload {
   exportedAt: string;
 }
 
+type AnySyncPayload = SyncPayloadV2 | SyncPayloadV3;
+
 function hashPublicKey(publicKey: string): string {
-  // Use base64url-safe version of the key as hash
   return publicKey.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+function upgradePayload(payload: AnySyncPayload): SyncPayloadV3 {
+  if (payload.version === 3) return payload;
+  // v2 → v3: wrap scalar secrets as Timestamped with updatedAt=0 so any local
+  // value outranks them. Legacy payloads carry no tombstones or pinned state.
+  const secret: Timestamped<string> | null = payload.masterSecret
+    ? { value: payload.masterSecret, updatedAt: 0 }
+    : null;
+  const apiKey: Timestamped<string> | null = payload.apiKey
+    ? { value: payload.apiKey, updatedAt: 0 }
+    : null;
+  return {
+    version: 3,
+    masterSecret: secret,
+    apiKey,
+    machines: payload.machines,
+    machineTombstones: {},
+    pinnedProjects: {},
+    exportedAt: payload.exportedAt,
+  };
 }
 
 export class SyncClient {
   private baseUrl: string;
 
   constructor(signalingServer: string) {
-    // Convert ws:// to http:// for REST calls
     this.baseUrl = signalingServer
       .replace('wss://', 'https://')
       .replace('ws://', 'http://');
@@ -34,7 +61,7 @@ export class SyncClient {
    * Returns 'ok' on success, 'tombstone' if the key has been rotated.
    */
   async pushToDevice(
-    payload: SyncPayload,
+    payload: SyncPayloadV3,
     recipientPublicKey: string,
   ): Promise<'ok' | 'tombstone'> {
     const plaintext = JSON.stringify(payload);
@@ -53,13 +80,16 @@ export class SyncClient {
   }
 
   /**
-   * Fetch and decrypt this device's mailbox.
-   * Returns the decrypted payload, tombstone indicator, or null if empty.
+   * Fetch and decrypt this device's mailbox. Any v2 blob is auto-upgraded.
    */
   async fetchMyMailbox(
     myPublicKey: string,
     mySecretKey: Uint8Array,
-  ): Promise<{ type: 'blob'; payload: SyncPayload } | { type: 'tombstone'; tombstone: string } | null> {
+  ): Promise<
+    | { type: 'blob'; payload: SyncPayloadV3 }
+    | { type: 'tombstone'; tombstone: string }
+    | null
+  > {
     const keyHash = hashPublicKey(myPublicKey);
     const res = await fetch(`${this.baseUrl}/sync/${keyHash}`);
 
@@ -72,7 +102,8 @@ export class SyncClient {
     }
 
     const decrypted = decryptSyncBlob(body.data, mySecretKey);
-    return { type: 'blob', payload: JSON.parse(decrypted) as SyncPayload };
+    const raw = JSON.parse(decrypted) as AnySyncPayload;
+    return { type: 'blob', payload: upgradePayload(raw) };
   }
 
   /**
@@ -96,4 +127,4 @@ export class SyncClient {
   }
 }
 
-export type { SyncPayload };
+export type { SyncPayloadV3 as SyncPayload };

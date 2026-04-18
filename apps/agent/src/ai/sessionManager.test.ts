@@ -1196,4 +1196,44 @@ describe('SessionManager', () => {
       expect(getContextUsage).not.toHaveBeenCalled();
     });
   });
+
+  describe('snapshotActiveSessions', () => {
+    it('returns an entry per active session with isActive=true and archived=false', async () => {
+      let i = 0;
+      (provider.startSession as Mock).mockImplementation(async () => ({
+        sessionId: `snap-${++i}`,
+        session: createMockProviderSession({ alive: true }),
+      }));
+
+      await manager.startSession({ prompt: 'A', cwd: '/tmp/a', streamId: 's1' });
+      await manager.startSession({ prompt: 'B', cwd: '/tmp/b', streamId: 's2' });
+
+      const snaps = manager.snapshotActiveSessions();
+      expect(snaps).toHaveLength(2);
+      for (const s of snaps) {
+        expect(s.isActive).toBe(true);
+        expect(s.archived).toBe(false);
+        expect(typeof s.sessionId).toBe('string');
+      }
+      expect(snaps.map((s) => s.sessionId).sort()).toEqual(['snap-1', 'snap-2']);
+    });
+
+    it('does not emit session-updated events', async () => {
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId: 'no-emit',
+        session: createMockProviderSession({ alive: true }),
+      });
+      await manager.startSession({ prompt: 'hi', cwd: '/tmp/t', streamId: 's1' });
+
+      const events: unknown[] = [];
+      manager.on('session-updated', (e) => events.push(e));
+
+      manager.snapshotActiveSessions();
+      expect(events).toHaveLength(0);
+    });
+
+    it('returns empty array when no sessions are active', () => {
+      expect(manager.snapshotActiveSessions()).toEqual([]);
+    });
+  });
 });

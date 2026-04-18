@@ -29,8 +29,15 @@ import { ProjectList } from './components/ProjectList';
 import { ProjectDetail } from './components/ProjectDetail';
 import { useProjectConnection } from './hooks/useProjectConnection';
 import { resolveHash, getAllKnownPaths } from './lib/pathHash';
-import { getApiKey, saveApiKey as saveApiKeyToStorage, exportMasterSecret, importMasterSecret } from './lib/secureStorage';
+import {
+  getApiKey,
+  getMasterSecretExport,
+  getApiKeyExport,
+  applyMasterSecret,
+  applyApiKey,
+} from './lib/secureStorage';
 import { SyncClient } from './lib/syncClient';
+import { mergeSyncPayloads, syncPayloadsEqual, type SyncPayloadV3 } from './lib/syncMerge';
 import { useMediaQuery } from './hooks/useMediaQuery';
 
 function AppContent() {
@@ -56,8 +63,11 @@ function AppContent() {
   } = useConnectionStore();
 
   const { reset: resetGit, setCurrentRepoPath } = useGitStore();
-  const { machines, recordConnection, overwriteMachines } = useMachineStore();
-  const { initialize: initIdentity, publicKey: identityPublicKey, pairedDevices, isSource, getSecretKey, clearAll: clearIdentity, removePairedDevice, initialized: identityInitialized } = useIdentityStore();
+  const { machines, recordConnection } = useMachineStore();
+  const machineTombstones = useMachineStore((s) => s.machineTombstones);
+  const pinnedProjects = useMachineStore((s) => s.pinnedProjects);
+  const applySyncedState = useMachineStore((s) => s.applySyncedState);
+  const { initialize: initIdentity, publicKey: identityPublicKey, pairedDevices, getSecretKey, clearAll: clearIdentity, removePairedDevice, initialized: identityInitialized } = useIdentityStore();
   const agentIdRef = useRef<string | null>(null);
 
   const {
@@ -190,7 +200,22 @@ function AppContent() {
 
   const syncClient = useMemo(() => new SyncClient(signalingServer), [signalingServer]);
 
-  // Check mailbox on startup
+  const buildLocalPayload = useCallback(async (): Promise<SyncPayloadV3> => {
+    const s = useMachineStore.getState();
+    return {
+      version: 3,
+      masterSecret: await getMasterSecretExport(),
+      apiKey: await getApiKeyExport(),
+      machines: s.machines,
+      machineTombstones: s.machineTombstones,
+      pinnedProjects: s.pinnedProjects,
+      exportedAt: new Date().toISOString(),
+    };
+  }, []);
+
+  // Pull this device's mailbox on startup and merge into local state. If the
+  // merge yields something different from what the remote sent, re-push so
+  // peers converge on the union.
   useEffect(() => {
     if (!identityPublicKey || !identityInitialized) return;
 
@@ -203,18 +228,41 @@ function AppContent() {
         const result = await syncClient.fetchMyMailbox(identityPublicKey, secretKey);
         if (cancelled) return;
 
-        if (result?.type === 'blob') {
-          overwriteMachines(result.payload.machines);
-          if (result.payload.masterSecret) {
-            await importMasterSecret(result.payload.masterSecret);
-          }
-          if (result.payload.apiKey) {
-            await saveApiKeyToStorage(result.payload.apiKey);
-          }
-        } else if (result?.type === 'tombstone') {
-          // Key has been rotated - wipe everything
+        if (result?.type === 'tombstone') {
           console.warn('Tombstone detected - wiping local data');
           await clearIdentity();
+          return;
+        }
+        if (result?.type !== 'blob') return;
+
+        const local = await buildLocalPayload();
+        const merged = mergeSyncPayloads(local, result.payload);
+
+        // Persist merged state locally.
+        applySyncedState({
+          machines: merged.machines,
+          machineTombstones: merged.machineTombstones,
+          pinnedProjects: merged.pinnedProjects,
+        });
+        if (merged.masterSecret) {
+          await applyMasterSecret(merged.masterSecret.value, merged.masterSecret.updatedAt);
+        }
+        if (merged.apiKey) {
+          await applyApiKey(merged.apiKey.value, merged.apiKey.updatedAt);
+        }
+
+        // If our merged view differs from the remote blob we read, fan it
+        // back out so other paired devices see the union.
+        if (!syncPayloadsEqual(merged, result.payload) && pairedDevices.length > 0) {
+          for (const device of pairedDevices) {
+            if (cancelled) return;
+            try {
+              const r = await syncClient.pushToDevice(merged, device.publicKey);
+              if (r === 'tombstone') removePairedDevice(device.publicKey);
+            } catch (error) {
+              console.error(`Re-push failed for ${device.publicKey.slice(0, 8)}:`, error);
+            }
+          }
         }
       } catch (error) {
         console.error('Failed to check sync mailbox:', error);
@@ -222,24 +270,24 @@ function AppContent() {
     })();
 
     return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identityPublicKey, identityInitialized]);
 
-  // Push to paired devices when machines change (if source)
+  // Push to all paired devices whenever local synced state changes.
+  const lastPushedRef = useRef<SyncPayloadV3 | null>(null);
   useEffect(() => {
-    if (!isSource || pairedDevices.length === 0 || !identityPublicKey) return;
+    if (pairedDevices.length === 0 || !identityPublicKey) return;
 
     let cancelled = false;
     (async () => {
       try {
-        const masterSecret = await exportMasterSecret();
-        const apiKey = await getApiKey();
-        const payload = {
-          version: 2 as const,
-          masterSecret,
-          apiKey: apiKey || undefined,
-          machines,
-          exportedAt: new Date().toISOString(),
-        };
+        const payload = await buildLocalPayload();
+        // Skip if nothing substantive changed since the last push — the
+        // effect re-fires on exportedAt changes otherwise.
+        if (lastPushedRef.current && syncPayloadsEqual(lastPushedRef.current, payload)) {
+          return;
+        }
+        lastPushedRef.current = payload;
 
         for (const device of pairedDevices) {
           if (cancelled) return;
@@ -258,7 +306,8 @@ function AppContent() {
     })();
 
     return () => { cancelled = true; };
-  }, [machines, isSource, pairedDevices, identityPublicKey]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [machines, machineTombstones, pinnedProjects, pairedDevices, identityPublicKey]);
 
   // Track current location for reconnect-safe navigation
   const locationRef = useRef(location);
@@ -925,8 +974,16 @@ function ProjectRouteSession({
   const { projectId, sessionId: urlSessionId } = useParams<{ projectId: string; sessionId: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const isNewSession = searchParams.has('new');
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
+  // Watch the archived flag on the URL-bound session so we can bounce out
+  // of pages whose sessionId has been retired on the daemon (rekey fork,
+  // CLI process exit, explicit close). isActive alone is too noisy — it
+  // can flip during normal list reconciliation.
+  const viewedArchived = useClaudeStore((s) =>
+    urlSessionId && urlSessionId !== 'new' ? s.sessions[urlSessionId]?.archived === true : false
+  );
 
   const { isReady, isConnecting, cwd, agentId: targetAgentId } = useProjectConnection(projectId, onConnect, onSwitchMachine);
 
@@ -947,6 +1004,19 @@ function ProjectRouteSession({
     }
     prevActiveRef.current = activeSessionId;
   }, [activeSessionId, projectBasePath, navigate]);
+
+  // Archived session bounce: if the session on this page gets archived on
+  // the daemon, navigate back. Prefer `navigate(-1)` so the defunct entry
+  // is popped (cleaner mobile back-stack). Fall back to replace when there's
+  // no prior entry (deep-link / refresh — `location.key === 'default'`).
+  useEffect(() => {
+    if (!viewedArchived) return;
+    if (location.key !== 'default') {
+      navigate(-1);
+    } else {
+      navigate(projectBasePath, { replace: true });
+    }
+  }, [viewedArchived, location.key, navigate, projectBasePath]);
 
   const getSessionId = () => useClaudeStore.getState().activeSessionId || urlSessionId;
 

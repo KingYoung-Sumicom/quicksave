@@ -982,4 +982,229 @@ describe('SessionManager — adversarial edge cases', () => {
       await permPromise;
     });
   });
+
+  // ── Idle hot resume (reuse alive CLI between turns) ──
+
+  describe('idle hot resume', () => {
+    it('idle hot resume (streaming=false, alive=true) reuses the same provider session', async () => {
+      const sessionId = 'idle-hot';
+      const aliveSession = createMockProviderSession({ alive: true }) as any;
+      aliveSession.pendingStreamIds = [];
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: aliveSession,
+      });
+
+      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test', streamId: 's1' });
+
+      // End the first turn: streaming=false but providerSession still alive
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      callbacks.emitStreamEnd({ sessionId, streamId: 's1', costUsd: 0.01 } as any);
+
+      // Resume should use idle hot resume, NOT cold resume
+      const result = await manager.resumeSession({
+        sessionId,
+        prompt: 'Follow-up',
+        cwd: '/tmp/test',
+        streamId: 's2',
+      });
+
+      expect(result).toBe(sessionId);
+      expect(aliveSession.sendUserMessage).toHaveBeenCalledWith('Follow-up');
+      expect(provider.resumeSession).not.toHaveBeenCalled();
+      expect(aliveSession.currentStreamId).toBe('s2');
+      expect(aliveSession.resultEmitted).toBe(false);
+      expect(aliveSession.kill).not.toHaveBeenCalled();
+    });
+
+    it('idle hot resume emits session-updated with isStreaming=true', async () => {
+      const sessionId = 'idle-update';
+      const aliveSession = createMockProviderSession({ alive: true }) as any;
+      aliveSession.pendingStreamIds = [];
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: aliveSession,
+      });
+
+      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test', streamId: 's1' });
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      callbacks.emitStreamEnd({ sessionId, streamId: 's1', costUsd: 0.01 } as any);
+
+      const updates: any[] = [];
+      manager.on('session-updated', (e: any) => {
+        if (e.sessionId === sessionId) updates.push(e);
+      });
+
+      await manager.resumeSession({
+        sessionId,
+        prompt: 'Follow-up',
+        cwd: '/tmp/test',
+        streamId: 's2',
+      });
+
+      const last = updates[updates.length - 1];
+      expect(last.isActive).toBe(true);
+      expect(last.isStreaming).toBe(true);
+    });
+
+    it('idle hot resume falls to cold resume when model changed', async () => {
+      const sessionId = 'idle-model-changed';
+      const aliveSession = createMockProviderSession({ alive: true }) as any;
+      aliveSession.pendingStreamIds = [];
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: aliveSession,
+      });
+
+      await manager.startSession({
+        prompt: 'Start',
+        cwd: '/tmp/test',
+        streamId: 's1',
+        model: 'claude-opus-4-5',
+      });
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      callbacks.emitStreamEnd({ sessionId, streamId: 's1', costUsd: 0.01 } as any);
+
+      // User switches model — should force cold resume
+      manager.setSessionConfig(sessionId, 'model', 'claude-sonnet-4-6');
+
+      const coldSession = createMockProviderSession({ alive: true });
+      (provider.resumeSession as Mock).mockResolvedValue({
+        sessionId,
+        session: coldSession,
+      });
+
+      await manager.resumeSession({
+        sessionId,
+        prompt: 'Follow-up',
+        cwd: '/tmp/test',
+        streamId: 's2',
+      });
+
+      expect(aliveSession.kill).toHaveBeenCalled();
+      expect(provider.resumeSession).toHaveBeenCalled();
+    });
+  });
+
+  // ── onSessionExited callback ──
+
+  describe('onSessionExited callback', () => {
+    it('fires session-updated with isActive=false and archived=true when provider calls onSessionExited', async () => {
+      const sessionId = 'exit-mark';
+      const mockProvSession = createMockProviderSession({ alive: true });
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: mockProvSession,
+      });
+
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+
+      const updates: any[] = [];
+      manager.on('session-updated', (e: any) => {
+        if (e.sessionId === sessionId) updates.push(e);
+      });
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      callbacks.onSessionExited!(sessionId, mockProvSession);
+
+      const last = updates[updates.length - 1];
+      expect(last.isActive).toBe(false);
+      expect(last.archived).toBe(true);
+      expect(last.isStreaming).toBe(false);
+      expect(manager.getActiveSessions().find(s => s.sessionId === sessionId)).toBeUndefined();
+    });
+
+    it('ignores stale onSessionExited callback from a replaced provider session', async () => {
+      const sessionId = 'exit-stale';
+      const oldProvSession = createMockProviderSession({ alive: false });
+      const newProvSession = createMockProviderSession({ alive: true });
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: oldProvSession,
+      });
+
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+
+      // Simulate replacement: a newer providerSession is now in the slot
+      const ps = (manager as any).sessions.get(sessionId) as ManagedSession;
+      ps.providerSession = newProvSession;
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      // Stale callback fires for the OLD provider session
+      callbacks.onSessionExited!(sessionId, oldProvSession);
+
+      // Session should still exist with the new provider
+      const sessions = manager.getActiveSessions();
+      expect(sessions.find(s => s.sessionId === sessionId)).toBeDefined();
+      expect((manager as any).sessions.get(sessionId).providerSession).toBe(newProvSession);
+    });
+
+    it('onSessionExited on unknown session is a no-op', () => {
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      const mockProvSession = createMockProviderSession();
+      expect(() => {
+        callbacks.onSessionExited!('ghost-session', mockProvSession);
+      }).not.toThrow();
+    });
+  });
+
+  // ── Cold resume sessionId rekey (provider forks on --resume) ──
+
+  describe('cold resume sessionId rekey', () => {
+    it('rekeys sessions map and emits inactive for old id when provider returns a different sessionId', async () => {
+      const oldId = 'old-session-id';
+      const newId = 'new-session-id';
+
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId: oldId,
+        session: createMockProviderSession({ alive: false }),
+      });
+
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+
+      // Persist some side-map state that should migrate with the rekey
+      await manager.setSessionConfig(oldId, 'permissionMode', 'bypassPermissions');
+
+      // End the stream and kill the provider to force cold resume
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      callbacks.emitStreamEnd({ sessionId: oldId, streamId: 's1', costUsd: 0 } as any);
+      // Make providerSession dead so neither hot nor idle hot resume triggers
+      (manager as any).sessions.get(oldId).providerSession = null;
+
+      // Provider forks the session_id on --resume
+      const coldSession = createMockProviderSession({ alive: true });
+      (provider.resumeSession as Mock).mockResolvedValue({
+        sessionId: newId,
+        session: coldSession,
+      });
+
+      const updates: any[] = [];
+      manager.on('session-updated', (e: any) => updates.push(e));
+
+      const returned = await manager.resumeSession({
+        sessionId: oldId,
+        prompt: 'Follow-up',
+        cwd: '/tmp/test',
+        streamId: 's2',
+      });
+
+      expect(returned).toBe(newId);
+      expect((manager as any).sessions.has(oldId)).toBe(false);
+      expect((manager as any).sessions.has(newId)).toBe(true);
+
+      // Side-map state migrated
+      expect(manager.getSessionConfig(newId).permissionMode).toBe('bypassPermissions');
+      expect(manager.getSessionConfig(oldId).permissionMode).toBeUndefined();
+
+      // PWA got an inactive event for the old id and active for the new id
+      const oldInactive = updates.find(u => u.sessionId === oldId && u.isActive === false);
+      const newActive = updates.find(u => u.sessionId === newId && u.isActive === true);
+      expect(oldInactive).toBeDefined();
+      expect(oldInactive.archived).toBe(true);
+      expect(newActive).toBeDefined();
+      expect(newActive.archived).toBe(false);
+    });
+  });
 });

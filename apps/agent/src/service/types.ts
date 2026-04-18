@@ -18,14 +18,20 @@ import { fileURLToPath } from 'url';
 export const IPC_VERSION = 1;
 
 /**
+ * True when this process was launched via the dev-daemon loader
+ * (`dev-marker.mjs` sets this before any app code runs). This is the single
+ * source of truth for "am I a dev-mode process" — we don't parse BUILD_ID or
+ * NODE_ENV, both of which have silently broken dev detection in the past.
+ */
+const IS_DEV = (globalThis as { __QUICKSAVE_DEV__?: boolean }).__QUICKSAVE_DEV__ === true;
+
+/**
  * Build output content hash, replaced by the bundler at production build time.
- * In dev mode (placeholder unreplaced), hashes source file mtimes so the
- * value only changes when code actually changes — avoids spurious daemon restarts.
+ * In dev mode, hashes source file mtimes so the value only changes when code
+ * actually changes — avoids spurious daemon restarts.
  */
 const _PLACEHOLDER = '__BUILD_ID__';
-export const BUILD_ID = _PLACEHOLDER === '__BUILD' + '_ID__'
-  ? devBuildId()
-  : _PLACEHOLDER;
+export const BUILD_ID = IS_DEV ? devBuildId() : _PLACEHOLDER;
 
 function devBuildId(): string {
   try {
@@ -237,8 +243,8 @@ export function shouldRestartDaemon(
   return { action: 'ok' };
 }
 
-function isDev(): boolean {
-  return BUILD_ID.startsWith('dev-') || process.env.NODE_ENV === 'development';
+export function isDev(): boolean {
+  return IS_DEV;
 }
 
 /**

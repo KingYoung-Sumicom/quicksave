@@ -355,19 +355,38 @@ export class SessionManager extends EventEmitter {
       existing!.providerSession = null;
     }
 
-    // Hot resume: session is streaming and provider session is alive
+    // Hot resume (active turn): provider is mid-turn. Queue the streamId so
+    // consumeStream picks it up after the current turn's result event.
     if (existing?.streaming && existing.providerSession?.alive) {
-      console.log(`[session-manager] hot resume session=${opts.sessionId.slice(0, 8)} streaming=true`);
-      // Add user prompt to cardBuilder for getCards on reconnect
+      console.log(`[session-manager] hot resume (active) session=${opts.sessionId.slice(0, 8)}`);
       if (existing.cardBuilder) {
         existing.cardBuilder.userMessage(opts.prompt);
       }
-      // Queue the streamId so consumeStream picks it up after the current turn's result
       const ps = existing.providerSession as any;
       if (ps.pendingStreamIds) {
         ps.pendingStreamIds.push(opts.streamId);
       }
       existing.providerSession.sendUserMessage(opts.prompt);
+      return opts.sessionId;
+    }
+
+    // Hot resume (idle): CLI alive but between turns — reuse the same process
+    // instead of cold-resuming. Saves a kill+spawn per follow-up prompt and
+    // avoids the brief isActive=false window that caused the "ghost inactive"
+    // badge flicker between turns.
+    if (existing?.providerSession?.alive && !modelChanged) {
+      console.log(`[session-manager] hot resume (idle) session=${opts.sessionId.slice(0, 8)}`);
+      const ps = existing.providerSession as any;
+      if (existing.cardBuilder) {
+        existing.cardBuilder.cancelDeferredClear?.();
+        existing.cardBuilder.userMessage(opts.prompt);
+        existing.cardBuilder.startNewTurn(opts.streamId);
+      }
+      ps.currentStreamId = opts.streamId;
+      ps.resultEmitted = false;
+      existing.streaming = true;
+      existing.providerSession.sendUserMessage(opts.prompt);
+      this.emitSessionUpdate(opts.sessionId);
       return opts.sessionId;
     }
 
@@ -377,17 +396,6 @@ export class SessionManager extends EventEmitter {
       console.log(`[session-manager] cold resume in flight, queuing prompt for session=${opts.sessionId.slice(0, 8)}`);
       inFlight.queuedPrompts.push(opts.prompt);
       return opts.sessionId;
-    }
-
-    // Kill any stale provider session before spawning a fresh one. Leaving the
-    // old process alive causes two CLI processes to share --resume state, and
-    // any pending control_responses routed through its stream are stranded
-    // (the new session's pendingControlResponses map doesn't know about them).
-    if (existing?.providerSession?.alive) {
-      console.log(`[session-manager] killing stale provider before cold resume session=${opts.sessionId.slice(0, 8)}`);
-      existing.providerSession.kill();
-      existing.providerSession = null;
-      existing.streaming = false;
     }
 
     // Cold resume: mark as in-flight, then delegate to provider
@@ -432,9 +440,21 @@ export class SessionManager extends EventEmitter {
       this.sessionAgents.set(sessionId, provider.id);
       if (existing) {
         existing.agentId = provider.id;
+        existing.sessionId = sessionId;
         existing.providerSession = providerSession;
         existing.streaming = true;
         existing.spawnedModel = resumeModel;
+        // Cold resume can fork a new CLI session_id. Rekey the map + side
+        // maps to the new ID so emitSessionUpdate finds the entry and the
+        // PWA sees isActive=true (the ghost-inactive bug otherwise).
+        if (sessionId !== opts.sessionId) {
+          this.sessions.delete(opts.sessionId);
+          this.sessions.set(sessionId, existing);
+          this.migrateSessionIdState(opts.sessionId, sessionId);
+          // Tell PWA the old id is defunct so its store doesn't keep a
+          // stale active entry for the previous session_id.
+          this.emitSessionUpdate(opts.sessionId);
+        }
       } else {
         const managed: ManagedSession = {
           sessionId,
@@ -787,6 +807,17 @@ export class SessionManager extends EventEmitter {
           this.preferences.model = model;
         }
       },
+      onSessionExited: (sessionId, providerSession) => {
+        const ps = this.sessions.get(sessionId);
+        // Stale callback — a newer provider has already taken this slot
+        // (e.g. cold resume killed this one and spawned a fresh CLI).
+        if (!ps || ps.providerSession !== providerSession) return;
+        console.log(`[session-manager] provider exited session=${sessionId.slice(0, 8)} — marking inactive`);
+        ps.providerSession = null;
+        ps.streaming = false;
+        this.sessions.delete(sessionId);
+        this.emitSessionUpdate(sessionId);
+      },
     };
   }
 
@@ -924,16 +955,53 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  /** Move per-session state from oldId to newId after the CLI forks on
+   * --resume. `sessionAgents[newId]` is already set by the caller; this
+   * helper moves the remaining side maps and clears the old key. */
+  private migrateSessionIdState(oldId: string, newId: string): void {
+    const permission = this.sessionPermissions.get(oldId);
+    if (permission !== undefined) {
+      this.sessionPermissions.set(newId, permission);
+      this.sessionPermissions.delete(oldId);
+    }
+    const sandboxed = this.sessionSandboxed.get(oldId);
+    if (sandboxed !== undefined) {
+      this.sessionSandboxed.set(newId, sandboxed);
+      this.sessionSandboxed.delete(oldId);
+    }
+    const config = this.sessionConfigs.get(oldId);
+    if (config !== undefined) {
+      this.sessionConfigs.set(newId, config);
+      this.sessionConfigs.delete(oldId);
+    }
+    this.sessionAgents.delete(oldId);
+  }
+
   private emitSessionUpdate(sessionId: string): void {
+    this.emit('session-updated', this.buildSessionUpdatePayload(sessionId));
+  }
+
+  /**
+   * Build the payload normally shipped via the `session-updated` event without
+   * emitting. Used by daemon-level code that wants to push a fresh snapshot to
+   * a specific peer (e.g. PWA reconnect) instead of triggering a broadcast.
+   */
+  buildSessionUpdatePayload(sessionId: string): Record<string, unknown> {
     const ps = this.sessions.get(sessionId);
     const hasPendingInput = Array.from(this.pendingInputRequests.values())
       .some(p => p.request.sessionId === sessionId);
     const eventStore = getEventStore();
     const stats = eventStore.getSessionStats(sessionId);
     const lastTurn = eventStore.getLastTurn(sessionId);
-    this.emit('session-updated', {
+    return {
       sessionId,
       isActive: !!ps,
+      // `archived` = session has been removed from the in-memory map
+      // (cold-resume rekey, onSessionExited, or closeSession). PWA uses this
+      // as a signal to navigate away from the now-defunct session page.
+      // Note: isActive=false alone is ambiguous (can also mean "emitted for
+      // an unknown id during reconcile"); archived=true is the strong signal.
+      archived: !ps,
       agent: ps?.agentId ?? this.sessionAgents.get(sessionId),
       isStreaming: ps?.streaming ?? false,
       hasPendingInput,
@@ -948,7 +1016,13 @@ export class SessionManager extends EventEmitter {
       lastTurnCacheCreationTokens: lastTurn?.cacheCreationTokens,
       lastTurnCacheReadTokens: lastTurn?.cacheReadTokens,
       lastTurnContextUsage: lastTurn?.contextUsage,
-    });
+    };
+  }
+
+  /** Snapshot of every active (in-memory) session's state, in the shape the
+   *  PWA already handles via `claude:session-updated`. */
+  snapshotActiveSessions(): Record<string, unknown>[] {
+    return Array.from(this.sessions.keys()).map((id) => this.buildSessionUpdatePayload(id));
   }
 
   private persistRegistryField(sessionId: string, key: string, value: unknown): void {
