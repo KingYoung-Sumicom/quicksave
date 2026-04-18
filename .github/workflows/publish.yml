@@ -39,5 +39,8 @@ jobs:
       - name: Publish @sumicom/quicksave-shared
         run: pnpm --filter @sumicom/quicksave-shared publish --access public --no-git-checks
 
+      - name: Publish @sumicom/quicksave-message-bus
+        run: pnpm --filter @sumicom/quicksave-message-bus publish --access public --no-git-checks
+
       - name: Publish @sumicom/quicksave
         run: pnpm --filter @sumicom/quicksave publish --access public --no-git-checks

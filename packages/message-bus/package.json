@@ -1,10 +1,23 @@
 {
   "name": "@sumicom/quicksave-message-bus",
   "version": "0.7.0",
-  "private": true,
   "description": "Transport-agnostic command + subscribe message bus for Quicksave",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KingYoung-Sumicom/quicksave.git",
+    "directory": "packages/message-bus"
+  },
+  "homepage": "https://github.com/KingYoung-Sumicom/quicksave#readme",
+  "bugs": {
+    "url": "https://github.com/KingYoung-Sumicom/quicksave/issues"
+  },
+  "keywords": ["quicksave", "message-bus", "transport"],
+  "files": ["dist"],
   "type": "module",
+  "publishConfig": {
+    "branch": "stable"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -17,7 +30,6 @@
       "types": "./dist/transports/fake.d.ts"
     }
   },
-  "files": ["dist"],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
