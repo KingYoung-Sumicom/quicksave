@@ -5,7 +5,7 @@
  * replay attacks, memory leaks, and other adversarial scenarios.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { PubSub, sessionTopic, BROADCAST_TOPIC } from './pubsub.js';
+import { PubSub, BROADCAST_TOPIC } from './pubsub.js';
 
 // ---------------------------------------------------------------------------
 // Mocks — mirrors the setup from connection.test.ts
@@ -202,8 +202,6 @@ describe('edge: rapid reconnect race', () => {
     addPeer(conn, 'pwa:peer-aaa');
     await flush();
 
-    conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-
     const sig = getSignaling(conn);
     // Signaling disconnect fires (clears all peers)
     sig.emit('disconnected');
@@ -216,12 +214,9 @@ describe('edge: rapid reconnect race', () => {
     expect(conn.hasPeers()).toBe(true);
   });
 
-  it('saved topics are restored after rapid reconnect from same peer', async () => {
+  it('broadcast subscription is restored after rapid reconnect from same peer', async () => {
     addPeer(conn, 'pwa:peer-aaa');
     await flush();
-
-    conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-    conn.subscribePeerToSession('pwa:peer-aaa', 'sess-002');
 
     const sig = getSignaling(conn);
     sig.emit('disconnected');
@@ -232,8 +227,6 @@ describe('edge: rapid reconnect race', () => {
 
     const state = conn.getDebugState();
     const peerTopics = state.peers[0]?.topics ?? [];
-    expect(peerTopics).toContain(sessionTopic('sess-001'));
-    expect(peerTopics).toContain(sessionTopic('sess-002'));
     expect(peerTopics).toContain(BROADCAST_TOPIC);
   });
 
@@ -498,44 +491,6 @@ describe('edge: PubSub duplicate and no-op operations', () => {
 // 7. sendToSession with disconnected peer still in pubsub
 // ---------------------------------------------------------------------------
 
-describe('edge: sendToSession with stale pubsub entry', () => {
-  let conn: AgentConnection;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    conn = new AgentConnection(makeConfig());
-  });
-
-  it('skips peer in pubsub but not in peers map', async () => {
-    addPeer(conn, 'pwa:peer-aaa');
-    addPeer(conn, 'pwa:peer-bbb');
-    await flush();
-
-    conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-    conn.subscribePeerToSession('pwa:peer-bbb', 'sess-001');
-
-    // Manually remove peer-aaa from peers map (simulating inconsistency)
-    // but leave it in pubsub
-    const peers = (conn as any).peers as Map<string, any>;
-    peers.delete('pwa:peer-aaa');
-
-    const sig = getSignaling(conn);
-    sig.sentMessages = [];
-
-    const sent = conn.sendToSession('sess-001', makeMessage());
-
-    // Only peer-bbb should be counted
-    expect(sent).toBe(1);
-
-    await flush();
-
-    // Only peer-bbb should have received the message
-    const targets = sig.sentMessages.map((m) => m.target);
-    expect(targets).not.toContain('pwa:peer-aaa');
-    expect(targets).toContain('pwa:peer-bbb');
-  });
-});
-
 // ---------------------------------------------------------------------------
 // 8. Broadcast fallback
 // ---------------------------------------------------------------------------
@@ -691,8 +646,6 @@ describe('edge: savedPeerTopics lifecycle', () => {
     addPeer(conn, 'pwa:peer-aaa');
     await flush();
 
-    conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-
     const sig = getSignaling(conn);
     sig.emit('disconnected');
 
@@ -711,8 +664,6 @@ describe('edge: savedPeerTopics lifecycle', () => {
     addPeer(conn, 'pwa:peer-aaa');
     await flush();
 
-    conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-
     const sig = getSignaling(conn);
     sig.emit('disconnected');
 
@@ -730,13 +681,9 @@ describe('edge: savedPeerTopics lifecycle', () => {
     expect(saved.has('pwa:peer-bbb')).toBe(false); // peer-bbb had nothing saved
   });
 
-  it('signaling disconnect does not save topics for peers with no subscriptions', async () => {
+  it('signaling disconnect saves broadcast subscription from auto-subscribe', async () => {
     addPeer(conn, 'pwa:peer-aaa');
     await flush();
-
-    // Don't subscribe to any session topics (only broadcast from auto-subscribe)
-    // Then manually unsub from broadcast to test the empty-topics path
-    conn.unsubscribePeerFromSession('pwa:peer-aaa', 'nonexistent'); // no-op
 
     const sig = getSignaling(conn);
 
@@ -756,7 +703,6 @@ describe('edge: savedPeerTopics lifecycle', () => {
     // Cycle 1
     addPeer(conn, 'pwa:peer-aaa');
     await flush();
-    conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
 
     sig.emit('disconnected');
     expect(saved.has('pwa:peer-aaa')).toBe(true);
@@ -765,24 +711,18 @@ describe('edge: savedPeerTopics lifecycle', () => {
     await flush();
     expect(saved.has('pwa:peer-aaa')).toBe(false);
 
-    // Cycle 2 — same peer, different session
-    conn.subscribePeerToSession('pwa:peer-aaa', 'sess-002');
-
+    // Cycle 2
     sig.emit('disconnected');
     expect(saved.has('pwa:peer-aaa')).toBe(true);
-    const savedTopics = saved.get('pwa:peer-aaa')!;
-    expect(savedTopics.has(sessionTopic('sess-001'))).toBe(true);
-    expect(savedTopics.has(sessionTopic('sess-002'))).toBe(true);
 
     addPeer(conn, 'pwa:peer-aaa');
     await flush();
     expect(saved.has('pwa:peer-aaa')).toBe(false);
 
-    // All sessions restored
+    // Broadcast topic restored
     const state = conn.getDebugState();
     const topics = state.peers[0]?.topics ?? [];
-    expect(topics).toContain(sessionTopic('sess-001'));
-    expect(topics).toContain(sessionTopic('sess-002'));
+    expect(topics).toContain(BROADCAST_TOPIC);
   });
 });
 

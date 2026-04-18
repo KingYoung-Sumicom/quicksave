@@ -283,52 +283,32 @@ PWA                           Relay Server                  Agent Daemon
 - 每個 peer 有獨立 DEK，relay server 無法解密內容
 - 訊息在傳輸前會先 gzip 壓縮再加密
 
-### PubSub 機制（`pubsub.ts`）
+### MessageBus (`packages/message-bus`) — PWA↔Agent 的 RPC + PubSub
 
-Topic-based pub/sub，取代舊版 `peerSessions: Map<string, string>` 一對一映射。
-支援多 peer 訂閱同一 session，以及自動的 broadcast topic。
+PWA 與 Agent 之間的所有 request-response、state subscribe、server push 都走 MessageBus。用 `bus:frame` 封包信封疊在既有 `Message` 之上，封裝 `command` / `subscribe(+snapshot)` / `publish` 三個 primitives：
 
-**Topic 慣例：**
-| Topic 格式 | 用途 |
-|---|---|
-| `session:{sessionId}` | Session 級事件（cards、stream-end、user-input） |
-| `broadcast` | 全域事件（session-updated、preferences-updated） |
+- **Server transport** (`apps/agent/src/messageBus/busServerTransport.ts`) 包住 `AgentConnection`，過濾 `type === 'bus:frame'` 的訊息；其餘 message（handshake、`push:subscription-offer`）走舊路徑。
+- **Client transport** (`apps/pwa/src/lib/busClientTransport.ts`) 由外部驅動（`notifyMessage` / `notifyConnected` / `notifyDisconnected`），因 `WebSocketClient` 只有單一 `onMessage` callback。
+- **Snapshot-on-subscribe**：`sub` frame 的 snapshot 是原子交付，斷線重連後 `MessageBusClient` 自動重發 `sub`，server 再次送出當下的 snapshot，消除「reconnect 後狀態 stale」視窗。
+- **Command queueing**：PWA 的 `bus.command(verb, payload, { queueWhileDisconnected: true })` 會在未連線時 hold 住，連上後自動 flush；避免 reconnect 競態丟失請求。
 
-**雙向索引：**
-```typescript
-class PubSub {
-  topics: Map<string, Set<string>>       // topic → Set<peerAddress>  (forward)
-  peerTopics: Map<string, Set<string>>   // peerAddress → Set<topic>  (reverse)
-}
-```
-- Forward index → `subscribers(topic)` O(1)，避免全表掃描
-- Reverse index → `unsubscribeAll(peer)` O(topics) 清理，斷線時用
+**現行 subscribe path：**
+| Path | Snapshot 型別 | Update 型別 | 來源 |
+|---|---|---|---|
+| `/sessions/active` | `SessionUpdatePayload[]` | `SessionUpdatePayload` | `claudeService.snapshotActiveSessions()` + `session-updated` 事件 |
+| `/preferences` | `ClaudePreferences` | `ClaudePreferences` | `claudeService.getPreferences()` + `preferences-updated` 事件 |
+| `/sessions/history` | `SessionRegistryEntry[]` | `SessionHistoryUpdatedPayload` | `sessionRegistry.getEntriesForProject()` + `messageHandler.onHistoryUpdated` |
+| `/repos/commit-summary` | `CommitSummaryState[]` | `CommitSummaryState` | `commitSummaryStore.snapshot()` + `state-updated` 事件 |
+| `/sessions/config` | `Record<sessionId, Record<key, ConfigValue>>` | `SessionConfigUpdatedPayload` | `claudeService.getAllSessionConfigs()` + `session-config-updated` 事件 |
+| `/sessions/:sessionId/cards` | `CardHistoryResponse`（offset=0、含 pendingInput overlay + title） | `SessionCardsUpdate`（`{ kind: 'card', event }` 或 `{ kind: 'stream-end', result }`） | `claudeService.getCards()` + `card-event` / `card-stream-end` 事件 |
 
-**訂閱生命週期：**
-```
-Key exchange 完成 → auto-subscribe(peer, 'broadcast')
-PWA 進入 session → claude:get-messages → subscribePeerToSession(peer, sessionId)
-  → pubsub.subscribe(peer, 'session:{sessionId}')
-PWA 離開 session → claude:unsubscribe → unsubscribePeerFromSession(peer, sessionId)
-  → pubsub.unsubscribe(peer, 'session:{sessionId}')
-PWA 斷線 → pubsub.unsubscribeAll(peer) 一次清理所有 topic
-```
+**Command adapter**（`service/run.ts` — `LEGACY_BUS_VERBS`）：
+所有 request-response verb（`git:*`、`ai:*`、`agent:*`、`claude:*`、`session:*`、`project:*`、`push:*`、`codex:*`）在啟動時被註冊成 `bus.onCommand(verb, ...)`。Adapter 把 payload 包回 `Message` 信封，dispatch 給既有 `messageHandler.handleMessage`，把結果翻譯回 resolved payload 或 reject Error。結構化錯誤編碼成 `"CODE: message"` 字串（PWA 端靠 `err.message.startsWith('REPO_MISMATCH')` 辨識）。
 
-**事件路由：**
-```
-claudeService.emit('card-event', { sessionId, ... })
-  → run.ts 攔截
-  → connection.sendToSession(sessionId, message)
-    → pubsub.subscribers('session:{sessionId}')   # 只發給訂閱的 peers
-    → 加密 + gzip + send(peer)
+**`git:*` 的 `__repoPath` smuggle**：bus 協議沒有信封級 metadata，所以 `useGitOperations.sendCommand` 把當前 repoPath 塞到 payload 的保留欄 `__repoPath`；adapter 讀出後放回 `msg.repoPath` 給 REPO_MISMATCH guard 檢查，回應時再把 server 認可的 repoPath 鏡射回 data 的 `__repoPath` 讓 PWA 做 scope 驗證。
 
-claudeService.emit('session-updated', ...)
-  → connection.broadcast(message)
-    → pubsub.subscribers('broadcast')              # 發給所有連線 peers
-```
-
-**防禦措施：** Permission card events 若 `sendToSession` 返回 0（無訂閱者），
-fallback 到 `broadcast` 確保不遺失。
+**PubSub 內部（`connection/pubsub.ts`）**：
+`AgentConnection` 內部仍保留 topic-based pubsub 供 `connection.broadcast()` 使用（全域廣播給所有 peers），但 PWA ↔ Agent 的 session/state 事件都已改走 MessageBus 的 `/path` 訂閱，不再需要 `session:{id}` 這類 topic。Broadcast topic 主要留給 relay 側事件 fan-out。
 
 ### Web Push 側通道（signed HTTP）
 
@@ -362,8 +342,8 @@ Agent ──[POST /push/{signPubKey}/notify,   signed]──▶ Relay → web-pu
 ```
 
 **Agent 觸發條件**（`run.ts` 事件掛鉤）：
-- `user-input-request`，且 `sendToSession(...) === 0`（無 peer 訂閱）→ 通知
-- `card-stream-end`，且無 peer 訂閱、未 interrupted、且 `hasPendingInputForSession` 為 false → 通知
+- `user-input-request`，且 `bus.subscriberCount('/sessions/:id/cards') === 0`（無 peer 訂閱 cards）→ 通知
+- `card-stream-end`，且 `bus.publish` 回傳 0 訂閱者、未 interrupted、且 `hasPendingInputForSession` 為 false → 通知
 
 兩種觸發產生同 `{title, body, sessionId, tag, agentId}` 結構；`tag: sessionId` 讓後續訊息在瀏覽器端自動摺疊成單一通知。
 
@@ -372,16 +352,19 @@ Agent ──[POST /push/{signPubKey}/notify,   signed]──▶ Relay → web-pu
 - 授權提示：首次連線後若 `Notification.permission === 'default'` 顯示 Banner
 - 自動 offer：每次連線完成且權限已 `granted`，由 `App.tsx` 重送 `push:subscription-offer`（agent 的 register 是 upsert，等冪）
 
-### Message 請求-回應模式
+### Request-response 模式（MessageBus command）
 
 ```typescript
-// PWA 端（useClaudeOperations.ts）
-const result = await sendRequest<ResponseType>(
-  { type: 'claude:start', id: uuid(), payload: {...} },
-  timeoutMs = 30000
+// PWA 端（useClaudeOperations.ts / useGitOperations.ts）
+const result = await busRef.current.command<ResponseType, RequestPayload>(
+  'claude:start',
+  payload,
+  { timeoutMs: 30_000, queueWhileDisconnected: true },
 );
-// 等待相同 id 的回應訊息
+// bus 內部以 id 配對 cmd/result frame；錯誤會 reject 為 Error
 ```
+
+Agent 端每個 verb 由 `service/run.ts` 註冊成 `bus.onCommand(verb, handler)`，adapter 會把 payload 包回 Message 信封 → `messageHandler.handleMessage` → 回 result frame。詳見前文「MessageBus Command adapter」。
 
 ---
 
@@ -411,29 +394,25 @@ interface Message {
 
 ### Claude 相關 Message Types
 
-| Type | 方向 | 說明 |
-|---|---|---|
-| `claude:list-sessions` | PWA→Agent | 列出歷史 sessions |
-| `claude:list-sessions:response` | Agent→PWA | |
-| `claude:start` | PWA→Agent | 啟動新 session |
-| `claude:start:response` | Agent→PWA | 回傳 sessionId |
-| `claude:resume` | PWA→Agent | 繼續 session |
-| `claude:resume:response` | Agent→PWA | |
-| `claude:cancel` | PWA→Agent | 取消 streaming |
-| `claude:cancel:response` | Agent→PWA | |
-| `claude:close` | PWA→Agent | 關閉 session |
-| `claude:get-messages` | PWA→Agent | 讀取歷史訊息（分頁） |
-| `claude:get-messages:response` | Agent→PWA | |
-| `claude:card-event` | Agent→PWA（push） | card add/update/append_text |
-| `claude:card-stream-end` | Agent→PWA（push） | turn 結束 |
-| `claude:user-input-request` | Agent→PWA（push） | 工具審批請求 |
-| `claude:user-input-response` | PWA→Agent | 使用者回應審批 |
-| `claude:user-input-resolved` | Agent→PWA（push） | 審批狀態已解決 |
-| `claude:session-updated` | Agent→PWA（push） | session 狀態變更 |
-| `claude:set-session-permission` | PWA→Agent | 變更 session 權限模式 |
-| `claude:unsubscribe` | PWA→Agent | 取消訂閱 session |
-| `claude:preferences-updated` | Agent→PWA（push） | 全域偏好廣播 |
-| `push:subscription-offer` | PWA→Agent | 轉交 browser PushSubscription（E2E 加密） |
+PWA↔Agent 的 session / cards / preferences 事件現在都走 MessageBus 的 `/path` 訂閱（見「MessageBus」章節）。下表的「Message type」欄是 `MessageHandler` 內部仍使用的 verb 名稱；對應的 bus 用法在「bus 對應」欄。
+
+| Type | 方向 | bus 對應 | 說明 |
+|---|---|---|---|
+| `claude:list-sessions` | PWA→Agent | `bus.command('claude:list-sessions', …)` | 列出歷史 sessions |
+| `claude:start` | PWA→Agent | `bus.command('claude:start', …)` | 啟動新 session |
+| `claude:resume` | PWA→Agent | `bus.command('claude:resume', …)` | 繼續 session |
+| `claude:cancel` | PWA→Agent | `bus.command('claude:cancel', …)` | 取消 streaming |
+| `claude:close` | PWA→Agent | `bus.command('claude:close', …)` | 關閉 session |
+| `claude:get-cards` | PWA→Agent | `bus.command('claude:get-cards', …)` | 分頁讀取歷史 cards（offset>0） |
+| `claude:active-sessions` | PWA→Agent | `bus.command('claude:active-sessions', …)` | reconnect 時重建 session 狀態 |
+| `claude:user-input-response` | PWA→Agent | `bus.command('claude:user-input-response', …)` | 回應工具審批／permission |
+| `claude:set-preferences` / `claude:get-preferences` | PWA→Agent | `bus.command(…)` | 全域偏好讀寫 |
+| `claude:set-session-permission` | PWA→Agent | `bus.command('claude:set-session-permission', …)` | 變更 session 權限模式 |
+| — | Agent→PWA push | `bus.subscribe('/sessions/:id/cards')` → `{kind: 'card', event}` / `{kind: 'stream-end', result}` | 舊 `claude:card-event` / `claude:card-stream-end` / `claude:user-input-request` 都已改走此 path（CardBuilder 在 pendingInput overlay 內承載 input request） |
+| — | Agent→PWA push | `bus.subscribe('/sessions/active')` | 舊 `claude:session-updated` 的替代 |
+| — | Agent→PWA push | `bus.subscribe('/preferences')` | 舊 `claude:preferences-updated` 的替代 |
+| `bus:frame` | 雙向 | — | MessageBus 封包信封：payload 為 `ClientFrame` / `ServerFrame`（sub / unsub / cmd / snap / upd / result / sub-error） |
+| `push:subscription-offer` | PWA→Agent | 走舊 WS path（`connection.send`） | 多 agent routing 需要 `sendToAgent`，bus 為單 active agent |
 | `push:subscription-offer:response` | Agent→PWA | 註冊結果 `{success, error?}` |
 
 ---
@@ -588,24 +567,25 @@ interface DebugResult {
 ```
 使用者輸入 prompt
   ↓ useClaudeOperations.startSession()
-  ↓ sendRequest('claude:start', payload)
-  ↓ [加密] → WebRTC → [解密]
-  ↓ MessageHandler.handle_claude_start()
+  ↓ bus.command('claude:start', payload, { queueWhileDisconnected: true })
+  ↓ bus:frame { kind: 'cmd', verb: 'claude:start' } → [加密] → WebRTC → [解密]
+  ↓ busServerTransport → bus.onCommand('claude:start') adapter
+  ↓ adapter 包回 Message 信封 → MessageHandler.handle_claude_start()
   ↓ SessionManager.startSession()
     ↓ ClaudeCliProvider.startSession()
       ↓ spawn('claude', ['--input-format', 'stream-json', '--output-format', 'stream-json',
       ↓                    '--permission-prompt-tool', 'stdio', '--append-system-prompt', '...', ...])
       ↓ stdin.write({ type: 'user', message: { role: 'user', content: prompt } })
       ↓ return ProviderSession { sessionId, streamId, abort() }
-    ↓ SessionManager.startSession() 建立 card builder、permission table
+    ↓ SessionManager 建立 card builder、permission table
     ↓ consumeStream() loop:
        for await (line of readline(proc.stdout))
          if control_request → handleControlRequest() → emit card → wait user → sendControlResponse()
          else → routeMessage() → StreamCardBuilder → CardEvent → emit('card-event')
-  ↓ connection.sendToSession() → [加密] → WebRTC → [解密]
-  ↓ useClaudeOperations → 收到 'claude:card-event' push
-  ↓ claudeStore.handleCardEvent()
-  ↓ React re-render → CardRenderer
+  ↓ claudeService.on('card-event') → bus.publish('/sessions/:id/cards', { kind: 'card', event })
+  ↓ bus:frame { kind: 'upd', path: '/sessions/.../cards' } → [加密] → WebRTC → [解密]
+  ↓ MessageBusClient dispatch → applySessionCardsUpdate(sessionId, update)
+  ↓ claudeStore.handleCardEvent() → React re-render → CardRenderer
   ↓ on 'result': turn complete, process stays alive for next stdin message
 ```
 
@@ -617,9 +597,10 @@ interface DebugResult {
 |---|---|---|
 | EventEmitter | `SessionManager` | AI 事件廣播 |
 | Strategy Pattern | `CodingAgentProvider` 介面 | 可插拔 AI provider 實作 |
-| PubSub | `AgentConnection` + `pubsub.ts` | Session 級別訊息路由 |
-| Request-Response | `useClaudeOperations` | 訊息 ID 配對等待 |
-| Zustand Store | `claudeStore.ts` | 集中式 PWA 狀態 |
+| MessageBus (RPC + PubSub) | `packages/message-bus` + `busServerTransport` / `busClientTransport` | PWA↔Agent 的 command / subscribe / publish |
+| Snapshot-on-subscribe | `bus.onSubscribe(path, { snapshot })` | 斷線重連自動重放當下 state，消除 stale window |
+| Command adapter | `service/run.ts — LEGACY_BUS_VERBS` | 把每個 verb 包裝成 bus command，delegate 給既有 `messageHandler.handleMessage` |
+| Zustand Store | `claudeStore.ts` / `gitStore.ts` | 集中式 PWA 狀態 |
 | Singleton Lock | `singleton.ts` | 確保單一 daemon |
 | JSONL Append | `sessionStore.ts` | Session 歷史持久化 |
 

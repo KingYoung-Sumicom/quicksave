@@ -1,8 +1,5 @@
 import { useCallback, useRef } from 'react';
 import {
-  createMessage,
-  type Message,
-  type ErrorPayload,
   type StatusResponsePayload,
   type DiffResponsePayload,
   type StageResponsePayload,
@@ -39,6 +36,7 @@ import {
   type CodingPath,
   type ClaudeModel,
 } from '@sumicom/quicksave-shared';
+import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useGitStore, makeSelectionKey, type SelectionSource } from '../stores/gitStore';
 import { WebSocketClient } from '../lib/websocket';
@@ -52,20 +50,18 @@ export const SUPERSEDED_ERROR = 'SUPERSEDED';
 const isSuperseded = (error: unknown): boolean =>
   error instanceof Error && error.message === SUPERSEDED_ERROR;
 
-type PendingRequest = {
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-  timeout: ReturnType<typeof setTimeout>;
-  /** True if this is a `git:*` request, which is repo-scoped and must be
-   *  validated against the current agent + repo on response. */
-  isGit: boolean;
-  /** Snapshot of agent + repo at send time. The response is dropped if either
-   *  has changed by the time it arrives. */
-  scope: { agentId: string | null; repoPath: string | null };
-};
+/**
+ * Marker attached to a git:* in-flight bus command so `cancelPendingGit` can
+ * flag it as superseded without having to cancel the underlying bus promise
+ * (the bus client does not expose cancellation).
+ */
+type InFlightGit = { superseded: boolean };
 
-export function useGitOperations(clientRef: React.RefObject<WebSocketClient | null>) {
-  const pendingRequests = useRef<Map<string, PendingRequest>>(new Map());
+export function useGitOperations(
+  clientRef: React.RefObject<WebSocketClient | null>,
+  busRef: React.RefObject<MessageBusClient | null>,
+) {
+  const inFlightGit = useRef<Set<InFlightGit>>(new Set());
   const {
     setStatus,
     setFileDiff,
@@ -87,103 +83,84 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
   } = useGitStore();
   const { setRepoPath, setAvailableRepos, setAvailableCodingPaths, availableCodingPaths } = useConnectionStore();
 
-  const sendRequest = useCallback(
-    <T>(message: Message, timeoutMs = 30000): Promise<T> => {
-      return new Promise((resolve, reject) => {
-        if (!clientRef.current) {
-          reject(new Error('Not connected'));
-          return;
-        }
+  /**
+   * Issue a bus command. For `git:*` verbs:
+   *  - Stamps the current repoPath into the payload via the reserved
+   *    `__repoPath` field so the agent's REPO_MISMATCH guard can compare.
+   *  - Snapshots active agent + repo at send time and re-checks them at
+   *    resolve time — if the user switched workspace while the command was in
+   *    flight, rejects with `SUPERSEDED_ERROR` so the caller can silently drop
+   *    the result instead of overwriting the new workspace's store.
+   *  - Translates the agent's `REPO_MISMATCH: ...` error into `SUPERSEDED`
+   *    for the same reason.
+   *  - Strips the server-echoed `__repoPath` from the data before returning.
+   */
+  const sendCommand = useCallback(
+    <T>(verb: string, payload: unknown, timeoutMs = 30000): Promise<T> => {
+      const bus = busRef.current;
+      if (!bus) return Promise.reject(new Error('Not connected'));
 
-        const isGit = message.type.startsWith('git:');
-        const repoPath = useGitStore.getState().currentRepoPath;
-        const agentId = clientRef.current.getActiveAgentId();
-        // Stamp git:* requests with the repo we expect to operate on. The
-        // agent rejects with REPO_MISMATCH if its peer state has moved on,
-        // and the PWA validates the response envelope on the way back.
-        if (isGit && repoPath) {
-          message.repoPath = repoPath;
-        }
+      const isGit = verb.startsWith('git:');
+      const snapshotAgentId = clientRef.current?.getActiveAgentId() ?? null;
+      const snapshotRepoPath = useGitStore.getState().currentRepoPath;
+      const entry: InFlightGit = { superseded: false };
+      if (isGit) inFlightGit.current.add(entry);
 
-        const timeout = setTimeout(() => {
-          pendingRequests.current.delete(message.id);
-          reject(new Error('Request timeout'));
-        }, timeoutMs);
+      let wirePayload: unknown = payload;
+      if (isGit && snapshotRepoPath) {
+        wirePayload = { ...(payload as object), __repoPath: snapshotRepoPath };
+      }
 
-        pendingRequests.current.set(message.id, {
-          resolve: resolve as (value: unknown) => void,
-          reject,
-          timeout,
-          isGit,
-          scope: { agentId, repoPath },
+      return bus
+        .command<unknown>(verb, wirePayload, { timeoutMs, queueWhileDisconnected: true })
+        .then((result) => {
+          if (!isGit) return result as T;
+          inFlightGit.current.delete(entry);
+          const currentAgent = clientRef.current?.getActiveAgentId() ?? null;
+          const currentRepo = useGitStore.getState().currentRepoPath;
+          const responseRepo =
+            result && typeof result === 'object' && '__repoPath' in result
+              ? (result as { __repoPath?: string }).__repoPath ?? null
+              : null;
+          const stale =
+            entry.superseded ||
+            currentAgent !== snapshotAgentId ||
+            currentRepo !== snapshotRepoPath ||
+            (responseRepo !== null && responseRepo !== snapshotRepoPath);
+          if (stale) throw new Error(SUPERSEDED_ERROR);
+          if (result && typeof result === 'object' && '__repoPath' in result) {
+            const { __repoPath: _omit, ...rest } = result as Record<string, unknown>;
+            void _omit;
+            return rest as T;
+          }
+          return result as T;
+        })
+        .catch((err) => {
+          if (isGit) inFlightGit.current.delete(entry);
+          if (err instanceof Error) {
+            if (err.message.startsWith('REPO_MISMATCH')) throw new Error(SUPERSEDED_ERROR);
+            if (isGit && entry.superseded) throw new Error(SUPERSEDED_ERROR);
+          }
+          throw err;
         });
-
-        clientRef.current.send(message);
-      });
     },
-    [clientRef]
+    [busRef, clientRef],
   );
 
   /**
-   * Reject every in-flight git:* request with `SUPERSEDED`. Call this before
-   * switching repo or active agent so any late responses don't overwrite the
-   * store with the previous workspace's data.
+   * Mark every in-flight git:* command as superseded. Called before switching
+   * repo or active agent so late-arriving responses from the previous
+   * workspace are discarded instead of overwriting the new one's store.
    */
   const cancelPendingGit = useCallback(() => {
-    for (const [id, entry] of pendingRequests.current) {
-      if (!entry.isGit) continue;
-      clearTimeout(entry.timeout);
-      pendingRequests.current.delete(id);
-      entry.reject(new Error(SUPERSEDED_ERROR));
-    }
+    for (const entry of inFlightGit.current) entry.superseded = true;
+    inFlightGit.current.clear();
   }, []);
-
-  const handleResponse = useCallback((message: Message) => {
-    const pending = pendingRequests.current.get(message.id);
-    if (!pending) return;
-
-    // Repo-scoped validation for git:* responses. If the user has switched
-    // agent or repo since the request went out, drop the response so the
-    // store can't be overwritten with stale data from another workspace.
-    if (pending.isGit) {
-      const currentAgent = clientRef.current?.getActiveAgentId() ?? null;
-      const currentRepo = useGitStore.getState().currentRepoPath;
-      const responseRepo = message.repoPath ?? null;
-      const stale =
-        currentAgent !== pending.scope.agentId ||
-        currentRepo !== pending.scope.repoPath ||
-        (responseRepo !== null && responseRepo !== pending.scope.repoPath);
-
-      // Treat the agent's REPO_MISMATCH error the same way: the agent's view
-      // of this peer's repo had already moved on by the time it processed
-      // the request. The response is meaningless to the current view.
-      const isRepoMismatchErr =
-        message.type === 'error' &&
-        (message.payload as ErrorPayload | undefined)?.code === 'REPO_MISMATCH';
-
-      if (stale || isRepoMismatchErr) {
-        clearTimeout(pending.timeout);
-        pendingRequests.current.delete(message.id);
-        pending.reject(new Error(SUPERSEDED_ERROR));
-        return;
-      }
-    }
-
-    clearTimeout(pending.timeout);
-    pendingRequests.current.delete(message.id);
-
-    if (message.type === 'error') {
-      pending.reject(new Error((message.payload as { message: string }).message));
-    } else {
-      pending.resolve(message.payload);
-    }
-  }, [clientRef]);
 
   const fetchStatus = useCallback(async () => {
     setLoading(true);
     try {
-      const message = createMessage('git:status', {});
-      const response = await sendRequest<StatusResponsePayload>(message);
+      const response = await sendCommand<StatusResponsePayload>('git:status', {});
       setStatus(response);
     } catch (error) {
       if (isSuperseded(error)) return;
@@ -191,15 +168,14 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     } finally {
       setLoading(false);
     }
-  }, [sendRequest, setStatus, setLoading, setError]);
+  }, [sendCommand, setStatus, setLoading, setError]);
 
   const fetchDiff = useCallback(
     async (path: string, staged = false, source?: SelectionSource) => {
       const key = makeSelectionKey(path, source ?? (staged ? 'staged' : 'unstaged'));
       setDiffLoading(key, true);
       try {
-        const message = createMessage('git:diff', { path, staged });
-        const response = await sendRequest<DiffResponsePayload>(message);
+        const response = await sendCommand<DiffResponsePayload>('git:diff', { path, staged });
         setFileDiff(key, response);
       } catch (error) {
         setDiffLoading(key, false);
@@ -207,15 +183,14 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setError(error instanceof Error ? error.message : 'Failed to fetch diff');
       }
     },
-    [sendRequest, setFileDiff, setDiffLoading, setError]
+    [sendCommand, setFileDiff, setDiffLoading, setError]
   );
 
   const stageFiles = useCallback(
     async (paths: string[]) => {
       setLoading(true);
       try {
-        const message = createMessage('git:stage', { paths });
-        const response = await sendRequest<StageResponsePayload>(message);
+        const response = await sendCommand<StageResponsePayload>('git:stage', { paths });
         if (!response.success) {
           throw new Error(response.error || 'Failed to stage files');
         }
@@ -227,15 +202,14 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setLoading(false);
       }
     },
-    [sendRequest, fetchStatus, setLoading, setError]
+    [sendCommand, fetchStatus, setLoading, setError]
   );
 
   const unstageFiles = useCallback(
     async (paths: string[]) => {
       setLoading(true);
       try {
-        const message = createMessage('git:unstage', { paths });
-        const response = await sendRequest<StageResponsePayload>(message);
+        const response = await sendCommand<StageResponsePayload>('git:unstage', { paths });
         if (!response.success) {
           throw new Error(response.error || 'Failed to unstage files');
         }
@@ -247,15 +221,14 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setLoading(false);
       }
     },
-    [sendRequest, fetchStatus, setLoading, setError]
+    [sendCommand, fetchStatus, setLoading, setError]
   );
 
   const stagePatch = useCallback(
     async (patch: string) => {
       setLoading(true);
       try {
-        const message = createMessage('git:stage-patch', { patch });
-        const response = await sendRequest<StagePatchResponsePayload>(message);
+        const response = await sendCommand<StagePatchResponsePayload>('git:stage-patch', { patch });
         if (!response.success) {
           throw new Error(response.error || 'Failed to stage patch');
         }
@@ -267,15 +240,14 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setLoading(false);
       }
     },
-    [sendRequest, fetchStatus, setLoading, setError]
+    [sendCommand, fetchStatus, setLoading, setError]
   );
 
   const unstagePatch = useCallback(
     async (patch: string) => {
       setLoading(true);
       try {
-        const message = createMessage('git:unstage-patch', { patch });
-        const response = await sendRequest<StagePatchResponsePayload>(message);
+        const response = await sendCommand<StagePatchResponsePayload>('git:unstage-patch', { patch });
         if (!response.success) {
           throw new Error(response.error || 'Failed to unstage patch');
         }
@@ -287,15 +259,18 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setLoading(false);
       }
     },
-    [sendRequest, fetchStatus, setLoading, setError]
+    [sendCommand, fetchStatus, setLoading, setError]
   );
 
   const commit = useCallback(
     async (commitMessage: string, description?: string) => {
       setLoading(true);
       try {
-        const message = createMessage('git:commit', { message: commitMessage, description, attribution: attributionEnabled });
-        const response = await sendRequest<CommitResponsePayload>(message);
+        const response = await sendCommand<CommitResponsePayload>('git:commit', {
+          message: commitMessage,
+          description,
+          attribution: attributionEnabled,
+        });
         if (!response.success) {
           throw new Error(response.error || 'Failed to commit');
         }
@@ -310,15 +285,14 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setLoading(false);
       }
     },
-    [sendRequest, fetchStatus, clearCommitForm, setLoading, setError, attributionEnabled]
+    [sendCommand, fetchStatus, clearCommitForm, setLoading, setError, attributionEnabled]
   );
 
   const fetchLog = useCallback(
     async (limit = 50) => {
       setLoading(true);
       try {
-        const message = createMessage('git:log', { limit });
-        const response = await sendRequest<LogResponsePayload>(message);
+        const response = await sendCommand<LogResponsePayload>('git:log', { limit });
         setCommits(response.commits);
       } catch (error) {
         if (isSuperseded(error)) return;
@@ -327,14 +301,13 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setLoading(false);
       }
     },
-    [sendRequest, setCommits, setLoading, setError]
+    [sendCommand, setCommits, setLoading, setError]
   );
 
   const fetchBranches = useCallback(async () => {
     setLoading(true);
     try {
-      const message = createMessage('git:branches', {});
-      const response = await sendRequest<BranchesResponsePayload>(message);
+      const response = await sendCommand<BranchesResponsePayload>('git:branches', {});
       setBranches(response.branches, response.current);
     } catch (error) {
       if (isSuperseded(error)) return;
@@ -342,14 +315,13 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     } finally {
       setLoading(false);
     }
-  }, [sendRequest, setBranches, setLoading, setError]);
+  }, [sendCommand, setBranches, setLoading, setError]);
 
   const checkout = useCallback(
     async (branch: string, create = false) => {
       setLoading(true);
       try {
-        const message = createMessage('git:checkout', { branch, create });
-        const response = await sendRequest<CheckoutResponsePayload>(message);
+        const response = await sendCommand<CheckoutResponsePayload>('git:checkout', { branch, create });
         if (!response.success) {
           throw new Error(response.error || 'Failed to checkout');
         }
@@ -362,15 +334,14 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setLoading(false);
       }
     },
-    [sendRequest, fetchStatus, fetchBranches, setLoading, setError]
+    [sendCommand, fetchStatus, fetchBranches, setLoading, setError]
   );
 
   const discardChanges = useCallback(
     async (paths: string[]) => {
       setLoading(true);
       try {
-        const message = createMessage('git:discard', { paths });
-        const response = await sendRequest<DiscardResponsePayload>(message);
+        const response = await sendCommand<DiscardResponsePayload>('git:discard', { paths });
         if (!response.success) {
           throw new Error(response.error || 'Failed to discard changes');
         }
@@ -382,15 +353,14 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setLoading(false);
       }
     },
-    [sendRequest, fetchStatus, setLoading, setError]
+    [sendCommand, fetchStatus, setLoading, setError]
   );
 
   const untrackFiles = useCallback(
     async (paths: string[]) => {
       setLoading(true);
       try {
-        const message = createMessage('git:untrack', { paths });
-        const response = await sendRequest<UntrackResponsePayload>(message);
+        const response = await sendCommand<UntrackResponsePayload>('git:untrack', { paths });
         if (!response.success) {
           throw new Error(response.error || 'Failed to untrack files');
         }
@@ -402,15 +372,14 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setLoading(false);
       }
     },
-    [sendRequest, fetchStatus, setLoading, setError]
+    [sendCommand, fetchStatus, setLoading, setError]
   );
 
   const addToGitignore = useCallback(
     async (pattern: string) => {
       setLoading(true);
       try {
-        const message = createMessage('git:gitignore-add', { pattern });
-        const response = await sendRequest<GitignoreAddResponsePayload>(message);
+        const response = await sendCommand<GitignoreAddResponsePayload>('git:gitignore-add', { pattern });
         if (!response.success) {
           throw new Error(response.error || 'Failed to add to .gitignore');
         }
@@ -422,26 +391,24 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setLoading(false);
       }
     },
-    [sendRequest, fetchStatus, setLoading, setError]
+    [sendCommand, fetchStatus, setLoading, setError]
   );
 
   const readGitignore = useCallback(async () => {
     try {
-      const message = createMessage('git:gitignore-read', {});
-      const response = await sendRequest<GitignoreReadResponsePayload>(message);
+      const response = await sendCommand<GitignoreReadResponsePayload>('git:gitignore-read', {});
       return response;
     } catch (error) {
       if (isSuperseded(error)) return null;
       setError(error instanceof Error ? error.message : 'Failed to read .gitignore');
       return null;
     }
-  }, [sendRequest, setError]);
+  }, [sendCommand, setError]);
 
   const writeGitignore = useCallback(
     async (content: string) => {
       try {
-        const message = createMessage('git:gitignore-write', { content });
-        const response = await sendRequest<GitignoreWriteResponsePayload>(message);
+        const response = await sendCommand<GitignoreWriteResponsePayload>('git:gitignore-write', { content });
         if (!response.success) {
           throw new Error(response.error || 'Failed to write .gitignore');
         }
@@ -453,7 +420,7 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         return false;
       }
     },
-    [sendRequest, fetchStatus, setError]
+    [sendCommand, fetchStatus, setError]
   );
 
   // Kick off commit-summary generation. Result + progress now flow via the
@@ -464,13 +431,16 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
   const generateCommitSummary = useCallback(
     async (context?: string, model?: ClaudeModel) => {
       try {
-        const message = createMessage('ai:generate-commit-summary', {
-          context,
-          model: model ?? selectedModel,
-          attribution: attributionEnabled,
-          source: commitSummarySource,
-        });
-        const response = await sendRequest<GenerateCommitSummaryResponsePayload>(message, 15_000);
+        const response = await sendCommand<GenerateCommitSummaryResponsePayload>(
+          'ai:generate-commit-summary',
+          {
+            context,
+            model: model ?? selectedModel,
+            attribution: attributionEnabled,
+            source: commitSummarySource,
+          },
+          15_000,
+        );
 
         if (!response.success) {
           throw new Error(response.error || 'Failed to generate summary');
@@ -493,7 +463,7 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         });
       }
     },
-    [sendRequest, selectedModel, attributionEnabled, commitSummarySource, applyCommitSummaryState]
+    [sendCommand, selectedModel, attributionEnabled, commitSummarySource, applyCommitSummaryState]
   );
 
   // Fetch the current agent-owned commit-summary state for the active repo.
@@ -502,14 +472,17 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
   const refreshCommitSummary = useCallback(
     async (repoPath?: string) => {
       try {
-        const message = createMessage('ai:commit-summary:get', repoPath ? { repoPath } : {});
-        const response = await sendRequest<GetCommitSummaryResponsePayload>(message, 10_000);
+        const response = await sendCommand<GetCommitSummaryResponsePayload>(
+          'ai:commit-summary:get',
+          repoPath ? { repoPath } : {},
+          10_000,
+        );
         applyCommitSummaryState(response.state);
       } catch {
         // Non-fatal — a stale local state just won't hydrate from the agent.
       }
     },
-    [sendRequest, applyCommitSummaryState]
+    [sendCommand, applyCommitSummaryState]
   );
 
   // Dismiss the pending AI suggestion: clear locally + tell the agent to drop
@@ -517,12 +490,11 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
   const dismissAiSummary = useCallback(async () => {
     resetAiSummaryLocal();
     try {
-      const message = createMessage('ai:commit-summary:clear', {});
-      await sendRequest<ClearCommitSummaryResponsePayload>(message, 10_000);
+      await sendCommand<ClearCommitSummaryResponsePayload>('ai:commit-summary:clear', {}, 10_000);
     } catch {
       // Non-fatal — the local state is already cleared.
     }
-  }, [sendRequest, resetAiSummaryLocal]);
+  }, [sendCommand, resetAiSummaryLocal]);
 
   // Apply the pending suggestion into the commit form, and clear the agent
   // state (it's no longer "pending" — the user used it).
@@ -530,18 +502,16 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
     const applied = applyAiSummaryLocal();
     if (!applied) return;
     try {
-      const message = createMessage('ai:commit-summary:clear', {});
-      await sendRequest<ClearCommitSummaryResponsePayload>(message, 10_000);
+      await sendCommand<ClearCommitSummaryResponsePayload>('ai:commit-summary:clear', {}, 10_000);
     } catch {
       // Non-fatal — agent will re-clear on commit anyway.
     }
-  }, [sendRequest, applyAiSummaryLocal]);
+  }, [sendCommand, applyAiSummaryLocal]);
 
   const setApiKey = useCallback(
     async (apiKey: string) => {
       try {
-        const message = createMessage('ai:set-api-key', { apiKey });
-        const response = await sendRequest<SetApiKeyResponsePayload>(message);
+        const response = await sendCommand<SetApiKeyResponsePayload>('ai:set-api-key', { apiKey });
 
         if (!response.success) {
           throw new Error(response.error || 'Failed to save API key');
@@ -554,31 +524,29 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         return false;
       }
     },
-    [sendRequest, setApiKeyConfigured, setError]
+    [sendCommand, setApiKeyConfigured, setError]
   );
 
   const checkApiKeyStatus = useCallback(async () => {
     try {
-      const message = createMessage('ai:get-api-key-status', {});
-      const response = await sendRequest<GetApiKeyStatusResponsePayload>(message);
+      const response = await sendCommand<GetApiKeyStatusResponsePayload>('ai:get-api-key-status', {});
       setApiKeyConfigured(response.configured);
     } catch {
       // Silently fail - API key status check is not critical
       setApiKeyConfigured(false);
     }
-  }, [sendRequest, setApiKeyConfigured]);
+  }, [sendCommand, setApiKeyConfigured]);
 
   const listRepos = useCallback(async () => {
     try {
-      const message = createMessage('agent:list-repos', {});
-      const response = await sendRequest<ListReposResponsePayload>(message, 5000);
+      const response = await sendCommand<ListReposResponsePayload>('agent:list-repos', {}, 5000);
       setAvailableRepos(response.repos);
       return response;
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Failed to list repos');
       return null;
     }
-  }, [sendRequest, setAvailableRepos, setError]);
+  }, [sendCommand, setAvailableRepos, setError]);
 
   const switchRepo = useCallback(
     async (path: string) => {
@@ -587,8 +555,7 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
       cancelPendingGit();
       setLoading(true);
       try {
-        const message = createMessage('agent:switch-repo', { path });
-        const response = await sendRequest<SwitchRepoResponsePayload>(message, 10000);
+        const response = await sendCommand<SwitchRepoResponsePayload>('agent:switch-repo', { path }, 10000);
         if (!response.success) {
           throw new Error(response.error || 'Failed to switch repository');
         }
@@ -608,28 +575,30 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         setLoading(false);
       }
     },
-    [sendRequest, cancelPendingGit, setRepoPath, setCurrentRepoPath, clearSelection, fetchStatus, refreshCommitSummary, setLoading, setError]
+    [sendCommand, cancelPendingGit, setRepoPath, setCurrentRepoPath, clearSelection, fetchStatus, refreshCommitSummary, setLoading, setError]
   );
 
   const browseDirectory = useCallback(
     async (path?: string) => {
       try {
-        const message = createMessage('agent:browse-directory', { path: path || '' });
-        const response = await sendRequest<BrowseDirectoryResponsePayload>(message, 10000);
+        const response = await sendCommand<BrowseDirectoryResponsePayload>(
+          'agent:browse-directory',
+          { path: path || '' },
+          10000,
+        );
         return response;
       } catch (error) {
         setError(error instanceof Error ? error.message : 'Failed to browse directory');
         return null;
       }
     },
-    [sendRequest, setError]
+    [sendCommand, setError]
   );
 
   const addRepo = useCallback(
     async (path: string): Promise<Repository | null> => {
       try {
-        const message = createMessage('agent:add-repo', { path });
-        const response = await sendRequest<AddRepoResponsePayload>(message, 10000);
+        const response = await sendCommand<AddRepoResponsePayload>('agent:add-repo', { path }, 10000);
         if (!response.success) {
           throw new Error(response.error || 'Failed to add repository');
         }
@@ -641,14 +610,13 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         return null;
       }
     },
-    [sendRequest, listRepos, setError]
+    [sendCommand, listRepos, setError]
   );
 
   const cloneRepo = useCallback(
     async (url: string, targetDir: string): Promise<Repository | null> => {
       try {
-        const message = createMessage('agent:clone-repo', { url, targetDir });
-        const response = await sendRequest<CloneRepoResponsePayload>(message, 120000);
+        const response = await sendCommand<CloneRepoResponsePayload>('agent:clone-repo', { url, targetDir }, 120000);
         if (!response.success) {
           throw new Error(response.error || 'Failed to clone repository');
         }
@@ -659,14 +627,17 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         return null;
       }
     },
-    [sendRequest, listRepos, setError]
+    [sendCommand, listRepos, setError]
   );
 
   const addCodingPath = useCallback(
     async (path: string): Promise<CodingPath | null> => {
       try {
-        const message = createMessage('agent:add-coding-path', { path });
-        const response = await sendRequest<AddCodingPathResponsePayload>(message, 10000);
+        const response = await sendCommand<AddCodingPathResponsePayload>(
+          'agent:add-coding-path',
+          { path },
+          10000,
+        );
         if (!response.success) {
           throw new Error(response.error || 'Failed to add workspace');
         }
@@ -679,14 +650,13 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         return null;
       }
     },
-    [sendRequest, setAvailableCodingPaths, availableCodingPaths, setError]
+    [sendCommand, setAvailableCodingPaths, availableCodingPaths, setError]
   );
 
   const removeRepo = useCallback(
     async (path: string): Promise<boolean> => {
       try {
-        const message = createMessage('agent:remove-repo', { path });
-        const response = await sendRequest<RemoveRepoResponsePayload>(message, 10000);
+        const response = await sendCommand<RemoveRepoResponsePayload>('agent:remove-repo', { path }, 10000);
         if (!response.success) {
           throw new Error(response.error || 'Failed to remove repository');
         }
@@ -697,14 +667,17 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         return false;
       }
     },
-    [sendRequest, listRepos, setError]
+    [sendCommand, listRepos, setError]
   );
 
   const removeCodingPath = useCallback(
     async (path: string): Promise<boolean> => {
       try {
-        const message = createMessage('agent:remove-coding-path', { path });
-        const response = await sendRequest<RemoveCodingPathResponsePayload>(message, 10000);
+        const response = await sendCommand<RemoveCodingPathResponsePayload>(
+          'agent:remove-coding-path',
+          { path },
+          10000,
+        );
         if (!response.success) {
           throw new Error(response.error || 'Failed to remove workspace');
         }
@@ -715,23 +688,21 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         return false;
       }
     },
-    [sendRequest, setAvailableCodingPaths, availableCodingPaths, setError]
+    [sendCommand, setAvailableCodingPaths, availableCodingPaths, setError]
   );
 
   const listSubmodules = useCallback(async () => {
     try {
-      const message = createMessage('git:submodules', {});
-      const response = await sendRequest<SubmodulesResponsePayload>(message, 10000);
+      const response = await sendCommand<SubmodulesResponsePayload>('git:submodules', {}, 10000);
       return response.submodules;
     } catch {
       return [];
     }
-  }, [sendRequest]);
+  }, [sendCommand]);
 
   const checkAgentUpdate = useCallback(async () => {
     try {
-      const message = createMessage('agent:check-update', {});
-      return await sendRequest<AgentCheckUpdateResponsePayload>(message, 15000);
+      return await sendCommand<AgentCheckUpdateResponsePayload>('agent:check-update', {}, 15000);
     } catch (error) {
       return {
         currentVersion: 'unknown',
@@ -739,12 +710,11 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         error: error instanceof Error ? error.message : 'Failed to check for updates',
       };
     }
-  }, [sendRequest]);
+  }, [sendCommand]);
 
   const updateAgent = useCallback(async () => {
     try {
-      const message = createMessage('agent:update', {});
-      return await sendRequest<AgentUpdateResponsePayload>(message, 180000);
+      return await sendCommand<AgentUpdateResponsePayload>('agent:update', {}, 180000);
     } catch (error) {
       return {
         success: false,
@@ -753,22 +723,24 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         error: error instanceof Error ? error.message : 'Failed to update agent',
       };
     }
-  }, [sendRequest]);
+  }, [sendCommand]);
 
   const getGitIdentity = useCallback(async () => {
     try {
-      const message = createMessage('git:config-get', {});
-      return await sendRequest<GitConfigGetResponsePayload>(message, 5000);
+      return await sendCommand<GitConfigGetResponsePayload>('git:config-get', {}, 5000);
     } catch {
       return { name: undefined, email: undefined };
     }
-  }, [sendRequest]);
+  }, [sendCommand]);
 
   const setGitIdentity = useCallback(
     async (name: string, email: string) => {
       try {
-        const message = createMessage('git:config-set', { name, email });
-        const response = await sendRequest<GitConfigSetResponsePayload>(message, 10000);
+        const response = await sendCommand<GitConfigSetResponsePayload>(
+          'git:config-set',
+          { name, email },
+          10000,
+        );
         if (!response.success) {
           throw new Error(response.error || 'Failed to set git identity');
         }
@@ -778,23 +750,21 @@ export function useGitOperations(clientRef: React.RefObject<WebSocketClient | nu
         return false;
       }
     },
-    [sendRequest, setError]
+    [sendCommand, setError]
   );
 
   const restartAgent = useCallback(async () => {
     try {
-      const message = createMessage('agent:restart', {});
-      return await sendRequest<AgentRestartResponsePayload>(message, 30000);
+      return await sendCommand<AgentRestartResponsePayload>('agent:restart', {}, 30000);
     } catch (error) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to restart agent',
       };
     }
-  }, [sendRequest]);
+  }, [sendCommand]);
 
   return {
-    handleResponse,
     cancelPendingGit,
     fetchStatus,
     fetchDiff,

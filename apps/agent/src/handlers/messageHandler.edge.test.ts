@@ -131,61 +131,10 @@ describe('MessageHandler — edge cases', () => {
   });
 
   // =========================================================================
-  // 2. Stale peer subscriptions
+  // 2. Resume on non-existent session
   // =========================================================================
 
-  describe('peer subscription lifecycle', () => {
-    it('should track subscription callbacks for claude:get-cards', async () => {
-      const subscriptions: Array<{ peer: string; sessionId: string }> = [];
-      handler.onPeerSubscribed = (peer, sessionId) => {
-        subscriptions.push({ peer, sessionId });
-      };
-
-      // Start a session
-      const startMsg = createMessage('claude:start', {
-        prompt: 'First session',
-        cwd: repoPath,
-      } as any);
-      const startResp = await handler.handleMessage(startMsg, peerA);
-      const startPayload = startResp.payload as any;
-      if (!startPayload.success) return; // skip if provider not available
-
-      const sessionIdA = startPayload.sessionId;
-      expect(subscriptions.some((s) => s.sessionId === sessionIdA && s.peer === peerA)).toBe(true);
-
-      // Get cards for the session — should trigger another subscription
-      const prevCount = subscriptions.length;
-      const getCardsMsg = createMessage('claude:get-cards', {
-        sessionId: sessionIdA,
-        cwd: repoPath,
-      } as any);
-      await handler.handleMessage(getCardsMsg, peerB);
-      expect(subscriptions.length).toBeGreaterThan(prevCount);
-      expect(subscriptions.some((s) => s.sessionId === sessionIdA && s.peer === peerB)).toBe(true);
-    });
-
-    it('should fire unsubscribe callback on claude:unsubscribe', async () => {
-      const unsubs: Array<{ peer: string; sessionId: string }> = [];
-      handler.onPeerUnsubscribed = (peer, sessionId) => {
-        unsubs.push({ peer, sessionId });
-      };
-
-      const unsubMsg = createMessage('claude:unsubscribe', {
-        sessionId: 'non-existent-session',
-      } as any);
-      const resp = await handler.handleMessage(unsubMsg, peerA);
-      expect(resp.type).toBe('claude:unsubscribe:response');
-      expect((resp.payload as any).ok).toBe(true);
-      expect(unsubs).toHaveLength(1);
-      expect(unsubs[0].sessionId).toBe('non-existent-session');
-    });
-  });
-
-  // =========================================================================
-  // 3. Message ordering — resume on streaming session
-  // =========================================================================
-
-  describe('claude:resume ordering', () => {
+  describe('claude:resume edge cases', () => {
     it('should handle resume for a non-existent session gracefully', async () => {
       const msg = createMessage('claude:resume', {
         sessionId: 'does-not-exist-000',
@@ -197,28 +146,10 @@ describe('MessageHandler — edge cases', () => {
       // Should be either a graceful error or success (cold resume creates a new session)
       expect(resp.payload).toBeDefined();
     }, 30000);
-
-    it('should subscribe peer before resumeSession resolves', async () => {
-      const subscriptions: string[] = [];
-      handler.onPeerSubscribed = (_peer, sessionId) => {
-        subscriptions.push(sessionId);
-      };
-
-      const msg = createMessage('claude:resume', {
-        sessionId: 'pre-subscribe-test',
-        prompt: 'Continue',
-        cwd: repoPath,
-      } as any);
-
-      // Even if resumeSession fails, the peer should have been subscribed
-      // BEFORE the async call (this is the documented hot-resume guarantee).
-      await handler.handleMessage(msg, peerA);
-      expect(subscriptions).toContain('pre-subscribe-test');
-    });
   });
 
   // =========================================================================
-  // 4. Error propagation
+  // 3. Error propagation
   // =========================================================================
 
   describe('error propagation', () => {

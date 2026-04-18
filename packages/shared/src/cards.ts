@@ -160,6 +160,18 @@ export interface CardHistoryResponse {
   title?: string;
 }
 
+// ── Session cards bus subscription (see /sessions/:sessionId/cards) ───────
+
+/**
+ * Update frame for the `/sessions/:sessionId/cards` message-bus path.
+ * Snapshot is `CardHistoryResponse` (offset=0 card history + pendingInput
+ * overlay + title). Updates carry either an incremental `CardEvent` or the
+ * final `CardStreamEnd` of a turn; the PWA applies them to its card store.
+ */
+export type SessionCardsUpdate =
+  | { kind: 'card'; event: CardEvent }
+  | { kind: 'stream-end'; result: CardStreamEnd };
+
 // ── Stream End ────────────────────────────────────────────────────────────
 
 export interface CardStreamEnd {

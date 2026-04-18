@@ -210,5 +210,17 @@ export class MessageBusClient {
     for (const state of this.subs.values()) {
       state.wireActive = false;
     }
+    // Reject all in-flight commands. They were sent to a peer that's no
+    // longer reachable; waiting for their timeout would surface misleading
+    // "timed out after Nms" errors to the caller. The caller can retry
+    // after reconnect if needed.
+    if (this.pending.size > 0) {
+      const stranded = Array.from(this.pending.values());
+      this.pending.clear();
+      for (const p of stranded) {
+        if (p.timer) clearTimeout(p.timer);
+        p.reject(new Error('Transport disconnected before response'));
+      }
+    }
   }
 }

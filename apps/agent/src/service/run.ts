@@ -18,6 +18,8 @@ import { spawn } from 'child_process';
 
 import { getOrCreateConfig, getManagedRepos, getManagedCodingPaths, addManagedRepo, removeManagedRepo } from '../config.js';
 import { AgentConnection } from '../connection/connection.js';
+import { BusServerTransport } from '../messageBus/busServerTransport.js';
+import { MessageBusServer } from '@sumicom/quicksave-message-bus';
 import { MessageHandler } from '../handlers/messageHandler.js';
 import { GitOperations } from '../git/operations.js';
 import { IpcServer } from './ipcServer.js';
@@ -33,7 +35,23 @@ import {
 import { writeServiceState, removeServiceState } from './stateStore.js';
 import { IPC_VERSION, BUILD_ID, isDebugEnabled, isDev } from './types.js';
 import type { ServiceState, StatusResult, PairingInfoResult, RepoInfo, DebugResult } from './types.js';
-import { createMessage, type Message, type Repository } from '@sumicom/quicksave-shared';
+import {
+  createMessage,
+  type CardEvent,
+  type CardHistoryResponse,
+  type CardStreamEnd,
+  type ClaudePreferences,
+  type CommitSummaryState,
+  type ConfigValue,
+  type Message,
+  type MessageType,
+  type Repository,
+  type SessionCardsUpdate,
+  type SessionConfigUpdatedPayload,
+  type SessionHistoryUpdatedPayload,
+  type SessionRegistryEntry,
+  type SessionUpdatePayload,
+} from '@sumicom/quicksave-shared';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { getEventStore } from '../storage/eventStore.js';
 
@@ -86,6 +104,12 @@ export async function runDaemon(): Promise<void> {
     keyPair: config.keyPair,
   });
 
+  // MessageBus lives alongside the legacy connection handlers. The adapter
+  // filters inbound messages for `type === 'bus:frame'`; everything else
+  // continues to flow through the existing MessageHandler path.
+  const busTransport = new BusServerTransport(connection);
+  const bus = new MessageBusServer(busTransport);
+
   const isProduction = !isDev();
   const messageHandler = new MessageHandler(validRepos, config.license, codingPaths, isProduction);
 
@@ -134,11 +158,74 @@ export async function runDaemon(): Promise<void> {
 
   // Pub/sub: ClaudeCodeService emits card events → send only to peers subscribed to that session
   const claudeService = messageHandler.getClaudeService();
-  claudeService.on('card-event', (event) => {
-    connection.sendToSession(event.sessionId, createMessage('claude:card-event', event));
+  const commitSummaryStore = messageHandler.getCommitSummaryStore();
+
+  // ── MessageBus subscription paths ─────────────────────────────────────────
+  // Each onSubscribe delivers the current state atomically in its `snap`
+  // frame; downstream publishes fire `upd` frames. Subscriptions survive
+  // reconnects — the client re-sends `sub` and the server re-snapshots —
+  // which eliminates the post-reconnect staleness window.
+
+  // Live active-session list. Snapshot = every active session; updates =
+  // single SessionUpdatePayload per change.
+  bus.onSubscribe<'/sessions/active', SessionUpdatePayload[], SessionUpdatePayload>(
+    '/sessions/active',
+    { snapshot: () => claudeService.snapshotActiveSessions() },
+  );
+
+  // Global user-editable preferences (model, reasoning effort).
+  bus.onSubscribe<'/preferences', ClaudePreferences, ClaudePreferences>(
+    '/preferences',
+    { snapshot: () => claudeService.getPreferences() },
+  );
+
+  // Session registry entries (historical + active). Snapshot returns every
+  // entry across all cwds; updates publish single upsert/delete events.
+  bus.onSubscribe<'/sessions/history', SessionRegistryEntry[], SessionHistoryUpdatedPayload>(
+    '/sessions/history',
+    { snapshot: () => getSessionRegistry().getEntriesForProject() },
+  );
+
+  // Per-repo AI commit-summary generation state. Snapshot = every tracked
+  // repo; updates publish one repo's state at a time.
+  bus.onSubscribe<'/repos/commit-summary', CommitSummaryState[], CommitSummaryState>(
+    '/repos/commit-summary',
+    { snapshot: () => commitSummaryStore.snapshot() },
+  );
+
+  // Per-session config, keyed by sessionId so late subscribers don't need to
+  // pre-know which ids exist.
+  bus.onSubscribe<'/sessions/config', Record<string, Record<string, ConfigValue>>, SessionConfigUpdatedPayload>(
+    '/sessions/config',
+    { snapshot: () => claudeService.getAllSessionConfigs() },
+  );
+
+  // Per-session card history + live card/stream-end stream. Snapshot = the
+  // initial `CardHistoryResponse` (offset=0, includes pendingInput overlay
+  // and title). Updates carry incremental CardEvents or CardStreamEnd.
+  bus.onSubscribe<'/sessions/:sessionId/cards', CardHistoryResponse, SessionCardsUpdate>(
+    '/sessions/:sessionId/cards',
+    {
+      snapshot: async ({ params }) => {
+        const sessionId = params.sessionId;
+        const liveCwd = claudeService.getSessionCwd(sessionId);
+        const cwd = liveCwd ?? getSessionRegistry().findBySessionId(sessionId)?.cwd ?? '';
+        return claudeService.getCards(sessionId, cwd, 0, 50);
+      },
+    },
+  );
+
+  claudeService.on('card-event', (event: CardEvent) => {
+    bus.publish<SessionCardsUpdate>(
+      `/sessions/${event.sessionId}/cards`,
+      { kind: 'card', event },
+    );
   });
-  claudeService.on('card-stream-end', (result) => {
-    const peersSent = connection.sendToSession(result.sessionId, createMessage('claude:card-stream-end', result));
+  claudeService.on('card-stream-end', (result: CardStreamEnd) => {
+    const peersSent = bus.publish<SessionCardsUpdate>(
+      `/sessions/${result.sessionId}/cards`,
+      { kind: 'stream-end', result },
+    );
 
     // Web Push trigger: session went idle while no PWA is watching. Skip when
     // the turn paused for user input — the user-input-request handler already
@@ -204,10 +291,12 @@ export async function runDaemon(): Promise<void> {
     });
   });
   claudeService.on('user-input-request', (request) => {
-    const peersSent = connection.sendToSession(request.sessionId, createMessage('claude:user-input-request', request));
-
-    // Web Push trigger: agent is blocked on user input and nobody is watching.
-    if (peersSent === 0) {
+    // The CardBuilder emits a card-event (update with pendingInput) before
+    // this fires, so any PWA subscribed to /sessions/:id/cards already sees
+    // the prompt. Here we only handle side effects: push-notify idle peers
+    // and record the permission event.
+    const watchers = bus.subscriberCount(`/sessions/${request.sessionId}/cards`);
+    if (watchers === 0) {
       const body = request.inputType === 'permission'
         ? 'Permission required to continue'
         : 'Input required to continue';
@@ -230,7 +319,9 @@ export async function runDaemon(): Promise<void> {
     });
   });
   claudeService.on('user-input-resolved', (info) => {
-    connection.sendToSession(info.sessionId, createMessage('claude:user-input-resolved', info));
+    // CardBuilder.clearPendingInput emits a card-event (update with
+    // pendingInput: undefined) before this fires, so PWA state is already
+    // reconciled via the /sessions/:id/cards subscription.
     getEventStore().record({
       type: 'permission_resolved',
       sessionId: info.sessionId,
@@ -238,22 +329,136 @@ export async function runDaemon(): Promise<void> {
     });
   });
   claudeService.on('session-updated', (info) => {
-    // session-updated goes to all peers (needed for session list status dots)
-    connection.broadcast(createMessage('claude:session-updated', info));
+    // Delivered via the bus `/sessions/active` subscription. New peers receive
+    // the full active-session list atomically in their snap frame, so no
+    // separate connect-time broadcast is needed.
+    bus.publish<SessionUpdatePayload>('/sessions/active', info);
   });
   claudeService.on('preferences-updated', (prefs) => {
-    connection.broadcast(createMessage('claude:preferences-updated', prefs));
+    bus.publish<ClaudePreferences>('/preferences', prefs);
   });
   claudeService.on('session-config-updated', (payload) => {
-    connection.broadcast(createMessage('session:config-updated', payload));
+    bus.publish<SessionConfigUpdatedPayload>('/sessions/config', payload);
   });
 
-  // Per-repo commit-summary state (agent-owned, broadcast to all peers so each
-  // PWA can mirror the pending suggestion + generation progress).
-  const commitSummaryStore = messageHandler.getCommitSummaryStore();
+  // Per-repo commit-summary state (agent-owned). Each PWA mirrors the
+  // pending suggestion + generation progress via `/repos/commit-summary`.
   commitSummaryStore.on('state-updated', (state) => {
-    connection.broadcast(createMessage('ai:commit-summary:updated', state));
+    bus.publish<CommitSummaryState>('/repos/commit-summary', state);
   });
+
+  // ── MessageBus command adapter ────────────────────────────────────────────
+  // Every request-response verb from the legacy MessageHandler is exposed as a
+  // bus command so the PWA can `bus.command(verb, payload)` instead of going
+  // through the legacy pendingRequests machinery.
+  //
+  // The adapter wraps the payload into a Message envelope, dispatches through
+  // `MessageHandler.handleMessage`, and translates the response into either a
+  // resolved payload or a rejected error. Structured errors (e.g. the
+  // REPO_MISMATCH guard on git:* requests) are encoded as `"CODE: message"` so
+  // callers can parse specific codes.
+  //
+  // `git:*` commands carry their expected repoPath through a reserved
+  // `__repoPath` payload slot — the bus protocol has no envelope-level
+  // metadata, so we smuggle it. The adapter lifts it onto `msg.repoPath` for
+  // the guard and mirrors the server's stamped repoPath back into the response
+  // payload so the PWA's scope check has the data it needs.
+  const LEGACY_BUS_VERBS: MessageType[] = [
+    'ping',
+    // git
+    'git:status',
+    'git:diff',
+    'git:stage',
+    'git:unstage',
+    'git:stage-patch',
+    'git:unstage-patch',
+    'git:commit',
+    'git:log',
+    'git:branches',
+    'git:checkout',
+    'git:discard',
+    'git:untrack',
+    'git:submodules',
+    'git:config-get',
+    'git:config-set',
+    'git:gitignore-add',
+    'git:gitignore-read',
+    'git:gitignore-write',
+    // ai
+    'ai:generate-commit-summary',
+    'ai:commit-summary:get',
+    'ai:commit-summary:clear',
+    'ai:set-api-key',
+    'ai:get-api-key-status',
+    // agent
+    'agent:list-repos',
+    'agent:switch-repo',
+    'agent:browse-directory',
+    'agent:add-repo',
+    'agent:remove-repo',
+    'agent:clone-repo',
+    'agent:list-coding-paths',
+    'agent:add-coding-path',
+    'agent:remove-coding-path',
+    'agent:check-update',
+    'agent:update',
+    'agent:restart',
+    // codex
+    'codex:list-models',
+    // claude
+    'claude:list-sessions',
+    'claude:start',
+    'claude:resume',
+    'claude:cancel',
+    'claude:close',
+    'claude:user-input-response',
+    'claude:get-preferences',
+    'claude:set-preferences',
+    'claude:set-session-permission',
+    'claude:active-sessions',
+    'claude:get-cards',
+    // session
+    'session:get-config',
+    'session:set-config',
+    'session:control-request',
+    'session:list-history',
+    'session:update-history',
+    'session:delete-history',
+    // project
+    'project:list-summaries',
+    'project:list-repos',
+    // push
+    'push:subscription-offer',
+  ];
+
+  for (const verb of LEGACY_BUS_VERBS) {
+    bus.onCommand(verb, async (rawPayload: unknown, { peer }) => {
+      let repoPath: string | undefined;
+      let payload: unknown = rawPayload;
+      if (payload && typeof payload === 'object' && '__repoPath' in payload) {
+        const obj = payload as Record<string, unknown>;
+        if (typeof obj.__repoPath === 'string') repoPath = obj.__repoPath;
+        const { __repoPath: _omit, ...rest } = obj;
+        void _omit;
+        payload = rest;
+      }
+      const msg = createMessage(verb, payload);
+      if (repoPath !== undefined) msg.repoPath = repoPath;
+      const response = await messageHandler.handleMessage(msg, peer);
+      if (response.type === 'error') {
+        const err = response.payload as { code?: string; message?: string };
+        const code = err.code ?? '';
+        const text = err.message ?? 'Handler error';
+        throw new Error(code ? `${code}: ${text}` : text);
+      }
+      if (verb.startsWith('git:') && typeof response.repoPath === 'string') {
+        // Echo the server's stamped repoPath into the data payload so the
+        // PWA can validate against its scope snapshot after the bus resolves.
+        return { ...(response.payload as object), __repoPath: response.repoPath };
+      }
+      return response.payload;
+    });
+  }
 
   // Init preferences from the last session's JSONL (best-effort, non-blocking)
   claudeService.initPreferences().catch(() => {});
@@ -261,24 +466,21 @@ export async function runDaemon(): Promise<void> {
   // Init session registry (loads all entries from disk)
   getSessionRegistry();
 
-  // Track which session each peer is viewing.
-  // Permission state is now carried directly on cards (via CardBuilder),
-  // so getCards() returns cards with pendingInput already attached.
-  // No need to re-send user-input-request on subscribe.
-  messageHandler.onPeerSubscribed = (peerAddress, sessionId) => {
-    connection.subscribePeerToSession(peerAddress, sessionId);
-  };
-
-  messageHandler.onPeerUnsubscribed = (peerAddress, sessionId) => {
-    connection.unsubscribePeerFromSession(peerAddress, sessionId);
-  };
-
+  // Per-session card stream, pendingInput overlay, and session status are all
+  // delivered via the bus (`/sessions/:id/cards` + `/sessions/active`), so the
+  // legacy per-session pubsub subscribe/unsubscribe wiring is no longer used.
   messageHandler.onHistoryUpdated = (cwd, entry, action) => {
-    connection.broadcast(createMessage('session:history-updated', { cwd, entry, action }));
+    bus.publish<SessionHistoryUpdatedPayload>('/sessions/history', { cwd, entry, action });
   };
 
-  // Wire: incoming PWA messages → MessageHandler → response back to PWA
+  // Wire: incoming PWA messages → MessageHandler → response back to PWA.
+  // Bus frames are consumed by `BusServerTransport` first (they route through
+  // `bus.onCommand` handlers or subscribe dispatchers), so skip them here to
+  // avoid producing UNKNOWN_MESSAGE_TYPE noise. Everything else — handshake,
+  // and any legacy PWA builds still sending request messages directly — still
+  // flows through the MessageHandler dispatch.
   connection.on('message', async (message: Message, peerAddress: string) => {
+    if (message.type === 'bus:frame') return;
     try {
       const response = await messageHandler.handleMessage(message, peerAddress);
       connection.send(response, peerAddress);
@@ -340,26 +542,6 @@ export async function runDaemon(): Promise<void> {
       jsonrpc: '2.0',
       method: 'event.peerConnected',
       params: { peerId: peerKey.slice(0, 12), peerCount: connection.getPeerCount() },
-    });
-
-    // Push a fresh snapshot of every active session directly to the peer.
-    // Mobile PWAs frequently drop + reconnect (app backgrounding, network
-    // flips); relying on the PWA's request/response reconcile path leaves a
-    // visible window where session badges look stale. Sending the current
-    // state here short-circuits that window without changing the PWA-side
-    // message contract.
-    //
-    // Deferred via setImmediate so the signaling `key-exchange-ack` (sent
-    // synchronously right after this emit) hits the wire first — otherwise
-    // the PWA's handleDataMessage discards our payload because it still has
-    // keyExchangeComplete=false and only accepts the ack in that state.
-    setImmediate(() => {
-      const snapshots = claudeService.snapshotActiveSessions();
-      if (snapshots.length === 0) return;
-      console.log(`[connect] pushing ${snapshots.length} session snapshot(s) to ${peerKey.slice(0, 12)}`);
-      for (const snapshot of snapshots) {
-        connection.send(createMessage('claude:session-updated', snapshot), peerAddress);
-      }
     });
   });
 

@@ -101,6 +101,15 @@ export class MessageBusServer {
     return count;
   }
 
+  /** Number of peers currently subscribed to the exact `path`. */
+  subscriberCount(path: string): number {
+    let count = 0;
+    for (const sub of this.active.values()) {
+      if (sub.path === path) count++;
+    }
+    return count;
+  }
+
   private handleFrame(peer: PeerId, frame: ClientFrame): void {
     switch (frame.kind) {
       case 'cmd':

@@ -11,6 +11,7 @@ import type {
   CardEvent,
   CardHistoryResponse,
   CardStreamEnd,
+  SessionUpdatePayload,
 } from '@sumicom/quicksave-shared';
 import {
   DEFAULT_AGENT,
@@ -199,6 +200,16 @@ export class SessionManager extends EventEmitter {
 
   getSessionConfig(sessionId: string): Record<string, ConfigValue> {
     return { ...this.sessionConfigs.get(sessionId) };
+  }
+
+  /** Snapshot of every tracked session's config. Used by the bus
+   *  `/sessions/config` subscription snapshot. */
+  getAllSessionConfigs(): Record<string, Record<string, ConfigValue>> {
+    const out: Record<string, Record<string, ConfigValue>> = {};
+    for (const [id, cfg] of this.sessionConfigs.entries()) {
+      out[id] = { ...cfg };
+    }
+    return out;
   }
 
   async setSessionConfig(sessionId: string, key: string, value: ConfigValue): Promise<Record<string, ConfigValue>> {
@@ -986,7 +997,7 @@ export class SessionManager extends EventEmitter {
    * emitting. Used by daemon-level code that wants to push a fresh snapshot to
    * a specific peer (e.g. PWA reconnect) instead of triggering a broadcast.
    */
-  buildSessionUpdatePayload(sessionId: string): Record<string, unknown> {
+  buildSessionUpdatePayload(sessionId: string): SessionUpdatePayload {
     const ps = this.sessions.get(sessionId);
     const hasPendingInput = Array.from(this.pendingInputRequests.values())
       .some(p => p.request.sessionId === sessionId);
@@ -1015,13 +1026,14 @@ export class SessionManager extends EventEmitter {
       lastTurnInputTokens: lastTurn?.inputTokens,
       lastTurnCacheCreationTokens: lastTurn?.cacheCreationTokens,
       lastTurnCacheReadTokens: lastTurn?.cacheReadTokens,
-      lastTurnContextUsage: lastTurn?.contextUsage,
+      lastTurnContextUsage: lastTurn?.contextUsage as SessionUpdatePayload['lastTurnContextUsage'],
     };
   }
 
-  /** Snapshot of every active (in-memory) session's state, in the shape the
-   *  PWA already handles via `claude:session-updated`. */
-  snapshotActiveSessions(): Record<string, unknown>[] {
+  /** Snapshot of every active (in-memory) session's state. Delivered via the
+   *  bus `/sessions/active` snap frame on subscribe; subsequent incremental
+   *  updates are published per session via the same path. */
+  snapshotActiveSessions(): SessionUpdatePayload[] {
     return Array.from(this.sessions.keys()).map((id) => this.buildSessionUpdatePayload(id));
   }
 

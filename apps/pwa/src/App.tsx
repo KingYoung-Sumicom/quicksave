@@ -8,6 +8,8 @@ import { useIdentityStore } from './stores/identityStore';
 import { useGitOperations } from './hooks/useGitOperations';
 import { useClaudeOperations } from './hooks/useClaudeOperations';
 import { WebSocketClient } from './lib/websocket';
+import { BusClientTransport } from './lib/busClientTransport';
+import { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { ConnectionSetup } from './components/ConnectionSetup';
 import { ConnectingOverlay } from './components/ConnectingOverlay';
 import { FleetStatusBar } from './components/FleetStatusBar';
@@ -19,7 +21,20 @@ import { Spinner } from './components/ui/Spinner';
 import { PathBrowser } from './components/PathBrowser';
 import { GitignoreEditor } from './components/GitignoreEditor';
 import { ClaudePanel } from './components/ClaudePanel';
-import { createMessage, type ClaudeUserInputResponsePayload, type Message, type PushSubscriptionOfferPayload } from '@sumicom/quicksave-shared';
+import {
+  type ClaudePreferences,
+  type ClaudeUserInputResponsePayload,
+  type CommitSummaryState,
+  type ConfigValue,
+  type Message,
+  type PushSubscriptionOfferPayload,
+  type SessionConfigUpdatedPayload,
+  type SessionHistoryUpdatedPayload,
+  type SessionRegistryEntry,
+  type SessionUpdatePayload,
+} from '@sumicom/quicksave-shared';
+import { applySessionUpdate } from './lib/applySessionUpdate';
+import { applyHistoryEntry, applyHistoryAction } from './lib/applyHistoryEntry';
 import { NotificationPrompt } from './components/NotificationPrompt';
 import { buildOfferMessage, getCurrentSubscription, notificationPermission } from './lib/pushSubscription';
 import { GitIdentityModal } from './components/GitIdentityModal';
@@ -40,8 +55,73 @@ import { SyncClient } from './lib/syncClient';
 import { mergeSyncPayloads, syncPayloadsEqual, type SyncPayloadV3 } from './lib/syncMerge';
 import { useMediaQuery } from './hooks/useMediaQuery';
 
+/**
+ * Subscribe the client to all agent-pushed state paths. Snapshots deliver
+ * the current value atomically on the sub frame (covering the reconnect /
+ * key-exchange race window); subsequent publishes arrive as `onUpdate`.
+ *
+ * Subscriptions are kept alive for the bus lifetime — the underlying client
+ * auto-re-sends `sub` frames on reconnect, so we don't need to re-bind here.
+ */
+function subscribeAllPaths(bus: MessageBusClient): void {
+  bus.subscribe<SessionUpdatePayload[], SessionUpdatePayload>('/sessions/active', {
+    onSnapshot: (sessions) => {
+      for (const s of sessions) applySessionUpdate(s);
+    },
+    onUpdate: (session) => applySessionUpdate(session),
+    onError: (err) => console.warn('[bus] /sessions/active error:', err),
+  });
+
+  bus.subscribe<ClaudePreferences, ClaudePreferences>('/preferences', {
+    onSnapshot: (prefs) => applyPreferencesToStore(prefs),
+    onUpdate: (prefs) => applyPreferencesToStore(prefs),
+    onError: (err) => console.warn('[bus] /preferences error:', err),
+  });
+
+  bus.subscribe<SessionRegistryEntry[], SessionHistoryUpdatedPayload>('/sessions/history', {
+    onSnapshot: (entries) => {
+      for (const entry of entries) applyHistoryEntry(entry);
+    },
+    onUpdate: (payload) => applyHistoryAction(payload),
+    onError: (err) => console.warn('[bus] /sessions/history error:', err),
+  });
+
+  bus.subscribe<CommitSummaryState[], CommitSummaryState>('/repos/commit-summary', {
+    onSnapshot: (states) => {
+      for (const state of states) applyCommitSummary(state);
+    },
+    onUpdate: (state) => applyCommitSummary(state),
+    onError: (err) => console.warn('[bus] /repos/commit-summary error:', err),
+  });
+
+  bus.subscribe<Record<string, Record<string, ConfigValue>>, SessionConfigUpdatedPayload>('/sessions/config', {
+    onSnapshot: (all) => {
+      for (const [sessionId, config] of Object.entries(all)) {
+        useClaudeStore.getState().applySessionConfig(sessionId, config);
+      }
+    },
+    onUpdate: ({ sessionId, config }) => useClaudeStore.getState().applySessionConfig(sessionId, config),
+    onError: (err) => console.warn('[bus] /sessions/config error:', err),
+  });
+}
+
+function applyPreferencesToStore(prefs: ClaudePreferences): void {
+  const { setSelectedModel, setSelectedReasoningEffort } = useClaudeStore.getState();
+  if (prefs.model !== undefined) setSelectedModel(prefs.model);
+  if (prefs.reasoningEffort !== undefined) setSelectedReasoningEffort(prefs.reasoningEffort);
+}
+
+function applyCommitSummary(state: CommitSummaryState): void {
+  // gitStore filters by currentRepoPath, so cross-repo chatter is ignored.
+  useGitStore.getState().applyCommitSummaryState(state);
+}
+
 function AppContent() {
   const clientRef = useRef<WebSocketClient | null>(null);
+  // MessageBus is the primary RPC/pubsub pipe. All commands and subscriptions
+  // flow through it; the legacy onMessage pump only forwards to the bus now.
+  const busTransportRef = useRef<BusClientTransport | null>(null);
+  const busRef = useRef<MessageBusClient | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const intentionalDisconnectRef = useRef(false);
@@ -71,7 +151,6 @@ function AppContent() {
   const agentIdRef = useRef<string | null>(null);
 
   const {
-    handleResponse,
     cancelPendingGit,
     fetchStatus,
     fetchDiff,
@@ -102,7 +181,7 @@ function AppContent() {
     checkAgentUpdate,
     updateAgent,
     restartAgent,
-  } = useGitOperations(clientRef);
+  } = useGitOperations(clientRef, busRef);
 
   /**
    * Switch the active agent and drop any in-flight git:* responses for the
@@ -116,7 +195,7 @@ function AppContent() {
   }, [cancelPendingGit]);
 
   const {
-    handleMessage: handleClaudeMessage,
+    reconcileActiveSessions,
     listSessions,
     getSessionCards,
     startSession,
@@ -131,7 +210,7 @@ function AppContent() {
     unsubscribeSession,
     listProjectSummaries,
     listProjectRepos,
-  } = useClaudeOperations(clientRef);
+  } = useClaudeOperations(busRef);
 
   const [showPathBrowser, setShowPathBrowser] = useState(false);
   const [showGitignoreEditor, setShowGitignoreEditor] = useState(false);
@@ -321,12 +400,11 @@ function AppContent() {
     navigate,
     setDisconnected,
     setReconnecting,
-    handleResponse,
-    handleClaudeMessage,
     setError,
     setConnectionStep,
     setAgentOnline,
     refreshCommitSummary,
+    reconcileActiveSessions,
     setActiveAgent,
   });
   useEffect(() => {
@@ -337,12 +415,11 @@ function AppContent() {
       navigate,
       setDisconnected,
       setReconnecting,
-      handleResponse,
-      handleClaudeMessage,
       setError,
       setConnectionStep,
       setAgentOnline,
       refreshCommitSummary,
+      reconcileActiveSessions,
       setActiveAgent,
     };
   });
@@ -360,7 +437,17 @@ function AppContent() {
     if (hmrClient) {
       // Reuse the existing connected client
       clientRef.current = hmrClient;
-      if (typeof window !== 'undefined') (window as any).__wsClient = hmrClient;
+      busTransportRef.current = new BusClientTransport(hmrClient);
+      busRef.current = new MessageBusClient(busTransportRef.current);
+      // The reused client is already past key-exchange, so mark the bus
+      // connected immediately — without this, queued commands would stall
+      // until the next onConnected (which does not fire on HMR reuse).
+      busTransportRef.current.notifyConnected();
+      subscribeAllPaths(busRef.current);
+      if (typeof window !== 'undefined') {
+        (window as any).__wsClient = hmrClient;
+        (window as any).__bus = busRef.current;
+      }
       return;
     }
 
@@ -368,6 +455,7 @@ function AppContent() {
 
     const client = new WebSocketClient(signalingServer, identityPublicKey, {
       onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences, agentVersion, latestVersion, devBuild, codexModels) => {
+        busTransportRef.current?.notifyConnected();
         agentIdRef.current = agentId;
         if (preferences) {
           useClaudeStore.getState().setSelectedModel(preferences.model);
@@ -389,8 +477,7 @@ function AppContent() {
         setTimeout(() => {
           if (!clientRef.current) return;
           handlersRef.current.setActiveAgent(agentId);
-          const msg = createMessage('claude:active-sessions', {});
-          clientRef.current.send(msg);
+          void handlersRef.current.reconcileActiveSessions();
         }, 500);
 
         // Hydrate agent-owned AI commit summary state so any in-flight or ready
@@ -421,6 +508,7 @@ function AppContent() {
         // No need to navigate on connect — the home page and project routes handle it.
       },
       onDisconnected: (disconnectedAgentId) => {
+        busTransportRef.current?.notifyDisconnected();
         if (disconnectedAgentId) {
           useConnectionStore.getState().setAgentDisconnected(disconnectedAgentId);
         }
@@ -432,10 +520,10 @@ function AppContent() {
         }
       },
       onMessage: (message) => {
-        // Try Claude push/response messages first, then git responses
-        if (!handlersRef.current.handleClaudeMessage(message)) {
-          handlersRef.current.handleResponse(message);
-        }
+        // With the command/pubsub migration complete, all responses flow
+        // through the bus. Non-bus messages (handshake, legacy push) are
+        // handled by the client itself — nothing left to route here.
+        busTransportRef.current?.notifyMessage(message);
       },
       onError: (error) => {
         // Don't show errors during intentional disconnect
@@ -449,12 +537,26 @@ function AppContent() {
       onAgentStatus: (agentId, online) => {
         handlersRef.current.setAgentOnline(online);
         useConnectionStore.getState().setAgentOnlineFor(agentId, online);
+        // Keep the bus transport's connected state in sync with the active
+        // agent's session. Without this, a command issued while the agent is
+        // offline hits a dead socket and waits out its 10–30s timeout instead
+        // of queuing for reconnect; the next onConnected (handshake:ack) will
+        // flush the queue.
+        if (!online && clientRef.current?.getActiveAgentId() === agentId) {
+          busTransportRef.current?.notifyDisconnected();
+        }
       },
     });
 
     clientRef.current = client;
+    busTransportRef.current = new BusClientTransport(client);
+    busRef.current = new MessageBusClient(busTransportRef.current);
+    subscribeAllPaths(busRef.current);
     // Debug: expose for console access
-    if (typeof window !== 'undefined') (window as any).__wsClient = client;
+    if (typeof window !== 'undefined') {
+      (window as any).__wsClient = client;
+      (window as any).__bus = busRef.current;
+    }
 
     client.connect().catch((error) => {
       console.error('Failed to connect WebSocket:', error);

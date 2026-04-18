@@ -110,9 +110,7 @@ export type MessageType =
   | 'claude:get-messages:response'
   | 'claude:stream'       // agent-push: streaming content
   | 'claude:stream:end'   // agent-push: session turn complete
-  | 'claude:user-input-request'   // agent-push: session needs user input
   | 'claude:user-input-response'  // pwa-push: user's response to input request
-  | 'claude:user-input-resolved'  // agent-push: pending input was resolved (notify other tabs)
   | 'claude:session-updated'      // agent-push: session state changed (active/streaming/pending)
   | 'claude:get-preferences'
   | 'claude:get-preferences:response'
@@ -123,13 +121,10 @@ export type MessageType =
   | 'claude:set-session-permission:response'  // agent-push: permission change applied
   | 'claude:active-sessions'                  // pwa-request: get in-memory active sessions
   | 'claude:active-sessions:response'         // agent-response: active sessions snapshot
-  // Card-based protocol (v2)
-  | 'claude:card-event'            // agent-push: card add/update/append_text
-  | 'claude:card-stream-end'       // agent-push: card streaming turn complete
-  | 'claude:get-cards'             // pwa-request: get card history
-  | 'claude:get-cards:response'    // agent-response: card history
-  | 'claude:unsubscribe'           // pwa-push: unsubscribe from session events
-  | 'claude:unsubscribe:response'  // agent-response: unsubscribe ack
+  // Card-based protocol (v2). CardEvents + CardStreamEnd are delivered via the
+  // MessageBus `/sessions/:sessionId/cards` subscription (see apps/agent/src/service/run.ts).
+  | 'claude:get-cards'             // pwa-request: get paginated card history
+  | 'claude:get-cards:response'    // agent-response: card history page
   | 'session:get-config'           // pwa-request: get session config
   | 'session:get-config:response'  // agent-response: session config
   | 'session:set-config'           // pwa-request: set a key on session config
@@ -1116,6 +1111,32 @@ export interface ContextUsageBreakdown {
   };
   /** Captured epoch ms — set by the agent when it records the turn. */
   capturedAt?: number;
+}
+
+/**
+ * Payload emitted by the agent for the `/sessions/active` bus subscription:
+ * snapshot is `SessionUpdatePayload[]`, each update is one
+ * `SessionUpdatePayload`. Fields mirror the subset of `ClaudeSessionSummary`
+ * that the PWA's session row cares about for live status.
+ */
+export interface SessionUpdatePayload {
+  sessionId: string;
+  isActive: boolean;
+  archived: boolean;
+  agent?: AgentId;
+  isStreaming: boolean;
+  hasPendingInput: boolean;
+  permissionMode?: string;
+  sandboxed?: boolean;
+  lastPromptAt?: number;
+  turnCount?: number;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  totalCostUsd?: number;
+  lastTurnInputTokens?: number;
+  lastTurnCacheCreationTokens?: number;
+  lastTurnCacheReadTokens?: number;
+  lastTurnContextUsage?: ContextUsageBreakdown;
 }
 
 // List Sessions

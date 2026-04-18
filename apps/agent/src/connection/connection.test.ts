@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
-import { sessionTopic, BROADCAST_TOPIC } from './pubsub.js';
+import { BROADCAST_TOPIC } from './pubsub.js';
 
 // ---------------------------------------------------------------------------
 // Mocks (vi.hoisted so they are available inside vi.mock factories)
@@ -264,112 +264,6 @@ describe('AgentConnection', () => {
   });
 
   // -----------------------------------------------------------------------
-  // subscribePeerToSession / unsubscribePeerFromSession
-  // -----------------------------------------------------------------------
-
-  describe('subscribePeerToSession', () => {
-    it('returns true for new subscription', async () => {
-      addPeer(conn, 'pwa:peer-aaa');
-      await flush();
-
-      const isNew = conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-      expect(isNew).toBe(true);
-    });
-
-    it('returns false for duplicate subscription', async () => {
-      addPeer(conn, 'pwa:peer-aaa');
-      await flush();
-
-      conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-      const isNew = conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-      expect(isNew).toBe(false);
-    });
-
-    it('ensures broadcast subscription is maintained', async () => {
-      addPeer(conn, 'pwa:peer-aaa');
-      await flush();
-
-      conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-      const state = conn.getDebugState();
-      expect(state.subscriptions[BROADCAST_TOPIC]).toBeDefined();
-    });
-  });
-
-  describe('unsubscribePeerFromSession', () => {
-    it('removes peer from session topic', async () => {
-      addPeer(conn, 'pwa:peer-aaa');
-      await flush();
-
-      conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-      conn.unsubscribePeerFromSession('pwa:peer-aaa', 'sess-001');
-
-      const state = conn.getDebugState();
-      const topic = sessionTopic('sess-001');
-      expect(state.subscriptions[topic]).toBeUndefined();
-    });
-
-    it('does not affect broadcast subscription', async () => {
-      addPeer(conn, 'pwa:peer-aaa');
-      await flush();
-
-      conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-      conn.unsubscribePeerFromSession('pwa:peer-aaa', 'sess-001');
-
-      const state = conn.getDebugState();
-      expect(state.subscriptions[BROADCAST_TOPIC]).toBeDefined();
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // sendToSession
-  // -----------------------------------------------------------------------
-
-  describe('sendToSession', () => {
-    it('sends only to subscribed peers', async () => {
-      addPeer(conn, 'pwa:peer-aaa');
-      addPeer(conn, 'pwa:peer-bbb');
-      await flush();
-
-      conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-      // peer-bbb is NOT subscribed to sess-001
-
-      const sig = getSignaling(conn);
-      sig.sentMessages = []; // clear ack messages
-
-      const sent = conn.sendToSession('sess-001', makeMessage());
-      expect(sent).toBe(1);
-
-      // Wait for async compression/encryption pipeline
-      await flush();
-
-      // Only peer-aaa should receive a message
-      const targets = sig.sentMessages.map((m) => m.target);
-      expect(targets).toContain('pwa:peer-aaa');
-      expect(targets).not.toContain('pwa:peer-bbb');
-    });
-
-    it('returns 0 when no peers are subscribed', async () => {
-      addPeer(conn, 'pwa:peer-aaa');
-      await flush();
-
-      const sent = conn.sendToSession('nonexistent-session', makeMessage());
-      expect(sent).toBe(0);
-    });
-
-    it('sends to multiple subscribed peers', async () => {
-      addPeer(conn, 'pwa:peer-aaa');
-      addPeer(conn, 'pwa:peer-bbb');
-      await flush();
-
-      conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-      conn.subscribePeerToSession('pwa:peer-bbb', 'sess-001');
-
-      const sent = conn.sendToSession('sess-001', makeMessage());
-      expect(sent).toBe(2);
-    });
-  });
-
-  // -----------------------------------------------------------------------
   // broadcast
   // -----------------------------------------------------------------------
 
@@ -459,8 +353,6 @@ describe('AgentConnection', () => {
       addPeer(conn, 'pwa:peer-aaa');
       await flush();
 
-      conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-
       const sig = getSignaling(conn);
       sig.emit('pwa-bye', 'pwa:peer-aaa');
 
@@ -469,7 +361,7 @@ describe('AgentConnection', () => {
 
       const state = conn.getDebugState();
       expect(state.peers).toHaveLength(0);
-      expect(state.subscriptions[sessionTopic('sess-001')]).toBeUndefined();
+      expect(state.subscriptions[BROADCAST_TOPIC] ?? []).not.toContain('pwa:peer-aaa');
     });
 
     it('emits "disconnected" event', async () => {
@@ -525,9 +417,6 @@ describe('AgentConnection', () => {
       addPeer(conn, 'pwa:peer-bbb');
       await flush();
 
-      conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-      conn.subscribePeerToSession('pwa:peer-bbb', 'sess-002');
-
       const sig = getSignaling(conn);
       sig.emit('disconnected');
 
@@ -568,16 +457,12 @@ describe('AgentConnection', () => {
       addPeer(conn, 'pwa:peer-aaa');
       await flush();
 
-      conn.subscribePeerToSession('pwa:peer-aaa', 'sess-001');
-
       const state = conn.getDebugState();
       expect(state.peers).toHaveLength(1);
       expect(state.peers[0].address).toBe('pwa:peer-aaa'.slice(0, 16));
       expect(state.peers[0].topics).toContain(BROADCAST_TOPIC);
-      expect(state.peers[0].topics).toContain(sessionTopic('sess-001'));
 
       expect(state.subscriptions[BROADCAST_TOPIC]).toBeDefined();
-      expect(state.subscriptions[sessionTopic('sess-001')]).toBeDefined();
     });
   });
 

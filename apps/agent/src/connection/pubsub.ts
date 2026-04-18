@@ -1,9 +1,11 @@
 /**
  * Topic-based pub/sub with reverse index for efficient peer cleanup.
  *
- * Topic conventions:
- *   "session:{sessionId}" — session-scoped events (cards, stream-end, user-input)
- *   "broadcast"           — global events (session-updated, preferences-updated)
+ * Only topic left after the MessageBus migration:
+ *   "broadcast" — legacy wide broadcast channel (peers auto-subscribe on key exchange).
+ *
+ * Session-scoped state (cards, stream-end, pending input) now flows through
+ * the MessageBus `/sessions/:sessionId/cards` subscription instead.
  */
 export class PubSub {
   /** topic → Set<peerAddress> */
@@ -99,11 +101,6 @@ export class PubSub {
 }
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
-
-/** Build a session topic string. */
-export function sessionTopic(sessionId: string): string {
-  return `session:${sessionId}`;
-}
 
 /** The broadcast topic — all connected peers auto-subscribe. */
 export const BROADCAST_TOPIC = 'broadcast';

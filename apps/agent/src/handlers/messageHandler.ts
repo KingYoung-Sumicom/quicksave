@@ -153,8 +153,6 @@ export class MessageHandler {
   private versionCheckInFlight: Promise<string | null> | null = null;
   private codexModelsCache: { models: CodexModelInfo[]; checkedAt: number } | null = null;
   private codexModelsCheckInFlight: Promise<CodexModelInfo[] | null> | null = null;
-  onPeerSubscribed?: (peerAddress: string, sessionId: string) => void;
-  onPeerUnsubscribed?: (peerAddress: string, sessionId: string) => void;
   onHistoryUpdated?: (cwd: string, entry: SessionRegistryEntry, action: 'upsert' | 'delete') => void;
 
   private productionBuild: boolean;
@@ -505,11 +503,6 @@ export class MessageHandler {
           return this.handleGetActiveSessions(message);
         case 'claude:get-cards':
           return this.handleClaudeGetCards(message as Message<ClaudeGetMessagesRequestPayload>, peerAddress);
-        case 'claude:unsubscribe': {
-          const unsub = message.payload as { sessionId: string };
-          this.onPeerUnsubscribed?.(peerAddress, unsub.sessionId);
-          return createMessage('claude:unsubscribe:response', { ok: true });
-        }
         case 'session:get-config':
           return this.handleGetSessionConfig(message as Message<SessionGetConfigRequestPayload>);
         case 'session:set-config':
@@ -1700,7 +1693,6 @@ export class MessageHandler {
       });
 
       console.log(`[agent:start] session created: ${sessionId} agent=${resolvedAgent ?? 'default'}`);
-      this.onPeerSubscribed?.(peerAddress, sessionId);
 
       // Register in session history
       const now = Date.now();
@@ -1756,11 +1748,6 @@ export class MessageHandler {
     const activeCfg = this.claudeService.getSessionConfig(requestedId);
     console.log(`[agent:resume] session=${requestedId} agent=${resolvedAgent ?? 'stored'} model=${(activeCfg.model as string | undefined) ?? 'default'} cwd=${cwd} prompt=${prompt.slice(0, 80)}`);
 
-    // Subscribe before resumeSession starts streaming — hot resume emits events
-    // immediately (user_message, then assistant turns), so we must be subscribed
-    // before session.send() fires, not after resumeSession() returns.
-    this.onPeerSubscribed?.(peerAddress, requestedId);
-
     try {
       const actualSessionId = await this.claudeService.resumeSession({
         sessionId: requestedId,
@@ -1771,10 +1758,6 @@ export class MessageHandler {
       });
 
       console.log(`[agent:resume] session resumed: ${actualSessionId}`);
-      // Re-subscribe with actual session ID (cold resume may return a different ID)
-      if (actualSessionId !== requestedId) {
-        this.onPeerSubscribed?.(peerAddress, actualSessionId);
-      }
 
       getEventStore().record({
         type: 'prompt_sent',
@@ -1864,7 +1847,6 @@ export class MessageHandler {
 
     try {
       const result = await this.claudeService.getCards(sessionId, cwd, offset, limit);
-      this.onPeerSubscribed?.(peerAddress, sessionId);
       const response = createMessage<CardHistoryResponse>('claude:get-cards:response', result);
       response.id = message.id;
       return response;

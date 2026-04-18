@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'events';
-import { PubSub, sessionTopic, BROADCAST_TOPIC } from '../connection/pubsub.js';
+import { PubSub, BROADCAST_TOPIC } from '../connection/pubsub.js';
 
 // ============================================================================
 // 1. PubSub subscription lost after agent relay reconnect
@@ -166,40 +166,6 @@ describe('Bug: PubSub subscription lost after relay reconnect', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     conn = new AgentConnection(makeConfig());
-  });
-
-  it('peer session subscriptions are restored after signaling disconnect + reconnect', async () => {
-    const peerAddr = 'pwa:peer-abc123';
-    const sessionId = 'session-xyz';
-
-    // Step 1: Add peer via key exchange
-    addPeer(conn, peerAddr);
-    await flush();
-    expect(conn.getPeerCount()).toBe(1);
-
-    // Step 2: Subscribe peer to a session topic
-    conn.subscribePeerToSession(peerAddr, sessionId);
-
-    // Verify subscription works — sendToSession should find the subscriber
-    const mockMessage = { id: 'msg-1', type: 'claude:card-event', payload: {}, timestamp: Date.now() };
-    const sentBefore = conn.sendToSession(sessionId, mockMessage);
-    expect(sentBefore).toBe(1);
-
-    // Step 3: Simulate signaling 'disconnected' event (WebSocket drops)
-    const sig = getSignaling(conn);
-    sig.emit('disconnected');
-    await flush();
-
-    expect(conn.getPeerCount()).toBe(0);
-
-    // Step 4: Simulate reconnect — peer does a new key exchange
-    addPeer(conn, peerAddr);
-    await flush();
-    expect(conn.getPeerCount()).toBe(1);
-
-    // Step 5: FIXED — session subscription is restored from savedPeerTopics
-    const sentAfter = conn.sendToSession(sessionId, mockMessage);
-    expect(sentAfter).toBe(1);
   });
 
   it('broadcast still works after reconnect (auto-subscribed)', async () => {
@@ -369,7 +335,7 @@ describe('PubSub topic cleanup', () => {
   });
 
   it('deletes topic from map after last subscriber unsubscribes', () => {
-    const topic = sessionTopic('sess-1');
+    const topic = 'session:sess-1';
 
     pubsub.subscribe('peer-a', topic);
     pubsub.subscribe('peer-b', topic);
@@ -391,8 +357,8 @@ describe('PubSub topic cleanup', () => {
   });
 
   it('unsubscribeAll cleans up empty topics', () => {
-    const topic1 = sessionTopic('sess-1');
-    const topic2 = sessionTopic('sess-2');
+    const topic1 = 'session:sess-1';
+    const topic2 = 'session:sess-2';
 
     // peer-a is the only subscriber to both topics
     pubsub.subscribe('peer-a', topic1);
@@ -418,7 +384,7 @@ describe('PubSub topic cleanup', () => {
   });
 
   it('unsubscribeAll does not remove topics with other subscribers', () => {
-    const topic = sessionTopic('sess-shared');
+    const topic = 'session:sess-shared';
 
     pubsub.subscribe('peer-a', topic);
     pubsub.subscribe('peer-b', topic);
@@ -439,7 +405,7 @@ describe('PubSub topic cleanup', () => {
   });
 
   it('subscribe returns true for new subscription, false for duplicate', () => {
-    const topic = sessionTopic('sess-1');
+    const topic = 'session:sess-1';
 
     const first = pubsub.subscribe('peer-a', topic);
     expect(first).toBe(true);

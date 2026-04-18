@@ -15,7 +15,7 @@ import {
   type KeyExchangeV2,
 } from '@sumicom/quicksave-shared';
 import { SignalingClient } from './relay.js';
-import { PubSub, sessionTopic, BROADCAST_TOPIC } from './pubsub.js';
+import { PubSub, BROADCAST_TOPIC } from './pubsub.js';
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
@@ -277,31 +277,6 @@ export class AgentConnection extends EventEmitter {
     return this.peers.size > 0;
   }
 
-  /**
-   * Register which session a peer is currently viewing.
-   * Returns true if this is a NEW subscription (peer was not already on this session topic).
-   */
-  subscribePeerToSession(peerAddress: string, sessionId: string): boolean {
-    const topic = sessionTopic(sessionId);
-    const isNew = this.pubsub.subscribe(peerAddress, topic);
-    if (isNew) {
-      console.log(`[sub] ${peerAddress.slice(0, 12)} → ${sessionId.slice(0, 8)}`);
-    }
-    // Ensure broadcast subscription
-    this.pubsub.subscribe(peerAddress, BROADCAST_TOPIC);
-    return isNew;
-  }
-
-  /**
-   * Remove a peer's session subscription.
-   * Called when the PWA explicitly unsubscribes from a session.
-   */
-  unsubscribePeerFromSession(peerAddress: string, sessionId: string): void {
-    const topic = sessionTopic(sessionId);
-    this.pubsub.unsubscribe(peerAddress, topic);
-    console.log(`[unsub] ${peerAddress.slice(0, 12)} x ${sessionId.slice(0, 8)}`);
-  }
-
   /** Debug snapshot of peers and pubsub state. */
   getDebugState(): { peers: Array<{ address: string; connectedAt: number; topics: string[] }>; subscriptions: Record<string, string[]> } {
     const peers = Array.from(this.peers.entries()).map(([addr, ps]) => ({
@@ -334,26 +309,6 @@ export class AgentConnection extends EventEmitter {
     }
   }
 
-  /** Send a message only to peers subscribed to a specific session. Returns number of peers sent to. */
-  sendToSession(sessionId: string, message: Message): number {
-    const topic = sessionTopic(sessionId);
-    const subscribers = this.pubsub.subscribers(topic);
-    let sent = 0;
-    for (const address of subscribers) {
-      if (this.peers.has(address)) {
-        this.send(message, address);
-        sent++;
-      }
-    }
-    if (sent === 0) {
-      const msgType = message.type;
-      const eventType = (message.payload as any)?.eventType;
-      if (eventType || msgType === 'claude:user-input-request') {
-        console.warn(`[sendToSession] NO peers for session=${sessionId.slice(0, 8)} type=${msgType} peers=${this.peers.size}`);
-      }
-    }
-    return sent;
-  }
 }
 
 /**

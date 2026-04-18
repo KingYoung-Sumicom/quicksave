@@ -93,6 +93,29 @@ describe('MessageBusClient - commands', () => {
     transport.emit({ kind: 'result', id, ok: true, data: 42 });
     await expect(promise).resolves.toBe(42);
   });
+
+  it('rejects in-flight commands when transport disconnects', async () => {
+    const promise = client.command<number>('slow', null, { timeoutMs: 60_000 });
+    expect(transport.sent).toHaveLength(1);
+    transport.setConnected(false);
+    await expect(promise).rejects.toThrow(/disconnected/i);
+  });
+
+  it('does not fire timeout timer for commands stranded by disconnect', async () => {
+    vi.useFakeTimers();
+    try {
+      const promise = client.command('slow', null, { timeoutMs: 100 });
+      transport.setConnected(false);
+      const settled = promise.catch((e) => e);
+      // The disconnect-rejection path must clear the timer so advancing past
+      // the timeout doesn't produce a second, misleading rejection.
+      vi.advanceTimersByTime(1_000);
+      const err = await settled;
+      expect(String(err)).toMatch(/disconnected/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('MessageBusClient - subscriptions', () => {

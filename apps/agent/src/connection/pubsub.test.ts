@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PubSub, sessionTopic, BROADCAST_TOPIC } from './pubsub.js';
+import { PubSub, BROADCAST_TOPIC } from './pubsub.js';
 
 describe('PubSub', () => {
   it('subscribe returns true for new, false for duplicate', () => {
@@ -83,32 +83,25 @@ describe('PubSub', () => {
     expect(ps.hasSubscribers('topicA')).toBe(false);
   });
 
-  it('multiple peers on same session topic', () => {
+  it('multiple peers on same topic', () => {
     const ps = new PubSub();
-    const topic = sessionTopic('sess-123');
-    ps.subscribe('tab1', topic);
-    ps.subscribe('tab2', topic);
+    ps.subscribe('tab1', 'custom-topic');
+    ps.subscribe('tab2', 'custom-topic');
 
-    expect(ps.subscribers(topic).size).toBe(2);
+    expect(ps.subscribers('custom-topic').size).toBe(2);
     ps.unsubscribeAll('tab1');
-    expect(ps.subscribers(topic).size).toBe(1);
-    expect(ps.subscribers(topic).has('tab2')).toBe(true);
+    expect(ps.subscribers('custom-topic').size).toBe(1);
+    expect(ps.subscribers('custom-topic').has('tab2')).toBe(true);
   });
 
-  it('peer subscribed to session + broadcast', () => {
+  it('peer subscribed to custom topic + broadcast', () => {
     const ps = new PubSub();
     ps.subscribe('peer1', BROADCAST_TOPIC);
-    ps.subscribe('peer1', sessionTopic('sess-1'));
+    ps.subscribe('peer1', 'custom-topic');
 
     expect(ps.topicsOf('peer1').size).toBe(2);
-    ps.unsubscribe('peer1', sessionTopic('sess-1'));
+    ps.unsubscribe('peer1', 'custom-topic');
     expect(ps.topicsOf('peer1').size).toBe(1);
     expect(ps.subscribers(BROADCAST_TOPIC).has('peer1')).toBe(true);
-  });
-});
-
-describe('sessionTopic', () => {
-  it('formats correctly', () => {
-    expect(sessionTopic('abc-123')).toBe('session:abc-123');
   });
 });

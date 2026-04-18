@@ -362,16 +362,6 @@ export class MockRelay {
         break;
       }
 
-      case 'claude:unsubscribe': {
-        await this.sendEncrypted(peer, {
-          id: message.id,
-          type: 'claude:unsubscribe:response',
-          payload: { success: true },
-          timestamp: Date.now(),
-        });
-        break;
-      }
-
       case 'session:get-config': {
         const configPayload = message.payload as { sessionId: string };
         await this.sendEncrypted(peer, {

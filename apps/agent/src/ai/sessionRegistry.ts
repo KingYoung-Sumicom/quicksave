@@ -83,6 +83,15 @@ export class SessionRegistry {
     return this.registry.get(cwd)?.get(sessionId);
   }
 
+  /** Scan all projects for a session by id. O(n) over projects; small registries only. */
+  findBySessionId(sessionId: string): SessionRegistryEntry | undefined {
+    for (const projectMap of this.registry.values()) {
+      const entry = projectMap.get(sessionId);
+      if (entry) return entry;
+    }
+    return undefined;
+  }
+
   getEntriesForProject(cwd?: string): SessionRegistryEntry[] {
     if (cwd) {
       const projectMap = this.registry.get(cwd);

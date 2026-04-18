@@ -54,14 +54,11 @@ interface RoutedEnvelope {
 }
 
 /** Message types that should be relayed across tabs via BroadcastChannel.
- *  Only broadcast-scoped events belong here — session-scoped events
- *  (stream, stream:end, user-input-request) are delivered directly
- *  to the subscribed peer via sendToSession on the agent side. */
-const CROSS_TAB_MESSAGE_TYPES = new Set([
-  'claude:session-updated', 'claude:preferences-updated',
-  'claude:user-input-resolved', 'session:history-updated',
-  'ai:commit-summary:updated',
-]);
+ *  All agent-push state now flows through the message-bus subscriptions,
+ *  which are per-peer (per tab) and re-sent on subscribe, so no legacy
+ *  envelope types need cross-tab fanout today. Keep the set and hooks in
+ *  place so new cross-tab broadcasts can be opted in without plumbing. */
+const CROSS_TAB_MESSAGE_TYPES = new Set<string>([]);
 
 export class WebSocketClient {
   private signalingServer: string;
