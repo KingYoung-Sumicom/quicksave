@@ -1,6 +1,6 @@
 {
   "name": "quicksave-relay",
-  "version": "0.6.4",
+  "version": "0.7.0",
   "description": "Quicksave relay server for WebSocket connection brokering",
   "type": "module",
   "main": "dist/index.js",
