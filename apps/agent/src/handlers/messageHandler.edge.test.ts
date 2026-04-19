@@ -14,6 +14,45 @@ import { simpleGit } from 'simple-git';
 import { resetSessionRegistry } from '../ai/sessionRegistry.js';
 import { setQuicksaveDir } from '../service/singleton.js';
 
+// Stub the CLI-spawning providers so edge-case tests don't fork real `claude`
+// processes. These tests exercise MessageHandler lifecycle/race logic — real
+// spawns under full-suite CPU contention made two tests marginally exceed the
+// 5s default timeout. Providers are fully exercised in their own test files.
+const makeMockSession = () => ({
+  sendUserMessage: vi.fn(),
+  interrupt: vi.fn(),
+  kill: vi.fn(),
+  alive: true,
+});
+vi.mock('../ai/claudeCodeProvider.js', () => ({
+  ClaudeCodeProvider: vi.fn().mockImplementation(() => ({
+    id: 'claude-code' as const,
+    historyMode: 'claude-jsonl' as const,
+    startSession: vi.fn().mockImplementation(async () => ({
+      sessionId: `mock-${Math.random().toString(36).slice(2, 10)}`,
+      session: makeMockSession(),
+    })),
+    resumeSession: vi.fn().mockImplementation(async (opts: { sessionId?: string }) => ({
+      sessionId: opts.sessionId ?? `mock-${Math.random().toString(36).slice(2, 10)}`,
+      session: makeMockSession(),
+    })),
+  })),
+}));
+vi.mock('../ai/codexSdkProvider.js', () => ({
+  CodexSdkProvider: vi.fn().mockImplementation(() => ({
+    id: 'codex' as const,
+    historyMode: 'memory' as const,
+    startSession: vi.fn().mockImplementation(async () => ({
+      sessionId: `mock-codex-${Math.random().toString(36).slice(2, 10)}`,
+      session: makeMockSession(),
+    })),
+    resumeSession: vi.fn().mockImplementation(async (opts: { sessionId?: string }) => ({
+      sessionId: opts.sessionId ?? `mock-codex-${Math.random().toString(36).slice(2, 10)}`,
+      session: makeMockSession(),
+    })),
+  })),
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
