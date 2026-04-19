@@ -326,7 +326,8 @@ describe('StreamCardBuilder', () => {
 
       const event = builder.clearPendingInput('req-clear') as CardUpdateEvent;
       expect(event.type).toBe('update');
-      expect(event.patch).toEqual({ pendingInput: undefined });
+      // null (not undefined) so it survives JSON.stringify across the bus.
+      expect(event.patch).toEqual({ pendingInput: null });
     });
 
     it('removes ephemeral card entirely', () => {

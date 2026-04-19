@@ -6,7 +6,7 @@
  * - Handles watch-agent → agent-status: online
  * - Performs V2 key exchange using real tweetnacl crypto
  * - Encrypts/decrypts messages with the negotiated session DEK
- * - Responds to handshake, claude:list-sessions, claude:get-cards, etc.
+ * - Responds to handshake, claude:get-cards, etc.
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
@@ -22,7 +22,6 @@ import {
 import type {
   Message,
   HandshakeAckPayload,
-  ClaudeListSessionsResponsePayload,
   ClaudeSessionSummary,
   KeyPair,
 } from '@sumicom/quicksave-shared';
@@ -66,7 +65,7 @@ export interface MockRelayOptions {
   agentId?: string;
   /** Repository path returned in handshake:ack. */
   repoPath?: string;
-  /** Sessions to return for claude:list-sessions. */
+  /** Sessions state used by the mock (returned via /sessions/history snap when wired). */
   sessions?: ClaudeSessionSummary[];
   /** Cards to return for claude:get-cards. */
   cards?: Card[];
@@ -251,19 +250,6 @@ export class MockRelay {
         break;
       }
 
-      case 'claude:list-sessions': {
-        const responsePayload: ClaudeListSessionsResponsePayload = {
-          sessions: this.sessions,
-        };
-        await this.sendEncrypted(peer, {
-          id: message.id,
-          type: 'claude:list-sessions:response',
-          payload: responsePayload,
-          timestamp: Date.now(),
-        });
-        break;
-      }
-
       case 'claude:get-cards': {
         const cardResponse: CardHistoryResponse = {
           cards: this.cards,
@@ -342,37 +328,6 @@ export class MockRelay {
         break;
       }
 
-      case 'session:list-history': {
-        await this.sendEncrypted(peer, {
-          id: message.id,
-          type: 'session:list-history:response',
-          payload: { entries: [] },
-          timestamp: Date.now(),
-        });
-        break;
-      }
-
-      case 'claude:active-sessions': {
-        await this.sendEncrypted(peer, {
-          id: message.id,
-          type: 'claude:active-sessions:response',
-          payload: { sessions: [] },
-          timestamp: Date.now(),
-        });
-        break;
-      }
-
-      case 'session:get-config': {
-        const configPayload = message.payload as { sessionId: string };
-        await this.sendEncrypted(peer, {
-          id: message.id,
-          type: 'session:get-config:response',
-          payload: { sessionId: configPayload.sessionId, config: {} },
-          timestamp: Date.now(),
-        });
-        break;
-      }
-
       case 'git:status': {
         await this.sendEncrypted(peer, {
           id: message.id,
@@ -445,7 +400,7 @@ export class MockRelay {
     }
   }
 
-  /** Update mock sessions list (affects future claude:list-sessions responses). */
+  /** Update mock sessions list (returned via /sessions/history snapshot when wired). */
   setSessions(sessions: ClaudeSessionSummary[]): void {
     this.sessions = sessions;
   }

@@ -17,7 +17,6 @@ interface ProjectDetailProps {
   isError: boolean;
   cwd: string | undefined;
   agentId: string;
-  onListSessions: (cwd?: string) => Promise<void>;
   onListProjectRepos?: (cwd: string) => Promise<ProjectRepo[] | null>;
   onRemoveCodingPath?: (path: string) => void;
   onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
@@ -29,7 +28,6 @@ export function ProjectDetail({
   isError,
   cwd,
   agentId,
-  onListSessions,
   onListProjectRepos,
   onRemoveCodingPath,
   onRestartAgent,
@@ -37,7 +35,6 @@ export function ProjectDetail({
   const navigate = useNavigate();
   const { projectId } = useParams<{ projectId: string }>();
   const sessions = useClaudeStore((s) => s.sessions);
-  const isLoadingSessions = useClaudeStore((s) => s.isLoadingSessions);
   const error = useConnectionStore((s) => s.error);
   const removeProject = useMachineStore((s) => s.removeProject);
   const [showMenu, setShowMenu] = useState(false);
@@ -51,13 +48,6 @@ export function ProjectDetail({
   const [projectRepos, setProjectRepos] = useState<ProjectRepo[]>(cachedRepos || []);
 
   const displayName = cwd?.split('/').pop() || cwd || 'Project';
-
-  // Fetch sessions when connected
-  useEffect(() => {
-    if (isReady && cwd) {
-      onListSessions(cwd);
-    }
-  }, [isReady, cwd, onListSessions]);
 
   // Fetch repos when connected
   const fetchRepos = useCallback(async () => {
@@ -192,11 +182,7 @@ export function ProjectDetail({
               </h2>
             </div>
 
-            {isLoadingSessions ? (
-              <div className="flex items-center justify-center py-8">
-                <Spinner size="w-6 h-6" color="border-blue-500" />
-              </div>
-            ) : cwdSessions.length === 0 ? (
+            {cwdSessions.length === 0 ? (
               <div className="px-4 py-6 text-center text-sm text-slate-500">
                 No sessions yet
               </div>

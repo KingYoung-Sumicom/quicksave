@@ -30,6 +30,7 @@ export function applySessionUpdate(payload: SessionUpdatePayload): void {
     current.agent === agent &&
     current.permissionMode === payload.permissionMode &&
     current.lastPromptAt === payload.lastPromptAt &&
+    current.lastTurnEndedAt === payload.lastTurnEndedAt &&
     current.turnCount === payload.turnCount &&
     current.totalInputTokens === payload.totalInputTokens &&
     current.totalOutputTokens === payload.totalOutputTokens &&
@@ -51,6 +52,7 @@ export function applySessionUpdate(payload: SessionUpdatePayload): void {
     agent,
     permissionMode: payload.permissionMode,
     lastPromptAt: payload.lastPromptAt,
+    lastTurnEndedAt: payload.lastTurnEndedAt,
     turnCount: payload.turnCount,
     totalInputTokens: payload.totalInputTokens,
     totalOutputTokens: payload.totalOutputTokens,

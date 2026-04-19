@@ -28,24 +28,31 @@ export function SessionStatsBar({
   onClear,
 }: SessionStatsBarProps) {
   const session = useClaudeStore((s) => s.sessions[sessionId]);
-  const lastPromptAt = session?.lastPromptAt;
   const lastTurnTotal = (session?.lastTurnInputTokens ?? 0)
     + (session?.lastTurnCacheCreationTokens ?? 0)
     + (session?.lastTurnCacheReadTokens ?? 0);
   const hasContextData = lastTurnTotal > 0;
   const contextTokens = session?.lastTurnContextUsage?.totalTokens ?? lastTurnTotal;
 
+  // Cache TTL is refreshed on each assistant response, so anchor on the latest
+  // of turn-end / prompt-sent rather than prompt-sent alone. Autonomous turns
+  // can run for many minutes; otherwise the countdown would expire mid-turn.
+  const cacheAnchor = Math.max(
+    session?.lastTurnEndedAt ?? 0,
+    session?.lastPromptAt ?? 0,
+  ) || undefined;
+
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!lastPromptAt) return;
+    if (!cacheAnchor) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [lastPromptAt]);
+  }, [cacheAnchor]);
 
-  const hasCountdown = typeof lastPromptAt === 'number';
+  const hasCountdown = typeof cacheAnchor === 'number';
   if (!hasContextData && !hasCountdown) return null;
 
-  const remainingMs = hasCountdown ? Math.max(0, lastPromptAt! + cacheLifetimeMs - now) : 0;
+  const remainingMs = hasCountdown ? Math.max(0, cacheAnchor! + cacheLifetimeMs - now) : 0;
   const expired = hasCountdown && remainingMs <= 0;
 
   return (

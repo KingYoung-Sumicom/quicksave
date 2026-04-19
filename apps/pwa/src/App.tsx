@@ -66,6 +66,12 @@ import { useMediaQuery } from './hooks/useMediaQuery';
 function subscribeAllPaths(bus: MessageBusClient): void {
   bus.subscribe<SessionUpdatePayload[], SessionUpdatePayload>('/sessions/active', {
     onSnapshot: (sessions) => {
+      // The snap is authoritative — it's the complete list of the agent's
+      // in-memory sessions. Any session the store has marked isActive=true
+      // that is NOT in this list must be demoted, otherwise a stale green
+      // badge survives reconnect (producing a visible "flash green then gray").
+      const liveIds = new Set(sessions.map((s) => s.sessionId));
+      useClaudeStore.getState().reconcileActiveSessions(liveIds);
       for (const s of sessions) applySessionUpdate(s);
     },
     onUpdate: (session) => applySessionUpdate(session),
@@ -165,7 +171,6 @@ function AppContent() {
     readGitignore,
     writeGitignore,
     generateCommitSummary,
-    refreshCommitSummary,
     dismissAiSummary,
     applyAiSuggestion,
     setApiKey,
@@ -195,8 +200,6 @@ function AppContent() {
   }, [cancelPendingGit]);
 
   const {
-    reconcileActiveSessions,
-    listSessions,
     getSessionCards,
     startSession,
     resumeSession,
@@ -204,7 +207,6 @@ function AppContent() {
     closeSession,
     archiveSession,
     respondToUserInput,
-    getSessionConfig,
     setSessionConfig,
     sendControlRequest,
     unsubscribeSession,
@@ -403,8 +405,6 @@ function AppContent() {
     setError,
     setConnectionStep,
     setAgentOnline,
-    refreshCommitSummary,
-    reconcileActiveSessions,
     setActiveAgent,
   });
   useEffect(() => {
@@ -418,8 +418,6 @@ function AppContent() {
       setError,
       setConnectionStep,
       setAgentOnline,
-      refreshCommitSummary,
-      reconcileActiveSessions,
       setActiveAgent,
     };
   });
@@ -471,20 +469,12 @@ function AppContent() {
         const repoPaths = availableRepos?.map((r) => r.path);
         const codingPaths = availableCodingPaths?.map((p) => p.path);
         handlersRef.current.recordConnection(agentId, path, pro, repoPaths, codingPaths);
-        // Reconcile session states: fetch actual active sessions from agent
-        // and mark locally-active sessions that are no longer active (e.g. after agent restart).
-        // This is safe on both initial connect and reconnect.
-        setTimeout(() => {
-          if (!clientRef.current) return;
-          handlersRef.current.setActiveAgent(agentId);
-          void handlersRef.current.reconcileActiveSessions();
-        }, 500);
-
-        // Hydrate agent-owned AI commit summary state so any in-flight or ready
-        // suggestion survives PWA reloads/reconnects.
-        if (path) {
-          void handlersRef.current.refreshCommitSummary(path);
-        }
+        // Session reconciliation is driven by the `/sessions/active` bus
+        // snap (in `subscribeAllPaths`): its `onSnapshot` calls
+        // `reconcileActiveSessions(liveIds)` with the authoritative live
+        // list atomically, so no delayed command-based fallback is needed.
+        // The `/repos/commit-summary` snap similarly hydrates any pending
+        // AI commit summary state.
 
         // Auto-offer push subscription: if the user has already granted
         // notification permission in a past session, re-send the offer so the
@@ -513,6 +503,11 @@ function AppContent() {
           useConnectionStore.getState().setAgentDisconnected(disconnectedAgentId);
         }
         handlersRef.current.setDisconnected();
+        // Demote any isActive=true sessions to closed. We can't trust the
+        // pre-disconnect snapshot across the blip, and letting stale green
+        // badges persist causes a "flash green then gray" on reconnect when
+        // the fresh /sessions/active snap finally corrects them.
+        useClaudeStore.getState().clearActiveOnDisconnect();
       },
       onReconnecting: (attempt, maxAttempts) => {
         if (!intentionalDisconnectRef.current) {
@@ -700,21 +695,16 @@ function AppContent() {
         fetchedSummariesRef.current.add(agentId);
         // Set active agent to route requests to this agent
         setActiveAgent(agentId);
-        listProjectSummaries().then(async (projects) => {
+        listProjectSummaries().then((projects) => {
           if (!projects) return;
           // Cache project summaries and prune stale knownCodingPaths
           const agentConn = useConnectionStore.getState().agentConnections[agentId];
           const managedPaths = agentConn?.availableCodingPaths?.map((p) => p.path);
           useMachineStore.getState().cacheAllProjects(agentId, projects, managedPaths);
-          // Fetch session lists for each project so inline sessions show on home page
-          for (const project of projects) {
-            setActiveAgent(agentId);
-            await listSessions(project.cwd);
-          }
         });
       }
     }
-  }, [agentConnections, listProjectSummaries, listSessions, setActiveAgent]);
+  }, [agentConnections, listProjectSummaries, setActiveAgent]);
 
   // Show connecting overlay only for /connect routes (QR/deep link) — not for project routes
   const showOverlay = !location.pathname.startsWith('/p/') && (
@@ -756,7 +746,6 @@ function AppContent() {
     <ProjectRouteDetail
       onConnect={handleConnect}
       onSwitchMachine={handleSwitchMachine}
-      onListSessions={listSessions}
       onListProjectRepos={listProjectRepos}
       onRemoveCodingPath={removeCodingPath}
       onRestartAgent={restartAgent}
@@ -778,9 +767,7 @@ function AppContent() {
             onCheckAgentUpdate={checkAgentUpdate}
             onUpdateAgent={updateAgent}
             onRestartAgent={restartAgent}
-            onListSessions={listSessions}
             onGetSessionCards={getSessionCards}
-            onGetSessionConfig={getSessionConfig}
             onStartSession={startSession}
             onResumeSession={resumeSession}
             onRespondToUserInput={respondToUserInput}
@@ -997,14 +984,12 @@ function ProjectRouteRepo({
 function ProjectRouteDetail({
   onConnect,
   onSwitchMachine,
-  onListSessions,
   onListProjectRepos,
   onRemoveCodingPath,
   onRestartAgent,
 }: {
   onConnect: (agentId: string, publicKey: string) => void;
   onSwitchMachine: (agentId: string) => void;
-  onListSessions: (cwd?: string) => Promise<void>;
   onListProjectRepos?: (cwd: string) => Promise<import('@sumicom/quicksave-shared').ProjectRepo[] | null>;
   onRemoveCodingPath?: (path: string) => void;
   onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
@@ -1019,7 +1004,6 @@ function ProjectRouteDetail({
       isError={isError}
       cwd={cwd}
       agentId={agentId}
-      onListSessions={onListSessions}
       onListProjectRepos={onListProjectRepos}
       onRemoveCodingPath={onRemoveCodingPath}
       onRestartAgent={onRestartAgent}
@@ -1042,9 +1026,7 @@ function ProjectRouteSession({
   onCheckAgentUpdate,
   onUpdateAgent,
   onRestartAgent,
-  onListSessions,
   onGetSessionCards,
-  onGetSessionConfig,
   onStartSession,
   onResumeSession,
   onRespondToUserInput,
@@ -1064,9 +1046,7 @@ function ProjectRouteSession({
   onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
   onUpdateAgent?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; restarting: boolean; error?: string }>;
   onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
-  onListSessions: (cwd?: string) => Promise<void>;
   onGetSessionCards: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
-  onGetSessionConfig?: (sessionId: string) => Promise<void>;
   onStartSession: (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
@@ -1123,7 +1103,6 @@ function ProjectRouteSession({
   const getSessionId = () => useClaudeStore.getState().activeSessionId || urlSessionId;
 
   // Bind cwd + agent routing into callbacks
-  const boundListSessions = useCallback(() => { ensureActiveAgent(); return onListSessions(cwd); }, [onListSessions, cwd, ensureActiveAgent]);
   const boundGetCards = useCallback(
     (sid: string, offset?: number, limit?: number) => { ensureActiveAgent(); return onGetSessionCards(sid, offset, limit, cwd); },
     [onGetSessionCards, cwd, ensureActiveAgent]
@@ -1181,7 +1160,6 @@ function ProjectRouteSession({
               setActiveSession(null);
               clearCards();
               navigate(projectBasePath, { replace: true });
-              onListSessions(cwd);
             }
           }}
           onCancelSession={() => {
@@ -1199,9 +1177,7 @@ function ProjectRouteSession({
         cwd={cwd}
         onSelectSession={(sid) => navigate(`${projectBasePath}/s/${sid}`)}
         onNewSession={() => navigate(`${projectBasePath}/s/new?new`)}
-        onListSessions={boundListSessions}
         onGetSessionCards={boundGetCards}
-        onGetSessionConfig={onGetSessionConfig}
         onSetSessionConfig={(sid, key, value) => onSetSessionConfig(sid, key, value)}
         onUnsubscribeSession={onUnsubscribeSession}
         onStartSession={boundStartSession}

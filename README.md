@@ -1,111 +1,130 @@
 # Quicksave
 
-Remote git control PWA with end-to-end encryption. Control your computer's git working tree from your phone.
+Remote-control your dev machine from a phone. Review diffs, stage, commit,
+and drive Claude Code CLI sessions — end-to-end encrypted, with a dumb
+relay in the middle that can't read your code.
 
-## Features
+## How it works
 
-- **Review changes** - View diffs on mobile
-- **Stage & unstage** - Prepare commits on the go
-- **Commit** - Write commit messages from anywhere
-- **E2E encrypted** - All data encrypted between devices
-- **Privacy first** - We can't see your code
+```
+┌────────────┐    WebSocket    ┌───────────┐    WebSocket    ┌──────────────┐
+│  PWA       │ ◄─────────────► │  Relay    │ ◄─────────────► │  Agent       │
+│ (browser)  │   (encrypted)   │ (stateless)│  (encrypted)   │ (your laptop)│
+└────────────┘                 └───────────┘                 └──────────────┘
+```
 
-## Quick Start
+- **PWA** — React app (`apps/pwa`), hosted at [quicksave.dev](https://quicksave.dev) or self-hostable.
+- **Agent** — Node.js daemon (`apps/agent`), installed globally via `npm install -g @sumicom/quicksave`. Runs git, manages Claude Code sessions, holds the NaCl keys.
+- **Relay** — Minimal Node server (`apps/relay`). Routes encrypted frames, serves an in-memory sync blob store, fans out Web Push. Never sees plaintext.
 
-### 1. Install the Desktop Agent
+All three endpoints share a small set of TypeScript packages:
+
+- [`@sumicom/quicksave-shared`](./packages/shared) — wire types, NaCl crypto, card model
+- [`@sumicom/quicksave-message-bus`](./packages/message-bus) — command + subscribe RPC over any transport
+
+## Quick start
+
+### 1. Install the agent on your dev machine
 
 ```bash
-# Install globally
 npm install -g @sumicom/quicksave
-
-# Run in your git repository
 cd /path/to/your/repo
 quicksave
 ```
 
-### 2. Connect from PWA
+This prints a pairing URL and QR code and keeps a background daemon
+running. See [`apps/agent/README.md`](./apps/agent/README.md) for the full
+CLI reference.
 
-1. Visit [quicksave.dev](https://quicksave.dev) on your phone
-2. Scan the QR code or enter connection details
-3. Start reviewing and committing!
+### 2. Connect the PWA
+
+Open [quicksave.dev](https://quicksave.dev) on your phone and scan the QR
+code. Everything from this point on is E2E encrypted.
+
+## Monorepo layout
+
+```
+apps/
+├── agent/        # Desktop daemon (npm: @sumicom/quicksave)
+├── pwa/          # React PWA
+└── relay/        # WebSocket relay server
+packages/
+├── shared/       # (npm: @sumicom/quicksave-shared)
+└── message-bus/  # (npm: @sumicom/quicksave-message-bus)
+docs/
+├── guidelines.md            # Engineering + design guidelines index
+├── guidelines/              # Individual guideline docs
+├── plans/                   # Feature / implementation plans
+├── references/              # Deep technical references (see below)
+└── relay/                   # Relay protocol & deployment docs
+```
+
+Each `apps/*` and `packages/*` has its own README with package-specific
+details.
+
+## Architecture
+
+The source-of-truth architecture document is
+[`docs/references/quicksave-architecture.md`](./docs/references/quicksave-architecture.md).
+It covers:
+
+- Session lifecycle across `SessionManager` / `ClaudeCliProvider`
+- MessageBus paths (`/sessions/active`, `/sessions/:id/cards`, `/preferences`, …)
+- End-to-end encryption and handshake flow
+- Web Push side channel
+- IPC / debug CLI
+
+> The old `ARCHITECTURE.md` at the repo root predates the current relay /
+> MessageBus design and is kept only for historical reference. Prefer the
+> doc above.
 
 ## Development
 
 ```bash
-# Install dependencies
-pnpm install
+pnpm install                  # installs everything + sets up git hooks
 
-# Build shared package
-pnpm --filter @sumicom/quicksave-shared build
-
-# Start dev server (PWA + signaling on same port)
-pnpm dev
-```
-
-This runs Vite with an embedded relay server on port 5173. Access the PWA at `http://localhost:5173/` with full HMR support.
-
-### Running Components Separately
-
-#### Relay Server (standalone)
-
-For production or testing the standalone relay server:
-
-```bash
-# Start relay server only (port 8080)
-pnpm dev:relay
-
-# Custom port
-PORT=3001 pnpm dev:relay
-```
-
-#### Agent
-
-```bash
-# Start agent pointing to local relay server
-QUICKSAVE_SIGNALING_URL=ws://localhost:8080 pnpm dev:agent -- --repo /path/to/repo
-
-# Or use the -s flag
+pnpm dev                      # vite dev server (PWA) on :5173
+pnpm dev:relay                # standalone relay on :8080
 pnpm dev:agent -- --repo /path/to/repo -s ws://localhost:8080
+
+pnpm -r test                  # run all test suites
+pnpm -r typecheck             # typecheck everything
+pnpm -r build                 # build everything
 ```
 
-#### PWA
+Per-app commands (e.g. `pnpm --filter @sumicom/quicksave test`) are
+documented in each package's README.
+
+### Self-restart during agent dev
 
 ```bash
-# Start PWA dev server (uses production signaling by default)
-pnpm dev:pwa
-
-# Or point to local relay server
-QUICKSAVE_SIGNALING_URL=ws://localhost:8080 pnpm dev:pwa
+./scripts/dev-daemon.sh            # kill + respawn daemon from source
+./scripts/dev-daemon-delayed.sh 30 # delayed variant; safe from inside a
+                                   # daemon-spawned Claude CLI
 ```
 
-## Architecture
+## Self-hosting
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed technical documentation.
+The relay and PWA are both self-hostable:
 
-## Self-Hosting
-
-Quicksave is fully self-hostable. You need two things: a relay server and a PWA build pointed at it.
-
-### 1. Deploy the Relay Server
-
-The relay server is a stateless Node.js process. Run it with Docker:
+### Relay
 
 ```bash
 docker build -f apps/relay/Dockerfile -t quicksave-relay .
 docker run -p 8080:8080 quicksave-relay
 ```
 
-Put it behind a reverse proxy (nginx, Caddy, Cloudflare) that terminates TLS — the relay itself only speaks plain HTTP/WebSocket.
+Put it behind a TLS-terminating reverse proxy. Set `VAPID_PUBLIC_KEY` /
+`VAPID_PRIVATE_KEY` to enable Web Push. See
+[`docs/relay/deployment.md`](./docs/relay/deployment.md) for the full
+checklist.
 
-### 2. Build and Deploy the PWA
-
-Point the PWA at your relay server at build time:
+### PWA
 
 ```bash
 QUICKSAVE_SIGNALING_URL=wss://your-relay.example.com pnpm build:pwa
+# deploy apps/pwa/dist/ to any static host
 ```
-
-Then deploy `apps/pwa/dist/` to any static host (Cloudflare Pages, Netlify, S3, etc.).
 
 ## License
 

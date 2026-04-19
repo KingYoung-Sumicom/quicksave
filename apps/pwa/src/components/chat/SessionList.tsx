@@ -1,27 +1,16 @@
 import type { ClaudeSessionSummary } from '@sumicom/quicksave-shared';
 import { StatusDot, sessionStatusKey } from '../SessionStatusBadge';
 import { formatRelativeTime } from '../../lib/formatRelativeTime';
-import { Spinner } from '../ui/Spinner';
 
 export function SessionList({
   sessions,
-  isLoading,
   onSelect,
   onNewSession,
 }: {
   sessions: ClaudeSessionSummary[];
-  isLoading: boolean;
   onSelect: (session: ClaudeSessionSummary) => void;
   onNewSession: () => void;
 }) {
-  if (isLoading) {
-    return (
-      <div className="flex-1 flex items-center justify-center py-12">
-        <Spinner size="w-8 h-8" color="border-blue-500" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex-1 overflow-y-auto safe-area-bottom">
       {sessions.length === 0 ? (

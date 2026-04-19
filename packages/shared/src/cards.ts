@@ -117,7 +117,14 @@ export interface CardUpdateEvent {
   streamId: string;
   sessionId: string;
   cardId: CardId;
-  /** Partial card fields to merge (only changed fields sent). */
+  /**
+   * Partial card fields to merge (only changed fields sent).
+   *
+   * Wire convention: `null` means "delete this key". JSON.stringify drops
+   * `undefined`, so we use `null` as the clear sentinel (e.g. clearing
+   * `pendingInput` after permission resolution). Receivers must delete
+   * null-valued keys after spreading the patch.
+   */
   patch: Record<string, unknown>;
 }
 

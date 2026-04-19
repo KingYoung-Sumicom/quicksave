@@ -51,7 +51,6 @@ type SessionMap = Record<string, ClaudeSessionSummary>;
 interface ClaudeStore {
   // Session list
   sessions: SessionMap;
-  isLoadingSessions: boolean;
 
   // Active session
   activeSessionId: string | null;
@@ -83,12 +82,16 @@ interface ClaudeStore {
 
   // Actions — sessions
   setSessions: (sessions: ClaudeSessionSummary[]) => void;
-  mergeSessions: (incoming: ClaudeSessionSummary[], cwd?: string) => void;
   upsertSession: (session: Partial<ClaudeSessionSummary> & { sessionId: string }) => void;
   removeSession: (sessionId: string) => void;
-  /** Reconcile session states with agent's actual active sessions after reconnect */
+  /** Demote any store-locally-active sessions whose ids are missing from
+   *  the authoritative live set. Called from the `/sessions/active` bus
+   *  snap handler, which delivers the complete in-memory list atomically. */
   reconcileActiveSessions: (activeSessionIds: Set<string>) => void;
-  setLoadingSessions: (loading: boolean) => void;
+  /** Demote every isActive=true session to closed; called on transport
+   *  disconnect so a stale green badge doesn't survive the blip. The next
+   *  /sessions/active snap on reconnect restores the truth. */
+  clearActiveOnDisconnect: () => void;
 
   // Actions — active session
   setActiveSession: (sessionId: string | null, streamId?: string | null) => void;
@@ -131,7 +134,6 @@ interface ClaudeStore {
 export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   // Initial state
   sessions: {},
-  isLoadingSessions: false,
   activeSessionId: null,
   activeStreamIds: [],
   isStreaming: false,
@@ -156,19 +158,6 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     for (const s of sessions) map[s.sessionId] = s;
     set({ sessions: map });
   },
-  mergeSessions: (incoming: ClaudeSessionSummary[], cwd?: string) =>
-    set((state) => {
-      const merged = { ...state.sessions };
-      // Remove stale sessions for this cwd (e.g. archived ones no longer returned)
-      if (cwd) {
-        const incomingIds = new Set(incoming.map(s => s.sessionId));
-        for (const [id, s] of Object.entries(merged)) {
-          if (s.cwd === cwd && !incomingIds.has(id)) delete merged[id];
-        }
-      }
-      for (const s of incoming) merged[s.sessionId] = s;
-      return { sessions: merged };
-    }),
   upsertSession: (partial) =>
     set((state) => ({
       sessions: {
@@ -193,7 +182,18 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       }
       return { sessions: updated };
     }),
-  setLoadingSessions: (loading) => set({ isLoadingSessions: loading }),
+  clearActiveOnDisconnect: () =>
+    set((state) => {
+      const updated = { ...state.sessions };
+      let changed = false;
+      for (const [id, session] of Object.entries(updated)) {
+        if (session.isActive) {
+          updated[id] = { ...session, isActive: false, isStreaming: false, hasPendingInput: false };
+          changed = true;
+        }
+      }
+      return changed ? { sessions: updated } : state;
+    }),
 
   // Active session
   setActiveSession: (sessionId, streamId = null) => {
@@ -263,9 +263,18 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         }
         case 'update': {
           return {
-            cards: state.cards.map((c) =>
-              c.id === event.cardId ? { ...c, ...event.patch } as Card : c
-            ),
+            cards: state.cards.map((c) => {
+              if (c.id !== event.cardId) return c;
+              // Wire convention: `null` in a patch means "delete this key".
+              // JSON.stringify drops `undefined`, so the agent uses `null` as
+              // the clear sentinel (e.g. clearing pendingInput on permission
+              // resolution). Strip null values after the spread.
+              const merged: Record<string, unknown> = { ...c, ...event.patch };
+              for (const [key, value] of Object.entries(event.patch)) {
+                if (value === null) delete merged[key];
+              }
+              return merged as unknown as Card;
+            }),
           };
         }
         case 'append_text': {
@@ -373,7 +382,6 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   reset: () =>
     set({
       sessions: {},
-      isLoadingSessions: false,
       activeSessionId: null,
       activeStreamIds: [],
       isStreaming: false,

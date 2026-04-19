@@ -14,7 +14,6 @@ import {
   type GitignoreReadResponsePayload,
   type GitignoreWriteResponsePayload,
   type GenerateCommitSummaryResponsePayload,
-  type GetCommitSummaryResponsePayload,
   type ClearCommitSummaryResponsePayload,
   type SetApiKeyResponsePayload,
   type GetApiKeyStatusResponsePayload,
@@ -466,25 +465,6 @@ export function useGitOperations(
     [sendCommand, selectedModel, attributionEnabled, commitSummarySource, applyCommitSummaryState]
   );
 
-  // Fetch the current agent-owned commit-summary state for the active repo.
-  // Call on initial connect and after repo switch so we hydrate any pending
-  // suggestion that was produced while this PWA was disconnected.
-  const refreshCommitSummary = useCallback(
-    async (repoPath?: string) => {
-      try {
-        const response = await sendCommand<GetCommitSummaryResponsePayload>(
-          'ai:commit-summary:get',
-          repoPath ? { repoPath } : {},
-          10_000,
-        );
-        applyCommitSummaryState(response.state);
-      } catch {
-        // Non-fatal — a stale local state just won't hydrate from the agent.
-      }
-    },
-    [sendCommand, applyCommitSummaryState]
-  );
-
   // Dismiss the pending AI suggestion: clear locally + tell the agent to drop
   // its state so other tabs/devices see the dismissal too.
   const dismissAiSummary = useCallback(async () => {
@@ -563,9 +543,6 @@ export function useGitOperations(
         setCurrentRepoPath(response.newPath);
         clearSelection();
         await fetchStatus();
-        // Hydrate any pending AI suggestion the agent may have for this repo.
-        // Non-blocking — the UI will update as soon as it arrives.
-        void refreshCommitSummary(response.newPath);
         return true;
       } catch (error) {
         if (isSuperseded(error)) return false;
@@ -575,7 +552,7 @@ export function useGitOperations(
         setLoading(false);
       }
     },
-    [sendCommand, cancelPendingGit, setRepoPath, setCurrentRepoPath, clearSelection, fetchStatus, refreshCommitSummary, setLoading, setError]
+    [sendCommand, cancelPendingGit, setRepoPath, setCurrentRepoPath, clearSelection, fetchStatus, setLoading, setError]
   );
 
   const browseDirectory = useCallback(
@@ -782,7 +759,6 @@ export function useGitOperations(
     readGitignore,
     writeGitignore,
     generateCommitSummary,
-    refreshCommitSummary,
     dismissAiSummary,
     applyAiSuggestion,
     setApiKey,

@@ -62,8 +62,6 @@ export type MessageType =
   | 'git:gitignore-write:response'
   | 'ai:generate-commit-summary'
   | 'ai:generate-commit-summary:response'
-  | 'ai:commit-summary:get'
-  | 'ai:commit-summary:get:response'
   | 'ai:commit-summary:clear'
   | 'ai:commit-summary:clear:response'
   | 'ai:commit-summary:updated'  // agent-push: per-repo commit summary state changed
@@ -96,8 +94,6 @@ export type MessageType =
   | 'agent:restart'
   | 'agent:restart:response'
   // Claude Code SDK Remote Control
-  | 'claude:list-sessions'
-  | 'claude:list-sessions:response'
   | 'claude:start'
   | 'claude:start:response'
   | 'claude:resume'
@@ -112,29 +108,21 @@ export type MessageType =
   | 'claude:stream:end'   // agent-push: session turn complete
   | 'claude:user-input-response'  // pwa-push: user's response to input request
   | 'claude:session-updated'      // agent-push: session state changed (active/streaming/pending)
-  | 'claude:get-preferences'
-  | 'claude:get-preferences:response'
   | 'claude:set-preferences'
   | 'claude:set-preferences:response'
   | 'claude:preferences-updated'  // agent-push: preferences changed, broadcast to all peers
   | 'claude:set-session-permission'           // pwa-push: change permission level for a specific session
   | 'claude:set-session-permission:response'  // agent-push: permission change applied
-  | 'claude:active-sessions'                  // pwa-request: get in-memory active sessions
-  | 'claude:active-sessions:response'         // agent-response: active sessions snapshot
   // Card-based protocol (v2). CardEvents + CardStreamEnd are delivered via the
   // MessageBus `/sessions/:sessionId/cards` subscription (see apps/agent/src/service/run.ts).
   | 'claude:get-cards'             // pwa-request: get paginated card history
   | 'claude:get-cards:response'    // agent-response: card history page
-  | 'session:get-config'           // pwa-request: get session config
-  | 'session:get-config:response'  // agent-response: session config
   | 'session:set-config'           // pwa-request: set a key on session config
   | 'session:set-config:response'  // agent-response: set-config ack with full config
   | 'session:config-updated'       // agent-push: session config changed
   | 'session:control-request'        // pwa-request: send raw control_request to CLI session
   | 'session:control-request:response' // agent-response: control response payload
   // Session registry (history)
-  | 'session:list-history'           // pwa-request: list session history
-  | 'session:list-history:response'  // agent-response: session history list
   | 'session:update-history'         // pwa-request: update session history entry
   | 'session:update-history:response' // agent-response: update ack
   | 'session:delete-history'         // pwa-request: delete session history entry
@@ -242,12 +230,6 @@ export interface ClaudePreferences {
   reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
 }
 
-export type ClaudeGetPreferencesRequestPayload = Record<string, never>;
-
-export interface ClaudeGetPreferencesResponsePayload {
-  preferences: ClaudePreferences;
-}
-
 export interface ClaudeSetPreferencesRequestPayload {
   preferences: Partial<ClaudePreferences>;
 }
@@ -307,17 +289,6 @@ export interface PushSubscriptionOfferResponsePayload {
 export type ConfigValue = string | number | boolean | null;
 
 export type AgentId = 'claude-code' | 'codex';
-
-/** PWA → Agent: get the full config for a session */
-export interface SessionGetConfigRequestPayload {
-  sessionId: string;
-}
-
-/** Agent → PWA: full session config */
-export interface SessionGetConfigResponsePayload {
-  sessionId: string;
-  config: Record<string, ConfigValue>;
-}
 
 /** PWA → Agent: set a single key on a session's config */
 export interface SessionSetConfigRequestPayload {
@@ -381,15 +352,6 @@ export interface SessionRegistryEntry {
   sandboxed?: boolean;
 }
 
-export interface SessionListHistoryRequestPayload {
-  cwd?: string;
-}
-
-export interface SessionListHistoryResponsePayload {
-  entries: SessionRegistryEntry[];
-  error?: string;
-}
-
 export interface SessionUpdateHistoryRequestPayload {
   sessionId: string;
   cwd: string;
@@ -451,22 +413,6 @@ export interface ProjectListReposRequestPayload {
 export interface ProjectListReposResponsePayload {
   repos: ProjectRepo[];
   error?: string;
-}
-
-export interface ClaudeActiveSession {
-  sessionId: string;
-  cwd: string;
-  agent?: AgentId;
-  isStreaming: boolean;
-  hasPendingInput: boolean;
-  permissionMode: string;
-  sandboxed?: boolean;
-}
-
-export type ClaudeActiveSessionsRequestPayload = Record<string, never>;
-
-export interface ClaudeActiveSessionsResponsePayload {
-  sessions: ClaudeActiveSession[];
 }
 
 // Handshake
@@ -957,8 +903,8 @@ export interface GenerateCommitSummaryResponsePayload {
 
 // Agent-owned commit summary state (one entry per repoPath). The state lives
 // on the agent so that long-running agentic generations survive PWA reloads
-// and are synced across tabs/devices. PWAs read via `ai:commit-summary:get`
-// and observe `ai:commit-summary:updated` broadcasts.
+// and are synced across tabs/devices. PWAs hydrate via the
+// `/repos/commit-summary` bus subscription (snapshot + updates).
 
 export type CommitSummaryStatus = 'idle' | 'generating' | 'ready' | 'error';
 
@@ -990,15 +936,6 @@ export interface CommitSummaryState {
   progress?: CommitSummaryProgress;
 }
 
-export interface GetCommitSummaryRequestPayload {
-  /** Optional repoPath override; defaults to the client's current repo. */
-  repoPath?: string;
-}
-
-export interface GetCommitSummaryResponsePayload {
-  state: CommitSummaryState;
-}
-
 export interface ClearCommitSummaryRequestPayload {
   repoPath?: string;
 }
@@ -1028,7 +965,7 @@ export interface GetApiKeyStatusResponsePayload {
 // Claude Code SDK Remote Control Types
 // ============================================================================
 
-// Session summary (from listSessions)
+// Session summary (delivered via `/sessions/history` + `/sessions/active` bus subs)
 export interface ClaudeSessionSummary {
   sessionId: string;
   summary: string;
@@ -1048,6 +985,12 @@ export interface ClaudeSessionSummary {
   permissionMode?: string;
   /** Epoch ms of the last `prompt_sent` event for this session. */
   lastPromptAt?: number;
+  /** Epoch ms of the last `turn_ended` event — used as the prompt-cache
+   * countdown anchor (cache TTL is refreshed on each assistant response, so
+   * this reflects the last cache write, not when the user pressed send).
+   * Autonomous turns can run for minutes; anchoring on `lastPromptAt` would
+   * expire the countdown prematurely. */
+  lastTurnEndedAt?: number;
   /** Cumulative stats derived from the event store. */
   turnCount?: number;
   totalInputTokens?: number;
@@ -1129,6 +1072,8 @@ export interface SessionUpdatePayload {
   permissionMode?: string;
   sandboxed?: boolean;
   lastPromptAt?: number;
+  /** See `ClaudeSessionSummary.lastTurnEndedAt`. */
+  lastTurnEndedAt?: number;
   turnCount?: number;
   totalInputTokens?: number;
   totalOutputTokens?: number;
@@ -1137,16 +1082,6 @@ export interface SessionUpdatePayload {
   lastTurnCacheCreationTokens?: number;
   lastTurnCacheReadTokens?: number;
   lastTurnContextUsage?: ContextUsageBreakdown;
-}
-
-// List Sessions
-export interface ClaudeListSessionsRequestPayload {
-  cwd?: string;
-}
-
-export interface ClaudeListSessionsResponsePayload {
-  sessions: ClaudeSessionSummary[];
-  error?: string;
 }
 
 // Start Session

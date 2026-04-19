@@ -7,6 +7,7 @@ export type {
   PeerId,
   ServerTransport,
 } from './transport.js';
+export { GET_SNAPSHOT_VERB } from './types.js';
 export type {
   AnyFrame,
   ClientFrame,

@@ -1,5 +1,11 @@
 import type { ClientTransport } from './transport.js';
-import type { CommandResultFrame, ServerFrame } from './types.js';
+import {
+  GET_SNAPSHOT_VERB,
+  type CommandResultFrame,
+  type ServerFrame,
+  type SnapshotFrame,
+  type UpdateFrame,
+} from './types.js';
 
 export type SubscribeCallbacks<S = unknown, U = unknown> = {
   onSnapshot: (data: S) => void;
@@ -23,6 +29,14 @@ type SubscriptionState = {
    * Re-sent on reconnect.
    */
   wireActive: boolean;
+  /**
+   * Highest per-path seq we've applied. Used to drop frames that race
+   * the initial snapshot (server's `active.set` happens before the
+   * awaited snapshot handler, so a publish during that gap can send its
+   * `upd` frame ahead of the `snap`). Reset on reconnect because the
+   * server may have restarted with a fresh counter.
+   */
+  lastSeq?: number;
 };
 
 export type CommandOptions = {
@@ -50,6 +64,21 @@ export class MessageBusClient {
     transport.onFrame((frame) => this.handleFrame(frame));
     transport.onConnected(() => this.handleConnected());
     transport.onDisconnected(() => this.handleDisconnected());
+  }
+
+  /**
+   * One-shot snapshot read for any subscribable path. Resolves with the
+   * same value the server would deliver on the `snap` frame of a
+   * `subscribe` — but without creating a subscription, so no updates
+   * follow and no `onSubscribed`/`onUnsubscribed` callbacks fire on the
+   * server. Intended for views that want a point-in-time value and don't
+   * care about live updates.
+   *
+   * Note: one-shot reads deliberately skip seq tracking; a concurrent
+   * `subscribe` on the same path manages its own seq independently.
+   */
+  getSnapshot<S = unknown>(path: string, opts: CommandOptions = {}): Promise<S> {
+    return this.command<S, { path: string }>(GET_SNAPSHOT_VERB, { path }, opts);
   }
 
   /**
@@ -154,10 +183,10 @@ export class MessageBusClient {
         this.handleResult(frame);
         return;
       case 'snap':
-        this.handleSnapshot(frame.path, frame.data);
+        this.handleSnapshot(frame);
         return;
       case 'upd':
-        this.handleUpdate(frame.path, frame.data);
+        this.handleUpdate(frame);
         return;
       case 'sub-error':
         this.handleSubError(frame.path, frame.error);
@@ -174,18 +203,40 @@ export class MessageBusClient {
     else pending.reject(new Error(frame.error));
   }
 
-  private handleSnapshot(path: string, data: unknown): void {
-    const state = this.subs.get(path);
+  private handleSnapshot(frame: SnapshotFrame): void {
+    const state = this.subs.get(frame.path);
     if (!state) return;
-    state.lastSnapshot = { data };
-    for (const cb of state.subscribers) cb.onSnapshot(data);
+    // Drop strictly-older snapshots. If seq === lastSeq we still apply so
+    // onSnapshot fires once per wire subscription; at equal seq the data
+    // is equivalent to what the raced upd delivered, so applying is a
+    // no-op-plus-callback rather than a rollback.
+    if (
+      frame.seq !== undefined &&
+      state.lastSeq !== undefined &&
+      frame.seq < state.lastSeq
+    ) {
+      return;
+    }
+    if (frame.seq !== undefined) state.lastSeq = frame.seq;
+    state.lastSnapshot = { data: frame.data };
+    for (const cb of state.subscribers) cb.onSnapshot(frame.data);
   }
 
-  private handleUpdate(path: string, data: unknown): void {
-    const state = this.subs.get(path);
+  private handleUpdate(frame: UpdateFrame): void {
+    const state = this.subs.get(frame.path);
     if (!state) return;
-    state.lastSnapshot = { data };
-    for (const cb of state.subscribers) cb.onUpdate(data);
+    // Drop updates we've already seen. Updates at `lastSeq` are redundant
+    // (already applied); strictly older are stale.
+    if (
+      frame.seq !== undefined &&
+      state.lastSeq !== undefined &&
+      frame.seq <= state.lastSeq
+    ) {
+      return;
+    }
+    if (frame.seq !== undefined) state.lastSeq = frame.seq;
+    state.lastSnapshot = { data: frame.data };
+    for (const cb of state.subscribers) cb.onUpdate(frame.data);
   }
 
   private handleSubError(path: string, error: string): void {
@@ -199,8 +250,12 @@ export class MessageBusClient {
     const pending = this.queue;
     this.queue = [];
     for (const fn of pending) fn();
-    // Re-establish wire subscriptions.
+    // Re-establish wire subscriptions. Clear lastSeq so the fresh snapshot
+    // is always accepted — the server may have restarted and reset its
+    // counter, in which case our stale lastSeq would erroneously drop
+    // everything the new server sends.
     for (const state of this.subs.values()) {
+      state.lastSeq = undefined;
       this.transport.send({ kind: 'sub', path: state.path });
       state.wireActive = true;
     }

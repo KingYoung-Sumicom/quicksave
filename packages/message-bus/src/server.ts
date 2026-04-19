@@ -5,7 +5,9 @@ import {
   type PathPattern,
 } from './path.js';
 import type { ServerTransport, PeerId } from './transport.js';
-import type { ClientFrame, PathParams } from './types.js';
+import { GET_SNAPSHOT_VERB, type ClientFrame, type PathParams } from './types.js';
+
+export { GET_SNAPSHOT_VERB };
 
 export type CommandHandler<P = unknown, R = unknown> = (
   payload: P,
@@ -55,16 +57,59 @@ export class MessageBusServer {
   private subscriptions: SubscriptionEntry[] = [];
   private active = new Map<string, ActiveSub>();
   private byPeer = new Map<PeerId, Set<string>>();
+  /**
+   * Monotonic sequence per path. Incremented on publish; read at snapshot
+   * capture time so clients can drop frames that are older than what they
+   * have already applied. This protects against a race in `handleSubscribe`
+   * where a `publish` fires during the `await` before the snapshot is sent —
+   * without seq, the late-arriving snapshot would overwrite the newer update.
+   */
+  private seqByPath = new Map<string, number>();
+
+  private nextSeq(path: string): number {
+    const next = (this.seqByPath.get(path) ?? 0) + 1;
+    this.seqByPath.set(path, next);
+    return next;
+  }
+
+  private currentSeq(path: string): number {
+    return this.seqByPath.get(path) ?? 0;
+  }
 
   constructor(private transport: ServerTransport) {
     transport.onFrame((peer, frame) => this.handleFrame(peer, frame));
     transport.onPeerDisconnected((peer) => this.handlePeerDisconnected(peer));
+    // Reserve the `$getSnapshot` verb for one-shot reads of any subscribable
+    // path. The handler reuses `sendSnapshot`-style logic but does not create
+    // an `ActiveSub`, so no `onSubscribed`/`onUnsubscribed` callbacks fire
+    // and the peer doesn't accumulate sub state for a value it only wanted
+    // to read once. Clients access this via `MessageBusClient.getSnapshot`.
+    this.commands.set(GET_SNAPSHOT_VERB, async (payload, ctx) => {
+      const { path } = (payload ?? {}) as { path?: string };
+      if (typeof path !== 'string' || !path) {
+        throw new Error(`${GET_SNAPSHOT_VERB}: missing "path"`);
+      }
+      const matched = this.findMatch(path);
+      if (!matched) {
+        throw new Error(`No subscription handler for path: ${path}`);
+      }
+      return matched.entry.handler.snapshot({
+        path,
+        params: matched.params as PathParams<string>,
+        peer: ctx.peer,
+      });
+    });
   }
 
   onCommand<P = unknown, R = unknown>(
     verb: string,
     handler: CommandHandler<P, R>,
   ): void {
+    if (verb === GET_SNAPSHOT_VERB) {
+      throw new Error(
+        `Command "${verb}" is reserved; use onSubscribe to expose a path`,
+      );
+    }
     if (this.commands.has(verb)) {
       throw new Error(`Command "${verb}" is already registered`);
     }
@@ -91,10 +136,11 @@ export class MessageBusServer {
    * Returns the number of peers that received the update.
    */
   publish<U = unknown>(path: string, data: U): number {
+    const seq = this.nextSeq(path);
     let count = 0;
     for (const sub of this.active.values()) {
       if (sub.path === path) {
-        this.transport.send(sub.peer, { kind: 'upd', path, data });
+        this.transport.send(sub.peer, { kind: 'upd', path, data, seq });
         count++;
       }
     }
@@ -212,12 +258,18 @@ export class MessageBusServer {
         `Subscription pattern "${entry.pattern.pattern}" is no longer registered`,
       );
     }
+    // Capture seq BEFORE invoking the handler. Snapshot data reflects state
+    // "as of" the moment the handler starts reading; any publish that races
+    // during the await assigns a strictly greater seq. The client uses this
+    // to drop a late-arriving snapshot whose data has already been
+    // superseded by a newer update delivered ahead of it on the wire.
+    const seq = this.currentSeq(entry.path);
     const data = await handler.snapshot({
       path: entry.path,
       params: entry.params as PathParams<string>,
       peer,
     });
-    this.transport.send(peer, { kind: 'snap', path: entry.path, data });
+    this.transport.send(peer, { kind: 'snap', path: entry.path, data, seq });
   }
 
   private handleUnsubscribe(peer: PeerId, path: string): void {

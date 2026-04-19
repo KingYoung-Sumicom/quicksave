@@ -25,12 +25,26 @@ export type SnapshotFrame = {
   kind: 'snap';
   path: string;
   data: unknown;
+  /**
+   * Monotonic per-path sequence number. Snapshot carries the seq of the
+   * latest publish at the time the snapshot data was captured; clients drop
+   * any snapshot whose seq is not newer than the last-applied frame for the
+   * same path, preventing a raced snapshot from overwriting a more-recent
+   * update. Absent on frames from legacy servers — clients fall back to the
+   * pre-seq behavior (apply unconditionally) in that case.
+   */
+  seq?: number;
 };
 
 export type UpdateFrame = {
   kind: 'upd';
   path: string;
   data: unknown;
+  /**
+   * Monotonic per-path sequence number assigned at publish time. See
+   * `SnapshotFrame.seq`. Absent on frames from legacy servers.
+   */
+  seq?: number;
 };
 
 export type SubscribeErrorFrame = {
@@ -52,6 +66,14 @@ export type ServerFrame =
   | SubscribeErrorFrame;
 
 export type AnyFrame = ClientFrame | ServerFrame;
+
+/**
+ * Reserved command verb for one-shot snapshot retrieval. Clients send
+ * `{ path }` and the server invokes the matching subscription handler's
+ * `snapshot()` without creating a subscription. Userland `onCommand`
+ * handlers cannot re-register this verb.
+ */
+export const GET_SNAPSHOT_VERB = '$getSnapshot';
 
 /** Extract `:param` names from a path pattern as a union of string literals. */
 export type PathParams<P extends string> =

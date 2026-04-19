@@ -220,3 +220,85 @@ describe('MessageBusClient - subscriptions', () => {
     expect(onUpdate2).toHaveBeenCalledWith('u');
   });
 });
+
+describe('MessageBusClient - seq ordering', () => {
+  let transport: StubClientTransport;
+  let client: MessageBusClient;
+
+  beforeEach(() => {
+    transport = new StubClientTransport();
+    client = new MessageBusClient(transport);
+  });
+
+  it('drops a raced stale snapshot whose seq is older than an already-applied update', () => {
+    // Scenario: server sub handler is awaiting snapshot data when a publish
+    // fires. The publish's `upd` (seq 5) reaches the wire first, then the
+    // snapshot (seq 4, captured before the publish). Without seq the snap
+    // would overwrite newer state on the client.
+    const onSnapshot = vi.fn();
+    const onUpdate = vi.fn();
+    client.subscribe('/x/1', { onSnapshot, onUpdate });
+    transport.emit({ kind: 'upd', path: '/x/1', data: 'new', seq: 5 });
+    transport.emit({ kind: 'snap', path: '/x/1', data: 'old', seq: 4 });
+    expect(onUpdate).toHaveBeenCalledWith('new');
+    expect(onSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('applies a snapshot whose seq equals the already-applied update (boundary case)', () => {
+    // Natural server traffic won't produce this — snapshot seq is captured
+    // before the handler, so a raced publish always has a strictly greater
+    // seq. But the client's drop rule uses `<` for snapshots (not `<=`) so
+    // that onSnapshot still fires when the server emits a matching seq.
+    const onSnapshot = vi.fn();
+    const onUpdate = vi.fn();
+    client.subscribe('/x/1', { onSnapshot, onUpdate });
+    transport.emit({ kind: 'upd', path: '/x/1', data: 'v', seq: 5 });
+    transport.emit({ kind: 'snap', path: '/x/1', data: 'v', seq: 5 });
+    expect(onUpdate).toHaveBeenCalledWith('v');
+    expect(onSnapshot).toHaveBeenCalledWith('v');
+  });
+
+  it('drops duplicate updates at the same seq', () => {
+    const onUpdate = vi.fn();
+    client.subscribe('/x/1', { onSnapshot: vi.fn(), onUpdate });
+    transport.emit({ kind: 'snap', path: '/x/1', data: 's', seq: 1 });
+    transport.emit({ kind: 'upd', path: '/x/1', data: 'u', seq: 1 });
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it('applies updates in increasing seq order', () => {
+    const onUpdate = vi.fn();
+    client.subscribe('/x/1', { onSnapshot: vi.fn(), onUpdate });
+    transport.emit({ kind: 'snap', path: '/x/1', data: 's', seq: 1 });
+    transport.emit({ kind: 'upd', path: '/x/1', data: 'a', seq: 2 });
+    transport.emit({ kind: 'upd', path: '/x/1', data: 'b', seq: 3 });
+    expect(onUpdate).toHaveBeenNthCalledWith(1, 'a');
+    expect(onUpdate).toHaveBeenNthCalledWith(2, 'b');
+  });
+
+  it('applies frames unconditionally when seq is absent (legacy-server fallback)', () => {
+    const onSnapshot = vi.fn();
+    const onUpdate = vi.fn();
+    client.subscribe('/x/1', { onSnapshot, onUpdate });
+    // No `seq` field on either frame — should behave as before (apply both).
+    transport.emit({ kind: 'upd', path: '/x/1', data: 'u' });
+    transport.emit({ kind: 'snap', path: '/x/1', data: 's' });
+    expect(onUpdate).toHaveBeenCalledWith('u');
+    expect(onSnapshot).toHaveBeenCalledWith('s');
+  });
+
+  it('resets lastSeq on reconnect so a server restart is not mistaken for stale frames', () => {
+    const onSnapshot = vi.fn();
+    const onUpdate = vi.fn();
+    client.subscribe('/x/1', { onSnapshot, onUpdate });
+    transport.emit({ kind: 'snap', path: '/x/1', data: 's1', seq: 10 });
+    expect(onSnapshot).toHaveBeenCalledWith('s1');
+
+    // Connection drops; on reconnect server restarted with fresh counter.
+    transport.setConnected(false);
+    transport.setConnected(true);
+    transport.emit({ kind: 'snap', path: '/x/1', data: 's2', seq: 1 });
+    // Without the reset, seq 1 < 10 would incorrectly drop this snapshot.
+    expect(onSnapshot).toHaveBeenCalledWith('s2');
+  });
+});

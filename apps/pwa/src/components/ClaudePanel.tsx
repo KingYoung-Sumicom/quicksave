@@ -17,9 +17,7 @@ interface ClaudePanelProps {
   sessionId?: string;
   newSession?: boolean;
   cwd?: string;
-  onListSessions: () => Promise<void>;
   onGetSessionCards: (sessionId: string, offset?: number, limit?: number) => Promise<void>;
-  onGetSessionConfig?: (sessionId: string) => Promise<void>;
   onSetSessionConfig?: (sessionId: string, key: string, value: ConfigValue) => void;
   onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string) => Promise<void>;
@@ -33,9 +31,7 @@ export function ClaudePanel({
   sessionId: urlSessionId,
   newSession,
   cwd,
-  onListSessions,
   onGetSessionCards,
-  onGetSessionConfig,
   onSetSessionConfig,
   onStartSession,
   onResumeSession,
@@ -46,7 +42,6 @@ export function ClaudePanel({
 }: ClaudePanelProps) {
   const {
     sessions,
-    isLoadingSessions,
     activeSessionId,
     isStreaming,
     streamError,
@@ -128,7 +123,6 @@ export function ClaudePanel({
     if (urlSessionId) {
       isAtBottomRef.current = true;
       onGetSessionCards(urlSessionId);
-      onGetSessionConfig?.(urlSessionId);
     }
   }, [urlSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -146,13 +140,11 @@ export function ClaudePanel({
     if (agentOnline === true && wasOnline === false) {
       console.log(`[sub:panel] agent reconnected: re-subscribe session=${urlSessionId.slice(0, 8)}`);
       onGetSessionCards(urlSessionId);
-      onGetSessionConfig?.(urlSessionId);
     }
     // Initial load: no cards yet
     if (agentOnline === true && wasOnline === null && cards.length === 0) {
       console.log(`[sub:panel] initial load: subscribe session=${urlSessionId.slice(0, 8)}`);
       onGetSessionCards(urlSessionId);
-      onGetSessionConfig?.(urlSessionId);
     }
   }, [agentOnline, connectionState]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -162,10 +154,7 @@ export function ClaudePanel({
       console.log(`[sub:panel] leaving chat view: unsub session=${activeSessionId.slice(0, 8)}`);
       onUnsubscribeSession?.(activeSessionId);
     }
-    if (!isChat) {
-      onListSessions();
-    }
-  }, [isChat, onListSessions]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isChat]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-scroll: stick to bottom unless user has scrolled up
   const isAtBottomRef = useRef(true);
@@ -456,7 +445,6 @@ export function ClaudePanel({
       ) : (
         <SessionList
           sessions={Object.values(sessions).filter((s) => s.cwd === cwd)}
-          isLoading={isLoadingSessions}
           onSelect={handleSelectSession}
           onNewSession={handleNewSession}
         />

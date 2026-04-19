@@ -344,7 +344,15 @@ export class StreamCardBuilder {
   private updateEvent(cardId: CardId, patch: Record<string, unknown>): CardUpdateEvent {
     const existing = this.cards.get(cardId);
     if (existing) {
-      Object.assign(existing, patch);
+      // Wire convention: `null` in a patch means "delete this key". JSON
+      // strips `undefined`, so it can't survive the bus transport as a clear
+      // signal — we use `null` as the sentinel and delete the key locally to
+      // keep the server-side card shape consistent with what peers see.
+      const bag = existing as unknown as Record<string, unknown>;
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === null) delete bag[key];
+        else bag[key] = value;
+      }
     }
     return { type: 'update', streamId: this.streamId, sessionId: this.sessionId, cardId, patch };
   }
@@ -469,7 +477,9 @@ export class StreamCardBuilder {
           this.ephemeralCards.delete(card.id);
           return this.removeEvent(card.id);
         }
-        return this.updateEvent(card.id, { pendingInput: undefined });
+        // `null` signals "clear" — JSON drops `undefined` so it can't cross
+        // the bus. See updateEvent() for the wire convention.
+        return this.updateEvent(card.id, { pendingInput: null });
       }
     }
     return null;

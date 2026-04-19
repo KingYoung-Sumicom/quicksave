@@ -256,8 +256,8 @@ Generation 可能跑 ~2 分鐘，state 住在 PWA 會被 reload / 換 tab 打斷
 - 每次狀態變更 emit `state-updated`；`service/run.ts` 把事件 bridge 到 `connection.broadcast('ai:commit-summary:updated', state)`，所有連線的 peer 一起同步
 - 訊息 API：
   - `ai:generate-commit-summary` — kickoff（同步回 kickoff response，後續靠 push）
-  - `ai:commit-summary:get` — PWA 重連時拉 snapshot
   - `ai:commit-summary:clear` — 使用者 dismiss 或 apply 後清掉；kill 在跑的 CLI
+  - `/repos/commit-summary` bus subscription — PWA 連線時自動拿 snapshot + 增量，重連時 bus 會自動重送 sub（取代已移除的 `ai:commit-summary:get` 命令）
   - `ai:commit-summary:updated` — agent → PWA 的 state push（列在 `CROSS_TAB_MESSAGE_TYPES`，BroadcastChannel 同裝置多 tab 共用）
 - Commit 成功後 `handleCommit` 自動呼叫 `commitSummaryStore.clear(repoPath)`（suggestion 已 stale）
 - PWA gitStore 只做 mirror：收到 `ai:commit-summary:updated` → `applyCommitSummaryState()`；使用者打的 commit draft 仍是 PWA localStorage，不進 agent
@@ -398,19 +398,20 @@ PWA↔Agent 的 session / cards / preferences 事件現在都走 MessageBus 的 
 
 | Type | 方向 | bus 對應 | 說明 |
 |---|---|---|---|
-| `claude:list-sessions` | PWA→Agent | `bus.command('claude:list-sessions', …)` | 列出歷史 sessions |
+| — | Agent→PWA push | `bus.subscribe('/sessions/history')` | 歷史 sessions 全量 snapshot + 增量更新（取代已移除的 `claude:list-sessions` 命令，避免與 `/sessions/active` 競態） |
 | `claude:start` | PWA→Agent | `bus.command('claude:start', …)` | 啟動新 session |
 | `claude:resume` | PWA→Agent | `bus.command('claude:resume', …)` | 繼續 session |
 | `claude:cancel` | PWA→Agent | `bus.command('claude:cancel', …)` | 取消 streaming |
 | `claude:close` | PWA→Agent | `bus.command('claude:close', …)` | 關閉 session |
 | `claude:get-cards` | PWA→Agent | `bus.command('claude:get-cards', …)` | 分頁讀取歷史 cards（offset>0） |
-| `claude:active-sessions` | PWA→Agent | `bus.command('claude:active-sessions', …)` | reconnect 時重建 session 狀態 |
 | `claude:user-input-response` | PWA→Agent | `bus.command('claude:user-input-response', …)` | 回應工具審批／permission |
-| `claude:set-preferences` / `claude:get-preferences` | PWA→Agent | `bus.command(…)` | 全域偏好讀寫 |
+| `claude:set-preferences` | PWA→Agent | `bus.command('claude:set-preferences', …)` | 全域偏好寫入（讀取走 `/preferences` sub） |
 | `claude:set-session-permission` | PWA→Agent | `bus.command('claude:set-session-permission', …)` | 變更 session 權限模式 |
 | — | Agent→PWA push | `bus.subscribe('/sessions/:id/cards')` → `{kind: 'card', event}` / `{kind: 'stream-end', result}` | 舊 `claude:card-event` / `claude:card-stream-end` / `claude:user-input-request` 都已改走此 path（CardBuilder 在 pendingInput overlay 內承載 input request） |
-| — | Agent→PWA push | `bus.subscribe('/sessions/active')` | 舊 `claude:session-updated` 的替代 |
-| — | Agent→PWA push | `bus.subscribe('/preferences')` | 舊 `claude:preferences-updated` 的替代 |
+| — | Agent→PWA push | `bus.subscribe('/sessions/active')` | 替代已移除的 `claude:active-sessions` 命令與 `claude:session-updated` push |
+| — | Agent→PWA push | `bus.subscribe('/preferences')` | 替代已移除的 `claude:get-preferences` 命令與 `claude:preferences-updated` push |
+| — | Agent→PWA push | `bus.subscribe('/sessions/config')` | 全部 session 的 config dict（替代已移除的 `session:get-config` 命令；一次性讀取可用 `bus.getSnapshot('/sessions/config')`） |
+| — | Agent→PWA push | `bus.subscribe('/repos/commit-summary')` | 全部 repo 的 AI commit summary state（替代已移除的 `ai:commit-summary:get` 命令） |
 | `bus:frame` | 雙向 | — | MessageBus 封包信封：payload 為 `ClientFrame` / `ServerFrame`（sub / unsub / cmd / snap / upd / result / sub-error） |
 | `push:subscription-offer` | PWA→Agent | 走舊 WS path（`connection.send`） | 多 agent routing 需要 `sendToAgent`，bus 為單 active agent |
 | `push:subscription-offer:response` | Agent→PWA | 註冊結果 `{success, error?}` |
@@ -472,13 +473,13 @@ claudeStore.ts
 
 ```typescript
 // Session 操作
-listSessions(cwd?)
 startSession(prompt, opts?)
 resumeSession(sessionId, prompt, cwd?)
 cancelSession(sessionId)
 closeSession(sessionId)
 
-// 歷史
+// 歷史（session 列表由 `/sessions/history` + `/sessions/active` bus 訂閱提供，
+// 沒有對應的 command；一次性讀取用 `bus.getSnapshot('/sessions/history')`）
 getSessionCards(sessionId, offset?, limit?, cwd?)
 
 // 輸入/審批

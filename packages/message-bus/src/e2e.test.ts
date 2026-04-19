@@ -110,6 +110,147 @@ describe('MessageBus e2e', () => {
     expect(server.publish('/x', { v: 2 })).toBe(0);
   });
 
+  it('async snapshot handler: a publish during the await cannot roll state back', async () => {
+    // Real-world shape of the bug fixed by seq numbers. The server adds the
+    // peer to its `active` map before awaiting the snapshot handler; any
+    // publish during that await sends an `upd` to the new peer and wins the
+    // race on the wire. Without seq, the late snapshot (pre-publish data)
+    // would overwrite the newer state. With seq, the client drops the stale
+    // snapshot and keeps the update.
+    const pipe = new FakePipe();
+    const server = new MessageBusServer(pipe.server);
+    let state = { v: 'initial' };
+    let resolveSnap: ((v: { v: string }) => void) | undefined;
+    server.onSubscribe('/state', {
+      snapshot: () =>
+        new Promise<{ v: string }>((resolve) => {
+          resolveSnap = resolve;
+        }),
+    });
+
+    const t = pipe.createClient();
+    const c = new MessageBusClient(t);
+    t.connect();
+    await flush();
+
+    let latest: { v: string } | undefined;
+    c.subscribe('/state', {
+      onSnapshot: (d) => {
+        latest = d as { v: string };
+      },
+      onUpdate: (d) => {
+        latest = d as { v: string };
+      },
+    });
+    // Let the server see the `sub` frame and enter the await.
+    await flush();
+
+    // A publisher mutates state and publishes while the handler is still
+    // awaiting. The upd is dispatched to the subscribed peer immediately.
+    state = { v: 'after-publish' };
+    server.publish('/state', state);
+    await flush();
+    expect(latest).toEqual({ v: 'after-publish' });
+
+    // Snapshot handler resolves with pre-publish data. The snap frame is
+    // now sent but carries an older seq — the client must drop it.
+    resolveSnap!({ v: 'initial' });
+    await flush();
+    expect(latest).toEqual({ v: 'after-publish' });
+  });
+
+  it('getSnapshot returns the current snap without creating a subscription', async () => {
+    const pipe = new FakePipe();
+    const server = new MessageBusServer(pipe.server);
+    let state = { v: 'first' };
+    const onSubscribed = vi.fn();
+    const onUnsubscribed = vi.fn();
+    server.onSubscribe('/state', {
+      snapshot: () => state,
+      onSubscribed,
+      onUnsubscribed,
+    });
+    const t = pipe.createClient();
+    const c = new MessageBusClient(t);
+    t.connect();
+    await flush();
+
+    const snap = await c.getSnapshot<{ v: string }>('/state');
+    expect(snap).toEqual({ v: 'first' });
+
+    // One-shot: no subscription registered on server.
+    expect(server.subscriberCount('/state')).toBe(0);
+    expect(onSubscribed).not.toHaveBeenCalled();
+    expect(onUnsubscribed).not.toHaveBeenCalled();
+
+    // A later publish doesn't reach the caller.
+    state = { v: 'after' };
+    expect(server.publish('/state', state)).toBe(0);
+
+    // Subsequent reads reflect current state.
+    const snap2 = await c.getSnapshot<{ v: string }>('/state');
+    expect(snap2).toEqual({ v: 'after' });
+  });
+
+  it('getSnapshot with path params resolves via pattern match', async () => {
+    const pipe = new FakePipe();
+    const server = new MessageBusServer(pipe.server);
+    const store = new Map<string, { value: number }>([
+      ['a', { value: 10 }],
+      ['b', { value: 20 }],
+    ]);
+    server.onSubscribe<'/items/:id', { value: number }>('/items/:id', {
+      snapshot: ({ params }) => store.get(params.id) ?? { value: -1 },
+    });
+    const t = pipe.createClient();
+    const c = new MessageBusClient(t);
+    t.connect();
+    await flush();
+
+    expect(await c.getSnapshot<{ value: number }>('/items/a')).toEqual({ value: 10 });
+    expect(await c.getSnapshot<{ value: number }>('/items/b')).toEqual({ value: 20 });
+  });
+
+  it('getSnapshot rejects when no handler matches the path', async () => {
+    const pipe = new FakePipe();
+    const server = new MessageBusServer(pipe.server);
+    server.onSubscribe('/known', { snapshot: () => ({}) });
+    const t = pipe.createClient();
+    const c = new MessageBusClient(t);
+    t.connect();
+    await flush();
+
+    await expect(c.getSnapshot('/unknown')).rejects.toThrow(
+      /No subscription handler for path/,
+    );
+  });
+
+  it('getSnapshot and subscribe on the same path are independent', async () => {
+    const pipe = new FakePipe();
+    const server = new MessageBusServer(pipe.server);
+    server.onSubscribe('/state', { snapshot: () => ({ v: 'live' }) });
+    const t = pipe.createClient();
+    const c = new MessageBusClient(t);
+    t.connect();
+    await flush();
+
+    const onSnap = vi.fn();
+    const onUpd = vi.fn();
+    c.subscribe('/state', { onSnapshot: onSnap, onUpdate: onUpd });
+    await flush();
+    expect(onSnap).toHaveBeenCalledTimes(1);
+
+    // A one-shot read does not fire the subscription's callbacks.
+    await c.getSnapshot('/state');
+    expect(onSnap).toHaveBeenCalledTimes(1);
+    expect(onUpd).toHaveBeenCalledTimes(0);
+
+    // The subscription still receives live updates.
+    server.publish('/state', { v: 'next' });
+    await flush();
+    expect(onUpd).toHaveBeenCalledWith({ v: 'next' });
+  });
+
   it('subscription snapshot is delivered atomically (no update lost between sub and snap)', async () => {
     // This is the central race the library is designed to prevent.
     // On subscribe: snapshot is sent before any subsequent publish can reach

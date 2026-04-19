@@ -89,6 +89,80 @@ describe('MessageBusServer - commands', () => {
     server.onCommand('once', () => 'ok');
     expect(() => server.onCommand('once', () => 'ok')).toThrow();
   });
+
+  it('rejects registering the reserved $getSnapshot verb', () => {
+    expect(() => server.onCommand('$getSnapshot', () => 'ok')).toThrow(
+      /reserved/,
+    );
+  });
+
+  it('responds to $getSnapshot by invoking the matching subscription handler', async () => {
+    server.onSubscribe<'/items/:id', { value: number }>('/items/:id', {
+      snapshot: ({ params }) => ({ value: Number(params.id) * 10 }),
+    });
+    transport.emitFrame('peer1', {
+      kind: 'cmd',
+      id: 'g1',
+      verb: '$getSnapshot',
+      payload: { path: '/items/7' },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(transport.lastSent()).toEqual({
+      peer: 'peer1',
+      frame: { kind: 'result', id: 'g1', ok: true, data: { value: 70 } },
+    });
+  });
+
+  it('$getSnapshot does not create an active subscription', async () => {
+    const onSubscribed = vi.fn();
+    const onUnsubscribed = vi.fn();
+    server.onSubscribe('/state', {
+      snapshot: () => ({ v: 1 }),
+      onSubscribed,
+      onUnsubscribed,
+    });
+    transport.emitFrame('peer1', {
+      kind: 'cmd',
+      id: 'g1',
+      verb: '$getSnapshot',
+      payload: { path: '/state' },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(server.subscriberCount('/state')).toBe(0);
+    expect(onSubscribed).not.toHaveBeenCalled();
+    // Publish after the one-shot read reaches no one.
+    expect(server.publish('/state', { v: 2 })).toBe(0);
+    transport.emitDisconnect('peer1');
+    expect(onUnsubscribed).not.toHaveBeenCalled();
+  });
+
+  it('$getSnapshot errors when no subscription handler matches', async () => {
+    transport.emitFrame('peer1', {
+      kind: 'cmd',
+      id: 'g1',
+      verb: '$getSnapshot',
+      payload: { path: '/unknown' },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(transport.lastSent()?.frame).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('No subscription handler'),
+    });
+  });
+
+  it('$getSnapshot errors when payload is missing path', async () => {
+    transport.emitFrame('peer1', {
+      kind: 'cmd',
+      id: 'g1',
+      verb: '$getSnapshot',
+      payload: {},
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(transport.lastSent()?.frame).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('missing "path"'),
+    });
+  });
 });
 
 describe('MessageBusServer - subscriptions', () => {
@@ -109,14 +183,14 @@ describe('MessageBusServer - subscriptions', () => {
     );
     transport.emitFrame('peer1', { kind: 'sub', path: '/sessions/abc' });
     await new Promise((r) => setImmediate(r));
-    expect(transport.lastSent()).toEqual({
+    expect(transport.lastSent()).toMatchObject({
       peer: 'peer1',
       frame: { kind: 'snap', path: '/sessions/abc', data: { id: 'abc' } },
     });
 
     const count = server.publish('/sessions/abc', { delta: 1 });
     expect(count).toBe(1);
-    expect(transport.lastSent()).toEqual({
+    expect(transport.lastSent()).toMatchObject({
       peer: 'peer1',
       frame: { kind: 'upd', path: '/sessions/abc', data: { delta: 1 } },
     });
@@ -211,5 +285,87 @@ describe('MessageBusServer - subscriptions', () => {
       error: 'snap failed',
     });
     expect(server.publish('/x/1', 'hi')).toBe(0);
+  });
+});
+
+describe('MessageBusServer - per-path seq numbers', () => {
+  let transport: StubTransport;
+  let server: MessageBusServer;
+
+  beforeEach(() => {
+    transport = new StubTransport();
+    server = new MessageBusServer(transport);
+  });
+
+  it('assigns monotonically increasing seq per path on publish', async () => {
+    server.onSubscribe('/x/:id', { snapshot: () => null });
+    transport.emitFrame('peer1', { kind: 'sub', path: '/x/1' });
+    await new Promise((r) => setImmediate(r));
+    server.publish('/x/1', 'a');
+    server.publish('/x/1', 'b');
+    server.publish('/x/1', 'c');
+    const updates = transport.sent.filter(
+      (s) => (s.frame as { kind: string }).kind === 'upd',
+    );
+    expect(updates.map((s) => (s.frame as { seq: number }).seq)).toEqual([1, 2, 3]);
+  });
+
+  it('maintains an independent counter per path', async () => {
+    server.onSubscribe('/x/:id', { snapshot: () => null });
+    transport.emitFrame('peer1', { kind: 'sub', path: '/x/1' });
+    transport.emitFrame('peer1', { kind: 'sub', path: '/x/2' });
+    await new Promise((r) => setImmediate(r));
+    server.publish('/x/1', 'a');
+    server.publish('/x/2', 'b');
+    server.publish('/x/1', 'c');
+    const by = (path: string) =>
+      transport.sent
+        .filter(
+          (s) =>
+            (s.frame as { kind: string }).kind === 'upd' &&
+            (s.frame as { path: string }).path === path,
+        )
+        .map((s) => (s.frame as { seq: number }).seq);
+    expect(by('/x/1')).toEqual([1, 2]);
+    expect(by('/x/2')).toEqual([1]);
+  });
+
+  it('snap captures seq before the handler runs so a raced publish has a strictly greater seq', async () => {
+    // A publish during the snapshot handler's await must outrank the snap
+    // frame, so the client can drop the stale snapshot and keep the newer
+    // update. Capturing seq *before* the handler is the only way to make
+    // this ordering hold regardless of whether the handler reads fresh or
+    // cached state.
+    let resolveSnap: ((v: string) => void) | undefined;
+    const snapshotPromise = new Promise<string>((resolve) => {
+      resolveSnap = resolve;
+    });
+    server.onSubscribe('/x/:id', { snapshot: () => snapshotPromise });
+    transport.emitFrame('peer1', { kind: 'sub', path: '/x/1' });
+    // Let handleSubscribe put us into active before publishing.
+    await Promise.resolve();
+    server.publish('/x/1', 'raced');
+    // Now resolve the handler so snap can be sent.
+    resolveSnap!('initial');
+    await new Promise((r) => setImmediate(r));
+
+    const updFrame = transport.sent.find(
+      (s) => (s.frame as { kind: string }).kind === 'upd',
+    )!.frame as { seq: number };
+    const snapFrame = transport.sent.find(
+      (s) => (s.frame as { kind: string }).kind === 'snap',
+    )!.frame as { seq: number };
+    expect(updFrame.seq).toBe(1);
+    expect(snapFrame.seq).toBeLessThan(updFrame.seq);
+  });
+
+  it('emits seq 0 on a snapshot when no publishes have happened yet', async () => {
+    server.onSubscribe('/x/:id', { snapshot: () => 'hi' });
+    transport.emitFrame('peer1', { kind: 'sub', path: '/x/1' });
+    await new Promise((r) => setImmediate(r));
+    expect(transport.lastSent()?.frame).toMatchObject({
+      kind: 'snap',
+      seq: 0,
+    });
   });
 });

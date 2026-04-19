@@ -190,6 +190,36 @@ describe('claudeStore', () => {
 
       expect(useClaudeStore.getState().cards).toHaveLength(1);
     });
+
+    it('update patch with null value deletes the key (wire convention)', () => {
+      // Regression: the agent sends `{ pendingInput: null }` to clear the
+      // permission dialog — JSON.stringify drops `undefined`, so null is the
+      // wire sentinel for "clear this key". The store must delete it post-spread.
+      const card = makeCard({
+        type: 'tool_call',
+        id: 'c1',
+        toolName: 'Bash',
+        toolInput: {},
+        toolUseId: 'tu1',
+        pendingInput: {
+          sessionId: 'sess1',
+          requestId: 'req-1',
+          inputType: 'permission',
+          title: 'Run Bash?',
+        },
+      } as any);
+      useClaudeStore.setState({ cards: [card] });
+
+      const event: CardEvent = {
+        type: 'update', streamId: 's1', sessionId: 'sess1',
+        cardId: 'c1', patch: { pendingInput: null } as any,
+      };
+      useClaudeStore.getState().handleCardEvent(event);
+
+      const updated = useClaudeStore.getState().cards[0] as any;
+      expect(updated.pendingInput).toBeUndefined();
+      expect('pendingInput' in updated).toBe(false);
+    });
   });
 
   // ── setActiveSession ───────────────────────────────────────────────────
@@ -406,7 +436,7 @@ describe('claudeStore', () => {
     });
   });
 
-  // ── setSessions / mergeSessions / upsertSession ────────────────────────
+  // ── setSessions / upsertSession ────────────────────────
 
   describe('session management', () => {
     it('setSessions replaces all sessions as a map', () => {
@@ -417,41 +447,6 @@ describe('claudeStore', () => {
       const sessions = useClaudeStore.getState().sessions;
       expect(Object.keys(sessions)).toEqual(['s1', 's2']);
       expect(sessions['s1'].summary).toBe('A');
-    });
-
-    it('mergeSessions adds without removing sessions from other cwds', () => {
-      useClaudeStore.getState().setSessions([
-        { sessionId: 's1', summary: 'A', lastModified: 1, cwd: '/a' } as any,
-      ]);
-      useClaudeStore.getState().mergeSessions([
-        { sessionId: 's2', summary: 'B', lastModified: 2, cwd: '/b' } as any,
-      ], '/b');
-      expect(Object.keys(useClaudeStore.getState().sessions).sort()).toEqual(['s1', 's2']);
-    });
-
-    it('mergeSessions removes stale sessions from same cwd', () => {
-      useClaudeStore.getState().setSessions([
-        { sessionId: 's1', summary: 'A', lastModified: 1, cwd: '/a' } as any,
-        { sessionId: 's2', summary: 'B', lastModified: 2, cwd: '/a' } as any,
-        { sessionId: 's3', summary: 'C', lastModified: 3, cwd: '/b' } as any,
-      ]);
-      // s2 was archived, agent no longer returns it for cwd /a
-      useClaudeStore.getState().mergeSessions([
-        { sessionId: 's1', summary: 'A updated', lastModified: 4, cwd: '/a' } as any,
-      ], '/a');
-      const sessions = useClaudeStore.getState().sessions;
-      expect(Object.keys(sessions).sort()).toEqual(['s1', 's3']);
-      expect(sessions['s1'].summary).toBe('A updated');
-    });
-
-    it('mergeSessions without cwd does not remove anything', () => {
-      useClaudeStore.getState().setSessions([
-        { sessionId: 's1', summary: 'A', lastModified: 1, cwd: '/a' } as any,
-      ]);
-      useClaudeStore.getState().mergeSessions([
-        { sessionId: 's2', summary: 'B', lastModified: 2, cwd: '/a' } as any,
-      ]);
-      expect(Object.keys(useClaudeStore.getState().sessions).sort()).toEqual(['s1', 's2']);
     });
 
     it('upsertSession merges partial into existing', () => {

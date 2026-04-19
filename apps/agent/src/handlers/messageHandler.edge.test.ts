@@ -311,16 +311,6 @@ describe('MessageHandler — edge cases', () => {
       expect((resp.payload as any).config.model).toBe('claude-sonnet-4-20250514');
     });
 
-    it('should return empty config for session:get-config on unknown session', async () => {
-      const msg = createMessage('session:get-config', {
-        sessionId: 'unknown-session',
-      } as any);
-      const resp = await handler.handleMessage(msg, peerA);
-      expect(resp.type).toBe('session:get-config:response');
-      expect((resp.payload as any).config).toBeDefined();
-      expect(typeof (resp.payload as any).config).toBe('object');
-    });
-
     it('should handle setting a null value without crashing', async () => {
       const msg = createMessage('session:set-config', {
         sessionId: 'test-null',
@@ -571,16 +561,6 @@ describe('MessageHandler — edge cases', () => {
   // =========================================================================
 
   describe('session history edge cases', () => {
-    it('should return empty entries for list-history on unknown cwd', async () => {
-      const msg = createMessage('session:list-history', {
-        cwd: '/totally/nonexistent/path',
-      } as any);
-      const resp = await handler.handleMessage(msg, peerA);
-      expect(resp.type).toBe('session:list-history:response');
-      expect((resp.payload as any).entries).toBeDefined();
-      expect(Array.isArray((resp.payload as any).entries)).toBe(true);
-    });
-
     it('should return error when updating history for non-existent entry', async () => {
       const msg = createMessage('session:update-history', {
         sessionId: 'ghost',
@@ -631,20 +611,7 @@ describe('MessageHandler — edge cases', () => {
   });
 
   // =========================================================================
-  // 15. claude:active-sessions when no sessions exist
-  // =========================================================================
-
-  describe('active sessions edge cases', () => {
-    it('should return empty array when no sessions are active', async () => {
-      const msg = createMessage('claude:active-sessions', {} as any);
-      const resp = await handler.handleMessage(msg, peerA);
-      expect(resp.type).toBe('claude:active-sessions:response');
-      expect((resp.payload as any).sessions).toEqual([]);
-    });
-  });
-
-  // =========================================================================
-  // 16. Switch to non-available repo
+  // 15. Switch to non-available repo
   // =========================================================================
 
   describe('switch repo edge cases', () => {
@@ -671,17 +638,10 @@ describe('MessageHandler — edge cases', () => {
   });
 
   // =========================================================================
-  // 17. Preferences edge cases
+  // 16. Preferences edge cases
   // =========================================================================
 
   describe('preferences edge cases', () => {
-    it('should return preferences even when none have been set', async () => {
-      const msg = createMessage('claude:get-preferences', {} as any);
-      const resp = await handler.handleMessage(msg, peerA);
-      expect(resp.type).toBe('claude:get-preferences:response');
-      expect((resp.payload as any).preferences).toBeDefined();
-    });
-
     it('should handle set-preferences with empty object', async () => {
       const msg = createMessage('claude:set-preferences', {
         preferences: {},
@@ -693,29 +653,7 @@ describe('MessageHandler — edge cases', () => {
   });
 
   // =========================================================================
-  // 18. claude:list-sessions edge cases
-  // =========================================================================
-
-  describe('claude:list-sessions edge cases', () => {
-    it('should return empty list for a cwd with no sessions', async () => {
-      const msg = createMessage('claude:list-sessions', {
-        cwd: '/tmp/empty-project-no-sessions',
-      } as any);
-      const resp = await handler.handleMessage(msg, peerA);
-      expect(resp.type).toBe('claude:list-sessions:response');
-      expect(Array.isArray((resp.payload as any).sessions)).toBe(true);
-    });
-
-    it('should use client repo path when cwd is not provided', async () => {
-      const msg = createMessage('claude:list-sessions', {} as any);
-      const resp = await handler.handleMessage(msg, peerA);
-      expect(resp.type).toBe('claude:list-sessions:response');
-      // Should not crash even when cwd is undefined in payload
-    });
-  });
-
-  // =========================================================================
-  // 19. Handler with zero repos
+  // 17. Handler with zero repos
   // =========================================================================
 
   describe('handler with zero repos', () => {

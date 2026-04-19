@@ -1,7 +1,6 @@
 import { useCallback, useRef } from 'react';
 import {
   type CardHistoryResponse,
-  type ClaudeListSessionsResponsePayload,
   type ClaudeStartResponsePayload,
   type ClaudeResumeResponsePayload,
   type ClaudeCancelResponsePayload,
@@ -14,7 +13,6 @@ import {
   type AgentId,
   type ConfigValue,
   type SessionCardsUpdate,
-  type SessionGetConfigResponsePayload,
   type SessionSetConfigResponsePayload,
   type SessionControlRequestPayload,
   type SessionControlRequestResponsePayload,
@@ -32,9 +30,7 @@ export function useClaudeOperations(
   // Per-session unsubscribe fns for /sessions/:id/cards bus subscriptions.
   const cardsUnsubsRef = useRef<Map<string, () => void>>(new Map());
   const {
-    mergeSessions,
     upsertSession,
-    setLoadingSessions,
     setActiveSession,
     setStreaming,
     setStreamError,
@@ -70,58 +66,6 @@ export function useClaudeOperations(
     },
     [busRef],
   );
-
-  /**
-   * Refresh the active-sessions view after (re)connect. Replaces the older
-   * push-based `claude:active-sessions:response` flow — with the bus, we just
-   * issue a command and reconcile the store inline.
-   */
-  const reconcileActiveSessions = useCallback(async () => {
-    try {
-      const resp = await sendCommand<{
-        sessions: Array<{
-          sessionId: string;
-          isStreaming?: boolean;
-          hasPendingInput?: boolean;
-          agent?: AgentId;
-          permissionMode?: string;
-        }>;
-      }>('claude:active-sessions', {}, 10_000);
-      const activeIds = new Set(resp.sessions.map((s) => s.sessionId));
-      useClaudeStore.getState().reconcileActiveSessions(activeIds);
-      for (const s of resp.sessions) {
-        upsertSession({
-          sessionId: s.sessionId,
-          isActive: true,
-          isStreaming: s.isStreaming,
-          hasPendingInput: s.hasPendingInput,
-          agent: s.agent,
-          permissionMode: s.permissionMode,
-        });
-      }
-    } catch (err) {
-      console.warn('reconcileActiveSessions failed:', err);
-    }
-  }, [sendCommand, upsertSession]);
-
-  const listSessions = useCallback(async (cwd?: string) => {
-    setLoadingSessions(true);
-    try {
-      const response = await sendCommand<ClaudeListSessionsResponsePayload>(
-        'claude:list-sessions',
-        { ...(cwd ? { cwd } : {}) },
-      );
-      if (response.error) {
-        throw new Error(response.error);
-      }
-      // Merge into map: preserves sessions from other cwds, removes stale ones for this cwd
-      mergeSessions(response.sessions, cwd);
-    } catch (error) {
-      console.error('Failed to list sessions:', error);
-    } finally {
-      setLoadingSessions(false);
-    }
-  }, [sendCommand, mergeSessions, setLoadingSessions]);
 
   /**
    * For offset === 0 (initial load / resubscribe after navigation): opens a
@@ -366,19 +310,6 @@ export function useClaudeOperations(
     [sendCommand, setSessionConfigKey, applySessionConfig],
   );
 
-  const getSessionConfig = useCallback(
-    async (sessionId: string) => {
-      try {
-        const response = await sendCommand<SessionGetConfigResponsePayload, { sessionId: string }>(
-          'session:get-config',
-          { sessionId },
-        );
-        applySessionConfig(sessionId, response.config);
-      } catch { /* agent may not support this yet */ }
-    },
-    [sendCommand, applySessionConfig],
-  );
-
   const sendControlRequest = useCallback(
     async (sessionId: string, subtype: string, params?: Record<string, unknown>): Promise<SessionControlRequestResponsePayload> => {
       // Allow a long wall-time budget — server pauses its idle timer during compaction/turn work.
@@ -446,8 +377,6 @@ export function useClaudeOperations(
   }, [sendCommand]);
 
   return {
-    reconcileActiveSessions,
-    listSessions,
     getSessionCards,
     startSession,
     resumeSession,
@@ -457,7 +386,6 @@ export function useClaudeOperations(
     respondToUserInput,
     setPreferences,
     setSessionPermission,
-    getSessionConfig,
     setSessionConfig,
     sendControlRequest,
     unsubscribeSession,

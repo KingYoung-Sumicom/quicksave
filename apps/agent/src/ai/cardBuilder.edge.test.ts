@@ -348,7 +348,8 @@ describe('Permission card lifecycle', () => {
 
     const event = builder.clearPendingInput('req-3') as CardUpdateEvent;
     expect(event.type).toBe('update');
-    expect(event.patch).toEqual({ pendingInput: undefined });
+    // null (not undefined) so it survives JSON.stringify across the bus.
+    expect(event.patch).toEqual({ pendingInput: null });
     expect(builder.getCards()).toHaveLength(1);
   });
 
@@ -381,6 +382,32 @@ describe('Permission card lifecycle', () => {
 
     expect(builder.clearPendingInput('req-dbl-eph')).not.toBeNull();
     expect(builder.clearPendingInput('req-dbl-eph')).toBeNull();
+  });
+
+  it('clearPendingInput patch survives a JSON round-trip (regression)', () => {
+    // Regression: previously the patch was `{ pendingInput: undefined }`,
+    // which JSON.stringify drops — the PWA received an empty patch and the
+    // permission dialog stayed stuck after Accept/Deny. The wire convention
+    // is now `null` to signal "clear this key".
+    const pending = makePendingInput('req-json');
+    builder.toolCallFromPermission('Bash', {}, 'tu-json', pending, false);
+    const event = builder.clearPendingInput('req-json') as CardUpdateEvent;
+    const roundTripped = JSON.parse(JSON.stringify(event)) as CardUpdateEvent;
+    expect(roundTripped.patch).toHaveProperty('pendingInput');
+    expect(roundTripped.patch.pendingInput).toBeNull();
+  });
+
+  it('clearPendingInput mutates the builder card to drop the key', () => {
+    // After Object.assign/merge, the server-side card must not retain a
+    // `pendingInput: null` — the wire carries null, but the local card
+    // should have the key removed so subsequent snapshots send a clean card.
+    const pending = makePendingInput('req-local');
+    builder.toolCallFromPermission('Bash', {}, 'tu-local', pending, false);
+    builder.clearPendingInput('req-local');
+    const cards = builder.getCards();
+    expect(cards).toHaveLength(1);
+    expect(cards[0].pendingInput).toBeUndefined();
+    expect('pendingInput' in cards[0]).toBe(false);
   });
 });
 
@@ -812,7 +839,8 @@ describe('Additional adversarial edge cases', () => {
 
     const event = builder.clearPendingInput('req-sub') as CardUpdateEvent;
     expect(event.type).toBe('update');
-    expect(event.patch).toEqual({ pendingInput: undefined });
+    // null (not undefined) so it survives JSON.stringify across the bus.
+    expect(event.patch).toEqual({ pendingInput: null });
     // Card still exists (subagent cards are not ephemeral by default)
     expect(builder.getCards()).toHaveLength(1);
   });

@@ -386,7 +386,6 @@ export async function runDaemon(): Promise<void> {
     'git:gitignore-write',
     // ai
     'ai:generate-commit-summary',
-    'ai:commit-summary:get',
     'ai:commit-summary:clear',
     'ai:set-api-key',
     'ai:get-api-key-status',
@@ -406,22 +405,17 @@ export async function runDaemon(): Promise<void> {
     // codex
     'codex:list-models',
     // claude
-    'claude:list-sessions',
     'claude:start',
     'claude:resume',
     'claude:cancel',
     'claude:close',
     'claude:user-input-response',
-    'claude:get-preferences',
     'claude:set-preferences',
     'claude:set-session-permission',
-    'claude:active-sessions',
     'claude:get-cards',
     // session
-    'session:get-config',
     'session:set-config',
     'session:control-request',
-    'session:list-history',
     'session:update-history',
     'session:delete-history',
     // project

@@ -356,12 +356,20 @@ serviceCmd
         if (sessions.length === 0) { console.log('  (none)'); return; }
         for (const s of sessions) {
           const id = (s.sessionId as string).slice(0, 8);
-          const active = s.isActive ? 'active' : 'idle';
-          const streaming = s.isStreaming ? '  streaming' : '';
+          // Status terminology:
+          //   closed    — registry-only, not in the daemon's in-memory map; a
+          //               cold resume would spawn a fresh provider process.
+          //   streaming — in-memory with an active turn in flight.
+          //   idle      — in-memory, provider alive between turns, awaiting
+          //               user input (hot-resumable without a re-spawn).
+          let status: string;
+          if (!s.isActive) status = 'closed';
+          else if (s.isStreaming) status = 'streaming';
+          else status = 'idle';
           const pending = s.hasPendingInput ? '  pending' : '';
           const mode = s.permissionMode ? `  mode=${s.permissionMode}` : '';
           const prompt = s.prompt ? `  "${(s.prompt as string).slice(0, 40)}${(s.prompt as string).length > 40 ? '...' : ''}"` : '';
-          console.log(`  ${id}  ${active}${streaming}${pending}${mode}${prompt}`);
+          console.log(`  ${id}  ${status}${pending}${mode}${prompt}`);
         }
       });
     } catch (err) {

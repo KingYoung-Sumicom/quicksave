@@ -39,11 +39,8 @@ import {
   License,
   GenerateCommitSummaryRequestPayload,
   GenerateCommitSummaryResponsePayload,
-  GetCommitSummaryRequestPayload,
-  GetCommitSummaryResponsePayload,
   ClearCommitSummaryRequestPayload,
   ClearCommitSummaryResponsePayload,
-  CommitSummaryState,
   SetApiKeyRequestPayload,
   SetApiKeyResponsePayload,
   GetApiKeyStatusResponsePayload,
@@ -69,8 +66,6 @@ import {
   AgentCheckUpdateResponsePayload,
   AgentUpdateResponsePayload,
   AgentRestartResponsePayload,
-  ClaudeListSessionsRequestPayload,
-  ClaudeListSessionsResponsePayload,
   ClaudeStartRequestPayload,
   ClaudeStartResponsePayload,
   ClaudeResumeRequestPayload,
@@ -81,23 +76,17 @@ import {
   ClaudeCloseResponsePayload,
   ClaudeGetMessagesRequestPayload,
   ClaudeUserInputResponsePayload,
-  ClaudeGetPreferencesResponsePayload,
   ClaudeSetPreferencesRequestPayload,
   ClaudeSetPreferencesResponsePayload,
   ClaudeSetSessionPermissionRequestPayload,
   ClaudeSetSessionPermissionResponsePayload,
-  ClaudeActiveSessionsResponsePayload,
   CardHistoryResponse,
   generateMessageId,
-  SessionGetConfigRequestPayload,
-  SessionGetConfigResponsePayload,
   SessionSetConfigRequestPayload,
   SessionSetConfigResponsePayload,
   SessionControlRequestPayload,
   SessionControlRequestResponsePayload,
   SessionRegistryEntry,
-  SessionListHistoryRequestPayload,
-  SessionListHistoryResponsePayload,
   SessionUpdateHistoryRequestPayload,
   SessionUpdateHistoryResponsePayload,
   SessionDeleteHistoryRequestPayload,
@@ -446,8 +435,6 @@ export class MessageHandler {
           return this.handleGitignoreWrite(message as Message<GitignoreWriteRequestPayload>, peerAddress);
         case 'ai:generate-commit-summary':
           return this.handleGenerateCommitSummary(message as Message<GenerateCommitSummaryRequestPayload>, peerAddress);
-        case 'ai:commit-summary:get':
-          return this.handleGetCommitSummary(message as Message<GetCommitSummaryRequestPayload>, peerAddress);
         case 'ai:commit-summary:clear':
           return this.handleClearCommitSummary(message as Message<ClearCommitSummaryRequestPayload>, peerAddress);
         case 'ai:set-api-key':
@@ -481,8 +468,6 @@ export class MessageHandler {
         case 'codex:list-models':
           return this.handleCodexListModels(message);
         // Claude Code SDK
-        case 'claude:list-sessions':
-          return this.handleClaudeListSessions(message as Message<ClaudeListSessionsRequestPayload>, peerAddress);
         case 'claude:start':
           return this.handleClaudeStart(message as Message<ClaudeStartRequestPayload>, peerAddress);
         case 'claude:resume':
@@ -493,24 +478,16 @@ export class MessageHandler {
           return this.handleClaudeClose(message as Message<ClaudeCloseRequestPayload>);
         case 'claude:user-input-response':
           return this.handleClaudeUserInputResponse(message as Message<ClaudeUserInputResponsePayload>);
-        case 'claude:get-preferences':
-          return this.handleGetPreferences(message);
         case 'claude:set-preferences':
           return this.handleSetPreferences(message as Message<ClaudeSetPreferencesRequestPayload>);
         case 'claude:set-session-permission':
           return this.handleSetSessionPermission(message as Message<ClaudeSetSessionPermissionRequestPayload>);
-        case 'claude:active-sessions':
-          return this.handleGetActiveSessions(message);
         case 'claude:get-cards':
           return this.handleClaudeGetCards(message as Message<ClaudeGetMessagesRequestPayload>, peerAddress);
-        case 'session:get-config':
-          return this.handleGetSessionConfig(message as Message<SessionGetConfigRequestPayload>);
         case 'session:set-config':
           return this.handleSetSessionConfig(message as Message<SessionSetConfigRequestPayload>);
         case 'session:control-request':
           return this.handleControlRequest(message as Message<SessionControlRequestPayload>);
-        case 'session:list-history':
-          return this.handleListHistory(message as Message<SessionListHistoryRequestPayload>, peerAddress);
         case 'session:update-history':
           return this.handleUpdateHistory(message as Message<SessionUpdateHistoryRequestPayload>);
         case 'session:delete-history':
@@ -1070,17 +1047,6 @@ export class MessageHandler {
         isRateLimit ? 'RATE_LIMITED' : 'API_ERROR',
       );
     }
-  }
-
-  private handleGetCommitSummary(
-    message: Message<GetCommitSummaryRequestPayload>,
-    peerAddress: string,
-  ): Message<GetCommitSummaryResponsePayload> {
-    const repoPath = message.payload.repoPath || this.getClientRepoPath(peerAddress);
-    const state: CommitSummaryState = this.commitSummaryStore.get(repoPath);
-    const response = createMessage<GetCommitSummaryResponsePayload>('ai:commit-summary:get:response', { state });
-    response.id = message.id;
-    return response;
   }
 
   private handleClearCommitSummary(
@@ -1645,29 +1611,6 @@ export class MessageHandler {
   // Claude Code SDK Handlers
   // ============================================================================
 
-  private async handleClaudeListSessions(
-    message: Message<ClaudeListSessionsRequestPayload>,
-    peerAddress: string
-  ): Promise<Message<ClaudeListSessionsResponsePayload>> {
-    try {
-      const cwd = message.payload.cwd || this.getClientRepoPath(peerAddress);
-      const sessions = await this.claudeService.listAvailableSessions(cwd);
-      const response = createMessage<ClaudeListSessionsResponsePayload>(
-        'claude:list-sessions:response',
-        { sessions }
-      );
-      response.id = message.id;
-      return response;
-    } catch (error) {
-      const response = createMessage<ClaudeListSessionsResponsePayload>(
-        'claude:list-sessions:response',
-        { sessions: [], error: error instanceof Error ? error.message : 'Failed to list sessions' }
-      );
-      response.id = message.id;
-      return response;
-    }
-  }
-
   private async handleClaudeStart(
     message: Message<ClaudeStartRequestPayload>,
     peerAddress: string,
@@ -1865,15 +1808,6 @@ export class MessageHandler {
     }
   }
 
-  private handleGetPreferences(message: Message): Message<ClaudeGetPreferencesResponsePayload> {
-    const response = createMessage<ClaudeGetPreferencesResponsePayload>(
-      'claude:get-preferences:response',
-      { preferences: this.claudeService.getPreferences() },
-    );
-    response.id = message.id;
-    return response;
-  }
-
   private handleSetPreferences(message: Message<ClaudeSetPreferencesRequestPayload>): Message<ClaudeSetPreferencesResponsePayload> {
     const applied = this.claudeService.setPreferences(message.payload.preferences);
     const response = createMessage<ClaudeSetPreferencesResponsePayload>(
@@ -1898,17 +1832,6 @@ export class MessageHandler {
     const response = createMessage<ClaudeSetSessionPermissionResponsePayload>(
       'claude:set-session-permission:response',
       { success, sessionId, permissionMode },
-    );
-    response.id = message.id;
-    return response;
-  }
-
-  private handleGetSessionConfig(message: Message<SessionGetConfigRequestPayload>): Message<SessionGetConfigResponsePayload> {
-    const { sessionId } = message.payload;
-    const config = this.claudeService.getSessionConfig(sessionId);
-    const response = createMessage<SessionGetConfigResponsePayload>(
-      'session:get-config:response',
-      { sessionId, config },
     );
     response.id = message.id;
     return response;
@@ -1966,32 +1889,7 @@ export class MessageHandler {
     }
   }
 
-  private handleGetActiveSessions(message: Message): Message<ClaudeActiveSessionsResponsePayload> {
-    const sessions = this.claudeService.getActiveSessions();
-    const response = createMessage<ClaudeActiveSessionsResponsePayload>(
-      'claude:active-sessions:response',
-      { sessions },
-    );
-    response.id = message.id;
-    return response;
-  }
-
   // ── Session Registry (History) ──────────────────────────────────────
-
-  private handleListHistory(
-    message: Message<SessionListHistoryRequestPayload>,
-    peerAddress: string,
-  ): Message<SessionListHistoryResponsePayload> {
-    const cwd = message.payload.cwd || this.getClientRepoPath(peerAddress);
-    const entries = getSessionRegistry().getEntriesForProject(cwd)
-      .filter(e => !e.archived);
-    const response = createMessage<SessionListHistoryResponsePayload>(
-      'session:list-history:response',
-      { entries },
-    );
-    response.id = message.id;
-    return response;
-  }
 
   private handleUpdateHistory(
     message: Message<SessionUpdateHistoryRequestPayload>,

@@ -665,6 +665,7 @@ export class SessionManager extends EventEmitter {
         permissionMode: this.sessions.get(entry.sessionId)?.permissionLevel
           ?? this.sessionPermissions.get(entry.sessionId),
         lastPromptAt: stats.lastPromptAt ?? undefined,
+        lastTurnEndedAt: stats.lastTurnEndedAt ?? undefined,
         turnCount: stats.turnCount,
         totalInputTokens: stats.totalInputTokens,
         totalOutputTokens: stats.totalOutputTokens,
@@ -1006,6 +1007,14 @@ export class SessionManager extends EventEmitter {
     const lastTurn = eventStore.getLastTurn(sessionId);
     return {
       sessionId,
+      // `isActive` reflects in-memory presence, NOT "currently doing work".
+      //   isActive=true  → session is in `this.sessions`: either streaming
+      //                    (isStreaming=true) or idle — alive between turns,
+      //                    awaiting user input, hot-resumable without spawning.
+      //   isActive=false → registry-only (archived/closed/never-opened); a
+      //                    follow-up prompt would need a cold resume.
+      // The "idle" semantic (awaiting user input) is the isActive && !isStreaming
+      // substate; consumers derive it rather than receiving it as its own flag.
       isActive: !!ps,
       // `archived` = session has been removed from the in-memory map
       // (cold-resume rekey, onSessionExited, or closeSession). PWA uses this
@@ -1019,6 +1028,7 @@ export class SessionManager extends EventEmitter {
       permissionMode: ps?.permissionLevel ?? this.sessionPermissions.get(sessionId),
       sandboxed: ps?.sandboxed ?? this.sessionSandboxed.get(sessionId) ?? false,
       lastPromptAt: stats.lastPromptAt ?? undefined,
+      lastTurnEndedAt: stats.lastTurnEndedAt ?? undefined,
       turnCount: stats.turnCount,
       totalInputTokens: stats.totalInputTokens,
       totalOutputTokens: stats.totalOutputTokens,
@@ -1030,9 +1040,15 @@ export class SessionManager extends EventEmitter {
     };
   }
 
-  /** Snapshot of every active (in-memory) session's state. Delivered via the
-   *  bus `/sessions/active` snap frame on subscribe; subsequent incremental
-   *  updates are published per session via the same path. */
+  /** Snapshot of every in-memory session's state (both streaming and idle —
+   *  "idle" here meaning alive-between-turns / awaiting user input, i.e. the
+   *  hot-resumable substate). Delivered via the bus `/sessions/active` snap
+   *  frame on subscribe; subsequent incremental updates are published per
+   *  session via the same path.
+   *
+   *  Note: registry-only sessions (closed, never-opened this process) are
+   *  intentionally NOT included here — the PWA learns about those via
+   *  `/sessions/history` or the `claude:list-sessions` command instead. */
   snapshotActiveSessions(): SessionUpdatePayload[] {
     return Array.from(this.sessions.keys()).map((id) => this.buildSessionUpdatePayload(id));
   }
