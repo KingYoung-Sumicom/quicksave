@@ -114,9 +114,13 @@ export class IpcServer extends EventEmitter {
       params: { shutting_down: true },
     });
 
-    // Close all client sockets
+    // Half-close each client socket: `end()` flushes any buffered writes (e.g.
+    // the pending shutdown response) before sending FIN. `destroy()` would
+    // drop them, causing the client to reject with "IPC connection closed".
     for (const client of this.clients.values()) {
-      client.socket.destroy();
+      if (!client.socket.destroyed) {
+        client.socket.end();
+      }
     }
     this.clients.clear();
 
@@ -274,8 +278,10 @@ export class IpcServer extends EventEmitter {
   }
 
   private handleShutdown(_client: IpcClient): { ok: true } {
-    // Schedule shutdown on next tick so the response gets sent first
-    process.nextTick(() => this.emit('shutdown-requested'));
+    // Defer to setImmediate (not process.nextTick): nextTick fires before the
+    // I/O poll phase, so the {ok:true} response `handleLine` is about to write
+    // wouldn't reach the client before `close()` destroys the socket.
+    setImmediate(() => this.emit('shutdown-requested'));
     return { ok: true };
   }
 

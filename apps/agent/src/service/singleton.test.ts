@@ -47,11 +47,20 @@ describe('shouldRestartDaemon', () => {
     expect(result.action).toBe('warn_outdated');
   });
 
-  it('returns restart when buildId differs in dev mode', () => {
-    // vitest.setup.ts sets globalThis.__QUICKSAVE_DEV__ so isDev() returns true
+  it('returns restart when buildId differs (dev)', () => {
     const result = shouldRestartDaemon(
       makeDaemon({ daemonBuildId: 'dev-aaa111bbb222' }),
       { ipcVersion: IPC_VERSION, buildId: 'dev-ccc333ddd444' },
+    );
+    expect(result.action).toBe('restart');
+  });
+
+  it('returns restart when buildId differs with prod-style stamped hashes', () => {
+    // Simulates `npm install -g quicksave@newer` replacing an older daemon:
+    // both sides carry stamped prod hashes, not dev- prefixed.
+    const result = shouldRestartDaemon(
+      makeDaemon({ daemonBuildId: 'a1b2c3d4e5f6' }),
+      { ipcVersion: IPC_VERSION, buildId: 'f6e5d4c3b2a1' },
     );
     expect(result.action).toBe('restart');
   });

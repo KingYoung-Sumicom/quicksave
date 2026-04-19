@@ -237,7 +237,11 @@ export function shouldRestartDaemon(
       ? { action: 'restart' }
       : { action: 'warn_outdated' };
   }
-  if (isDev() && daemon.daemonBuildId !== cli.buildId) {
+  // Any BUILD_ID mismatch means the running daemon's code differs from the
+  // CLI's code — restart regardless of dev vs prod. In prod this catches
+  // `npm install -g quicksave@newer` replacing an older daemon; in dev it
+  // catches source-file edits (BUILD_ID is an mtime hash).
+  if (daemon.daemonBuildId !== cli.buildId) {
     return { action: 'restart' };
   }
   return { action: 'ok' };

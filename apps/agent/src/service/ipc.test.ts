@@ -144,9 +144,25 @@ describe('IPC Server + Client', () => {
     const result = await client.request<any>('shutdown');
     expect(result.ok).toBe(true);
 
-    // Wait for nextTick
+    // Wait for setImmediate to fire
     await new Promise((r) => setTimeout(r, 10));
     expect(shutdownRequested).toBe(true);
+  });
+
+  it('shutdown response reaches client before server closes sockets', async () => {
+    // Regression: if the server destroyed client sockets before flushing the
+    // {ok:true} response, the client's pending request would reject with
+    // IpcDisconnectedError — breaking `quicksave service stop`.
+    const sock = await createServer();
+    const { client } = await createClient(sock);
+
+    server.on('shutdown-requested', () => {
+      // Immediately close the server, mirroring the daemon's real handler.
+      void server.close();
+    });
+
+    const result = await client.request<any>('shutdown');
+    expect(result).toEqual({ ok: true });
   });
 
   it('client disconnect is detected by server', async () => {
