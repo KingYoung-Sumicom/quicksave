@@ -636,8 +636,7 @@ export class SessionManager extends EventEmitter {
 
   async listAvailableSessions(cwd: string): Promise<ClaudeSessionSummary[]> {
     const registry = getSessionRegistry();
-    const registryEntries = registry.getEntriesForProject(cwd)
-      .filter(entry => !entry.archived);
+    const registryEntries = registry.getEntriesForProject(cwd);
 
     const pendingSessionIds = new Set(
       Array.from(this.pendingInputRequests.values()).map(p => p.request.sessionId)

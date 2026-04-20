@@ -284,4 +284,474 @@ describe('SessionRegistry', () => {
       expect(registry.getEntriesForProject('/proj')).toEqual([]);
     });
   });
+
+  describe('archive storage routing', () => {
+    it('upsertEntry with archived: true writes under archived/ subtree, not active', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry({ archived: true });
+      registry.upsertEntry(entry);
+
+      const encodedCwd = entry.cwd.replace(/\//g, '-');
+      const activePath = join(tempDir, encodedCwd, `${entry.sessionId}.json`);
+      const archivedPath = join(tempDir, 'archived', encodedCwd, `${entry.sessionId}.json`);
+
+      expect(existsSync(archivedPath)).toBe(true);
+      expect(existsSync(activePath)).toBe(false);
+
+      const onDisk = JSON.parse(readFileSync(archivedPath, 'utf-8'));
+      expect(onDisk).toEqual(entry);
+    });
+
+    it('upsertEntry with archived: true does not add entry to in-memory map', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry({ archived: true });
+      registry.upsertEntry(entry);
+
+      expect(registry.getEntry(entry.cwd, entry.sessionId)).toBeUndefined();
+      expect(registry.getEntriesForProject(entry.cwd)).toEqual([]);
+      expect(registry.findBySessionId(entry.sessionId)).toBeUndefined();
+    });
+
+    it('upsertEntry with archived: false writes to active subtree and is visible in memory', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry({ archived: false });
+      registry.upsertEntry(entry);
+
+      const encodedCwd = entry.cwd.replace(/\//g, '-');
+      const activePath = join(tempDir, encodedCwd, `${entry.sessionId}.json`);
+      const archivedPath = join(tempDir, 'archived', encodedCwd, `${entry.sessionId}.json`);
+
+      expect(existsSync(activePath)).toBe(true);
+      expect(existsSync(archivedPath)).toBe(false);
+
+      expect(registry.getEntry(entry.cwd, entry.sessionId)).toEqual(entry);
+      expect(registry.getEntriesForProject(entry.cwd)).toHaveLength(1);
+      expect(registry.findBySessionId(entry.sessionId)).toEqual(entry);
+    });
+
+    it('upsertEntry with archived omitted writes to active subtree and is visible in memory', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry();
+      registry.upsertEntry(entry);
+
+      const encodedCwd = entry.cwd.replace(/\//g, '-');
+      const activePath = join(tempDir, encodedCwd, `${entry.sessionId}.json`);
+      const archivedPath = join(tempDir, 'archived', encodedCwd, `${entry.sessionId}.json`);
+
+      expect(existsSync(activePath)).toBe(true);
+      expect(existsSync(archivedPath)).toBe(false);
+      expect(registry.findBySessionId(entry.sessionId)).toEqual(entry);
+    });
+
+    it('transitions active -> archived: removes active file, creates archived file, drops from memory', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry();
+      registry.upsertEntry(entry);
+
+      const encodedCwd = entry.cwd.replace(/\//g, '-');
+      const activePath = join(tempDir, encodedCwd, `${entry.sessionId}.json`);
+      const archivedPath = join(tempDir, 'archived', encodedCwd, `${entry.sessionId}.json`);
+
+      expect(existsSync(activePath)).toBe(true);
+      expect(existsSync(archivedPath)).toBe(false);
+
+      registry.upsertEntry({ ...entry, archived: true });
+
+      expect(existsSync(activePath)).toBe(false);
+      expect(existsSync(archivedPath)).toBe(true);
+      expect(registry.getEntry(entry.cwd, entry.sessionId)).toBeUndefined();
+      expect(registry.findBySessionId(entry.sessionId)).toBeUndefined();
+    });
+
+    it('transitions archived -> active: removes archived file, creates active file, adds to memory', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry({ archived: true });
+      registry.upsertEntry(entry);
+
+      const encodedCwd = entry.cwd.replace(/\//g, '-');
+      const activePath = join(tempDir, encodedCwd, `${entry.sessionId}.json`);
+      const archivedPath = join(tempDir, 'archived', encodedCwd, `${entry.sessionId}.json`);
+
+      expect(existsSync(archivedPath)).toBe(true);
+      expect(existsSync(activePath)).toBe(false);
+
+      registry.upsertEntry({ ...entry, archived: false });
+
+      expect(existsSync(archivedPath)).toBe(false);
+      expect(existsSync(activePath)).toBe(true);
+      const loaded = registry.getEntry(entry.cwd, entry.sessionId);
+      expect(loaded).toBeDefined();
+      expect(loaded!.archived).toBe(false);
+    });
+  });
+
+  describe('readArchivedEntry', () => {
+    it('returns undefined when no archived file exists', () => {
+      const registry = new SessionRegistry();
+      expect(registry.readArchivedEntry('/home/user/project-a', 'sess-1')).toBeUndefined();
+    });
+
+    it('returns the entry when an archived file exists', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry({ archived: true, title: 'Archived one' });
+      registry.upsertEntry(entry);
+
+      const result = registry.readArchivedEntry(entry.cwd, entry.sessionId);
+      expect(result).toEqual(entry);
+    });
+
+    it('does not return active entries', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry();
+      registry.upsertEntry(entry);
+
+      expect(registry.readArchivedEntry(entry.cwd, entry.sessionId)).toBeUndefined();
+    });
+  });
+
+  describe('listArchivedEntries', () => {
+    it('returns [] when archived subtree is missing', () => {
+      const registry = new SessionRegistry();
+      expect(registry.listArchivedEntries()).toEqual([]);
+      expect(registry.listArchivedEntries('/home/user/project-a')).toEqual([]);
+    });
+
+    it('returns [] when archived subtree has no entries for given cwd', () => {
+      const registry = new SessionRegistry();
+      // Seed an archived entry for a different project
+      registry.upsertEntry(makeEntry({ cwd: '/proj-a', sessionId: 's1', archived: true }));
+      expect(registry.listArchivedEntries('/proj-b')).toEqual([]);
+    });
+
+    it('returns only archived entries, sorted by lastAccessedAt desc', () => {
+      const registry = new SessionRegistry();
+
+      // Active entries (should be excluded)
+      registry.upsertEntry(
+        makeEntry({ cwd: '/proj-a', sessionId: 'active-1', lastAccessedAt: 9000 }),
+      );
+      registry.upsertEntry(
+        makeEntry({ cwd: '/proj-b', sessionId: 'active-2', lastAccessedAt: 9500 }),
+      );
+
+      // Archived entries
+      registry.upsertEntry(
+        makeEntry({
+          cwd: '/proj-a',
+          sessionId: 'arch-old',
+          archived: true,
+          lastAccessedAt: 1000,
+        }),
+      );
+      registry.upsertEntry(
+        makeEntry({
+          cwd: '/proj-b',
+          sessionId: 'arch-new',
+          archived: true,
+          lastAccessedAt: 3000,
+        }),
+      );
+      registry.upsertEntry(
+        makeEntry({
+          cwd: '/proj-a',
+          sessionId: 'arch-mid',
+          archived: true,
+          lastAccessedAt: 2000,
+        }),
+      );
+
+      const all = registry.listArchivedEntries();
+      expect(all.map((e) => e.sessionId)).toEqual(['arch-new', 'arch-mid', 'arch-old']);
+      // None of the active ones
+      expect(all.some((e) => e.sessionId.startsWith('active-'))).toBe(false);
+    });
+
+    it('filters to the given cwd when provided', () => {
+      const registry = new SessionRegistry();
+      registry.upsertEntry(
+        makeEntry({
+          cwd: '/proj-a',
+          sessionId: 'a1',
+          archived: true,
+          lastAccessedAt: 1000,
+        }),
+      );
+      registry.upsertEntry(
+        makeEntry({
+          cwd: '/proj-a',
+          sessionId: 'a2',
+          archived: true,
+          lastAccessedAt: 2000,
+        }),
+      );
+      registry.upsertEntry(
+        makeEntry({
+          cwd: '/proj-b',
+          sessionId: 'b1',
+          archived: true,
+          lastAccessedAt: 3000,
+        }),
+      );
+
+      const forA = registry.listArchivedEntries('/proj-a');
+      expect(forA.map((e) => e.sessionId)).toEqual(['a2', 'a1']);
+
+      const forB = registry.listArchivedEntries('/proj-b');
+      expect(forB.map((e) => e.sessionId)).toEqual(['b1']);
+    });
+
+    it('returns archived entries across all projects when cwd is omitted', () => {
+      const registry = new SessionRegistry();
+      registry.upsertEntry(
+        makeEntry({
+          cwd: '/proj-a',
+          sessionId: 'a1',
+          archived: true,
+          lastAccessedAt: 1000,
+        }),
+      );
+      registry.upsertEntry(
+        makeEntry({
+          cwd: '/proj-b',
+          sessionId: 'b1',
+          archived: true,
+          lastAccessedAt: 2000,
+        }),
+      );
+
+      const all = registry.listArchivedEntries();
+      expect(all).toHaveLength(2);
+      expect(all[0].sessionId).toBe('b1');
+      expect(all[1].sessionId).toBe('a1');
+    });
+  });
+
+  describe('updateEntry — archive transitions', () => {
+    it('finds and updates entries that live only in the archived subtree', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry({ archived: true });
+      registry.upsertEntry(entry);
+
+      const result = registry.updateEntry(entry.cwd, entry.sessionId, { title: 'x' });
+      expect(result).not.toBeNull();
+      expect(result!.title).toBe('x');
+      expect(result!.archived).toBe(true);
+
+      // Still archived on disk, not in memory
+      const encodedCwd = entry.cwd.replace(/\//g, '-');
+      const archivedPath = join(tempDir, 'archived', encodedCwd, `${entry.sessionId}.json`);
+      expect(existsSync(archivedPath)).toBe(true);
+      const onDisk = JSON.parse(readFileSync(archivedPath, 'utf-8'));
+      expect(onDisk.title).toBe('x');
+      expect(onDisk.archived).toBe(true);
+      expect(registry.getEntry(entry.cwd, entry.sessionId)).toBeUndefined();
+    });
+
+    it('flipping archived true -> false moves file from archived to active subtree', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry({ archived: true });
+      registry.upsertEntry(entry);
+
+      const encodedCwd = entry.cwd.replace(/\//g, '-');
+      const activePath = join(tempDir, encodedCwd, `${entry.sessionId}.json`);
+      const archivedPath = join(tempDir, 'archived', encodedCwd, `${entry.sessionId}.json`);
+
+      const result = registry.updateEntry(entry.cwd, entry.sessionId, { archived: false });
+      expect(result).not.toBeNull();
+      expect(result!.archived).toBe(false);
+
+      expect(existsSync(archivedPath)).toBe(false);
+      expect(existsSync(activePath)).toBe(true);
+      const fromMem = registry.getEntry(entry.cwd, entry.sessionId);
+      expect(fromMem).toBeDefined();
+      expect(fromMem!.archived).toBe(false);
+    });
+
+    it('flipping archived false -> true moves file from active to archived subtree', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry();
+      registry.upsertEntry(entry);
+
+      const encodedCwd = entry.cwd.replace(/\//g, '-');
+      const activePath = join(tempDir, encodedCwd, `${entry.sessionId}.json`);
+      const archivedPath = join(tempDir, 'archived', encodedCwd, `${entry.sessionId}.json`);
+
+      const result = registry.updateEntry(entry.cwd, entry.sessionId, { archived: true });
+      expect(result).not.toBeNull();
+      expect(result!.archived).toBe(true);
+
+      expect(existsSync(activePath)).toBe(false);
+      expect(existsSync(archivedPath)).toBe(true);
+      expect(registry.getEntry(entry.cwd, entry.sessionId)).toBeUndefined();
+    });
+
+    it('returns null when the entry exists in neither subtree', () => {
+      const registry = new SessionRegistry();
+      const result = registry.updateEntry('/nope', 'nope', { title: 'x' });
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('deleteEntry — both subtrees', () => {
+    it('removes an archived entry and returns true', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry({ archived: true });
+      registry.upsertEntry(entry);
+
+      const encodedCwd = entry.cwd.replace(/\//g, '-');
+      const archivedPath = join(tempDir, 'archived', encodedCwd, `${entry.sessionId}.json`);
+      expect(existsSync(archivedPath)).toBe(true);
+
+      const result = registry.deleteEntry(entry.cwd, entry.sessionId);
+      expect(result).toBe(true);
+      expect(existsSync(archivedPath)).toBe(false);
+      expect(registry.readArchivedEntry(entry.cwd, entry.sessionId)).toBeUndefined();
+    });
+
+    it('returns false when entry exists in neither subtree', () => {
+      const registry = new SessionRegistry();
+      expect(registry.deleteEntry('/no', 'nothing')).toBe(false);
+    });
+  });
+
+  describe('loadAll — legacy migration', () => {
+    it('migrates legacy archived entry found in active subtree to archived subtree', () => {
+      const { writeFileSync, mkdirSync } = require('fs');
+      const cwd = '/home/user/legacy-proj';
+      const encodedCwd = cwd.replace(/\//g, '-');
+      const projDir = join(tempDir, encodedCwd);
+      mkdirSync(projDir, { recursive: true });
+
+      const legacyEntry = makeEntry({
+        cwd,
+        sessionId: 'legacy-arch',
+        archived: true,
+        title: 'Legacy archived',
+      });
+      const legacyPath = join(projDir, `${legacyEntry.sessionId}.json`);
+      writeFileSync(legacyPath, JSON.stringify(legacyEntry));
+
+      const registry = new SessionRegistry();
+      registry.loadAll();
+
+      // Active file removed
+      expect(existsSync(legacyPath)).toBe(false);
+      // Archived file exists with same contents
+      const archivedPath = join(
+        tempDir,
+        'archived',
+        encodedCwd,
+        `${legacyEntry.sessionId}.json`,
+      );
+      expect(existsSync(archivedPath)).toBe(true);
+      const onDisk = JSON.parse(readFileSync(archivedPath, 'utf-8'));
+      expect(onDisk).toEqual(legacyEntry);
+
+      // Not in memory
+      expect(registry.getEntry(cwd, legacyEntry.sessionId)).toBeUndefined();
+      // But readable via readArchivedEntry
+      expect(registry.readArchivedEntry(cwd, legacyEntry.sessionId)).toEqual(legacyEntry);
+    });
+
+    it('does not treat the archived/ directory as a project dir when loading active entries', () => {
+      // Pre-seed archived entries on disk by using upsertEntry on a first registry.
+      const seed = new SessionRegistry();
+      seed.upsertEntry(
+        makeEntry({
+          cwd: '/proj-a',
+          sessionId: 'arch-1',
+          archived: true,
+          title: 'Archived A',
+        }),
+      );
+      seed.upsertEntry(makeEntry({ cwd: '/proj-a', sessionId: 'active-1', title: 'Active A' }));
+
+      // Archived subtree exists at tempDir/archived
+      expect(existsSync(join(tempDir, 'archived'))).toBe(true);
+
+      const registry = new SessionRegistry();
+      registry.loadAll();
+
+      // Only the active entry should be in memory
+      const all = registry.getEntriesForProject(undefined);
+      expect(all.map((e) => e.sessionId)).toEqual(['active-1']);
+
+      // And no phantom entry with an "archived" cwd was created
+      expect(registry.getEntriesForProject('/archived')).toEqual([]);
+      // Double-check: no entry whose cwd comes from a decoded "archived" path
+      for (const e of all) {
+        expect(e.cwd).not.toMatch(/archived/);
+      }
+    });
+
+    it('loads mixed: active, pre-archived, and legacy-archived correctly', () => {
+      const { writeFileSync, mkdirSync } = require('fs');
+
+      // Seed via an initial registry: creates one active + one pre-archived file.
+      const seed = new SessionRegistry();
+      seed.upsertEntry(
+        makeEntry({
+          cwd: '/proj-a',
+          sessionId: 'active-1',
+          title: 'Active',
+          lastAccessedAt: 5000,
+        }),
+      );
+      seed.upsertEntry(
+        makeEntry({
+          cwd: '/proj-a',
+          sessionId: 'pre-arch',
+          archived: true,
+          title: 'Pre-archived',
+          lastAccessedAt: 6000,
+        }),
+      );
+
+      // Write a legacy entry directly under active subtree with archived: true.
+      const legacyCwd = '/proj-b';
+      const legacyEncoded = legacyCwd.replace(/\//g, '-');
+      const legacyProjDir = join(tempDir, legacyEncoded);
+      mkdirSync(legacyProjDir, { recursive: true });
+      const legacy = makeEntry({
+        cwd: legacyCwd,
+        sessionId: 'legacy',
+        archived: true,
+        title: 'Legacy',
+        lastAccessedAt: 7000,
+      });
+      const legacyActivePath = join(legacyProjDir, `${legacy.sessionId}.json`);
+      writeFileSync(legacyActivePath, JSON.stringify(legacy));
+
+      // Pre-archived file should already be in archived subtree (from seed upsert).
+      const preArchivedPath = join(tempDir, 'archived', '-proj-a', 'pre-arch.json');
+      expect(existsSync(preArchivedPath)).toBe(true);
+      const preArchivedBefore = readFileSync(preArchivedPath, 'utf-8');
+
+      const registry = new SessionRegistry();
+      registry.loadAll();
+
+      // Only true active entries in memory
+      const inMem = registry.getEntriesForProject(undefined);
+      expect(inMem.map((e) => e.sessionId)).toEqual(['active-1']);
+
+      // Legacy migrated: active file gone, archived file exists
+      expect(existsSync(legacyActivePath)).toBe(false);
+      const legacyArchivedPath = join(
+        tempDir,
+        'archived',
+        legacyEncoded,
+        `${legacy.sessionId}.json`,
+      );
+      expect(existsSync(legacyArchivedPath)).toBe(true);
+      expect(registry.readArchivedEntry(legacyCwd, legacy.sessionId)).toEqual(legacy);
+
+      // Pre-existing archived file untouched (same bytes)
+      expect(existsSync(preArchivedPath)).toBe(true);
+      expect(readFileSync(preArchivedPath, 'utf-8')).toBe(preArchivedBefore);
+
+      // listArchivedEntries returns both archived ones, sorted desc by lastAccessedAt
+      const archived = registry.listArchivedEntries();
+      expect(archived.map((e) => e.sessionId)).toEqual(['legacy', 'pre-arch']);
+    });
+  });
 });

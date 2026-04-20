@@ -1927,8 +1927,7 @@ export class MessageHandler {
   private handleListProjectSummaries(
     message: Message,
   ): Message<ProjectListSummariesResponsePayload> {
-    const allEntries = getSessionRegistry().getEntriesForProject()
-      .filter(e => !e.archived);
+    const allEntries = getSessionRegistry().getEntriesForProject();
 
     // Group by cwd
     const byCwd = new Map<string, SessionRegistryEntry[]>();
