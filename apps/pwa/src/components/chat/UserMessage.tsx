@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { ChatMarkdown } from './ChatMarkdown';
 
 const COLLAPSE_LINE_THRESHOLD = 4;
 
@@ -69,9 +68,9 @@ function PlainUserMessage({ content }: { content: string }) {
   return (
     <div className="bg-slate-700 rounded-lg px-3 py-2 max-w-full inline-block">
       <div
-        className={`chat-markdown overflow-hidden transition-all ${collapsible && !expanded ? 'max-h-24' : ''}`}
+        className={`whitespace-pre-wrap break-words text-sm overflow-hidden transition-all ${collapsible && !expanded ? 'max-h-24' : ''}`}
       >
-        <ChatMarkdown>{content}</ChatMarkdown>
+        {content}
       </div>
       {collapsible && (
         <button
