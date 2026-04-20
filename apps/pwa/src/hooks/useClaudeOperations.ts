@@ -17,6 +17,8 @@ import {
   type SessionControlRequestPayload,
   type SessionControlRequestResponsePayload,
   type SessionUpdateHistoryResponsePayload,
+  type SessionListArchivedRequestPayload,
+  type SessionListArchivedResponsePayload,
   type ProjectListSummariesResponsePayload,
   type ProjectListReposResponsePayload,
 } from '@sumicom/quicksave-shared';
@@ -267,6 +269,35 @@ export function useClaudeOperations(
     [sendCommand],
   );
 
+  const restoreSession = useCallback(
+    async (sessionId: string, cwd: string) => {
+      try {
+        await sendCommand<SessionUpdateHistoryResponsePayload>(
+          'session:update-history',
+          { sessionId, cwd, updates: { archived: false } },
+        );
+      } catch (error) {
+        console.error('Failed to restore session:', error);
+      }
+    },
+    [sendCommand],
+  );
+
+  const listArchivedSessions = useCallback(
+    async (cwd: string, offset = 0, limit = 20) => {
+      try {
+        return await sendCommand<SessionListArchivedResponsePayload, SessionListArchivedRequestPayload>(
+          'session:list-archived',
+          { cwd, offset, limit },
+        );
+      } catch (error) {
+        console.error('Failed to list archived sessions:', error);
+        return null;
+      }
+    },
+    [sendCommand],
+  );
+
   const setPreferences = useCallback(
     (prefs: Partial<ClaudePreferences>) => {
       applyPreferences(prefs); // optimistic
@@ -383,6 +414,8 @@ export function useClaudeOperations(
     cancelSession,
     closeSession,
     archiveSession,
+    restoreSession,
+    listArchivedSessions,
     respondToUserInput,
     setPreferences,
     setSessionPermission,

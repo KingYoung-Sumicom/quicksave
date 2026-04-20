@@ -102,4 +102,5 @@ export const REQUEST_RESPONSE_MAP: Record<string, string> = {
   // Session registry (history)
   'session:update-history': 'session:update-history:response',
   'session:delete-history': 'session:delete-history:response',
+  'session:list-archived': 'session:list-archived:response',
 };

@@ -184,6 +184,67 @@ export class SessionRegistry {
   }
 
   /**
+   * Paginated archived listing. Two-phase so the read cost scales with the
+   * page size, not the total archive count:
+   *   1. `readdir` + `stat` every archived JSON for its mtime (cheap —
+   *      no file open, no parse).
+   *   2. Sort by mtime desc, slice to [offset, offset+limit), then parse
+   *      only the selected page.
+   *
+   * mtime is set at `upsertEntry` time so it equals the moment the session
+   * was archived — which is also what the UI wants as "most recently
+   * archived first". We ignore the JSON's `lastAccessedAt` here because
+   * reading it would require parsing the whole archive.
+   */
+  listArchivedEntriesPage(
+    cwd: string | undefined,
+    offset: number,
+    limit: number,
+  ): { entries: SessionRegistryEntry[]; total: number } {
+    const archivedRoot = join(getSessionRegistryDir(), ARCHIVED_SUBDIR);
+    if (!existsSync(archivedRoot)) return { entries: [], total: 0 };
+
+    const projectDirs = cwd ? [encodeProjectPath(cwd)] : this.listArchivedProjectDirs(archivedRoot);
+
+    const candidates: Array<{ path: string; mtimeMs: number }> = [];
+    for (const projectDir of projectDirs) {
+      const projectPath = join(archivedRoot, projectDir);
+      let files: string[];
+      try {
+        files = readdirSync(projectPath).filter((f) => f.endsWith('.json'));
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        const fullPath = join(projectPath, file);
+        try {
+          candidates.push({ path: fullPath, mtimeMs: statSync(fullPath).mtimeMs });
+        } catch {
+          // file vanished between readdir and stat — ignore
+        }
+      }
+    }
+
+    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const total = candidates.length;
+    const safeOffset = Math.max(0, offset | 0);
+    const safeLimit = Math.max(0, limit | 0);
+    const page = candidates.slice(safeOffset, safeOffset + safeLimit);
+
+    const entries: SessionRegistryEntry[] = [];
+    for (const { path } of page) {
+      try {
+        const raw = readFileSync(path, 'utf-8');
+        const entry = JSON.parse(raw) as SessionRegistryEntry;
+        if (entry.sessionId && entry.cwd) entries.push(entry);
+      } catch (err) {
+        console.warn(`[sessionRegistry] Skipping malformed archived file ${path}:`, err);
+      }
+    }
+    return { entries, total };
+  }
+
+  /**
    * Persist an entry. Routes to active or archived subtree based on
    * `entry.archived`, and removes any stale copy from the other subtree so
    * transitions (archive / unarchive) are atomic from the caller's view.

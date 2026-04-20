@@ -9,7 +9,12 @@ import { ConfirmModal } from './ui/ConfirmModal';
 import { StatusDot, sessionStatusKey } from './SessionStatusBadge';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
 import { pathToHash } from '../lib/pathHash';
-import type { ClaudeSessionSummary, ProjectRepo } from '@sumicom/quicksave-shared';
+import type {
+  ClaudeSessionSummary,
+  ProjectRepo,
+  SessionListArchivedResponsePayload,
+} from '@sumicom/quicksave-shared';
+import { ArchivedSessionsList } from './ArchivedSessionsList';
 
 interface ProjectDetailProps {
   isReady: boolean;
@@ -20,6 +25,8 @@ interface ProjectDetailProps {
   onListProjectRepos?: (cwd: string) => Promise<ProjectRepo[] | null>;
   onRemoveCodingPath?: (path: string) => void;
   onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
+  onListArchivedSessions?: (cwd: string, offset?: number, limit?: number) => Promise<SessionListArchivedResponsePayload | null>;
+  onRestoreSession?: (sessionId: string, cwd: string) => Promise<void>;
 }
 
 export function ProjectDetail({
@@ -31,6 +38,8 @@ export function ProjectDetail({
   onListProjectRepos,
   onRemoveCodingPath,
   onRestartAgent,
+  onListArchivedSessions,
+  onRestoreSession,
 }: ProjectDetailProps) {
   const navigate = useNavigate();
   const { projectId } = useParams<{ projectId: string }>();
@@ -230,6 +239,15 @@ export function ProjectDetail({
               </button>
             </div>
           </div>
+
+          {/* Archived Sessions (collapsible, paginated) */}
+          {cwd && onListArchivedSessions && onRestoreSession && (
+            <ArchivedSessionsList
+              cwd={cwd}
+              onListArchived={onListArchivedSessions}
+              onRestore={onRestoreSession}
+            />
+          )}
 
           {/* Section 2: Git Repos */}
           <div>

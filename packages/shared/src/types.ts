@@ -127,6 +127,8 @@ export type MessageType =
   | 'session:update-history:response' // agent-response: update ack
   | 'session:delete-history'         // pwa-request: delete session history entry
   | 'session:delete-history:response' // agent-response: delete ack
+  | 'session:list-archived'          // pwa-request: paginated archived history
+  | 'session:list-archived:response' // agent-response: page of archived entries
   | 'session:history-updated'        // agent-push: session history changed
   // Push notifications (PWA → agent: hand off a web-push subscription for relay-side delivery)
   | 'push:subscription-offer'
@@ -408,9 +410,40 @@ export interface SessionDeleteHistoryResponsePayload {
   error?: string;
 }
 
+export interface SessionListArchivedRequestPayload {
+  cwd: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface SessionListArchivedResponsePayload {
+  entries: BroadcastSessionEntry[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+/**
+ * `SessionRegistryEntry` enriched with live stats pulled from the event store
+ * at broadcast time. These fields are NOT persisted on the registry JSON —
+ * they're joined in at snapshot/publish so inactive sessions can still render
+ * their context/cache usage without duplicating the blob to disk.
+ */
+export interface BroadcastSessionEntry extends SessionRegistryEntry {
+  lastPromptAt?: number;
+  lastTurnEndedAt?: number;
+  turnCount?: number;
+  totalInputTokens?: number;
+  totalOutputTokens?: number;
+  lastTurnInputTokens?: number;
+  lastTurnCacheCreationTokens?: number;
+  lastTurnCacheReadTokens?: number;
+  lastTurnContextUsage?: ContextUsageBreakdown;
+}
+
 export interface SessionHistoryUpdatedPayload {
   cwd: string;
-  entry: SessionRegistryEntry;
+  entry: BroadcastSessionEntry;
   action: 'upsert' | 'delete';
 }
 

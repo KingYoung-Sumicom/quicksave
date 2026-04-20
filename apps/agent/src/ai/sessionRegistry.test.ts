@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync } from 'fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync, utimesSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { SessionRegistryEntry } from '@sumicom/quicksave-shared';
@@ -523,6 +523,119 @@ describe('SessionRegistry', () => {
       expect(all).toHaveLength(2);
       expect(all[0].sessionId).toBe('b1');
       expect(all[1].sessionId).toBe('a1');
+    });
+  });
+
+  describe('listArchivedEntriesPage', () => {
+    // Helper: seed an archived entry then pin its mtime so ordering is deterministic.
+    function seedArchived(
+      registry: InstanceType<typeof SessionRegistry>,
+      cwd: string,
+      sessionId: string,
+      mtimeSeconds: number,
+    ) {
+      registry.upsertEntry(makeEntry({ cwd, sessionId, archived: true }));
+      const encodedCwd = cwd.replace(/\//g, '-');
+      const filePath = join(tempDir, 'archived', encodedCwd, `${sessionId}.json`);
+      utimesSync(filePath, mtimeSeconds, mtimeSeconds);
+    }
+
+    it('returns {entries:[], total:0} when archived subtree is missing', () => {
+      const registry = new SessionRegistry();
+      expect(registry.listArchivedEntriesPage('/proj-a', 0, 20)).toEqual({ entries: [], total: 0 });
+      expect(registry.listArchivedEntriesPage(undefined, 0, 20)).toEqual({ entries: [], total: 0 });
+    });
+
+    it('returns entries sorted by file mtime desc (newest archived first)', () => {
+      const registry = new SessionRegistry();
+      seedArchived(registry, '/proj-a', 'oldest', 1_000);
+      seedArchived(registry, '/proj-a', 'middle', 2_000);
+      seedArchived(registry, '/proj-a', 'newest', 3_000);
+
+      const { entries, total } = registry.listArchivedEntriesPage('/proj-a', 0, 20);
+      expect(total).toBe(3);
+      expect(entries.map((e) => e.sessionId)).toEqual(['newest', 'middle', 'oldest']);
+    });
+
+    it('paginates correctly: offset+limit returns a slice; total counts all', () => {
+      const registry = new SessionRegistry();
+      for (let i = 0; i < 5; i++) {
+        seedArchived(registry, '/proj-a', `s${i}`, 1_000 + i);
+      }
+
+      const page1 = registry.listArchivedEntriesPage('/proj-a', 0, 2);
+      expect(page1.total).toBe(5);
+      expect(page1.entries.map((e) => e.sessionId)).toEqual(['s4', 's3']);
+
+      const page2 = registry.listArchivedEntriesPage('/proj-a', 2, 2);
+      expect(page2.total).toBe(5);
+      expect(page2.entries.map((e) => e.sessionId)).toEqual(['s2', 's1']);
+
+      const page3 = registry.listArchivedEntriesPage('/proj-a', 4, 2);
+      expect(page3.total).toBe(5);
+      expect(page3.entries.map((e) => e.sessionId)).toEqual(['s0']);
+    });
+
+    it('returns empty entries but correct total when offset exceeds size', () => {
+      const registry = new SessionRegistry();
+      seedArchived(registry, '/proj-a', 's1', 1_000);
+
+      const result = registry.listArchivedEntriesPage('/proj-a', 100, 20);
+      expect(result.total).toBe(1);
+      expect(result.entries).toEqual([]);
+    });
+
+    it('filters by cwd when provided', () => {
+      const registry = new SessionRegistry();
+      seedArchived(registry, '/proj-a', 'a1', 1_000);
+      seedArchived(registry, '/proj-a', 'a2', 2_000);
+      seedArchived(registry, '/proj-b', 'b1', 3_000);
+
+      const forA = registry.listArchivedEntriesPage('/proj-a', 0, 20);
+      expect(forA.total).toBe(2);
+      expect(forA.entries.map((e) => e.sessionId)).toEqual(['a2', 'a1']);
+
+      const forB = registry.listArchivedEntriesPage('/proj-b', 0, 20);
+      expect(forB.total).toBe(1);
+      expect(forB.entries.map((e) => e.sessionId)).toEqual(['b1']);
+    });
+
+    it('merges across all projects when cwd is undefined', () => {
+      const registry = new SessionRegistry();
+      seedArchived(registry, '/proj-a', 'a-old', 1_000);
+      seedArchived(registry, '/proj-b', 'b-new', 3_000);
+      seedArchived(registry, '/proj-a', 'a-new', 2_000);
+
+      const all = registry.listArchivedEntriesPage(undefined, 0, 20);
+      expect(all.total).toBe(3);
+      expect(all.entries.map((e) => e.sessionId)).toEqual(['b-new', 'a-new', 'a-old']);
+    });
+
+    it('returns total=0 for a cwd that has no archived entries', () => {
+      const registry = new SessionRegistry();
+      seedArchived(registry, '/proj-a', 's1', 1_000);
+
+      const result = registry.listArchivedEntriesPage('/proj-b', 0, 20);
+      expect(result).toEqual({ entries: [], total: 0 });
+    });
+
+    it('does not include active (non-archived) entries', () => {
+      const registry = new SessionRegistry();
+      registry.upsertEntry(makeEntry({ cwd: '/proj-a', sessionId: 'active-1' }));
+      seedArchived(registry, '/proj-a', 'archived-1', 1_000);
+
+      const result = registry.listArchivedEntriesPage('/proj-a', 0, 20);
+      expect(result.total).toBe(1);
+      expect(result.entries[0].sessionId).toBe('archived-1');
+    });
+
+    it('clamps negative offset and limit to zero', () => {
+      const registry = new SessionRegistry();
+      seedArchived(registry, '/proj-a', 's1', 1_000);
+
+      const neg = registry.listArchivedEntriesPage('/proj-a', -5, -10);
+      expect(neg.total).toBe(1);
+      expect(neg.entries).toEqual([]);
     });
   });
 

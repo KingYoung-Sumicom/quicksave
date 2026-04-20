@@ -1,11 +1,11 @@
-import type { SessionHistoryUpdatedPayload, SessionRegistryEntry } from '@sumicom/quicksave-shared';
+import type { BroadcastSessionEntry, SessionHistoryUpdatedPayload } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
 
 /**
  * Apply a single session-registry entry to the store.
  * Archived entries are removed (the PWA hides archived sessions).
  */
-export function applyHistoryEntry(entry: SessionRegistryEntry, machineAgentId: string): void {
+export function applyHistoryEntry(entry: BroadcastSessionEntry, machineAgentId: string): void {
   const { removeSession, upsertSession } = useClaudeStore.getState();
   if (entry.archived) {
     removeSession(entry.sessionId);
@@ -23,6 +23,18 @@ export function applyHistoryEntry(entry: SessionRegistryEntry, machineAgentId: s
     messageCount: entry.messageCount,
     totalCostUsd: entry.totalCostUsd,
     permissionMode: entry.permissionMode,
+    // Runtime-enriched from the event store at broadcast time so inactive
+    // sessions still get cache / context usage — otherwise `SessionStatsBar`
+    // renders nothing until the session is hot-resumed.
+    lastPromptAt: entry.lastPromptAt,
+    lastTurnEndedAt: entry.lastTurnEndedAt,
+    turnCount: entry.turnCount,
+    totalInputTokens: entry.totalInputTokens,
+    totalOutputTokens: entry.totalOutputTokens,
+    lastTurnInputTokens: entry.lastTurnInputTokens,
+    lastTurnCacheCreationTokens: entry.lastTurnCacheCreationTokens,
+    lastTurnCacheReadTokens: entry.lastTurnCacheReadTokens,
+    lastTurnContextUsage: entry.lastTurnContextUsage,
   });
 }
 

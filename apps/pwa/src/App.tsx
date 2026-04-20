@@ -30,7 +30,7 @@ import {
   type PushSubscriptionOfferPayload,
   type SessionConfigUpdatedPayload,
   type SessionHistoryUpdatedPayload,
-  type SessionRegistryEntry,
+  type BroadcastSessionEntry,
   type SessionUpdatePayload,
 } from '@sumicom/quicksave-shared';
 import { applySessionUpdate } from './lib/applySessionUpdate';
@@ -90,7 +90,7 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
     onError: (err) => console.warn('[bus] /preferences error:', err),
   });
 
-  bus.subscribe<SessionRegistryEntry[], SessionHistoryUpdatedPayload>('/sessions/history', {
+  bus.subscribe<BroadcastSessionEntry[], SessionHistoryUpdatedPayload>('/sessions/history', {
     onSnapshot: (entries) => {
       for (const entry of entries) applyHistoryEntry(entry, agentId);
     },
@@ -249,6 +249,8 @@ function AppContent() {
     cancelSession,
     closeSession,
     archiveSession,
+    restoreSession,
+    listArchivedSessions,
     respondToUserInput,
     setSessionConfig,
     sendControlRequest,
@@ -799,6 +801,8 @@ function AppContent() {
       onListProjectRepos={listProjectRepos}
       onRemoveCodingPath={removeCodingPath}
       onRestartAgent={restartAgent}
+      onListArchivedSessions={listArchivedSessions}
+      onRestoreSession={restoreSession}
     />
   );
 
@@ -1037,12 +1041,16 @@ function ProjectRouteDetail({
   onListProjectRepos,
   onRemoveCodingPath,
   onRestartAgent,
+  onListArchivedSessions,
+  onRestoreSession,
 }: {
   onConnect: (agentId: string, publicKey: string) => void;
   onSwitchMachine: (agentId: string) => void;
   onListProjectRepos?: (cwd: string) => Promise<import('@sumicom/quicksave-shared').ProjectRepo[] | null>;
   onRemoveCodingPath?: (path: string) => void;
   onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
+  onListArchivedSessions?: (cwd: string, offset?: number, limit?: number) => Promise<import('@sumicom/quicksave-shared').SessionListArchivedResponsePayload | null>;
+  onRestoreSession?: (sessionId: string, cwd: string) => Promise<void>;
 }) {
   const { projectId } = useParams<{ projectId: string }>();
   const { isReady, isConnecting, isError, cwd, agentId } = useProjectConnection(projectId, onConnect, onSwitchMachine);
@@ -1057,6 +1065,8 @@ function ProjectRouteDetail({
       onListProjectRepos={onListProjectRepos}
       onRemoveCodingPath={onRemoveCodingPath}
       onRestartAgent={onRestartAgent}
+      onListArchivedSessions={onListArchivedSessions}
+      onRestoreSession={onRestoreSession}
     />
   );
 }

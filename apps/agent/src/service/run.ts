@@ -47,13 +47,14 @@ import {
   type MessageType,
   type Repository,
   type SessionCardsUpdate,
+  type BroadcastSessionEntry,
   type SessionConfigUpdatedPayload,
   type SessionHistoryUpdatedPayload,
-  type SessionRegistryEntry,
   type SessionUpdatePayload,
 } from '@sumicom/quicksave-shared';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { getEventStore } from '../storage/eventStore.js';
+import { enrichEntry } from '../ai/enrichEntry.js';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const PACKAGE_VERSION = '0.7.1';
@@ -181,9 +182,9 @@ export async function runDaemon(): Promise<void> {
 
   // Session registry entries (historical + active). Snapshot returns every
   // entry across all cwds; updates publish single upsert/delete events.
-  bus.onSubscribe<'/sessions/history', SessionRegistryEntry[], SessionHistoryUpdatedPayload>(
+  bus.onSubscribe<'/sessions/history', BroadcastSessionEntry[], SessionHistoryUpdatedPayload>(
     '/sessions/history',
-    { snapshot: () => getSessionRegistry().getEntriesForProject() },
+    { snapshot: () => getSessionRegistry().getEntriesForProject().map(enrichEntry) },
   );
 
   // Per-repo AI commit-summary generation state. Snapshot = every tracked
@@ -418,6 +419,7 @@ export async function runDaemon(): Promise<void> {
     'session:control-request',
     'session:update-history',
     'session:delete-history',
+    'session:list-archived',
     // project
     'project:list-summaries',
     'project:list-repos',
@@ -464,7 +466,10 @@ export async function runDaemon(): Promise<void> {
   // delivered via the bus (`/sessions/:id/cards` + `/sessions/active`), so the
   // legacy per-session pubsub subscribe/unsubscribe wiring is no longer used.
   messageHandler.onHistoryUpdated = (cwd, entry, action) => {
-    bus.publish<SessionHistoryUpdatedPayload>('/sessions/history', { cwd, entry, action });
+    // For deletes the entry is a tombstone — SQLite join would be noise, and
+    // downstream consumers only key off `entry.sessionId` + `action`.
+    const enriched = action === 'delete' ? entry : enrichEntry(entry);
+    bus.publish<SessionHistoryUpdatedPayload>('/sessions/history', { cwd, entry: enriched, action });
   };
 
   // Wire: incoming PWA messages → MessageHandler → response back to PWA.

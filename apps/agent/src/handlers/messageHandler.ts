@@ -91,6 +91,8 @@ import {
   SessionUpdateHistoryResponsePayload,
   SessionDeleteHistoryRequestPayload,
   SessionDeleteHistoryResponsePayload,
+  SessionListArchivedRequestPayload,
+  SessionListArchivedResponsePayload,
   CodexModelInfo,
   CodexListModelsResponsePayload,
   ProjectListSummariesResponsePayload,
@@ -111,6 +113,7 @@ import { SessionManager } from '../ai/sessionManager.js';
 import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
 import { CodexSdkProvider } from '../ai/codexSdkProvider.js';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
+import { enrichEntry } from '../ai/enrichEntry.js';
 import { getEventStore } from '../storage/eventStore.js';
 import { readdir, stat, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
@@ -492,6 +495,8 @@ export class MessageHandler {
           return this.handleUpdateHistory(message as Message<SessionUpdateHistoryRequestPayload>);
         case 'session:delete-history':
           return this.handleDeleteHistory(message as Message<SessionDeleteHistoryRequestPayload>);
+        case 'session:list-archived':
+          return this.handleListArchived(message as Message<SessionListArchivedRequestPayload>);
         case 'project:list-summaries':
           return this.handleListProjectSummaries(message);
         case 'project:list-repos':
@@ -1921,6 +1926,19 @@ export class MessageHandler {
     if (success && entry) {
       this.onHistoryUpdated?.(cwd, entry, 'delete');
     }
+    return response;
+  }
+
+  private handleListArchived(
+    message: Message<SessionListArchivedRequestPayload>,
+  ): Message<SessionListArchivedResponsePayload> {
+    const { cwd, offset = 0, limit = 20 } = message.payload;
+    const { entries, total } = getSessionRegistry().listArchivedEntriesPage(cwd, offset, limit);
+    const response = createMessage<SessionListArchivedResponsePayload>(
+      'session:list-archived:response',
+      { entries: entries.map(enrichEntry), total, offset, limit },
+    );
+    response.id = message.id;
     return response;
   }
 
