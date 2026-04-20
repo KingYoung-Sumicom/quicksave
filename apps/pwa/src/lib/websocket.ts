@@ -25,7 +25,7 @@ export type ConnectionEventHandler = {
   onConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], preferences?: ClaudePreferences, agentVersion?: string, latestVersion?: string, devBuild?: boolean, codexModels?: CodexModelInfo[]) => void;
   onDisconnected: (agentId?: string) => void;
   onReconnecting: (attempt: number, maxAttempts: number) => void;
-  onMessage: (message: Message) => void;
+  onMessage: (message: Message, fromAgentId: string) => void;
   onError: (error: Error) => void;
   onConnectionStep: (step: ConnectionStep, attempt?: number) => void;
   onAgentStatus: (agentId: string, online: boolean) => void;
@@ -106,9 +106,9 @@ export class WebSocketClient {
     // Cross-tab relay: listen for push messages broadcast by the tab that owns the relay connection
     this.crossTabChannel = new BroadcastChannel('quicksave-agent-push');
     this.crossTabChannel.onmessage = (event) => {
-      const message = event.data as Message;
-      if (message?.type && CROSS_TAB_MESSAGE_TYPES.has(message.type)) {
-        this.eventHandlers.onMessage(message);
+      const { message, fromAgentId } = (event.data ?? {}) as { message?: Message; fromAgentId?: string };
+      if (message?.type && fromAgentId && CROSS_TAB_MESSAGE_TYPES.has(message.type)) {
+        this.eventHandlers.onMessage(message, fromAgentId);
       }
     };
   }
@@ -485,11 +485,11 @@ export class WebSocketClient {
         return;
       }
 
-      this.eventHandlers.onMessage(message);
+      this.eventHandlers.onMessage(message, session.agentId);
       // Relay broadcast events to other tabs so their session list indicators stay current.
       // BroadcastChannel doesn't deliver to the sender, so there's no loop risk.
       if (CROSS_TAB_MESSAGE_TYPES.has(message.type)) {
-        this.crossTabChannel?.postMessage(message);
+        this.crossTabChannel?.postMessage({ message, fromAgentId: session.agentId });
       }
     } catch (error) {
       console.error('Failed to handle message:', error);

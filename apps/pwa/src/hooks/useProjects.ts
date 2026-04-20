@@ -33,16 +33,18 @@ export function useProjects(): ProjectEntry[] {
   return useMemo(() => {
     const pinnedSet = new Set(pinnedProjectIds);
 
-    // Pre-compute live session stats per cwd from all sessions.
+    // Pre-compute live session stats keyed by `{agentId}\0{cwd}` so the same
+    // cwd on two different machines doesn't collide.
     // Use lastPromptAt (stable during execution) in preference to lastModified
     // (updates on every streaming event — causes projects to jump in the list).
     const liveStats = new Map<string, { lastActivityAt: number; sessionCount: number; lastSessionTitle?: string; hasActiveSession: boolean }>();
     for (const session of Object.values(sessions)) {
-      if (!session.cwd) continue;
+      if (!session.cwd || !session.machineAgentId) continue;
+      const key = `${session.machineAgentId}\0${session.cwd}`;
       const ts = session.lastPromptAt ?? session.lastModified;
-      const existing = liveStats.get(session.cwd);
+      const existing = liveStats.get(key);
       if (!existing) {
-        liveStats.set(session.cwd, {
+        liveStats.set(key, {
           lastActivityAt: ts,
           sessionCount: 1,
           lastSessionTitle: session.summary,
@@ -73,7 +75,7 @@ export function useProjects(): ProjectEntry[] {
       for (const [cwd, cached] of Object.entries(machine.cachedProjects || {})) {
         seenCwds.add(cwd);
         const projectId = toProjectId(machine.agentId, cwd);
-        const live = machineIsConnected ? liveStats.get(cwd) : undefined;
+        const live = machineIsConnected ? liveStats.get(`${machine.agentId}\0${cwd}`) : undefined;
         entries.push({
           projectId,
           agentId: machine.agentId,
@@ -94,7 +96,7 @@ export function useProjects(): ProjectEntry[] {
       for (const cwd of machine.knownCodingPaths || []) {
         if (seenCwds.has(cwd)) continue;
         const projectId = toProjectId(machine.agentId, cwd);
-        const live = machineIsConnected ? liveStats.get(cwd) : undefined;
+        const live = machineIsConnected ? liveStats.get(`${machine.agentId}\0${cwd}`) : undefined;
         entries.push({
           projectId,
           agentId: machine.agentId,

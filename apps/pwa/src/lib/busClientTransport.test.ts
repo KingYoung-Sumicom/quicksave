@@ -8,22 +8,27 @@ import { BusClientTransport } from './busClientTransport.js';
 
 // ── Stubs ──
 
+const AGENT_ID = 'agent-1';
+
 /**
- * Minimal WebSocketClient stand-in: records calls to send().
- * The adapter should only interact with `send(message)`.
+ * Minimal WebSocketClient stand-in: records calls to sendToAgent().
+ * The per-agent transport routes sends via `sendToAgent(agentId, message)`.
  */
 class FakeWebSocketClient {
   public sendCalls: Message[] = [];
+  public sendToAgentCalls: Array<{ agentId: string; message: Message }> = [];
 
-  send(message: Message): void {
+  sendToAgent(agentId: string, message: Message): void {
+    this.sendToAgentCalls.push({ agentId, message });
     this.sendCalls.push(message);
   }
 }
 
-function makeTransport() {
+function makeTransport(agentId: string = AGENT_ID) {
   const client = new FakeWebSocketClient();
   const transport = new BusClientTransport(
-    client as unknown as import('./websocket.js').WebSocketClient
+    client as unknown as import('./websocket.js').WebSocketClient,
+    agentId
   );
   return { client, transport };
 }
@@ -149,7 +154,7 @@ describe('BusClientTransport — notifyMessage inbound', () => {
 
     const frame = snapFrame();
     const envelope = createMessage('bus:frame', frame);
-    const result = transport.notifyMessage(envelope);
+    const result = transport.notifyMessage(envelope, AGENT_ID);
 
     expect(result).toBe(true);
     expect(h1).toHaveBeenCalledTimes(1);
@@ -163,11 +168,31 @@ describe('BusClientTransport — notifyMessage inbound', () => {
     const h = vi.fn();
     transport.onFrame(h);
 
-    const gitResult = transport.notifyMessage(createMessage('git:status', { branch: 'main' }));
-    const claudeResult = transport.notifyMessage(createMessage('claude:start', { cwd: '/x' }));
+    const gitResult = transport.notifyMessage(
+      createMessage('git:status', { branch: 'main' }),
+      AGENT_ID
+    );
+    const claudeResult = transport.notifyMessage(
+      createMessage('claude:start', { cwd: '/x' }),
+      AGENT_ID
+    );
 
     expect(gitResult).toBe(false);
     expect(claudeResult).toBe(false);
+    expect(h).not.toHaveBeenCalled();
+  });
+
+  it('drops bus:frame messages from other agents', () => {
+    const { transport } = makeTransport();
+    const h = vi.fn();
+    transport.onFrame(h);
+
+    const result = transport.notifyMessage(
+      createMessage('bus:frame', snapFrame()),
+      'other-agent'
+    );
+
+    expect(result).toBe(false);
     expect(h).not.toHaveBeenCalled();
   });
 
@@ -178,21 +203,22 @@ describe('BusClientTransport — notifyMessage inbound', () => {
     transport.onFrame(() => order.push('b'));
     transport.onFrame(() => order.push('c'));
 
-    transport.notifyMessage(createMessage('bus:frame', snapFrame()));
+    transport.notifyMessage(createMessage('bus:frame', snapFrame()), AGENT_ID);
 
     expect(order).toEqual(['a', 'b', 'c']);
   });
 });
 
 describe('BusClientTransport — outbound send', () => {
-  it('wraps the frame in a bus:frame Message and forwards to client.send', () => {
+  it('wraps the frame in a bus:frame Message and routes via sendToAgent with the bound agentId', () => {
     const { client, transport } = makeTransport();
     const frame = subFrame();
 
     transport.send(frame);
 
-    expect(client.sendCalls).toHaveLength(1);
-    const envelope = client.sendCalls[0];
+    expect(client.sendToAgentCalls).toHaveLength(1);
+    const { agentId, message: envelope } = client.sendToAgentCalls[0];
+    expect(agentId).toBe(AGENT_ID);
     expect(envelope).toMatchObject({
       type: 'bus:frame',
       payload: frame,

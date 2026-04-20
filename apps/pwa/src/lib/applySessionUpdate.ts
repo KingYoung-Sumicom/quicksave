@@ -9,7 +9,7 @@ import { useClaudeStore } from '../stores/claudeStore';
  * the current store state before writing, and syncs the streaming/agent/
  * permission-mode UI refs when the updated session is the active one.
  */
-export function applySessionUpdate(payload: SessionUpdatePayload): void {
+export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId: string): void {
   const {
     sessions,
     activeSessionId,
@@ -23,6 +23,7 @@ export function applySessionUpdate(payload: SessionUpdatePayload): void {
   const current = sessions[payload.sessionId];
   if (
     current &&
+    current.machineAgentId === machineAgentId &&
     current.isActive === payload.isActive &&
     current.archived === payload.archived &&
     current.isStreaming === payload.isStreaming &&
@@ -45,6 +46,7 @@ export function applySessionUpdate(payload: SessionUpdatePayload): void {
 
   upsertSession({
     sessionId: payload.sessionId,
+    machineAgentId,
     isActive: payload.isActive,
     archived: payload.archived,
     isStreaming: payload.isStreaming,

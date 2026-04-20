@@ -7,25 +7,20 @@ import type {
 import type { WebSocketClient } from './websocket.js';
 
 /**
- * Client-side adapter exposing {@link WebSocketClient} as a
- * {@link ClientTransport} for {@link MessageBusClient}.
+ * Per-agent adapter exposing a single agent's {@link WebSocketClient} session
+ * as a {@link ClientTransport} for {@link MessageBusClient}.
  *
- * Integration model:
- *  - The adapter is fed incoming {@link Message}s via {@link notifyMessage}
- *    rather than registering its own handler on the shared client. The host
- *    (e.g. the `useClaudeOperations` hook) calls `notifyMessage` from its
- *    existing `onMessage` pump; if the message is a `bus:frame`, the adapter
- *    consumes it and returns `true`, otherwise the host routes it as usual.
- *  - Connected / disconnected / error state is fed through
- *    {@link notifyConnected}, {@link notifyDisconnected}, which mirror the
- *    events the hook already observes.
- *  - `send()` wraps the outgoing {@link ClientFrame} in a `bus:frame`
- *    envelope and calls `WebSocketClient.send()`.
- *
- * Rationale: the existing `WebSocketClient` uses a single-handler callback
- * model (`ConnectionEventHandler.onMessage`). Adding a second consumer would
- * require invasive changes to the client; letting the adapter be driven
- * externally keeps the change surface tight for Phase 2.
+ * Each instance is bound to one `agentId` so multi-agent mode can run one
+ * `MessageBusClient` per connected agent. The adapter:
+ *  - Sends via `WebSocketClient.sendToAgent(agentId, …)` — independent of the
+ *    client's shared `activeAgentId`, so commands from agent A don't get
+ *    misrouted if the UI has activated agent B.
+ *  - Consumes incoming `bus:frame` envelopes only when the source agentId
+ *    matches, letting the host fan a single `onMessage` stream into
+ *    per-agent transports.
+ *  - Receives connect/disconnect signals from the host (via
+ *    {@link notifyConnected} / {@link notifyDisconnected}), mirroring the
+ *    events the host already observes on the shared client.
  */
 export class BusClientTransport implements ClientTransport {
   private frameHandlers: Array<(frame: ServerFrame) => void> = [];
@@ -33,14 +28,16 @@ export class BusClientTransport implements ClientTransport {
   private disconnectHandlers: Array<() => void> = [];
   private connected = false;
 
-  constructor(private client: WebSocketClient) {}
+  constructor(private client: WebSocketClient, private agentId: string) {}
 
   /**
-   * Feed an incoming Message observed by the host's `onMessage` pump.
-   * Returns `true` if the message was a `bus:frame` and was consumed by
-   * the adapter, `false` if the host should handle it normally.
+   * Feed an incoming Message observed by the host's `onMessage` pump. The
+   * host knows which agent the message came from; the adapter drops frames
+   * from other agents so each bus instance sees only its own traffic.
+   * Returns `true` if the message was consumed.
    */
-  notifyMessage(message: Message): boolean {
+  notifyMessage(message: Message, fromAgentId: string): boolean {
+    if (fromAgentId !== this.agentId) return false;
     if (message.type !== 'bus:frame') return false;
     const frame = message.payload as ServerFrame;
     for (const h of this.frameHandlers) h(frame);
@@ -48,7 +45,7 @@ export class BusClientTransport implements ClientTransport {
   }
 
   /**
-   * Signal that the underlying link is ready (post key-exchange).
+   * Signal that this agent's link is ready (post key-exchange).
    * Fires the ClientTransport `connected` event once per transition.
    */
   notifyConnected(): void {
@@ -57,7 +54,7 @@ export class BusClientTransport implements ClientTransport {
     for (const h of this.connectHandlers) h();
   }
 
-  /** Signal that the underlying link has gone down. Idempotent. */
+  /** Signal that this agent's link has gone down. Idempotent. */
   notifyDisconnected(): void {
     if (!this.connected) return;
     this.connected = false;
@@ -66,7 +63,7 @@ export class BusClientTransport implements ClientTransport {
 
   send(frame: ClientFrame): void {
     const envelope = createMessage('bus:frame', frame);
-    this.client.send(envelope);
+    this.client.sendToAgent(this.agentId, envelope);
   }
 
   onFrame(handler: (frame: ServerFrame) => void): void {

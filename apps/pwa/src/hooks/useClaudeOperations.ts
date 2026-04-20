@@ -25,7 +25,7 @@ import { useClaudeStore } from '../stores/claudeStore';
 import { applySessionCardsSnapshot, applySessionCardsUpdate } from '../lib/applySessionCards';
 
 export function useClaudeOperations(
-  busRef: React.RefObject<MessageBusClient | null>,
+  getBus: () => MessageBusClient | null,
 ) {
   // Per-session unsubscribe fns for /sessions/:id/cards bus subscriptions.
   const cardsUnsubsRef = useRef<Map<string, () => void>>(new Map());
@@ -60,11 +60,11 @@ export function useClaudeOperations(
    */
   const sendCommand = useCallback(
     <R, P = unknown>(verb: string, payload: P, timeoutMs = 30000): Promise<R> => {
-      const bus = busRef.current;
+      const bus = getBus();
       if (!bus) return Promise.reject(new Error('Not connected'));
       return bus.command<R, P>(verb, payload, { timeoutMs, queueWhileDisconnected: true });
     },
-    [busRef],
+    [getBus],
   );
 
   /**
@@ -80,7 +80,7 @@ export function useClaudeOperations(
   const getSessionCards = useCallback(
     async (sessionId: string, offset = 0, limit = 50, cwd?: string, subscribeOnly = false) => {
       if (offset === 0) {
-        const bus = busRef.current;
+        const bus = getBus();
         if (!bus) return;
         if (cardsUnsubsRef.current.has(sessionId)) return; // already subscribed
         if (!subscribeOnly) {
@@ -126,7 +126,7 @@ export function useClaudeOperations(
         setLoadingHistory(false);
       }
     },
-    [busRef, sendCommand, prependCards, setHistoryMeta, setLoadingHistory, setHistoryError]
+    [getBus, sendCommand, prependCards, setHistoryMeta, setLoadingHistory, setHistoryError]
   );
 
   const startSession = useCallback(

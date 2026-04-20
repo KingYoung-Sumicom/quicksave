@@ -56,25 +56,31 @@ import { mergeSyncPayloads, syncPayloadsEqual, type SyncPayloadV3 } from './lib/
 import { useMediaQuery } from './hooks/useMediaQuery';
 
 /**
- * Subscribe the client to all agent-pushed state paths. Snapshots deliver
- * the current value atomically on the sub frame (covering the reconnect /
- * key-exchange race window); subsequent publishes arrive as `onUpdate`.
+ * Subscribe one agent's bus to all agent-pushed state paths. Snapshots
+ * deliver the current value atomically on the sub frame (covering the
+ * reconnect / key-exchange race window); subsequent publishes arrive as
+ * `onUpdate`.
  *
- * Subscriptions are kept alive for the bus lifetime — the underlying client
- * auto-re-sends `sub` frames on reconnect, so we don't need to re-bind here.
+ * Called once per agent when that agent's bus is lazily created. In
+ * multi-agent mode each agent gets its own bus so subscriptions fan out
+ * correctly (the shared transport would only have reached whichever
+ * agent was active at subscribe time).
+ *
+ * `agentId` is captured so handlers can tag records with the originating
+ * machine — critical for filtering sessions by project (the same cwd
+ * string on two different machines must not collide).
  */
-function subscribeAllPaths(bus: MessageBusClient): void {
+function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
   bus.subscribe<SessionUpdatePayload[], SessionUpdatePayload>('/sessions/active', {
     onSnapshot: (sessions) => {
-      // The snap is authoritative — it's the complete list of the agent's
-      // in-memory sessions. Any session the store has marked isActive=true
-      // that is NOT in this list must be demoted, otherwise a stale green
-      // badge survives reconnect (producing a visible "flash green then gray").
+      // The snap is authoritative for THIS agent — any session the store
+      // has marked isActive=true for this agent that is NOT in the snap
+      // must be demoted, otherwise a stale green badge survives reconnect.
       const liveIds = new Set(sessions.map((s) => s.sessionId));
-      useClaudeStore.getState().reconcileActiveSessions(liveIds);
-      for (const s of sessions) applySessionUpdate(s);
+      useClaudeStore.getState().reconcileActiveSessions(liveIds, agentId);
+      for (const s of sessions) applySessionUpdate(s, agentId);
     },
-    onUpdate: (session) => applySessionUpdate(session),
+    onUpdate: (session) => applySessionUpdate(session, agentId),
     onError: (err) => console.warn('[bus] /sessions/active error:', err),
   });
 
@@ -86,9 +92,9 @@ function subscribeAllPaths(bus: MessageBusClient): void {
 
   bus.subscribe<SessionRegistryEntry[], SessionHistoryUpdatedPayload>('/sessions/history', {
     onSnapshot: (entries) => {
-      for (const entry of entries) applyHistoryEntry(entry);
+      for (const entry of entries) applyHistoryEntry(entry, agentId);
     },
-    onUpdate: (payload) => applyHistoryAction(payload),
+    onUpdate: (payload) => applyHistoryAction(payload, agentId),
     onError: (err) => console.warn('[bus] /sessions/history error:', err),
   });
 
@@ -122,12 +128,19 @@ function applyCommitSummary(state: CommitSummaryState): void {
   useGitStore.getState().applyCommitSummaryState(state);
 }
 
+interface AgentBus {
+  transport: BusClientTransport;
+  bus: MessageBusClient;
+}
+
 function AppContent() {
   const clientRef = useRef<WebSocketClient | null>(null);
-  // MessageBus is the primary RPC/pubsub pipe. All commands and subscriptions
-  // flow through it; the legacy onMessage pump only forwards to the bus now.
-  const busTransportRef = useRef<BusClientTransport | null>(null);
-  const busRef = useRef<MessageBusClient | null>(null);
+  // One MessageBus per connected agent. Each bus owns its own subscriptions
+  // so `/sessions/history` etc. reach every agent, not just whichever one
+  // was active when the shared bus first subscribed. Commands route via
+  // `sendToAgent(agentId, …)` so they reach the right peer regardless of
+  // the client's shared activeAgentId.
+  const busesRef = useRef<Map<string, AgentBus>>(new Map());
   const navigate = useNavigate();
   const location = useLocation();
   const intentionalDisconnectRef = useRef(false);
@@ -155,6 +168,36 @@ function AppContent() {
   const applySyncedState = useMachineStore((s) => s.applySyncedState);
   const { initialize: initIdentity, publicKey: identityPublicKey, pairedDevices, getSecretKey, clearAll: clearIdentity, removePairedDevice, initialized: identityInitialized } = useIdentityStore();
   const agentIdRef = useRef<string | null>(null);
+
+  // Resolve the MessageBus for whichever agent the client currently treats
+  // as active. Commands flow through the active agent's bus; sends inside
+  // BusClientTransport target that agent explicitly, so re-activating during
+  // a multi-agent session won't misroute an in-flight command.
+  const getActiveBus = useCallback((): MessageBusClient | null => {
+    const aid = clientRef.current?.getActiveAgentId();
+    if (!aid) return null;
+    return busesRef.current.get(aid)?.bus ?? null;
+  }, []);
+
+  // Lazily create the per-agent bus + transport and register its
+  // subscriptions. Called on each agent's handshake:ack; idempotent so
+  // reconnects reuse the same bus (preserves the subscription cache and
+  // pending-command queue).
+  const ensureBusForAgent = useCallback((agentId: string): AgentBus => {
+    const client = clientRef.current;
+    if (!client) throw new Error('ensureBusForAgent: no WebSocketClient');
+    const existing = busesRef.current.get(agentId);
+    if (existing) return existing;
+    const transport = new BusClientTransport(client, agentId);
+    const bus = new MessageBusClient(transport);
+    const entry: AgentBus = { transport, bus };
+    busesRef.current.set(agentId, entry);
+    subscribeAllPaths(bus, agentId);
+    if (typeof window !== 'undefined') {
+      ((window as unknown) as { __buses?: Map<string, AgentBus> }).__buses = busesRef.current;
+    }
+    return entry;
+  }, []);
 
   const {
     cancelPendingGit,
@@ -186,7 +229,7 @@ function AppContent() {
     checkAgentUpdate,
     updateAgent,
     restartAgent,
-  } = useGitOperations(clientRef, busRef);
+  } = useGitOperations(clientRef, getActiveBus);
 
   /**
    * Switch the active agent and drop any in-flight git:* responses for the
@@ -212,7 +255,7 @@ function AppContent() {
     unsubscribeSession,
     listProjectSummaries,
     listProjectRepos,
-  } = useClaudeOperations(busRef);
+  } = useClaudeOperations(getActiveBus);
 
   const [showPathBrowser, setShowPathBrowser] = useState(false);
   const [showGitignoreEditor, setShowGitignoreEditor] = useState(false);
@@ -433,18 +476,19 @@ function AppContent() {
     const hmrClient = hot?.data?.wsClient as WebSocketClient | undefined;
 
     if (hmrClient) {
-      // Reuse the existing connected client
+      // Reuse the existing connected client. Rebuild a per-agent bus for
+      // every agent the client already has a session with — the client has
+      // survived HMR but the bus instances have not, so their subscriptions
+      // need to be re-registered. Each transport is marked connected
+      // immediately since the underlying agent link is already past
+      // key-exchange (onConnected won't fire again on HMR reuse).
       clientRef.current = hmrClient;
-      busTransportRef.current = new BusClientTransport(hmrClient);
-      busRef.current = new MessageBusClient(busTransportRef.current);
-      // The reused client is already past key-exchange, so mark the bus
-      // connected immediately — without this, queued commands would stall
-      // until the next onConnected (which does not fire on HMR reuse).
-      busTransportRef.current.notifyConnected();
-      subscribeAllPaths(busRef.current);
+      for (const connectedAgentId of hmrClient.getConnectedAgentIds()) {
+        const { transport } = ensureBusForAgent(connectedAgentId);
+        transport.notifyConnected();
+      }
       if (typeof window !== 'undefined') {
-        (window as any).__wsClient = hmrClient;
-        (window as any).__bus = busRef.current;
+        (window as unknown as { __wsClient?: WebSocketClient }).__wsClient = hmrClient;
       }
       return;
     }
@@ -453,7 +497,8 @@ function AppContent() {
 
     const client = new WebSocketClient(signalingServer, identityPublicKey, {
       onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences, agentVersion, latestVersion, devBuild, codexModels) => {
-        busTransportRef.current?.notifyConnected();
+        const { transport } = ensureBusForAgent(agentId);
+        transport.notifyConnected();
         agentIdRef.current = agentId;
         if (preferences) {
           useClaudeStore.getState().setSelectedModel(preferences.model);
@@ -498,9 +543,12 @@ function AppContent() {
         // No need to navigate on connect — the home page and project routes handle it.
       },
       onDisconnected: (disconnectedAgentId) => {
-        busTransportRef.current?.notifyDisconnected();
         if (disconnectedAgentId) {
+          busesRef.current.get(disconnectedAgentId)?.transport.notifyDisconnected();
           useConnectionStore.getState().setAgentDisconnected(disconnectedAgentId);
+        } else {
+          // Blanket disconnect (WebSocket itself dropped) — flag every bus.
+          for (const { transport } of busesRef.current.values()) transport.notifyDisconnected();
         }
         handlersRef.current.setDisconnected();
         // Demote any isActive=true sessions to closed. We can't trust the
@@ -514,11 +562,11 @@ function AppContent() {
           handlersRef.current.setReconnecting(attempt, maxAttempts);
         }
       },
-      onMessage: (message) => {
+      onMessage: (message, fromAgentId) => {
         // With the command/pubsub migration complete, all responses flow
-        // through the bus. Non-bus messages (handshake, legacy push) are
-        // handled by the client itself — nothing left to route here.
-        busTransportRef.current?.notifyMessage(message);
+        // through the bus. Each agent has its own bus; route the frame to
+        // the matching transport so subscriptions stay isolated per peer.
+        busesRef.current.get(fromAgentId)?.transport.notifyMessage(message, fromAgentId);
       },
       onError: (error) => {
         // Don't show errors during intentional disconnect
@@ -532,25 +580,23 @@ function AppContent() {
       onAgentStatus: (agentId, online) => {
         handlersRef.current.setAgentOnline(online);
         useConnectionStore.getState().setAgentOnlineFor(agentId, online);
-        // Keep the bus transport's connected state in sync with the active
-        // agent's session. Without this, a command issued while the agent is
-        // offline hits a dead socket and waits out its 10–30s timeout instead
-        // of queuing for reconnect; the next onConnected (handshake:ack) will
+        // Keep the bus transport's connected state in sync with the agent's
+        // session. Without this, a command issued while the agent is offline
+        // hits a dead socket and waits out its 10–30s timeout instead of
+        // queuing for reconnect; the next onConnected (handshake:ack) will
         // flush the queue.
-        if (!online && clientRef.current?.getActiveAgentId() === agentId) {
-          busTransportRef.current?.notifyDisconnected();
+        if (!online) {
+          busesRef.current.get(agentId)?.transport.notifyDisconnected();
         }
       },
     });
 
     clientRef.current = client;
-    busTransportRef.current = new BusClientTransport(client);
-    busRef.current = new MessageBusClient(busTransportRef.current);
-    subscribeAllPaths(busRef.current);
-    // Debug: expose for console access
+    // Per-agent buses are created lazily in `onConnected`; nothing to wire
+    // up at client-creation time beyond the client itself.
     if (typeof window !== 'undefined') {
-      (window as any).__wsClient = client;
-      (window as any).__bus = busRef.current;
+      (window as unknown as { __wsClient?: WebSocketClient }).__wsClient = client;
+      (window as unknown as { __buses?: Map<string, AgentBus> }).__buses = busesRef.current;
     }
 
     client.connect().catch((error) => {
@@ -559,15 +605,19 @@ function AppContent() {
     });
 
     return () => {
-      // During HMR, stash the client so the next module instance can reuse it
+      // During HMR, stash the client so the next module instance can reuse it.
+      // The per-agent bus map is NOT stashed — it holds references to the
+      // MessageBusClient pending/subscription state that the new module will
+      // rebuild by replaying subscribeAllPaths per connected agent.
       if (hot) {
         hot.data.wsClient = client;
       } else {
         client.disconnect();
       }
       clientRef.current = null;
+      busesRef.current.clear();
     };
-  }, [identityPublicKey, signalingServer]);
+  }, [identityPublicKey, signalingServer, ensureBusForAgent]);
 
   const handleConnect = useCallback(
     async (newAgentId: string, publicKey: string) => {

@@ -5,7 +5,7 @@ import { useClaudeStore } from '../stores/claudeStore';
  * Apply a single session-registry entry to the store.
  * Archived entries are removed (the PWA hides archived sessions).
  */
-export function applyHistoryEntry(entry: SessionRegistryEntry): void {
+export function applyHistoryEntry(entry: SessionRegistryEntry, machineAgentId: string): void {
   const { removeSession, upsertSession } = useClaudeStore.getState();
   if (entry.archived) {
     removeSession(entry.sessionId);
@@ -13,6 +13,7 @@ export function applyHistoryEntry(entry: SessionRegistryEntry): void {
   }
   upsertSession({
     sessionId: entry.sessionId,
+    machineAgentId,
     summary: entry.title ?? entry.firstPrompt ?? entry.sessionId.slice(0, 8),
     lastModified: entry.lastAccessedAt,
     createdAt: entry.createdAt,
@@ -29,10 +30,10 @@ export function applyHistoryEntry(entry: SessionRegistryEntry): void {
  * Apply an incremental history update from the `/sessions/history` bus path.
  * `action === 'delete'` removes; otherwise delegates to `applyHistoryEntry`.
  */
-export function applyHistoryAction(payload: SessionHistoryUpdatedPayload): void {
+export function applyHistoryAction(payload: SessionHistoryUpdatedPayload, machineAgentId: string): void {
   if (payload.action === 'delete') {
     useClaudeStore.getState().removeSession(payload.entry.sessionId);
     return;
   }
-  applyHistoryEntry(payload.entry);
+  applyHistoryEntry(payload.entry, machineAgentId);
 }

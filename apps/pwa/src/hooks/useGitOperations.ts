@@ -58,7 +58,7 @@ type InFlightGit = { superseded: boolean };
 
 export function useGitOperations(
   clientRef: React.RefObject<WebSocketClient | null>,
-  busRef: React.RefObject<MessageBusClient | null>,
+  getBus: () => MessageBusClient | null,
 ) {
   const inFlightGit = useRef<Set<InFlightGit>>(new Set());
   const {
@@ -96,7 +96,7 @@ export function useGitOperations(
    */
   const sendCommand = useCallback(
     <T>(verb: string, payload: unknown, timeoutMs = 30000): Promise<T> => {
-      const bus = busRef.current;
+      const bus = getBus();
       if (!bus) return Promise.reject(new Error('Not connected'));
 
       const isGit = verb.startsWith('git:');
@@ -143,7 +143,7 @@ export function useGitOperations(
           throw err;
         });
     },
-    [busRef, clientRef],
+    [getBus, clientRef],
   );
 
   /**

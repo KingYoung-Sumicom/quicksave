@@ -40,13 +40,16 @@ function makePayload(overrides: Partial<SessionUpdatePayload> = {}): SessionUpda
   };
 }
 
+const MACHINE_AGENT_ID = 'machine-a';
+
 function makeSummary(
-  overrides: Partial<ClaudeSessionSummary> = {}
-): ClaudeSessionSummary {
+  overrides: Partial<ClaudeSessionSummary & { machineAgentId?: string }> = {}
+): ClaudeSessionSummary & { machineAgentId?: string } {
   // Build a summary that deep-matches makePayload() by default, so idempotency
   // comparisons hold unless a test explicitly overrides a compared field.
   return {
     sessionId: 's1',
+    machineAgentId: MACHINE_AGENT_ID,
     summary: 'summary',
     lastModified: 12345,
     isActive: true,
@@ -70,7 +73,7 @@ function makeSummary(
 }
 
 interface StoreStub {
-  sessions: Record<string, ClaudeSessionSummary>;
+  sessions: Record<string, ClaudeSessionSummary & { machineAgentId?: string }>;
   activeSessionId: string | null;
   upsertSession: ReturnType<typeof vi.fn>;
   setStreaming: ReturnType<typeof vi.fn>;
@@ -111,11 +114,12 @@ describe('applySessionUpdate', () => {
       const store = setupStore();
       const payload = makePayload({ lastTurnContextUsage: context });
 
-      applySessionUpdate(payload);
+      applySessionUpdate(payload, MACHINE_AGENT_ID);
 
       expect(store.upsertSession).toHaveBeenCalledTimes(1);
       expect(store.upsertSession).toHaveBeenCalledWith({
         sessionId: payload.sessionId,
+        machineAgentId: MACHINE_AGENT_ID,
         isActive: payload.isActive,
         archived: payload.archived,
         isStreaming: payload.isStreaming,
@@ -139,7 +143,7 @@ describe('applySessionUpdate', () => {
       const store = setupStore();
       const payload = makePayload({ sandboxed: true });
 
-      applySessionUpdate(payload);
+      applySessionUpdate(payload, MACHINE_AGENT_ID);
 
       expect(store.upsertSession).toHaveBeenCalledTimes(1);
       const arg = store.upsertSession.mock.calls[0][0];
@@ -153,7 +157,7 @@ describe('applySessionUpdate', () => {
         sessions: { s1: makeSummary() },
       });
 
-      applySessionUpdate(makePayload());
+      applySessionUpdate(makePayload(), MACHINE_AGENT_ID);
 
       expect(store.upsertSession).not.toHaveBeenCalled();
     });
@@ -224,7 +228,7 @@ describe('applySessionUpdate', () => {
           sessions: { s1: makeSummary(existing) },
         });
 
-        applySessionUpdate(makePayload(incoming));
+        applySessionUpdate(makePayload(incoming), MACHINE_AGENT_ID);
 
         expect(store.upsertSession).toHaveBeenCalledTimes(1);
       }
@@ -240,7 +244,7 @@ describe('applySessionUpdate', () => {
         sessions: { s1: makeSummary({ lastTurnContextUsage: undefined }) },
       });
 
-      applySessionUpdate(makePayload({ lastTurnContextUsage: undefined }));
+      applySessionUpdate(makePayload({ lastTurnContextUsage: undefined }), MACHINE_AGENT_ID);
 
       expect(store.upsertSession).not.toHaveBeenCalled();
     });
@@ -257,7 +261,7 @@ describe('applySessionUpdate', () => {
         sessions: { s1: makeSummary({ lastTurnContextUsage: existingCtx }) },
       });
 
-      applySessionUpdate(makePayload({ lastTurnContextUsage: undefined }));
+      applySessionUpdate(makePayload({ lastTurnContextUsage: undefined }), MACHINE_AGENT_ID);
 
       expect(store.upsertSession).toHaveBeenCalledTimes(1);
     });
@@ -282,7 +286,7 @@ describe('applySessionUpdate', () => {
         sessions: { s1: makeSummary({ lastTurnContextUsage: ctxExisting }) },
       });
 
-      applySessionUpdate(makePayload({ lastTurnContextUsage: ctxIncoming }));
+      applySessionUpdate(makePayload({ lastTurnContextUsage: ctxIncoming }), MACHINE_AGENT_ID);
 
       expect(store.upsertSession).not.toHaveBeenCalled();
     });
@@ -306,7 +310,7 @@ describe('applySessionUpdate', () => {
         sessions: { s1: makeSummary({ lastTurnContextUsage: ctxExisting }) },
       });
 
-      applySessionUpdate(makePayload({ lastTurnContextUsage: ctxIncoming }));
+      applySessionUpdate(makePayload({ lastTurnContextUsage: ctxIncoming }), MACHINE_AGENT_ID);
 
       expect(store.upsertSession).toHaveBeenCalledTimes(1);
     });
@@ -321,7 +325,8 @@ describe('applySessionUpdate', () => {
           isStreaming: true,
           agent: 'claude-code' as AgentId,
           permissionMode: 'acceptEdits',
-        })
+        }),
+        MACHINE_AGENT_ID
       );
 
       expect(store.upsertSession).toHaveBeenCalledTimes(1);
@@ -341,7 +346,8 @@ describe('applySessionUpdate', () => {
           isStreaming: false,
           agent: undefined,
           permissionMode: 'default',
-        })
+        }),
+        MACHINE_AGENT_ID
       );
 
       expect(store.setStreaming).toHaveBeenCalledTimes(1);
@@ -358,7 +364,8 @@ describe('applySessionUpdate', () => {
           isStreaming: true,
           agent: 'claude-code' as AgentId,
           permissionMode: undefined,
-        })
+        }),
+        MACHINE_AGENT_ID
       );
 
       expect(store.setStreaming).toHaveBeenCalledTimes(1);
@@ -370,7 +377,7 @@ describe('applySessionUpdate', () => {
     it('does NOT call any of the three setters when sessionId does not match activeSessionId', () => {
       const store = setupStore({ activeSessionId: 'other-session' });
 
-      applySessionUpdate(makePayload({ sessionId: 's1', isStreaming: true }));
+      applySessionUpdate(makePayload({ sessionId: 's1', isStreaming: true }), MACHINE_AGENT_ID);
 
       expect(store.upsertSession).toHaveBeenCalledTimes(1);
       expect(store.setStreaming).not.toHaveBeenCalled();
@@ -385,7 +392,7 @@ describe('applySessionUpdate', () => {
         activeSessionId: 's1',
       });
 
-      applySessionUpdate(makePayload());
+      applySessionUpdate(makePayload(), MACHINE_AGENT_ID);
 
       expect(store.upsertSession).not.toHaveBeenCalled();
       expect(store.setStreaming).not.toHaveBeenCalled();

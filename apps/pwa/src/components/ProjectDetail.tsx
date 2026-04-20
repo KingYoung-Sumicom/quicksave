@@ -84,9 +84,12 @@ export function ProjectDetail({
     navigate('/', { replace: true });
   }, [cwd, agentId, onRemoveCodingPath, removeProject, navigate]);
 
-  // Filter sessions for this cwd
+  // Filter sessions for this project: must match both the resolved cwd AND
+  // the owning machine agent, since two machines can share the same cwd
+  // string (e.g. `/home/user/foo` on two Linux boxes) and the store now
+  // holds sessions from every connected agent.
   const cwdSessions = Object.values(sessions)
-    .filter((s) => s.cwd === cwd || (!s.cwd && isReady))
+    .filter((s) => (!s.machineAgentId || s.machineAgentId === agentId) && (s.cwd === cwd || (!s.cwd && isReady)))
     .sort((a, b) => {
       const rankA = a.isStreaming ? 2 : a.isActive ? 1 : 0;
       const rankB = b.isStreaming ? 2 : b.isActive ? 1 : 0;

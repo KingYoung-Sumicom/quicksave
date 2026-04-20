@@ -45,8 +45,16 @@ if (savedPrefs.selectedAgent && savedPrefs.selectedModel) {
   }
 }
 
+/**
+ * Locally-stored session summary: extends the shared shape with the agent
+ * (machine) that originated the record. Needed for filtering/routing in
+ * multi-agent mode — same `cwd` string can exist on multiple machines, and
+ * a bus command for this session must target the owning agent.
+ */
+export type StoredSessionSummary = ClaudeSessionSummary & { machineAgentId?: string };
+
 /** Sessions keyed by sessionId for O(1) lookup. */
-type SessionMap = Record<string, ClaudeSessionSummary>;
+type SessionMap = Record<string, StoredSessionSummary>;
 
 interface ClaudeStore {
   // Session list
@@ -82,12 +90,14 @@ interface ClaudeStore {
 
   // Actions — sessions
   setSessions: (sessions: ClaudeSessionSummary[]) => void;
-  upsertSession: (session: Partial<ClaudeSessionSummary> & { sessionId: string }) => void;
+  upsertSession: (session: Partial<StoredSessionSummary> & { sessionId: string }) => void;
   removeSession: (sessionId: string) => void;
   /** Demote any store-locally-active sessions whose ids are missing from
-   *  the authoritative live set. Called from the `/sessions/active` bus
-   *  snap handler, which delivers the complete in-memory list atomically. */
-  reconcileActiveSessions: (activeSessionIds: Set<string>) => void;
+   *  the authoritative live set FOR THAT AGENT. Called from the
+   *  `/sessions/active` bus snap handler, which delivers the complete live
+   *  list atomically per agent. Scoped by `machineAgentId` so one agent's
+   *  snap doesn't wipe another agent's active sessions. */
+  reconcileActiveSessions: (activeSessionIds: Set<string>, machineAgentId: string) => void;
   /** Demote every isActive=true session to closed; called on transport
    *  disconnect so a stale green badge doesn't survive the blip. The next
    *  /sessions/active snap on reconnect restores the truth. */
@@ -162,7 +172,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     set((state) => ({
       sessions: {
         ...state.sessions,
-        [partial.sessionId]: { ...state.sessions[partial.sessionId], ...partial } as ClaudeSessionSummary,
+        [partial.sessionId]: { ...state.sessions[partial.sessionId], ...partial } as StoredSessionSummary,
       },
     })),
   removeSession: (sessionId) =>
@@ -172,10 +182,13 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       delete next[sessionId];
       return { sessions: next };
     }),
-  reconcileActiveSessions: (activeSessionIds) =>
+  reconcileActiveSessions: (activeSessionIds, machineAgentId) =>
     set((state) => {
       const updated = { ...state.sessions };
       for (const [id, session] of Object.entries(updated)) {
+        // Only demote sessions that belong to THIS agent; other agents'
+        // active sessions are not in the incoming set and must be untouched.
+        if (session.machineAgentId !== machineAgentId) continue;
         if (session.isActive && !activeSessionIds.has(id)) {
           updated[id] = { ...session, isActive: false, isStreaming: false, hasPendingInput: false };
         }
