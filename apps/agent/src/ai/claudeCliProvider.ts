@@ -5,7 +5,7 @@ import { existsSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import type { CardEvent, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
-import { SANDBOX_MCP_NAME, SANDBOX_BASH_TOOL } from './sandboxMcp.js';
+import { SANDBOX_MCP_NAME, SANDBOX_BASH_TOOL, buildSandboxMcpServerConfig } from './sandboxMcp.js';
 import { DebugLogger } from './debugLogger.js';
 import type {
   CodingAgentProvider,
@@ -312,18 +312,13 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     }
 
     // Always inject sandbox MCP server — approve/deny controlled by sandboxed flag at runtime
-    const tsPath = join(__ownDir, 'sandboxMcpStdio.ts');
-    const jsPath = join(__ownDir, 'sandboxMcpStdio.js');
-    const hasTsPath = existsSync(tsPath);
     const mcpConfig = {
       mcpServers: {
-        [SANDBOX_MCP_NAME]: {
-          type: 'stdio',
-          command: hasTsPath ? 'npx' : 'node',
-          args: hasTsPath
-            ? ['tsx', tsPath, '--cwd', opts.cwd]
-            : [jsPath, '--cwd', opts.cwd],
-        },
+        [SANDBOX_MCP_NAME]: buildSandboxMcpServerConfig({
+          ownDir: __ownDir,
+          cwd: opts.cwd,
+          sessionId: opts.resumeSessionId,
+        }),
       },
     };
     args.push('--mcp-config', JSON.stringify(mcpConfig));
@@ -636,11 +631,13 @@ export class ClaudeCliProvider implements CodingAgentProvider {
             emitCard(cb.assistantText(block.text));
           }
         } else if (block.type === 'tool_use') {
+          callbacks.onToolUse?.(sessionId, block.name, block.input ?? {});
           if (block.name !== 'Agent') {
             emitCard(cb.toolUse(block.name, block.input ?? {}, block.id));
           }
         } else if (block.type === 'server_tool_use' || block.type === 'mcp_tool_use') {
           console.log(`[cli:debug] mcp_tool_use name=${block.name} id=${block.id}`);
+          callbacks.onToolUse?.(sessionId, block.name ?? block.type, block.input ?? {});
           emitCard(cb.toolUse(block.name ?? block.type, block.input ?? {}, block.id ?? ''));
         } else if (block.type && block.type !== 'tool_use') {
           // Unknown block type — surface as info card so it's visible

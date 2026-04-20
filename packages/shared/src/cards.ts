@@ -163,7 +163,7 @@ export interface CardHistoryResponse {
   error?: string;
   /** Pending permission/question requests for this session (agent-authoritative). */
   pendingInputs?: PendingInputWithContext[];
-  /** Session title (set via SetTitle MCP tool or derived from session registry). */
+  /** Session title / subject (set via the UpdateSessionStatus MCP tool or derived from session registry). */
   title?: string;
 }
 

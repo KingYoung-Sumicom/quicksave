@@ -333,12 +333,34 @@ export interface SessionConfigUpdatedPayload {
 // Session Registry (History) Types
 // ============================================================================
 
+/**
+ * Ticket-style lifecycle stage for a session.
+ * `blocked` is a separate orthogonal flag (any stage can be blocked).
+ */
+export type SessionStage = 'investigating' | 'working' | 'verifying' | 'done';
+
+/**
+ * One entry in a session's append-only note log. Each call to
+ * UpdateSessionStatus with a `note` appends an entry. Latest is surfaced as
+ * `note` on the registry entry; the full list is available as `noteHistory`.
+ */
+export interface SessionNoteEntry {
+  /** Epoch ms when the note was recorded. */
+  ts: number;
+  /** One-line progress/finding text as written by the agent. */
+  text: string;
+}
+
+/** Maximum entries retained in noteHistory before oldest are trimmed. */
+export const SESSION_NOTE_HISTORY_CAP = 50;
+
 export interface SessionRegistryEntry {
   sessionId: string;
   cwd: string;
   agent?: AgentId;
   repoName?: string;
   gitBranch?: string;
+  /** Subject of this session — what it's solving, from the user's perspective. */
   title?: string;
   firstPrompt?: string;
   createdAt: number;
@@ -347,6 +369,18 @@ export interface SessionRegistryEntry {
   totalCostUsd?: number;
   pinned?: boolean;
   archived?: boolean;
+  // Ticket-model metadata — set via the UpdateSessionStatus MCP tool
+  stage?: SessionStage;
+  /** Orthogonal flag — true when stuck (waiting on user / permission / external). */
+  blocked?: boolean;
+  /** Latest one-line progress note (duplicate of the last noteHistory entry's text, for quick access). */
+  note?: string;
+  /**
+   * Append-only log of progress/finding notes. Each call to UpdateSessionStatus
+   * that supplies a `note` appends an entry. Capped at SESSION_NOTE_HISTORY_CAP
+   * oldest-first so the registry broadcast stays a reasonable size.
+   */
+  noteHistory?: SessionNoteEntry[];
   // Session settings — persisted so they survive daemon restarts
   permissionMode?: string;
   sandboxed?: boolean;

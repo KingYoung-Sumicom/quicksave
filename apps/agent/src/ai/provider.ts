@@ -28,6 +28,12 @@ export interface ProviderCallbacks {
     response?: string;
     updatedInput?: Record<string, unknown>;
   }>;
+  /** Fired when a tool_use block is observed on the assistant stream. Runs for
+   * EVERY tool invocation regardless of whether the permission callback fires.
+   * CLI auto-mode silently pre-approves MCP tools without sending can_use_tool,
+   * so daemon-side side effects (e.g. UpdateSessionStatus persistence) must be
+   * driven from this hook, not handlePermissionRequest. */
+  onToolUse?(sessionId: string, toolName: string, toolInput: Record<string, unknown>): void;
   onModelDetected(model: string): void;
   /** Fired when the underlying provider process has fully exited. SessionManager
    * uses this to remove the session from its in-memory map and emit

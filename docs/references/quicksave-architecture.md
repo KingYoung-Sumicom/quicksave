@@ -238,7 +238,12 @@ const sessionManager = new SessionManager(new MyCustomProvider());
 | `plan` | 純規劃 | 無（不執行任何工具） |
 
 **Sandbox MCP 工具權限：**
-- `SetTitle` — 永遠自動核准
+- `UpdateSessionStatus` — 永遠自動核准，在 `sessionManager.shouldAutoApprove` 中處理，把
+  `subject` / `stage` / `blocked` / `note` 寫回 session config 與 `SessionRegistryEntry`，
+  並觸發 `session-config-updated` 事件。`note` 欄位採 append-only：每次呼叫附帶非空 `note`
+  時，會附加一筆 `{ts, text}` 到 `SessionRegistryEntry.noteHistory`，超過
+  `SESSION_NOTE_HISTORY_CAP`（50）時由舊至新裁切；同時把最新一行鏡射到 `note` 供 home
+  screen 快速顯示。`noteHistory` 透過既有的 `/sessions/history` bus 頻道廣播。
 - `SandboxBash`（sandbox ON）— 自動核准，在 kernel sandbox 內執行
 - `SandboxBash`（sandbox OFF）— 視為 `Bash`，依 permissionMode 的 auto-approve 規則處理
 
@@ -246,7 +251,11 @@ const sessionManager = new SessionManager(new MyCustomProvider());
 
 透過 `--append-system-prompt` CLI 參數注入，start 和 resume 都帶。固定內容：
 - 引導 Claude 偏好 `SandboxBash` 做 read-only commands
-- 引導 Claude 在新 task/context 切換時呼叫 `SetTitle`
+- 要求 Claude 在每個新 session 的第一回合呼叫 `UpdateSessionStatus`（ticket model：
+  `subject` + `stage ∈ {investigating, working, verifying, done}` + `blocked` flag + `note`），
+  並在 stage 變化 / 卡住解除 / 有值得回報的進度時再次更新。`note` 會寫入 session 的 append-only
+  event log（`noteHistory`），長任務（研究 / 大型重構）鼓勵在每個 sub-goal 或 finding 時
+  emit 一筆 note，供 user 開啟 session 時 skim 最近幾筆作為進度訊號
 - PWA agent type 可附加自定義 system prompt
 
 ### Commit Message 生成（兩條路徑）

@@ -8,8 +8,48 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Quicksave</title>
+    <style>
+      #app-splash {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        background: #0f172a;
+        color: #cbd5e1;
+        font-family: system-ui, -apple-system, sans-serif;
+        z-index: 2147483647;
+        transition: opacity 240ms ease;
+      }
+      #app-splash.fade-out { opacity: 0; pointer-events: none; }
+      #app-splash .logo {
+        width: 72px;
+        height: 72px;
+        animation: splash-pulse 1.6s ease-in-out infinite;
+      }
+      #app-splash .label {
+        font-size: 14px;
+        letter-spacing: 0.08em;
+        color: #64748b;
+        text-transform: uppercase;
+      }
+      @keyframes splash-pulse {
+        0%, 100% { transform: scale(1); opacity: 0.9; }
+        50% { transform: scale(1.06); opacity: 1; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #app-splash .logo { animation: none; }
+        #app-splash { transition: none; }
+      }
+    </style>
   </head>
   <body class="bg-slate-900 text-slate-100">
+    <div id="app-splash" aria-hidden="true">
+      <img class="logo" src="/favicon.svg" alt="" />
+      <div class="label">Quicksave</div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

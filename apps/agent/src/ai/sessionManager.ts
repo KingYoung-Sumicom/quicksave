@@ -11,15 +11,19 @@ import type {
   CardEvent,
   CardHistoryResponse,
   CardStreamEnd,
+  SessionNoteEntry,
+  SessionRegistryEntry,
+  SessionStage,
   SessionUpdatePayload,
 } from '@sumicom/quicksave-shared';
 import {
   DEFAULT_AGENT,
   DEFAULT_MODEL,
+  SESSION_NOTE_HISTORY_CAP,
   matchAllowPattern,
 } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder, buildCardsFromHistory, loadPersistedCards } from './cardBuilder.js';
-import { SANDBOX_BASH_TOOL, SET_TITLE_TOOL } from './sandboxMcp.js';
+import { SANDBOX_BASH_TOOL, UPDATE_SESSION_STATUS_TOOL } from './sandboxMcp.js';
 import { getSessionRegistry } from './sessionRegistry.js';
 import { getEventStore } from '../storage/eventStore.js';
 import type {
@@ -57,12 +61,25 @@ const AUTO_APPROVE: Record<PermissionLevel, Set<string>> = {
 };
 
 const DEFAULT_SYSTEM_PROMPT = [
-  'For non-destructive shell commands (ls, cat, find, git log, git status, git diff, etc.), prefer SandboxBash over Bash. SandboxBash runs in a sandboxed environment. Use Bash only for commands that modify state.',
-  'Call SetTitle to set a descriptive session title when you start a new task or switch context. Keep titles short (e.g. "Fixing auth middleware", "Adding unit tests for UserService"). Update it when the focus changes.',
+  'For non-destructive shell commands (ls, cat, find, git log, git status, git diff, etc.), prefer `mcp__quicksave-sandbox__SandboxBash` over Bash. SandboxBash runs in a sandboxed environment. Use Bash only for commands that modify state.',
+  // Ticket-model status updates. Sessions surface on the user\'s home screen as tickets; keep this metadata fresh.
+  'Treat each session as a ticket. The `mcp__quicksave-sandbox__UpdateSessionStatus` MCP tool is already loaded and available — call it directly, do NOT use ToolSearch. On your FIRST response in a new session, call it with at minimum `subject` and `stage` before doing other work. `subject` is what the user is trying to solve (e.g. "Fix auth token expiring early"), not what you are doing (not "Debugging jwt.ts"). On RESUME, if you do not see a prior `mcp__quicksave-sandbox__UpdateSessionStatus` tool_use in the conversation history, call it ONCE with no arguments as a dry-run to read the current stored status; if the returned subject is empty OR does not match what the user is now asking for, follow up with a real call to set/correct it.',
+  'Re-call `mcp__quicksave-sandbox__UpdateSessionStatus` whenever the stage changes (investigating → working → verifying → done), whenever work becomes blocked or unblocked (set `blocked` true/false without changing `stage`), or when a one-line `note` would give the user useful progress signal. `note` is an append-only event log — each call adds one entry — so for long-running tasks (research, large refactors) emit a fresh `note` every time you rule out an approach, cross a sub-goal, or hit a blocker. Do not skip `verifying` when you have tests/build/repro running. Do not declare `done` until the user\'s problem is fully resolved.',
 ].join('\n\n');
 
 function buildSystemPrompt(extra?: string): string {
   return extra ? `${DEFAULT_SYSTEM_PROMPT}\n\n${extra}` : DEFAULT_SYSTEM_PROMPT;
+}
+
+const SESSION_STAGES: readonly SessionStage[] = [
+  'investigating',
+  'working',
+  'verifying',
+  'done',
+] as const;
+
+function isSessionStage(value: string): value is SessionStage {
+  return (SESSION_STAGES as readonly string[]).includes(value);
 }
 
 function normalizeAgentId(value: unknown): AgentId | undefined {
@@ -812,6 +829,13 @@ export class SessionManager extends EventEmitter {
       ) => {
         return this.handlePermissionRequest(sessionId, req);
       },
+      onToolUse: (sessionId: string, toolName: string, toolInput: Record<string, unknown>) => {
+        // Claude CLI's auto permission mode skips can_use_tool for MCP tools,
+        // so handlePermissionRequest can't reliably drive side effects here.
+        if (toolName === UPDATE_SESSION_STATUS_TOOL) {
+          this.updateSessionStatus(sessionId, toolInput);
+        }
+      },
       onModelDetected: (model: string) => {
         console.log(`[session-manager] model detected: ${model} (agent=${agentId})`);
         if (agentId === 'claude-code') {
@@ -916,9 +940,10 @@ export class SessionManager extends EventEmitter {
   }
 
   private shouldAutoApprove(sessionId: string, toolName: string, input: Record<string, unknown>): boolean {
-    // SetTitle — always approve
-    if (toolName === SET_TITLE_TOOL) {
-      if (input.title) this.updateSessionTitle(sessionId, input.title as string);
+    // UpdateSessionStatus — always approve. The actual metadata write happens
+    // in the onToolUse callback (driven by the assistant stream), because
+    // CLI auto mode pre-approves MCP tools without ever sending can_use_tool.
+    if (toolName === UPDATE_SESSION_STATUS_TOOL) {
       return true;
     }
 
@@ -949,19 +974,75 @@ export class SessionManager extends EventEmitter {
     return true;
   }
 
-  /** Update session title (triggered by SetTitle MCP tool). */
-  private updateSessionTitle(sessionId: string, title: string): void {
-    const config = this.sessionConfigs.get(sessionId) ?? {};
-    this.sessionConfigs.set(sessionId, { ...config, title });
-    this.emit('session-config-updated', { sessionId, config: this.sessionConfigs.get(sessionId) });
+  /**
+   * Update session ticket-model status (triggered by the UpdateSessionStatus MCP tool).
+   * Partial update: only fields present in `input` are written. Unknown-typed inputs
+   * are validated here before being applied to session config / registry.
+   *
+   * `note`, when supplied, is appended to the session's `noteHistory` log in the
+   * registry (capped at SESSION_NOTE_HISTORY_CAP, oldest-first). The latest note
+   * text is also mirrored to session config / registry `note` for quick access.
+   */
+  private updateSessionStatus(sessionId: string, input: Record<string, unknown>): void {
+    const configUpdates: Record<string, ConfigValue> = {};
+    const entryUpdates: Partial<SessionRegistryEntry> = {};
+    let noteToAppend: string | null = null;
+    let changed = false;
 
-    // Update session registry so it persists across restarts
+    if (typeof input.subject === 'string' && input.subject.length > 0) {
+      configUpdates.title = input.subject;
+      entryUpdates.title = input.subject;
+      changed = true;
+    }
+
+    if (typeof input.stage === 'string' && isSessionStage(input.stage)) {
+      configUpdates.stage = input.stage;
+      entryUpdates.stage = input.stage;
+      changed = true;
+    }
+
+    if (typeof input.blocked === 'boolean') {
+      configUpdates.blocked = input.blocked;
+      entryUpdates.blocked = input.blocked;
+      changed = true;
+    }
+
+    if (typeof input.note === 'string' && input.note.length > 0) {
+      configUpdates.note = input.note;
+      entryUpdates.note = input.note;
+      noteToAppend = input.note;
+      changed = true;
+    }
+
+    if (!changed) return;
+
+    const prev = this.sessionConfigs.get(sessionId) ?? {};
+    const next = { ...prev, ...configUpdates };
+    this.sessionConfigs.set(sessionId, next);
+    this.emit('session-config-updated', { sessionId, config: next });
+
     const ps = this.sessions.get(sessionId);
     if (ps?.cwd) {
       const registry = getSessionRegistry();
       const entry = registry.getEntry(ps.cwd, sessionId);
       if (entry) {
-        registry.upsertEntry({ ...entry, title, lastAccessedAt: Date.now() });
+        let nextHistory = entry.noteHistory;
+        if (noteToAppend !== null) {
+          const appended: SessionNoteEntry = { ts: Date.now(), text: noteToAppend };
+          const prior = Array.isArray(entry.noteHistory) ? entry.noteHistory : [];
+          const combined = [...prior, appended];
+          // Trim oldest-first once we exceed the cap so the registry payload
+          // stays broadcast-friendly.
+          nextHistory = combined.length > SESSION_NOTE_HISTORY_CAP
+            ? combined.slice(combined.length - SESSION_NOTE_HISTORY_CAP)
+            : combined;
+        }
+        registry.upsertEntry({
+          ...entry,
+          ...entryUpdates,
+          ...(nextHistory !== entry.noteHistory ? { noteHistory: nextHistory } : {}),
+          lastAccessedAt: Date.now(),
+        });
       }
     }
   }

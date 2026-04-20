@@ -46,7 +46,7 @@ vi.mock('./sandboxMcp.js', () => ({
   SANDBOX_MCP_NAME: 'quicksave-sandbox',
   SANDBOX_MCP_PREFIX: 'mcp__quicksave-sandbox__',
   SANDBOX_BASH_TOOL: 'mcp__quicksave-sandbox__SandboxBash',
-  SET_TITLE_TOOL: 'mcp__quicksave-sandbox__SetTitle',
+  UPDATE_SESSION_STATUS_TOOL: 'mcp__quicksave-sandbox__UpdateSessionStatus',
 }));
 
 // ── Helpers ──
@@ -327,11 +327,11 @@ describe('SessionManager', () => {
       callbacks = manager.makeCallbacks('claude-code' as any);
     });
 
-    it('should auto-approve SetTitle tool', async () => {
+    it('should auto-approve UpdateSessionStatus tool', async () => {
       const result = await callbacks.handlePermissionRequest(sessionId, {
-        toolName: 'mcp__quicksave-sandbox__SetTitle',
-        toolInput: { title: 'My Task' },
-        toolUseId: 'tu-title',
+        toolName: 'mcp__quicksave-sandbox__UpdateSessionStatus',
+        toolInput: { subject: 'My Task', stage: 'working' },
+        toolUseId: 'tu-status',
       });
       expect(result.action).toBe('allow');
     });

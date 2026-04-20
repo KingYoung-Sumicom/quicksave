@@ -46,7 +46,7 @@ vi.mock('./sandboxMcp.js', () => ({
   SANDBOX_MCP_NAME: 'quicksave-sandbox',
   SANDBOX_MCP_PREFIX: 'mcp__quicksave-sandbox__',
   SANDBOX_BASH_TOOL: 'mcp__quicksave-sandbox__SandboxBash',
-  SET_TITLE_TOOL: 'mcp__quicksave-sandbox__SetTitle',
+  UPDATE_SESSION_STATUS_TOOL: 'mcp__quicksave-sandbox__UpdateSessionStatus',
 }));
 
 // ── Helpers ──
