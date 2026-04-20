@@ -517,6 +517,11 @@ export class SessionManager extends EventEmitter {
     if (!ps?.providerSession) return false;
     console.log(`[session-manager] cancel session=${sessionId.slice(0, 8)}`);
     ps.providerSession.interrupt();
+    // The CLI abandons its can_use_tool RPC after interrupt, so any awaiter
+    // on our side would hang forever. Resolve outstanding permissions with
+    // deny: it unblocks the daemon promise, frees the map slot, and matches
+    // user intent ("stop" = don't do that thing).
+    this.cancelPendingInputsForSession(sessionId);
     return true;
   }
 
@@ -541,8 +546,23 @@ export class SessionManager extends EventEmitter {
       ps.providerSession = null;
     }
     this.sessions.delete(sessionId);
+    // Drop any pending permission promises for this session — the CLI is dead
+    // so any later resolveUserInput would land on an orphan promise, and the
+    // map entry would leak forever.
+    this.cancelPendingInputsForSession(sessionId);
     this.emitSessionUpdate(sessionId);
     return true;
+  }
+
+  /** Resolve and remove every pending user-input request for a session that
+   *  is going away. Used by closeSession and onSessionExited so the map
+   *  doesn't leak and any awaiter unblocks with a deny. */
+  private cancelPendingInputsForSession(sessionId: string): void {
+    for (const [requestId, pending] of this.pendingInputRequests) {
+      if (pending.request.sessionId !== sessionId) continue;
+      pending.resolve({ sessionId, requestId, action: 'deny' });
+      this.pendingInputRequests.delete(requestId);
+    }
   }
 
   // ── Permission ──
@@ -567,7 +587,16 @@ export class SessionManager extends EventEmitter {
       }
     }
 
-    this.emitSessionUpdate(sessionId);
+    if (ps) {
+      this.emitSessionUpdate(sessionId);
+    } else {
+      // Inactive session: emitSessionUpdate would carry archived=true (since
+      // the session isn't in the in-memory map), which the PWA reads as a
+      // "session retired" signal and bounces the user off the page. Persist
+      // to the registry instead so the new mode applies on the next cold
+      // resume; the PWA's optimistic state already reflects the change.
+      this.persistRegistryField(sessionId, 'permissionMode', level);
+    }
     return true;
   }
 
@@ -596,7 +625,11 @@ export class SessionManager extends EventEmitter {
     }
 
     this.emit('user-input-resolved', { requestId: response.requestId, sessionId: pending.request.sessionId });
-    this.emitSessionUpdate(pending.request.sessionId);
+    // Skip the session-update emit when the session is no longer in memory:
+    // buildSessionUpdatePayload would set archived=true and navigate the PWA
+    // off the page. Can happen if the CLI exited (or was rekeyed) between
+    // sending the permission request and the user responding.
+    if (ps) this.emitSessionUpdate(pending.request.sessionId);
     return true;
   }
 
@@ -851,6 +884,7 @@ export class SessionManager extends EventEmitter {
         ps.providerSession = null;
         ps.streaming = false;
         this.sessions.delete(sessionId);
+        this.cancelPendingInputsForSession(sessionId);
         this.emitSessionUpdate(sessionId);
       },
     };
@@ -1066,6 +1100,15 @@ export class SessionManager extends EventEmitter {
       this.sessionConfigs.set(newId, config);
       this.sessionConfigs.delete(oldId);
     }
+    // Rewrite any pending input request still tagged with the old sessionId
+    // so a later resolveUserInput can find the new session entry (and its
+    // cardBuilder) to clear the PWA's pending-permission UI. Without this,
+    // permission prompts emitted before the rekey stay stuck on screen.
+    for (const [, pending] of this.pendingInputRequests) {
+      if (pending.request.sessionId === oldId) {
+        pending.request = { ...pending.request, sessionId: newId };
+      }
+    }
     this.sessionAgents.delete(oldId);
   }
 
@@ -1178,6 +1221,15 @@ export class SessionManager extends EventEmitter {
   ): Promise<ClaudeUserInputResponsePayload> {
     return new Promise((resolve) => {
       this.pendingInputRequests.set(requestId, { resolve, request });
+      // Notify subscribers so the PWA's dot indicator flips to "pending"
+      // immediately. resolveUserInput emits its own update to flip it back.
+      // Guard against an inactive session: emitting then would carry
+      // archived=true and bounce the PWA off the page. (Should not normally
+      // happen — the CLI is alive whenever it asks for permission — but the
+      // race is cheap to guard.)
+      if (this.sessions.has(request.sessionId)) {
+        this.emitSessionUpdate(request.sessionId);
+      }
     });
   }
 }

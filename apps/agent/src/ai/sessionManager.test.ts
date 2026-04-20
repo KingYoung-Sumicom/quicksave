@@ -171,6 +171,49 @@ describe('SessionManager', () => {
       });
       await permPromise;
     });
+
+    it('emits session-updated with hasPendingInput=true when a permission request is registered', async () => {
+      // Regression: without this emit, the PWA dot indicator never flips to
+      // "pending" because it only learns about hasPendingInput via the
+      // session-updated event.
+      const sessionId = 'pending-emit';
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        streamId: 'stream-1',
+      });
+
+      const updates: any[] = [];
+      manager.on('session-updated', (e: any) => {
+        if (e.sessionId === sessionId) updates.push(e);
+      });
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      const permPromise = callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'Bash',
+        toolInput: { command: 'rm -rf /' },
+        toolUseId: 'tu-pending-emit',
+      });
+
+      expect(updates.length).toBeGreaterThanOrEqual(1);
+      expect(updates.at(-1).hasPendingInput).toBe(true);
+
+      // Resolve and confirm the indicator flips back.
+      const pendingRequests = manager.getPendingInputRequests();
+      manager.resolveUserInput({
+        sessionId,
+        requestId: pendingRequests[0].requestId,
+        action: 'allow',
+      });
+      await permPromise;
+
+      expect(updates.at(-1).hasPendingInput).toBe(false);
+    });
   });
 
   // ── closeSession ──
@@ -252,6 +295,59 @@ describe('SessionManager', () => {
       expect(result).toBe(true);
       expect(mockSession.interrupt).toHaveBeenCalled();
     });
+
+    it('should drain pending permission requests with deny when stop is pressed', async () => {
+      // Regression: pressing stop while a permission prompt is awaiting was
+      // leaving the pendingInputRequests entry behind. The CLI abandons its
+      // can_use_tool RPC after interrupt, so the daemon promise would hang
+      // forever and the next resolveUserInput from the PWA would land on a
+      // dead promise.
+      const sessionId = 'cancel-with-pending';
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 'stream-1' });
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      const permPromise = callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'Bash',
+        toolInput: { command: 'rm -rf /' },
+        toolUseId: 'tu-cancel',
+      });
+
+      expect(manager.getPendingInputRequests()).toHaveLength(1);
+
+      await manager.cancelSession(sessionId);
+
+      expect(manager.getPendingInputRequests()).toHaveLength(0);
+      const result = await permPromise;
+      expect(result.action).toBe('deny');
+    });
+
+    it('should keep the session in the active map after cancel (interrupt only)', async () => {
+      // Sanity: cancel must NOT close or archive the session — only interrupt.
+      // Otherwise a follow-up prompt on the same session would force a cold
+      // resume instead of a hot one.
+      const sessionId = 'cancel-keeps-active';
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 'stream-1' });
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      void callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'Bash',
+        toolInput: { command: 'echo' },
+        toolUseId: 'tu-keep',
+      });
+
+      await manager.cancelSession(sessionId);
+
+      const active = manager.getActiveSessions();
+      expect(active.some((s) => s.sessionId === sessionId)).toBe(true);
+    });
   });
 
   // ── setPermissionLevel ──
@@ -302,6 +398,34 @@ describe('SessionManager', () => {
       expect(manager.getPermissionLevel('not-active')).toBe('acceptEdits');
       // Default because getPermissionLevel checks sessions map first, falls back to sessionPermissions
       // But since sessions map is empty, the fallback logic in the method returns from sessionPermissions
+    });
+
+    it('should NOT emit session-updated for inactive sessions', async () => {
+      // Regression: emitting for an inactive session carries archived=true,
+      // which the PWA reads as a "session retired" signal and bounces the
+      // user off the page when they toggle plan mode on a cold session.
+      const events: any[] = [];
+      manager.on('session-updated', (e) => events.push(e));
+
+      await manager.setPermissionLevel('cold-session', 'plan');
+
+      expect(events).toHaveLength(0);
+    });
+
+    it('should persist the new mode to the registry for inactive sessions', async () => {
+      const { getSessionRegistry } = await import('./sessionRegistry.js');
+      const registry = (getSessionRegistry as Mock)();
+      (registry.getEntriesForProject as Mock).mockReturnValue([
+        { sessionId: 'cold-session', cwd: '/tmp/test' },
+      ]);
+
+      await manager.setPermissionLevel('cold-session', 'plan');
+
+      expect(registry.updateEntry).toHaveBeenCalledWith(
+        '/tmp/test',
+        'cold-session',
+        { permissionMode: 'plan' },
+      );
     });
   });
 
@@ -654,6 +778,143 @@ describe('SessionManager', () => {
         requestId: 'unknown',
         action: 'allow',
       })).toBe(false);
+    });
+
+    it('should NOT emit session-updated when the session is no longer active', async () => {
+      // Regression: if the session was removed from the in-memory map between
+      // the permission request and the user's response, the session-updated
+      // emit would carry archived=true and bounce the PWA off the page.
+      const sessionId = 'resolve-after-exit';
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 'stream-1' });
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      const permPromise = callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'Bash',
+        toolInput: { command: 'echo hi' },
+        toolUseId: 'tu-late',
+      });
+
+      const pending = manager.getPendingInputRequests();
+      expect(pending).toHaveLength(1);
+
+      // Simulate the CLI exiting (or being closed) before the user responds.
+      manager.closeSession(sessionId);
+
+      // Now collect events and resolve.
+      const updateEvents: any[] = [];
+      manager.on('session-updated', (e) => updateEvents.push(e));
+
+      manager.resolveUserInput({
+        sessionId,
+        requestId: pending[0].requestId,
+        action: 'allow',
+      });
+
+      await permPromise;
+
+      expect(updateEvents).toHaveLength(0);
+    });
+
+    it('should be a no-op when called for a request that closeSession already drained', async () => {
+      // closeSession auto-resolves pending inputs (see edge.test.ts), so a
+      // racing user response should NOT find an entry to resolve. The CLI
+      // promise must still settle exactly once (with deny from close), not
+      // twice or with an unexpected action.
+      const sessionId = 'resolve-after-close-race';
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 'stream-1' });
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      const permPromise = callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'Bash',
+        toolInput: { command: 'echo hi' },
+        toolUseId: 'tu-event',
+      });
+      const requestId = manager.getPendingInputRequests()[0].requestId;
+
+      manager.closeSession(sessionId);
+
+      const lateResolved = manager.resolveUserInput({
+        sessionId,
+        requestId,
+        action: 'allow',
+      });
+      // The entry was already drained by closeSession.
+      expect(lateResolved).toBe(false);
+      // The promise resolved once, with the close-driven deny — not the late allow.
+      const result = await permPromise;
+      expect(result.action).toBe('deny');
+    });
+  });
+
+  // ── waitForUserInput (via handlePermissionRequest) ──
+
+  describe('waitForUserInput emit guard', () => {
+    it('should NOT emit session-updated for an inactive session', async () => {
+      // Regression: waitForUserInput is invoked when the CLI asks for
+      // permission. Normally the session is alive, but if it has been
+      // removed (race with closeSession / onSessionExited), the emit would
+      // carry archived=true and bounce the PWA.
+      const sessionId = 'wait-on-inactive';
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 'stream-1' });
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+
+      // Remove the session BEFORE the permission request arrives — simulating
+      // a stale callback from a CLI that has already been killed.
+      manager.closeSession(sessionId);
+
+      const updateEvents: any[] = [];
+      manager.on('session-updated', (e) => updateEvents.push(e));
+
+      // Fire and forget — we just care about the emits triggered synchronously.
+      void callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'Bash',
+        toolInput: { command: 'echo' },
+        toolUseId: 'tu-wait-inactive',
+      });
+
+      // The pending request is still registered (caller will resolve it later)…
+      expect(manager.getPendingInputRequests()).toHaveLength(1);
+      // …but no session-updated event was emitted with archived=true.
+      expect(updateEvents).toHaveLength(0);
+    });
+
+    it('should emit session-updated normally for an active session', async () => {
+      // Positive case: when the session IS active, waitForUserInput should
+      // emit so the PWA's pending-input dot indicator flips on.
+      const sessionId = 'wait-on-active';
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 'stream-1' });
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+
+      const updateEvents: any[] = [];
+      manager.on('session-updated', (e) => updateEvents.push(e));
+
+      void callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'Bash',
+        toolInput: { command: 'echo' },
+        toolUseId: 'tu-wait-active',
+      });
+
+      expect(updateEvents.length).toBeGreaterThanOrEqual(1);
+      const last = updateEvents[updateEvents.length - 1];
+      expect(last.sessionId).toBe(sessionId);
+      expect(last.hasPendingInput).toBe(true);
+      expect(last.archived).toBe(false);
     });
   });
 

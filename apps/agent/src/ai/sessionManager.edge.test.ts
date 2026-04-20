@@ -262,7 +262,7 @@ describe('SessionManager — adversarial edge cases', () => {
   // ── 3. Permission request timeout/cleanup ──
 
   describe('pending permission requests on session close', () => {
-    it('closeSession does NOT resolve pending permission requests — they leak', async () => {
+    it('closeSession resolves and removes pending permission requests', async () => {
       const sessionId = 'perm-leak';
       (provider.startSession as Mock).mockResolvedValue({
         sessionId,
@@ -273,7 +273,6 @@ describe('SessionManager — adversarial edge cases', () => {
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
 
-      // Create a pending permission that will never resolve unless cleanup() is called
       const permPromise = callbacks.handlePermissionRequest(sessionId, {
         toolName: 'Bash',
         toolInput: { command: 'rm -rf /' },
@@ -282,21 +281,15 @@ describe('SessionManager — adversarial edge cases', () => {
 
       expect(manager.getPendingInputRequests()).toHaveLength(1);
 
-      // Close the session
       manager.closeSession(sessionId);
 
-      // BUG: closeSession does NOT clean up pendingInputRequests for the closed session.
-      // The pending promise hangs forever. Only cleanup() resolves them.
-      expect(manager.getPendingInputRequests()).toHaveLength(1);
-
-      // Clean up to avoid hanging test: resolve manually
-      const pending = manager.getPendingInputRequests();
-      manager.resolveUserInput({
-        sessionId,
-        requestId: pending[0].requestId,
-        action: 'deny',
-      });
-      await permPromise;
+      // The map must be drained — leaving entries leaks both the map slot and
+      // the promise the CLI side is awaiting.
+      expect(manager.getPendingInputRequests()).toHaveLength(0);
+      // The awaited promise must resolve (with deny) so the provider's
+      // can_use_tool RPC unblocks instead of hanging forever.
+      const result = await permPromise;
+      expect(result.action).toBe('deny');
     });
 
     it('cleanup() properly resolves all pending permission requests', async () => {
@@ -736,7 +729,7 @@ describe('SessionManager — adversarial edge cases', () => {
   // ── 9. Memory leak in pendingInputRequests ──
 
   describe('pendingInputRequests cleanup', () => {
-    it('pending inputs for a closed session remain in the map (potential memory leak)', async () => {
+    it('pending inputs are cleared from the map when the session closes', async () => {
       const sessionId = 'leak-test';
       (provider.startSession as Mock).mockResolvedValue({
         sessionId,
@@ -747,13 +740,12 @@ describe('SessionManager — adversarial edge cases', () => {
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
 
-      // Create multiple pending permissions
-      callbacks.handlePermissionRequest(sessionId, {
+      const p1 = callbacks.handlePermissionRequest(sessionId, {
         toolName: 'Bash',
         toolInput: { command: 'cmd1' },
         toolUseId: 'tu-1',
       });
-      callbacks.handlePermissionRequest(sessionId, {
+      const p2 = callbacks.handlePermissionRequest(sessionId, {
         toolName: 'Bash',
         toolInput: { command: 'cmd2' },
         toolUseId: 'tu-2',
@@ -761,23 +753,52 @@ describe('SessionManager — adversarial edge cases', () => {
 
       expect(manager.getPendingInputRequests()).toHaveLength(2);
 
-      // Close the session
       manager.closeSession(sessionId);
 
-      // BUG: pendingInputRequests still has entries for the closed session.
-      // These hanging promises will never resolve (unless cleanup() is called).
-      expect(manager.getPendingInputRequests()).toHaveLength(2);
+      expect(manager.getPendingInputRequests()).toHaveLength(0);
 
-      // getDebugState still shows them
       const debug = manager.getDebugState();
-      expect(debug.pendingInputs).toHaveLength(2);
+      expect(debug.pendingInputs).toHaveLength(0);
       expect(debug.activeSessions).toHaveLength(0);
 
-      // Clean up to avoid hanging: use cleanup()
-      manager.cleanup();
+      // Both promises must resolve so the provider's can_use_tool callbacks
+      // unblock — otherwise the CLI side is stuck waiting for a response that
+      // will never arrive.
+      const [r1, r2] = await Promise.all([p1, p2]);
+      expect(r1.action).toBe('deny');
+      expect(r2.action).toBe('deny');
     });
 
-    it('resolveUserInput for a request whose session was closed should still resolve the promise', async () => {
+    it('pending inputs are cleared when the provider exits unexpectedly', async () => {
+      // Same shape as closeSession but driven by the onSessionExited callback,
+      // which fires on unprompted CLI exit (crash, normal exit, etc.).
+      const sessionId = 'exit-leak';
+      const mockSession = createMockProviderSession();
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: mockSession,
+      });
+
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      const permPromise = callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'Bash',
+        toolInput: { command: 'echo' },
+        toolUseId: 'tu-exit',
+      });
+
+      expect(manager.getPendingInputRequests()).toHaveLength(1);
+
+      // Simulate provider exit via the same callback the provider would call.
+      callbacks.onSessionExited(sessionId, mockSession);
+
+      expect(manager.getPendingInputRequests()).toHaveLength(0);
+      const result = await permPromise;
+      expect(result.action).toBe('deny');
+    });
+
+    it('resolveUserInput called after closeSession is a no-op (close already drained)', async () => {
       const sessionId = 'resolve-after-close';
       (provider.startSession as Mock).mockResolvedValue({
         sessionId,
@@ -797,16 +818,15 @@ describe('SessionManager — adversarial edge cases', () => {
       const pending = manager.getPendingInputRequests();
       manager.closeSession(sessionId);
 
-      // Resolving after close should still work (removes from map, resolves promise)
       const resolved = manager.resolveUserInput({
         sessionId,
         requestId: pending[0].requestId,
         action: 'allow',
       });
 
-      expect(resolved).toBe(true);
+      expect(resolved).toBe(false);
       const result = await permPromise;
-      expect(result.action).toBe('allow');
+      expect(result.action).toBe('deny');
       expect(manager.getPendingInputRequests()).toHaveLength(0);
     });
   });
@@ -858,6 +878,110 @@ describe('SessionManager — adversarial edge cases', () => {
       expect(coldSession.sendUserMessage).toHaveBeenCalledWith('Third');
       // Provider itself handles the first prompt, so sendUserMessage is only for queued ones
       expect(coldSession.sendUserMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('rewrites pending input sessionId after a cold-resume rekey', async () => {
+      // Regression: when cold resume forks a new CLI session_id, pending
+      // permission requests still carried the old sessionId. resolveUserInput
+      // would then look up sessions[oldId] (gone), miss the cardBuilder, and
+      // never clear the PWA's pending-permission UI — visually "stuck".
+      const oldId = 'rekey-old';
+      const newId = 'rekey-new';
+
+      // 1) Start with the old session id and queue a pending permission.
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId: oldId,
+        session: createMockProviderSession(),
+      });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      const permPromise = callbacks.handlePermissionRequest(oldId, {
+        toolName: 'Bash',
+        toolInput: { command: 'echo' },
+        toolUseId: 'tu-rekey',
+      });
+
+      const beforeRekey = manager.getPendingInputRequests();
+      expect(beforeRekey).toHaveLength(1);
+      expect(beforeRekey[0].sessionId).toBe(oldId);
+      const requestId = beforeRekey[0].requestId;
+
+      // 2) Mark the providerSession as not alive so resumeSession takes the
+      //    cold path (otherwise hot-resume short-circuits and never rekeys).
+      const ps = (manager as any).sessions.get(oldId) as ManagedSession;
+      (ps.providerSession as ProviderSession).alive = false;
+
+      // 3) Drive cold resume; provider returns a new sessionId.
+      (provider.resumeSession as Mock).mockResolvedValue({
+        sessionId: newId,
+        session: createMockProviderSession(),
+      });
+      await manager.resumeSession({
+        sessionId: oldId,
+        prompt: 'next',
+        cwd: '/tmp/test',
+        streamId: 's2',
+      });
+
+      // 4) The pending entry must now be tagged with the NEW sessionId so the
+      //    cardBuilder lookup in resolveUserInput hits the live session entry.
+      const afterRekey = manager.getPendingInputRequests();
+      expect(afterRekey).toHaveLength(1);
+      expect(afterRekey[0].sessionId).toBe(newId);
+
+      // 5) Resolving via the new id (the only one in the map) must complete.
+      const resolved = manager.resolveUserInput({
+        sessionId: newId,
+        requestId,
+        action: 'allow',
+      });
+      expect(resolved).toBe(true);
+      const result = await permPromise;
+      expect(result.action).toBe('allow');
+    });
+
+    it('hasPendingInput on session-update tracks the new id after rekey', async () => {
+      // Regression: buildSessionUpdatePayload computes hasPendingInput by
+      // matching pending.request.sessionId. Without rewrite, the dot
+      // indicator on the new sessionId would be wrong.
+      const oldId = 'rekey-flag-old';
+      const newId = 'rekey-flag-new';
+
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId: oldId,
+        session: createMockProviderSession(),
+      });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      void callbacks.handlePermissionRequest(oldId, {
+        toolName: 'Bash',
+        toolInput: { command: 'echo' },
+        toolUseId: 'tu-rekey-flag',
+      });
+
+      const ps = (manager as any).sessions.get(oldId) as ManagedSession;
+      (ps.providerSession as ProviderSession).alive = false;
+
+      (provider.resumeSession as Mock).mockResolvedValue({
+        sessionId: newId,
+        session: createMockProviderSession(),
+      });
+
+      const updates: any[] = [];
+      manager.on('session-updated', (e) => updates.push(e));
+      await manager.resumeSession({
+        sessionId: oldId,
+        prompt: 'next',
+        cwd: '/tmp/test',
+        streamId: 's2',
+      });
+
+      const newIdUpdates = updates.filter((u) => u.sessionId === newId);
+      expect(newIdUpdates.length).toBeGreaterThan(0);
+      // Last emit for the new id must report hasPendingInput=true.
+      expect(newIdUpdates[newIdUpdates.length - 1].hasPendingInput).toBe(true);
     });
   });
 

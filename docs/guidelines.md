@@ -75,6 +75,19 @@ Before designing or implementing any feature, check the relevant guidelines belo
 
 ---
 
+## PWA ↔ PWA Sync Security
+
+**`docs/guidelines/sync-security.md`** — 多台 PWA client 同步「設備 / 帳號設定」的安全設計。涵蓋：
+- Threat model（單用戶、跨用戶共享 relay、外部攻擊者已知 mailbox key）
+- 五層防線（sender 簽章 + paired-devices 白名單 / per-IP rate-limit / 單槽 mailbox + per-key in-flight mutex / signed cancel / pairing code）
+- `SignedSyncPayload V4` schema 與收件端驗章流程
+- Pairing code bootstrap 流程（OOB、5 分鐘有效、一次性）
+- 對應的 file map（`syncStore.ts`、`syncClient.ts`、`identityStore.ts` 等）
+
+**維護規則**：修改 `packages/shared/src/crypto.ts` 的 sign/verify/encrypt、`apps/relay/src/syncStore.ts` 的 slot/mutex、`apps/pwa/src/lib/syncClient.ts` 或 `syncMerge.ts` 的 payload schema、`identityStore.ts` 的 `PairedDevice` 結構、或 pairing / revocation 流程時，同步更新此文件。
+
+---
+
 ## Session Settings Persistence
 
 All user-facing session settings (e.g. `permissionMode`, `sandboxed`) **must** be persisted in `SessionRegistryEntry` so they survive daemon restarts.
