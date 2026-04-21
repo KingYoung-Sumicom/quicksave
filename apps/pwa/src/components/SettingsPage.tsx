@@ -1,7 +1,10 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useGitStore } from '../stores/gitStore';
 import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { DevicePairingSection } from './DevicePairingSection';
+import { PairDeviceModal } from './PairDeviceModal';
+import { ScanToJoinModal } from './ScanToJoinModal';
 import { ApiKeySection } from './settings/ApiKeySection';
 import { PrimaryKeySection } from './settings/PrimaryKeySection';
 import { NotificationSection } from './settings/NotificationSection';
@@ -15,6 +18,8 @@ interface SettingsPageProps {
 
 export function SettingsPage({ onSendApiKeyToAgent, onPushOffer }: SettingsPageProps) {
   const navigate = useNavigate();
+  const [showPairModal, setShowPairModal] = useState(false);
+  const [showScanModal, setShowScanModal] = useState(false);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -34,6 +39,40 @@ export function SettingsPage({ onSendApiKeyToAgent, onPushOffer }: SettingsPageP
           <div className="border-t border-slate-700" />
 
           <DevicePairingSection />
+
+          <div className="border-t border-slate-700" />
+
+          <div className="space-y-3">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+              裝置同步
+            </h3>
+
+            <div className="space-y-1.5">
+              <button
+                type="button"
+                onClick={() => setShowPairModal(true)}
+                className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 rounded-md font-medium"
+              >
+                邀請新裝置
+              </button>
+              <p className="text-xs text-slate-500">
+                在這台產生 QR，讓新裝置掃描以加入同步。
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <button
+                type="button"
+                onClick={() => setShowScanModal(true)}
+                className="w-full py-2 px-4 bg-slate-700 hover:bg-slate-600 rounded-md font-medium"
+              >
+                連結到現有裝置
+              </button>
+              <p className="text-xs text-slate-500">
+                打開相機，掃描另一台已設定好的裝置上的 QR 碼。
+              </p>
+            </div>
+          </div>
 
           <div className="border-t border-slate-700" />
 
@@ -59,6 +98,12 @@ export function SettingsPage({ onSendApiKeyToAgent, onPushOffer }: SettingsPageP
 
         </div>
       </div>
+      {showPairModal && (
+        <PairDeviceModal onClose={() => setShowPairModal(false)} />
+      )}
+      {showScanModal && (
+        <ScanToJoinModal onClose={() => setShowScanModal(false)} />
+      )}
     </div>
   );
 }

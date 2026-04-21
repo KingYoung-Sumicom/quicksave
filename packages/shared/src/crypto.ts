@@ -424,5 +424,133 @@ export function generateAgentId(): string {
     .replace(/=/g, '');
 }
 
+// ============================================================================
+// Shared-Secret Key Derivation (PWA sync identity)
+// ============================================================================
+
+const X25519_DOMAIN = 'quicksave-sync-x25519-v1';
+const ED25519_DOMAIN = 'quicksave-sync-ed25519-v1';
+
+function deriveSeed(masterSecret: Uint8Array, domain: string): Uint8Array {
+  const domainBytes = decodeUTF8(domain);
+  const input = new Uint8Array(domainBytes.length + masterSecret.length);
+  input.set(domainBytes);
+  input.set(masterSecret, domainBytes.length);
+  return nacl.hash(input).slice(0, 32);
+}
+
+/**
+ * Derive the shared X25519 and Ed25519 keypairs used by all PWA clients
+ * that share this `masterSecret`. Both keypairs are fully deterministic
+ * from `masterSecret` + a fixed domain string, so every PWA that holds
+ * the same secret derives bit-identical pubkeys.
+ */
+export function deriveSharedKeys(
+  masterSecret: Uint8Array
+): { x25519: KeyPair; ed25519: KeyPair } {
+  if (masterSecret.length !== 32) {
+    throw new Error('masterSecret must be 32 bytes');
+  }
+  const x25519Seed = deriveSeed(masterSecret, X25519_DOMAIN);
+  const ed25519Seed = deriveSeed(masterSecret, ED25519_DOMAIN);
+  return {
+    x25519: nacl.box.keyPair.fromSecretKey(x25519Seed),
+    ed25519: nacl.sign.keyPair.fromSeed(ed25519Seed),
+  };
+}
+
+// ============================================================================
+// SAS (Short Authentication String) for PWA pairing
+// ============================================================================
+
+// 32 symbols, case-insensitive, removed 0/1/I/O to avoid typo ambiguity.
+// 5 bits per character.
+export const SAS_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+
+const SAS_DOMAIN = 'quicksave-sas-v1';
+
+/**
+ * Encode the first `chars * 5` bits of `hmacOutput` into the 32-symbol SAS
+ * alphabet. Reads bits big-endian (MSB first) from consecutive bytes.
+ */
+export function sasEncode(hmacOutput: Uint8Array, chars: number): string {
+  if (!Number.isInteger(chars) || chars <= 0) {
+    throw new Error('chars must be a positive integer');
+  }
+  const bytesNeeded = Math.ceil((chars * 5) / 8);
+  if (hmacOutput.length < bytesNeeded) {
+    throw new Error(
+      `hmacOutput too short: need >= ${bytesNeeded} bytes for ${chars} chars`
+    );
+  }
+  let result = '';
+  let bitBuffer = 0;
+  let bitsInBuffer = 0;
+  let byteIdx = 0;
+  for (let i = 0; i < chars; i++) {
+    while (bitsInBuffer < 5) {
+      bitBuffer = (bitBuffer << 8) | hmacOutput[byteIdx++];
+      bitsInBuffer += 8;
+    }
+    bitsInBuffer -= 5;
+    const idx = (bitBuffer >> bitsInBuffer) & 0x1f;
+    result += SAS_ALPHABET[idx];
+  }
+  return result;
+}
+
+/**
+ * Compute the current bucket index for a SAS window. Default 60s window.
+ * A and B only agree if they fall in the same bucket (or adjacent, checked
+ * at verify time).
+ */
+export function sasBucket(now: number, windowMs = 60_000): number {
+  if (!Number.isFinite(now) || now < 0) {
+    throw new Error('now must be a non-negative finite number');
+  }
+  if (!Number.isFinite(windowMs) || windowMs <= 0) {
+    throw new Error('windowMs must be a positive number');
+  }
+  return Math.floor(now / windowMs);
+}
+
+/**
+ * Compute the SAS string for a given pubkey and bucket.
+ *
+ * Deterministic hash of (domain || pubkey || bucket_be8); the same inputs
+ * always yield the same SAS on both A and B. The "HMAC" in the design doc
+ * is interpreted as "a domain-separated cryptographic hash": SAS isn't a
+ * MAC (there's no secret key both sides share before pairing), it's a
+ * visual comparison of two independently-computed values.
+ */
+export function sasCompute(
+  pubkey: Uint8Array,
+  bucket: number,
+  chars = 6
+): string {
+  if (pubkey.length === 0) {
+    throw new Error('pubkey must not be empty');
+  }
+  if (!Number.isInteger(bucket) || bucket < 0) {
+    throw new Error('bucket must be a non-negative integer');
+  }
+  const domainBytes = decodeUTF8(SAS_DOMAIN);
+  const bucketBytes = new Uint8Array(8);
+  // Big-endian 64-bit encoding of the bucket index.
+  const view = new DataView(
+    bucketBytes.buffer,
+    bucketBytes.byteOffset,
+    bucketBytes.byteLength
+  );
+  view.setBigUint64(0, BigInt(bucket), false);
+  const input = new Uint8Array(
+    domainBytes.length + pubkey.length + bucketBytes.length
+  );
+  input.set(domainBytes);
+  input.set(pubkey, domainBytes.length);
+  input.set(bucketBytes, domainBytes.length + pubkey.length);
+  return sasEncode(nacl.hash(input), chars);
+}
+
 // Re-export encoding utilities
 export { encodeBase64, decodeBase64, encodeUTF8, decodeUTF8 };

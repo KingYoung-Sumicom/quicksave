@@ -40,6 +40,7 @@ import { buildOfferMessage, getCurrentSubscription, notificationPermission } fro
 import { GitIdentityModal } from './components/GitIdentityModal';
 import { SettingsPage } from './components/SettingsPage';
 import { AddNewPage } from './components/AddNewPage';
+import { JoinGroupPage } from './routes/JoinGroupPage';
 import { ProjectList } from './components/ProjectList';
 import { ProjectDetail } from './components/ProjectDetail';
 import { useProjectConnection } from './hooks/useProjectConnection';
@@ -865,6 +866,7 @@ function AppContent() {
               path="/settings"
               element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />}
             />
+            <Route path="/pair" element={<JoinGroupPage />} />
             <Route
               path="*"
               element={
@@ -889,6 +891,7 @@ function AppContent() {
                 <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} onConnect={handleConnect} />} />
                 <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />} />
                 <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
+                <Route path="/pair" element={<JoinGroupPage />} />
               </Routes>
             </div>
           </div>
@@ -903,6 +906,7 @@ function AppContent() {
           <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} onConnect={handleConnect} />} />
           <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />} />
           <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
+          <Route path="/pair" element={<JoinGroupPage />} />
         </Routes>
       )}
       {showOverlay && <ConnectingOverlay onAbort={handleAbortConnection} onRetry={handleRetryConnection} />}

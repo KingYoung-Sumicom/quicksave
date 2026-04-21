@@ -49,6 +49,10 @@ export default defineConfig({
             purpose: 'any maskable',
           },
         ],
+        url_handlers: [
+          { origin: 'https://pwa.quicksave.dev' },
+          { origin: 'https://quicksave.dev' },
+        ],
       },
     }),
   ],

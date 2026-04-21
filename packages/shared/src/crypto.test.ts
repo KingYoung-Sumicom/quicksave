@@ -22,6 +22,11 @@ import {
   verifyTombstone,
   encryptSyncBlob,
   decryptSyncBlob,
+  SAS_ALPHABET,
+  deriveSharedKeys,
+  sasEncode,
+  sasBucket,
+  sasCompute,
 } from './crypto.js';
 
 describe('Key Generation', () => {
@@ -389,5 +394,282 @@ describe('sync blob encryption', () => {
     const encrypted = encryptSyncBlob(plaintext, recipientKeyPair.publicKey);
 
     expect(() => decryptSyncBlob(encrypted, otherKeyPair.secretKey)).toThrow();
+  });
+});
+
+describe('SAS_ALPHABET', () => {
+  it('should have exactly 32 characters', () => {
+    expect(SAS_ALPHABET.length).toBe(32);
+  });
+
+  it('should not contain the ambiguous characters 0, 1, I, O', () => {
+    expect(SAS_ALPHABET).not.toContain('0');
+    expect(SAS_ALPHABET).not.toContain('1');
+    expect(SAS_ALPHABET).not.toContain('I');
+    expect(SAS_ALPHABET).not.toContain('O');
+  });
+
+  it('should only contain characters from the set 23456789A-HJ-NP-Z', () => {
+    expect(SAS_ALPHABET).toMatch(/^[23456789A-HJ-NP-Z]+$/);
+  });
+
+  it('should contain all distinct characters', () => {
+    const uniqueChars = new Set(SAS_ALPHABET.split(''));
+    expect(uniqueChars.size).toBe(SAS_ALPHABET.length);
+  });
+});
+
+describe('deriveSharedKeys', () => {
+  it('should be deterministic: same secret produces same pubkeys', () => {
+    const secret = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) secret[i] = i;
+
+    const a = deriveSharedKeys(secret);
+    const b = deriveSharedKeys(secret);
+
+    expect(encodeBase64(a.x25519.publicKey)).toBe(encodeBase64(b.x25519.publicKey));
+    expect(encodeBase64(a.x25519.secretKey)).toBe(encodeBase64(b.x25519.secretKey));
+    expect(encodeBase64(a.ed25519.publicKey)).toBe(encodeBase64(b.ed25519.publicKey));
+    expect(encodeBase64(a.ed25519.secretKey)).toBe(encodeBase64(b.ed25519.secretKey));
+  });
+
+  it('should produce different pubkeys for different secrets', () => {
+    const s1 = nacl.randomBytes(32);
+    const s2 = nacl.randomBytes(32);
+
+    const a = deriveSharedKeys(s1);
+    const b = deriveSharedKeys(s2);
+
+    expect(encodeBase64(a.x25519.publicKey)).not.toBe(encodeBase64(b.x25519.publicKey));
+    expect(encodeBase64(a.ed25519.publicKey)).not.toBe(encodeBase64(b.ed25519.publicKey));
+  });
+
+  it('should return keys with the correct lengths', () => {
+    const secret = nacl.randomBytes(32);
+    const derived = deriveSharedKeys(secret);
+
+    expect(derived.x25519.publicKey).toBeInstanceOf(Uint8Array);
+    expect(derived.x25519.secretKey).toBeInstanceOf(Uint8Array);
+    expect(derived.ed25519.publicKey).toBeInstanceOf(Uint8Array);
+    expect(derived.ed25519.secretKey).toBeInstanceOf(Uint8Array);
+
+    expect(derived.x25519.publicKey.length).toBe(32);
+    expect(derived.x25519.secretKey.length).toBe(32);
+    expect(derived.ed25519.publicKey.length).toBe(32);
+    expect(derived.ed25519.secretKey.length).toBe(64);
+  });
+
+  it('should produce usable x25519 keypair (sync-blob roundtrip)', () => {
+    const secret = nacl.randomBytes(32);
+    const { x25519 } = deriveSharedKeys(secret);
+
+    const plaintext = 'hello derived world';
+    const encrypted = encryptSyncBlob(plaintext, x25519.publicKey);
+    const decrypted = decryptSyncBlob(encrypted, x25519.secretKey);
+
+    expect(decrypted).toBe(plaintext);
+  });
+
+  it('should produce usable ed25519 keypair (sign/verify)', () => {
+    const secret = nacl.randomBytes(32);
+    const { ed25519 } = deriveSharedKeys(secret);
+
+    const message = 'sign me';
+    const signature = sign(message, ed25519.secretKey);
+
+    expect(verify(message, signature, ed25519.publicKey)).toBe(true);
+  });
+
+  it('should throw for a 0-byte master secret', () => {
+    expect(() => deriveSharedKeys(new Uint8Array(0))).toThrow();
+  });
+
+  it('should throw for a 16-byte master secret', () => {
+    expect(() => deriveSharedKeys(new Uint8Array(16))).toThrow();
+  });
+
+  it('should throw for a 33-byte master secret', () => {
+    expect(() => deriveSharedKeys(new Uint8Array(33))).toThrow();
+  });
+
+  it('should throw for a 64-byte master secret', () => {
+    expect(() => deriveSharedKeys(new Uint8Array(64))).toThrow();
+  });
+
+  it('should domain-separate x25519 and ed25519 seeds', () => {
+    const secret = nacl.randomBytes(32);
+    const derived = deriveSharedKeys(secret);
+
+    expect(encodeBase64(derived.x25519.publicKey)).not.toBe(
+      encodeBase64(derived.ed25519.publicKey)
+    );
+  });
+});
+
+describe('sasEncode', () => {
+  it('should return exactly `chars` characters', () => {
+    const buf = nacl.randomBytes(16);
+    expect(sasEncode(buf, 6).length).toBe(6);
+    expect(sasEncode(buf, 4).length).toBe(4);
+    expect(sasEncode(buf, 8).length).toBe(8);
+  });
+
+  it('should produce output with only alphabet characters', () => {
+    const buf = nacl.randomBytes(16);
+    const out = sasEncode(buf, 6);
+    for (const ch of out) {
+      expect(SAS_ALPHABET).toContain(ch);
+    }
+  });
+
+  it('should be deterministic', () => {
+    const buf = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(sasEncode(buf, 6)).toBe(sasEncode(buf, 6));
+    expect(sasEncode(buf, 4)).toBe(sasEncode(buf, 4));
+  });
+
+  it('should encode all-zero input to the first alphabet char repeated', () => {
+    const buf = new Uint8Array([0x00, 0x00, 0x00, 0x00]);
+    const result = sasEncode(buf, 6);
+    expect(result).toBe('222222');
+    expect(SAS_ALPHABET[0]).toBe('2');
+  });
+
+  it('should encode all-0xff input to the last alphabet char repeated', () => {
+    const buf = new Uint8Array([0xff, 0xff, 0xff, 0xff]);
+    const result = sasEncode(buf, 6);
+    const last = SAS_ALPHABET[SAS_ALPHABET.length - 1];
+    expect(result).toBe(last.repeat(6));
+  });
+
+  it('should throw when chars is 0', () => {
+    const buf = nacl.randomBytes(16);
+    expect(() => sasEncode(buf, 0)).toThrow();
+  });
+
+  it('should throw when chars is negative', () => {
+    const buf = nacl.randomBytes(16);
+    expect(() => sasEncode(buf, -1)).toThrow();
+  });
+
+  it('should throw when chars is not an integer', () => {
+    const buf = nacl.randomBytes(16);
+    expect(() => sasEncode(buf, 2.5)).toThrow();
+  });
+
+  it('should throw when hmacOutput is too short for requested chars', () => {
+    // 6 chars need ceil(30/8) = 4 bytes; supply only 3
+    expect(() => sasEncode(new Uint8Array(3), 6)).toThrow();
+  });
+});
+
+describe('sasBucket', () => {
+  it('should return 0 for now=0', () => {
+    expect(sasBucket(0)).toBe(0);
+  });
+
+  it('should return 0 for now=59_999 (within first 60s bucket)', () => {
+    expect(sasBucket(59_999)).toBe(0);
+  });
+
+  it('should return 1 for now=60_000', () => {
+    expect(sasBucket(60_000)).toBe(1);
+  });
+
+  it('should return 2 for now=120_000', () => {
+    expect(sasBucket(120_000)).toBe(2);
+  });
+
+  it('should honor custom windowMs (60_000 @ 30_000 => 2)', () => {
+    expect(sasBucket(60_000, 30_000)).toBe(2);
+  });
+
+  it('should honor custom windowMs (59_999 @ 30_000 => 1)', () => {
+    expect(sasBucket(59_999, 30_000)).toBe(1);
+  });
+
+  it('should throw when now is negative', () => {
+    expect(() => sasBucket(-1)).toThrow();
+  });
+
+  it('should throw when windowMs is 0', () => {
+    expect(() => sasBucket(60_000, 0)).toThrow();
+  });
+
+  it('should throw when windowMs is negative', () => {
+    expect(() => sasBucket(60_000, -1)).toThrow();
+  });
+
+  it('should throw when now is NaN', () => {
+    expect(() => sasBucket(Number.NaN)).toThrow();
+  });
+
+  it('should throw when now is Infinity', () => {
+    expect(() => sasBucket(Number.POSITIVE_INFINITY)).toThrow();
+  });
+});
+
+describe('sasCompute', () => {
+  it('should return 6 characters by default from SAS_ALPHABET', () => {
+    const pubkey = nacl.randomBytes(32);
+    const result = sasCompute(pubkey, 0);
+    expect(result.length).toBe(6);
+    for (const ch of result) {
+      expect(SAS_ALPHABET).toContain(ch);
+    }
+  });
+
+  it('should be deterministic for same (pubkey, bucket, chars)', () => {
+    const pubkey = nacl.randomBytes(32);
+    const a = sasCompute(pubkey, 42);
+    const b = sasCompute(pubkey, 42);
+    expect(a).toBe(b);
+
+    const c = sasCompute(pubkey, 42, 8);
+    const d = sasCompute(pubkey, 42, 8);
+    expect(c).toBe(d);
+  });
+
+  it('should (very likely) produce different output for adjacent buckets', () => {
+    const pubkey = nacl.randomBytes(32);
+    expect(sasCompute(pubkey, 100)).not.toBe(sasCompute(pubkey, 101));
+  });
+
+  it('should (very likely) produce different output for different pubkeys', () => {
+    const pk1 = nacl.randomBytes(32);
+    const pk2 = nacl.randomBytes(32);
+    expect(sasCompute(pk1, 0)).not.toBe(sasCompute(pk2, 0));
+  });
+
+  it('should respect custom chars=4', () => {
+    const pubkey = nacl.randomBytes(32);
+    const result = sasCompute(pubkey, 0, 4);
+    expect(result.length).toBe(4);
+    for (const ch of result) {
+      expect(SAS_ALPHABET).toContain(ch);
+    }
+  });
+
+  it('should respect custom chars=8', () => {
+    const pubkey = nacl.randomBytes(32);
+    const result = sasCompute(pubkey, 0, 8);
+    expect(result.length).toBe(8);
+    for (const ch of result) {
+      expect(SAS_ALPHABET).toContain(ch);
+    }
+  });
+
+  it('should throw when pubkey is empty', () => {
+    expect(() => sasCompute(new Uint8Array(0), 0)).toThrow();
+  });
+
+  it('should throw when bucket is negative', () => {
+    const pubkey = nacl.randomBytes(32);
+    expect(() => sasCompute(pubkey, -1)).toThrow();
+  });
+
+  it('should throw when bucket is non-integer', () => {
+    const pubkey = nacl.randomBytes(32);
+    expect(() => sasCompute(pubkey, 1.5)).toThrow();
   });
 });
