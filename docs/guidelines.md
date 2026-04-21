@@ -82,11 +82,12 @@ Before designing or implementing any feature, check the relevant guidelines belo
 - Identity model：所有 PWA 共用 `masterSecret`，X25519 / Ed25519 keypair 由它派生（無 per-PWA crypto identity、無白名單）
 - 單槽 mailbox + read-modify-write + per-mailbox in-flight mutex + LWW 收斂
 - `SignedSyncEnvelope` schema 與 relay 端 Ed25519 verify
-- Pairing flow：QR(ephemeral X25519 pubkey) + sealed-box 直送 `masterSecret`
-- 退役（清 browser storage）vs. 群組 reset（tombstone + 換 `masterSecret`）
-- 與 Happy Coder 的差異（Quicksave 維持 stateless relay）
+- PWA pairing：A 同時出 QR + deep-link URL（`#k=<eA_pub>` fragment）+ 多槽 mailbox + B 顯示 6 碼 SAS（32 符號 alphabet）+ A 輸入過濾候選
+- **Agent 信任模型**：TOFU 記一把 PWA pubkey、訂閱 `tombstone:*` pubsub、收到 tombstone 自動自毀並進入自閉模式、需 CLI `quicksave pair` 解鎖
+- 退役（清 browser storage）vs. 群組 reset（tombstone + 換 `masterSecret` + agent 自動自毀）
+- 與 Happy Coder 的差異（Quicksave 維持 stateless relay；agent 不持 `masterSecret`）
 
-**維護規則**：修改 `packages/shared/src/crypto.ts` 的 sign/verify/encrypt/seed-keypair 派生、`apps/relay/src/syncStore.ts` 的 slot/mutex/in-flight 結構、`apps/pwa/src/lib/syncClient.ts` 或 `syncMerge.ts` 的 envelope schema 或 read-modify-write 流程、pairing flow（QR / sealed-box bootstrap）、或 group reset / tombstone 行為時，同步更新此文件。
+**維護規則**：修改 `packages/shared/src/crypto.ts` 的 sign/verify/encrypt/seed-keypair/SAS 派生、`apps/relay/src/syncStore.ts` 的 slot/mutex、`apps/relay/src/pairStore.ts` 的 `/pair-requests/*` 生命週期、`apps/pwa/src/lib/syncClient.ts` 或 `syncMerge.ts` 的 envelope schema、`apps/pwa/src/lib/pairClient.ts` 的 SAS pairing flow、`apps/agent/src/config.ts` 的 `peerPWA*` 欄位、`apps/agent/src/connection/connection.ts` 的 handshake 驗 pubkey 與自閉模式、或 group reset / tombstone pubsub 推送時，同步更新此文件。
 
 ---
 
