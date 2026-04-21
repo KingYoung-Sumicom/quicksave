@@ -141,6 +141,8 @@ export type MessageType =
   | 'project:list-summaries:response'
   | 'project:list-repos'
   | 'project:list-repos:response'
+  | 'project:delete'
+  | 'project:delete:response'
   // Message bus envelope (transports opaque bus frames; see packages/message-bus)
   | 'bus:frame'
   | 'error';
