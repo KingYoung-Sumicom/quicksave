@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { FormattedMessage, useIntl } from 'react-intl';
 import { useNotificationEnable } from '../hooks/useNotificationEnable';
 import type { Message, PushSubscriptionOfferPayload } from '@sumicom/quicksave-shared';
 
@@ -16,6 +17,7 @@ interface NotificationPromptProps {
  * dismiss can still re-enable later from the Settings panel.
  */
 export function NotificationPrompt({ onOffer }: NotificationPromptProps) {
+  const intl = useIntl();
   const { isSupported, permission, busy, error, enable } = useNotificationEnable(onOffer);
   const [dismissed, setDismissed] = useState(false);
 
@@ -40,8 +42,8 @@ export function NotificationPrompt({ onOffer }: NotificationPromptProps) {
         <div className="p-3 bg-blue-500/10 border border-blue-500/30 backdrop-blur-sm rounded-lg shadow-lg flex items-center gap-3">
           <div className="flex-1 text-sm text-blue-300">
             {error
-              ? <>Couldn&apos;t enable notifications: {error}</>
-              : <>Enable notifications to get alerted when a session needs your attention.</>}
+              ? <FormattedMessage id="notificationPrompt.errorPrefix" values={{ error }} />
+              : <FormattedMessage id="notificationPrompt.prompt" />}
           </div>
           <button
             type="button"
@@ -49,12 +51,12 @@ export function NotificationPrompt({ onOffer }: NotificationPromptProps) {
             disabled={busy}
             className="px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-500 disabled:bg-blue-700/60 rounded-md text-white transition-colors"
           >
-            {busy ? 'Enabling…' : 'Enable'}
+            <FormattedMessage id={busy ? 'notificationPrompt.enabling' : 'notificationPrompt.enable'} />
           </button>
           <button
             type="button"
             onClick={handleDismiss}
-            aria-label="Dismiss"
+            aria-label={intl.formatMessage({ id: 'notificationPrompt.dismissAria' })}
             className="p-1 text-slate-500 hover:text-slate-400"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

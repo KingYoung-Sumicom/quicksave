@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useIntl } from 'react-intl';
 import { clsx } from 'clsx';
 import { DEFAULT_KV_CACHE_LIFETIME_MS } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../../stores/claudeStore';
@@ -27,6 +28,7 @@ export function SessionStatsBar({
   onCompact,
   onClear,
 }: SessionStatsBarProps) {
+  const intl = useIntl();
   const session = useClaudeStore((s) => s.sessions[sessionId]);
   const lastTurnTotal = (session?.lastTurnInputTokens ?? 0)
     + (session?.lastTurnCacheCreationTokens ?? 0)
@@ -70,8 +72,8 @@ export function SessionStatsBar({
           )}
           title={
             expired
-              ? `Prompt cache likely expired — next turn will re-send ~${formatTokens(contextTokens)} tokens as fresh input`
-              : 'Estimated prompt cache remaining'
+              ? intl.formatMessage({ id: 'sessionStatsBar.expiredTitle' }, { tokens: formatTokens(contextTokens) })
+              : intl.formatMessage({ id: 'sessionStatsBar.title' })
           }
         >
           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -80,8 +82,8 @@ export function SessionStatsBar({
           </svg>
           {expired
             ? contextTokens > 0
-              ? `Expired (${formatTokens(contextTokens)} tokens)`
-              : 'Expired'
+              ? intl.formatMessage({ id: 'sessionStatsBar.expiredWithTokens' }, { tokens: formatTokens(contextTokens) })
+              : intl.formatMessage({ id: 'sessionStatsBar.expired' })
             : formatCountdown(remainingMs)}
         </span>
       )}

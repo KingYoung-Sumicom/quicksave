@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
-import type { ConfigValue, SessionControlRequestResponsePayload } from '@sumicom/quicksave-shared';
+import type { ConfigValue, ProjectRepo, SessionControlRequestResponsePayload } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
+import { useMediaQuery } from '../hooks/useMediaQuery';
 import { StatusDot, sessionStatusKey, type SessionStatusKey } from './SessionStatusBadge';
 import { BaseStatusBar, MenuButton, BackButton, SettingsGearButton } from './BaseStatusBar';
 import { AgentSettingsDrawer } from './AgentSettingsDrawer';
@@ -12,16 +13,22 @@ interface SessionAppBarProps {
   onOpenMenu: () => void;
   /** Session ID from URL — used as fallback when activeSessionId is null (inactive session) */
   sessionId?: string;
-  /** When set, show back arrow navigating to this path instead of hamburger menu */
+  /** When set, show back arrow navigating to this path instead of hamburger menu (mobile only) */
   backTo?: string;
+  /** Project ID from the route — used by the utilities drawer to navigate to project repos. */
+  projectId?: string;
+  /** Agent ID owning the project — used to look up available repos. */
+  agentId?: string;
+  /** Project cwd — repos under this path are shown in the utilities drawer. */
+  cwd?: string;
+  /** Fetches the full per-project repo list (incl. submodules + dirty state)
+   *  when the utilities drawer opens. */
+  onListProjectRepos?: (cwd: string) => Promise<ProjectRepo[] | null>;
   onSetSessionConfig?: (key: string, value: ConfigValue) => void;
   onSendControlRequest?: (sessionId: string, subtype: string, params?: Record<string, unknown>) => Promise<SessionControlRequestResponsePayload>;
   onCloseSession?: () => void;
   onArchiveSession?: () => void;
   onCancelSession?: () => void;
-  onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
-  onUpdateAgent?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; restarting: boolean; error?: string }>;
-  onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
 }
 
 export function SessionAppBar({
@@ -31,23 +38,29 @@ export function SessionAppBar({
   onOpenMenu,
   sessionId,
   backTo,
+  projectId,
+  agentId,
+  cwd,
+  onListProjectRepos,
   onSetSessionConfig,
   onSendControlRequest,
   onCloseSession,
   onArchiveSession,
   onCancelSession,
-  onCheckAgentUpdate,
-  onUpdateAgent,
-  onRestartAgent,
 }: SessionAppBarProps) {
   const navigate = useNavigate();
+  // Desktop split-pane already provides nav via the sidebar — drop the redundant
+  // back/menu affordance so the bar isn't competing with the sidebar.
+  const isDesktop = useMediaQuery('(min-width: 768px)');
 
   return (
     <>
       <BaseStatusBar
-        left={backTo
-          ? <BackButton onClick={() => navigate(-1)} />
-          : <MenuButton onClick={onOpenMenu} />
+        left={isDesktop
+          ? null
+          : backTo
+            ? <BackButton onClick={() => navigate(-1)} />
+            : <MenuButton onClick={onOpenMenu} />
         }
         center={<SessionStatusIndicator />}
         right={<SettingsGearButton onClick={onOpenSettings} />}
@@ -57,14 +70,15 @@ export function SessionAppBar({
         isOpen={showSettings}
         onClose={onCloseSettings}
         sessionId={sessionId}
+        projectId={projectId}
+        agentId={agentId}
+        cwd={cwd}
+        onListProjectRepos={onListProjectRepos}
         onSetSessionConfig={onSetSessionConfig}
         onSendControlRequest={onSendControlRequest}
         onCancelSession={onCancelSession}
         onCloseSession={onCloseSession}
         onArchiveSession={onArchiveSession}
-        onCheckAgentUpdate={onCheckAgentUpdate}
-        onUpdateAgent={onUpdateAgent}
-        onRestartAgent={onRestartAgent}
       />
     </>
   );

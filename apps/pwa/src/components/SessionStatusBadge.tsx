@@ -1,14 +1,15 @@
 import { clsx } from 'clsx';
+import { FormattedMessage } from 'react-intl';
 import type { ClaudeSessionSummary } from '@sumicom/quicksave-shared';
 
 export type SessionStatusKey = 'thinking' | 'pending' | 'waiting' | 'standby' | 'closed';
 
 export const SESSION_STATUS = {
-  thinking: { label: 'Thinking', dotColor: 'bg-blue-400',   textColor: 'text-blue-300',   borderColor: 'border-blue-500/30',   bgColor: 'bg-blue-500/10',   pulse: true  },
-  pending:  { label: 'Pending',  dotColor: 'bg-orange-400', textColor: 'text-orange-300', borderColor: 'border-orange-500/30', bgColor: 'bg-orange-500/10', pulse: true  },
-  waiting:  { label: 'Waiting',  dotColor: 'bg-blue-400',   textColor: 'text-blue-300',   borderColor: 'border-blue-500/30',   bgColor: 'bg-blue-500/10',   pulse: true  },
-  standby:  { label: 'Standby',  dotColor: 'bg-green-400',  textColor: 'text-green-300',  borderColor: 'border-green-500/30',  bgColor: 'bg-green-500/10',  pulse: false },
-  closed:   { label: 'Closed',   dotColor: 'bg-slate-500',  textColor: 'text-slate-400',  borderColor: 'border-slate-600/30',  bgColor: 'bg-slate-700/30',  pulse: false },
+  thinking: { dotColor: 'bg-blue-400',   textColor: 'text-blue-300',   borderColor: 'border-blue-500/30',   bgColor: 'bg-blue-500/10',   pulse: true  },
+  pending:  { dotColor: 'bg-orange-400', textColor: 'text-orange-300', borderColor: 'border-orange-500/30', bgColor: 'bg-orange-500/10', pulse: true  },
+  waiting:  { dotColor: 'bg-blue-400',   textColor: 'text-blue-300',   borderColor: 'border-blue-500/30',   bgColor: 'bg-blue-500/10',   pulse: true  },
+  standby:  { dotColor: 'bg-green-400',  textColor: 'text-green-300',  borderColor: 'border-green-500/30',  bgColor: 'bg-green-500/10',  pulse: false },
+  closed:   { dotColor: 'bg-slate-500',  textColor: 'text-slate-400',  borderColor: 'border-slate-600/30',  bgColor: 'bg-slate-700/30',  pulse: false },
 } as const;
 
 /** Derive status from a session summary. */
@@ -43,7 +44,7 @@ export function SessionStatusBadge({ statusKey, showClosed = false }: SessionSta
         s.borderColor, s.bgColor, s.textColor
       )}
     >
-      {s.label}
+      <FormattedMessage id={`sessionStatus.label.${statusKey}`} />
       <span className={clsx('w-1.5 h-1.5 rounded-full', s.dotColor, s.pulse && 'animate-pulse')} />
     </span>
   );

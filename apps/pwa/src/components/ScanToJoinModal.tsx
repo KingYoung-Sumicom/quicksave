@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { FormattedMessage, useIntl, type IntlShape } from 'react-intl';
 import { useNavigate } from 'react-router-dom';
 import { Html5Qrcode } from 'html5-qrcode';
 import { Modal } from './ui/Modal';
@@ -15,6 +16,7 @@ type Phase = 'starting' | 'scanning' | 'matched' | 'error';
 const SCANNER_ELEMENT_ID = 'pair-qr-scanner';
 
 export function ScanToJoinModal({ onClose }: ScanToJoinModalProps) {
+  const intl = useIntl();
   const navigate = useNavigate();
   const [phase, setPhase] = useState<Phase>('starting');
   const [error, setError] = useState<string | null>(null);
@@ -76,7 +78,7 @@ export function ScanToJoinModal({ onClose }: ScanToJoinModalProps) {
         setPhase('scanning');
       } catch (e) {
         if (!cancelled) {
-          setError(friendlyCameraError(e));
+          setError(friendlyCameraError(e, intl));
           setPhase('error');
         }
       }
@@ -132,7 +134,7 @@ export function ScanToJoinModal({ onClose }: ScanToJoinModalProps) {
 
   return (
     <Modal
-      title="連結到現有裝置"
+      title={intl.formatMessage({ id: 'pair.scan.title' })}
       onClose={onClose}
       maxWidth="max-w-lg"
       backdropClose={false}
@@ -152,7 +154,7 @@ export function ScanToJoinModal({ onClose }: ScanToJoinModalProps) {
       `}</style>
       <div className="p-4 space-y-4">
         <p className="text-sm text-slate-400">
-          在主要裝置打開「邀請新裝置」，然後用相機對準畫面上的 QR 碼。
+          <FormattedMessage id="pair.scan.instructions" />
         </p>
 
         <div className="relative w-full aspect-square max-w-sm mx-auto bg-slate-900 rounded-md overflow-hidden">
@@ -173,19 +175,19 @@ export function ScanToJoinModal({ onClose }: ScanToJoinModalProps) {
 
         {phase === 'starting' && (
           <div className="flex items-center gap-2 text-slate-400 text-sm">
-            <Spinner color="border-blue-500" /> 正在啟動相機…
+            <Spinner color="border-blue-500" /> <FormattedMessage id="pair.scan.starting" />
           </div>
         )}
 
         {phase === 'scanning' && (
           <div className="text-xs text-slate-500 text-center">
-            對準 QR 碼即可自動辨識
+            <FormattedMessage id="pair.scan.scanning" />
           </div>
         )}
 
         {phase === 'matched' && (
           <div className="text-sm text-emerald-400 flex items-center gap-2">
-            <Spinner color="border-emerald-500" /> 已辨識，轉跳到配對畫面…
+            <Spinner color="border-emerald-500" /> <FormattedMessage id="pair.scan.matched" />
           </div>
         )}
 
@@ -197,7 +199,7 @@ export function ScanToJoinModal({ onClose }: ScanToJoinModalProps) {
             onClick={onClose}
             className="px-4 py-2 text-sm bg-slate-700 hover:bg-slate-600 rounded-md"
           >
-            取消
+            <FormattedMessage id="pair.scan.cancel" />
           </button>
         </div>
       </div>
@@ -205,16 +207,16 @@ export function ScanToJoinModal({ onClose }: ScanToJoinModalProps) {
   );
 }
 
-function friendlyCameraError(e: unknown): string {
+function friendlyCameraError(e: unknown, intl: IntlShape): string {
   const msg = (e as Error)?.message ?? String(e);
   if (/permission|denied|NotAllowed/i.test(msg)) {
-    return '相機權限被拒。請在瀏覽器設定中允許相機存取後再試一次。';
+    return intl.formatMessage({ id: 'pair.scan.error.permission' });
   }
   if (/NotFound|no camera/i.test(msg)) {
-    return '找不到可用相機。';
+    return intl.formatMessage({ id: 'pair.scan.error.notFound' });
   }
   if (/secure|https/i.test(msg)) {
-    return '相機需要 HTTPS 環境。請在正式網域或 localhost 下使用。';
+    return intl.formatMessage({ id: 'pair.scan.error.https' });
   }
-  return `啟動相機失敗：${msg}`;
+  return intl.formatMessage({ id: 'pair.scan.error.generic' }, { message: msg });
 }

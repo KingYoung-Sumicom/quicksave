@@ -1,4 +1,5 @@
 import { useEffect, useCallback, useState, useMemo } from 'react';
+import { FormattedMessage, useIntl } from 'react-intl';
 import { ErrorBox } from './ui/ErrorBox';
 import {
   useGitStore,
@@ -124,6 +125,7 @@ export function RepoView({
   onSetApiKey,
 }: RepoViewProps) {
   void _onDiscard; // Will be used in future discard UI
+  const intl = useIntl();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const {
     expandedDiffs,
@@ -290,26 +292,30 @@ export function RepoView({
                 d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
               />
             </svg>
-            <h3 className="text-lg font-medium text-slate-300 mb-1">Working tree clean</h3>
-            <p className="text-sm text-slate-500">No changes to commit</p>
+            <h3 className="text-lg font-medium text-slate-300 mb-1">
+              <FormattedMessage id="repoView.workingTreeClean" />
+            </h3>
+            <p className="text-sm text-slate-500">
+              <FormattedMessage id="repoView.noChangesToCommit" />
+            </p>
             <button
               onClick={onRefresh}
               className="mt-4 px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-md text-sm transition-colors"
             >
-              Refresh
+              <FormattedMessage id="repoView.refresh" />
             </button>
           </div>
         )}
 
         {/* Staged Files */}
         <FileList
-          title="Staged"
+          title={intl.formatMessage({ id: 'fileList.staged' })}
           files={staged}
           type="staged"
           onFileClick={(path) => handleFileClick(path, 'staged')}
           actions={[
-            { label: 'Unstage', onAction: onUnstage, primary: true },
-            { label: 'Untrack', onAction: onUntrack },
+            { label: intl.formatMessage({ id: 'fileList.unstage' }), onAction: onUnstage, primary: true },
+            { label: intl.formatMessage({ id: 'fileList.untrack' }), onAction: onUntrack },
           ]}
           expandedDiffs={expandedDiffs}
           loadingDiffs={loadingDiffs}
@@ -323,7 +329,7 @@ export function RepoView({
 
         {/* Changed + Untracked Files */}
         <FileList
-          title="Changes"
+          title={intl.formatMessage({ id: 'fileList.changes' })}
           files={[
             ...unstaged,
             ...untracked.map((path) => ({ path, status: 'added' as const })),
@@ -339,8 +345,8 @@ export function RepoView({
             handleFileClick(path, isUnt ? 'untracked' : 'unstaged');
           }}
           actions={[
-            { label: 'Stage', onAction: onStage, primary: true },
-            { label: 'Ignore', onAction: (paths) => paths.forEach(p => onAddToGitignore(p)) },
+            { label: intl.formatMessage({ id: 'fileList.stage' }), onAction: onStage, primary: true },
+            { label: intl.formatMessage({ id: 'fileList.ignore' }), onAction: (paths) => paths.forEach(p => onAddToGitignore(p)) },
           ]}
           expandedDiffs={expandedDiffs}
           loadingDiffs={loadingDiffs}
@@ -370,7 +376,7 @@ export function RepoView({
               disabled={isLoading}
               className="px-4 py-2 text-sm text-slate-400 hover:text-white transition-colors"
             >
-              ↻ Refresh
+              <FormattedMessage id="repoView.refreshSymbol" />
             </button>
           </div>
         )}

@@ -490,6 +490,9 @@ export interface ProjectRepo {
   name: string;
   currentBranch?: string;
   isSubmodule?: boolean;
+  /** True when the repo has uncommitted/unstaged/untracked changes. Optional
+   *  because older agents may not populate it; treat undefined as unknown. */
+  hasChanges?: boolean;
 }
 
 export interface ProjectListReposRequestPayload {
@@ -1095,6 +1098,15 @@ export interface ClaudeSessionSummary {
   isStreaming?: boolean;
   hasPendingInput?: boolean;
   permissionMode?: string;
+  // Ticket-model metadata — mirrored from `SessionRegistryEntry` so home-screen
+  // session cards can render stage/blocked/latest-note without joining manually.
+  /** First-prompt fallback used when title (subject) hasn't been set. */
+  firstPrompt?: string;
+  stage?: SessionStage;
+  blocked?: boolean;
+  /** Latest progress note (mirror of the last `noteHistory` entry). */
+  note?: string;
+  noteHistory?: SessionNoteEntry[];
   /** Epoch ms of the last `prompt_sent` event for this session. */
   lastPromptAt?: number;
   /** Epoch ms of the last `turn_ended` event — used as the prompt-cache

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { FormattedMessage, useIntl } from 'react-intl';
 import { Html5Qrcode } from 'html5-qrcode';
 import { Spinner } from './ui/Spinner';
 
@@ -9,6 +10,7 @@ interface QRScannerProps {
 }
 
 export function QRScanner({ onScan, onPairingScan, onError }: QRScannerProps) {
+  const intl = useIntl();
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const [shouldStart, setShouldStart] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
@@ -61,11 +63,11 @@ export function QRScanner({ onScan, onPairingScan, onError }: QRScannerProps) {
         return;
       }
 
-      setError('Invalid QR code. Please scan the QR code from quicksave-agent.');
+      setError(intl.formatMessage({ id: 'qrScanner.error.invalid' }));
     } catch {
-      setError('Invalid QR code format.');
+      setError(intl.formatMessage({ id: 'qrScanner.error.invalidFormat' }));
     }
-  }, [onScan, onPairingScan]);
+  }, [onScan, onPairingScan, intl]);
 
   // Start scanner when shouldStart becomes true and element is mounted
   useEffect(() => {
@@ -101,7 +103,7 @@ export function QRScanner({ onScan, onPairingScan, onError }: QRScannerProps) {
         setError(null);
       } catch (err) {
         console.error('Failed to start scanner:', err);
-        const message = err instanceof Error ? err.message : 'Failed to access camera';
+        const message = err instanceof Error ? err.message : intl.formatMessage({ id: 'qrScanner.fallback.cameraAccess' });
         setError(message);
         setPermissionDenied(true);
         setShouldStart(false);
@@ -112,7 +114,7 @@ export function QRScanner({ onScan, onPairingScan, onError }: QRScannerProps) {
     };
 
     startScanner();
-  }, [shouldStart, handleScan, onError]);
+  }, [shouldStart, handleScan, onError, intl]);
 
   const stopScanner = useCallback(async () => {
     if (scannerRef.current?.isScanning) {
@@ -191,27 +193,31 @@ export function QRScanner({ onScan, onPairingScan, onError }: QRScannerProps) {
       {showStartButton && (
         permissionDenied ? (
           <>
-            <p className="text-red-400 text-sm mb-2">Camera access denied</p>
+            <p className="text-red-400 text-sm mb-2">
+              <FormattedMessage id="qrScanner.error.permissionDenied" />
+            </p>
             <p className="text-slate-400 text-xs mb-4">
-              Please allow camera access in your browser settings.
+              <FormattedMessage id="qrScanner.error.permissionHint" />
             </p>
           </>
         ) : error ? (
           <p className="text-yellow-400 text-sm mb-4">{error}</p>
         ) : (
           <p className="text-slate-400 text-sm mb-4">
-            Tap the button below to scan the QR code from your agent.
+            <FormattedMessage id="qrScanner.prompt.tapToScan" />
           </p>
         )
       )}
 
       {isStarting && (
-        <p className="text-slate-400 text-sm mb-4">Starting camera...</p>
+        <p className="text-slate-400 text-sm mb-4">
+          <FormattedMessage id="qrScanner.starting" />
+        </p>
       )}
 
       {isScanning && !error && (
         <p className="text-slate-400 text-sm mb-4">
-          Point your camera at the QR code displayed by the agent.
+          <FormattedMessage id="qrScanner.prompt.scanning" />
         </p>
       )}
 
@@ -225,7 +231,7 @@ export function QRScanner({ onScan, onPairingScan, onError }: QRScannerProps) {
           onClick={() => setShouldStart(true)}
           className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium text-white transition-colors"
         >
-          {permissionDenied ? 'Try Again' : 'Start Camera'}
+          <FormattedMessage id={permissionDenied ? 'qrScanner.button.tryAgain' : 'qrScanner.button.startCamera'} />
         </button>
       )}
 
@@ -234,7 +240,7 @@ export function QRScanner({ onScan, onPairingScan, onError }: QRScannerProps) {
           onClick={stopScanner}
           className="px-4 py-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-sm text-white transition-colors"
         >
-          Stop Camera
+          <FormattedMessage id="qrScanner.button.stopCamera" />
         </button>
       )}
     </div>

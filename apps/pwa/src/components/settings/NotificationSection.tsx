@@ -1,4 +1,6 @@
+import { FormattedMessage } from 'react-intl';
 import { useNotificationEnable } from '../../hooks/useNotificationEnable';
+import type { PushSupportStatus } from '../../lib/pushSubscription';
 import { Spinner } from '../ui/Spinner';
 import { ErrorBox } from '../ui/ErrorBox';
 import type { Message, PushSubscriptionOfferPayload } from '@sumicom/quicksave-shared';
@@ -7,26 +9,38 @@ interface NotificationSectionProps {
   onPushOffer?: (msg: Message<PushSubscriptionOfferPayload>) => void;
 }
 
+function unsupportedMessageId(status: PushSupportStatus): string {
+  if (status.ok) return 'settings.notifications.unsupported';
+  switch (status.kind) {
+    case 'ios-not-standalone':
+      return 'settings.notifications.unsupported.iosStandalone';
+    case 'no-vapid-key':
+      return 'settings.notifications.unsupported.noVapidKey';
+    case 'no-browser-support':
+      return 'settings.notifications.unsupported.browser';
+  }
+}
+
 export function NotificationSection({ onPushOffer }: NotificationSectionProps) {
-  const { isSupported, permission, busy, error, enable } = useNotificationEnable(onPushOffer);
+  const { isSupported, supportStatus, permission, busy, error, enable } = useNotificationEnable(onPushOffer);
 
   return (
     <div className="space-y-3">
       <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
-        Notifications
+        <FormattedMessage id="settings.notifications.title" />
       </h3>
 
       <p className="text-sm text-slate-300">
-        Get alerted when a session needs your attention.
+        <FormattedMessage id="settings.notifications.description" />
       </p>
 
       {!isSupported ? (
         <p className="text-xs text-slate-500">
-          Push notifications aren&apos;t available in this browser.
+          <FormattedMessage id={unsupportedMessageId(supportStatus)} />
         </p>
       ) : permission === 'denied' ? (
         <p className="text-xs text-slate-400">
-          Notifications are blocked. Update the permission in your browser settings to re-enable.
+          <FormattedMessage id="settings.notifications.denied" />
         </p>
       ) : permission === 'granted' ? (
         <div className="flex items-center justify-between">
@@ -38,14 +52,16 @@ export function NotificationSection({ onPushOffer }: NotificationSectionProps) {
                 clipRule="evenodd"
               />
             </svg>
-            Enabled
+            <FormattedMessage id="settings.notifications.enabled" />
           </span>
           <button
             onClick={enable}
             disabled={busy}
             className="text-xs text-slate-400 hover:text-slate-300 transition-colors disabled:opacity-50"
           >
-            {busy ? 'Refreshing…' : 'Re-register'}
+            <FormattedMessage
+              id={busy ? 'settings.notifications.refreshing' : 'settings.notifications.refresh'}
+            />
           </button>
         </div>
       ) : (
@@ -57,10 +73,10 @@ export function NotificationSection({ onPushOffer }: NotificationSectionProps) {
           {busy ? (
             <>
               <Spinner color="border-white" />
-              Enabling…
+              <FormattedMessage id="settings.notifications.enabling" />
             </>
           ) : (
-            'Enable Notifications'
+            <FormattedMessage id="settings.notifications.enable" />
           )}
         </button>
       )}

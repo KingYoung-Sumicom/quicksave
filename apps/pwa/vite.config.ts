@@ -22,6 +22,13 @@ export default defineConfig({
       injectManifest: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
       },
+      // Register the SW in `vite dev` too; otherwise navigator.serviceWorker.ready
+      // hangs forever and the notification "Re-register" button looks stuck.
+      devOptions: {
+        enabled: true,
+        type: 'module',
+        navigateFallback: 'index.html',
+      },
       includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
       manifest: {
         name: 'Quicksave',

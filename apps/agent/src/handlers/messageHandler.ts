@@ -2023,6 +2023,7 @@ export class MessageHandler {
           path: cwd,
           name: basename(cwd),
           currentBranch: rootBranch || undefined,
+          hasChanges: await this.getGitDirtyQuiet(cwd),
         });
         seen.add(cwd);
       }
@@ -2042,6 +2043,7 @@ export class MessageHandler {
               name: sub.path,
               currentBranch: branch || undefined,
               isSubmodule: true,
+              hasChanges: await this.getGitDirtyQuiet(subPath),
             });
           }
         } catch {
@@ -2072,6 +2074,7 @@ export class MessageHandler {
               path: full,
               name: full.slice(cwd.length + 1),
               currentBranch: branch || undefined,
+              hasChanges: await this.getGitDirtyQuiet(full),
             });
           }
           await scan(full, depth + 1);
@@ -2136,6 +2139,20 @@ export class MessageHandler {
       const git = new GitOperations(cwd);
       const { current } = await git.getBranches();
       return current || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async getGitDirtyQuiet(cwd: string): Promise<boolean | undefined> {
+    try {
+      const git = new GitOperations(cwd);
+      const status = await git.getStatus();
+      return (
+        status.staged.length > 0 ||
+        status.unstaged.length > 0 ||
+        status.untracked.length > 0
+      );
     } catch {
       return undefined;
     }

@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect } from 'react';
+import { FormattedMessage, useIntl } from 'react-intl';
 import { clsx } from 'clsx';
 import type { FileDiff, DiffHunk, ImageData } from '@sumicom/quicksave-shared';
 import type { LineSelection } from '../stores/gitStore';
@@ -50,7 +51,9 @@ export function DiffViewer({
         {diff.imageData ? (
           <ImageDiff imageData={diff.imageData} />
         ) : (
-          <div className="p-6 text-center text-slate-400">Binary file - cannot display diff</div>
+          <div className="p-6 text-center text-slate-400">
+            <FormattedMessage id="diffViewer.binary" />
+          </div>
         )}
       </div>
     );
@@ -64,7 +67,7 @@ export function DiffViewer({
           <svg className="w-6 h-6 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
           </svg>
-          {diff.truncatedReason || 'File too large to display'}
+          {diff.truncatedReason || <FormattedMessage id="diffViewer.tooLarge" />}
         </div>
       </div>
     );
@@ -74,7 +77,9 @@ export function DiffViewer({
     return (
       <div ref={containerRef} className="bg-slate-800 rounded-lg overflow-hidden">
         {showHeader && <Header path={diff.path} onClose={onClose} />}
-        <div className="p-6 text-center text-slate-400">No changes to display</div>
+        <div className="p-6 text-center text-slate-400">
+          <FormattedMessage id="diffViewer.noChanges" />
+        </div>
       </div>
     );
   }
@@ -162,6 +167,7 @@ function buildSidePairs(lines: string[], oldStart: number, newStart: number): Si
 // ─── Components ──────────────────────────────────────────────────────────────
 
 function ImageDiff({ imageData }: { imageData: ImageData }) {
+  const intl = useIntl();
   const hasOld = !!imageData.old;
   const hasNew = !!imageData.new;
   const sideBySide = hasOld && hasNew;
@@ -170,16 +176,16 @@ function ImageDiff({ imageData }: { imageData: ImageData }) {
     <div className={clsx('p-4', sideBySide && 'grid grid-cols-2 gap-4')}>
       {hasOld && (
         <div className="flex flex-col items-center gap-2">
-          {sideBySide && <span className="text-xs font-medium text-red-400">Before</span>}
-          {!hasNew && <span className="text-xs font-medium text-red-400">Deleted</span>}
-          <img src={imageData.old} alt="Previous version" className="max-w-full max-h-64 rounded border border-slate-600 object-contain" />
+          {sideBySide && <span className="text-xs font-medium text-red-400"><FormattedMessage id="diffViewer.image.before" /></span>}
+          {!hasNew && <span className="text-xs font-medium text-red-400"><FormattedMessage id="diffViewer.image.deleted" /></span>}
+          <img src={imageData.old} alt={intl.formatMessage({ id: 'diffViewer.image.oldAlt' })} className="max-w-full max-h-64 rounded border border-slate-600 object-contain" />
         </div>
       )}
       {hasNew && (
         <div className="flex flex-col items-center gap-2">
-          {sideBySide && <span className="text-xs font-medium text-green-400">After</span>}
-          {!hasOld && <span className="text-xs font-medium text-green-400">Added</span>}
-          <img src={imageData.new} alt="Current version" className="max-w-full max-h-64 rounded border border-slate-600 object-contain" />
+          {sideBySide && <span className="text-xs font-medium text-green-400"><FormattedMessage id="diffViewer.image.after" /></span>}
+          {!hasOld && <span className="text-xs font-medium text-green-400"><FormattedMessage id="diffViewer.image.added" /></span>}
+          <img src={imageData.new} alt={intl.formatMessage({ id: 'diffViewer.image.newAlt' })} className="max-w-full max-h-64 rounded border border-slate-600 object-contain" />
         </div>
       )}
     </div>
@@ -187,10 +193,11 @@ function ImageDiff({ imageData }: { imageData: ImageData }) {
 }
 
 function Header({ path, onClose }: { path: string; onClose: () => void }) {
+  const intl = useIntl();
   return (
     <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700 bg-slate-800/50">
       <span className="font-mono text-sm truncate">{path}</span>
-      <button onClick={onClose} className="p-1 hover:bg-slate-700 rounded transition-colors" aria-label="Close diff">
+      <button onClick={onClose} className="p-1 hover:bg-slate-700 rounded transition-colors" aria-label={intl.formatMessage({ id: 'diffViewer.closeAria' })}>
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
         </svg>

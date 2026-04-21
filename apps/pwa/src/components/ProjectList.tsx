@@ -1,10 +1,11 @@
 import { useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { FormattedMessage } from 'react-intl';
 import { useProjects } from '../hooks/useProjects';
 import { useClaudeStore } from '../stores/claudeStore';
-import { ProjectCard } from './ProjectCard';
 import { DesktopSideMenuAppBar } from './DesktopSideMenuAppBar';
-import type { ClaudeSessionSummary } from '@sumicom/quicksave-shared';
+import { SessionTicketCard } from './SessionTicketCard';
+import { toProjectId } from '../lib/projectId';
 
 interface ProjectListProps {
   compact?: boolean;
@@ -13,47 +14,61 @@ interface ProjectListProps {
   onAddMachine?: () => void;
 }
 
+/**
+ * Home screen — flat ticket list across all projects/machines, sorted by
+ * recency. Project context lives on each ticket (project-name pill in the
+ * meta line). Projects with zero sessions get a small footer section so they
+ * stay reachable without re-introducing the project-card hierarchy.
+ */
 export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachine }: ProjectListProps) {
   const projects = useProjects();
   const navigate = useNavigate();
   const location = useLocation();
-  // Extract active project and session IDs from URL: /p/:projectId or /p/:projectId/s/:sessionId
-  // Use location.pathname instead of useParams because in desktop layout the sidebar
-  // is rendered outside the <Routes> that define :projectId.
-  const projectMatch = location.pathname.match(/\/p\/([^/]+)/);
-  const activeProjectId = projectMatch?.[1];
   const sessionMatch = location.pathname.match(/\/p\/[^/]+\/s\/([^/?]+)/);
   const activeSessionId = sessionMatch?.[1];
 
-  // Get live sessions grouped by cwd (from all connected agents)
   const sessions = useClaudeStore((s) => s.sessions);
 
-  const sessionsByCwd = useMemo(() => {
-    const map = new Map<string, ClaudeSessionSummary[]>();
-    for (const session of Object.values(sessions)) {
-      if (!session.cwd) continue;
-      let list = map.get(session.cwd);
-      if (!list) {
-        list = [];
-        map.set(session.cwd, list);
-      }
-      list.push(session);
-    }
+  // Build a cwd → ProjectEntry index so we can attach a project name + route to
+  // each session without recomputing per row.
+  const projectByCwd = useMemo(() => {
+    const map = new Map<string, typeof projects[number]>();
+    for (const p of projects) map.set(`${p.agentId}\0${p.cwd}`, p);
     return map;
+  }, [projects]);
+
+  const flatSessions = useMemo(() => {
+    return Object.values(sessions)
+      .filter((s) => s.cwd && s.machineAgentId)
+      .sort((a, b) => {
+        const rankA = a.isStreaming ? 2 : a.isActive ? 1 : 0;
+        const rankB = b.isStreaming ? 2 : b.isActive ? 1 : 0;
+        if (rankA !== rankB) return rankB - rankA;
+        const tsA = a.lastPromptAt ?? a.lastModified;
+        const tsB = b.lastPromptAt ?? b.lastModified;
+        return tsB - tsA;
+      });
   }, [sessions]);
+
+  const emptyProjects = useMemo(
+    () => projects.filter((p) => p.sessionCount === 0),
+    [projects],
+  );
 
   if (projects.length === 0) {
     return (
       <div className="flex flex-col h-full">
         <DesktopSideMenuAppBar onOpenSettings={onOpenSettings} onOpenAddNew={onOpenAddNew} />
         <div className="flex-1 flex flex-col items-center justify-center px-6 text-center">
-          <p className="text-slate-400 text-sm mb-4">No projects yet</p>
+          <p className="text-slate-400 text-sm mb-4">
+            <FormattedMessage id="projectList.empty.noProjects" />
+          </p>
           {onAddMachine && (
             <button
               onClick={onAddMachine}
               className="text-sm text-blue-400 hover:text-blue-300 transition-colors"
             >
-              + Add Machine
+              <FormattedMessage id="projectList.empty.addMachine" />
             </button>
           )}
         </div>
@@ -61,51 +76,68 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
     );
   }
 
-  // Group: with sessions vs without sessions
-  const withSessions = projects.filter((p) => p.sessionCount > 0);
-  const withoutSessions = projects.filter((p) => p.sessionCount === 0);
-
-  const renderGroup = (items: typeof projects, label?: string) => {
-    if (items.length === 0) return null;
-    return (
-      <div>
-        {label && (
-          <p className="text-[12px] font-medium text-slate-500 uppercase tracking-wider px-5 mb-1.5">
-            {label}
-          </p>
-        )}
-        <div className="divide-y divide-slate-700/40">
-          {items.map((project) => {
-            const cwdSessions = project.isConnected
-              ? sessionsByCwd.get(project.cwd)
-              : undefined;
-
-            return (
-              <ProjectCard
-                key={project.projectId}
-                project={project}
-                sessions={cwdSessions}
-                isActive={activeProjectId === project.projectId}
-                activeSessionId={activeProjectId === project.projectId ? activeSessionId : undefined}
-                onClick={() => navigate(`/p/${project.projectId}`)}
-                onSessionClick={(sessionId) => navigate(`/p/${project.projectId}/s/${sessionId}`)}
-                compact={compact}
-                bare
-              />
-            );
-          })}
-        </div>
-      </div>
-    );
-  };
-
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <DesktopSideMenuAppBar onOpenSettings={onOpenSettings} onOpenAddNew={onOpenAddNew} />
       <div className="flex-1 overflow-y-auto">
         <div className={`${compact ? '' : 'max-w-lg mx-auto py-4'} space-y-5`}>
-          {renderGroup(withSessions)}
-          {renderGroup(withoutSessions, withoutSessions.length > 0 && withSessions.length > 0 ? 'No Sessions' : undefined)}
+          {/* Flat ticket list — every session, sorted by recency. */}
+          {flatSessions.length > 0 && (
+            <div className="divide-y divide-slate-700/40">
+              {flatSessions.map((session) => {
+                const project = projectByCwd.get(`${session.machineAgentId}\0${session.cwd}`);
+                const projectName = project?.displayName ?? session.cwd?.split('/').pop() ?? '';
+                const projectId = project?.projectId ?? toProjectId(session.machineAgentId!, session.cwd!);
+                return (
+                  <SessionTicketCard
+                    key={session.sessionId}
+                    session={session}
+                    isActive={activeSessionId === session.sessionId}
+                    compact={compact}
+                    projectName={projectName}
+                    onClick={() => navigate(`/p/${projectId}/s/${session.sessionId}`)}
+                  />
+                );
+              })}
+            </div>
+          )}
+
+          {/* Empty-project footer — keeps navigation reachable without
+              reintroducing the project-card hierarchy. */}
+          {emptyProjects.length > 0 && (
+            <div>
+              <p className="text-[12px] font-medium text-slate-500 uppercase tracking-wider px-5 mb-1.5">
+                <FormattedMessage id="projectList.projects" />
+              </p>
+              <div className="divide-y divide-slate-700/40">
+                {emptyProjects.map((project) => (
+                  <button
+                    key={project.projectId}
+                    onClick={() => navigate(`/p/${project.projectId}`)}
+                    className={`w-full flex items-center gap-3 py-2.5 text-left active:bg-slate-700/60 transition-colors ${compact ? 'px-2' : 'px-4'}`}
+                  >
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${project.isConnected ? 'bg-emerald-400' : 'bg-red-500'}`}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="list-title text-[14px] truncate">{project.displayName}</div>
+                      <div className="list-subtitle text-[11px] truncate">{project.machineName}</div>
+                    </div>
+                    <svg className="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Both empty: helpful prompt. */}
+          {flatSessions.length === 0 && emptyProjects.length === 0 && (
+            <p className="text-center text-sm text-slate-500 py-12">
+              <FormattedMessage id="projectList.empty.noTasks" />
+            </p>
+          )}
         </div>
       </div>
     </div>

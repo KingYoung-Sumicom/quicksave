@@ -1,5 +1,7 @@
 import { useState, useRef } from 'react';
+import { FormattedMessage, useIntl } from 'react-intl';
 import { ErrorBox } from '../ui/ErrorBox';
+import { ConfirmModal } from '../ui/ConfirmModal';
 import { exportMasterSecret, importMasterSecret, saveApiKey as saveApiKeyToStorage, getApiKey } from '../../lib/secureStorage';
 import { useMachineStore } from '../../stores/machineStore';
 import type { Machine } from '../../stores/machineStore';
@@ -10,8 +12,11 @@ interface BackupData {
   machines?: Machine[];
 }
 
+type CopyState = 'idle' | 'copied' | 'failed';
+
 export function PrimaryKeySection() {
-  const [copyLabel, setCopyLabel] = useState('Copy to Clipboard');
+  const intl = useIntl();
+  const [copyState, setCopyState] = useState<CopyState>('idle');
   const [pastedKey, setPastedKey] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState(false);
@@ -22,11 +27,11 @@ export function PrimaryKeySection() {
     try {
       const secret = await exportMasterSecret();
       await navigator.clipboard.writeText(secret);
-      setCopyLabel('Copied!');
-      setTimeout(() => setCopyLabel('Copy to Clipboard'), 2000);
+      setCopyState('copied');
+      setTimeout(() => setCopyState('idle'), 2000);
     } catch {
-      setCopyLabel('Failed to copy');
-      setTimeout(() => setCopyLabel('Copy to Clipboard'), 2000);
+      setCopyState('failed');
+      setTimeout(() => setCopyState('idle'), 2000);
     }
   }
 
@@ -57,7 +62,7 @@ export function PrimaryKeySection() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch {
-      setImportError('Failed to export key');
+      setImportError(intl.formatMessage({ id: 'settings.dangerZone.primaryKey.error.exportFailed' }));
     }
   }
 
@@ -71,7 +76,7 @@ export function PrimaryKeySection() {
         const parsed = JSON.parse(event.target?.result as string);
         const secret = parsed.masterSecret;
         if (!secret || typeof secret !== 'string') {
-          setImportError('Invalid backup file: missing masterSecret field');
+          setImportError(intl.formatMessage({ id: 'settings.dangerZone.primaryKey.error.missingSecret' }));
           return;
         }
         setPendingBackup({
@@ -80,7 +85,7 @@ export function PrimaryKeySection() {
           machines: parsed.machines,
         });
       } catch {
-        setImportError('Invalid backup file: could not parse JSON');
+        setImportError(intl.formatMessage({ id: 'settings.dangerZone.primaryKey.error.parseFailed' }));
       }
     };
     reader.readAsText(file);
@@ -89,7 +94,7 @@ export function PrimaryKeySection() {
 
   function handlePasteRestore(): void {
     if (!pastedKey.trim()) {
-      setImportError('Please paste a key first');
+      setImportError(intl.formatMessage({ id: 'settings.dangerZone.primaryKey.error.emptyPaste' }));
       return;
     }
     setPendingBackup({ masterSecret: pastedKey.trim() });
@@ -125,20 +130,36 @@ export function PrimaryKeySection() {
       setPendingBackup(null);
       setTimeout(() => setImportSuccess(false), 3000);
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : 'Failed to import backup');
+      setImportError(
+        err instanceof Error
+          ? err.message
+          : intl.formatMessage({ id: 'settings.dangerZone.primaryKey.error.importFailed' }),
+      );
       setPendingBackup(null);
     }
   }
 
+  const copyLabelId =
+    copyState === 'copied'
+      ? 'settings.dangerZone.primaryKey.copied'
+      : copyState === 'failed'
+        ? 'settings.dangerZone.primaryKey.copyFailed'
+        : 'settings.dangerZone.primaryKey.copy';
+
+  const pastePlaceholder = intl.formatMessage({
+    id: 'settings.dangerZone.primaryKey.restoreFromPastePlaceholder',
+  });
+
+  const confirmMachineCount = pendingBackup?.machines?.length ?? 0;
+
   return (
     <>
       <div className="space-y-4">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
-          Primary Key
-        </h3>
-
-        <p className="text-sm text-slate-400">
-          Your primary key encrypts all connections. Back it up to restore access on a new device.
+        <p className="text-sm font-medium text-white">
+          <FormattedMessage id="settings.dangerZone.primaryKey.label" />
+        </p>
+        <p className="text-xs text-slate-400">
+          <FormattedMessage id="settings.dangerZone.primaryKey.description" />
         </p>
 
         {/* Export */}
@@ -147,13 +168,13 @@ export function PrimaryKeySection() {
             onClick={handleCopySecret}
             className="flex-1 py-2 px-3 bg-slate-700 hover:bg-slate-600 rounded-md text-sm font-medium text-white transition-colors"
           >
-            {copyLabel}
+            <FormattedMessage id={copyLabelId} />
           </button>
           <button
             onClick={handleDownloadSecret}
             className="flex-1 py-2 px-3 bg-slate-700 hover:bg-slate-600 rounded-md text-sm font-medium text-white transition-colors"
           >
-            Download File
+            <FormattedMessage id="settings.dangerZone.primaryKey.download" />
           </button>
         </div>
 
@@ -163,7 +184,7 @@ export function PrimaryKeySection() {
             onClick={() => fileInputRef.current?.click()}
             className="w-full py-2 px-3 bg-slate-700 hover:bg-slate-600 rounded-md text-sm font-medium text-white transition-colors"
           >
-            Restore from File
+            <FormattedMessage id="settings.dangerZone.primaryKey.restoreFromFile" />
           </button>
           <input
             ref={fileInputRef}
@@ -175,12 +196,12 @@ export function PrimaryKeySection() {
 
           <div className="space-y-2">
             <label className="block text-sm text-slate-400">
-              Or paste key:
+              <FormattedMessage id="settings.dangerZone.primaryKey.restoreFromPasteLabel" />
             </label>
             <textarea
               value={pastedKey}
               onChange={(e) => setPastedKey(e.target.value)}
-              placeholder="Paste your backup key here..."
+              placeholder={pastePlaceholder}
               rows={3}
               className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none font-mono text-sm"
             />
@@ -189,7 +210,7 @@ export function PrimaryKeySection() {
               disabled={!pastedKey.trim()}
               className="w-full py-2 px-3 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md text-sm font-medium text-white transition-colors"
             >
-              Restore
+              <FormattedMessage id="settings.dangerZone.primaryKey.restore" />
             </button>
           </div>
         </div>
@@ -200,45 +221,40 @@ export function PrimaryKeySection() {
 
         {importSuccess && (
           <div className="p-2 bg-green-500/20 border border-green-500/50 rounded text-sm text-green-400">
-            Primary key restored successfully!
+            <FormattedMessage id="settings.dangerZone.primaryKey.restoreSuccess" />
           </div>
         )}
       </div>
 
-      {/* Confirmation Dialog */}
       {pendingBackup !== null && (
-        <>
-          <div className="fixed inset-0 bg-black/50 z-[60]" />
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-            <div className="bg-slate-800 rounded-lg w-full max-w-sm shadow-xl border border-slate-700">
-              <div className="p-4 space-y-4">
-                <h3 className="text-lg font-semibold text-white">
-                  Restore Backup?
-                </h3>
-                <p className="text-sm text-slate-400">
-                  This will replace your current primary key.
-                  {pendingBackup.apiKey && ' Your API key will also be updated.'}
-                  {pendingBackup.machines && pendingBackup.machines.length > 0 &&
-                    ` ${pendingBackup.machines.length} machine(s) will be added.`}
-                </p>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setPendingBackup(null)}
-                    className="flex-1 py-2 px-4 bg-slate-700 hover:bg-slate-600 rounded-md font-medium text-white transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleConfirmImport}
-                    className="flex-1 py-2 px-4 bg-red-600 hover:bg-red-700 rounded-md font-medium text-white transition-colors"
-                  >
-                    Restore
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </>
+        <ConfirmModal
+          title={<FormattedMessage id="settings.dangerZone.primaryKey.confirm.title" />}
+          message={
+            <>
+              <FormattedMessage id="settings.dangerZone.primaryKey.confirm.message" />
+              {pendingBackup.apiKey && (
+                <>
+                  {' '}
+                  <FormattedMessage id="settings.dangerZone.primaryKey.confirm.messageWithApiKey" />
+                </>
+              )}
+              {confirmMachineCount > 0 && (
+                <>
+                  {' '}
+                  <FormattedMessage
+                    id="settings.dangerZone.primaryKey.confirm.messageWithMachines"
+                    values={{ count: confirmMachineCount }}
+                  />
+                </>
+              )}
+            </>
+          }
+          confirmLabel={<FormattedMessage id="settings.dangerZone.primaryKey.restore" />}
+          confirmText="restore"
+          variant="danger"
+          onConfirm={handleConfirmImport}
+          onCancel={() => setPendingBackup(null)}
+        />
       )}
     </>
   );

@@ -23,6 +23,13 @@ export function applyHistoryEntry(entry: BroadcastSessionEntry, machineAgentId: 
     messageCount: entry.messageCount,
     totalCostUsd: entry.totalCostUsd,
     permissionMode: entry.permissionMode,
+    // Ticket-model fields — keep raw `firstPrompt` so the card can show the
+    // user's original ask when no `title` (subject) has been set yet.
+    firstPrompt: entry.firstPrompt,
+    stage: entry.stage,
+    blocked: entry.blocked,
+    note: entry.note,
+    noteHistory: entry.noteHistory,
     // Runtime-enriched from the event store at broadcast time so inactive
     // sessions still get cache / context usage — otherwise `SessionStatsBar`
     // renders nothing until the session is hot-resumed.

@@ -1,42 +1,53 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { SwipeableDrawer } from './SwipeableDrawer';
-import { Spinner } from './ui/Spinner';
 import { Modal } from './ui/Modal';
-import type { ConfigValue, SessionControlRequestResponsePayload } from '@sumicom/quicksave-shared';
+import type { ConfigValue, ProjectRepo, SessionControlRequestResponsePayload } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
 import { useConnectionStore } from '../stores/connectionStore';
 import { ClaudeSettingsSection } from './settings/ClaudeSettingsSection';
 import { ControlRequestPalette } from './settings/ControlRequestPalette';
+import { pathToHash } from '../lib/pathHash';
 
 interface AgentSettingsDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   /** Session ID from URL — fallback when store activeSessionId is null (inactive session) */
   sessionId?: string;
+  /** Project ID from the route — used to navigate to repo views from the drawer. */
+  projectId?: string;
+  /** Agent ID owning the current project — used to look up its available repos. */
+  agentId?: string;
+  /** Project cwd — repos under this path are listed in the Git repository section. */
+  cwd?: string;
+  /** Fetches the full per-project repo list (incl. submodules + dirty state).
+   *  Called lazily when the drawer opens. Falls back to the handshake-time
+   *  availableRepos list if this is absent or the call fails. */
+  onListProjectRepos?: (cwd: string) => Promise<ProjectRepo[] | null>;
   onSetSessionConfig?: (key: string, value: ConfigValue) => void;
   onSendControlRequest?: (sessionId: string, subtype: string, params?: Record<string, unknown>) => Promise<SessionControlRequestResponsePayload>;
   onCancelSession?: () => void;
   onCloseSession?: () => void;
   onArchiveSession?: () => void;
-  onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
-  onUpdateAgent?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; restarting: boolean; error?: string }>;
-  onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
 }
 
 export function AgentSettingsDrawer({
   isOpen,
   onClose,
   sessionId: sessionIdProp,
+  projectId,
+  agentId,
+  cwd,
+  onListProjectRepos,
   onSetSessionConfig,
   onSendControlRequest,
   onCancelSession,
   onCloseSession,
   onArchiveSession,
-  onCheckAgentUpdate,
-  onUpdateAgent,
-  onRestartAgent,
 }: AgentSettingsDrawerProps) {
+  const navigate = useNavigate();
   const [showControlPalette, setShowControlPalette] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const storeSessionId = useClaudeStore((s) => s.activeSessionId);
   const activeSessionId = storeSessionId || sessionIdProp || null;
   const localIsStreaming = useClaudeStore((s) => s.isStreaming);
@@ -44,26 +55,46 @@ export function AgentSettingsDrawer({
   const activeSession = activeSessionId ? sessions[activeSessionId] : undefined;
   const isStreaming = localIsStreaming || !!activeSession?.isStreaming;
 
-  const agentVersion = useConnectionStore((s) => s.agentVersion);
-  const latestVersion = useConnectionStore((s) => s.latestVersion);
-  const devBuild = useConnectionStore((s) => s.devBuild);
-  const setLatestVersion = useConnectionStore((s) => s.setLatestVersion);
+  // Repos under this project's cwd. `listProjectRepos` walks the tree and
+  // returns submodules + nested repos + dirty state; we prefer its output
+  // over the handshake-time availableRepos list, which is flat and stale.
+  // The filtered availableRepos is a synchronous fallback so the section
+  // doesn't flash empty while the RPC is in flight.
+  const agentConn = useConnectionStore((s) => (agentId ? s.agentConnections[agentId] : undefined));
+  const [fetchedRepos, setFetchedRepos] = useState<ProjectRepo[] | null>(null);
 
-  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
-  const [isUpdating, setIsUpdating] = useState(false);
-  const [updateResult, setUpdateResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [isRestarting, setIsRestarting] = useState(false);
-  const [restartResult, setRestartResult] = useState<{ success: boolean; message: string } | null>(null);
+  const fallbackRepos = useMemo<ProjectRepo[]>(() => {
+    if (!cwd || !agentConn?.availableRepos) return [];
+    return agentConn.availableRepos
+      .filter((r) => r.path === cwd || r.path.startsWith(cwd + '/'))
+      .map((r) => ({ path: r.path, name: r.name, currentBranch: r.currentBranch }));
+  }, [agentConn?.availableRepos, cwd]);
 
+  const projectRepos = fetchedRepos ?? fallbackRepos;
+
+  // Refresh the list every time the drawer opens so dirty indicators reflect
+  // the current working-tree state rather than the snapshot from last open.
   useEffect(() => {
-    if (!isOpen) { setUpdateResult(null); setRestartResult(null); }
-  }, [isOpen]);
+    if (!isOpen || !cwd || !onListProjectRepos) return;
+    let cancelled = false;
+    onListProjectRepos(cwd).then((repos) => {
+      if (cancelled) return;
+      if (repos) setFetchedRepos(repos);
+    });
+    return () => { cancelled = true; };
+  }, [isOpen, cwd, onListProjectRepos]);
+
+  const handleOpenRepo = (repoPath: string) => {
+    if (!projectId) return;
+    navigate(`/p/${projectId}/r/${pathToHash(repoPath)}`);
+    onClose();
+  };
 
   return (
     <SwipeableDrawer isOpen={isOpen} onClose={onClose} side="right" drawerWidth={400} className="w-[90%] max-w-[400px] bg-slate-800 flex flex-col shadow-xl">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-slate-700">
-          <h2 className="text-lg font-semibold text-white">Settings</h2>
+          <h2 className="text-lg font-semibold text-white">Utilities</h2>
           <button
             onClick={onClose}
             className="p-1 hover:bg-slate-700 rounded-md transition-colors"
@@ -91,11 +122,13 @@ export function AgentSettingsDrawer({
             </div>
           )}
 
-          {/* Section: Session Controls — only when there's an active session */}
-          {activeSessionId && (onCancelSession || onCloseSession || onArchiveSession) && (
+          {/* Section: Session Controls — only when there's an active session.
+              End Session lives in Advanced now to keep destructive actions out
+              of the primary surface. */}
+          {activeSessionId && (onCancelSession || onArchiveSession) && (
             <div className="space-y-3">
               <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
-                Session
+                Task
               </h3>
               <div className="flex gap-2">
                 {onCancelSession && (
@@ -115,190 +148,105 @@ export function AgentSettingsDrawer({
                     Archive
                   </button>
                 )}
-                {onCloseSession && (
-                  <button
-                    onClick={() => { onCloseSession(); onClose(); }}
-                    className="flex-1 py-2 px-3 bg-red-600/20 hover:bg-red-600/30 border border-red-600/50 rounded-md text-sm font-medium text-red-400 transition-colors"
-                  >
-                    End Session
-                  </button>
-                )}
               </div>
             </div>
           )}
 
-          {/* Section: Control Request Palette — opens modal */}
-          {activeSessionId && onSendControlRequest && (
+          {/* Section: Git repository — repo switcher. Only shown when the drawer
+              has project context (projectId + cwd) and the agent has reported
+              repos under that cwd. An amber dot next to the name means the
+              repo has uncommitted/unstaged/untracked changes. */}
+          {projectId && projectRepos.length > 0 && (
+            <div className="space-y-3">
+              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                Git repository
+              </h3>
+              <div className="space-y-1.5">
+                {projectRepos.map((repo) => (
+                  <button
+                    key={repo.path}
+                    type="button"
+                    onClick={() => handleOpenRepo(repo.path)}
+                    className="w-full flex items-center gap-2 py-2 px-3 bg-slate-700 hover:bg-slate-600 rounded-md text-sm font-medium text-slate-200 transition-colors text-left"
+                  >
+                    <svg className="w-4 h-4 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+                    </svg>
+                    <span className="flex-1 min-w-0 flex items-center gap-1.5">
+                      <span className="truncate">{repo.name}</span>
+                      {repo.hasChanges && (
+                        <span
+                          className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"
+                          aria-label="Uncommitted changes"
+                          title="Uncommitted changes"
+                        />
+                      )}
+                    </span>
+                    {repo.currentBranch && (
+                      <span className="text-[11px] text-slate-400 font-mono truncate max-w-[40%]">
+                        {repo.currentBranch}
+                      </span>
+                    )}
+                    <svg className="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Section: Advanced — collapsed by default. Holds the destructive
+              End Session action plus the control-request palette. */}
+          {activeSessionId && (onCloseSession || onSendControlRequest) && (
             <>
               <div className="border-t border-slate-700" />
               <div className="space-y-3">
-                <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
-                  Advanced
-                </h3>
                 <button
                   type="button"
-                  onClick={() => setShowControlPalette(true)}
-                  className="w-full flex items-center justify-between py-2 px-3 bg-slate-700 hover:bg-slate-600 rounded-md text-sm font-medium text-slate-200 transition-colors"
+                  onClick={() => setAdvancedOpen((v) => !v)}
+                  aria-expanded={advancedOpen}
+                  className="w-full flex items-center justify-between text-left"
                 >
-                  <span>Control Request Palette</span>
-                  <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                    Advanced
+                  </h3>
+                  <svg
+                    className={`w-4 h-4 text-slate-500 transition-transform ${advancedOpen ? 'rotate-90' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                   </svg>
                 </button>
-              </div>
-            </>
-          )}
-
-          {/* Divider */}
-          <div className="border-t border-slate-700" />
-
-          {/* Section: CLI Agent */}
-          <div className="space-y-3">
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
-              CLI Agent
-            </h3>
-
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-slate-300">Version</p>
-              <span className="text-sm font-mono text-slate-400">
-                {agentVersion || 'unknown'}{devBuild ? ' (dev)' : ''}
-              </span>
-            </div>
-
-            {devBuild ? (
-              <div className="space-y-2">
-                {restartResult && (
-                  <div className={`p-2 rounded text-sm ${
-                    restartResult.success
-                      ? 'bg-green-500/20 border border-green-500/50 text-green-400'
-                      : 'bg-red-500/20 border border-red-500/50 text-red-400'
-                  }`}>
-                    {restartResult.message}
-                  </div>
-                )}
-                <button
-                  onClick={async () => {
-                    if (!onRestartAgent) return;
-                    setIsRestarting(true);
-                    setRestartResult(null);
-                    try {
-                      const result = await onRestartAgent();
-                      if (result.success) {
-                        setRestartResult({ success: true, message: 'Agent is restarting...' });
-                      } else {
-                        setRestartResult({ success: false, message: result.error || 'Restart failed' });
-                      }
-                    } catch (err) {
-                      setRestartResult({ success: false, message: err instanceof Error ? err.message : 'Restart failed' });
-                    } finally {
-                      setIsRestarting(false);
-                    }
-                  }}
-                  disabled={isRestarting || !onRestartAgent}
-                  className="w-full py-2 px-4 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors flex items-center justify-center gap-2"
-                >
-                  {isRestarting ? (
-                    <>
-                      <Spinner color="border-white" />
-                      Restarting...
-                    </>
-                  ) : (
-                    'Restart Agent'
-                  )}
-                </button>
-              </div>
-            ) : (
-              <>
-                <div className="flex items-center justify-between">
-                  <p className="text-sm text-slate-300">Latest</p>
-                  <span className="text-sm font-mono text-slate-400 flex items-center gap-2">
-                    {isCheckingUpdate ? (
-                      <Spinner size="w-3 h-3" />
-                    ) : (
-                      latestVersion || '—'
-                    )}
-                    {onCheckAgentUpdate && !isCheckingUpdate && (
+                {advancedOpen && (
+                  <div className="space-y-2">
+                    {onSendControlRequest && (
                       <button
-                        onClick={async () => {
-                          setIsCheckingUpdate(true);
-                          try {
-                            const result = await onCheckAgentUpdate();
-                            if (result.latestVersion) setLatestVersion(result.latestVersion);
-                          } finally {
-                            setIsCheckingUpdate(false);
-                          }
-                        }}
-                        className="p-0.5 hover:bg-slate-600 rounded transition-colors"
-                        aria-label="Check for updates"
-                        title="Check for updates"
+                        type="button"
+                        onClick={() => setShowControlPalette(true)}
+                        className="w-full flex items-center justify-between py-2 px-3 bg-slate-700 hover:bg-slate-600 rounded-md text-sm font-medium text-slate-200 transition-colors"
                       >
-                        <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        <span>Control Request Palette</span>
+                        <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                         </svg>
                       </button>
                     )}
-                  </span>
-                </div>
-
-                {latestVersion && agentVersion && latestVersion !== agentVersion && (
-                  <div className="p-2 bg-amber-500/20 border border-amber-500/50 rounded text-sm text-amber-400">
-                    New version available: {latestVersion}
+                    {onCloseSession && (
+                      <button
+                        onClick={() => { onCloseSession(); onClose(); }}
+                        className="w-full py-2 px-3 bg-red-600/20 hover:bg-red-600/30 border border-red-600/50 rounded-md text-sm font-medium text-red-400 transition-colors"
+                      >
+                        End Task
+                      </button>
+                    )}
                   </div>
                 )}
-
-                {latestVersion && agentVersion && latestVersion === agentVersion && !updateResult && (
-                  <div className="p-2 bg-green-500/20 border border-green-500/50 rounded text-sm text-green-400">
-                    Already up to date
-                  </div>
-                )}
-
-                {updateResult && (
-                  <div className={`p-2 rounded text-sm ${
-                    updateResult.success
-                      ? 'bg-green-500/20 border border-green-500/50 text-green-400'
-                      : 'bg-red-500/20 border border-red-500/50 text-red-400'
-                  }`}>
-                    {updateResult.message}
-                  </div>
-                )}
-
-                <button
-                  onClick={async () => {
-                    if (!onUpdateAgent) return;
-                    setIsUpdating(true);
-                    setUpdateResult(null);
-                    try {
-                      const result = await onUpdateAgent();
-                      if (result.success) {
-                        const msg = result.restarting
-                          ? `Updated: ${result.previousVersion} → ${result.newVersion}. Agent is restarting...`
-                          : `Already on the latest version (${result.previousVersion}).`;
-                        setUpdateResult({ success: true, message: msg });
-                        if (result.newVersion) setLatestVersion(result.newVersion);
-                      } else {
-                        setUpdateResult({ success: false, message: result.error || 'Update failed' });
-                      }
-                    } catch (err) {
-                      setUpdateResult({ success: false, message: err instanceof Error ? err.message : 'Update failed' });
-                    } finally {
-                      setIsUpdating(false);
-                    }
-                  }}
-                  disabled={isUpdating || !onUpdateAgent || (!!latestVersion && latestVersion === agentVersion)}
-                  className="w-full py-2 px-4 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors flex items-center justify-center gap-2"
-                >
-                  {isUpdating ? (
-                    <>
-                      <Spinner color="border-white" />
-                      Updating...
-                    </>
-                  ) : (
-                    'Update Agent'
-                  )}
-                </button>
-              </>
-            )}
-          </div>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Control Request Palette Modal */}

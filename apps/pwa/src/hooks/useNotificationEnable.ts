@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   buildOfferMessage,
-  isPushSupported,
+  getPushSupportStatus,
   notificationPermission,
   subscribe,
+  type PushSupportStatus,
 } from '../lib/pushSubscription';
 import type { Message, PushSubscriptionOfferPayload } from '@sumicom/quicksave-shared';
 
 export interface UseNotificationEnableResult {
   /** True when the browser supports push and a VAPID key is configured. */
   isSupported: boolean;
+  /** Specific reason push is unavailable, or `{ ok: true }` when fully supported. */
+  supportStatus: PushSupportStatus;
   /** Current browser permission state — refreshed after enable() and on mount. */
   permission: NotificationPermission;
   /** In-flight indicator for enable(). */
@@ -29,7 +32,8 @@ export function useNotificationEnable(
   onOffer?: (msg: Message<PushSubscriptionOfferPayload>) => void
 ): UseNotificationEnableResult {
   const vapidPublicKey = import.meta.env.VITE_VAPID_PUBLIC_KEY as string | undefined;
-  const isSupported = isPushSupported() && !!vapidPublicKey;
+  const supportStatus = getPushSupportStatus(vapidPublicKey);
+  const isSupported = supportStatus.ok;
 
   const [permission, setPermission] = useState<NotificationPermission>(() =>
     isSupported ? notificationPermission() : 'denied'
@@ -64,5 +68,5 @@ export function useNotificationEnable(
     }
   }, [isSupported, vapidPublicKey, onOffer]);
 
-  return { isSupported, permission, busy, error, enable };
+  return { isSupported, supportStatus, permission, busy, error, enable };
 }

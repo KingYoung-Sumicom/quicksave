@@ -91,6 +91,19 @@ Before designing or implementing any feature, check the relevant guidelines belo
 
 ---
 
+## Sandbox Mode
+
+**`docs/guidelines/sandbox-mode.md`** — Kernel-level sandbox that coding-agent sessions run under by default. Covers:
+- `DEFAULT_SANDBOXED = true`, per-session override persisted on `SessionRegistryEntry`
+- Filesystem write confinement to the project `cwd` + `SandboxBash` auto-approval
+- Runtimes (`sandbox-exec` on macOS, `bwrap` on Linux) and the SBPL profile location
+- When to turn sandbox OFF and the associated trade-offs
+- Pointers to the default, the stdio MCP server, the provider wiring, and the PWA toggles
+
+**維護規則**：變動 `DEFAULT_SANDBOXED`、支援的 sandbox backends、`SandboxBash` 工具名稱 / 參數 / auto-approval hook、SBPL profile 策略,或 PWA sandbox toggle 所在位置時,同步更新此文件。
+
+---
+
 ## Session Settings Persistence
 
 All user-facing session settings (e.g. `permissionMode`, `sandboxed`) **must** be persisted in `SessionRegistryEntry` so they survive daemon restarts.

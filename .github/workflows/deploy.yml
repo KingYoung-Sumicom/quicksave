@@ -39,6 +39,7 @@ jobs:
         run: pnpm build
         env:
           QUICKSAVE_SIGNALING_URL: ${{ vars.SIGNAL_URL }}
+          VITE_VAPID_PUBLIC_KEY: ${{ vars.VAPID_PUBLIC_KEY }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

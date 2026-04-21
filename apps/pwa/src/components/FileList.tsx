@@ -1,5 +1,6 @@
 import { clsx } from 'clsx';
 import { useState, useMemo } from 'react';
+import { useIntl } from 'react-intl';
 import type { FileChange, FileStatus, FileDiff } from '@sumicom/quicksave-shared';
 import { DiffViewer } from './DiffViewer';
 import { Spinner } from './ui/Spinner';
@@ -48,6 +49,7 @@ export function FileList({
   onSelectAllFiles,
   sourceOverrides,
 }: FileListProps) {
+  const intl = useIntl();
   const primaryAction = actions.find(a => a.primary) || actions[0];
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -159,7 +161,7 @@ export function FileList({
             <button
               onClick={handleCheckboxClick}
               className="w-4 h-4 flex items-center justify-center flex-shrink-0"
-              aria-label={isSelected ? 'Deselect file' : 'Select file'}
+              aria-label={intl.formatMessage({ id: isSelected ? 'fileList.deselectFile.aria' : 'fileList.selectFile.aria' })}
             >
               <span
                 className={clsx(
@@ -252,7 +254,7 @@ export function FileList({
             <button
               onClick={handleDirCheckboxClick}
               className="w-4 h-4 flex items-center justify-center flex-shrink-0"
-              aria-label={dirAllSelected ? 'Deselect folder' : 'Select folder'}
+              aria-label={intl.formatMessage({ id: dirAllSelected ? 'fileList.deselectFolder.aria' : 'fileList.selectFolder.aria' })}
             >
               <span
                 className={clsx(
@@ -314,7 +316,7 @@ export function FileList({
           <button
             onClick={handleSelectAllClick}
             className="w-4 h-4 flex items-center justify-center"
-            aria-label={allSelected ? 'Deselect all' : 'Select all'}
+            aria-label={intl.formatMessage({ id: allSelected ? 'fileList.deselectAll.aria' : 'fileList.selectAll.aria' })}
           >
             <span
               className={clsx(
@@ -348,7 +350,7 @@ export function FileList({
           }}
           className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded transition-colors"
         >
-          {primaryAction.label} All
+          {intl.formatMessage({ id: 'fileList.actionAll' }, { label: primaryAction.label })}
         </button>
       </div>
 

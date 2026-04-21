@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { FormattedMessage, useIntl } from 'react-intl';
 import { Spinner } from '../ui/Spinner';
 import { ErrorBox } from '../ui/ErrorBox';
 import { saveApiKey as saveApiKeyToStorage, hasApiKey } from '../../lib/secureStorage';
@@ -9,6 +10,7 @@ interface ApiKeySectionProps {
 }
 
 export function ApiKeySection({ isOpen, onSendApiKeyToAgent }: ApiKeySectionProps) {
+  const intl = useIntl();
   const [apiKey, setApiKey] = useState('');
   const [isSavingKey, setIsSavingKey] = useState(false);
   const [keyError, setKeyError] = useState<string | null>(null);
@@ -27,7 +29,7 @@ export function ApiKeySection({ isOpen, onSendApiKeyToAgent }: ApiKeySectionProp
 
   async function handleSaveApiKey(): Promise<void> {
     if (!apiKey.trim()) {
-      setKeyError('Please enter an API key');
+      setKeyError(intl.formatMessage({ id: 'settings.apiKey.error.empty' }));
       return;
     }
 
@@ -47,21 +49,29 @@ export function ApiKeySection({ isOpen, onSendApiKeyToAgent }: ApiKeySectionProp
       setApiKey('');
       setTimeout(() => setKeySuccess(false), 2000);
     } catch (err) {
-      setKeyError(err instanceof Error ? err.message : 'Failed to save API key');
+      setKeyError(
+        err instanceof Error
+          ? err.message
+          : intl.formatMessage({ id: 'settings.apiKey.error.saveFailed' }),
+      );
     } finally {
       setIsSavingKey(false);
     }
   }
 
+  const placeholder = intl.formatMessage({
+    id: apiKeyStored ? 'settings.apiKey.placeholder.update' : 'settings.apiKey.placeholder.new',
+  });
+
   return (
     <div className="space-y-3">
       <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
-        Anthropic API Key
+        <FormattedMessage id="settings.apiKey.title" />
       </h3>
 
       <div className="flex items-center justify-between">
         <p className="text-sm text-slate-300">
-          Required for AI commit summaries
+          <FormattedMessage id="settings.apiKey.description" />
         </p>
         {apiKeyStored && (
           <span className="text-xs text-green-400 flex items-center gap-1">
@@ -72,7 +82,7 @@ export function ApiKeySection({ isOpen, onSendApiKeyToAgent }: ApiKeySectionProp
                 clipRule="evenodd"
               />
             </svg>
-            Configured
+            <FormattedMessage id="settings.apiKey.configured" />
           </span>
         )}
       </div>
@@ -81,22 +91,20 @@ export function ApiKeySection({ isOpen, onSendApiKeyToAgent }: ApiKeySectionProp
         type="password"
         value={apiKey}
         onChange={(e) => setApiKey(e.target.value)}
-        placeholder={apiKeyStored ? 'Enter new key to update...' : 'sk-ant-...'}
+        placeholder={placeholder}
         className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
         disabled={isSavingKey}
       />
 
       <p className="text-xs text-slate-400">
-        Your API key is stored on your device and sent securely to your machines when connected.
+        <FormattedMessage id="settings.apiKey.storageNote" />
       </p>
 
-      {keyError && (
-        <ErrorBox>{keyError}</ErrorBox>
-      )}
+      {keyError && <ErrorBox>{keyError}</ErrorBox>}
 
       {keySuccess && (
         <div className="p-2 bg-green-500/20 border border-green-500/50 rounded text-sm text-green-400">
-          API key saved successfully!
+          <FormattedMessage id="settings.apiKey.success" />
         </div>
       )}
 
@@ -108,10 +116,10 @@ export function ApiKeySection({ isOpen, onSendApiKeyToAgent }: ApiKeySectionProp
         {isSavingKey ? (
           <>
             <Spinner color="border-white" />
-            Saving...
+            <FormattedMessage id="settings.apiKey.saving" />
           </>
         ) : (
-          'Save API Key'
+          <FormattedMessage id="settings.apiKey.save" />
         )}
       </button>
 
@@ -131,38 +139,46 @@ export function ApiKeySection({ isOpen, onSendApiKeyToAgent }: ApiKeySectionProp
             clipRule="evenodd"
           />
         </svg>
-        How to get an API key
+        <FormattedMessage id="settings.apiKey.help.toggle" />
       </button>
 
       {showApiKeyHelp && (
         <div className="space-y-3">
           <div className="p-3 bg-slate-700/50 rounded-lg text-sm text-slate-300 space-y-2">
-            <p className="font-medium">Why is an API key required?</p>
+            <p className="font-medium">
+              <FormattedMessage id="settings.apiKey.help.whyTitle" />
+            </p>
             <p className="text-slate-400">
-              Quicksave uses Claude AI to generate commit message summaries from your diffs.
-              Claude Pro/Max subscriptions only work with the official Claude apps.
-              Third-party tools like quicksave require a separate API key with usage-based billing.
+              <FormattedMessage id="settings.apiKey.help.whyBody" />
             </p>
           </div>
 
           <div className="p-3 bg-slate-700/50 rounded-lg text-sm space-y-3">
-            <p className="font-medium text-slate-300">How to get your API key:</p>
+            <p className="font-medium text-slate-300">
+              <FormattedMessage id="settings.apiKey.help.howTitle" />
+            </p>
             <ol className="list-decimal list-inside space-y-1.5 text-slate-400">
               <li>
-                Go to{' '}
-                <a
-                  href="https://console.anthropic.com/settings/keys"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-purple-400 hover:text-purple-300 underline"
-                >
-                  console.anthropic.com/settings/keys
-                </a>
+                <FormattedMessage
+                  id="settings.apiKey.help.step1"
+                  values={{
+                    link: (
+                      <a
+                        href="https://console.anthropic.com/settings/keys"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-purple-400 hover:text-purple-300 underline"
+                      >
+                        console.anthropic.com/settings/keys
+                      </a>
+                    ),
+                  }}
+                />
               </li>
-              <li>Sign in or create an Anthropic account</li>
-              <li>Click &quot;Create Key&quot; and give it a name</li>
-              <li>Copy the key (starts with sk-ant-...)</li>
-              <li>Paste it above and click Save</li>
+              <li><FormattedMessage id="settings.apiKey.help.step2" /></li>
+              <li><FormattedMessage id="settings.apiKey.help.step3" /></li>
+              <li><FormattedMessage id="settings.apiKey.help.step4" /></li>
+              <li><FormattedMessage id="settings.apiKey.help.step5" /></li>
             </ol>
           </div>
         </div>

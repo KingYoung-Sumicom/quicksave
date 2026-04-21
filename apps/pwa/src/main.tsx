@@ -1,11 +1,14 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import { IntlProvider } from './i18n/IntlProvider';
 import './index.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <IntlProvider>
+      <App />
+    </IntlProvider>
   </React.StrictMode>
 );
 

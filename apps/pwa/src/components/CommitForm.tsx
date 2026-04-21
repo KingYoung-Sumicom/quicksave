@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import { FormattedMessage, useIntl, type IntlShape } from 'react-intl';
 import { Spinner } from './ui/Spinner';
 import { ErrorBox } from './ui/ErrorBox';
 import { ConfirmModal } from './ui/ConfirmModal';
@@ -18,6 +19,7 @@ interface CommitFormProps {
 }
 
 export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion, onDismissAiSummary, onOpenSettings, stagedCount }: CommitFormProps) {
+  const intl = useIntl();
   const {
     commitMessage,
     commitDescription,
@@ -104,10 +106,10 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
   const isCliSource = commitSummarySource === 'claude-cli';
   // CLI source uses the user's Claude Code subscription, so no API key is required.
   const canGenerate = isCliSource || apiKeyConfigured;
-  const defaultLoadingLabel = isCliSource
-    ? 'Exploring repo with Claude CLI...'
-    : 'Generating commit message...';
-  const progressLabel = describeProgress(aiProgress) ?? defaultLoadingLabel;
+  const defaultLoadingLabel = intl.formatMessage({
+    id: isCliSource ? 'commitForm.exploringCli' : 'commitForm.generating',
+  });
+  const progressLabel = describeProgress(aiProgress, intl) ?? defaultLoadingLabel;
 
   return (
     <div className="bg-slate-800 rounded-lg p-4">
@@ -124,7 +126,9 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
             </div>
             {aiProgress && (aiProgress.toolCount || aiProgress.elapsedMs) ? (
               <div className="text-xs text-slate-400">
-                {aiProgress.toolCount ? `${aiProgress.toolCount} tool${aiProgress.toolCount === 1 ? '' : 's'}` : null}
+                {aiProgress.toolCount
+                  ? intl.formatMessage({ id: 'commitForm.progress.toolCount' }, { count: aiProgress.toolCount })
+                  : null}
                 {aiProgress.toolCount && aiProgress.elapsedMs ? ' · ' : null}
                 {aiProgress.elapsedMs ? formatElapsed(aiProgress.elapsedMs) : null}
               </div>
@@ -165,7 +169,7 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
                     d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
                   />
                 </svg>
-                {isCliSource ? 'Generate (agentic)' : 'Generate'}
+                <FormattedMessage id={isCliSource ? 'commitForm.generateAgentic' : 'commitForm.generate'} />
               </button>
             </div>
           </div>
@@ -185,19 +189,19 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                   </svg>
-                  <span className="text-sm font-medium">Regenerating...</span>
+                  <span className="text-sm font-medium"><FormattedMessage id="commitForm.regenerating" /></span>
                 </div>
               </div>
             )}
             <div className="flex items-start justify-between gap-2 mb-2">
-              <span className="text-xs text-purple-400 font-medium">AI Suggestion</span>
+              <span className="text-xs text-purple-400 font-medium"><FormattedMessage id="commitForm.aiSuggestion" /></span>
               <div className="flex gap-1">
                 <button
                   type="button"
                   onClick={handleGenerateClick}
                   disabled={isGeneratingAiSummary}
                   className="text-xs text-slate-400 hover:text-white disabled:text-slate-600 disabled:cursor-not-allowed px-2 py-1 rounded transition-colors"
-                  title="Regenerate"
+                  title={intl.formatMessage({ id: 'commitForm.regenerate.title' })}
                 >
                   {isGeneratingAiSummary ? (
                     <Spinner size="w-3 h-3" borderWidth="border" />
@@ -210,7 +214,7 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
                   onClick={handleDismissSuggestion}
                   disabled={isGeneratingAiSummary}
                   className="text-xs text-slate-400 hover:text-white disabled:text-slate-600 disabled:cursor-not-allowed px-2 py-1 rounded transition-colors"
-                  title="Dismiss"
+                  title={intl.formatMessage({ id: 'commitForm.dismiss.title' })}
                 >
                   ✕
                 </button>
@@ -227,14 +231,17 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
                 disabled={isGeneratingAiSummary}
                 className="text-sm text-purple-400 hover:text-purple-300 disabled:text-slate-600 disabled:cursor-not-allowed font-medium transition-colors"
               >
-                Use this message
+                <FormattedMessage id="commitForm.useMessage" />
               </button>
               {(aiTokenUsage || aiResultCached) && (
                 <span className="text-xs text-slate-500">
                   {aiResultCached ? (
-                    'cached'
+                    <FormattedMessage id="commitForm.cached" />
                   ) : aiTokenUsage ? (
-                    `${aiTokenUsage.inputTokens + aiTokenUsage.outputTokens} tokens`
+                    <FormattedMessage
+                      id="commitForm.tokens"
+                      values={{ count: aiTokenUsage.inputTokens + aiTokenUsage.outputTokens }}
+                    />
                   ) : null}
                 </span>
               )}
@@ -265,7 +272,7 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
                 }
               }
             }}
-            placeholder="Commit message"
+            placeholder={intl.formatMessage({ id: 'commitForm.message.placeholder' })}
             rows={1}
             className="w-full px-3 py-3 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none overflow-hidden leading-relaxed"
             disabled={isLoading}
@@ -279,7 +286,7 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
             onClick={() => setShowDescription(true)}
             className="text-sm text-slate-400 hover:text-white transition-colors"
           >
-            + Add description
+            <FormattedMessage id="commitForm.description.addButton" />
           </button>
         )}
 
@@ -289,7 +296,7 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
             <textarea
               value={commitDescription}
               onChange={(e) => setCommitDescription(e.target.value)}
-              placeholder="Extended description (optional)"
+              placeholder={intl.formatMessage({ id: 'commitForm.description.placeholder' })}
               rows={3}
               className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none min-h-[12rem] md:min-h-0"
               disabled={isLoading}
@@ -310,15 +317,15 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
               <span className="loading-dot w-2 h-2 bg-white rounded-full" />
             </span>
           ) : (
-            `Commit ${stagedCount} file${stagedCount !== 1 ? 's' : ''}`
+            <FormattedMessage id="commitForm.submit" values={{ count: stagedCount }} />
           )}
         </button>
       </form>
       {showOverwriteConfirm && (
         <ConfirmModal
-          title="Overwrite existing message?"
-          message="Generating will replace the commit message and description you've already written."
-          confirmLabel="Overwrite"
+          title={<FormattedMessage id="commitForm.overwrite.title" />}
+          message={<FormattedMessage id="commitForm.overwrite.message" />}
+          confirmLabel={<FormattedMessage id="commitForm.overwrite.confirm" />}
           onConfirm={handleConfirmOverwrite}
           onCancel={() => setShowOverwriteConfirm(false)}
         />
@@ -327,16 +334,16 @@ export function CommitForm({ onCommit, onGenerateAiSummary, onApplyAiSuggestion,
   );
 }
 
-function describeProgress(progress: CommitSummaryProgress | null): string | null {
+function describeProgress(progress: CommitSummaryProgress | null, intl: IntlShape): string | null {
   if (!progress) return null;
-  if (progress.phase === 'preparing') return 'Preparing generation...';
+  if (progress.phase === 'preparing') return intl.formatMessage({ id: 'commitForm.progress.preparing' });
   if (progress.phase === 'inspecting') {
     return progress.lastToolName
-      ? `Inspecting repo (${progress.lastToolName})...`
-      : 'Inspecting repo...';
+      ? intl.formatMessage({ id: 'commitForm.progress.inspectingWithTool' }, { tool: progress.lastToolName })
+      : intl.formatMessage({ id: 'commitForm.progress.inspecting' });
   }
-  if (progress.phase === 'generating') return 'Drafting commit message...';
-  if (progress.phase === 'finalizing') return 'Finalizing...';
+  if (progress.phase === 'generating') return intl.formatMessage({ id: 'commitForm.progress.drafting' });
+  if (progress.phase === 'finalizing') return intl.formatMessage({ id: 'commitForm.progress.finalizing' });
   return null;
 }
 
@@ -425,9 +432,18 @@ interface SourceToggleProps {
 }
 
 function SourceToggle({ value, onChange, disabled }: SourceToggleProps) {
+  const intl = useIntl();
   const options: { id: CommitSummarySource; label: string; hint: string }[] = [
-    { id: 'api', label: 'API', hint: 'Fast · uses your Anthropic API key' },
-    { id: 'claude-cli', label: 'Claude CLI', hint: 'Agentic · reads related files · uses your Claude subscription' },
+    {
+      id: 'api',
+      label: intl.formatMessage({ id: 'commitForm.source.api.label' }),
+      hint: intl.formatMessage({ id: 'commitForm.source.api.hint' }),
+    },
+    {
+      id: 'claude-cli',
+      label: intl.formatMessage({ id: 'commitForm.source.cli.label' }),
+      hint: intl.formatMessage({ id: 'commitForm.source.cli.hint' }),
+    },
   ];
   const active = options.find((o) => o.id === value) ?? options[0];
 

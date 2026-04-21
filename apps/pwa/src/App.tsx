@@ -39,6 +39,7 @@ import { NotificationPrompt } from './components/NotificationPrompt';
 import { buildOfferMessage, getCurrentSubscription, notificationPermission } from './lib/pushSubscription';
 import { GitIdentityModal } from './components/GitIdentityModal';
 import { SettingsPage } from './components/SettingsPage';
+import { MachineInfoPage } from './components/MachineInfoPage';
 import { AddNewPage } from './components/AddNewPage';
 import { JoinGroupPage } from './routes/JoinGroupPage';
 import { ProjectList } from './components/ProjectList';
@@ -854,15 +855,13 @@ function AppContent() {
             onCloseSession={closeSession}
             onArchiveSession={archiveSession}
             onCancelSession={cancelSession}
-            onCheckAgentUpdate={checkAgentUpdate}
-            onUpdateAgent={updateAgent}
-            onRestartAgent={restartAgent}
             onGetSessionCards={getSessionCards}
             onStartSession={startSession}
             onResumeSession={resumeSession}
             onRespondToUserInput={respondToUserInput}
             onUnsubscribeSession={unsubscribeSession}
             onSetActiveAgent={setActiveAgent}
+            onListProjectRepos={listProjectRepos}
   />
   );
 
@@ -923,8 +922,9 @@ function AppContent() {
                 <Route path="/p/:projectId" element={projectDetailElement} />
                 <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
                 <Route path="/p/:projectId/r/:repoId" element={projectRepoElement} />
-                <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} onConnect={handleConnect} />} />
+                <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} onConnect={handleConnect} onStartSession={startSession} />} />
                 <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />} />
+                <Route path="/settings/m/:agentId" element={<MachineInfoPage onSetActiveAgent={setActiveAgent} onCheckAgentUpdate={checkAgentUpdate} onUpdateAgent={updateAgent} onRestartAgent={restartAgent} />} />
                 <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
                 <Route path="/pair" element={<JoinGroupPage />} />
               </Routes>
@@ -938,8 +938,9 @@ function AppContent() {
           <Route path="/p/:projectId" element={projectDetailElement} />
           <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
           <Route path="/p/:projectId/r/:repoId" element={projectRepoElement} />
-          <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} onConnect={handleConnect} />} />
+          <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} onConnect={handleConnect} onStartSession={startSession} />} />
           <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />} />
+          <Route path="/settings/m/:agentId" element={<MachineInfoPage onSetActiveAgent={setActiveAgent} onCheckAgentUpdate={checkAgentUpdate} onUpdateAgent={updateAgent} onRestartAgent={restartAgent} />} />
           <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
           <Route path="/pair" element={<JoinGroupPage />} />
         </Routes>
@@ -1122,15 +1123,13 @@ function ProjectRouteSession({
   onCloseSession,
   onArchiveSession,
   onCancelSession,
-  onCheckAgentUpdate,
-  onUpdateAgent,
-  onRestartAgent,
   onGetSessionCards,
   onStartSession,
   onResumeSession,
   onRespondToUserInput,
   onUnsubscribeSession,
   onSetActiveAgent,
+  onListProjectRepos,
 }: {
   onConnect: (agentId: string, publicKey: string) => void;
   onSwitchMachine: (agentId: string) => void;
@@ -1142,15 +1141,13 @@ function ProjectRouteSession({
   onCloseSession: (sessionId: string) => void;
   onArchiveSession: (sessionId: string, cwd: string) => Promise<void>;
   onCancelSession: (sessionId: string) => void;
-  onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
-  onUpdateAgent?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; restarting: boolean; error?: string }>;
-  onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
   onGetSessionCards: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
   onStartSession: (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
   onUnsubscribeSession?: (sessionId: string) => void;
   onSetActiveAgent?: (agentId: string) => void;
+  onListProjectRepos?: (cwd: string) => Promise<import('@sumicom/quicksave-shared').ProjectRepo[] | null>;
 }) {
   const { projectId, sessionId: urlSessionId } = useParams<{ projectId: string; sessionId: string }>();
   const [searchParams] = useSearchParams();
@@ -1241,6 +1238,10 @@ function ProjectRouteSession({
           onOpenMenu={() => {}}
           backTo={projectBasePath}
           sessionId={urlSessionId}
+          projectId={projectId}
+          agentId={targetAgentId ?? undefined}
+          cwd={cwd}
+          onListProjectRepos={onListProjectRepos}
           onSetSessionConfig={(key, value) => {
             const sid = getSessionId();
             if (sid) onSetSessionConfig(sid, key, value);
@@ -1265,9 +1266,6 @@ function ProjectRouteSession({
             const sid = getSessionId();
             if (sid) onCancelSession(sid);
           }}
-          onCheckAgentUpdate={onCheckAgentUpdate}
-          onUpdateAgent={onUpdateAgent}
-          onRestartAgent={onRestartAgent}
         />
       )}
       <ClaudePanel
@@ -1275,7 +1273,7 @@ function ProjectRouteSession({
         newSession={isNewSession}
         cwd={cwd}
         onSelectSession={(sid) => navigate(`${projectBasePath}/s/${sid}`)}
-        onNewSession={() => navigate(`${projectBasePath}/s/new?new`)}
+        onNewSession={() => navigate(`/add?tab=session&projectId=${encodeURIComponent(projectId ?? '')}`)}
         onGetSessionCards={boundGetCards}
         onSetSessionConfig={(sid, key, value) => onSetSessionConfig(sid, key, value)}
         onUnsubscribeSession={onUnsubscribeSession}

@@ -1,13 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { FormattedMessage, useIntl } from 'react-intl';
 import { useClaudeStore } from '../stores/claudeStore';
 import { useMachineStore } from '../stores/machineStore';
 import { useConnectionStore } from '../stores/connectionStore';
 import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { Spinner } from './ui/Spinner';
 import { ConfirmModal } from './ui/ConfirmModal';
-import { StatusDot, sessionStatusKey } from './SessionStatusBadge';
-import { formatRelativeTime } from '../lib/formatRelativeTime';
 import { pathToHash } from '../lib/pathHash';
 import type {
   ClaudeSessionSummary,
@@ -16,6 +15,7 @@ import type {
   SessionListArchivedResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { ArchivedSessionsList } from './ArchivedSessionsList';
+import { SessionTicketCard } from './SessionTicketCard';
 
 interface ProjectDetailProps {
   isReady: boolean;
@@ -42,6 +42,7 @@ export function ProjectDetail({
   onListArchivedSessions,
   onRestoreSession,
 }: ProjectDetailProps) {
+  const intl = useIntl();
   const navigate = useNavigate();
   const { projectId } = useParams<{ projectId: string }>();
   const sessions = useClaudeStore((s) => s.sessions);
@@ -84,7 +85,8 @@ export function ProjectDetail({
   }, [navigate, projectId]);
 
   const handleNewSession = useCallback(() => {
-    navigate(`/p/${projectId}/s/new?new`);
+    if (!projectId) return;
+    navigate(`/add?tab=session&projectId=${encodeURIComponent(projectId)}`);
   }, [navigate, projectId]);
 
   const handleRemoveProject = useCallback(async () => {
@@ -125,7 +127,7 @@ export function ProjectDetail({
             <button
               onClick={() => setShowMenu((prev) => !prev)}
               className="p-1.5 rounded-md transition-colors hover:bg-slate-700 text-slate-400"
-              aria-label="Project settings"
+              aria-label={intl.formatMessage({ id: 'projectDetail.settings.aria' })}
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01" />
@@ -146,14 +148,14 @@ export function ProjectDetail({
                       }}
                       className="w-full text-left px-4 py-2 text-sm text-slate-300 hover:bg-slate-600 transition-colors"
                     >
-                      Restart Agent
+                      <FormattedMessage id="projectDetail.menu.restartAgent" />
                     </button>
                   )}
                   <button
                     onClick={() => { setShowMenu(false); setShowRemoveConfirm(true); }}
                     className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-slate-600 transition-colors"
                   >
-                    Delete Project
+                    <FormattedMessage id="projectDetail.menu.deleteProject" />
                   </button>
                 </div>
               </>
@@ -166,7 +168,9 @@ export function ProjectDetail({
       {isConnecting && (
         <div className="flex-1 flex flex-col items-center justify-center gap-4">
           <Spinner size="w-8 h-8" color="border-blue-500" />
-          <p className="text-sm text-slate-400">Connecting...</p>
+          <p className="text-sm text-slate-400">
+            <FormattedMessage id="projectDetail.connecting" />
+          </p>
         </div>
       )}
 
@@ -178,12 +182,14 @@ export function ProjectDetail({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </div>
-          <p className="text-sm text-slate-400">{error || 'Connection failed'}</p>
+          <p className="text-sm text-slate-400">
+            {error || intl.formatMessage({ id: 'projectDetail.error.connectionFailed' })}
+          </p>
           <button
             onClick={() => navigate('/')}
             className="text-sm text-blue-400 hover:text-blue-300"
           >
-            Back to projects
+            <FormattedMessage id="projectDetail.error.backToProjects" />
           </button>
         </div>
       )}
@@ -195,38 +201,22 @@ export function ProjectDetail({
           <div>
             <div className="px-4 pt-4 pb-2">
               <h2 className="text-[12px] font-medium text-slate-500 uppercase tracking-wider">
-                Coding Agent Sessions
+                <FormattedMessage id="projectDetail.sessions.title" />
               </h2>
             </div>
 
             {cwdSessions.length === 0 ? (
               <div className="px-4 py-6 text-center text-sm text-slate-500">
-                No sessions yet
+                <FormattedMessage id="projectDetail.sessions.empty" />
               </div>
             ) : (
               <div className="divide-y divide-slate-700/40">
                 {cwdSessions.map((session) => (
-                  <button
+                  <SessionTicketCard
                     key={session.sessionId}
+                    session={session}
                     onClick={() => handleSelectSession(session)}
-                    className="w-full text-left px-4 py-2.5 hover:bg-slate-700/50 active:bg-slate-700/60 transition-colors flex items-center gap-3"
-                  >
-                    <StatusDot statusKey={sessionStatusKey(session)} />
-                    <div className="flex-1 min-w-0">
-                      <p className="list-title text-sm line-clamp-2">
-                        {session.summary || session.sessionId.slice(0, 12)}
-                      </p>
-                      <div className="list-meta flex items-center gap-2 mt-0.5 text-[11px]">
-                        {session.gitBranch && (
-                          <span>{session.gitBranch}</span>
-                        )}
-                        <span>{formatRelativeTime(session.lastModified)}</span>
-                      </div>
-                    </div>
-                    <svg className="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  </button>
+                  />
                 ))}
               </div>
             )}
@@ -240,7 +230,9 @@ export function ProjectDetail({
                 <svg className="w-4 h-4 text-blue-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                 </svg>
-                <span className="text-sm text-blue-400 font-medium">New Session</span>
+                <span className="text-sm text-blue-400 font-medium">
+                  <FormattedMessage id="projectDetail.sessions.newTask" />
+                </span>
               </button>
             </div>
           </div>
@@ -258,7 +250,7 @@ export function ProjectDetail({
           <div>
             <div className="px-4 pt-4 pb-2">
               <h2 className="text-[12px] font-medium text-slate-500 uppercase tracking-wider">
-                Git Repos
+                <FormattedMessage id="projectDetail.repos.title" />
               </h2>
             </div>
 
@@ -268,7 +260,7 @@ export function ProjectDetail({
               </div>
             ) : projectRepos.length === 0 ? (
               <div className="px-4 py-4 text-center text-sm text-slate-500">
-                No git repos found
+                <FormattedMessage id="projectDetail.repos.empty" />
               </div>
             ) : (
               <div className="divide-y divide-slate-700/40">
@@ -285,7 +277,11 @@ export function ProjectDetail({
                       <p className="list-title text-sm">{repo.name}</p>
                       <div className="list-meta flex items-center gap-1.5 mt-0.5 text-[11px]">
                         {repo.currentBranch && <span>{repo.currentBranch}</span>}
-                        {repo.isSubmodule && <span className="opacity-70">(submodule)</span>}
+                        {repo.isSubmodule && (
+                          <span className="opacity-70">
+                            <FormattedMessage id="projectDetail.repos.submodule" />
+                          </span>
+                        )}
                       </div>
                     </div>
                     <svg className="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -305,7 +301,7 @@ export function ProjectDetail({
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
-                Refresh
+                <FormattedMessage id="projectDetail.repos.refresh" />
               </button>
               {projectRepos.length === 0 && (
                 <>
@@ -320,7 +316,7 @@ export function ProjectDetail({
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                     </svg>
-                    Git Init
+                    <FormattedMessage id="projectDetail.repos.init" />
                   </button>
                   <button
                     onClick={() => {
@@ -332,7 +328,7 @@ export function ProjectDetail({
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                     </svg>
-                    Git Clone
+                    <FormattedMessage id="projectDetail.repos.clone" />
                   </button>
                 </>
               )}
@@ -343,9 +339,9 @@ export function ProjectDetail({
 
       {showRemoveConfirm && (
         <ConfirmModal
-          title="Delete Project?"
-          message={`Hide "${displayName}" from Quicksave? Active sessions will be archived (restorable individually). The actual folder on disk is not touched.`}
-          confirmLabel="Delete"
+          title={<FormattedMessage id="projectDetail.delete.title" />}
+          message={<FormattedMessage id="projectDetail.delete.message" values={{ name: displayName }} />}
+          confirmLabel={<FormattedMessage id="projectDetail.delete.confirmLabel" />}
           onConfirm={() => {
             setShowRemoveConfirm(false);
             void handleRemoveProject();

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { FormattedMessage, useIntl } from 'react-intl';
 import QRCode from 'qrcode';
 import { Modal } from './ui/Modal';
 import { ErrorBox } from './ui/ErrorBox';
@@ -18,6 +19,7 @@ interface PairDeviceModalProps {
 type Phase = 'loading' | 'waiting' | 'submitting' | 'sent' | 'expired' | 'error';
 
 export function PairDeviceModal({ onClose }: PairDeviceModalProps) {
+  const intl = useIntl();
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState<string | null>(null);
   const [pairUrl, setPairUrl] = useState('');
@@ -132,10 +134,10 @@ export function PairDeviceModal({ onClose }: PairDeviceModalProps) {
       if (result.status === 'sent') {
         setPhase('sent');
       } else if (result.status === 'no-match') {
-        setSasFeedback('沒有對上的裝置，請確認新裝置螢幕上的 6 碼');
+        setSasFeedback(intl.formatMessage({ id: 'pair.invite.sas.noMatch' }));
         setPhase('waiting');
       } else {
-        setSasFeedback('偵測到可疑碰撞（多個候選對上同一組 code），已中止配對');
+        setSasFeedback(intl.formatMessage({ id: 'pair.invite.sas.collision' }));
         setPhase('error');
         await invite.cancel();
       }
@@ -146,25 +148,30 @@ export function PairDeviceModal({ onClose }: PairDeviceModalProps) {
   };
 
   return (
-    <Modal title="加入新裝置" onClose={onClose} maxWidth="max-w-lg" backdropClose={false}>
+    <Modal
+      title={intl.formatMessage({ id: 'pair.invite.title' })}
+      onClose={onClose}
+      maxWidth="max-w-lg"
+      backdropClose={false}
+    >
       <div className="p-4 space-y-4">
         {phase === 'loading' && (
           <div className="flex items-center gap-2 text-slate-400">
-            <Spinner color="border-blue-500" /> 正在建立邀請…
+            <Spinner color="border-blue-500" /> <FormattedMessage id="pair.invite.loading" />
           </div>
         )}
 
         {phase === 'expired' && (
           <div className="space-y-3">
             <div className="p-3 bg-amber-500/15 border border-amber-500/40 rounded text-amber-200 text-sm">
-              這組 QR / 連結已過期，未被任何裝置完成配對。請重新產生一組。
+              <FormattedMessage id="pair.invite.expired.message" />
             </div>
             <button
               type="button"
               onClick={() => setRegenTick((n) => n + 1)}
               className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 rounded-md font-medium"
             >
-              重新產生 QR
+              <FormattedMessage id="pair.invite.expired.regenerate" />
             </button>
           </div>
         )}
@@ -175,17 +182,17 @@ export function PairDeviceModal({ onClose }: PairDeviceModalProps) {
               {qrDataUrl ? (
                 <img
                   src={qrDataUrl}
-                  alt="Pairing QR"
+                  alt={intl.formatMessage({ id: 'pair.invite.qr.alt' })}
                   className="rounded bg-white p-2"
                 />
               ) : (
                 <div className="w-60 h-60 flex items-center justify-center bg-slate-700 rounded text-slate-500 text-sm">
-                  QR 載入中…
+                  <FormattedMessage id="pair.invite.qr.loading" />
                 </div>
               )}
               <div className="w-full">
                 <label className="block text-xs text-slate-400 mb-1">
-                  或複製此連結貼到新裝置
+                  <FormattedMessage id="pair.invite.copyHint" />
                 </label>
                 <div className="flex gap-2">
                   <input
@@ -199,19 +206,29 @@ export function PairDeviceModal({ onClose }: PairDeviceModalProps) {
                     onClick={handleCopy}
                     className="px-3 py-1.5 text-sm bg-slate-700 hover:bg-slate-600 rounded-md"
                   >
-                    {copied ? '已複製' : '複製'}
+                    <FormattedMessage id={copied ? 'pair.invite.copied' : 'pair.invite.copy'} />
                   </button>
                 </div>
               </div>
               <div className="w-full text-xs text-slate-500 flex justify-between">
-                <span>已偵測到 {candidateCount} 個候選裝置</span>
-                <span>剩餘 {Math.ceil(remainingMs / 1000)}s</span>
+                <span>
+                  <FormattedMessage
+                    id="pair.invite.candidatesDetected"
+                    values={{ count: candidateCount }}
+                  />
+                </span>
+                <span>
+                  <FormattedMessage
+                    id="pair.invite.remaining"
+                    values={{ seconds: Math.ceil(remainingMs / 1000) }}
+                  />
+                </span>
               </div>
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-2">
               <label className="block text-sm text-slate-300">
-                輸入新裝置螢幕上顯示的 6 碼
+                <FormattedMessage id="pair.invite.sasPrompt" />
               </label>
               <input
                 type="text"
@@ -223,7 +240,7 @@ export function PairDeviceModal({ onClose }: PairDeviceModalProps) {
                 autoCorrect="off"
                 spellCheck={false}
                 className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white text-center text-2xl font-mono tracking-widest placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="------"
+                placeholder={intl.formatMessage({ id: 'pair.invite.sasPlaceholder' })}
               />
               {sasFeedback && (
                 <div className="text-sm text-amber-400">{sasFeedback}</div>
@@ -234,7 +251,9 @@ export function PairDeviceModal({ onClose }: PairDeviceModalProps) {
                 className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium flex items-center justify-center gap-2"
               >
                 {phase === 'submitting' && <Spinner />}
-                {phase === 'submitting' ? '驗證中…' : '驗證並傳送'}
+                <FormattedMessage
+                  id={phase === 'submitting' ? 'pair.invite.submitting' : 'pair.invite.submit'}
+                />
               </button>
             </form>
           </>
@@ -242,7 +261,7 @@ export function PairDeviceModal({ onClose }: PairDeviceModalProps) {
 
         {phase === 'sent' && (
           <div className="p-3 bg-emerald-500/20 border border-emerald-500/50 rounded text-emerald-300 text-sm">
-            已將金鑰傳給新裝置。新裝置應該馬上就能看到同步結果。
+            <FormattedMessage id="pair.invite.sent" />
           </div>
         )}
 
@@ -254,7 +273,7 @@ export function PairDeviceModal({ onClose }: PairDeviceModalProps) {
             onClick={onClose}
             className="px-4 py-2 text-sm bg-slate-700 hover:bg-slate-600 rounded-md"
           >
-            {phase === 'sent' ? '完成' : '取消'}
+            <FormattedMessage id={phase === 'sent' ? 'pair.invite.done' : 'pair.invite.cancel'} />
           </button>
         </div>
       </div>

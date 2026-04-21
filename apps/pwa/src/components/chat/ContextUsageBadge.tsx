@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { FormattedMessage, useIntl } from 'react-intl';
 import { clsx } from 'clsx';
 import type { ContextUsageBreakdown } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../../stores/claudeStore';
@@ -39,6 +40,7 @@ function colorFor(name: string): { fill: string; dot: string } {
 }
 
 export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsageBadgeProps) {
+  const intl = useIntl();
   const session = useClaudeStore((s) => s.sessions[sessionId]);
   const config = useSessionConfig(sessionId);
   const [open, setOpen] = useState(false);
@@ -94,7 +96,10 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
       <button
         type="button"
         onClick={() => setOpen(true)}
-        title={`${formatTokens(used)} / ${formatTokens(limit)} used — tap for details`}
+        title={intl.formatMessage(
+          { id: 'contextUsage.badgeTitle' },
+          { used: formatTokens(used), limit: formatTokens(limit) },
+        )}
         className={clsx(
           'flex items-center gap-1 px-2 py-1 rounded-md tabular-nums transition-colors',
           chipTone,
@@ -114,7 +119,9 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
           <div className="bg-slate-800 border border-slate-700 rounded-xl shadow-2xl w-full max-w-sm p-5 space-y-5 max-h-[90vh] overflow-y-auto">
             {/* Header */}
             <div>
-              <h3 className="text-sm font-medium text-slate-200">Context window usage</h3>
+              <h3 className="text-sm font-medium text-slate-200">
+                <FormattedMessage id="contextUsage.title" />
+              </h3>
               {model && (
                 <p className="text-xs text-slate-500 mt-0.5 font-mono">{model}</p>
               )}
@@ -135,7 +142,10 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
               </div>
               {breakdown?.isAutoCompactEnabled && breakdown.autoCompactThreshold && (
                 <p className="text-[10px] text-slate-500 mt-1">
-                  Auto-compact triggers at {formatTokens(breakdown.autoCompactThreshold)}
+                  <FormattedMessage
+                    id="contextUsage.autoCompactHint"
+                    values={{ tokens: formatTokens(breakdown.autoCompactThreshold) }}
+                  />
                 </p>
               )}
             </div>
@@ -153,7 +163,7 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
                 {/* Memory files */}
                 {breakdown.memoryFiles && breakdown.memoryFiles.length > 0 && (
                   <DetailList
-                    title="Memory files"
+                    title={intl.formatMessage({ id: 'contextUsage.section.memoryFiles' })}
                     items={breakdown.memoryFiles.map((f) => ({
                       key: f.path,
                       primary: f.path.split('/').pop() ?? f.path,
@@ -171,8 +181,14 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
                 {/* Skills */}
                 {breakdown.skills && breakdown.skills.skillFrontmatter && breakdown.skills.skillFrontmatter.length > 0 && (
                   <DetailList
-                    title={`Skills · ${breakdown.skills.includedSkills}/${breakdown.skills.totalSkills}`}
-                    subtitle={formatTokens(breakdown.skills.tokens) + ' total'}
+                    title={intl.formatMessage(
+                      { id: 'contextUsage.section.skills' },
+                      { included: breakdown.skills.includedSkills, total: breakdown.skills.totalSkills },
+                    )}
+                    subtitle={intl.formatMessage(
+                      { id: 'contextUsage.section.skillsSubtitle' },
+                      { tokens: formatTokens(breakdown.skills.tokens) },
+                    )}
                     items={breakdown.skills.skillFrontmatter.map((s) => ({
                       key: s.name + ':' + s.source,
                       primary: s.name,
@@ -191,15 +207,15 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
             {turnCount > 0 && (
               <section>
                 <h4 className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">
-                  Session totals
+                  <FormattedMessage id="contextUsage.section.sessionTotals" />
                 </h4>
                 <div className="space-y-1.5 text-xs">
-                  <StatRow label="Turns" value={String(turnCount)} />
-                  <StatRow label="Input (billed)" value={formatTokens(totalInput)} />
-                  <StatRow label="Output" value={formatTokens(totalOutput)} />
+                  <StatRow label={intl.formatMessage({ id: 'contextUsage.totals.turns' })} value={String(turnCount)} />
+                  <StatRow label={intl.formatMessage({ id: 'contextUsage.totals.input' })} value={formatTokens(totalInput)} />
+                  <StatRow label={intl.formatMessage({ id: 'contextUsage.totals.output' })} value={formatTokens(totalOutput)} />
                   {totalCost > 0 && (
                     <StatRow
-                      label="Cost"
+                      label={intl.formatMessage({ id: 'contextUsage.totals.cost' })}
                       value={'$' + totalCost.toFixed(totalCost < 0.01 ? 4 : 2)}
                     />
                   )}
@@ -216,9 +232,9 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
                       type="button"
                       onClick={() => { onCompact(); setOpen(false); }}
                       className="px-3 py-2 text-xs font-medium rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors"
-                      title="Summarize conversation to reduce context"
+                      title={intl.formatMessage({ id: 'contextUsage.action.compactTitle' })}
                     >
-                      Compact
+                      <FormattedMessage id="contextUsage.action.compact" />
                     </button>
                   )}
                   {onClear && (
@@ -226,9 +242,9 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
                       type="button"
                       onClick={() => { onClear(); setOpen(false); }}
                       className="px-3 py-2 text-xs font-medium rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors"
-                      title="Start a fresh session"
+                      title={intl.formatMessage({ id: 'contextUsage.action.clearTitle' })}
                     >
-                      Clear
+                      <FormattedMessage id="contextUsage.action.clear" />
                     </button>
                   )}
                 </div>
@@ -238,7 +254,7 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
                 onClick={() => setOpen(false)}
                 className="w-full px-3 py-2.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white shadow-md shadow-blue-900/40 hover:shadow-lg hover:shadow-blue-900/50 transition-all"
               >
-                Close
+                <FormattedMessage id="contextUsage.action.close" />
               </button>
             </div>
           </div>
@@ -260,7 +276,7 @@ function CategoriesSection({ breakdown }: { breakdown: ContextUsageBreakdown }) 
   return (
     <section>
       <h4 className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">
-        By category
+        <FormattedMessage id="contextUsage.section.byCategory" />
       </h4>
       <div className="h-2.5 rounded-full bg-slate-900/60 overflow-hidden flex">
         {segments.map((seg, idx) =>
@@ -297,14 +313,15 @@ function MessageBreakdownSection({
 }: {
   breakdown: NonNullable<ContextUsageBreakdown['messageBreakdown']>;
 }) {
+  const intl = useIntl();
   const rows: Array<{ key: string; label: string; color: string; value: number }> = [
-    { key: 'tool_calls', label: 'Tool calls', color: 'bg-blue-500', value: breakdown.toolCallTokens },
-    { key: 'tool_results', label: 'Tool results', color: 'bg-emerald-500', value: breakdown.toolResultTokens },
-    { key: 'assistant', label: 'Assistant', color: 'bg-violet-500', value: breakdown.assistantMessageTokens },
-    { key: 'user', label: 'User', color: 'bg-sky-500', value: breakdown.userMessageTokens },
-    { key: 'attachments', label: 'Attachments', color: 'bg-amber-500', value: breakdown.attachmentTokens },
+    { key: 'tool_calls', label: intl.formatMessage({ id: 'contextUsage.message.toolCalls' }), color: 'bg-blue-500', value: breakdown.toolCallTokens },
+    { key: 'tool_results', label: intl.formatMessage({ id: 'contextUsage.message.toolResults' }), color: 'bg-emerald-500', value: breakdown.toolResultTokens },
+    { key: 'assistant', label: intl.formatMessage({ id: 'contextUsage.message.assistant' }), color: 'bg-violet-500', value: breakdown.assistantMessageTokens },
+    { key: 'user', label: intl.formatMessage({ id: 'contextUsage.message.user' }), color: 'bg-sky-500', value: breakdown.userMessageTokens },
+    { key: 'attachments', label: intl.formatMessage({ id: 'contextUsage.message.attachments' }), color: 'bg-amber-500', value: breakdown.attachmentTokens },
     ...(breakdown.unattributedTokens
-      ? [{ key: 'unattributed', label: 'Unattributed', color: 'bg-slate-500', value: breakdown.unattributedTokens }]
+      ? [{ key: 'unattributed', label: intl.formatMessage({ id: 'contextUsage.message.unattributed' }), color: 'bg-slate-500', value: breakdown.unattributedTokens }]
       : []),
   ].filter((r) => r.value > 0);
   const total = rows.reduce((sum, r) => sum + r.value, 0);
@@ -313,7 +330,7 @@ function MessageBreakdownSection({
   return (
     <section>
       <h4 className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">
-        Inside messages · {formatTokens(total)}
+        <FormattedMessage id="contextUsage.section.insideMessages" values={{ tokens: formatTokens(total) }} />
       </h4>
       <div className="h-2.5 rounded-full bg-slate-900/60 overflow-hidden flex">
         {rows.map((r) => (
@@ -339,7 +356,7 @@ function MessageBreakdownSection({
       {breakdown.toolCallsByType && breakdown.toolCallsByType.length > 0 && (
         <div className="mt-3 pt-3 border-t border-slate-700/50">
           <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">
-            By tool (call → result)
+            <FormattedMessage id="contextUsage.byTool" />
           </p>
           <div className="space-y-1 text-xs">
             {breakdown.toolCallsByType.map((t) => (
@@ -358,7 +375,7 @@ function MessageBreakdownSection({
       {breakdown.attachmentsByType && breakdown.attachmentsByType.length > 0 && (
         <div className="mt-3 pt-3 border-t border-slate-700/50">
           <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">
-            Attachments
+            <FormattedMessage id="contextUsage.attachments" />
           </p>
           <div className="space-y-1 text-xs">
             {breakdown.attachmentsByType.map((a) => (
@@ -393,14 +410,17 @@ function McpToolsSection({ tools }: { tools: NonNullable<ContextUsageBreakdown['
   return (
     <section>
       <h4 className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">
-        MCP tools · {formatTokens(totalTokens)}
+        <FormattedMessage id="contextUsage.section.mcpTools" values={{ tokens: formatTokens(totalTokens) }} />
       </h4>
       <div className="space-y-1 text-xs">
         {Array.from(byServer.entries()).map(([server, info]) => (
           <div key={server} className="flex items-baseline justify-between gap-2">
             <span className="text-slate-300 font-mono text-[11px] truncate">{server}</span>
             <span className="tabular-nums text-slate-500 text-[11px] shrink-0">
-              {info.loadedCount + info.deferredCount} tool{info.loadedCount + info.deferredCount === 1 ? '' : 's'}
+              <FormattedMessage
+                id="contextUsage.toolCount"
+                values={{ count: info.loadedCount + info.deferredCount }}
+              />
               <span className="mx-1 text-slate-600">·</span>
               <span className="text-slate-300">{formatTokens(info.loaded + info.deferred)}</span>
             </span>
@@ -452,10 +472,11 @@ function FallbackSection({
   cacheRead: number;
   used: number;
 }) {
+  const intl = useIntl();
   return (
     <section>
       <h4 className="text-[11px] uppercase tracking-wider text-slate-500 mb-2">
-        Current turn · {formatTokens(used)}
+        <FormattedMessage id="contextUsage.section.currentTurn" values={{ tokens: formatTokens(used) }} />
       </h4>
       <div className="h-2.5 rounded-full bg-slate-900/60 overflow-hidden flex">
         {[
@@ -473,12 +494,12 @@ function FallbackSection({
         )}
       </div>
       <div className="space-y-1 mt-3 text-xs">
-        <LegendRow color="bg-emerald-500" label="Cache read" value={cacheRead} total={used} />
-        <LegendRow color="bg-sky-500" label="Cache created" value={cacheCreation} total={used} />
-        <LegendRow color="bg-amber-500" label="Input (billed)" value={input} total={used} />
+        <LegendRow color="bg-emerald-500" label={intl.formatMessage({ id: 'contextUsage.fallback.cacheRead' })} value={cacheRead} total={used} />
+        <LegendRow color="bg-sky-500" label={intl.formatMessage({ id: 'contextUsage.fallback.cacheCreated' })} value={cacheCreation} total={used} />
+        <LegendRow color="bg-amber-500" label={intl.formatMessage({ id: 'contextUsage.fallback.inputBilled' })} value={input} total={used} />
       </div>
       <p className="text-[10px] text-slate-500 mt-2 italic">
-        Detailed breakdown will appear after the next turn completes.
+        <FormattedMessage id="contextUsage.fallback.laterHint" />
       </p>
     </section>
   );

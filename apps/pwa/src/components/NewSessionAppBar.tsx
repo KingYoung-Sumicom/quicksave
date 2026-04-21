@@ -10,7 +10,7 @@ interface NewSessionAppBarProps {
 
 export function NewSessionAppBar({ cwd, onOpenMenu, backTo }: NewSessionAppBarProps) {
   const navigate = useNavigate();
-  const displayPath = cwd?.split('/').pop() || cwd || 'New Session';
+  const displayPath = cwd?.split('/').pop() || cwd || 'New Task';
 
   return (
     <BaseStatusBar

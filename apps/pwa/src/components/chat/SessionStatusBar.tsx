@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import { clsx } from 'clsx';
+import { useIntl } from 'react-intl';
 import type { ConfigValue } from '@sumicom/quicksave-shared';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
 import { PERMISSION_MODES, getModelsForAgent } from '../../lib/claudePresets';
@@ -27,6 +28,7 @@ const REASONING_EFFORTS = [
 ];
 
 export function SessionStatusBar({ sessionId, onSetSessionConfig, children }: SessionStatusBarProps) {
+  const intl = useIntl();
   const config = useSessionConfig(sessionId);
   const [openPopover, setOpenPopover] = useState<PopoverType>(null);
   const barRef = useRef<HTMLDivElement>(null);
@@ -157,7 +159,7 @@ export function SessionStatusBar({ sessionId, onSetSessionConfig, children }: Se
             ? 'bg-emerald-600/20 text-emerald-400'
             : 'bg-slate-700/60 text-slate-400 hover:bg-slate-700 hover:text-slate-300'
         )}
-        title={sandboxed ? 'Sandbox on — writes restricted' : 'Sandbox off'}
+        title={intl.formatMessage({ id: sandboxed ? 'sessionStatus.sandbox.titleOn' : 'sessionStatus.sandbox.titleOff' })}
       >
         {/* Box icon */}
         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">

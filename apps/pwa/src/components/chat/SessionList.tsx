@@ -1,3 +1,4 @@
+import { FormattedMessage } from 'react-intl';
 import type { ClaudeSessionSummary } from '@sumicom/quicksave-shared';
 import { StatusDot, sessionStatusKey } from '../SessionStatusBadge';
 import { formatRelativeTime } from '../../lib/formatRelativeTime';
@@ -15,7 +16,7 @@ export function SessionList({
     <div className="flex-1 overflow-y-auto safe-area-bottom">
       {sessions.length === 0 ? (
         <div className="flex items-center justify-center py-12 text-slate-400 text-sm">
-          No sessions yet
+          <FormattedMessage id="projectDetail.sessions.empty" />
         </div>
       ) : (
         sessions.map((session) => (
@@ -55,7 +56,9 @@ export function SessionList({
           <svg className="w-4 h-4 text-blue-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
-          <span className="text-sm text-blue-400 font-medium">New Session</span>
+          <span className="text-sm text-blue-400 font-medium">
+            <FormattedMessage id="projectDetail.sessions.newTask" />
+          </span>
         </button>
       </div>
     </div>

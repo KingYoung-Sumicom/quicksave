@@ -19,10 +19,45 @@ function urlBase64ToUint8Array(base64: string): Uint8Array {
 }
 
 export function isPushSupported(): boolean {
-  return typeof window !== 'undefined'
-    && 'serviceWorker' in navigator
-    && 'PushManager' in window
-    && typeof Notification !== 'undefined';
+  const s = getPushSupportStatus(undefined);
+  // Browser APIs present — VAPID is a config concern, not a capability one.
+  return s.ok || s.kind === 'no-vapid-key';
+}
+
+export type PushSupportStatus =
+  | { ok: true }
+  | { ok: false; kind: 'no-browser-support'; detail: 'no-window' | 'no-service-worker' | 'no-notification-api' | 'no-push-manager' }
+  | { ok: false; kind: 'ios-not-standalone' }
+  | { ok: false; kind: 'no-vapid-key' };
+
+/**
+ * Report the first reason push isn't available, in the order a user can act on:
+ * insecure/ancient browser → iOS needs home-screen install → missing VAPID config.
+ * UI can show a specific hint per kind instead of a generic "unsupported".
+ */
+export function getPushSupportStatus(vapidPublicKey: string | undefined): PushSupportStatus {
+  const w: Window | undefined = typeof window !== 'undefined' ? window : undefined;
+  if (!w) {
+    return { ok: false, kind: 'no-browser-support', detail: 'no-window' };
+  }
+  if (!('serviceWorker' in navigator)) {
+    return { ok: false, kind: 'no-browser-support', detail: 'no-service-worker' };
+  }
+  if (typeof Notification === 'undefined') {
+    return { ok: false, kind: 'no-browser-support', detail: 'no-notification-api' };
+  }
+  if (!('PushManager' in w)) {
+    // iOS 16.4+ exposes PushManager only after the PWA is added to Home Screen.
+    const nav = navigator as Navigator & { maxTouchPoints?: number };
+    const isIOS = /iPad|iPhone|iPod/.test(nav.userAgent)
+      || (nav.platform === 'MacIntel' && (nav.maxTouchPoints ?? 0) > 1);
+    const standalone = typeof w.matchMedia === 'function'
+      && w.matchMedia('(display-mode: standalone)').matches;
+    if (isIOS && !standalone) return { ok: false, kind: 'ios-not-standalone' };
+    return { ok: false, kind: 'no-browser-support', detail: 'no-push-manager' };
+  }
+  if (!vapidPublicKey) return { ok: false, kind: 'no-vapid-key' };
+  return { ok: true };
 }
 
 export function notificationPermission(): NotificationPermission {
@@ -32,7 +67,11 @@ export function notificationPermission(): NotificationPermission {
 
 async function getRegistration(): Promise<ServiceWorkerRegistration | null> {
   if (!('serviceWorker' in navigator)) return null;
-  const ready = await navigator.serviceWorker.ready;
+  // `.ready` never resolves when no SW is registered (e.g. dev server without
+  // VitePWA devOptions). Race against a timeout so the UI can surface an error
+  // instead of sitting in "registering…" forever.
+  const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000));
+  const ready = await Promise.race([navigator.serviceWorker.ready, timeout]);
   return ready ?? null;
 }
 

@@ -365,12 +365,23 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
           [sessionId]: { ...state.sessionConfigs[sessionId], ...config },
         },
       };
-      // Sync title into session map so status bar picks it up immediately
-      if (typeof config.title === 'string' && state.sessions[sessionId]) {
-        next.sessions = {
-          ...state.sessions,
-          [sessionId]: { ...state.sessions[sessionId], summary: config.title as string },
-        };
+      // Mirror ticket-model fields (subject/stage/blocked/note) into the
+      // session map so home-screen ticket cards re-render the moment the agent
+      // calls `UpdateSessionStatus`, without waiting for the next history
+      // broadcast roundtrip.
+      const session = state.sessions[sessionId];
+      if (session) {
+        const sessionPatch: Partial<typeof session> = {};
+        if (typeof config.title === 'string') sessionPatch.summary = config.title;
+        if (typeof config.stage === 'string') sessionPatch.stage = config.stage as typeof session.stage;
+        if (typeof config.blocked === 'boolean') sessionPatch.blocked = config.blocked;
+        if (typeof config.note === 'string') sessionPatch.note = config.note;
+        if (Object.keys(sessionPatch).length > 0) {
+          next.sessions = {
+            ...state.sessions,
+            [sessionId]: { ...session, ...sessionPatch },
+          };
+        }
       }
       const configAgent = typeof config.agent === 'string'
         ? config.agent

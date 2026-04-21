@@ -57,7 +57,7 @@ export function ArchivedSessionsList({ cwd, onListArchived, onRestore }: Archive
         className="w-full flex items-center justify-between px-4 pt-4 pb-2 text-left hover:bg-slate-700/30 transition-colors"
       >
         <h2 className="text-[12px] font-medium text-slate-500 uppercase tracking-wider">
-          Archived Sessions
+          Archived Tasks
           {expanded && total > 0 && (
             <span className="ml-2 normal-case text-slate-500 tracking-normal">({total})</span>
           )}
@@ -80,7 +80,7 @@ export function ArchivedSessionsList({ cwd, onListArchived, onRestore }: Archive
             </div>
           ) : entries.length === 0 ? (
             <div className="px-4 py-6 text-center text-sm text-slate-500">
-              No archived sessions
+              No archived tasks
             </div>
           ) : (
             <>

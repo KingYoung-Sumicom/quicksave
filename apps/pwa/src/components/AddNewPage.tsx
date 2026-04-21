@@ -1,14 +1,17 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { clsx } from 'clsx';
+import { FormattedMessage, useIntl } from 'react-intl';
 import type {
   Repository,
   CodingPath,
   BrowseDirectoryResponsePayload,
   DirectoryEntry,
+  AgentId,
 } from '@sumicom/quicksave-shared';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useMachineStore } from '../stores/machineStore';
+import { useClaudeStore } from '../stores/claudeStore';
 import { useProjects } from '../hooks/useProjects';
 import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { ChevronIcon } from './ui/ChevronIcon';
@@ -16,7 +19,19 @@ import { Spinner } from './ui/Spinner';
 import { Modal } from './ui/Modal';
 import { ErrorBox } from './ui/ErrorBox';
 import { QRScanner } from './QRScanner';
+import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
+import { getAgentType } from '../lib/claudePresets';
 import { toProjectId } from '../lib/projectId';
+
+type StartSessionOpts = {
+  agent?: AgentId;
+  allowedTools?: string[];
+  systemPrompt?: string;
+  model?: string;
+  permissionMode?: string;
+  cwd?: string;
+  sandboxed?: boolean;
+};
 
 type TabKey = 'project' | 'session' | 'machine';
 
@@ -26,6 +41,7 @@ interface AddNewPageProps {
   onCloneRepo: (url: string, targetDir: string) => Promise<Repository | null>;
   onAddCodingPath: (path: string) => Promise<CodingPath | null>;
   onConnect: (agentId: string, publicKey: string) => void;
+  onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
 }
 
 export function AddNewPage({
@@ -34,9 +50,18 @@ export function AddNewPage({
   onCloneRepo,
   onAddCodingPath,
   onConnect,
+  onStartSession,
 }: AddNewPageProps) {
   const navigate = useNavigate();
-  const [tab, setTab] = useState<TabKey>('project');
+  const [searchParams] = useSearchParams();
+  const initialTab = useMemo<TabKey>(() => {
+    const raw = searchParams.get('tab');
+    return raw === 'project' || raw === 'session' || raw === 'machine' ? raw : 'session';
+    // Only honor the initial URL — subsequent tab clicks shouldn't flip back.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const initialProjectId = useMemo(() => searchParams.get('projectId'), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const [tab, setTab] = useState<TabKey>(initialTab);
   const agentConnections = useConnectionStore((s) => s.agentConnections);
   const machines = useMachineStore((s) => s.machines);
 
@@ -98,11 +123,15 @@ export function AddNewPage({
     <div className="flex flex-col h-full overflow-hidden">
       <BaseStatusBar
         left={<BackButton onClick={goBack} />}
-        center={<span className="text-sm font-medium text-slate-300">Add New</span>}
+        center={
+          <span className="text-sm font-medium text-slate-300">
+            <FormattedMessage id="addNew.title" />
+          </span>
+        }
       />
 
       <div className="flex border-b border-slate-700 px-2">
-        {(['project', 'session', 'machine'] as const).map((key) => (
+        {(['session', 'project', 'machine'] as const).map((key) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -113,7 +142,7 @@ export function AddNewPage({
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             )}
           >
-            {key === 'project' ? 'Project' : key === 'session' ? 'Session' : 'Machine'}
+            <FormattedMessage id={`addNew.tab.${key}`} />
           </button>
         ))}
       </div>
@@ -121,7 +150,7 @@ export function AddNewPage({
       {tab === 'project' && connectedMachines.length > 1 && (
         <div className="px-4 py-3 border-b border-slate-700 flex items-center gap-2">
           <label htmlFor="add-machine-select" className="text-xs text-slate-400 shrink-0">
-            Machine
+            <FormattedMessage id="addNew.project.machineLabel" />
           </label>
           <select
             id="add-machine-select"
@@ -154,7 +183,13 @@ export function AddNewPage({
             }}
           />
         )}
-        {tab === 'session' && <SessionTab />}
+        {tab === 'session' && (
+          <SessionTab
+            initialProjectId={initialProjectId}
+            onSetActiveAgent={onSetActiveAgent}
+            onStartSession={onStartSession}
+          />
+        )}
         {tab === 'machine' && (
           <MachineTab
             onConnect={(agentId, publicKey) => {
@@ -174,6 +209,7 @@ function useDirectoryBrowser(
   resetKey: string | null,
   onBrowseDirectory: (path?: string) => Promise<BrowseDirectoryResponsePayload | null>
 ) {
+  const intl = useIntl();
   const [currentPath, setCurrentPath] = useState<string>('');
   const [parentPath, setParentPath] = useState<string | null>(null);
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
@@ -196,12 +232,12 @@ function useDirectoryBrowser(
           }
         }
       } catch {
-        setError('Failed to browse directory');
+        setError(intl.formatMessage({ id: 'addNew.project.browseFailed' }));
       } finally {
         setLoading(false);
       }
     },
-    [onBrowseDirectory]
+    [onBrowseDirectory, intl]
   );
 
   // Reload home whenever the routing key (selected agent) changes.
@@ -231,13 +267,14 @@ function ProjectTab({
   onCloneRepo: (url: string, targetDir: string) => Promise<Repository | null>;
   onDone: (agentId: string | null, path: string | null) => void;
 }) {
+  const intl = useIntl();
   const { currentPath, parentPath, entries, loading, error, setError, load } =
     useDirectoryBrowser(selectedAgentId, onBrowseDirectory);
   const [adding, setAdding] = useState(false);
   const [showClone, setShowClone] = useState(false);
 
   if (!selectedAgentId) {
-    return <EmptyAgentNotice message="Connect to a machine to add a project." />;
+    return <EmptyAgentNotice message={intl.formatMessage({ id: 'addNew.project.empty' })} />;
   }
 
   const handleSelect = async () => {
@@ -254,7 +291,7 @@ function ProjectTab({
       useMachineStore.getState().addKnownCodingPath(selectedAgentId, result.path);
       onDone(selectedAgentId, result.path);
     } else {
-      setError('Failed to add project');
+      setError(intl.formatMessage({ id: 'addNew.project.failed' }));
     }
   };
 
@@ -272,14 +309,14 @@ function ProjectTab({
           disabled={!currentPath}
           className="flex-shrink-0 px-3 py-1 text-xs font-medium bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded transition-colors"
         >
-          Clone…
+          <FormattedMessage id="addNew.project.clone" />
         </button>
         <button
           onClick={handleSelect}
           disabled={adding || !currentPath}
           className="flex-shrink-0 px-3 py-1 text-xs font-medium bg-purple-600 hover:bg-purple-500 disabled:opacity-50 rounded transition-colors"
         >
-          {adding ? 'Adding...' : 'Add as Project'}
+          <FormattedMessage id={adding ? 'addNew.project.adding' : 'addNew.project.addAsProject'} />
         </button>
       </div>
       {error && <ErrorBar message={error} />}
@@ -323,6 +360,7 @@ function CloneRepoModal({
   onClose: () => void;
   onCloned: () => void;
 }) {
+  const intl = useIntl();
   const [url, setUrl] = useState('');
   const [name, setName] = useState('');
   const [cloning, setCloning] = useState(false);
@@ -345,16 +383,16 @@ function CloneRepoModal({
     if (repo) {
       onCloned();
     } else {
-      setError('Failed to clone repository');
+      setError(intl.formatMessage({ id: 'addNew.clone.failed' }));
     }
   };
 
   return (
-    <Modal title="Clone Git Repository" onClose={cloning ? () => {} : onClose} backdropClose={!cloning}>
+    <Modal title={intl.formatMessage({ id: 'addNew.clone.title' })} onClose={cloning ? () => {} : onClose} backdropClose={!cloning}>
       <div className="p-4 space-y-4">
         <div className="space-y-1">
           <label className="text-xs font-medium text-slate-400 uppercase tracking-wide">
-            Repository URL
+            <FormattedMessage id="addNew.clone.urlLabel" />
           </label>
           <input
             type="text"
@@ -363,7 +401,7 @@ function CloneRepoModal({
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.nativeEvent.isComposing && canClone) handleClone();
             }}
-            placeholder="https://github.com/user/repo.git"
+            placeholder={intl.formatMessage({ id: 'addNew.clone.urlPlaceholder' })}
             className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
             disabled={cloning}
             autoFocus
@@ -372,7 +410,10 @@ function CloneRepoModal({
 
         <div className="space-y-1">
           <label className="text-xs font-medium text-slate-400 uppercase tracking-wide">
-            Folder Name <span className="text-slate-500 normal-case font-normal">(optional)</span>
+            <FormattedMessage id="addNew.clone.nameLabel" />{' '}
+            <span className="text-slate-500 normal-case font-normal">
+              <FormattedMessage id="addNew.clone.nameOptional" />
+            </span>
           </label>
           <input
             type="text"
@@ -381,7 +422,7 @@ function CloneRepoModal({
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.nativeEvent.isComposing && canClone) handleClone();
             }}
-            placeholder={defaultName || 'repo'}
+            placeholder={defaultName || intl.formatMessage({ id: 'addNew.clone.namePlaceholder' })}
             className="w-full px-3 py-2 bg-slate-900 border border-slate-600 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
             disabled={cloning}
           />
@@ -392,7 +433,7 @@ function CloneRepoModal({
           )}
           {nameConflict && (
             <p className="text-xs text-red-400">
-              A folder named “{effectiveName}” already exists here.
+              <FormattedMessage id="addNew.clone.conflict" values={{ name: effectiveName }} />
             </p>
           )}
         </div>
@@ -405,7 +446,7 @@ function CloneRepoModal({
             disabled={cloning}
             className="px-3 py-1.5 text-sm text-slate-300 hover:text-white disabled:opacity-50 transition-colors"
           >
-            Cancel
+            <FormattedMessage id="common.cancel" />
           </button>
           <button
             onClick={handleClone}
@@ -413,7 +454,7 @@ function CloneRepoModal({
             className="px-4 py-1.5 text-sm font-medium bg-blue-600 hover:bg-blue-500 disabled:bg-slate-600 disabled:cursor-not-allowed rounded transition-colors flex items-center gap-2"
           >
             {cloning && <Spinner color="border-white" />}
-            {cloning ? 'Cloning…' : 'Clone'}
+            <FormattedMessage id={cloning ? 'addNew.clone.submitting' : 'addNew.clone.submit'} />
           </button>
         </div>
       </div>
@@ -428,6 +469,7 @@ function MachineTab({
 }: {
   onConnect: (agentId: string, publicKey: string) => void;
 }) {
+  const intl = useIntl();
   const [mode, setMode] = useState<'scan' | 'manual'>('scan');
   const [agentId, setAgentId] = useState('');
   const [publicKey, setPublicKey] = useState('');
@@ -461,7 +503,7 @@ function MachineTab({
           )}
           onClick={() => setMode('scan')}
         >
-          Scan QR
+          <FormattedMessage id="addNew.machine.scanQr" />
         </button>
         <button
           type="button"
@@ -471,7 +513,7 @@ function MachineTab({
           )}
           onClick={() => setMode('manual')}
         >
-          Manual Entry
+          <FormattedMessage id="addNew.machine.manualEntry" />
         </button>
       </div>
 
@@ -495,27 +537,27 @@ function MachineTab({
         <form onSubmit={handleManualSubmit} className="space-y-4">
           <div>
             <label htmlFor="add-agent-id" className="block text-sm font-medium text-slate-300 mb-1">
-              Agent ID
+              <FormattedMessage id="addNew.machine.agentIdLabel" />
             </label>
             <input
               id="add-agent-id"
               type="text"
               value={agentId}
               onChange={(e) => setAgentId(e.target.value)}
-              placeholder="Enter agent ID"
+              placeholder={intl.formatMessage({ id: 'addNew.machine.agentIdPlaceholder' })}
               className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               disabled={isConnecting}
             />
           </div>
           <div>
             <label htmlFor="add-public-key" className="block text-sm font-medium text-slate-300 mb-1">
-              Public Key
+              <FormattedMessage id="addNew.machine.publicKeyLabel" />
             </label>
             <textarea
               id="add-public-key"
               value={publicKey}
               onChange={(e) => setPublicKey(e.target.value)}
-              placeholder="Enter agent public key"
+              placeholder={intl.formatMessage({ id: 'addNew.machine.publicKeyPlaceholder' })}
               rows={3}
               className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none font-mono text-sm"
               disabled={isConnecting}
@@ -527,13 +569,16 @@ function MachineTab({
             disabled={!agentId.trim() || !publicKey.trim() || isConnecting}
             className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors"
           >
-            {isConnecting ? 'Connecting…' : 'Add & Connect'}
+            <FormattedMessage id={isConnecting ? 'addNew.machine.connecting' : 'addNew.machine.submit'} />
           </button>
         </form>
       )}
 
       <p className="mt-4 text-center text-xs text-slate-500">
-        Run <code className="text-slate-400">quicksave</code> on your computer to get connection details.
+        <FormattedMessage
+          id="addNew.machine.footer"
+          values={{ cmd: <code className="text-slate-400">quicksave</code> }}
+        />
       </p>
     </div>
   );
@@ -541,42 +586,151 @@ function MachineTab({
 
 // ── Session Tab ─────────────────────────────────────────────────────────────
 
-function SessionTab() {
+function SessionTab({
+  initialProjectId,
+  onSetActiveAgent,
+  onStartSession,
+}: {
+  initialProjectId: string | null;
+  onSetActiveAgent: (agentId: string) => void;
+  onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
+}) {
+  const intl = useIntl();
   const projects = useProjects();
   const navigate = useNavigate();
+
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => {
+    if (initialProjectId && projects.some((p) => p.projectId === initialProjectId)) {
+      return initialProjectId;
+    }
+    const firstConnected = projects.find((p) => p.isConnected);
+    return firstConnected?.projectId ?? projects[0]?.projectId ?? null;
+  });
+
+  // Honor initialProjectId once it appears in the hydrated project list —
+  // store rehydration can happen after the first render, so the initial-state
+  // guess above may have fallen back to firstConnected.
+  const [honoredInitial, setHonoredInitial] = useState(() =>
+    !initialProjectId || projects.some((p) => p.projectId === initialProjectId)
+  );
+  useEffect(() => {
+    if (honoredInitial || !initialProjectId) return;
+    if (projects.some((p) => p.projectId === initialProjectId)) {
+      setSelectedProjectId(initialProjectId);
+      setHonoredInitial(true);
+    }
+  }, [projects, initialProjectId, honoredInitial]);
+
+  // Keep selection valid as the projects list churns (reconnects, additions).
+  useEffect(() => {
+    if (selectedProjectId && projects.some((p) => p.projectId === selectedProjectId)) return;
+    const firstConnected = projects.find((p) => p.isConnected);
+    setSelectedProjectId(firstConnected?.projectId ?? projects[0]?.projectId ?? null);
+  }, [projects, selectedProjectId]);
+
+  const project = projects.find((p) => p.projectId === selectedProjectId) ?? null;
+
+  const selectedAgent = useClaudeStore((s) => s.selectedAgent);
+  const selectedModel = useClaudeStore((s) => s.selectedModel);
+  const selectedPermissionMode = useClaudeStore((s) => s.selectedPermissionMode);
+  const sandboxEnabled = useClaudeStore((s) => s.sandboxEnabled);
+
+  const [prompt, setPrompt] = useState('');
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canStart = !!project?.isConnected && !!prompt.trim() && !starting;
+
+  const handleStart = async () => {
+    if (!canStart || !project) return;
+    const text = prompt.trim();
+    setStarting(true);
+    setError(null);
+    const agentType = getAgentType(selectedAgent);
+    onSetActiveAgent(project.agentId);
+    try {
+      await onStartSession(text, {
+        agent: selectedAgent,
+        model: selectedModel,
+        permissionMode: selectedPermissionMode,
+        sandboxed: sandboxEnabled || undefined,
+        cwd: project.cwd,
+        ...(agentType.allowedTools !== undefined ? { allowedTools: agentType.allowedTools } : {}),
+        ...(agentType.systemPrompt ? { systemPrompt: agentType.systemPrompt } : {}),
+      });
+      const streamErr = useClaudeStore.getState().streamError;
+      if (streamErr) {
+        setError(streamErr);
+        return;
+      }
+      const sid = useClaudeStore.getState().activeSessionId;
+      setPrompt('');
+      if (sid) {
+        navigate(`/p/${project.projectId}/s/${sid}`);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : intl.formatMessage({ id: 'addNew.session.failed' }));
+    } finally {
+      setStarting(false);
+    }
+  };
 
   if (projects.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center p-6 text-center text-slate-400 text-sm">
-        Add a project first to start a new session.
+        <FormattedMessage id="addNew.session.empty" />
       </div>
     );
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <p className="px-4 pt-3 pb-1 text-xs text-slate-500">Pick a project for the new session</p>
-      {projects.map((p) => (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 overflow-y-auto">
+        <NewSessionEmptyState
+          cwd={project?.cwd}
+          projectSelector={{
+            projects,
+            selectedProjectId,
+            onSelect: (id) => setSelectedProjectId(id || null),
+          }}
+        />
+      </div>
+
+      {error && <ErrorBar message={error} />}
+
+      <div className="border-t border-slate-700 px-4 py-3 bg-slate-900 flex items-end gap-2 safe-area-bottom-input">
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              handleStart();
+            }
+          }}
+          placeholder={intl.formatMessage({ id: project?.isConnected ? 'addNew.session.promptReady' : 'addNew.session.promptOffline' })}
+          className="flex-1 bg-slate-700 rounded-lg px-3 py-2 text-sm resize-none overflow-y-auto focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+          rows={2}
+          disabled={!project?.isConnected || starting}
+        />
         <button
-          key={p.projectId}
-          onClick={() => navigate(`/p/${p.projectId}/s/new?new`)}
-          disabled={!p.isConnected}
+          onPointerDown={(e) => { e.preventDefault(); handleStart(); }}
+          disabled={!canStart}
           className={clsx(
-            'w-full flex items-center gap-3 px-4 py-3 border-b border-slate-700/50 transition-colors text-left',
-            p.isConnected ? 'hover:bg-slate-700' : 'opacity-50 cursor-not-allowed'
+            'p-2 rounded-lg transition-colors flex-shrink-0',
+            canStart ? 'bg-blue-600 hover:bg-blue-500' : 'bg-slate-600 text-slate-400',
           )}
+          title={intl.formatMessage({ id: 'addNew.session.startTitle' })}
         >
-          <div className="w-8 h-8 flex items-center justify-center text-lg">{p.machineIcon}</div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm text-white truncate">{p.displayName}</p>
-            <p className="text-xs text-slate-500 truncate">
-              {p.machineName}
-              {!p.isConnected && ' · offline'}
-            </p>
-          </div>
-          <ChevronIcon size="w-4 h-4" className="text-slate-500" />
+          {starting ? (
+            <Spinner color="border-white" />
+          ) : (
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />
+            </svg>
+          )}
         </button>
-      ))}
+      </div>
     </div>
   );
 }
@@ -644,7 +798,9 @@ function BrowseList({
 
       {entries.length === 0 ? (
         <div className="px-4 py-6 text-center text-slate-500">
-          <p>Empty directory</p>
+          <p>
+            <FormattedMessage id="addNew.project.browseEmpty" />
+          </p>
         </div>
       ) : (
         entries.map((entry) => {
@@ -703,7 +859,7 @@ function BrowseList({
                 <p className="truncate">{entry.name}</p>
                 {highlightRepos && entry.isGitRepo && (
                   <p className="text-xs text-slate-500">
-                    {alreadyAdded ? 'Already added' : 'Git repository — tap to add'}
+                    <FormattedMessage id={alreadyAdded ? 'addNew.project.alreadyAdded' : 'addNew.project.tapToAdd'} />
                   </p>
                 )}
               </div>

@@ -37,7 +37,7 @@ const CONTROL_REQUESTS: ControlRequestDef[] = [
   {
     subtype: 'set_model',
     label: 'Set Model',
-    description: 'Switch the model for the current session (no restart)',
+    description: 'Switch the model for the current task (no restart)',
     params: [{ name: 'model', placeholder: 'claude-opus-4-7[1m]', required: true }],
   },
   {
@@ -142,7 +142,7 @@ export function ControlRequestPalette({ sessionId, onSendControlRequest }: Contr
     <div className="space-y-3">
       {disabled && (
         <p className="text-xs text-slate-500">
-          {!sessionId ? 'Requires an active session.' : 'Control request API not available.'}
+          {!sessionId ? 'Requires an active task.' : 'Control request API not available.'}
         </p>
       )}
 

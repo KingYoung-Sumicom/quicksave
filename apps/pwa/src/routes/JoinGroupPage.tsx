@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { FormattedMessage, useIntl } from 'react-intl';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { encodeBase64 } from '@sumicom/quicksave-shared';
 import { ErrorBox } from '../components/ui/ErrorBox';
@@ -13,6 +14,7 @@ import { applyMasterSecret } from '../lib/secureStorage';
 type Phase = 'parsing' | 'waiting' | 'received' | 'error';
 
 export function JoinGroupPage() {
+  const intl = useIntl();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const [phase, setPhase] = useState<Phase>('parsing');
@@ -27,7 +29,7 @@ export function JoinGroupPage() {
     (async () => {
       try {
         const k = params.get('k');
-        if (!k) throw new Error('邀請連結缺少 k= 金鑰參數');
+        if (!k) throw new Error(intl.formatMessage({ id: 'join.error.missingK' }));
         const transport = getDefaultPairTransport();
         const client = new PairClient(transport);
         const join = await client.acceptInvite({ eA_pubB64: fromUrlSafe(k) });
@@ -78,27 +80,32 @@ export function JoinGroupPage() {
   return (
     <div className="min-h-full flex items-center justify-center p-4">
       <div className="w-full max-w-md bg-slate-800 rounded-lg border border-slate-700 p-6 space-y-4">
-        <h1 className="text-lg font-semibold">加入 Quicksave 群組</h1>
+        <h1 className="text-lg font-semibold">
+          <FormattedMessage id="join.title" />
+        </h1>
 
         {phase === 'parsing' && (
           <div className="flex items-center gap-2 text-slate-400">
-            <Spinner color="border-blue-500" /> 解析邀請…
+            <Spinner color="border-blue-500" /> <FormattedMessage id="join.parsing" />
           </div>
         )}
 
         {phase === 'waiting' && (
           <>
             <p className="text-sm text-slate-400">
-              在原本的裝置上輸入以下 6 碼以完成配對：
+              <FormattedMessage id="join.waiting.prompt" />
             </p>
             <div className="bg-slate-900 border border-slate-700 rounded-md py-6 text-center font-mono text-5xl tracking-[0.35em]">
               {sas}
             </div>
             <div className="text-xs text-slate-500 text-right">
-              剩餘 {Math.ceil(sasRemainingMs / 1000)}s（到期會自動換一組）
+              <FormattedMessage
+                id="join.waiting.sasRemaining"
+                values={{ seconds: Math.ceil(sasRemainingMs / 1000) }}
+              />
             </div>
             <div className="flex items-center gap-2 text-xs text-slate-500">
-              <Spinner /> 正在等待原裝置確認…
+              <Spinner /> <FormattedMessage id="join.waiting.waitingConfirmation" />
             </div>
             <button
               type="button"
@@ -110,7 +117,7 @@ export function JoinGroupPage() {
               }}
               className="w-full py-2 px-4 text-sm bg-slate-700 hover:bg-slate-600 rounded-md"
             >
-              取消配對
+              <FormattedMessage id="join.waiting.cancel" />
             </button>
           </>
         )}
@@ -118,14 +125,14 @@ export function JoinGroupPage() {
         {phase === 'received' && (
           <div className="space-y-3">
             <div className="p-3 bg-emerald-500/20 border border-emerald-500/50 rounded text-emerald-300 text-sm">
-              配對成功！主金鑰已寫入本機。
+              <FormattedMessage id="join.received.success" />
             </div>
             <button
               type="button"
               onClick={() => navigate('/', { replace: true })}
               className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 rounded-md font-medium"
             >
-              前往主畫面
+              <FormattedMessage id="join.received.goHome" />
             </button>
           </div>
         )}
@@ -138,7 +145,7 @@ export function JoinGroupPage() {
               onClick={() => navigate('/', { replace: true })}
               className="w-full py-2 px-4 bg-slate-700 hover:bg-slate-600 rounded-md text-sm"
             >
-              返回主畫面
+              <FormattedMessage id="join.error.goHome" />
             </button>
           </div>
         )}
