@@ -134,6 +134,72 @@ interface ExtendedWebSocket extends WebSocket {
   ip: string;
 }
 
+// In-memory pair mailbox store for dev (mirrors apps/relay/src/pairStore.ts).
+interface DevPairSlot {
+  id: string;
+  data: string;
+  kind?: string;
+  createdAt: number;
+}
+interface DevPairMailbox {
+  slots: DevPairSlot[];
+  expiresAt: number;
+  listeners: Set<(slot: DevPairSlot) => void>;
+}
+class DevPairStore {
+  private mailboxes = new Map<string, DevPairMailbox>();
+  private readonly ttlMs = 5 * 60_000;
+  private readonly maxSlots = 64;
+  private readonly maxDataSize = 8192;
+  private nextId = 1;
+
+  postSlot(addr: string, input: { data: string; kind?: string }): DevPairSlot {
+    if (input.data.length > this.maxDataSize) throw new Error('data too large');
+    const now = Date.now();
+    let mb = this.mailboxes.get(addr);
+    if (!mb) {
+      mb = { slots: [], expiresAt: now + this.ttlMs, listeners: new Set() };
+      this.mailboxes.set(addr, mb);
+    }
+    if (mb.expiresAt < now + this.ttlMs) mb.expiresAt = now + this.ttlMs;
+    if (mb.slots.length >= this.maxSlots) throw new Error('mailbox full');
+    const slot: DevPairSlot = {
+      id: `s-${this.nextId++}-${now}`,
+      data: input.data,
+      kind: input.kind,
+      createdAt: now,
+    };
+    mb.slots.push(slot);
+    for (const fn of mb.listeners) {
+      try { fn(slot); } catch { /* ignore */ }
+    }
+    return slot;
+  }
+  getSlots(addr: string): DevPairSlot[] {
+    const mb = this.mailboxes.get(addr);
+    if (!mb) return [];
+    if (mb.expiresAt <= Date.now()) { this.mailboxes.delete(addr); return []; }
+    return mb.slots.slice();
+  }
+  deleteMailbox(addr: string): void {
+    const mb = this.mailboxes.get(addr);
+    if (mb) { mb.listeners.clear(); mb.slots = []; }
+    this.mailboxes.delete(addr);
+  }
+  subscribe(addr: string, onSlot: (s: DevPairSlot) => void): () => void {
+    let mb = this.mailboxes.get(addr);
+    if (!mb) {
+      mb = { slots: [], expiresAt: Date.now() + this.ttlMs, listeners: new Set() };
+      this.mailboxes.set(addr, mb);
+    }
+    mb.listeners.add(onSlot);
+    return () => {
+      const cur = this.mailboxes.get(addr);
+      if (cur) cur.listeners.delete(onSlot);
+    };
+  }
+}
+
 // In-memory sync store for dev
 class SyncStore {
   private entries = new Map<string, { data: string; isTombstone: boolean }>();
@@ -163,6 +229,7 @@ export function signalingServerPlugin(): Plugin {
   let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   let connections: ConnectionManager | null = null;
   let syncStore: SyncStore | null = null;
+  let pairStore: DevPairStore | null = null;
 
   return {
     name: 'vite-plugin-signaling',
@@ -171,17 +238,95 @@ export function signalingServerPlugin(): Plugin {
     configureServer(viteServer: ViteDevServer) {
       connections = new ConnectionManager();
       syncStore = new SyncStore();
+      pairStore = new DevPairStore();
+
+      // Add pair-request HTTP endpoints as Vite middleware
+      viteServer.middlewares.use((req, res, next) => {
+        const pairMatch = req.url?.match(
+          /^\/pair-requests\/([A-Za-z0-9_-]{8,128})(\/subscribe)?(?:\?.*)?$/,
+        );
+        if (!pairMatch) return next();
+        const addr = pairMatch[1];
+        const subscribe = !!pairMatch[2];
+
+        if (subscribe && req.method === 'GET') {
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+            'X-Accel-Buffering': 'no',
+          });
+          for (const slot of pairStore!.getSlots(addr)) {
+            res.write(`event: slot\ndata: ${JSON.stringify(slot)}\n\n`);
+          }
+          const unsub = pairStore!.subscribe(addr, (slot) => {
+            res.write(`event: slot\ndata: ${JSON.stringify(slot)}\n\n`);
+          });
+          const ping = setInterval(() => res.write(': ping\n\n'), 25_000);
+          const teardown = () => {
+            clearInterval(ping);
+            unsub();
+            try { res.end(); } catch { /* ignore */ }
+          };
+          req.on('close', teardown);
+          req.on('error', teardown);
+          return;
+        }
+
+        if (req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ slots: pairStore!.getSlots(addr) }));
+          return;
+        }
+        if (req.method === 'POST') {
+          const chunks: Buffer[] = [];
+          req.on('data', (c: Buffer) => chunks.push(c));
+          req.on('end', () => {
+            try {
+              const body = Buffer.concat(chunks).toString('utf-8');
+              const parsed = JSON.parse(body) as { data?: unknown; kind?: unknown };
+              if (typeof parsed.data !== 'string' || parsed.data.length === 0) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'data required' }));
+                return;
+              }
+              const kind = typeof parsed.kind === 'string' ? parsed.kind : undefined;
+              const slot = pairStore!.postSlot(addr, { data: parsed.data, kind });
+              res.writeHead(201, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ id: slot.id }));
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              const status = msg.includes('full') ? 409 : msg.includes('too large') ? 413 : 400;
+              res.writeHead(status, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: msg }));
+            }
+          });
+          return;
+        }
+        if (req.method === 'DELETE') {
+          pairStore!.deleteMailbox(addr);
+          res.writeHead(204);
+          res.end();
+          return;
+        }
+        res.writeHead(405);
+        res.end('Method Not Allowed');
+      });
 
       // Add sync HTTP endpoints as Vite middleware
       viteServer.middlewares.use((req, res, next) => {
-        const syncMatch = req.url?.match(/^\/sync\/([a-zA-Z0-9_-]{8,64})(\/tombstone)?$/);
+        const syncMatch = req.url?.match(
+          /^\/sync\/([a-zA-Z0-9_-]{8,64})(\/tombstone|\/lock)?$/,
+        );
         if (!syncMatch) return next();
 
         const keyHash = syncMatch[1];
-        const isTombstoneRoute = !!syncMatch[2];
+        const suffix = syncMatch[2];
+        const subpath: 'blob' | 'tombstone' | 'lock' =
+          suffix === '/tombstone' ? 'tombstone' : suffix === '/lock' ? 'lock' : 'blob';
 
         // GET /sync/:keyHash
-        if (req.method === 'GET' && !isTombstoneRoute) {
+        if (req.method === 'GET' && subpath === 'blob') {
           const entry = syncStore!.get(keyHash);
           if (!entry) {
             res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -198,48 +343,81 @@ export function signalingServerPlugin(): Plugin {
           return;
         }
 
-        // PUT /sync/:keyHash or PUT /sync/:keyHash/tombstone
-        if (req.method === 'PUT') {
-          const chunks: Buffer[] = [];
-          req.on('data', (chunk: Buffer) => chunks.push(chunk));
-          req.on('end', () => {
-            const body = Buffer.concat(chunks).toString('utf-8');
-
-            if (isTombstoneRoute) {
-              try {
-                syncStore!.putTombstone(keyHash, body);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ ok: true }));
-              } catch (err: unknown) {
-                const message = err instanceof Error ? err.message : 'Unknown error';
-                res.writeHead(409, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: message }));
-              }
-            } else {
-              try {
-                syncStore!.put(keyHash, body);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ ok: true }));
-              } catch (err: unknown) {
-                const message = err instanceof Error ? err.message : 'Unknown error';
-                if (message.includes('tombstone')) {
-                  const entry = syncStore!.get(keyHash);
-                  res.writeHead(410, { 'Content-Type': 'application/json' });
-                  res.end(JSON.stringify({ error: 'Tombstone exists', type: 'tombstone', data: entry?.data }));
-                } else if (message.includes('max size')) {
-                  res.writeHead(413, { 'Content-Type': 'application/json' });
-                  res.end(JSON.stringify({ error: message }));
-                } else {
-                  res.writeHead(500, { 'Content-Type': 'application/json' });
-                  res.end(JSON.stringify({ error: message }));
-                }
-              }
-            }
-          });
+        const isWrite =
+          (req.method === 'PUT' && (subpath === 'blob' || subpath === 'tombstone')) ||
+          (req.method === 'DELETE' && subpath === 'lock');
+        if (!isWrite) {
+          res.writeHead(405);
+          res.end('Method Not Allowed');
           return;
         }
 
-        next();
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer) => chunks.push(chunk));
+        req.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf-8');
+          // Dev server accepts SignedSyncEnvelope bodies but skips Ed25519
+          // verification — nothing else talks to it. We only need to pull
+          // `ciphertext` out for the write actions.
+          let envelope: { action?: string; ciphertext?: string; sigPubkey?: string } | null = null;
+          try {
+            envelope = JSON.parse(body);
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid JSON' }));
+            return;
+          }
+          if (!envelope || typeof envelope !== 'object') {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'invalid envelope' }));
+            return;
+          }
+
+          if (subpath === 'lock') {
+            // Dev store has no mutex — always report released=false.
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ released: false }));
+            return;
+          }
+
+          const ciphertext = envelope.ciphertext;
+          if (typeof ciphertext !== 'string' || ciphertext.length === 0) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'ciphertext required' }));
+            return;
+          }
+
+          if (subpath === 'tombstone') {
+            try {
+              syncStore!.putTombstone(keyHash, ciphertext);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: true }));
+            } catch (err: unknown) {
+              const message = err instanceof Error ? err.message : 'Unknown error';
+              res.writeHead(409, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: message }));
+            }
+          } else {
+            try {
+              syncStore!.put(keyHash, ciphertext);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: true }));
+            } catch (err: unknown) {
+              const message = err instanceof Error ? err.message : 'Unknown error';
+              if (message.includes('tombstone')) {
+                const entry = syncStore!.get(keyHash);
+                res.writeHead(410, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Tombstone exists', type: 'tombstone', data: entry?.data }));
+              } else if (message.includes('max size')) {
+                res.writeHead(413, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: message }));
+              } else {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: message }));
+              }
+            }
+          }
+        });
       });
 
       // Wait for httpServer to be available

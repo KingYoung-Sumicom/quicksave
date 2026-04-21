@@ -5,7 +5,8 @@ import { mkdir, writeFile, rm, readFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { simpleGit } from 'simple-git';
-import { resetSessionRegistry } from '../ai/sessionRegistry.js';
+import { getSessionRegistry, resetSessionRegistry } from '../ai/sessionRegistry.js';
+import type { SessionRegistryEntry } from '@sumicom/quicksave-shared';
 import { setQuicksaveDir } from '../service/singleton.js';
 
 // Prevent tests from reading/writing the real ~/.quicksave/agent.json
@@ -740,6 +741,112 @@ describe('MessageHandler', () => {
       } finally {
         await rm(codingPath, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('handleMessage - project:delete', () => {
+    let projectDir: string;
+
+    beforeEach(async () => {
+      projectDir = join(tmpdir(), `qs-delete-project-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      await mkdir(projectDir, { recursive: true });
+
+      // Register the project as a managed coding path so its removal is visible
+      const addMsg = createMessage('agent:add-coding-path', { path: projectDir });
+      const addResp = await handler.handleMessage(addMsg);
+      expect((addResp.payload as any).success).toBe(true);
+    });
+
+    afterEach(async () => {
+      try {
+        await rm(projectDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    });
+
+    function seedEntry(sessionId: string, lastAccessedAt = Date.now()): SessionRegistryEntry {
+      const entry: SessionRegistryEntry = {
+        sessionId,
+        cwd: projectDir,
+        title: `session-${sessionId}`,
+        createdAt: lastAccessedAt - 1000,
+        lastAccessedAt,
+      };
+      getSessionRegistry().upsertEntry(entry);
+      return entry;
+    }
+
+    it('archives all active sessions for the cwd and returns the count', async () => {
+      seedEntry('sess-a', Date.now() - 2000);
+      seedEntry('sess-b', Date.now() - 1000);
+
+      const historyEvents: Array<{ cwd: string; entry: SessionRegistryEntry; action: string }> = [];
+      handler.onHistoryUpdated = (cwd, entry, action) => {
+        historyEvents.push({ cwd, entry, action });
+      };
+
+      const msg = createMessage('project:delete', { cwd: projectDir });
+      const response = await handler.handleMessage(msg);
+
+      expect(response.type).toBe('project:delete:response');
+      expect(response.id).toBe(msg.id);
+      expect((response.payload as any).success).toBe(true);
+      expect((response.payload as any).archivedCount).toBe(2);
+
+      // Entries gone from the active view
+      const registry = getSessionRegistry();
+      expect(registry.getEntriesForProject(projectDir)).toHaveLength(0);
+
+      // Still discoverable as archived
+      const archivedIds = registry.listArchivedEntries(projectDir).map((e) => e.sessionId).sort();
+      expect(archivedIds).toEqual(['sess-a', 'sess-b']);
+
+      // Each archive fires an onHistoryUpdated('upsert') with archived=true
+      expect(historyEvents).toHaveLength(2);
+      for (const ev of historyEvents) {
+        expect(ev.cwd).toBe(projectDir);
+        expect(ev.action).toBe('upsert');
+        expect(ev.entry.archived).toBe(true);
+      }
+    });
+
+    it('removes the cwd from managed coding paths', async () => {
+      const msg = createMessage('project:delete', { cwd: projectDir });
+      const response = await handler.handleMessage(msg);
+      expect((response.payload as any).success).toBe(true);
+
+      const listResp = await handler.handleMessage(
+        createMessage('agent:list-coding-paths', {}),
+      );
+      const paths = (listResp.payload as any).paths as Array<{ path: string }>;
+      expect(paths.some((p) => p.path === projectDir)).toBe(false);
+    });
+
+    it('returns success with archivedCount 0 when the project has no active sessions', async () => {
+      const msg = createMessage('project:delete', { cwd: projectDir });
+      const response = await handler.handleMessage(msg);
+
+      expect((response.payload as any).success).toBe(true);
+      expect((response.payload as any).archivedCount).toBe(0);
+    });
+
+    it('drops the project from project:list-summaries after delete', async () => {
+      seedEntry('sess-only');
+
+      const before = await handler.handleMessage(
+        createMessage('project:list-summaries', {}),
+      );
+      const beforeProjects = (before.payload as any).projects as Array<{ cwd: string }>;
+      expect(beforeProjects.some((p) => p.cwd === projectDir)).toBe(true);
+
+      await handler.handleMessage(createMessage('project:delete', { cwd: projectDir }));
+
+      const after = await handler.handleMessage(
+        createMessage('project:list-summaries', {}),
+      );
+      const afterProjects = (after.payload as any).projects as Array<{ cwd: string }>;
+      expect(afterProjects.some((p) => p.cwd === projectDir)).toBe(false);
     });
   });
 });

@@ -97,6 +97,8 @@ import {
   CodexListModelsResponsePayload,
   ProjectListSummariesResponsePayload,
   ProjectSummary,
+  ProjectDeleteRequestPayload,
+  ProjectDeleteResponsePayload,
   ProjectListReposRequestPayload,
   ProjectListReposResponsePayload,
   ProjectRepo,
@@ -501,6 +503,8 @@ export class MessageHandler {
           return this.handleListProjectSummaries(message);
         case 'project:list-repos':
           return await this.handleListProjectRepos(message as Message<ProjectListReposRequestPayload>);
+        case 'project:delete':
+          return this.handleDeleteProject(message as Message<ProjectDeleteRequestPayload>);
         case 'push:subscription-offer':
           return this.handlePushSubscriptionOffer(message as Message<PushSubscriptionOfferPayload>);
         default:
@@ -2086,6 +2090,42 @@ export class MessageHandler {
     const response = createMessage<ProjectListReposResponsePayload>(
       'project:list-repos:response',
       { repos },
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  /**
+   * Hide a project without touching the filesystem. Archives every active
+   * session under `cwd` (each archive fires `/sessions/history` so PWAs drop
+   * the sessions from their live view) and removes the cwd from managed
+   * coding paths so it stops surfacing as an empty workspace. Archived
+   * session JSON stays on disk and can be restored individually.
+   */
+  private handleDeleteProject(
+    message: Message<ProjectDeleteRequestPayload>,
+  ): Message<ProjectDeleteResponsePayload> {
+    const { cwd } = message.payload;
+    const registry = getSessionRegistry();
+    const active = registry.getEntriesForProject(cwd);
+
+    let archivedCount = 0;
+    for (const entry of active) {
+      const updated = registry.updateEntry(cwd, entry.sessionId, { archived: true });
+      if (updated) {
+        archivedCount++;
+        this.onHistoryUpdated?.(cwd, updated, 'upsert');
+      }
+    }
+
+    if (this.codingPaths.has(cwd)) {
+      this.codingPaths.delete(cwd);
+      removeManagedCodingPath(cwd);
+    }
+
+    const response = createMessage<ProjectDeleteResponsePayload>(
+      'project:delete:response',
+      { success: true, archivedCount },
     );
     response.id = message.id;
     return response;

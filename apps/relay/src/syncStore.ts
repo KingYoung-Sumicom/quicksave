@@ -6,14 +6,73 @@ interface SyncEntry {
 
 interface SyncStoreConfig {
   maxBlobSize: number; // bytes
+  lockTtlMs?: number;
+  now?: () => number;
+}
+
+export interface MailboxLock {
+  sigPubkey: string;
+  acquiredAt: number;
+  expiresAt: number;
 }
 
 export class SyncStore {
   private entries = new Map<string, SyncEntry>();
-  private config: SyncStoreConfig;
+  private locks = new Map<string, MailboxLock>();
+  private config: Required<Omit<SyncStoreConfig, 'now'>> & { now: () => number };
 
   constructor(config: SyncStoreConfig = { maxBlobSize: 8192 }) {
-    this.config = config;
+    this.config = {
+      maxBlobSize: config.maxBlobSize,
+      lockTtlMs: config.lockTtlMs ?? 10_000,
+      now: config.now ?? Date.now,
+    };
+  }
+
+  /**
+   * Attempt to acquire the per-mailbox write lock. Returns `{ ok: true }` on
+   * success, `{ ok: false, heldBy }` if another key holds it. Re-acquisition
+   * by the same `sigPubkey` is idempotent and refreshes the TTL.
+   */
+  tryAcquireLock(
+    keyHash: string,
+    sigPubkey: string,
+  ): { ok: true; expiresAt: number } | { ok: false; heldBy: MailboxLock } {
+    const now = this.config.now();
+    const existing = this.locks.get(keyHash);
+    if (existing && existing.expiresAt > now && existing.sigPubkey !== sigPubkey) {
+      return { ok: false, heldBy: existing };
+    }
+    const expiresAt = now + this.config.lockTtlMs;
+    this.locks.set(keyHash, { sigPubkey, acquiredAt: now, expiresAt });
+    return { ok: true, expiresAt };
+  }
+
+  /**
+   * Release the lock if (and only if) held by `sigPubkey`. Returns true if
+   * a lock was released, false otherwise. Expired locks count as released.
+   */
+  releaseLock(keyHash: string, sigPubkey: string): boolean {
+    const existing = this.locks.get(keyHash);
+    if (!existing) return false;
+    if (existing.expiresAt <= this.config.now()) {
+      this.locks.delete(keyHash);
+      return true;
+    }
+    if (existing.sigPubkey !== sigPubkey) return false;
+    this.locks.delete(keyHash);
+    return true;
+  }
+
+  /** For debug/stats only. */
+  peekLock(keyHash: string): MailboxLock | null {
+    const existing = this.locks.get(keyHash);
+    if (!existing) return null;
+    if (existing.expiresAt <= this.config.now()) {
+      this.locks.delete(keyHash);
+      return null;
+    }
+    return existing;
   }
 
   get(keyHash: string): { type: 'blob' | 'tombstone'; data: string } | null {
@@ -59,6 +118,16 @@ export class SyncStore {
       if (entry.isTombstone) tombstones++;
       else blobs++;
     }
-    return { blobs, tombstones, total: this.entries.size };
+    const now = this.config.now();
+    let activeLocks = 0;
+    for (const lock of this.locks.values()) {
+      if (lock.expiresAt > now) activeLocks++;
+    }
+    return {
+      blobs,
+      tombstones,
+      total: this.entries.size,
+      locks: activeLocks,
+    };
   }
 }

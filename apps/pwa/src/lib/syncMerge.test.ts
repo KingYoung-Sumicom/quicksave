@@ -28,7 +28,6 @@ function makePayload(overrides: Partial<SyncPayloadV3> = {}): SyncPayloadV3 {
     apiKey: null,
     machines: [],
     machineTombstones: {},
-    pinnedProjects: {},
     exportedAt: '2026-04-18T00:00:00.000Z',
     ...overrides,
   };
@@ -181,29 +180,6 @@ describe('mergeSyncPayloads', () => {
     });
   });
 
-  describe('pinnedProjects', () => {
-    it('LWW per projectId', () => {
-      const a = makePayload({
-        pinnedProjects: { p1: { pinned: true, updatedAt: 100 } },
-      });
-      const b = makePayload({
-        pinnedProjects: { p1: { pinned: false, updatedAt: 200 } },
-      });
-      const merged = mergeSyncPayloads(a, b);
-      expect(merged.pinnedProjects.p1).toEqual({ pinned: false, updatedAt: 200 });
-    });
-
-    it('unions projectIds only on one side', () => {
-      const a = makePayload({ pinnedProjects: { p1: { pinned: true, updatedAt: 100 } } });
-      const b = makePayload({ pinnedProjects: { p2: { pinned: true, updatedAt: 200 } } });
-      const merged = mergeSyncPayloads(a, b);
-      expect(merged.pinnedProjects).toEqual({
-        p1: { pinned: true, updatedAt: 100 },
-        p2: { pinned: true, updatedAt: 200 },
-      });
-    });
-  });
-
   describe('masterSecret and apiKey', () => {
     it('LWW when both sides present', () => {
       const a = makePayload({ apiKey: { value: 'old', updatedAt: 100 } });
@@ -230,11 +206,9 @@ describe('mergeSyncPayloads', () => {
     it('is commutative for independent edits (order of merge does not matter)', () => {
       const a = makePayload({
         machines: [makeMachine({ agentId: 'x', nickname: 'A-edit', updatedAt: 100 })],
-        pinnedProjects: { p1: { pinned: true, updatedAt: 100 } },
       });
       const b = makePayload({
         machines: [makeMachine({ agentId: 'y', nickname: 'B-edit', updatedAt: 100 })],
-        pinnedProjects: { p2: { pinned: true, updatedAt: 100 } },
       });
       const ab = mergeSyncPayloads(a, b);
       const ba = mergeSyncPayloads(b, a);
@@ -246,7 +220,6 @@ describe('mergeSyncPayloads', () => {
         machines: [
           makeMachine({ agentId: 'x', knownRepos: ['/r1', '/r2'], updatedAt: 100 }),
         ],
-        pinnedProjects: { p1: { pinned: true, updatedAt: 100 } },
         machineTombstones: { z: 50 },
       });
       const merged = mergeSyncPayloads(a, a);
@@ -318,20 +291,6 @@ describe('gossip convergence scenarios', () => {
       .toEqual(['new-from-A', 'new-from-C']);
   });
 
-  it('pin-vs-unpin race resolves by timestamp, propagates through gossip', () => {
-    // A pins at t=100; C unpins at t=200.
-    const a = makePayload({ pinnedProjects: { p: { pinned: true, updatedAt: 100 } } });
-    const c = makePayload({ pinnedProjects: { p: { pinned: false, updatedAt: 200 } } });
-
-    const b1 = mergeSyncPayloads(makePayload(), a);
-    const b2 = mergeSyncPayloads(b1, c);
-
-    expect(b2.pinnedProjects.p).toEqual({ pinned: false, updatedAt: 200 });
-
-    // Gossip back: A should now reflect the unpin.
-    const aFinal = mergeSyncPayloads(a, b2);
-    expect(aFinal.pinnedProjects.p.pinned).toBe(false);
-  });
 });
 
 describe('syncPayloadsEqual', () => {
@@ -352,12 +311,6 @@ describe('syncPayloadsEqual', () => {
     const b = makePayload({
       machines: [makeMachine({ agentId: 'x', nickname: 'two' })],
     });
-    expect(syncPayloadsEqual(a, b)).toBe(false);
-  });
-
-  it('detects differing pinned state', () => {
-    const a = makePayload({ pinnedProjects: { p: { pinned: true, updatedAt: 1 } } });
-    const b = makePayload({ pinnedProjects: { p: { pinned: false, updatedAt: 1 } } });
     expect(syncPayloadsEqual(a, b)).toBe(false);
   });
 });

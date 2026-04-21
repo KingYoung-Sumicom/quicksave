@@ -28,6 +28,11 @@ const {
   mockDecryptWithSharedSecret,
   mockParseMessage,
   mockSerializeMessage,
+  mockVerifyKeyExchangeV2Signature,
+  mockDecodeBase64,
+  mockIsPaired,
+  mockLoadConfig,
+  mockPinPeerPWA,
 } = vi.hoisted(() => {
   const { EventEmitter } = require('events');
 
@@ -61,6 +66,18 @@ const {
     mockDecryptWithSharedSecret: vi.fn().mockReturnValue(''),
     mockParseMessage: vi.fn(),
     mockSerializeMessage: vi.fn().mockReturnValue('{"type":"ping"}'),
+    mockVerifyKeyExchangeV2Signature: vi.fn().mockReturnValue(true),
+    mockDecodeBase64: vi.fn().mockReturnValue(new Uint8Array(32)),
+    mockIsPaired: vi.fn().mockReturnValue(false),
+    mockLoadConfig: vi.fn().mockReturnValue({
+      agentId: 'agent-test-001',
+      keyPair: { publicKey: 'pub-key-base64', secretKey: 'sec-key-base64' },
+      signKeyPair: { publicKey: 'sign-pk', secretKey: 'sign-sk' },
+      peerPWAPublicKey: null,
+      peerPWASignPublicKey: null,
+      signalingServer: 'wss://test.example.com',
+    }),
+    mockPinPeerPWA: vi.fn(),
   };
 });
 
@@ -68,15 +85,23 @@ vi.mock('../connection/relay.js', () => ({
   SignalingClient: MockSignalingClient,
 }));
 
+vi.mock('../config.js', () => ({
+  isPaired: mockIsPaired,
+  loadConfig: mockLoadConfig,
+  pinPeerPWA: mockPinPeerPWA,
+}));
+
 vi.mock('@sumicom/quicksave-shared', () => ({
   generateKeyPair: vi.fn(),
   encodeKeyPair: vi.fn(),
   decodeKeyPair: mockDecodeKeyPair,
+  decodeBase64: mockDecodeBase64,
   encryptWithSharedSecret: mockEncryptWithSharedSecret,
   decryptWithSharedSecret: mockDecryptWithSharedSecret,
   decryptDEK: mockDecryptDEK,
   parseMessage: mockParseMessage,
   serializeMessage: mockSerializeMessage,
+  verifyKeyExchangeV2Signature: mockVerifyKeyExchangeV2Signature,
   DEFAULT_AGENT: 'claude-code',
   DEFAULT_MODEL: 'claude-sonnet-4-20250514',
   matchAllowPattern: vi.fn().mockReturnValue(false),
@@ -148,6 +173,8 @@ function addPeer(conn: AgentConnection, address: string): void {
     version: 2,
     encryptedDEK: 'encrypted-dek-base64',
     timestamp: Date.now(),
+    sigPubkey: 'peer-sign-pubkey-base64',
+    signature: 'signature-base64',
   });
   sig.emit('data', keyExchange, address);
 }

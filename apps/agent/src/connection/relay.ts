@@ -14,6 +14,7 @@ export interface SignalingEvents {
   connected: () => void;
   disconnected: () => void;
   error: (error: Error) => void;
+  'tombstone-event': (keyHash: string, data: string) => void;
 }
 
 export class SignalingClient extends EventEmitter {
@@ -24,6 +25,8 @@ export class SignalingClient extends EventEmitter {
   private reconnectDelay = 1000;
   private maxReconnectDelay = 90000;
   private isConnected = false;
+  /** Active tombstone subscriptions keyed by `keyHash`. Replayed on reconnect. */
+  private tombstoneSubscriptions = new Set<string>();
 
   constructor(signalingServer: string, agentId: string) {
     super();
@@ -40,6 +43,14 @@ export class SignalingClient extends EventEmitter {
           this.isConnected = true;
           this.reconnectAttempts = 0;
           this.startHeartbeat();
+          // Replay active tombstone subscriptions so reconnects don't leave the
+          // agent silently unsubscribed after a relay restart or network blip.
+          for (const keyHash of this.tombstoneSubscriptions) {
+            this.sendRaw({
+              type: 'tombstone-subscribe',
+              payload: { keyHash },
+            });
+          }
           this.emit('connected');
           resolve();
         });
@@ -54,7 +65,16 @@ export class SignalingClient extends EventEmitter {
               return;
             }
             // Handle signaling messages (only specific types from signaling server)
-            const signalingTypes = ['peer-connected', 'peer-offline', 'data', 'bye', 'error', 'pwa-bye'];
+            const signalingTypes = [
+              'peer-connected',
+              'peer-offline',
+              'data',
+              'bye',
+              'error',
+              'pwa-bye',
+              'sync-updated',
+              'tombstone-event',
+            ];
             if (parsed.type && signalingTypes.includes(parsed.type)) {
               this.handleMessage(parsed as SignalingMessage);
               return;
@@ -114,6 +134,19 @@ export class SignalingClient extends EventEmitter {
         }
         break;
       }
+      case 'tombstone-event': {
+        const payload = message.payload as
+          | { keyHash?: string; data?: string }
+          | undefined;
+        if (
+          payload &&
+          typeof payload.keyHash === 'string' &&
+          typeof payload.data === 'string'
+        ) {
+          this.emit('tombstone-event', payload.keyHash, payload.data);
+        }
+        break;
+      }
     }
   }
 
@@ -159,6 +192,42 @@ export class SignalingClient extends EventEmitter {
         console.error('Failed to send signaling message:', error);
       });
     }
+  }
+
+  /**
+   * Send a plain-JSON signaling message without gzip wrapping. The relay's
+   * `onMessage` hook parses the envelope directly, so control messages like
+   * `tombstone-subscribe` must skip the `{z:...}` compression envelope.
+   */
+  private sendRaw(message: { type: string; payload?: unknown }): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(message));
+    }
+  }
+
+  /**
+   * Ask the relay to push `tombstone-event` for `keyHash`. Idempotent: the
+   * relay de-dupes per socket, and we track subscriptions locally so reconnects
+   * replay them automatically.
+   */
+  subscribeTombstone(keyHash: string): void {
+    this.tombstoneSubscriptions.add(keyHash);
+    this.sendRaw({
+      type: 'tombstone-subscribe',
+      payload: { keyHash },
+    });
+  }
+
+  /**
+   * Stop receiving push for `keyHash`. Best-effort — if the socket is down the
+   * relay will drop the subscription on disconnect anyway.
+   */
+  unsubscribeTombstone(keyHash: string): void {
+    this.tombstoneSubscriptions.delete(keyHash);
+    this.sendRaw({
+      type: 'tombstone-unsubscribe',
+      payload: { keyHash },
+    });
   }
 
   private attemptReconnect(): void {

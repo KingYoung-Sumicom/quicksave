@@ -38,6 +38,10 @@ const {
   addManagedCodingPath,
   rotateKeyPair,
   addLicense,
+  isPaired,
+  pinPeerPWA,
+  clearPeerPWA,
+  unlockPairingAndRotate,
 } = await import('./config.js');
 
 const CONFIG_DIR = '/fake/home/.quicksave';
@@ -134,11 +138,18 @@ describe('getOrCreateConfig', () => {
     consoleSpy.mockRestore();
   });
 
-  it('returns existing config when signaling server matches', () => {
-    mockConfigFile(baseConfig);
+  it('returns existing config when signaling server matches and peerPWA* already normalized', () => {
+    // Use a config that already has peerPWA* + closed explicitly set —
+    // otherwise getOrCreateConfig will backfill them and trigger a re-save.
+    const stableConfig = {
+      ...baseConfig,
+      peerPWAPublicKey: null,
+      peerPWASignPublicKey: null,
+      closed: false,
+    };
+    mockConfigFile(stableConfig);
     const config = getOrCreateConfig('wss://signal.quicksave.dev');
-    expect(config).toEqual(baseConfig);
-    // Should not re-save since server is the same
+    expect(config).toEqual(stableConfig);
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
   });
 
@@ -281,5 +292,199 @@ describe('rotateKeyPair', () => {
   it('throws when no config exists', () => {
     mockConfigFile(null);
     expect(() => rotateKeyPair()).toThrow('No config found');
+  });
+});
+
+describe('peer PWA TOFU pinning', () => {
+  it('createDefaultConfig sets peerPWA* fields to null', () => {
+    mockedExistsSync.mockReturnValue(true);
+    const config = createDefaultConfig('wss://signal.example.com');
+    expect(config.peerPWAPublicKey).toBeNull();
+    expect(config.peerPWASignPublicKey).toBeNull();
+  });
+
+  it('getOrCreateConfig backfills peerPWA* as null on pre-TOFU configs', () => {
+    // Legacy config missing the peerPWA* fields entirely.
+    mockConfigFile(baseConfig);
+    const config = getOrCreateConfig('wss://signal.quicksave.dev');
+    expect(config.peerPWAPublicKey).toBeNull();
+    expect(config.peerPWASignPublicKey).toBeNull();
+    // Should have rewritten the file with the normalized fields.
+    expect(mockedWriteFileSync).toHaveBeenCalled();
+    const saved = JSON.parse(
+      mockedWriteFileSync.mock.calls[0]![1] as string,
+    );
+    expect(saved.peerPWAPublicKey).toBeNull();
+    expect(saved.peerPWASignPublicKey).toBeNull();
+  });
+
+  it('getOrCreateConfig preserves already-pinned peerPWA* fields', () => {
+    mockConfigFile({
+      ...baseConfig,
+      peerPWAPublicKey: 'peer-pk',
+      peerPWASignPublicKey: 'peer-sign-pk',
+      closed: false,
+    });
+    const config = getOrCreateConfig('wss://signal.quicksave.dev');
+    expect(config.peerPWAPublicKey).toBe('peer-pk');
+    expect(config.peerPWASignPublicKey).toBe('peer-sign-pk');
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it('isPaired returns false on an unpaired config', () => {
+    mockConfigFile({
+      ...baseConfig,
+      peerPWAPublicKey: null,
+      peerPWASignPublicKey: null,
+    });
+    expect(isPaired()).toBe(false);
+  });
+
+  it('isPaired returns true when both peerPWA* fields are set', () => {
+    mockConfigFile({
+      ...baseConfig,
+      peerPWAPublicKey: 'peer-pk',
+      peerPWASignPublicKey: 'peer-sign-pk',
+    });
+    expect(isPaired()).toBe(true);
+  });
+
+  it('isPaired returns false when only one peerPWA field is set', () => {
+    mockConfigFile({
+      ...baseConfig,
+      peerPWAPublicKey: 'peer-pk',
+      peerPWASignPublicKey: null,
+    });
+    expect(isPaired()).toBe(false);
+  });
+
+  it('pinPeerPWA writes both fields on an unpaired config', () => {
+    mockConfigFile({
+      ...baseConfig,
+      peerPWAPublicKey: null,
+      peerPWASignPublicKey: null,
+    });
+    const result = pinPeerPWA('peer-pk', 'peer-sign-pk');
+    expect(result.peerPWAPublicKey).toBe('peer-pk');
+    expect(result.peerPWASignPublicKey).toBe('peer-sign-pk');
+    const saved = JSON.parse(
+      mockedWriteFileSync.mock.calls[0]![1] as string,
+    );
+    expect(saved.peerPWAPublicKey).toBe('peer-pk');
+    expect(saved.peerPWASignPublicKey).toBe('peer-sign-pk');
+  });
+
+  it('pinPeerPWA is idempotent when the same pair is already pinned', () => {
+    mockConfigFile({
+      ...baseConfig,
+      peerPWAPublicKey: 'peer-pk',
+      peerPWASignPublicKey: 'peer-sign-pk',
+    });
+    const result = pinPeerPWA('peer-pk', 'peer-sign-pk');
+    expect(result.peerPWAPublicKey).toBe('peer-pk');
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it('pinPeerPWA throws when a different pair is already pinned', () => {
+    mockConfigFile({
+      ...baseConfig,
+      peerPWAPublicKey: 'peer-pk',
+      peerPWASignPublicKey: 'peer-sign-pk',
+    });
+    expect(() => pinPeerPWA('other-pk', 'other-sign-pk')).toThrow(
+      /already paired/i,
+    );
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it('pinPeerPWA throws when no config exists', () => {
+    mockConfigFile(null);
+    expect(() => pinPeerPWA('peer-pk', 'peer-sign-pk')).toThrow(
+      /no config/i,
+    );
+  });
+
+  it('clearPeerPWA nulls peerPWA*, rotates the full identity, and sets closed: true', () => {
+    mockConfigFile({
+      ...baseConfig,
+      agentId: 'old-agent-id',
+      peerPWAPublicKey: 'peer-pk',
+      peerPWASignPublicKey: 'peer-sign-pk',
+      keyPair: { publicKey: 'old-pk', secretKey: 'old-sk' },
+      signKeyPair: { publicKey: 'old-sign-pk', secretKey: 'old-sign-sk' },
+      closed: false,
+    });
+    const result = clearPeerPWA();
+    expect(result.peerPWAPublicKey).toBeNull();
+    expect(result.peerPWASignPublicKey).toBeNull();
+    // Full identity rotation: agentId + X25519 + Ed25519 all fresh.
+    expect(result.agentId).toBe('mock-agent-id');
+    expect(result.keyPair).toEqual({ publicKey: 'mock-pk', secretKey: 'mock-sk' });
+    expect(result.signKeyPair).toEqual({ publicKey: 'mock-sign-pk', secretKey: 'mock-sign-sk' });
+    // Sticky closed flag persisted to disk so restart can't re-open TOFU.
+    expect(result.closed).toBe(true);
+    const saved = JSON.parse(
+      mockedWriteFileSync.mock.calls[0]![1] as string,
+    );
+    expect(saved.peerPWAPublicKey).toBeNull();
+    expect(saved.peerPWASignPublicKey).toBeNull();
+    expect(saved.agentId).toBe('mock-agent-id');
+    expect(saved.keyPair).toEqual({ publicKey: 'mock-pk', secretKey: 'mock-sk' });
+    expect(saved.signKeyPair).toEqual({ publicKey: 'mock-sign-pk', secretKey: 'mock-sign-sk' });
+    expect(saved.closed).toBe(true);
+  });
+
+  it('clearPeerPWA throws when no config exists', () => {
+    mockConfigFile(null);
+    expect(() => clearPeerPWA()).toThrow(/no config/i);
+  });
+});
+
+describe('unlockPairingAndRotate', () => {
+  it('clears peerPWA*, rotates identity, and lifts the closed gate', () => {
+    mockConfigFile({
+      ...baseConfig,
+      agentId: 'old-agent-id',
+      peerPWAPublicKey: null,
+      peerPWASignPublicKey: null,
+      keyPair: { publicKey: 'old-pk', secretKey: 'old-sk' },
+      signKeyPair: { publicKey: 'old-sign-pk', secretKey: 'old-sign-sk' },
+      closed: true,
+    });
+    const result = unlockPairingAndRotate();
+    expect(result.peerPWAPublicKey).toBeNull();
+    expect(result.peerPWASignPublicKey).toBeNull();
+    expect(result.agentId).toBe('mock-agent-id');
+    expect(result.keyPair).toEqual({ publicKey: 'mock-pk', secretKey: 'mock-sk' });
+    expect(result.signKeyPair).toEqual({ publicKey: 'mock-sign-pk', secretKey: 'mock-sign-sk' });
+    // Distinguishes it from clearPeerPWA: closed is cleared.
+    expect(result.closed).toBe(false);
+    const saved = JSON.parse(
+      mockedWriteFileSync.mock.calls[0]![1] as string,
+    );
+    expect(saved.closed).toBe(false);
+    expect(saved.agentId).toBe('mock-agent-id');
+    expect(saved.keyPair).toEqual({ publicKey: 'mock-pk', secretKey: 'mock-sk' });
+  });
+
+  it('still rotates identity even when called on an already-unpaired/open config', () => {
+    // User-driven re-pair from a paired state: every `quicksave pair`
+    // invocation should come with a fresh identity, regardless of prior state.
+    mockConfigFile({
+      ...baseConfig,
+      agentId: 'old-agent-id',
+      peerPWAPublicKey: 'peer-pk',
+      peerPWASignPublicKey: 'peer-sign-pk',
+      closed: false,
+    });
+    const result = unlockPairingAndRotate();
+    expect(result.agentId).toBe('mock-agent-id');
+    expect(result.peerPWAPublicKey).toBeNull();
+    expect(result.closed).toBe(false);
+  });
+
+  it('throws when no config exists', () => {
+    mockConfigFile(null);
+    expect(() => unlockPairingAndRotate()).toThrow(/no config/i);
   });
 });

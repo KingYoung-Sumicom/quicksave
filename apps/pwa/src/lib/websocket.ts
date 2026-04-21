@@ -7,6 +7,7 @@ import {
   encodeBase64,
   parseMessage,
   serializeMessage,
+  signKeyExchangeV2,
   verifyLicense,
   generateKeyPair,
   type Message,
@@ -18,6 +19,15 @@ import {
   type CodexModelInfo,
   type HandshakeAckPayload,
 } from '@sumicom/quicksave-shared';
+
+/** Provider for the PWA group's shared Ed25519 signing keypair, used to
+ *  sign the V2 key exchange so agents can TOFU-pin + verify it. Returns
+ *  `null` if the identity store hasn't finished initializing, in which
+ *  case the key exchange is deferred by one retry tick. */
+export type SigningKeyPairProvider = () => Promise<{
+  publicKey: Uint8Array;
+  secretKey: Uint8Array;
+} | null>;
 
 export type ConnectionStep = 'signaling' | 'waiting-for-agent' | 'key-exchange' | 'handshake';
 
@@ -93,15 +103,19 @@ export class WebSocketClient {
   private static readonly MAX_KEY_EXCHANGE_RETRIES = 5;
   private static readonly KEY_EXCHANGE_BASE_DELAY = 2000;
 
+  private getSigningKeyPair: SigningKeyPairProvider;
+
   constructor(
     signalingServer: string,
     identityPublicKey: string,
-    handlers: ConnectionEventHandler
+    handlers: ConnectionEventHandler,
+    getSigningKeyPair: SigningKeyPairProvider,
   ) {
     this.signalingServer = signalingServer;
     const suffix = Math.random().toString(36).slice(2, 10);
     this.connectionId = `${identityPublicKey}-${suffix}`;
     this.eventHandlers = handlers;
+    this.getSigningKeyPair = getSigningKeyPair;
 
     // Cross-tab relay: listen for push messages broadcast by the tab that owns the relay connection
     this.crossTabChannel = new BroadcastChannel('quicksave-agent-push');
@@ -337,7 +351,7 @@ export class WebSocketClient {
         if (online) {
           const session = this.sessions.get(agentId);
           if (session && !session.keyExchangeComplete) {
-            this.initiateKeyExchange(session);
+            void this.initiateKeyExchange(session);
           }
         } else {
           // Agent went offline — reset key exchange so we re-negotiate when it returns
@@ -373,7 +387,7 @@ export class WebSocketClient {
   // Key exchange
   // =========================================================================
 
-  private initiateKeyExchange(session: AgentSession): void {
+  private async initiateKeyExchange(session: AgentSession): Promise<void> {
     // Clear any existing retry timeout
     if (session.keyExchangeTimeout) {
       clearTimeout(session.keyExchangeTimeout);
@@ -382,15 +396,35 @@ export class WebSocketClient {
 
     this.eventHandlers.onConnectionStep('key-exchange', 1);
 
+    const signingKeyPair = await this.getSigningKeyPair();
+    if (!signingKeyPair) {
+      // Identity store not ready yet — defer to the retry tick so the agent
+      // isn't sent a pre-TOFU envelope that would be rejected.
+      console.warn('Signing keypair not yet available; deferring key exchange');
+      this.scheduleKeyExchangeRetry(session);
+      return;
+    }
+
     // V2 protocol: generate session DEK and encrypt it for the Agent
     session.sessionDEK = generateSessionDEK();
     const encryptedDEK = encryptDEK(session.sessionDEK, session.agentPublicKey);
+    const timestamp = Date.now();
+    const { sigPubkey, signature } = signKeyExchangeV2({
+      agentId: session.agentId,
+      encryptedDEK,
+      timestamp,
+      signingPublicKey: signingKeyPair.publicKey,
+      signingSecretKey: signingKeyPair.secretKey,
+      encodeBase64,
+    });
 
     const keyExchangePayload = JSON.stringify({
       type: 'key-exchange',
       version: 2,
       encryptedDEK,
-      timestamp: Date.now(),
+      timestamp,
+      sigPubkey,
+      signature,
     });
 
     // Wrap in routing envelope
@@ -412,19 +446,37 @@ export class WebSocketClient {
     const delay = WebSocketClient.KEY_EXCHANGE_BASE_DELAY * Math.pow(2, session.keyExchangeRetries);
     session.keyExchangeRetries++;
 
-    session.keyExchangeTimeout = setTimeout(() => {
+    session.keyExchangeTimeout = setTimeout(async () => {
       if (!session.keyExchangeComplete && this.sessions.has(session.agentId)) {
         this.eventHandlers.onConnectionStep('key-exchange', session.keyExchangeRetries + 1);
         console.log(`Retrying key exchange for agent ${session.agentId} (attempt ${session.keyExchangeRetries})`);
+
+        const signingKeyPair = await this.getSigningKeyPair();
+        if (!signingKeyPair) {
+          console.warn('Signing keypair still unavailable; will retry again');
+          this.scheduleKeyExchangeRetry(session);
+          return;
+        }
         // Regenerate DEK for retry
         session.sessionDEK = generateSessionDEK();
         const encryptedDEK = encryptDEK(session.sessionDEK, session.agentPublicKey);
+        const timestamp = Date.now();
+        const { sigPubkey, signature } = signKeyExchangeV2({
+          agentId: session.agentId,
+          encryptedDEK,
+          timestamp,
+          signingPublicKey: signingKeyPair.publicKey,
+          signingSecretKey: signingKeyPair.secretKey,
+          encodeBase64,
+        });
 
         const keyExchangePayload = JSON.stringify({
           type: 'key-exchange',
           version: 2,
           encryptedDEK,
-          timestamp: Date.now(),
+          timestamp,
+          sigPubkey,
+          signature,
         });
 
         this.sendRouted(session.agentId, keyExchangePayload);

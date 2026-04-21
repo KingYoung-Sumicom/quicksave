@@ -40,11 +40,6 @@ export interface Machine {
   cachedProjects: Record<string, CachedProjectData>;
 }
 
-export interface PinnedProjectState {
-  pinned: boolean;
-  updatedAt: number;
-}
-
 /** Fields that participate in device-to-device sync. Changes here bump updatedAt. */
 const SYNCED_MACHINE_FIELDS = new Set<keyof Machine>([
   'publicKey',
@@ -59,8 +54,6 @@ const TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 interface MachineStore {
   // State
   machines: Machine[];
-  /** projectId → { pinned, updatedAt }. pinned=false acts as a soft tombstone. */
-  pinnedProjects: Record<string, PinnedProjectState>;
   /** agentId → deletedAt (ms). Pruned after TOMBSTONE_TTL_MS. */
   machineTombstones: Record<string, number>;
 
@@ -78,18 +71,15 @@ interface MachineStore {
   cacheProjectData: (agentId: string, cwd: string, data: CachedProjectData) => void;
   cacheAllProjects: (agentId: string, projects: Array<{ cwd: string } & CachedProjectData>, managedPaths?: string[]) => void;
   cacheProjectRepos: (agentId: string, cwd: string, repos: CachedRepoInfo[]) => void;
-  pinProject: (projectId: string) => void;
-  unpinProject: (projectId: string) => void;
   removeProject: (agentId: string, cwd: string) => void;
   pruneTombstones: () => void;
   /**
-   * Replace the synced slices (machines, machineTombstones, pinnedProjects)
-   * in one atomic update. Used after merging a remote sync payload.
+   * Replace the synced slices (machines, machineTombstones) in one atomic
+   * update. Used after merging a remote sync payload.
    */
   applySyncedState: (state: {
     machines: Machine[];
     machineTombstones: Record<string, number>;
-    pinnedProjects: Record<string, PinnedProjectState>;
   }) => void;
 }
 
@@ -97,7 +87,6 @@ export const useMachineStore = create<MachineStore>()(
   persist(
     (set, get) => ({
       machines: [],
-      pinnedProjects: {},
       machineTombstones: {},
 
       addMachine: (machine) =>
@@ -261,22 +250,6 @@ export const useMachineStore = create<MachineStore>()(
           }),
         })),
 
-      pinProject: (projectId) =>
-        set((state) => ({
-          pinnedProjects: {
-            ...state.pinnedProjects,
-            [projectId]: { pinned: true, updatedAt: Date.now() },
-          },
-        })),
-
-      unpinProject: (projectId) =>
-        set((state) => ({
-          pinnedProjects: {
-            ...state.pinnedProjects,
-            [projectId]: { pinned: false, updatedAt: Date.now() },
-          },
-        })),
-
       removeProject: (agentId, cwd) =>
         set((state) => ({
           machines: state.machines.map((m) => {
@@ -294,7 +267,6 @@ export const useMachineStore = create<MachineStore>()(
         set(() => ({
           machines: next.machines,
           machineTombstones: next.machineTombstones,
-          pinnedProjects: next.pinnedProjects,
         })),
 
       pruneTombstones: () =>
@@ -304,21 +276,16 @@ export const useMachineStore = create<MachineStore>()(
           for (const [agentId, deletedAt] of Object.entries(state.machineTombstones)) {
             if (deletedAt >= cutoff) kept[agentId] = deletedAt;
           }
-          // Also prune soft-unpin tombstones older than TTL
-          const keptPins: Record<string, PinnedProjectState> = {};
-          for (const [id, entry] of Object.entries(state.pinnedProjects)) {
-            if (entry.pinned || entry.updatedAt >= cutoff) keptPins[id] = entry;
-          }
-          return { machineTombstones: kept, pinnedProjects: keptPins };
+          return { machineTombstones: kept };
         }),
     }),
     {
       name: 'quicksave-machines',
-      version: 4,
+      version: 5,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as {
           machines: Machine[];
-          pinnedProjects?: string[] | Record<string, PinnedProjectState>;
+          pinnedProjects?: unknown;
           machineTombstones?: Record<string, number>;
         };
         if (version < 2) {
@@ -332,24 +299,16 @@ export const useMachineStore = create<MachineStore>()(
             ...m,
             cachedProjects: (m as Machine).cachedProjects || {},
           }));
-          state.pinnedProjects = (state.pinnedProjects as string[]) || [];
         }
         if (version < 4) {
-          // Backfill updatedAt from addedAt (or 0 if missing).
           state.machines = state.machines.map((m) => ({
             ...m,
             updatedAt: (m as Machine).updatedAt ?? m.addedAt ?? 0,
           }));
-          // Convert pinnedProjects from string[] → Record<string, PinnedProjectState>.
-          const prev = state.pinnedProjects;
-          if (Array.isArray(prev)) {
-            const next: Record<string, PinnedProjectState> = {};
-            for (const id of prev) next[id] = { pinned: true, updatedAt: 0 };
-            state.pinnedProjects = next;
-          } else if (!prev) {
-            state.pinnedProjects = {};
-          }
           state.machineTombstones = state.machineTombstones || {};
+        }
+        if (version < 5) {
+          delete state.pinnedProjects;
         }
         return state;
       },
@@ -373,9 +332,3 @@ export const selectRecentMachines = (limit: number) => (state: MachineStore): Ma
     .filter((m) => m.lastConnectedAt !== null)
     .sort((a, b) => (b.lastConnectedAt ?? 0) - (a.lastConnectedAt ?? 0))
     .slice(0, limit);
-
-/** Project IDs that are currently pinned. */
-export const selectPinnedProjectIds = (state: MachineStore): string[] =>
-  Object.entries(state.pinnedProjects)
-    .filter(([, v]) => v.pinned)
-    .map(([id]) => id);

@@ -14,12 +14,24 @@ const {
   mockDecryptWithSharedSecret,
   mockParseMessage,
   mockSerializeMessage,
+  mockVerifyKeyExchangeV2Signature,
+  mockDecodeBase64,
+  mockIsPaired,
+  mockLoadConfig,
+  mockPinPeerPWA,
+  mockClearPeerPWA,
+  mockUnlockPairingAndRotate,
+  mockCheckTombstone,
 } = vi.hoisted(() => {
   const { EventEmitter } = require('events');
 
   class MockSignalingClient extends EventEmitter {
     connectCalled = false;
     sentMessages: Array<{ data: string; target: string | null }> = [];
+    // Tombstone push subscription tracking so tests can assert connection-level
+    // calls into the signaling layer.
+    subscribedKeys: string[] = [];
+    unsubscribedKeys: string[] = [];
 
     constructor(_url: string, _agentId: string) {
       super();
@@ -31,6 +43,14 @@ const {
 
     sendData(data: string, targetAddress: string | null): void {
       this.sentMessages.push({ data, target: targetAddress });
+    }
+
+    subscribeTombstone(keyHash: string): void {
+      this.subscribedKeys.push(keyHash);
+    }
+
+    unsubscribeTombstone(keyHash: string): void {
+      this.unsubscribedKeys.push(keyHash);
     }
 
     disconnect(): void {}
@@ -47,6 +67,32 @@ const {
     mockDecryptWithSharedSecret: vi.fn().mockReturnValue(''),
     mockParseMessage: vi.fn(),
     mockSerializeMessage: vi.fn().mockReturnValue('{"type":"ping"}'),
+    // Default: signature verify succeeds. Individual tests override.
+    mockVerifyKeyExchangeV2Signature: vi.fn().mockReturnValue(true),
+    mockDecodeBase64: vi.fn().mockReturnValue(new Uint8Array(32)),
+    // Default: agent is unpaired so TOFU path is taken. Tests override.
+    mockIsPaired: vi.fn().mockReturnValue(false),
+    mockLoadConfig: vi.fn().mockReturnValue({
+      agentId: 'agent-test-001',
+      keyPair: { publicKey: 'pub-key-base64', secretKey: 'sec-key-base64' },
+      signKeyPair: { publicKey: 'sign-pk', secretKey: 'sign-sk' },
+      peerPWAPublicKey: null,
+      peerPWASignPublicKey: null,
+      signalingServer: 'wss://test.example.com',
+    }),
+    mockPinPeerPWA: vi.fn(),
+    mockClearPeerPWA: vi.fn(),
+    mockUnlockPairingAndRotate: vi.fn().mockReturnValue({
+      agentId: 'agent-rotated-001',
+      keyPair: { publicKey: 'rotated-pub', secretKey: 'rotated-sec' },
+      signKeyPair: { publicKey: 'rotated-sign-pub', secretKey: 'rotated-sign-sec' },
+      peerPWAPublicKey: null,
+      peerPWASignPublicKey: null,
+      closed: false,
+      signalingServer: 'wss://test.example.com',
+    }),
+    // Default: no tombstone — tests override per case.
+    mockCheckTombstone: vi.fn().mockResolvedValue({ status: 'absent' }),
   };
 });
 
@@ -54,15 +100,39 @@ vi.mock('./relay.js', () => ({
   SignalingClient: MockSignalingClient,
 }));
 
+vi.mock('../config.js', () => ({
+  isPaired: mockIsPaired,
+  loadConfig: mockLoadConfig,
+  pinPeerPWA: mockPinPeerPWA,
+  clearPeerPWA: mockClearPeerPWA,
+  unlockPairingAndRotate: mockUnlockPairingAndRotate,
+}));
+
+// Minimal mocks for the helpers the production code now imports from
+// tombstoneCheck. Real logic is exercised in tombstoneCheck.test.ts — here we
+// just need the symbols to resolve. Using vi.hoisted so the variables are
+// initialised before vi.mock's hoisted factory runs.
+const { mockHashPublicKey, mockVerifyTombstonePayload } = vi.hoisted(() => ({
+  mockHashPublicKey: vi.fn((pk: string) => `hash-${pk.slice(0, 8)}`),
+  mockVerifyTombstonePayload: vi.fn(),
+}));
+vi.mock('../tombstoneCheck.js', () => ({
+  checkTombstone: mockCheckTombstone,
+  hashPublicKey: mockHashPublicKey,
+  verifyTombstonePayload: mockVerifyTombstonePayload,
+}));
+
 vi.mock('@sumicom/quicksave-shared', () => ({
   generateKeyPair: vi.fn(),
   encodeKeyPair: vi.fn(),
   decodeKeyPair: mockDecodeKeyPair,
+  decodeBase64: mockDecodeBase64,
   encryptWithSharedSecret: mockEncryptWithSharedSecret,
   decryptWithSharedSecret: mockDecryptWithSharedSecret,
   decryptDEK: mockDecryptDEK,
   parseMessage: mockParseMessage,
   serializeMessage: mockSerializeMessage,
+  verifyKeyExchangeV2Signature: mockVerifyKeyExchangeV2Signature,
 }));
 
 // Mock zlib — avoid real compression in unit tests
@@ -102,13 +172,19 @@ function getSignaling(conn: AgentConnection): MockSignalingClient {
 }
 
 /** Simulate a successful key exchange so the peer is registered. */
-function addPeer(conn: AgentConnection, address: string): void {
+function addPeer(
+  conn: AgentConnection,
+  address: string,
+  opts: { sigPubkey?: string; signature?: string } = {},
+): void {
   const sig = getSignaling(conn);
   const keyExchange = JSON.stringify({
     type: 'key-exchange',
     version: 2,
     encryptedDEK: 'encrypted-dek-base64',
     timestamp: Date.now(),
+    sigPubkey: opts.sigPubkey ?? 'peer-sign-pubkey-base64',
+    signature: opts.signature ?? 'signature-base64',
   });
   sig.emit('data', keyExchange, address);
 }
@@ -479,6 +555,628 @@ describe('AgentConnection', () => {
       sig.emit('error', new Error('ws failed'));
 
       expect(handler).toHaveBeenCalledWith(expect.any(Error));
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // TOFU peer PWA pinning (C2)
+  // -----------------------------------------------------------------------
+
+  // -----------------------------------------------------------------------
+  // Tombstone self-destruct
+  // -----------------------------------------------------------------------
+
+  describe('tombstone self-destruct', () => {
+    const PAIRED_CONFIG = {
+      agentId: 'agent-test-001',
+      keyPair: { publicKey: 'pub-key-base64', secretKey: 'sec-key-base64' },
+      signKeyPair: { publicKey: 'sign-pk', secretKey: 'sign-sk' },
+      peerPWAPublicKey: 'pinned-peer-pub',
+      peerPWASignPublicKey: 'pinned-peer-sign-pub',
+      signalingServer: 'wss://test.example.com',
+    };
+
+    it('returns null and does not call checkTombstone when unpaired', async () => {
+      mockIsPaired.mockReturnValue(false);
+
+      const result = await conn.runTombstoneCheck();
+
+      expect(result).toBeNull();
+      expect(mockCheckTombstone).not.toHaveBeenCalled();
+      expect(mockClearPeerPWA).not.toHaveBeenCalled();
+    });
+
+    it('returns null when loadConfig() returns null', async () => {
+      mockLoadConfig.mockReturnValueOnce(null);
+
+      const result = await conn.runTombstoneCheck();
+
+      expect(result).toBeNull();
+      expect(mockCheckTombstone).not.toHaveBeenCalled();
+    });
+
+    it('returns "absent" and does not self-destruct on paired-but-no-tombstone', async () => {
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+      mockCheckTombstone.mockResolvedValueOnce({ status: 'absent' });
+
+      const tombstonedHandler = vi.fn();
+      conn.on('tombstoned', tombstonedHandler);
+
+      const result = await conn.runTombstoneCheck();
+
+      expect(result).toEqual({ status: 'absent' });
+      expect(mockCheckTombstone).toHaveBeenCalledWith({
+        signalingServer: 'wss://test.example.com',
+        peerPWAPublicKey: 'pinned-peer-pub',
+        peerPWASignPublicKey: 'pinned-peer-sign-pub',
+      });
+      expect(tombstonedHandler).not.toHaveBeenCalled();
+      expect(mockClearPeerPWA).not.toHaveBeenCalled();
+    });
+
+    it('self-destructs on a "tombstoned" result: emits tombstoned, clears peer PWA, evicts active peers', async () => {
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+
+      // Register two live peers first (before we arm the tombstone response).
+      // Use matching sigPubkey since the test config is paired.
+      addPeer(conn, 'pwa:peer-aaa', { sigPubkey: 'pinned-peer-sign-pub' });
+      addPeer(conn, 'pwa:peer-bbb', { sigPubkey: 'pinned-peer-sign-pub' });
+      await flush();
+      expect(conn.getPeerCount()).toBe(2);
+
+      const tombstone = {
+        type: 'rotated' as const,
+        oldPublicKey: 'pinned-peer-pub',
+        signature: 'sig-base64',
+      };
+      mockCheckTombstone.mockResolvedValueOnce({
+        status: 'tombstoned',
+        tombstone,
+      });
+
+      const tombstonedHandler = vi.fn();
+      const disconnectedHandler = vi.fn();
+      conn.on('tombstoned', tombstonedHandler);
+      conn.on('disconnected', disconnectedHandler);
+
+      const result = await conn.runTombstoneCheck();
+
+      expect(result?.status).toBe('tombstoned');
+
+      // tombstoned event carries the oldPublicKey from the tombstone
+      expect(tombstonedHandler).toHaveBeenCalledTimes(1);
+      expect(tombstonedHandler).toHaveBeenCalledWith({
+        oldPublicKey: 'pinned-peer-pub',
+      });
+
+      // config-side self-destruct
+      expect(mockClearPeerPWA).toHaveBeenCalledTimes(1);
+
+      // All active peers evicted with a disconnected emit each
+      expect(conn.hasPeers()).toBe(false);
+      expect(conn.getPeerCount()).toBe(0);
+      expect(disconnectedHandler).toHaveBeenCalledWith('pwa:peer-aaa');
+      expect(disconnectedHandler).toHaveBeenCalledWith('pwa:peer-bbb');
+    });
+
+    it('does NOT self-destruct on "verify-failed" (bad tombstone is ignored)', async () => {
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+      mockCheckTombstone.mockResolvedValueOnce({
+        status: 'verify-failed',
+        reason: 'signature verify failed',
+      });
+
+      addPeer(conn, 'pwa:peer-aaa', { sigPubkey: 'pinned-peer-sign-pub' });
+      await flush();
+
+      const tombstonedHandler = vi.fn();
+      conn.on('tombstoned', tombstonedHandler);
+
+      const result = await conn.runTombstoneCheck();
+
+      expect(result?.status).toBe('verify-failed');
+      expect(tombstonedHandler).not.toHaveBeenCalled();
+      expect(mockClearPeerPWA).not.toHaveBeenCalled();
+      // Live peer still there
+      expect(conn.hasPeers()).toBe(true);
+    });
+
+    it('does NOT self-destruct on "error" (transient network failure)', async () => {
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+      mockCheckTombstone.mockResolvedValueOnce({
+        status: 'error',
+        error: 'ECONNREFUSED',
+      });
+
+      addPeer(conn, 'pwa:peer-aaa', { sigPubkey: 'pinned-peer-sign-pub' });
+      await flush();
+
+      const tombstonedHandler = vi.fn();
+      conn.on('tombstoned', tombstonedHandler);
+
+      const result = await conn.runTombstoneCheck();
+
+      expect(result?.status).toBe('error');
+      expect(tombstonedHandler).not.toHaveBeenCalled();
+      expect(mockClearPeerPWA).not.toHaveBeenCalled();
+      expect(conn.hasPeers()).toBe(true);
+    });
+
+    it('runs the tombstone check when signaling emits "connected"', async () => {
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+      mockCheckTombstone.mockResolvedValueOnce({ status: 'absent' });
+
+      const sig = getSignaling(conn);
+      sig.emit('connected');
+
+      // Let the microtask chain from the async handler settle.
+      await flush();
+      await flush();
+
+      expect(mockCheckTombstone).toHaveBeenCalledTimes(1);
+      expect(mockCheckTombstone).toHaveBeenCalledWith({
+        signalingServer: 'wss://test.example.com',
+        peerPWAPublicKey: 'pinned-peer-pub',
+        peerPWASignPublicKey: 'pinned-peer-sign-pub',
+      });
+    });
+  });
+
+  describe('TOFU peer PWA pinning', () => {
+    it('pins peer PWA sigPubkey on first successful exchange (unpaired → paired)', async () => {
+      // Use mockReturnValue (not Once) so every getState()/isPaired() call
+      // during the flow sees unpaired — the test describe above may have left
+      // mockIsPaired returning true, and vi.clearAllMocks only clears history.
+      mockIsPaired.mockReturnValue(false);
+
+      addPeer(conn, 'pwa:peer-aaa', { sigPubkey: 'first-sig-pubkey' });
+      await flush();
+
+      expect(conn.hasPeers()).toBe(true);
+      expect(mockPinPeerPWA).toHaveBeenCalledWith('peer-aaa', 'first-sig-pubkey');
+    });
+
+    it('rejects key exchange when sigPubkey does not match pinned value', async () => {
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue({
+        agentId: 'agent-test-001',
+        keyPair: { publicKey: 'pub-key-base64', secretKey: 'sec-key-base64' },
+        signKeyPair: { publicKey: 'sign-pk', secretKey: 'sign-sk' },
+        peerPWAPublicKey: 'peer-aaa',
+        peerPWASignPublicKey: 'pinned-sig-pubkey',
+        signalingServer: 'wss://test.example.com',
+      });
+
+      const errorHandler = vi.fn();
+      conn.on('error', errorHandler);
+
+      addPeer(conn, 'pwa:peer-aaa', { sigPubkey: 'different-sig-pubkey' });
+      await flush();
+
+      expect(conn.hasPeers()).toBe(false);
+      expect(errorHandler).toHaveBeenCalled();
+      expect(mockPinPeerPWA).not.toHaveBeenCalled();
+    });
+
+    it('accepts key exchange when sigPubkey matches pinned value', async () => {
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue({
+        agentId: 'agent-test-001',
+        keyPair: { publicKey: 'pub-key-base64', secretKey: 'sec-key-base64' },
+        signKeyPair: { publicKey: 'sign-pk', secretKey: 'sign-sk' },
+        peerPWAPublicKey: 'peer-aaa',
+        peerPWASignPublicKey: 'pinned-sig-pubkey',
+        signalingServer: 'wss://test.example.com',
+      });
+
+      addPeer(conn, 'pwa:peer-aaa', { sigPubkey: 'pinned-sig-pubkey' });
+      await flush();
+
+      expect(conn.hasPeers()).toBe(true);
+      // Already paired → should NOT call pinPeerPWA
+      expect(mockPinPeerPWA).not.toHaveBeenCalled();
+    });
+
+    it('rejects key exchange missing sigPubkey field', async () => {
+      const errorHandler = vi.fn();
+      conn.on('error', errorHandler);
+
+      const sig = getSignaling(conn);
+      const keyExchange = JSON.stringify({
+        type: 'key-exchange',
+        version: 2,
+        encryptedDEK: 'encrypted-dek-base64',
+        timestamp: Date.now(),
+        signature: 'signature-base64',
+        // no sigPubkey
+      });
+      sig.emit('data', keyExchange, 'pwa:peer-nosig');
+      await flush();
+
+      expect(conn.hasPeers()).toBe(false);
+      expect(errorHandler).toHaveBeenCalled();
+    });
+
+    it('rejects key exchange missing signature field', async () => {
+      const errorHandler = vi.fn();
+      conn.on('error', errorHandler);
+
+      const sig = getSignaling(conn);
+      const keyExchange = JSON.stringify({
+        type: 'key-exchange',
+        version: 2,
+        encryptedDEK: 'encrypted-dek-base64',
+        timestamp: Date.now(),
+        sigPubkey: 'peer-sign-pubkey-base64',
+        // no signature
+      });
+      sig.emit('data', keyExchange, 'pwa:peer-nosig');
+      await flush();
+
+      expect(conn.hasPeers()).toBe(false);
+      expect(errorHandler).toHaveBeenCalled();
+    });
+
+    it('rejects key exchange when signature verification fails', async () => {
+      mockVerifyKeyExchangeV2Signature.mockReturnValueOnce(false);
+
+      const errorHandler = vi.fn();
+      conn.on('error', errorHandler);
+
+      addPeer(conn, 'pwa:peer-badsig');
+      await flush();
+
+      expect(conn.hasPeers()).toBe(false);
+      expect(errorHandler).toHaveBeenCalled();
+      expect(mockPinPeerPWA).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('pair state (closed / paired / unpaired)', () => {
+    const PAIRED_CONFIG = {
+      agentId: 'agent-test-001',
+      keyPair: { publicKey: 'pub-key-base64', secretKey: 'sec-key-base64' },
+      signKeyPair: { publicKey: 'sign-pk', secretKey: 'sign-sk' },
+      peerPWAPublicKey: 'pinned-peer-pub',
+      peerPWASignPublicKey: 'pinned-peer-sign-pub',
+      closed: false,
+      signalingServer: 'wss://test.example.com',
+    };
+
+    const CLOSED_CONFIG = {
+      agentId: 'agent-rotated-001',
+      keyPair: { publicKey: 'rotated-pub', secretKey: 'rotated-sec' },
+      signKeyPair: { publicKey: 'rotated-sign-pub', secretKey: 'rotated-sign-sec' },
+      peerPWAPublicKey: null,
+      peerPWASignPublicKey: null,
+      closed: true,
+      signalingServer: 'wss://test.example.com',
+    };
+
+    const UNPAIRED_CONFIG = {
+      ...CLOSED_CONFIG,
+      closed: false,
+    };
+
+    const TOMBSTONE_RESULT = {
+      status: 'tombstoned' as const,
+      tombstone: {
+        type: 'rotated' as const,
+        oldPublicKey: 'pinned-peer-pub',
+        signature: 'sig-base64',
+      },
+    };
+
+    it('getState returns "unpaired" when config has no peerPWA* and closed is false', () => {
+      mockIsPaired.mockReturnValue(false);
+      mockLoadConfig.mockReturnValue(UNPAIRED_CONFIG);
+      expect(conn.getState()).toBe('unpaired');
+    });
+
+    it('getState returns "paired" when config has peerPWA* pinned', () => {
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+      expect(conn.getState()).toBe('paired');
+    });
+
+    it('getState returns "closed" when config.closed is true (persisted across restart)', () => {
+      mockLoadConfig.mockReturnValue(CLOSED_CONFIG);
+      // closed beats isPaired even if isPaired somehow returns true
+      mockIsPaired.mockReturnValue(true);
+      expect(conn.getState()).toBe('closed');
+    });
+
+    it('getState returns "closed" after a verified tombstone (clearPeerPWA persists closed=true)', async () => {
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+      mockCheckTombstone.mockResolvedValueOnce(TOMBSTONE_RESULT);
+      // Model clearPeerPWA side effect: after tombstone, loadConfig returns
+      // CLOSED_CONFIG (rotated + closed=true).
+      mockClearPeerPWA.mockImplementationOnce(() => {
+        mockLoadConfig.mockReturnValue(CLOSED_CONFIG);
+        return CLOSED_CONFIG;
+      });
+      conn.on('tombstoned', () => {});
+
+      await conn.runTombstoneCheck();
+
+      expect(mockClearPeerPWA).toHaveBeenCalledTimes(1);
+      expect(conn.getState()).toBe('closed');
+    });
+
+    it('unlockPairing rotates keys and drops state from closed back to unpaired', async () => {
+      // Start closed (post-tombstone state).
+      mockLoadConfig.mockReturnValue(CLOSED_CONFIG);
+      expect(conn.getState()).toBe('closed');
+
+      // unlockPairingAndRotate side effect: fresh UNPAIRED_CONFIG. Reset
+      // mockIsPaired to false so the subsequent getState() sees an unpaired
+      // config (UNPAIRED_CONFIG has peerPWAPublicKey=null).
+      mockUnlockPairingAndRotate.mockImplementationOnce(() => {
+        mockLoadConfig.mockReturnValue(UNPAIRED_CONFIG);
+        mockIsPaired.mockReturnValue(false);
+        return UNPAIRED_CONFIG;
+      });
+
+      const result = await conn.unlockPairing();
+
+      expect(mockUnlockPairingAndRotate).toHaveBeenCalledTimes(1);
+      expect(result.agentId).toBe('agent-rotated-001');
+      expect(conn.getState()).toBe('unpaired');
+    });
+
+    it('unlockPairing emits identity-rotated with the new agentId', async () => {
+      mockLoadConfig.mockReturnValue(CLOSED_CONFIG);
+      mockUnlockPairingAndRotate.mockImplementationOnce(() => {
+        mockLoadConfig.mockReturnValue(UNPAIRED_CONFIG);
+        mockIsPaired.mockReturnValue(false);
+        return UNPAIRED_CONFIG;
+      });
+      const rotatedHandler = vi.fn();
+      conn.on('identity-rotated', rotatedHandler);
+
+      await conn.unlockPairing();
+
+      expect(rotatedHandler).toHaveBeenCalledWith({ agentId: 'agent-rotated-001' });
+    });
+
+    it('handleKeyExchange refuses new peers while in closed state', async () => {
+      mockLoadConfig.mockReturnValue(CLOSED_CONFIG);
+
+      const errorHandler = vi.fn();
+      conn.on('error', errorHandler);
+
+      addPeer(conn, 'pwa:peer-new', { sigPubkey: 'fresh-sig-pk' });
+      await flush();
+
+      expect(conn.hasPeers()).toBe(false);
+      expect(errorHandler).toHaveBeenCalled();
+      // Pin MUST NOT happen while closed — confirms the gate is before TOFU.
+      expect(mockPinPeerPWA).not.toHaveBeenCalled();
+    });
+
+    it('after unlockPairing, handleKeyExchange proceeds again and can TOFU-pin', async () => {
+      mockLoadConfig.mockReturnValue(CLOSED_CONFIG);
+      mockUnlockPairingAndRotate.mockImplementationOnce(() => {
+        mockLoadConfig.mockReturnValue(UNPAIRED_CONFIG);
+        mockIsPaired.mockReturnValue(false);
+        return UNPAIRED_CONFIG;
+      });
+
+      await conn.unlockPairing();
+      expect(conn.getState()).toBe('unpaired');
+
+      addPeer(conn, 'pwa:peer-fresh', { sigPubkey: 'fresh-sig-pk' });
+      await flush();
+
+      expect(conn.hasPeers()).toBe(true);
+      expect(mockPinPeerPWA).toHaveBeenCalledWith('peer-fresh', 'fresh-sig-pk');
+    });
+
+    it('unlockPairing is callable from any state (always rotates)', async () => {
+      // Start paired — a user re-pairing deliberately, not a tombstone path.
+      mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+      mockIsPaired.mockReturnValue(true);
+      expect(conn.getState()).toBe('paired');
+
+      mockUnlockPairingAndRotate.mockImplementationOnce(() => {
+        mockLoadConfig.mockReturnValue(UNPAIRED_CONFIG);
+        mockIsPaired.mockReturnValue(false);
+        mockIsPaired.mockReturnValue(false);
+        return UNPAIRED_CONFIG;
+      });
+
+      await conn.unlockPairing();
+
+      expect(mockUnlockPairingAndRotate).toHaveBeenCalledTimes(1);
+      expect(conn.getState()).toBe('unpaired');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Tombstone push (relay pubsub) — subscribe-on-connect, event handling,
+  // idempotency with the catch-up GET path.
+  // -----------------------------------------------------------------------
+
+  describe('tombstone push channel', () => {
+    const PAIRED_CONFIG = {
+      agentId: 'agent-test-001',
+      keyPair: { publicKey: 'pub-key-base64', secretKey: 'sec-key-base64' },
+      signKeyPair: { publicKey: 'sign-pk', secretKey: 'sign-sk' },
+      peerPWAPublicKey: 'pinned-peer-pub',
+      peerPWASignPublicKey: 'pinned-peer-sign-pub',
+      signalingServer: 'wss://test.example.com',
+    };
+
+    it('subscribes to the pinned peer mailbox when signaling connects while paired', async () => {
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+      mockCheckTombstone.mockResolvedValue({ status: 'absent' });
+
+      const sig = getSignaling(conn);
+      sig.emit('connected');
+      await flush();
+      await flush();
+
+      expect(mockHashPublicKey).toHaveBeenCalledWith('pinned-peer-pub');
+      // hashPublicKey is mocked to `hash-<first8>`
+      expect(sig.subscribedKeys).toEqual(['hash-pinned-p']);
+    });
+
+    it('does NOT subscribe when unpaired (no pinned peer to watch yet)', async () => {
+      mockIsPaired.mockReturnValue(false);
+      mockLoadConfig.mockReturnValue({ ...PAIRED_CONFIG, peerPWAPublicKey: null });
+
+      const sig = getSignaling(conn);
+      sig.emit('connected');
+      await flush();
+
+      expect(sig.subscribedKeys).toEqual([]);
+    });
+
+    it('subscribe is idempotent across reconnects for the same pinned peer', async () => {
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+      mockCheckTombstone.mockResolvedValue({ status: 'absent' });
+
+      const sig = getSignaling(conn);
+      sig.emit('connected');
+      await flush();
+      sig.emit('connected');
+      await flush();
+      sig.emit('connected');
+      await flush();
+
+      // Only the first call issues an explicit subscribe; subsequent connects
+      // are handled by SignalingClient's own replay list (not tested here).
+      expect(sig.subscribedKeys).toEqual(['hash-pinned-p']);
+    });
+
+    it('verifies a pushed tombstone and self-destructs on success', async () => {
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+      mockVerifyTombstonePayload.mockReturnValue({
+        status: 'tombstoned',
+        tombstone: {
+          type: 'rotated',
+          oldPublicKey: 'pinned-peer-pub',
+          signature: 'sig',
+        },
+      });
+      const tombstonedHandler = vi.fn();
+      conn.on('tombstoned', tombstonedHandler);
+
+      const sig = getSignaling(conn);
+      sig.emit('tombstone-event', 'hash-pinned-p', 'raw-tombstone-json');
+
+      expect(mockVerifyTombstonePayload).toHaveBeenCalledWith(
+        'raw-tombstone-json',
+        'pinned-peer-pub',
+        'pinned-peer-sign-pub',
+      );
+      expect(mockClearPeerPWA).toHaveBeenCalledTimes(1);
+      expect(tombstonedHandler).toHaveBeenCalledWith({
+        oldPublicKey: 'pinned-peer-pub',
+      });
+    });
+
+    it('ignores a pushed tombstone for a non-matching keyHash', () => {
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+      const tombstonedHandler = vi.fn();
+      conn.on('tombstoned', tombstonedHandler);
+
+      const sig = getSignaling(conn);
+      sig.emit('tombstone-event', 'hash-other-mailbox', 'anything');
+
+      expect(mockVerifyTombstonePayload).not.toHaveBeenCalled();
+      expect(mockClearPeerPWA).not.toHaveBeenCalled();
+      expect(tombstonedHandler).not.toHaveBeenCalled();
+    });
+
+    it('ignores a pushed payload whose verification fails', () => {
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+      mockVerifyTombstonePayload.mockReturnValue({
+        status: 'verify-failed',
+        reason: 'signature verify failed',
+      });
+      const tombstonedHandler = vi.fn();
+      conn.on('tombstoned', tombstonedHandler);
+
+      const sig = getSignaling(conn);
+      sig.emit('tombstone-event', 'hash-pinned-p', 'forged-data');
+
+      expect(mockClearPeerPWA).not.toHaveBeenCalled();
+      expect(tombstonedHandler).not.toHaveBeenCalled();
+    });
+
+    it('second verified tombstone is a no-op once state is "closed" (idempotency)', () => {
+      // First event: transitions paired → closed.
+      mockIsPaired.mockReturnValue(true);
+      mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+      mockVerifyTombstonePayload.mockReturnValue({
+        status: 'tombstoned',
+        tombstone: {
+          type: 'rotated',
+          oldPublicKey: 'pinned-peer-pub',
+          signature: 'sig',
+        },
+      });
+      // clearPeerPWA side effect: config flips to closed=true.
+      mockClearPeerPWA.mockImplementationOnce(() => {
+        mockLoadConfig.mockReturnValue({
+          ...PAIRED_CONFIG,
+          peerPWAPublicKey: null,
+          peerPWASignPublicKey: null,
+          closed: true,
+        });
+      });
+      const tombstonedHandler = vi.fn();
+      conn.on('tombstoned', tombstonedHandler);
+
+      const sig = getSignaling(conn);
+      sig.emit('tombstone-event', 'hash-pinned-p', 'first');
+      // Second event (e.g. catch-up GET races with push): should be ignored
+      // because getState() now reports 'closed'.
+      sig.emit('tombstone-event', 'hash-pinned-p', 'second');
+
+      expect(mockClearPeerPWA).toHaveBeenCalledTimes(1);
+      expect(tombstonedHandler).toHaveBeenCalledTimes(1);
+    });
+
+    it('start() launches the 180s periodic catch-up fallback', async () => {
+      vi.useFakeTimers();
+      try {
+        mockIsPaired.mockReturnValue(true);
+        mockLoadConfig.mockReturnValue(PAIRED_CONFIG);
+        mockCheckTombstone.mockResolvedValue({ status: 'absent' });
+
+        await conn.start();
+
+        // No polling fire yet.
+        expect(mockCheckTombstone).toHaveBeenCalledTimes(0);
+
+        // Advance past one 180s window → one GET call.
+        await vi.advanceTimersByTimeAsync(180_000);
+        expect(mockCheckTombstone).toHaveBeenCalledTimes(1);
+
+        // Two more windows → two more calls.
+        await vi.advanceTimersByTimeAsync(180_000 * 2);
+        expect(mockCheckTombstone).toHaveBeenCalledTimes(3);
+
+        // disconnect() clears the interval.
+        conn.disconnect();
+        await vi.advanceTimersByTimeAsync(180_000 * 5);
+        expect(mockCheckTombstone).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

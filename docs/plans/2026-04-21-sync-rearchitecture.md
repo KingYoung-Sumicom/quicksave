@@ -67,36 +67,46 @@
 
 ### B1. Multi-slot pair mailbox
 
-- [ ] `PairSlot` / `PairMailbox` 資料結構（append-only、cap 64、TTL 5 min）
-- [ ] Garbage collector（setInterval 掃過期 mailbox）
-- [ ] **Files**: `apps/relay/src/pairStore.ts`（新檔）、`apps/relay/src/pairStore.test.ts`
+- [x] `PairSlot` / `PairMailbox` 資料結構（append-only、cap 64、TTL 5 min、activity 延長 TTL）
+- [x] Garbage collector（`startGc` 用 setInterval、`.unref()` 不阻塞 Node 退出）
+- [x] 錯誤型別：`PairStoreFullError`、`PairStoreTooLargeError`
+- [x] **Files**: `apps/relay/src/pairStore.ts`、`apps/relay/src/pairStore.test.ts`（33 tests by subagent）、`apps/relay/src/pairRoutes.test.ts`（17 HTTP/SSE integration tests）— 全 relay 套件 92/92 綠
 
 ### B2. Pair HTTP routes
 
-- [ ] `POST /pair-requests/{hash}` append slot（回 slot_id）
-- [ ] `GET /pair-requests/{hash}` 回整個 slots array
-- [ ] `DELETE /pair-requests/{hash}` 立即清除
-- [ ] Per-IP rate-limit（複用既有 middleware）
-- [ ] **Files**: `apps/relay/src/index.ts`
+- [x] `POST /pair-requests/{addr}` append slot（回 `{id, mailboxExpiresAt}`、201）
+- [x] `GET /pair-requests/{addr}` 回 `{slots}`
+- [x] `DELETE /pair-requests/{addr}` → 204
+- [x] `GET /pair-requests/{addr}/subscribe` SSE（含 25s ping、teardown on close）
+- [x] Per-IP sliding-window rate-limit（60s / 120 req，pair + sync 共用）
+- [x] Dev: `apps/pwa/vite-plugin-relay.ts` 加 inline 對等路由 supporting `vite dev`
+- [x] **Files**: `apps/relay/src/index.ts`、`apps/pwa/vite-plugin-relay.ts`
 
 ### B3. Pubsub topic extensions
 
-- [ ] `pair:{hash}` topic：`POST /pair-requests/*` 成功後 emit `{ slot_id }`
-- [ ] `tombstone:{hash}` topic：既有 tombstone 寫入流程追加 publish
-- [ ] **Files**: `apps/relay/src/index.ts`、`apps/relay/src/syncStore.ts`
+- [x] `pair:{addr}` topic：實作在 B2 的 SSE（`PairStore.subscribe` + `/subscribe` endpoint）
+- [x] `tombstone:{hash}` topic：WS push channel（`tombstone-subscribe`/`-unsubscribe`/`-event`）+ `syncRoutes` `onTombstone` callback + agent 180s catch-up GET fallback
+- [x] **Files**: `apps/relay/src/tombstoneSubs.ts`（新）、`apps/relay/src/syncRoutes.ts`、`apps/relay/src/index.ts`、`apps/agent/src/connection/relay.ts`、`apps/agent/src/connection/connection.ts`
 
 ### B4. Signed sync envelope + per-mailbox mutex
 
-- [ ] `SignedSyncEnvelope` schema 驗證（Ed25519 verify on PUT/DELETE `/sync/*`）
-- [ ] Per-mailbox in-flight mutex（`inFlight: Map<hash, {sigPubkey, acquiredAt}>`）
-- [ ] HTTP 409 回傳 + client 端退避重試邏輯（在 `apps/pwa/src/lib/syncClient.ts`）
-- [ ] Cancel route `DELETE /sync/{hash}/lock`
-- [ ] **Files**: `apps/relay/src/syncStore.ts`, `apps/relay/src/index.ts`, `apps/pwa/src/lib/syncClient.ts`
+- [x] `SignedSyncEnvelope` schema + Ed25519 verify on PUT/DELETE `/sync/*`（共用 `verifySignedRequest`，`extra=[keyHash, ciphertextHash]`；lock-release 的 `ciphertextHash=''`）
+- [x] Per-mailbox in-flight mutex（`SyncStore.tryAcquireLock/releaseLock`，10s TTL 自動過期；`stats.locks` 暴露診斷）
+- [x] HTTP 409 + `Retry-After` 標頭 + client 端指數退避（150ms base、max 4 retries、max 5s、抖動，並尊重 server 回的 `retryAfterMs`）
+- [x] Cancel route `DELETE /sync/{hash}/lock`（envelope action `sync-lock-release`、禁帶 ciphertext）
+- [x] 把 handler 抽到 `apps/relay/src/syncRoutes.ts`（`createSyncRouter`），prod index.ts 與 test 共用同一份，避免漂移
+- [x] `apps/pwa/vite-plugin-relay.ts` dev middleware 也支援新 envelope 與 `/lock`（開發模式不做簽章驗證，只剝 envelope）
+- [x] `apps/pwa/src/lib/syncClient.ts` 新 API：`pushToDevice / postTombstone / releaseLock` 全部要求 `SyncSignKeyPair`；`rotateIdentity` 回傳舊 signing keypair 以利 post tombstone
+- [x] **Tests**：47 個 shared envelope 單元測試 + 12 個 SyncStore lock 單元測試 + 18 個 syncRoutes HTTP 整合測試（bad-sig / replay / tampered / stale / future / 413 / 409 均覆蓋）
+- [x] **Flake 清理**：順手把 `pairRoutes.test.ts` 由固定 port 改成 `port: 0`（OS 挑空 port，避免 TIME_WAIT flake）
+- [x] **Files**: `apps/relay/src/syncStore.ts`、`apps/relay/src/syncRoutes.ts`（新）、`apps/relay/src/index.ts`、`apps/relay/src/syncRoutes.test.ts`（新）、`apps/relay/src/syncLocks.test.ts`（新）、`apps/pwa/src/lib/syncClient.ts`、`apps/pwa/src/stores/identityStore.ts`、`apps/pwa/src/App.tsx`、`apps/pwa/src/components/DevicePairingSection.tsx`、`apps/pwa/vite-plugin-relay.ts`、`packages/shared/src/syncEnvelope.ts`、`packages/shared/src/syncEnvelope.test.ts`（新）
 
 ### B5. 換掉 MockRelay
 
-- [ ] `HttpPairTransport` 實作 `PairTransport` interface（覆寫 A2 的 MockRelay）
-- [ ] E2E test：兩個瀏覽器 / 兩個 vitest context pair 成功
+- [x] `HttpPairTransport`：`apps/pwa/src/lib/httpPairTransport.ts`（fetch + EventSource）
+- [x] `getDefaultPairTransport()`：從 connectionStore 抓 signaling URL、回 HttpPairTransport
+- [x] `PairDeviceModal` / `JoinGroupPage` 切換掉 `getSharedMockRelay`
+- [ ] E2E test：兩 PWA 透過真 relay pair 成功
 - [ ] 手動驗證：桌機 Chrome + 手機 PWA 實機 pair
 
 ### B6. Stage B 驗收
@@ -113,32 +123,41 @@
 
 ### C1. Agent config schema
 
-- [ ] `peerPWAPublicKey: string | null`、`peerPWASignPublicKey: string | null` 加入 `AgentConfig`
-- [ ] Config migration：舊 config 讀到 `null` 視為 unpaired
-- [ ] **Files**: `apps/agent/src/config.ts`
+- [x] `peerPWAPublicKey: string | null`、`peerPWASignPublicKey: string | null` 加入 `AgentConfig`
+- [x] Config migration：舊 config 讀到 `null` 視為 unpaired（`getOrCreateConfig` 自動 normalize + 寫回）
+- [x] 新增 `isPaired() / pinPeerPWA(pk, signPk) / clearPeerPWA()` helpers。`pinPeerPWA` 對已 pin 不同對的情況會 throw；`clearPeerPWA` 會順便 rotate `keyPair` 讓舊 session DEK 不可解
+- [x] Config tests 從 31 擴到 43 tests（新 12 個覆蓋 TOFU + pin/clear/idempotency/error paths），836 agent tests 全綠
+- [x] **Files**: `apps/agent/src/config.ts`、`apps/agent/src/config.test.ts`
 
 ### C2. Handshake 驗簽
 
-- [ ] V2 handshake 協議擴充：PWA 端要對 agent 出題的 challenge 以共用 Ed25519 私鑰簽名
-- [ ] Agent 端：unpaired 時接受第一個 handshake 並寫入 config（TOFU）；paired 時要求簽章對 stored pubkey 驗過才接受
-- [ ] **Files**: `apps/agent/src/connection/connection.ts: handleKeyExchange`、對應 PWA 端 `apps/pwa/src/lib/websocket.ts` 或 `sessionManager`
+- [x] V2 handshake 擴充 `sigPubkey` + `signature` 欄位（canonical body `key-exchange-v2|agentId|sigPubkey|encryptedDEK|ts`）
+- [x] 新增 `packages/shared/src/keyExchange.ts`：`canonicalKeyExchangeV2Body / signKeyExchangeV2 / verifyKeyExchangeV2Signature`
+- [x] Agent `handleKeyExchange`：timestamp check → 拿 sigPubkey/signature → verify → 讀 config → paired 時要求 sigPubkey === pinned；unpaired 時 `pinPeerPWA` 做 TOFU 寫入
+- [x] PWA `WebSocketClient` 新增 `SigningKeyPairProvider` callback；`initiateKeyExchange` 變成 async，拿到 signing keypair 後對 envelope 簽章；App.tsx 掛上 provider
+- [x] 測試覆蓋：`connection.test.ts` 加 6 個 TOFU 測試（pin-first、mismatch reject、match accept、missing sigPubkey reject、missing signature reject、verify fail reject）；`connection.edge.test.ts` + `ai/edgeCases.test.ts` 的 helper 也補上 sig fields
+- [x] 836 agent tests 全綠（含新 TOFU 測試）
+- [x] **Files**: `packages/shared/src/keyExchange.ts`（新）、`packages/shared/src/types.ts`（KeyExchangeV2 擴充）、`packages/shared/src/index.ts`、`apps/agent/src/connection/connection.ts`、`apps/pwa/src/lib/websocket.ts`、`apps/pwa/src/App.tsx`、`apps/agent/src/connection/connection.test.ts`、`apps/agent/src/connection/connection.edge.test.ts`、`apps/agent/src/ai/edgeCases.test.ts`
 
 ### C3. Tombstone pubsub 訂閱 + 自毀
 
-- [ ] Agent relay 連線時訂閱 `tombstone:{hash(peerPWAPublicKey)}`
-- [ ] 收到事件 → `verifyTombstone(payload, peerPWASignPublicKey)` → 通過則：
-  - 清 config 的 `peerPWA*` 欄位
-  - 產新的 agent keypair
-  - 清所有 session state
-  - 關閉 relay 連線、拒絕入站 handshake
-- [ ] **Files**: `apps/agent/src/connection/connection.ts`、`apps/agent/src/state.ts`
+- [x] **v1 採 catch-up GET**（不加新 relay endpoint）：每次 signaling `'connected'`（含首次連線與每次 reconnect）自動跑 `GET /sync/{hash(peerPWAPublicKey)}`；410 → 解析 tombstone → 驗章 → 自毀
+- [x] 新增 `apps/agent/src/tombstoneCheck.ts`：`hashPublicKey / signalingServerToHttp / checkTombstone`，回傳 `{ absent | tombstoned | verify-failed | error }`；`oldPublicKey` 必須與 pinned pubkey 一致，否則當作 replay 拒絕
+- [x] `AgentConnection` 新增 `runTombstoneCheck()` public method + `handleVerifiedTombstone()` private：清所有 peer sessions → `clearPeerPWA()`（連帶 rotate 自己的 X25519 keypair）→ emit `'tombstoned'` 事件給上層
+- [x] Signaling transport 不主動 disconnect —— 讓 daemon 繼續跑在 unpaired 狀態，後續新的 PWA TOFU 可以直接接上（"closed" state 留給 C4）
+- [x] **Tests**：`tombstoneCheck.test.ts` 新增 22 測試（hash / URL scheme / HTTP 404/200/410/500 / 驗章正反 / malformed / network error / bad pinned pk）；`connection.test.ts` 新增 7 測試（unpaired no-op、absent no-emit、tombstoned 完整自毀、verify-failed ignored、error ignored、connected event 會自動跑 check）。871 agent tests 全綠
+- [x] **Caveat**：v1 沒有 server push；tombstone 偵測到需要 signaling reconnect。實際使用上 PWA rotate 後 agent 必然收到 bye（PWA 切換 identity）→ signaling 重連 → check。若要 <1s latency 的推送需要擴 `@sumicom/ws-relay` 協議（留給 v2）
+- [x] **Files**: `apps/agent/src/tombstoneCheck.ts`（新）、`apps/agent/src/tombstoneCheck.test.ts`（新）、`apps/agent/src/connection/connection.ts`、`apps/agent/src/connection/connection.test.ts`
 
 ### C4. 自閉模式 + CLI 解鎖
 
-- [ ] Agent state 新增 `'unpaired' | 'paired' | 'closed'` 明確狀態
-- [ ] `quicksave pair` CLI：檢查 state，若 `closed` 則先清理再進 `unpaired`；產 invite URL；等 TOFU
-- [ ] `quicksave status` 顯示當前 state
-- [ ] **Files**: `apps/agent/src/state.ts`、`apps/agent/src/cli/pair.ts`、`apps/agent/src/cli/status.ts`
+- [x] Agent state 新增 `'unpaired' | 'paired' | 'closed'` 明確狀態（`AgentPairState` type + `AgentConnection.getState()` + runtime-only `tombstonedClosed` flag）
+- [x] `AgentConnection.unlockPairing()` 解除 closed flag；`handleKeyExchange` 在 closed 狀態直接拒絕 + emit error（測試覆蓋）
+- [x] IPC 新方法：`get-agent-state`（回 `AgentStateResult`：state/agentId/publicKey/signPublicKey/peerPWA*/peerCount/connectionState）、`unlock-pairing`（回 `{previousState, state}`）
+- [x] `quicksave status` top-level CLI：打 `get-agent-state` 印出當前 state + 連線資訊；若 `closed` 提示下一步該跑 `quicksave pair`
+- [x] `quicksave pair` top-level CLI：打 `unlock-pairing`（closed → unpaired），再打 `get-pairing-info` 顯示連線 URL + QR
+- [x] **Tests**：`connection.test.ts` 新增 7 個 C4 測試（getState unpaired/paired/closed、unlockPairing 清 flag、closed 擋 handleKeyExchange、unlockPairing 後可 TOFU、unlockPairing no-op when not closed）。878 agent tests 全綠
+- [x] **Files**: `apps/agent/src/connection/connection.ts`（`AgentPairState`、`tombstonedClosed`、`getState`、`unlockPairing`、closed gate、`handleVerifiedTombstone` 設 flag）、`apps/agent/src/service/types.ts`（`AgentPairState`/`AgentStateResult`/`UnlockPairingResult`）、`apps/agent/src/service/run.ts`（兩個新 IPC 方法）、`apps/agent/src/index.ts`（`status` + `pair` 兩個 top-level command）、`apps/agent/src/connection/connection.test.ts`（+7 C4 tests）
 
 ### C5. Stage C 驗收
 
@@ -151,24 +170,41 @@
 
 ## Stage D — 清理 + 文件
 
-### D1. 移除舊的 per-PWA identity 程式
+### D1. 移除舊的 per-PWA identity 程式 ✅
 
-- [ ] `identityStore.ts` 刪除 `pairedDevices` 相關欄位與 action
-- [ ] 刪除與 endorsement / roster 有關的 code 與 type
-- [ ] 刪除不再用到的 sync helpers（若有）
-- [ ] **Files**: `apps/pwa/src/stores/identityStore.ts`、`packages/shared/src/types.ts`
+- [x] `identityStore.ts` 改成只存 `publicKey`（從 `masterSecret` 派生）；刪除 `pairedDevices` / `isSource` / `addPairedDevice` / `removePairedDevice` / `setIsSource`
+- [x] 把 App.tsx 的「per-device fan-out sync」改成「shared-mailbox pull-merge-push」
+- [x] 把 `syncClient.pushToDevice` 重新命名為 `pushToMailbox` 並更新 doc
+- [x] 重寫 `DevicePairingSection.tsx`：砍掉手貼 paired-device list UI，只留 Group Public Key + Rotate Identity
+- [x] 刪除 `secureStorage.ts` 的 `IDENTITY_KEY` / `SIGNING_KEY` 常數與 `getIdentityKeyPair` / `saveIdentityKeyPair` / `getSigningKeyPair` / `saveSigningKeyPair` / `clearIdentityKeys` 函式
+- [x] 從 `packages/shared/src/types.ts` 刪除 `PairedDevice` interface
+- [x] PWA `tsc --noEmit` 綠；shared 144/144 + agent 878/878 tests 綠
+- **Files**: `apps/pwa/src/stores/identityStore.ts`、`apps/pwa/src/App.tsx`、`apps/pwa/src/lib/syncClient.ts`、`apps/pwa/src/components/DevicePairingSection.tsx`、`apps/pwa/src/lib/secureStorage.ts`、`packages/shared/src/types.ts`
 
-### D2. 文件同步
+### D2. 文件同步 ✅
 
-- [ ] `docs/references/quicksave-architecture.md` §三（AgentConnection）、§六（PWA store）更新
-- [ ] 檢查 `CLAUDE.md` 文件同步表格中受影響的條目
-- [ ] `docs/guidelines/sync-security.md` 若實作過程有偏離設計，同步修正
+- [x] `docs/references/quicksave-architecture.md` §三 新增「PWA 群組同步 (shared-mailbox)」+「Agent TOFU + Tombstone catch-up」兩個子節
+- [x] `docs/references/quicksave-architecture.md` §六 更新 identityStore 形狀與 API
+- [x] `CLAUDE.md` 文件同步表格新增一行：PWA↔PWA sync mailbox / TOFU / tombstone → `sync-security.md` + `architecture.md` §三
+- [x] `docs/guidelines/sync-security.md` 修正 drift：
+  - TOFU 從「現行實作不持久化 peer pubkey」更新為「已實作於 connection.ts + config.ts」
+  - 把 Tombstone Pubsub Subscription 整節替換為 Tombstone Catch-up GET + AgentPairState 狀態機 + CLI status/pair
+  - Files Map「Relay pubsub 推送」那一行移除；IPC 解鎖路徑改用 `get-agent-state` / `unlock-pairing`
+  - Open Questions §2（tombstone pubsub 可靠性）標記為已解，採 catch-up GET
 
-### D3. 清空我自己的測試資料
+### D3. 驗證路徑（manual）
 
+**遷移性質說明**：Stage B–D 的改動**不需要 DB wipe**。現有 PWA 的 `masterSecret` 繼續有效（`deriveSharedKeys` 會派生出相同的共用 pubkey），IndexedDB 裡 orphan 的 `IDENTITY_KEY` / `SIGNING_KEY` rows 無害；兩台同 `masterSecret` 的 PWA 會在第一次 push 時自動聚到新的共用 mailbox 並 LWW 合併。**唯一需要使用者動作**的是每台 agent 跑一次 `quicksave pair` 重新 TOFU-pin（C2 把 handshake 改成強制簽章，舊 unsigned 不通過；這正好符合 `sync-security.md` 的 Group Reset 代價）。
+
+**就地升級路徑（推薦）**：
+- [ ] 既有 PWA 直接 load 新版 code；自檢 IndexedDB 裡 `masterSecret` 還在、`machines` 列表仍顯示、下一次 sync push 能成功 PUT 到新的共用 mailbox
+- [ ] 每台 agent 跑 `quicksave pair`，用 PWA 掃 QR 完成 TOFU pin
+- [ ] 跑 `quicksave status` 看 state = `paired`、peerPWA pubkey 與 PWA 的 Group Public Key 一致
+
+**冷啟動驗證（選擇性，不相容的情境用）**：
 - [ ] 清空 dev agent 的 `~/.quicksave/`
 - [ ] 清空 dev PWA 的 IndexedDB / localStorage
-- [ ] 重跑一次完整 bootstrap（agent pair + PWA pair 多裝置），確認 fresh state 流程可走
+- [ ] 重跑一次完整 bootstrap（PWA 產生新 `masterSecret` → agent `quicksave pair` → 第二台 PWA 走 pair flow 拿 `masterSecret`），確認 fresh state 流程可走
 
 ---
 

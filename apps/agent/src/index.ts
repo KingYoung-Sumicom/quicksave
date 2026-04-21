@@ -12,7 +12,7 @@ import { IpcClient as IpcClientClass } from './service/ipcClient.js';
 import { readServiceState } from './service/stateStore.js';
 import { isProcessAlive } from './service/singleton.js';
 import { isDebugEnabled } from './service/types.js';
-import type { StatusResult, PairingInfoResult, DebugResult } from './service/types.js';
+import type { StatusResult, PairingInfoResult, DebugResult, AgentStateResult, UnlockPairingResult } from './service/types.js';
 import type { CardHistoryResponse } from '@sumicom/quicksave-shared';
 
 const program = new Command();
@@ -144,6 +144,63 @@ program
       qrcode.generate(pairingUrl, { small: true });
     } catch (err) {
       console.error('Failed to rotate keys:', (err as Error).message);
+      process.exit(1);
+    }
+  });
+
+// ---------------------------------------------------------------------------
+// Pair state commands
+// ---------------------------------------------------------------------------
+
+program
+  .command('status')
+  .description('Show agent pairing state (unpaired | paired | closed)')
+  .action(async () => {
+    try {
+      await withDaemon(async (client) => {
+        const s = await client.request<AgentStateResult>('get-agent-state');
+        console.log(`State:       ${s.state}`);
+        console.log(`Agent ID:    ${s.agentId}`);
+        console.log(`Signaling:   ${s.connectionState}`);
+        console.log(`Peers:       ${s.peerCount}`);
+        if (s.peerPWAPublicKey) {
+          console.log(`Peer PWA pk: ${s.peerPWAPublicKey.slice(0, 24)}…`);
+        } else {
+          console.log(`Peer PWA:    (not pinned)`);
+        }
+        if (s.state === 'closed') {
+          console.log('');
+          console.log('Agent is closed after a tombstone event.');
+          console.log('Run `quicksave pair` to re-enable pairing.');
+        }
+      });
+    } catch (err) {
+      console.error('Failed to query daemon:', (err as Error).message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('pair')
+  .description('Reset pairing lock (after tombstone) and show connection URL')
+  .option('--no-qr', 'Disable QR code display')
+  .action(async (options: { qr?: boolean }) => {
+    try {
+      await withDaemon(async (client) => {
+        const unlock = await client.request<UnlockPairingResult>('unlock-pairing');
+        if (unlock.previousState === 'closed') {
+          console.log('Closed state cleared — agent is ready to pair.');
+          console.log('');
+        } else if (unlock.previousState === 'paired') {
+          console.log('Agent is already paired; showing existing connection URL.');
+          console.log('(Use `rotate-keys` on the PWA to re-pair from scratch.)');
+          console.log('');
+        }
+        const info = await client.request<PairingInfoResult>('get-pairing-info');
+        displayPairingInfo(info, options.qr !== false);
+      });
+    } catch (err) {
+      console.error('Failed to pair:', (err as Error).message);
       process.exit(1);
     }
   });

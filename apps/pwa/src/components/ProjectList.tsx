@@ -61,10 +61,9 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
     );
   }
 
-  // Group: pinned vs unpinned with sessions vs without sessions
-  const pinned = projects.filter((p) => p.isPinned);
-  const withSessions = projects.filter((p) => !p.isPinned && p.sessionCount > 0);
-  const withoutSessions = projects.filter((p) => !p.isPinned && p.sessionCount === 0);
+  // Group: with sessions vs without sessions
+  const withSessions = projects.filter((p) => p.sessionCount > 0);
+  const withoutSessions = projects.filter((p) => p.sessionCount === 0);
 
   const renderGroup = (items: typeof projects, label?: string) => {
     if (items.length === 0) return null;
@@ -105,9 +104,8 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
       <DesktopSideMenuAppBar onOpenSettings={onOpenSettings} onOpenAddNew={onOpenAddNew} />
       <div className="flex-1 overflow-y-auto">
         <div className={`${compact ? '' : 'max-w-lg mx-auto py-4'} space-y-5`}>
-          {renderGroup(pinned, pinned.length > 0 ? 'Pinned' : undefined)}
           {renderGroup(withSessions)}
-          {renderGroup(withoutSessions, withoutSessions.length > 0 && (pinned.length > 0 || withSessions.length > 0) ? 'No Sessions' : undefined)}
+          {renderGroup(withoutSessions, withoutSessions.length > 0 && withSessions.length > 0 ? 'No Sessions' : undefined)}
         </div>
       </div>
     </div>

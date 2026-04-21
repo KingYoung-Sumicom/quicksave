@@ -5,9 +5,9 @@ import { ErrorBox } from '../components/ui/ErrorBox';
 import { Spinner } from '../components/ui/Spinner';
 import {
   PairClient,
-  getSharedMockRelay,
   type PairJoinHandle,
 } from '../lib/pairClient';
+import { getDefaultPairTransport } from '../lib/pairTransport';
 import { applyMasterSecret } from '../lib/secureStorage';
 
 type Phase = 'parsing' | 'waiting' | 'received' | 'error';
@@ -28,7 +28,7 @@ export function JoinGroupPage() {
       try {
         const k = params.get('k');
         if (!k) throw new Error('邀請連結缺少 k= 金鑰參數');
-        const transport = getSharedMockRelay();
+        const transport = getDefaultPairTransport();
         const client = new PairClient(transport);
         const join = await client.acceptInvite({ eA_pubB64: fromUrlSafe(k) });
         if (cancelled) {

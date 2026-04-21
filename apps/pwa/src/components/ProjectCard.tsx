@@ -66,9 +66,6 @@ export function ProjectCard({ project, sessions, onClick, onSessionClick, isActi
             <span className="list-title text-[17px] font-medium truncate">
               {project.displayName}
             </span>
-            {project.isPinned && (
-              <span className="text-[10px] text-amber-400/60 shrink-0">pinned</span>
-            )}
           </div>
           <div className="mt-0.5">
             <span className="list-subtitle text-[12px] truncate">

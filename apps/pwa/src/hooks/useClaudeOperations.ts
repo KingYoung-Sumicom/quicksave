@@ -21,6 +21,8 @@ import {
   type SessionListArchivedResponsePayload,
   type ProjectListSummariesResponsePayload,
   type ProjectListReposResponsePayload,
+  type ProjectDeleteRequestPayload,
+  type ProjectDeleteResponsePayload,
 } from '@sumicom/quicksave-shared';
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { useClaudeStore } from '../stores/claudeStore';
@@ -407,6 +409,21 @@ export function useClaudeOperations(
     }
   }, [sendCommand]);
 
+  const deleteProject = useCallback(
+    async (cwd: string): Promise<ProjectDeleteResponsePayload | null> => {
+      try {
+        return await sendCommand<ProjectDeleteResponsePayload, ProjectDeleteRequestPayload>(
+          'project:delete',
+          { cwd },
+        );
+      } catch (error) {
+        console.error('Failed to delete project:', error);
+        return null;
+      }
+    },
+    [sendCommand],
+  );
+
   return {
     getSessionCards,
     startSession,
@@ -424,5 +441,6 @@ export function useClaudeOperations(
     unsubscribeSession,
     listProjectSummaries,
     listProjectRepos,
+    deleteProject,
   };
 }

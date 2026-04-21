@@ -5,17 +5,33 @@ import {
   generateKeyPair,
   encodeKeyPair,
   decodeKeyPair,
+  decodeBase64,
   encryptWithSharedSecret,
   decryptWithSharedSecret,
   decryptDEK,
   parseMessage,
   serializeMessage,
+  verifyKeyExchangeV2Signature,
   type Message,
   type KeyPair,
   type KeyExchangeV2,
 } from '@sumicom/quicksave-shared';
 import { SignalingClient } from './relay.js';
 import { PubSub, BROADCAST_TOPIC } from './pubsub.js';
+import {
+  clearPeerPWA,
+  isPaired,
+  loadConfig,
+  pinPeerPWA,
+  unlockPairingAndRotate,
+  type AgentConfig,
+} from '../config.js';
+import {
+  checkTombstone,
+  hashPublicKey,
+  verifyTombstonePayload,
+  type TombstoneCheckResult,
+} from '../tombstoneCheck.js';
 
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
@@ -37,7 +53,23 @@ export interface AgentConnectionEvents {
   disconnected: (peerAddress: string) => void;
   message: (message: Message, peerAddress: string) => void;
   error: (error: Error) => void;
+  /**
+   * A verified tombstone was observed for the pinned peer PWA group. Config
+   * has already been cleared and the keypair rotated. Upper layers should
+   * typically stop the process or prompt the user to run `quicksave pair`.
+   */
+  tombstoned: (details: { oldPublicKey: string }) => void;
 }
+
+/**
+ * Coarse-grained agent pairing state surfaced to the CLI + telemetry.
+ *
+ * - `unpaired`: ready to TOFU a new PWA group on the next handshake
+ * - `paired`:   peerPWA identity is pinned; handshakes validated against it
+ * - `closed`:   tombstone was observed; all incoming handshakes are refused
+ *               until `unlockPairing()` is called (e.g. by `quicksave pair`)
+ */
+export type AgentPairState = 'unpaired' | 'paired' | 'closed';
 
 export class AgentConnection extends EventEmitter {
   private config: ConnectionConfig;
@@ -53,6 +85,17 @@ export class AgentConnection extends EventEmitter {
   // Key exchange replay protection
   private static readonly KEY_EXCHANGE_MAX_AGE_MS = 60000; // 60 seconds
 
+  // Periodic catch-up GET fallback. Runs even when the relay-push channel is
+  // healthy — if the push path is silently broken (relay restart before we
+  // resubscribe, proxy dropping the message, etc.) this still catches the
+  // rotation within 3 minutes. 180s is the ceiling the user signed off on;
+  // tighter intervals trade latency for relay load that's not worth paying
+  // unless we see an incident.
+  private static readonly TOMBSTONE_POLL_MS = 180_000;
+  private tombstonePollTimer: ReturnType<typeof setInterval> | null = null;
+  /** The keyHash we currently have an active relay subscription for, if any. */
+  private subscribedKeyHash: string | null = null;
+
   constructor(config: ConnectionConfig) {
     super();
     this.config = config;
@@ -62,6 +105,15 @@ export class AgentConnection extends EventEmitter {
   }
 
   private setupSignalingHandlers(): void {
+    this.signaling.on('connected', () => {
+      // Each (re)connect is a chance to catch up on a missed tombstone.
+      void this.runTombstoneCheck();
+      // (Re-)subscribe the push channel if we already know the pinned peer.
+      // Unpaired agents have no mailbox to watch yet; TOFU will call this
+      // helper explicitly after pinning.
+      this.resubscribeIfPaired();
+    });
+
     this.signaling.on('peer-connected', () => {
       console.log('PWA peer connected, waiting for key exchange...');
     });
@@ -100,6 +152,61 @@ export class AgentConnection extends EventEmitter {
     this.signaling.on('error', (error: Error) => {
       this.emit('error', error);
     });
+
+    // Relay-pushed tombstone — the emergency fast path. We still verify locally
+    // with the pinned signing pubkey because the relay is untrusted; a forged
+    // payload here will simply fail verification and be dropped.
+    this.signaling.on('tombstone-event', (keyHash: string, data: string) => {
+      this.handlePushedTombstone(keyHash, data);
+    });
+  }
+
+  private handlePushedTombstone(keyHash: string, data: string): void {
+    // Short-circuit once we're already closed: the catch-up GET and the push
+    // path can both fire for the same tombstone, and after the first handler
+    // runs `peerPWAPublicKey` is null on disk.
+    if (this.getState() === 'closed') return;
+    const config = loadConfig();
+    if (!config || !isPaired(config)) return;
+    const expectedHash = hashPublicKey(config.peerPWAPublicKey!);
+    if (keyHash !== expectedHash) {
+      // Ignore pushes for mailboxes we aren't pinned to. Shouldn't happen
+      // because we only subscribe to our pinned peer, but the relay is
+      // untrusted so we verify anyway.
+      return;
+    }
+    const result = verifyTombstonePayload(
+      data,
+      config.peerPWAPublicKey!,
+      config.peerPWASignPublicKey!,
+    );
+    if (result.status === 'tombstoned') {
+      this.handleVerifiedTombstone(result.tombstone.oldPublicKey);
+    } else if (result.status === 'verify-failed') {
+      console.error(`Pushed tombstone verification failed: ${result.reason}`);
+    }
+  }
+
+  /**
+   * Subscribe to the pinned peer's tombstone mailbox via the relay push
+   * channel, if the agent is currently paired. Idempotent: safe to call from
+   * both `connected` and TOFU completion paths.
+   */
+  private resubscribeIfPaired(): void {
+    const config = loadConfig();
+    if (!config || !isPaired(config)) return;
+    const keyHash = hashPublicKey(config.peerPWAPublicKey!);
+    if (this.subscribedKeyHash === keyHash) {
+      // Already subscribed to the same key — but the SignalingClient replays
+      // its own subscription set on reconnect, so we don't need to re-send.
+      return;
+    }
+    // If we were subscribed to an old key (e.g. after unlockPairing), drop it.
+    if (this.subscribedKeyHash) {
+      this.signaling.unsubscribeTombstone(this.subscribedKeyHash);
+    }
+    this.signaling.subscribeTombstone(keyHash);
+    this.subscribedKeyHash = keyHash;
   }
 
   async start(): Promise<void> {
@@ -108,6 +215,155 @@ export class AgentConnection extends EventEmitter {
     console.log('Connected to signaling server');
     console.log(`Agent ID: ${this.config.agentId}`);
     console.log(`Public Key: ${this.config.keyPair.publicKey}`);
+    // Tombstone catch-up runs from the 'connected' handler registered in
+    // setupSignalingHandlers(), so every reconnect re-checks too. Also start
+    // the 180s periodic fallback in case the push channel silently breaks.
+    this.startTombstonePolling();
+  }
+
+  /**
+   * Check the pinned peer's mailbox for a signed tombstone. No-op if the
+   * agent is not currently paired. Exposed so the signaling reconnect path
+   * can piggy-back on the check without re-implementing the policy.
+   */
+  async runTombstoneCheck(): Promise<TombstoneCheckResult | null> {
+    const config = loadConfig();
+    if (!config || !isPaired(config)) return null;
+    const result = await checkTombstone({
+      signalingServer: this.config.signalingServer,
+      peerPWAPublicKey: config.peerPWAPublicKey!,
+      peerPWASignPublicKey: config.peerPWASignPublicKey!,
+    });
+    if (result.status === 'tombstoned') {
+      this.handleVerifiedTombstone(result.tombstone.oldPublicKey);
+    } else if (result.status === 'verify-failed') {
+      console.error(`Tombstone check: verification failed (${result.reason})`);
+    } else if (result.status === 'error') {
+      // Network / transient errors are non-fatal; we'll recheck next connect.
+      console.error(`Tombstone check: ${result.error}`);
+    }
+    return result;
+  }
+
+  /**
+   * Invoked when a valid tombstone for the pinned peer group has been
+   * observed. Clears peer identity state on disk (which also rotates the
+   * agent's own keypair), tears down all active peer sessions, and emits
+   * `tombstoned` for upper layers. The signaling transport is left running
+   * so the agent can accept a fresh TOFU handshake from a rotated group.
+   */
+  /**
+   * Coarse pair-state for CLI + telemetry. Reads the (possibly freshly-saved)
+   * config on each call so the answer stays accurate after tombstone cleanup.
+   * `closed` is now persisted on disk (`config.closed`), so a daemon restart
+   * preserves the self-destructed state.
+   */
+  getState(): AgentPairState {
+    const config = loadConfig();
+    if (!config) return 'unpaired';
+    if (config.closed) return 'closed';
+    return isPaired(config) ? 'paired' : 'unpaired';
+  }
+
+  /**
+   * Lift the `closed` gate and rotate the agent's own cryptographic identity
+   * (`agentId`, X25519 keypair, Ed25519 signing keypair). Called by the
+   * `quicksave pair` CLI path. Tears down the current signaling connection
+   * and reconnects with the new `agentId` so old routing addresses stop
+   * receiving traffic. Safe to call from any state.
+   */
+  async unlockPairing(): Promise<AgentConfig> {
+    const newConfig = unlockPairingAndRotate();
+    this.config = {
+      ...this.config,
+      agentId: newConfig.agentId,
+      keyPair: newConfig.keyPair,
+    };
+    this.keyPair = decodeKeyPair(newConfig.keyPair);
+
+    // Tear down every active peer session — old DEKs are irrelevant under the
+    // rotated keypair anyway.
+    for (const [address] of this.peers) {
+      this.pubsub.unsubscribeAll(address);
+      this.emit('disconnected', address);
+    }
+    this.peers.clear();
+    this.savedPeerTopics.clear();
+
+    // No pinned mailbox yet under the rotated identity — clear the locally
+    // tracked subscription so the next TOFU can subscribe fresh.
+    this.subscribedKeyHash = null;
+
+    // Reinstantiate signaling under the new agentId so the relay routes to
+    // this process under the new address only.
+    this.signaling.removeAllListeners();
+    this.signaling.disconnect();
+    this.signaling = new SignalingClient(
+      this.config.signalingServer,
+      newConfig.agentId,
+    );
+    this.setupSignalingHandlers();
+    try {
+      await this.signaling.connect();
+    } catch (err) {
+      console.error('Signaling reconnect after unlockPairing failed:', err);
+      // Leave the SignalingClient object in place; its own reconnect loop
+      // will keep trying.
+    }
+
+    this.emit('identity-rotated', { agentId: newConfig.agentId });
+    return newConfig;
+  }
+
+  private handleVerifiedTombstone(oldPublicKey: string): void {
+    // Idempotency guard: the push-channel event and the catch-up GET can race,
+    // and both may fire before the first one has finished writing to disk. The
+    // persisted `closed` flag is the canonical answer; once set, we ignore
+    // further tombstone triggers until `unlockPairing()` clears it.
+    if (this.getState() === 'closed') {
+      return;
+    }
+    console.warn(
+      `Tombstone verified for pinned peer ${oldPublicKey.slice(0, 12)}... — self-destructing pairing`,
+    );
+    // Best-effort unsubscribe from the relay push channel; the closed-state
+    // gate in handleKeyExchange is the real line of defense.
+    if (this.subscribedKeyHash) {
+      this.signaling.unsubscribeTombstone(this.subscribedKeyHash);
+      this.subscribedKeyHash = null;
+    }
+    this.stopTombstonePolling();
+    // Tear down every active peer session first so no leftover DEK answers.
+    for (const [address] of this.peers) {
+      this.pubsub.unsubscribeAll(address);
+      this.emit('disconnected', address);
+    }
+    this.peers.clear();
+    this.savedPeerTopics.clear();
+    try {
+      clearPeerPWA();
+    } catch (err) {
+      console.error('clearPeerPWA failed during tombstone handling:', err);
+    }
+    this.emit('tombstoned', { oldPublicKey });
+  }
+
+  private startTombstonePolling(): void {
+    if (this.tombstonePollTimer) return;
+    this.tombstonePollTimer = setInterval(() => {
+      // Errors and 'absent' are silent — treated as no-op, same as the existing
+      // runTombstoneCheck behaviour. We only act on verified tombstones.
+      void this.runTombstoneCheck();
+    }, AgentConnection.TOMBSTONE_POLL_MS);
+    // Don't block process shutdown on the polling timer.
+    this.tombstonePollTimer.unref?.();
+  }
+
+  private stopTombstonePolling(): void {
+    if (this.tombstonePollTimer) {
+      clearInterval(this.tombstonePollTimer);
+      this.tombstonePollTimer = null;
+    }
   }
 
   private async handleDataMessage(data: string, from: string | null): Promise<void> {
@@ -152,6 +408,15 @@ export class AgentConnection extends EventEmitter {
    * Handle key exchange message
    */
   private async handleKeyExchange(message: KeyExchangeV2, from: string | null): Promise<void> {
+    // Closed state gate: once we've self-destructed from a tombstone, refuse
+    // any handshake until an operator runs `quicksave pair` (which calls
+    // `unlockPairing()`). Sourced from the persisted `config.closed` flag.
+    if (this.getState() === 'closed') {
+      console.error('Agent is in closed state; refusing key exchange until `quicksave pair` is run');
+      this.emit('error', new Error('Agent closed after tombstone; run `quicksave pair` to re-enable'));
+      return;
+    }
+
     // Verify timestamp for replay protection
     const age = Date.now() - message.timestamp;
     if (age > AgentConnection.KEY_EXCHANGE_MAX_AGE_MS) {
@@ -165,6 +430,66 @@ export class AgentConnection extends EventEmitter {
       console.error(`Key exchange timestamp in future (age: ${age}ms)`);
       this.emit('error', new Error('Key exchange timestamp invalid'));
       return;
+    }
+
+    // Proof-of-possession: the PWA must sign the canonical key-exchange body
+    // with the group's shared Ed25519 key. On the first successful handshake
+    // we TOFU-pin that key; after that, sigPubkey must match the pinned one.
+    if (!message.sigPubkey || !message.signature) {
+      console.error('Key exchange missing sigPubkey/signature — rejecting pre-TOFU legacy peer');
+      this.emit('error', new Error('Key exchange missing signature'));
+      return;
+    }
+    const sigValid = verifyKeyExchangeV2Signature({
+      agentId: this.config.agentId,
+      encryptedDEK: message.encryptedDEK,
+      timestamp: message.timestamp,
+      sigPubkey: message.sigPubkey,
+      signature: message.signature,
+      decodeBase64,
+    });
+    if (!sigValid) {
+      console.error('Key exchange signature verification failed');
+      this.emit('error', new Error('Key exchange signature invalid'));
+      return;
+    }
+
+    const config = loadConfig();
+    if (config && isPaired(config)) {
+      if (message.sigPubkey !== config.peerPWASignPublicKey) {
+        console.error(
+          'Key exchange sigPubkey does not match pinned peer — rejecting',
+        );
+        this.emit(
+          'error',
+          new Error('Key exchange sigPubkey mismatch (peer not the pinned PWA group)'),
+        );
+        return;
+      }
+    } else {
+      // Unpaired: TOFU. Pin the claimed signing key (and the PWA's X25519
+      // pubkey, derived from the routed address — `pwa:{publicKey}`) for
+      // all future handshakes.
+      const peerPWAPublicKey = (from ?? '').replace(/^pwa:/, '');
+      if (peerPWAPublicKey && config) {
+        try {
+          pinPeerPWA(peerPWAPublicKey, message.sigPubkey);
+          console.log(
+            `TOFU: pinned peer PWA pubkey ${peerPWAPublicKey.slice(0, 12)}... ` +
+              `sig ${message.sigPubkey.slice(0, 12)}...`,
+          );
+          // Now that we have a pinned mailbox, start listening for pushed
+          // tombstones on it. Idempotent.
+          this.resubscribeIfPaired();
+        } catch (err) {
+          console.error('TOFU pin failed:', err);
+          this.emit(
+            'error',
+            err instanceof Error ? err : new Error('TOFU pin failed'),
+          );
+          return;
+        }
+      }
     }
 
     // Decrypt the session DEK
@@ -258,6 +583,7 @@ export class AgentConnection extends EventEmitter {
   }
 
   disconnect(): void {
+    this.stopTombstonePolling();
     this.signaling.disconnect();
   }
 

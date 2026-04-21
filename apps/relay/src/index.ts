@@ -6,6 +6,13 @@ import { SyncStore } from './syncStore.js';
 import { PushStore } from './pushStore.js';
 import { PushService } from './pushService.js';
 import { createPushRoutes, type PushRoutes } from './pushRoutes.js';
+import {
+  PairStore,
+  PairStoreFullError,
+  PairStoreTooLargeError,
+} from './pairStore.js';
+import { createSyncRouter, parseSyncUrl } from './syncRoutes.js';
+import { TombstoneSubs } from './tombstoneSubs.js';
 
 // Injected by esbuild at build time from package.json
 declare const VERSION: string;
@@ -13,6 +20,160 @@ declare const VERSION: string;
 const PORT = parseInt(process.env.PORT || '8080', 10);
 
 const syncStore = new SyncStore();
+const pairStore = new PairStore();
+pairStore.startGc();
+const tombstoneSubs = new TombstoneSubs();
+const syncRouter = createSyncRouter({
+  store: syncStore,
+  onTombstone: (keyHash, ciphertext) => tombstoneSubs.publish(keyHash, ciphertext),
+});
+
+// Simple per-IP sliding-window rate limiter for pair + sync routes.
+// 60 requests per 60s per IP is plenty for legitimate pairing flow but blunts
+// mailbox-flooding abuse. Keys get evicted lazily.
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX = 120;
+const rateLimitHits = new Map<string, number[]>();
+function rateLimitOk(ip: string): boolean {
+  const now = Date.now();
+  let hits = rateLimitHits.get(ip);
+  if (!hits) {
+    hits = [];
+    rateLimitHits.set(ip, hits);
+  }
+  // Drop entries outside the window.
+  while (hits.length && hits[0] < now - RATE_LIMIT_WINDOW_MS) hits.shift();
+  if (hits.length >= RATE_LIMIT_MAX) return false;
+  hits.push(now);
+  return true;
+}
+setInterval(() => {
+  const cutoff = Date.now() - RATE_LIMIT_WINDOW_MS;
+  for (const [ip, hits] of rateLimitHits) {
+    while (hits.length && hits[0] < cutoff) hits.shift();
+    if (hits.length === 0) rateLimitHits.delete(ip);
+  }
+}, RATE_LIMIT_WINDOW_MS).unref?.();
+
+function clientIp(req: IncomingMessage): string {
+  const fwd = req.headers['x-forwarded-for'];
+  if (typeof fwd === 'string' && fwd.length > 0) return fwd.split(',')[0].trim();
+  return req.socket.remoteAddress ?? 'unknown';
+}
+
+function handlePairRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  addr: string,
+  subscribe: boolean,
+): void {
+  if (!rateLimitOk(clientIp(req))) {
+    res.writeHead(429, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'rate limit exceeded' }));
+    return;
+  }
+
+  if (subscribe) {
+    if (req.method !== 'GET') {
+      res.writeHead(405);
+      res.end('Method Not Allowed');
+      return;
+    }
+    // Server-Sent Events: stream each newly-appended slot as a single event.
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    // Flush any existing slots so late subscribers still see the state.
+    for (const slot of pairStore.getSlots(addr)) {
+      res.write(`event: slot\ndata: ${JSON.stringify(slot)}\n\n`);
+    }
+    const unsub = pairStore.subscribe(addr, (slot) => {
+      res.write(`event: slot\ndata: ${JSON.stringify(slot)}\n\n`);
+    });
+    // Periodic comment keeps proxies from idling the stream closed.
+    const ping = setInterval(() => res.write(': ping\n\n'), 25_000);
+    const teardown = () => {
+      clearInterval(ping);
+      unsub();
+      try {
+        res.end();
+      } catch {
+        // ignore
+      }
+    };
+    req.on('close', teardown);
+    req.on('error', teardown);
+    return;
+  }
+
+  if (req.method === 'GET') {
+    const slots = pairStore.getSlots(addr);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ slots }));
+    return;
+  }
+
+  if (req.method === 'POST') {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      try {
+        const body = Buffer.concat(chunks).toString('utf-8');
+        let parsed: { data?: unknown; kind?: unknown };
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'invalid JSON body' }));
+          return;
+        }
+        if (typeof parsed.data !== 'string' || parsed.data.length === 0) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'data field required (string)' }));
+          return;
+        }
+        const kind =
+          typeof parsed.kind === 'string' && parsed.kind.length > 0
+            ? parsed.kind
+            : undefined;
+        const { id, mailboxExpiresAt } = pairStore.postSlot(addr, {
+          data: parsed.data,
+          kind,
+        });
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id, mailboxExpiresAt }));
+      } catch (err) {
+        if (err instanceof PairStoreFullError) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'mailbox full' }));
+          return;
+        }
+        if (err instanceof PairStoreTooLargeError) {
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+          return;
+        }
+        const message = err instanceof Error ? err.message : 'unknown error';
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: message }));
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'DELETE') {
+    pairStore.deleteMailbox(addr);
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  res.writeHead(405);
+  res.end('Method Not Allowed');
+}
 
 // Push notifications are optional: only initialised when VAPID keys are set.
 let pushRoutes: PushRoutes | null = null;
@@ -34,77 +195,6 @@ if (vapidPublicKey && vapidPrivateKey) {
 // Quicksave-specific agent watcher tracking
 // agentId → Set of pwa peer addresses ('pwa:{pwaKey}') watching that agent
 const agentWatchers = new Map<string, Set<string>>();
-
-function handleSyncRequest(
-  req: IncomingMessage,
-  res: ServerResponse,
-  keyHash: string,
-  isTombstoneRoute: boolean
-): void {
-  if (req.method === 'GET' && !isTombstoneRoute) {
-    const entry = syncStore.get(keyHash);
-    if (!entry) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Not found' }));
-      return;
-    }
-    if (entry.type === 'tombstone') {
-      res.writeHead(410, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ type: 'tombstone', data: entry.data }));
-      return;
-    }
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ type: 'blob', data: entry.data }));
-    return;
-  }
-
-  if (req.method === 'PUT') {
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
-    req.on('end', () => {
-      const body = Buffer.concat(chunks).toString('utf-8');
-      if (isTombstoneRoute) {
-        try {
-          syncStore.putTombstone(keyHash, body);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true }));
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : 'Unknown error';
-          if (message.includes('tombstone')) {
-            res.writeHead(409, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Tombstone already exists' }));
-          } else {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: message }));
-          }
-        }
-      } else {
-        try {
-          syncStore.put(keyHash, body);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true }));
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : 'Unknown error';
-          if (message.includes('tombstone')) {
-            const entry = syncStore.get(keyHash);
-            res.writeHead(410, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Tombstone exists', type: 'tombstone', data: entry?.data }));
-          } else if (message.includes('exceeds max size')) {
-            res.writeHead(413, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: message }));
-          } else {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: message }));
-          }
-        }
-      }
-    });
-    return;
-  }
-
-  res.writeHead(405);
-  res.end('Method Not Allowed');
-}
 
 // relay is set before any requests arrive (server listens after createRelay returns)
 let relay!: RelayInstance;
@@ -152,6 +242,7 @@ relay = createRelay({
 
     onPeerDisconnect(peer: Peer, registry: PeerRegistryInterface) {
       console.log(`[DISCONNECT] ${peer.address}`);
+      tombstoneSubs.unsubscribeAll(peer.ws);
       if (peer.channel === 'agent') {
         // Notify watchers that agent went offline
         const watchers = agentWatchers.get(peer.id) ?? new Set<string>();
@@ -194,6 +285,32 @@ relay = createRelay({
         sendMessage(peer.ws, { type: 'agent-status', payload: { agentId, online: !!agentPeer } });
         return true;
       }
+
+      // Agents subscribe to tombstone push so group-reset reaches them
+      // without waiting on the periodic catch-up GET. We push any already-
+      // present tombstone immediately so late subscribers don't miss it.
+      if (m.type === 'tombstone-subscribe' && peer.channel === 'agent') {
+        const payload = m.payload as { keyHash?: unknown } | undefined;
+        const keyHash = payload?.keyHash;
+        if (typeof keyHash !== 'string' || keyHash.length < 8) return true;
+        tombstoneSubs.subscribe(keyHash, peer.ws);
+        const existing = syncStore.get(keyHash);
+        if (existing && existing.type === 'tombstone') {
+          sendMessage(peer.ws, {
+            type: 'tombstone-event',
+            payload: { keyHash, data: existing.data },
+          });
+        }
+        return true;
+      }
+
+      if (m.type === 'tombstone-unsubscribe' && peer.channel === 'agent') {
+        const payload = m.payload as { keyHash?: unknown } | undefined;
+        const keyHash = payload?.keyHash;
+        if (typeof keyHash !== 'string' || keyHash.length < 8) return true;
+        tombstoneSubs.unsubscribe(keyHash, peer.ws);
+        return true;
+      }
     },
 
     onHttpRequest(req: IncomingMessage, res: ServerResponse, next: () => void) {
@@ -212,15 +329,31 @@ relay = createRelay({
         res.end(JSON.stringify({
           ...stats,
           syncStore: syncStore.stats,
+          pairStore: pairStore.stats,
+          tombstoneSubs: tombstoneSubs.stats,
           push: pushRoutes?.stats() ?? null,
         }));
         return;
       }
 
       // Handle /sync/* routes
-      const syncMatch = req.url?.match(/^\/sync\/([a-zA-Z0-9_-]{8,64})(\/tombstone)?$/);
-      if (syncMatch) {
-        handleSyncRequest(req, res, syncMatch[1], !!syncMatch[2]);
+      const sync = parseSyncUrl(req.url);
+      if (sync) {
+        if (!rateLimitOk(clientIp(req))) {
+          res.writeHead(429, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'rate limit exceeded' }));
+          return;
+        }
+        syncRouter.handle(req, res, sync.keyHash, sync.subpath);
+        return;
+      }
+
+      // Handle /pair-requests/* routes
+      const pairMatch = req.url?.match(
+        /^\/pair-requests\/([A-Za-z0-9_-]{8,128})(\/subscribe)?(?:\?.*)?$/,
+      );
+      if (pairMatch) {
+        handlePairRequest(req, res, pairMatch[1], !!pairMatch[2]);
         return;
       }
 
@@ -241,6 +374,7 @@ console.log(`Quicksave Signaling Server v${typeof VERSION !== 'undefined' ? VERS
 console.log(`  Agent: ws://localhost:${PORT}/agent/{agentId}`);
 console.log(`  PWA:   ws://localhost:${PORT}/pwa/{encodedPublicKey}`);
 console.log(`  Sync:  http://localhost:${PORT}/sync/{keyHash}`);
+console.log(`  Pair:  http://localhost:${PORT}/pair-requests/{addr}`);
 if (pushRoutes) console.log(`  Push:  http://localhost:${PORT}/push/{signPubKey}/{register|unregister|notify}`);
 
 process.on('SIGINT', () => {

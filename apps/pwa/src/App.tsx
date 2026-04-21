@@ -165,9 +165,8 @@ function AppContent() {
   const { reset: resetGit, setCurrentRepoPath } = useGitStore();
   const { machines, recordConnection } = useMachineStore();
   const machineTombstones = useMachineStore((s) => s.machineTombstones);
-  const pinnedProjects = useMachineStore((s) => s.pinnedProjects);
   const applySyncedState = useMachineStore((s) => s.applySyncedState);
-  const { initialize: initIdentity, publicKey: identityPublicKey, pairedDevices, getSecretKey, clearAll: clearIdentity, removePairedDevice, initialized: identityInitialized } = useIdentityStore();
+  const { initialize: initIdentity, publicKey: identityPublicKey, getSecretKey, getSigningSecretKey, getSigningPublicKey, clearAll: clearIdentity, initialized: identityInitialized } = useIdentityStore();
   const agentIdRef = useRef<string | null>(null);
 
   // Resolve the MessageBus for whichever agent the client currently treats
@@ -224,7 +223,6 @@ function AppContent() {
     addRepo,
     cloneRepo,
     addCodingPath,
-    removeCodingPath,
     getGitIdentity,
     setGitIdentity,
     checkAgentUpdate,
@@ -258,6 +256,7 @@ function AppContent() {
     unsubscribeSession,
     listProjectSummaries,
     listProjectRepos,
+    deleteProject,
   } = useClaudeOperations(getActiveBus);
 
   const [showPathBrowser, setShowPathBrowser] = useState(false);
@@ -335,14 +334,13 @@ function AppContent() {
       apiKey: await getApiKeyExport(),
       machines: s.machines,
       machineTombstones: s.machineTombstones,
-      pinnedProjects: s.pinnedProjects,
       exportedAt: new Date().toISOString(),
     };
   }, []);
 
-  // Pull this device's mailbox on startup and merge into local state. If the
-  // merge yields something different from what the remote sent, re-push so
-  // peers converge on the union.
+  // Pull the shared group mailbox on startup (address = hash(groupPubkey)).
+  // All PWAs that share `masterSecret` derive the same pubkey, so we read
+  // and write to one mailbox — no per-device fan-out.
   useEffect(() => {
     if (!identityPublicKey || !identityInitialized) return;
 
@@ -365,11 +363,9 @@ function AppContent() {
         const local = await buildLocalPayload();
         const merged = mergeSyncPayloads(local, result.payload);
 
-        // Persist merged state locally.
         applySyncedState({
           machines: merged.machines,
           machineTombstones: merged.machineTombstones,
-          pinnedProjects: merged.pinnedProjects,
         });
         if (merged.masterSecret) {
           await applyMasterSecret(merged.masterSecret.value, merged.masterSecret.updatedAt);
@@ -378,17 +374,19 @@ function AppContent() {
           await applyApiKey(merged.apiKey.value, merged.apiKey.updatedAt);
         }
 
-        // If our merged view differs from the remote blob we read, fan it
-        // back out so other paired devices see the union.
-        if (!syncPayloadsEqual(merged, result.payload) && pairedDevices.length > 0) {
-          for (const device of pairedDevices) {
-            if (cancelled) return;
-            try {
-              const r = await syncClient.pushToDevice(merged, device.publicKey);
-              if (r === 'tombstone') removePairedDevice(device.publicKey);
-            } catch (error) {
-              console.error(`Re-push failed for ${device.publicKey.slice(0, 8)}:`, error);
-            }
+        // If the merge widened our view beyond the remote blob we read,
+        // write it back so the next reader sees the union.
+        if (!syncPayloadsEqual(merged, result.payload)) {
+          const signingSecret = await getSigningSecretKey();
+          const signingPublic = await getSigningPublicKey();
+          if (!signingSecret || !signingPublic) return;
+          try {
+            await syncClient.pushToMailbox(merged, identityPublicKey, {
+              publicKey: signingPublic,
+              secretKey: signingSecret,
+            });
+          } catch (error) {
+            console.error('Re-push to shared mailbox failed:', error);
           }
         }
       } catch (error) {
@@ -400,41 +398,41 @@ function AppContent() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identityPublicKey, identityInitialized]);
 
-  // Push to all paired devices whenever local synced state changes.
+  // Push to the shared group mailbox whenever local synced state changes.
   const lastPushedRef = useRef<SyncPayloadV3 | null>(null);
   useEffect(() => {
-    if (pairedDevices.length === 0 || !identityPublicKey) return;
+    if (!identityPublicKey) return;
 
     let cancelled = false;
     (async () => {
       try {
         const payload = await buildLocalPayload();
-        // Skip if nothing substantive changed since the last push — the
-        // effect re-fires on exportedAt changes otherwise.
         if (lastPushedRef.current && syncPayloadsEqual(lastPushedRef.current, payload)) {
           return;
         }
         lastPushedRef.current = payload;
 
-        for (const device of pairedDevices) {
-          if (cancelled) return;
-          try {
-            const result = await syncClient.pushToDevice(payload, device.publicKey);
-            if (result === 'tombstone') {
-              removePairedDevice(device.publicKey);
-            }
-          } catch (error) {
-            console.error(`Failed to sync to device ${device.publicKey.slice(0, 8)}:`, error);
-          }
+        const signingSecret = await getSigningSecretKey();
+        const signingPublic = await getSigningPublicKey();
+        if (!signingSecret || !signingPublic) return;
+        if (cancelled) return;
+
+        try {
+          await syncClient.pushToMailbox(payload, identityPublicKey, {
+            publicKey: signingPublic,
+            secretKey: signingSecret,
+          });
+        } catch (error) {
+          console.error('Failed to push to shared mailbox:', error);
         }
       } catch (error) {
-        console.error('Failed to push sync:', error);
+        console.error('Failed to build sync payload:', error);
       }
     })();
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [machines, machineTombstones, pinnedProjects, pairedDevices, identityPublicKey]);
+  }, [machines, machineTombstones, identityPublicKey]);
 
   // Track current location for reconnect-safe navigation
   const locationRef = useRef(location);
@@ -592,6 +590,20 @@ function AppContent() {
           busesRef.current.get(agentId)?.transport.notifyDisconnected();
         }
       },
+    },
+    // Signing keypair provider for V2 key-exchange TOFU on the agent side.
+    // Returns null if the identity store hasn't finished initializing, and
+    // the client will retry on its own backoff schedule.
+    async () => {
+      try {
+        const secretKey = await getSigningSecretKey();
+        const publicKey = await getSigningPublicKey();
+        if (!secretKey || !publicKey) return null;
+        return { publicKey, secretKey };
+      } catch (err) {
+        console.error('Failed to load signing keypair for key-exchange:', err);
+        return null;
+      }
     });
 
     clientRef.current = client;
@@ -764,6 +776,29 @@ function AppContent() {
     state === 'connecting' || state === 'reconnecting' || (state === 'error' && !!useConnectionStore.getState().error)
   );
 
+  // Delete project: archive all sessions under cwd + remove coding path on
+  // agent, then refresh local summaries/managed paths so the home screen
+  // drops the project immediately.
+  const handleDeleteProject = useCallback(async (cwd: string) => {
+    const result = await deleteProject(cwd);
+    if (result?.success) {
+      const connState = useConnectionStore.getState();
+      connState.setAvailableCodingPaths(
+        connState.availableCodingPaths.filter((cp) => cp.path !== cwd),
+      );
+      const projects = await listProjectSummaries();
+      const agentId = clientRef.current?.getActiveAgentId() ?? null;
+      if (projects && agentId) {
+        const agentConn = useConnectionStore.getState().agentConnections[agentId];
+        const managedPaths = (agentConn?.availableCodingPaths ?? [])
+          .map((p) => p.path)
+          .filter((p) => p !== cwd);
+        useMachineStore.getState().cacheAllProjects(agentId, projects, managedPaths);
+      }
+    }
+    return result;
+  }, [deleteProject, listProjectSummaries]);
+
   const projectRepoElement = (
     <ProjectRouteRepo
       onConnect={handleConnect}
@@ -800,7 +835,7 @@ function AppContent() {
       onConnect={handleConnect}
       onSwitchMachine={handleSwitchMachine}
       onListProjectRepos={listProjectRepos}
-      onRemoveCodingPath={removeCodingPath}
+      onDeleteProject={handleDeleteProject}
       onRestartAgent={restartAgent}
       onListArchivedSessions={listArchivedSessions}
       onRestoreSession={restoreSession}
@@ -1043,7 +1078,7 @@ function ProjectRouteDetail({
   onConnect,
   onSwitchMachine,
   onListProjectRepos,
-  onRemoveCodingPath,
+  onDeleteProject,
   onRestartAgent,
   onListArchivedSessions,
   onRestoreSession,
@@ -1051,7 +1086,7 @@ function ProjectRouteDetail({
   onConnect: (agentId: string, publicKey: string) => void;
   onSwitchMachine: (agentId: string) => void;
   onListProjectRepos?: (cwd: string) => Promise<import('@sumicom/quicksave-shared').ProjectRepo[] | null>;
-  onRemoveCodingPath?: (path: string) => void;
+  onDeleteProject?: (cwd: string) => Promise<import('@sumicom/quicksave-shared').ProjectDeleteResponsePayload | null>;
   onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
   onListArchivedSessions?: (cwd: string, offset?: number, limit?: number) => Promise<import('@sumicom/quicksave-shared').SessionListArchivedResponsePayload | null>;
   onRestoreSession?: (sessionId: string, cwd: string) => Promise<void>;
@@ -1067,7 +1102,7 @@ function ProjectRouteDetail({
       cwd={cwd}
       agentId={agentId}
       onListProjectRepos={onListProjectRepos}
-      onRemoveCodingPath={onRemoveCodingPath}
+      onDeleteProject={onDeleteProject}
       onRestartAgent={onRestartAgent}
       onListArchivedSessions={onListArchivedSessions}
       onRestoreSession={onRestoreSession}

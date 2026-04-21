@@ -466,6 +466,23 @@ export interface ProjectListSummariesResponsePayload {
   error?: string;
 }
 
+/**
+ * Hide a project from the PWA list without deleting the cwd on disk.
+ * Archives every active session under the cwd and drops it from the agent's
+ * managed coding paths. Data on disk (archived session JSON) is preserved so
+ * sessions can be restored individually later.
+ */
+export interface ProjectDeleteRequestPayload {
+  cwd: string;
+}
+
+export interface ProjectDeleteResponsePayload {
+  success: boolean;
+  /** Number of sessions archived as part of the deletion. */
+  archivedCount?: number;
+  error?: string;
+}
+
 export interface ProjectRepo {
   path: string;
   name: string;
@@ -826,11 +843,34 @@ export type SignalingMessageType =
   | 'bye'
   | 'pwa-bye'
   | 'sync-updated'
-  | 'error';
+  | 'error'
+  // Agent → Relay: subscribe this WS to push notifications for tombstone
+  // writes on the mailbox identified by `keyHash`. Relay replies with an
+  // immediate `tombstone-event` if a tombstone already exists on that key.
+  | 'tombstone-subscribe'
+  // Agent → Relay: inverse of the above. Best-effort; subscriptions also die
+  // when the underlying WS disconnects.
+  | 'tombstone-unsubscribe'
+  // Relay → Agent: either the initial replay on subscribe or a live push
+  // emitted by `PUT /sync/{keyHash}/tombstone`. `data` is the raw signed
+  // ciphertext (same body shape the GET catch-up path returns).
+  | 'tombstone-event';
 
 export interface SignalingMessage {
   type: SignalingMessageType;
   payload?: unknown;
+}
+
+/** Payload for `tombstone-subscribe` / `tombstone-unsubscribe`. */
+export interface TombstoneSubscribePayload {
+  keyHash: string;
+}
+
+/** Payload for `tombstone-event` (relay → agent). */
+export interface TombstoneEventPayload {
+  keyHash: string;
+  /** Raw signed tombstone ciphertext — client parses + verifies. */
+  data: string;
 }
 
 // ============================================================================
@@ -840,12 +880,21 @@ export interface SignalingMessage {
 /**
  * Key exchange message - PWA sends encrypted session DEK to Agent
  * This provides forward secrecy: if Agent is compromised, only current session is exposed
+ *
+ * `sigPubkey` + `signature` carry proof-of-possession of the PWA group's
+ * shared Ed25519 signing key (derived from `masterSecret`). Agent uses this
+ * for TOFU pinning on the first successful handshake and for equality-match
+ * against the pinned key on every subsequent handshake. Canonical signed
+ * body is produced by `canonicalKeyExchangeV2Body()` in
+ * `packages/shared/src/keyExchange.ts`.
  */
 export interface KeyExchangeV2 {
   type: 'key-exchange';
   version: 2;
   encryptedDEK: string; // Session DEK encrypted with Agent's public key (base64)
   timestamp: number; // Unix timestamp for replay protection
+  sigPubkey: string; // base64 Ed25519 public key (shared across the PWA group)
+  signature: string; // base64 Ed25519 signature over canonicalKeyExchangeV2Body
 }
 
 /**
@@ -884,12 +933,6 @@ export interface Tombstone {
   type: 'rotated';
   oldPublicKey: string;  // base64 X25519 public key
   signature: string;     // Ed25519 sign("rotated:{oldPublicKey}", oldSigningSecretKey)
-}
-
-export interface PairedDevice {
-  publicKey: string;
-  label: string;
-  pairedAt: number;
 }
 
 // ============================================================================

@@ -380,6 +380,31 @@ Agent ──[POST /push/{signPubKey}/notify,   signed]──▶ Relay → web-pu
 - 授權提示：首次連線後若 `Notification.permission === 'default'` 顯示 Banner
 - 自動 offer：每次連線完成且權限已 `granted`，由 `App.tsx` 重送 `push:subscription-offer`（agent 的 register 是 upsert，等冪）
 
+### PWA 群組同步（shared-mailbox sync）
+
+PWA 之間的「machine 列表 / machine tombstones / apiKey / masterSecret」走 relay 的 signed sync mailbox，不走 WebRTC：
+
+- 所有同一帳號的 PWA 派生同一把 `masterSecret`（放 IndexedDB）→ `deriveSharedKeys()` 產生共用 X25519 + Ed25519 keypair
+- 單一 mailbox 位址 = `hash(shared_X25519_pubkey)`；所有 paired PWA 都讀寫同一個 mailbox
+- Client (`apps/pwa/src/lib/syncClient.ts`) 每次 push 用 `SignedSyncEnvelope`（Ed25519 簽）給 relay；relay 用 per-mailbox mutex（10s TTL）serialize PUT，409 時 client 指數退避重試
+- Payload 是 `SyncPayloadV3`（`apps/pwa/src/lib/syncMerge.ts`），欄位級 `Timestamped<T>` + LWW 合併
+
+### Agent TOFU 信任錨 + Tombstone catch-up
+
+Agent 不持 `masterSecret`，只 TOFU 釘一把 PWA 群組的共用 pubkey：
+
+- `AgentPairState = 'unpaired' | 'paired' | 'closed'`
+- **unpaired** → 第一次 signed handshake 把 peer 的 X25519 + Ed25519 pubkey 寫入 `~/.quicksave/config.json` 的 `peerPWAPublicKey` / `peerPWASignPublicKey`
+- **paired** → 後續 handshake 必須用 pinned Ed25519 pubkey 簽章；不符即拒
+- **closed**（runtime flag）→ 全拒入站 handshake；由 CLI `quicksave pair` 解鎖
+- Tombstone 檢查走 catch-up GET：relay `'connected'` 事件觸發 `runTombstoneCheck`（`apps/agent/src/tombstoneCheck.ts`），驗章通過後清除 config 的 peer pubkey、emit `'tombstoned'`、設 closed flag
+
+CLI：
+- `quicksave status` → 印出 state / agentId / peers / peerPWA pubkey
+- `quicksave pair` → 解鎖 closed + 顯示 QR/URL
+
+詳細設計見 `docs/guidelines/sync-security.md`。
+
 ### Request-response 模式（MessageBus command）
 
 ```typescript
@@ -495,7 +520,17 @@ claudeStore.ts
   historyHasMore: boolean
   selectedModel: string
   selectedPermissionMode: string
+
+identityStore.ts
+  publicKey: string | null             // base64 X25519 group pubkey（所有 PWA 相同）
+  initialized: boolean
+  // 所有 keypair 都由 `masterSecret` 派生；store 本身不存任何 keypair
+  getSecretKey() / getSigningSecretKey() / getSigningPublicKey()
+  rotateIdentity()  // 產生新 masterSecret → 回傳舊 signing keys 供 tombstone
+  clearAll()        // 清除 masterSecret
 ```
+
+詳細 threat model 與 key derivation 見 `docs/guidelines/sync-security.md`。
 
 ### Hook API（`useClaudeOperations.ts`）
 

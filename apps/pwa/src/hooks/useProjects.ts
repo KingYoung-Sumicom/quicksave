@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useMachineStore, selectPinnedProjectIds } from '../stores/machineStore';
+import { useMachineStore } from '../stores/machineStore';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useClaudeStore } from '../stores/claudeStore';
 import { toProjectId } from '../lib/projectId';
@@ -16,23 +16,19 @@ export interface ProjectEntry {
   lastSessionTitle?: string;
   hasActiveSession?: boolean;
   isConnected: boolean;
-  isPinned: boolean;
 }
 
 /**
  * Derives a sorted project list from machineStore + connectionStore + claudeStore.
  * For the connected machine, live session data overrides cached data.
- * Pinned projects first, then sorted by lastActivityAt desc.
+ * Sorted by lastActivityAt desc.
  */
 export function useProjects(): ProjectEntry[] {
   const machines = useMachineStore((s) => s.machines);
-  const pinnedProjectIds = useMachineStore(selectPinnedProjectIds);
   const agentConnections = useConnectionStore((s) => s.agentConnections);
   const sessions = useClaudeStore((s) => s.sessions);
 
   return useMemo(() => {
-    const pinnedSet = new Set(pinnedProjectIds);
-
     // Pre-compute live session stats keyed by `{agentId}\0{cwd}` so the same
     // cwd on two different machines doesn't collide.
     // Use lastPromptAt (stable during execution) in preference to lastModified
@@ -88,7 +84,6 @@ export function useProjects(): ProjectEntry[] {
           lastSessionTitle: live?.lastSessionTitle ?? cached.lastSessionTitle,
           hasActiveSession: live?.hasActiveSession,
           isConnected: machineIsConnected,
-          isPinned: pinnedSet.has(projectId),
         });
       }
 
@@ -109,15 +104,13 @@ export function useProjects(): ProjectEntry[] {
           lastSessionTitle: live?.lastSessionTitle,
           hasActiveSession: live?.hasActiveSession,
           isConnected: machineIsConnected,
-          isPinned: pinnedSet.has(projectId),
         });
       }
     }
 
-    // Sort: pinned first, then projects with sessions before those without,
-    // then by lastActivityAt desc, then alphabetically by displayName
+    // Sort: projects with sessions before those without, then by
+    // lastActivityAt desc, then alphabetically by displayName
     entries.sort((a, b) => {
-      if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
       const aHas = a.sessionCount > 0 ? 1 : 0;
       const bHas = b.sessionCount > 0 ? 1 : 0;
       if (aHas !== bHas) return bHas - aHas;
@@ -126,5 +119,5 @@ export function useProjects(): ProjectEntry[] {
     });
 
     return entries;
-  }, [machines, pinnedProjectIds, agentConnections, sessions]);
+  }, [machines, agentConnections, sessions]);
 }

@@ -1,6 +1,5 @@
 import type {
   Machine,
-  PinnedProjectState,
   CachedProjectData,
 } from '../stores/machineStore';
 
@@ -21,8 +20,6 @@ export interface SyncPayloadV3 {
   machines: Machine[];
   /** agentId → deletedAt (ms). Supersedes a machine with older updatedAt. */
   machineTombstones: Record<string, number>;
-  /** projectId → { pinned, updatedAt }. pinned=false is a soft tombstone. */
-  pinnedProjects: Record<string, PinnedProjectState>;
   exportedAt: string;
 }
 
@@ -109,7 +106,6 @@ function mergeMachine(a: Machine, b: Machine): Machine {
  *   otherwise the machine survives and the tombstone is dropped.
  * - machineTombstones: union, take max deletedAt per agentId. Drop tombstones
  *   superseded by a revived machine.
- * - pinnedProjects: per-projectId LWW by updatedAt.
  */
 export function mergeSyncPayloads(a: SyncPayloadV3, b: SyncPayloadV3): SyncPayloadV3 {
   // Tombstones: union with max(deletedAt).
@@ -140,22 +136,12 @@ export function mergeSyncPayloads(a: SyncPayloadV3, b: SyncPayloadV3): SyncPaylo
     machines.push(m);
   }
 
-  // Pinned projects: LWW per projectId.
-  const pinnedProjects: Record<string, PinnedProjectState> = { ...a.pinnedProjects };
-  for (const [id, entry] of Object.entries(b.pinnedProjects)) {
-    const existing = pinnedProjects[id];
-    if (!existing || entry.updatedAt > existing.updatedAt) {
-      pinnedProjects[id] = entry;
-    }
-  }
-
   return {
     version: 3,
     masterSecret: pickLatest(a.masterSecret, b.masterSecret),
     apiKey: pickLatest(a.apiKey, b.apiKey),
     machines,
     machineTombstones: tombstones,
-    pinnedProjects,
     exportedAt: a.exportedAt >= b.exportedAt ? a.exportedAt : b.exportedAt,
   };
 }
@@ -171,7 +157,6 @@ export function syncPayloadsEqual(a: SyncPayloadV3, b: SyncPayloadV3): boolean {
   if (!timestampedEqual(a.masterSecret, b.masterSecret)) return false;
   if (!timestampedEqual(a.apiKey, b.apiKey)) return false;
   if (!recordEqual(a.machineTombstones, b.machineTombstones)) return false;
-  if (!pinnedEqual(a.pinnedProjects, b.pinnedProjects)) return false;
 
   if (a.machines.length !== b.machines.length) return false;
   const bMap = new Map(b.machines.map((m) => [m.agentId, m]));
@@ -194,20 +179,6 @@ function timestampedEqual<T>(
 function recordEqual(a: Record<string, number>, b: Record<string, number>): boolean {
   const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
   for (const k of keys) if (a[k] !== b[k]) return false;
-  return true;
-}
-
-function pinnedEqual(
-  a: Record<string, PinnedProjectState>,
-  b: Record<string, PinnedProjectState>,
-): boolean {
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-  for (const k of keys) {
-    const av = a[k];
-    const bv = b[k];
-    if (!av || !bv) return false;
-    if (av.pinned !== bv.pinned || av.updatedAt !== bv.updatedAt) return false;
-  }
   return true;
 }
 

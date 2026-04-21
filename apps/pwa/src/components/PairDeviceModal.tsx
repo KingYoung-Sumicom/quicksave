@@ -5,10 +5,10 @@ import { ErrorBox } from './ui/ErrorBox';
 import { Spinner } from './ui/Spinner';
 import {
   PairClient,
-  getSharedMockRelay,
   type PairInviteHandle,
   type Candidate,
 } from '../lib/pairClient';
+import { getDefaultPairTransport } from '../lib/pairTransport';
 import { getMasterSecret } from '../lib/secureStorage';
 
 interface PairDeviceModalProps {
@@ -48,7 +48,7 @@ export function PairDeviceModal({ onClose }: PairDeviceModalProps) {
         setSasInput('');
         setSasFeedback(null);
         const masterSecret = await getMasterSecret();
-        const transport = getSharedMockRelay();
+        const transport = getDefaultPairTransport();
         const client = new PairClient(transport);
         const invite = await client.createInvite({
           baseUrl,

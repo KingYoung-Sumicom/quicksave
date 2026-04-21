@@ -15,3 +15,9 @@ export * from './protocol.js';
 
 // Permission utilities
 export * from './permissions.js';
+
+// Signed sync envelope
+export * from './syncEnvelope.js';
+
+// Signed V2 key-exchange helpers
+export * from './keyExchange.js';

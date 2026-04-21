@@ -16,7 +16,7 @@ import { hostname } from 'os';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 
-import { getOrCreateConfig, getManagedRepos, getManagedCodingPaths, addManagedRepo, removeManagedRepo } from '../config.js';
+import { getOrCreateConfig, getManagedRepos, getManagedCodingPaths, addManagedRepo, removeManagedRepo, loadConfig, type AgentConfig } from '../config.js';
 import { AgentConnection } from '../connection/connection.js';
 import { BusServerTransport } from '../messageBus/busServerTransport.js';
 import { MessageBusServer } from '@sumicom/quicksave-message-bus';
@@ -34,7 +34,15 @@ import {
 } from './singleton.js';
 import { writeServiceState, removeServiceState } from './stateStore.js';
 import { IPC_VERSION, BUILD_ID, isDebugEnabled, isDev } from './types.js';
-import type { ServiceState, StatusResult, PairingInfoResult, RepoInfo, DebugResult } from './types.js';
+import type {
+  ServiceState,
+  StatusResult,
+  PairingInfoResult,
+  RepoInfo,
+  DebugResult,
+  AgentStateResult,
+  UnlockPairingResult,
+} from './types.js';
 import {
   createMessage,
   type CardEvent,
@@ -621,15 +629,42 @@ function registerDaemonMethods(
   ipcServer: IpcServer,
   connection: AgentConnection,
   messageHandler: MessageHandler,
-  config: { agentId: string; keyPair: { publicKey: string }; signKeyPair: { publicKey: string }; signalingServer: string },
+  config: AgentConfig,
 ): void {
-  // get-pairing-info
-  ipcServer.registerMethod('get-pairing-info', (): PairingInfoResult => {
-    const signPk = config.signKeyPair.publicKey;
-    const pairingUrl = `https://quicksave.dev/#/connect/${config.agentId}?pk=${encodeURIComponent(config.keyPair.publicKey)}&spk=${encodeURIComponent(signPk)}&name=${encodeURIComponent(hostname())}`;
+  // get-agent-state — C4 coarse pair state + identity snapshot for CLI.
+  // Reads fresh config on every call so rotation from `unlock-pairing` or a
+  // tombstone is reflected immediately.
+  ipcServer.registerMethod('get-agent-state', (): AgentStateResult => {
+    const current = loadConfig() ?? config;
     return {
-      agentId: config.agentId,
-      publicKey: config.keyPair.publicKey,
+      state: connection.getState(),
+      agentId: current.agentId,
+      publicKey: current.keyPair.publicKey,
+      signPublicKey: current.signKeyPair.publicKey,
+      peerPWAPublicKey: current.peerPWAPublicKey ?? null,
+      peerPWASignPublicKey: current.peerPWASignPublicKey ?? null,
+      peerCount: connection.getPeerCount(),
+      connectionState: connection.hasPeers() ? 'connected' : 'disconnected',
+    };
+  });
+
+  // unlock-pairing — exits `closed` state and rotates the agent's own
+  // cryptographic identity (agentId + X25519 + Ed25519). Awaits signaling
+  // reconnect so `get-pairing-info` right after returns a live address.
+  ipcServer.registerMethod('unlock-pairing', async (): Promise<UnlockPairingResult> => {
+    const previousState = connection.getState();
+    await connection.unlockPairing();
+    return { previousState, state: connection.getState() };
+  });
+
+  // get-pairing-info — always reads fresh config so rotations are reflected
+  ipcServer.registerMethod('get-pairing-info', (): PairingInfoResult => {
+    const current = loadConfig() ?? config;
+    const signPk = current.signKeyPair.publicKey;
+    const pairingUrl = `https://quicksave.dev/#/connect/${current.agentId}?pk=${encodeURIComponent(current.keyPair.publicKey)}&spk=${encodeURIComponent(signPk)}&name=${encodeURIComponent(hostname())}`;
+    return {
+      agentId: current.agentId,
+      publicKey: current.keyPair.publicKey,
       signPublicKey: signPk,
       pairingUrl,
       connectionState: connection.hasPeers() ? 'connected' : 'disconnected',

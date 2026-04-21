@@ -12,6 +12,7 @@ import { pathToHash } from '../lib/pathHash';
 import type {
   ClaudeSessionSummary,
   ProjectRepo,
+  ProjectDeleteResponsePayload,
   SessionListArchivedResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { ArchivedSessionsList } from './ArchivedSessionsList';
@@ -23,7 +24,7 @@ interface ProjectDetailProps {
   cwd: string | undefined;
   agentId: string;
   onListProjectRepos?: (cwd: string) => Promise<ProjectRepo[] | null>;
-  onRemoveCodingPath?: (path: string) => void;
+  onDeleteProject?: (cwd: string) => Promise<ProjectDeleteResponsePayload | null>;
   onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
   onListArchivedSessions?: (cwd: string, offset?: number, limit?: number) => Promise<SessionListArchivedResponsePayload | null>;
   onRestoreSession?: (sessionId: string, cwd: string) => Promise<void>;
@@ -36,7 +37,7 @@ export function ProjectDetail({
   cwd,
   agentId,
   onListProjectRepos,
-  onRemoveCodingPath,
+  onDeleteProject,
   onRestartAgent,
   onListArchivedSessions,
   onRestoreSession,
@@ -86,12 +87,16 @@ export function ProjectDetail({
     navigate(`/p/${projectId}/s/new?new`);
   }, [navigate, projectId]);
 
-  const handleRemoveProject = useCallback(() => {
+  const handleRemoveProject = useCallback(async () => {
     if (!cwd || !agentId) return;
-    onRemoveCodingPath?.(cwd);
+    const result = await onDeleteProject?.(cwd);
+    if (result && !result.success) {
+      console.error('Failed to delete project:', result.error);
+      return;
+    }
     removeProject(agentId, cwd);
     navigate('/', { replace: true });
-  }, [cwd, agentId, onRemoveCodingPath, removeProject, navigate]);
+  }, [cwd, agentId, onDeleteProject, removeProject, navigate]);
 
   // Filter sessions for this project: must match both the resolved cwd AND
   // the owning machine agent, since two machines can share the same cwd
@@ -148,7 +153,7 @@ export function ProjectDetail({
                     onClick={() => { setShowMenu(false); setShowRemoveConfirm(true); }}
                     className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-slate-600 transition-colors"
                   >
-                    Remove Project
+                    Delete Project
                   </button>
                 </div>
               </>
@@ -338,12 +343,12 @@ export function ProjectDetail({
 
       {showRemoveConfirm && (
         <ConfirmModal
-          title="Remove Project?"
-          message={`Remove "${displayName}" from your project list?`}
-          confirmLabel="Remove"
+          title="Delete Project?"
+          message={`Hide "${displayName}" from Quicksave? Active sessions will be archived (restorable individually). The actual folder on disk is not touched.`}
+          confirmLabel="Delete"
           onConfirm={() => {
             setShowRemoveConfirm(false);
-            handleRemoveProject();
+            void handleRemoveProject();
           }}
           onCancel={() => setShowRemoveConfirm(false)}
         />

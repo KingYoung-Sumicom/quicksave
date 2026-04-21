@@ -180,6 +180,28 @@ export interface PairingInfoResult {
 }
 
 // ---------------------------------------------------------------------------
+// get-agent-state / unlock-pairing (C4)
+// ---------------------------------------------------------------------------
+
+export type AgentPairState = 'unpaired' | 'paired' | 'closed';
+
+export interface AgentStateResult {
+  state: AgentPairState;
+  agentId: string;
+  publicKey: string;
+  signPublicKey: string;
+  peerPWAPublicKey: string | null;
+  peerPWASignPublicKey: string | null;
+  peerCount: number;
+  connectionState: 'connected' | 'connecting' | 'disconnected';
+}
+
+export interface UnlockPairingResult {
+  previousState: AgentPairState;
+  state: AgentPairState;
+}
+
+// ---------------------------------------------------------------------------
 // debug introspection
 // ---------------------------------------------------------------------------
 
