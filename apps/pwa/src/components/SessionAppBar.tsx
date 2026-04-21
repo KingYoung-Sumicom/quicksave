@@ -3,7 +3,7 @@ import type { ConfigValue, ProjectRepo, SessionControlRequestResponsePayload } f
 import { useClaudeStore } from '../stores/claudeStore';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { StatusDot, sessionStatusKey, type SessionStatusKey } from './SessionStatusBadge';
-import { BaseStatusBar, MenuButton, BackButton, SettingsGearButton } from './BaseStatusBar';
+import { BaseStatusBar, MenuButton, BackButton, DrawerButton } from './BaseStatusBar';
 import { AgentSettingsDrawer } from './AgentSettingsDrawer';
 
 interface SessionAppBarProps {
@@ -63,7 +63,7 @@ export function SessionAppBar({
             : <MenuButton onClick={onOpenMenu} />
         }
         center={<SessionStatusIndicator />}
-        right={<SettingsGearButton onClick={onOpenSettings} />}
+        right={<DrawerButton onClick={onOpenSettings} />}
       />
 
       <AgentSettingsDrawer

@@ -2168,6 +2168,9 @@ export class MessageHandler {
     } else {
       const { subscription, relayHttpUrl } = message.payload;
       const result = await client.register(subscription, relayHttpUrl);
+      if (!result.ok) {
+        console.warn(`[push] register failed status=${result.status}${result.error ? ` error=${result.error}` : ''}`);
+      }
       payload = result.ok ? { success: true } : { success: false, error: result.error ?? `http-${result.status}` };
     }
     const response = createMessage<PushSubscriptionOfferResponsePayload>('push:subscription-offer:response', payload);

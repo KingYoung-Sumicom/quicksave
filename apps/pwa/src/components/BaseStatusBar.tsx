@@ -81,6 +81,22 @@ export function PlusButton({ onClick, label = 'Add' }: { onClick: () => void; la
   );
 }
 
+/** Reusable right-side drawer toggle button (panel-right icon). */
+export function DrawerButton({ onClick, label = 'Open drawer' }: { onClick: () => void; label?: string }) {
+  return (
+    <button
+      onClick={onClick}
+      className="p-1.5 rounded-md transition-colors hover:bg-slate-700 text-slate-400"
+      aria-label={label}
+    >
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <rect x="3" y="3" width="18" height="18" rx="2" strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} />
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 3v18" />
+      </svg>
+    </button>
+  );
+}
+
 /** Reusable settings gear button */
 export function SettingsGearButton({ onClick }: { onClick: () => void }) {
   return (

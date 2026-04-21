@@ -7,6 +7,7 @@ import { useMachineStore } from './stores/machineStore';
 import { useIdentityStore } from './stores/identityStore';
 import { useGitOperations } from './hooks/useGitOperations';
 import { useClaudeOperations } from './hooks/useClaudeOperations';
+import { useSessionAttention } from './hooks/useSessionAttention';
 import { WebSocketClient } from './lib/websocket';
 import { BusClientTransport } from './lib/busClientTransport';
 import { MessageBusClient } from '@sumicom/quicksave-message-bus';
@@ -862,6 +863,7 @@ function AppContent() {
             onUnsubscribeSession={unsubscribeSession}
             onSetActiveAgent={setActiveAgent}
             onListProjectRepos={listProjectRepos}
+            getBus={getActiveBus}
   />
   );
 
@@ -1130,6 +1132,7 @@ function ProjectRouteSession({
   onUnsubscribeSession,
   onSetActiveAgent,
   onListProjectRepos,
+  getBus,
 }: {
   onConnect: (agentId: string, publicKey: string) => void;
   onSwitchMachine: (agentId: string) => void;
@@ -1148,8 +1151,13 @@ function ProjectRouteSession({
   onUnsubscribeSession?: (sessionId: string) => void;
   onSetActiveAgent?: (agentId: string) => void;
   onListProjectRepos?: (cwd: string) => Promise<import('@sumicom/quicksave-shared').ProjectRepo[] | null>;
+  getBus: () => MessageBusClient | null;
 }) {
   const { projectId, sessionId: urlSessionId } = useParams<{ projectId: string; sessionId: string }>();
+  // Hold the attention topic only while this tab is visible+focused so the
+  // agent's push gate fires for the *other* devices the user isn't holding.
+  const attentionSessionId = urlSessionId && urlSessionId !== 'new' ? urlSessionId : null;
+  useSessionAttention(attentionSessionId, getBus);
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();

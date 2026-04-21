@@ -224,6 +224,17 @@ export async function runDaemon(): Promise<void> {
     },
   );
 
+  // Presence marker for the session view. The PWA subscribes only while the
+  // tab is visible AND focused; it unsubscribes on visibilitychange/blur and
+  // on tab close. We use `subscriberCount(attention) === 0` as the push gate,
+  // so a backgrounded device on another browser doesn't suppress the
+  // notification on the user's phone. No snapshot payload — subscribe alone
+  // is the signal.
+  bus.onSubscribe<'/sessions/:sessionId/attention', null, never>(
+    '/sessions/:sessionId/attention',
+    { snapshot: () => null },
+  );
+
   claudeService.on('card-event', (event: CardEvent) => {
     bus.publish<SessionCardsUpdate>(
       `/sessions/${event.sessionId}/cards`,
@@ -231,26 +242,30 @@ export async function runDaemon(): Promise<void> {
     );
   });
   claudeService.on('card-stream-end', (result: CardStreamEnd) => {
-    const peersSent = bus.publish<SessionCardsUpdate>(
+    bus.publish<SessionCardsUpdate>(
       `/sessions/${result.sessionId}/cards`,
       { kind: 'stream-end', result },
     );
 
-    // Web Push trigger: session went idle while no PWA is watching. Skip when
-    // the turn paused for user input — the user-input-request handler already
-    // notified (and the `tag` would collapse anyway, but the extra round-trip
-    // is wasted). Also skip when the agent was explicitly interrupted.
-    if (
-      peersSent === 0
-      && !result.interrupted
-      && !claudeService.hasPendingInputForSession(result.sessionId)
-    ) {
+    // Web Push trigger: session went idle while no PWA is actively attending
+    // this session. Subscribing to cards alone isn't enough — a backgrounded
+    // tab on another device keeps that subscription alive, which would
+    // silently swallow the notification on the user's phone. The attention
+    // topic is only held while visible+focused, so counting its subscribers
+    // answers "is anyone actually looking at this session?" correctly.
+    //
+    // Skip when the turn paused for user input (user-input-request handles
+    // that path) and when the agent was explicitly interrupted.
+    const attendingCount = bus.subscriberCount(`/sessions/${result.sessionId}/attention`);
+    const suppressed = result.interrupted || claudeService.hasPendingInputForSession(result.sessionId);
+    if (attendingCount === 0 && !suppressed) {
       pushClient.notify(result.sessionId, {
         title: 'Quicksave',
         body: 'Session is ready for your next instruction',
         tag: result.sessionId,
         agentId: config.agentId,
-      }).catch((err) => console.warn('[push] notify (idle) failed', err));
+      }).then((r) => { if (!r.ok || (r.sent ?? 0) === 0) console.warn(`[push] idle notify returned status=${r.status} sent=${r.sent ?? 0}`); })
+        .catch((err) => console.warn('[push] notify (idle) failed', err));
     }
 
     const cwd = claudeService.getSessionCwd(result.sessionId);
@@ -303,8 +318,10 @@ export async function runDaemon(): Promise<void> {
     // The CardBuilder emits a card-event (update with pendingInput) before
     // this fires, so any PWA subscribed to /sessions/:id/cards already sees
     // the prompt. Here we only handle side effects: push-notify idle peers
-    // and record the permission event.
-    const watchers = bus.subscriberCount(`/sessions/${request.sessionId}/cards`);
+    // and record the permission event. Gate on attention (not cards) so a
+    // backgrounded tab doesn't suppress notifications on a device the user
+    // is actually holding.
+    const watchers = bus.subscriberCount(`/sessions/${request.sessionId}/attention`);
     if (watchers === 0) {
       const body = request.inputType === 'permission'
         ? 'Permission required to continue'
@@ -314,7 +331,8 @@ export async function runDaemon(): Promise<void> {
         body,
         tag: request.sessionId,
         agentId: config.agentId,
-      }).catch((err) => console.warn('[push] notify (input-request) failed', err));
+      }).then((r) => { if (!r.ok || (r.sent ?? 0) === 0) console.warn(`[push] input-request notify returned status=${r.status} sent=${r.sent ?? 0}`); })
+        .catch((err) => console.warn('[push] notify (input-request) failed', err));
     }
 
     getEventStore().record({
