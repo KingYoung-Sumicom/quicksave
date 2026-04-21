@@ -1,196 +1,252 @@
 # PWA ↔ PWA Sync Security
 
 如何在多台 PWA client 之間安全同步「設備（agent running machines）」資訊與帳號設定。
-本文件鎖定**單用戶應用**情境（每位使用者持有自己的一組裝置；relay 為跨用戶共享、無帳號狀態）。
+本文件鎖定**單用戶應用**情境（每位使用者持有自己的一組 PWA 裝置；relay 為跨用戶共享、無帳號狀態）。
+
+整體設計向 [Happy Coder](https://github.com/slopus/happy) 收斂：**所有同一帳號的 PWA 共用一把 `masterSecret`，所有加解密 / 簽章金鑰皆由它派生。** 沒有 per-PWA 身分、沒有白名單、沒有 endorsement 傳播。
 
 ## Threat Model
 
-**信任邊界**：使用者持有的 PWA 裝置們互信；relay 不可信（視為 best-effort 暫存層）；外部攻擊者已知或可猜中你的 mailbox key（即 `hash(recipient pubkey)`）。
+**信任邊界**：
+
+- **互信**：使用者持有的 PWA 裝置們（共用 `masterSecret` ⇒ 同一個 cryptographic principal）
+- **不信任**：relay（best-effort 暫存層；可能被逆向 / 故障 / 換手）
+- **可被觀察**：mailbox 位址 `hash(shared_pubkey)`（外部攻擊者可能透過流量分析猜中）
 
 **要防的攻擊**：
 
-| 威脅 | 說明 |
+| 威脅 | 機制 |
 |---|---|
-| Forgery | 攻擊者寫入冒充合法裝置的 sync blob，使收件方 merge 進惡意 `Machine` 條目（例如把 `agentId` 指向攻擊者持有的 pubkey），下次連線即遭 MITM |
-| LWW spoof | 攻擊者把 `updatedAt` 設成極大值，讓偽造項目蓋過合法項目 |
-| Mailbox spam / DoS | 外部攻擊者持續 PUT 垃圾，蓋掉合法 sender 的單槽 mailbox blob，造成同步失效 |
-| Pairing impersonation | 加入新 PWA 時，攻擊者冒充使用者既有裝置回覆 bootstrap，騙新裝置接受惡意 master secret / paired devices roster |
+| Forgery | 攻擊者寫入冒充合法裝置的 sync blob，下次同步即遭注入惡意 `Machine`、進而被 MITM agent 連線 |
+| LWW spoof | 攻擊者把 `updatedAt` 設成極大值，讓偽造項目蓋過合法項目（forgery 的特例） |
+| Mailbox spam / DoS | 攻擊者持續 PUT 垃圾，蓋掉合法 sender 的單槽 mailbox blob，造成同步失效 |
+| Pairing impersonation | 加入新 PWA 時，攻擊者攔截 pairing channel，把惡意 `masterSecret` 推給新裝置（之後就能讀寫 mailbox） |
 
 **不在此文件範圍內**：
 
 - Relay 程式碼本身的弱點（注入、超載防護等基礎服務治理）
-- 端裝置完全淪陷後的後續攻擊（裝置上的 `secureStorage` 私鑰被竊）
-- 使用者透過 phishing 主動把私鑰交出去
+- 端裝置完全淪陷後的後續攻擊（裝置上的 IndexedDB `masterSecret` 被竊）
+- 使用者透過 phishing 主動把 `masterSecret` 交出去
 
-## Layered Design
+## Identity Model
 
-| 層 | 機制 | 解什麼 |
+`masterSecret`（32 bytes）是唯一的根憑證。所有需要的 keypair 都從它派生：
+
+| Key | 派生方式 | 用途 |
 |---|---|---|
-| 應用層 | Sender Ed25519 簽章 + paired-devices 白名單 | Forgery、LWW spoof |
-| Relay 層 | Per-IP rate-limit on PUT | 量級 DoS |
-| Relay 層 | 單槽 mailbox + per-sender-key 全域 in-flight mutex | 限制單一 key 對 mailbox 命名空間的占用 |
-| Relay 層 | Signed cancel request | 撤回 stale 寫入、釋放 mutex |
-| 應用層 | Pairing code（OOB, 5 分鐘有效，一次性） | Pairing 階段的 bootstrap 信任錨 |
+| 共用 X25519 keypair | `crypto_box_seed_keypair(masterSecret)`（或等效 KDF） | sealed-box 加解密 sync mailbox blob |
+| 共用 Ed25519 signing key | `crypto_sign_seed_keypair(masterSecret)` | 簽 sync blob 與 cancel / lock 請求 |
 
-每一層只解一件事，垂直疊加；任何單一層失守不會直接導致信任鏈崩塌。
+**關鍵性質**：
 
-## 1. Sender Authenticity（最重要）
+- 所有 paired PWA 派生出**完全相同**的 keypair → mailbox 位址（`hash(shared_pubkey)`）對全群只有一個
+- 持有 `masterSecret` ⇔ 是合法成員。沒有「誰是哪一台」的 cryptographic 區分
+- 裝置暱稱（`nickname`）只是 UI 上的方便標籤，**不參與任何驗章 / 授權決策**
 
-`encryptSyncBlob` 目前用 sealed-box（`packages/shared/src/crypto.ts:348`，每次產 ephemeral keypair 寫入），收件方解密成功**不代表寄件方身分可信**。必須在 payload 內加 sender 簽章，由收件方對照白名單驗證。
+派生工作放在 `packages/shared/src/crypto.ts`；secureStorage 只保存 `masterSecret`，不再存 per-device keypair。
 
-### Payload schema 變更（`SyncPayloadV3` → `V4`）
+### 為什麼放棄 per-PWA crypto identity
 
-```ts
-interface SignedSyncPayload {
-  version: 4;
-  sender: {
-    pubkey: string;        // sender's X25519 pubkey (用於對應 paired device)
-    signPubkey: string;    // sender's Ed25519 pubkey (用於驗章)
-  };
-  recipientHash: string;   // hash(recipient X25519 pubkey)，綁死 mailbox
-  timestamp: number;       // sender 寫入時間，含進簽章避免 replay
-  payload: SyncPayloadV3;  // 既有同步內容
-  signature: string;       // ed25519_sign(canonicalize({sender, recipientHash, timestamp, payload}))
-}
-```
+在前一版設計中，我們嘗試讓每台 PWA 有自己的 X25519 + Ed25519 keypair，並維護 `pairedDevices` 白名單。檢視每個原本想解決的問題：
 
-**`recipientHash` 必填**：避免攻擊者把 mailbox A 的合法 blob 重放到 mailbox B。
-**`timestamp` 含進簽章**：攻擊者無法調整時間繞過時效檢查。
+| 想解決 | 重新評估 |
+|---|---|
+| 區分「哪台裝置寫的」做事後追蹤 | 單用戶情境下沒人會去追蹤；要做要靠 monitoring，per-device 簽章不解此問 |
+| 踢掉特定裝置 | 退役裝置 = user 自己清空 browser storage（routine retirement）；裝置遺失 = 整群 reset（換 `masterSecret`）；都不需要白名單 |
+| 防 forgery | `masterSecret` 共用後，「合法成員」與「持有 key 的攻擊者」cryptographic 上不可區分 → 不靠白名單，靠保護 `masterSecret` 與 mailbox 位址不外洩 |
 
-### 收件端驗證流程（`apps/pwa/src/lib/syncClient.ts: fetchMyMailbox`）
+結論：複雜度全部刪除。
 
-1. 解密 outer envelope（sealed-box，現行邏輯）
-2. 解析 `SignedSyncPayload`，檢查 `recipientHash === hash(myPublicKey)` → 不符直接 drop
-3. 檢查 `sender.pubkey ∈ pairedDevices`（已配對裝置白名單）→ 不在直接 drop（**silent**，不提示 user，避免讓攻擊者用 dialogs 騷擾）
-4. 用 `sender.signPubkey` 驗 `signature` → 失敗直接 drop
-5. 通過後才進 `syncMerge` LWW 合併
-
-### `pairedDevices` 結構
-
-```ts
-interface PairedDevice {
-  pubkey: string;          // X25519 (encryption)
-  signPubkey: string;      // Ed25519 (signature verification)
-  nickname: string;
-  pairedAt: number;
-  pairingMethod: 'qr' | 'code';  // 為了 audit
-}
-```
-
-存放於 `apps/pwa/src/stores/identityStore.ts`（已有 `quicksave-paired-devices` localStorage key）。Schema 升級需 migration。
-
-## 2. Mailbox Model: 單槽 + Per-Key Mutex
+## Sync Mailbox: 單槽 + Read-Modify-Write
 
 ### Slot semantics
 
-每個 recipient mailbox（key = `hash(recipient pubkey)`）保留**單槽**設計（與現行一致）。Relay 額外維護：
+只有**一個 mailbox**，位址 = `hash(shared_pubkey)`。所有 paired PWA 既是 sender 也是 receiver。
+
+- 每次寫入都是**完整 blob 覆蓋**（單槽）
+- Blob 內容是 `SyncPayloadV3`（`apps/pwa/src/lib/syncMerge.ts`），所有同步欄位用 `Timestamped<T>` 包裝、機器列表配 `machineTombstones`
+- 衝突解決：欄位級 LWW（已實作於 `syncMerge.ts`）
+
+### Read-Modify-Write flow
+
+每次本地有變更要推上去：
+
+```
+1. GET  /sync/{hash(shared_pubkey)}            ← 拉最新 blob
+2. decryptSyncBlob(blob, sharedSecretKey)
+3. local = mergeSyncPayloads(local, remote)    ← LWW 收斂
+4. signedBlob = sign(encrypted)                ← 用共用 signing key
+5. PUT  /sync/{hash(shared_pubkey)}            ← 寫回
+```
+
+LWW 是 commutative 的，兩台裝置無鎖並寫**最終仍會收斂**——但收斂前的中間狀態可能短暫缺欄位（A 寫 A 視角的 blob、B 寫 B 視角的 blob）。為避免這種抖動：
+
+### Per-Mailbox Mutex（serialize PUT）
+
+Relay 在 `apps/relay/src/syncStore.ts` 為單一 mailbox 維護一個簡單的 in-flight flag：
 
 ```ts
-// apps/relay/src/syncStore.ts
-inFlightSlots: Map<senderPubkeyHash, recipientMailboxKey>
+inFlight: Map<mailboxKeyHash, { sigPubkey: string; acquiredAt: number }>
 ```
 
-- 一個 sender pubkey 在任一時刻**只能在一個 mailbox 持有未消費的 slot**
-- PUT 時 relay 檢查 sender 是否已有 outstanding slot：
-  - 寫入同一 mailbox（覆蓋自己的 slot）→ 允許
-  - 寫入不同 mailbox → **拒絕（HTTP 409）**，sender 必須先 cancel 或等到原 slot 被消費 / TTL 過期
-- TTL：建議 1 小時（夠長到讓收件方有時間上線拉取，夠短到不會永久占位）
+- PUT 時若 mailbox 沒有 in-flight，標記 sender 為當前持有者，接受寫入
+- PUT 時若已有 in-flight 且非同一 sender → **HTTP 409**，client 退避後重試（read-modify-write 重來一次，自然合併對方剛寫進去的內容）
+- TTL：60 秒（避免 client 在 PUT 過程中崩潰造成 mailbox 永久鎖死）
+- 寫入完成後立即清除 in-flight
 
-**為何這樣設計（單用戶情境）**：
-- 合法 sender 是使用者自己的 ~3–5 台裝置，一次 fan-out 序列化執行（寫 A → 等消費 → 寫 B）→ 完整 convergence 約數十秒到數分鐘，state sync 不是延遲敏感的
-- 一台裝置不可能同時被人手動操作（人類只有兩手）→ 合法 sender 之間不會競爭同一個 slot
-- 攻擊者就算在 paired-devices 簽章驗證之外灌垃圾，per-key mutex 也只允許他占據單一 mailbox slot；想騷擾多個 mailbox 必須持續 cancel + rotate，配合 per-IP rate-limit 性價比極差
+**為何夠用（單用戶情境）**：
 
-### Slot 釋放條件
+- 合法 sender 是使用者自己的 ~3–5 台裝置；同一個人類不會多手同時操作。並寫窗口極窄
+- 真撞上 409 就退避重試，幾秒內收斂，使用者無感
+- 攻擊者就算知道 mailbox 位址，沒有 `masterSecret` 仍寫不出能被解密的 blob——但他可以 PUT 垃圾占住 in-flight slot 騷擾。**這是 spam 而非 forgery**，由 per-IP rate-limit 抵擋
 
-| 觸發 | 動作 |
-|---|---|
-| 收件方 GET 成功 | Slot 自動清除（mailbox 視為「letter taken」） |
-| Sender 主動 cancel | Slot 清除（見下） |
-| TTL 到期（1 小時） | Relay 後台清除 |
+### 寫入授權：簽章必填
 
-### Cancel
+雖然 mailbox 內容是 sealed-box 加密、攻擊者無法產生有效 ciphertext，relay 仍需區分「合法 PUT」與「垃圾 PUT」以做 mutex 與 rate-limit accounting。
 
-Sender 簽 `{action: "cancel", mailbox_hash, timestamp}` 用自己的 Ed25519 私鑰。Relay 比對 slot 上記錄的 `senderPubkeyHash`，驗章後清除。
+每次 PUT body：
+
+```ts
+interface SignedSyncEnvelope {
+  ciphertext: string;       // sealed-box(encrypted SyncPayloadV3)
+  sigPubkey: string;        // 共用 Ed25519 pubkey（每群唯一）
+  timestamp: number;
+  signature: string;        // ed25519_sign({mailboxKeyHash, ciphertext, timestamp})
+}
+```
+
+Relay 驗 `signature`（純 Ed25519 verify，無狀態），失敗即 reject。這擋掉攻擊者用隨意 payload 灌爆 mutex。
+
+`sigPubkey` 與 mailbox 一一對應（`hash(sigPubkey) ⇔ mailboxKeyHash` 透過共用 X25519 / Ed25519 同源派生關係，relay 可選擇是否驗證一致；最簡實作是只驗章不驗源）。
+
+### Cancel（釋放 mutex）
+
+若 client 寫入過程中決定放棄（user 取消、上層 retry），可主動釋放：
 
 ```http
-DELETE /sync/{mailbox_hash}
-Body: { senderPubkey, timestamp, signature }
+DELETE /sync/{mailbox_hash}/lock
+Body: { sigPubkey, timestamp, signature }
 ```
 
-Cancel 是 best-effort：若收件方已 GET 過，撤回對對方狀態無效，文件需明示。
+Relay 驗章、比對 `sigPubkey === inFlight.sigPubkey`、清除 in-flight。Cancel 是 best-effort（TTL 也會自動清）。
 
-## 3. Per-IP Rate-Limit
+## Pairing Flow
 
-Relay 對 `PUT /sync/*` 與 `DELETE /sync/*`（cancel）做 per-source-IP 限流：
+新 PWA 加入既有群組的目標：把 `masterSecret` 從某台既有 PWA（B）安全送到新 PWA（A）。
 
-- Burst：10 requests / 10 seconds
-- Sustained：60 requests / minute
+### Trust anchor: QR code 物理通道
 
-實作建議走 token bucket，state 存記憶體即可（relay 重啟 reset 不影響安全性）。Reverse-proxy（Cloudflare、Caddy）若已有限流，這層可以薄一些。
+A 在本地產生 ephemeral X25519 keypair `(eA_pub, eA_sec)`，把 `eA_pub` 編成 QR 顯示在自己螢幕上。
 
-## 4. Pairing Bootstrap
+B 用相機掃 A 螢幕上的 QR → 取得 `eA_pub`。**這個物理動作就是信任錨**：B 相信此 pubkey 屬於眼前這台裝置。
 
-新加入的 PWA 沒有任何 `pairedDevices`，需要從**既有的某台裝置 B** 取得：
-1. B 的 `signPubkey`（之後驗章用）
-2. 群組裡所有其他裝置的 `signPubkey`（讓新裝置認識整群）
-3. `masterSecret` / `apiKey` 等同步 payload 內容
+### Bootstrap blob
 
-### Pairing code 流程
+```ts
+const blob = sealedBox(
+  JSON.stringify({ masterSecret }),
+  eA_pub,
+);
+```
 
-1. **B**（既有裝置）開「加入新裝置」→ 顯示 6 位數字 code（或 QR），有效 5 分鐘
-2. **A**（新 PWA）輸入 code（或掃 QR）
-3. A 在本地產生 X25519 + Ed25519 keypair，組 `Request = sign_A({A.pubkey, A.signPubkey, timestamp, salt, hash(code)})`
-4. A `PUT /pair-requests/{hash(code)}`（relay 上的暫存槽，5 分鐘 TTL，per-code 單槽）
-5. B 輪詢或 ws-watch `/pair-requests/{hash(code)}`，撈到唯一一筆 → 驗 A inner signature → 顯示「已配對 nickname?」讓 user 確認 nickname（**不顯示 pubkey 給 user 比對**）
-6. B 簽 `Endorsement = sign_B({A.pubkey, A.signPubkey, timestamp})`，併入下一輪 sync payload 廣播給其他 paired devices
-7. B 同時回寫 A 的 mailbox：`{master secret, paired devices roster, signed by B, MAC'd with hash(code)}`
-   - A 用 `hash(code)` 當 HMAC key 驗 MAC（只有看到 code 的 B 算得出）→ 信任這份 bootstrap → 之後就用簽章驗其他成員
-8. A 把 B 加入 `pairedDevices`，根據 roster 把其他成員也加入
+B 把 `blob` 傳給 A。傳輸通道有兩種：
 
-其他成員下一次拉到含 `Endorsement` 的 sync blob 時，驗 B 的簽章 → 自動把 A 加入自己的 `pairedDevices`。群組自然收斂。
+1. **Direct（同機房 / 同區網）**：A 同時開短期 mailbox `hash(eA_pub)` 在 relay 上監聽，B PUT blob 上去，A GET → 解密 → 寫入 secureStorage
+2. **Out-of-band**：B 把 blob 編成另一個 QR 給 A 掃；完全不過 relay
 
-### Code 性質
+第一種較順手（user 只要在 A 上開「等待配對」、在 B 上掃 QR、就完成）；第二種是 relay 不可用時的 fallback。
 
-- 6 位 base32（≈30 bits 熵）+ 5 分鐘有效 + 一次性消耗 → 線下口傳 / SMS 強度足夠
-- 也可改用 QR：QR payload = `code:URI://...`，掃了等於輸入 code，多一個物理通道
-- **嚴禁顯示 pubkey 讓 user 自己比對**——已知 UX 失敗模式
+### A 端流程
 
-### Revocation
+```
+1. 產生 ephemeral keypair (eA_pub, eA_sec)
+2. 顯示 QR(eA_pub)，開 mailbox hash(eA_pub) 等
+3. 收到 sealedBox blob
+4. decryptSealedBox(blob, eA_sec) → masterSecret
+5. 派生共用 X25519 / Ed25519 keypair
+6. fetchMyMailbox(共用 X25519 pubkey, 共用 X25519 secret)
+7. mergeSyncPayloads → 完成
+8. 銷毀 ephemeral keypair 與 hash(eA_pub) mailbox
+```
 
-| 場景 | 動作 |
+### Pairing 的安全性
+
+- `eA_pub` 在 QR 上短暫顯示（建議 60 秒 TTL）。攻擊者要 MITM 必須**物理上**看到 A 螢幕並掉包 B 的相機畫面 → 不在威脅模型內
+- `masterSecret` 只走 sealed-box，過 relay 也只是 ciphertext，relay / 中間人取得 blob 解不開
+- 配對過程不寫共用 mailbox（避免在新成員加入前洩漏 `masterSecret` 的存在）
+
+### 不再需要 endorsement 傳播
+
+因為新 PWA 拿到的就是 `masterSecret` 本體，**它一旦完成 pairing 就自動屬於群組**——其他成員無需做任何「歡迎新人」的廣播。下一次任一成員 read-modify-write，新 PWA 就能以對等身分參與。
+
+## 裝置退役與群組 Reset
+
+### Routine retirement（裝置還在手上）
+
+「退役一台舊平板 / 舊瀏覽器」的正確操作就是**清空該裝置的 browser storage**：`masterSecret` 與所有同步資料隨之消失，該裝置從此無法解密 mailbox。
+
+不需要任何協定、不需要通知其他裝置、不需要更新 roster。其他裝置完全察覺不到——這是預期行為。
+
+### Group reset（裝置遺失 / 失竊）
+
+裝置落入第三方手中、且當事人想徹底切離 → 整群輪換 `masterSecret`。流程：
+
+1. 任一存活的 PWA 觸發 `quicksave rotate-keys`（沿用既有 [tombstone 機制](../plans/2026-02-16-pwa-identity-and-sync-design.md)）
+2. 對舊 mailbox `hash(shared_pubkey_old)` PUT tombstone（`createTombstone` in `packages/shared/src/crypto.ts`），鎖死該位址
+3. 產生新 `masterSecret`，重新對其他存活 PWA 跑一次 [Pairing Flow](#pairing-flow)（每台都掃 QR）
+4. **Agent 端**也輪換 pubkey：因為 agent 連線資訊存在 sync mailbox 裡，舊 mailbox 已封死後新 mailbox 是空的，需要重新從 agent 端 `quicksave pair` 一次（下個 release 可能合併到 rotate-keys 流程內）
+
+代價明顯（所有裝置要重來），但這是低頻操作（裝置遺失才觸發），且**簡單可預測**：沒有「誰被踢掉了還能解多少歷史 blob」的曖昧區間。
+
+## Relay Layer Protections
+
+| 機制 | 解什麼 |
 |---|---|
-| 誤配對 / code 外流 | B 在 code 有效期內可手動 revoke（PUT 一個 revoke marker 到 `/pair-requests/{hash(code)}`） |
-| 想踢掉某台裝置 | 任一 paired device 簽 `Removal = sign_X({remove: target.pubkey, timestamp})` 併入 sync payload；其他成員看到後從自己的 `pairedDevices` 移除 |
+| Per-IP rate-limit on PUT / DELETE | 量級 DoS；burst 10/10s, sustained 60/min |
+| 單槽 mailbox + per-mailbox in-flight mutex | Read-modify-write 收斂、阻擋無 `masterSecret` 的攻擊者占位騷擾（搭配 sig verify） |
+| Ed25519 signature verify on PUT / DELETE | 攻擊者沒有共用 signing key 就無法消耗 mutex / rate-limit 配額之外的資源 |
+| Tombstone（既有） | 群組 reset 時封死舊 mailbox |
 
-裝置移除無法強制——被踢的裝置仍持有自己的 keypair 與 master secret。實務上要搭配 `masterSecret` 輪換才能真正切離（見「Open Questions」）。
+Relay 仍**完全無狀態**（in-memory map、可隨時重啟）。重啟代價：mutex 全部釋放、in-flight 寫入需 client 重試；mailbox 內容需 paired devices 下次 push 重建。
+
+## 與 Happy Coder 的差異
+
+| 面向 | Quicksave | Happy |
+|---|---|---|
+| Identity 派生 | `masterSecret` → 共用 X25519 + Ed25519 | `secret` → 共用 Ed25519（with challenge auth） |
+| Relay 架構 | Stateless；HTTP PUT/GET + mutex | Stateful；token-based auth, 持久 session |
+| Sender authentication | Per-PUT Ed25519 signature（無狀態驗證） | Pre-authenticated session token（連線時驗一次） |
+| Mailbox semantics | 共用單槽 + per-mailbox mutex + LWW | Per-session push 串流 |
+| Pairing | QR(ephemeral pubkey) → sealed-box bootstrap | QR(ephemeral pubkey) → sealed-box bootstrap |
+| 加新裝置後通知群組 | 不需要（持有 `masterSecret` 即成員） | 不需要（同上） |
+
+核心差異是 relay 哲學：**Quicksave 堅持 stateless relay**，所有 trust 與授權由 client-side crypto 與 per-request signature 解決；Happy 接受 stateful relay 換 push 體驗。Pairing 部分兩者本質上一致。
 
 ## Files Map
 
 | 變更 | 檔案 |
 |---|---|
-| 新 payload schema `V4` 與 sign/verify helper | `packages/shared/src/crypto.ts`、`apps/pwa/src/lib/syncMerge.ts` |
-| 收件端驗章 + 白名單過濾 | `apps/pwa/src/lib/syncClient.ts: fetchMyMailbox` |
-| `PairedDevice` 型別擴充與 migration | `apps/pwa/src/stores/identityStore.ts` |
-| Per-key in-flight mutex | `apps/relay/src/syncStore.ts` |
-| Cancel route | `apps/relay/src/index.ts: handleSyncRequest`（新增 DELETE 分支） |
+| 從 `masterSecret` 派生共用 X25519 + Ed25519 keypair（helper） | `packages/shared/src/crypto.ts` |
+| `SignedSyncEnvelope` schema、簽 / 驗 helper | `packages/shared/src/crypto.ts`、`apps/pwa/src/lib/syncClient.ts` |
+| Read-modify-write 與 409 退避邏輯 | `apps/pwa/src/lib/syncClient.ts`、`apps/pwa/src/stores/syncStore.ts` |
+| Per-mailbox in-flight mutex + Ed25519 verify | `apps/relay/src/syncStore.ts`、`apps/relay/src/index.ts: handleSyncRequest` |
+| Cancel route (`DELETE /sync/{hash}/lock`) | `apps/relay/src/index.ts` |
 | Per-IP rate-limit middleware | `apps/relay/src/index.ts` |
-| Pairing code routes (`/pair-requests/*`) | `apps/relay/src/index.ts`（新檔 `pairRoutes.ts`） |
-| Pairing UI（顯示 code、輸入 code、確認 nickname） | `apps/pwa/src/components/`（新檔 `PairDeviceModal.tsx` 等） |
+| Pairing UI（顯示 QR、掃 QR、等待 mailbox、銷毀 ephemeral） | `apps/pwa/src/components/`（新檔 `PairDeviceModal.tsx`） |
+| 移除：`PairedDevice` 型別、白名單持久化、endorsement 處理 | `apps/pwa/src/stores/identityStore.ts`（刪 `pairedDevices` 相關欄位） |
 
 ## Open Questions
 
-1. **`masterSecret` 輪換**：踢掉裝置後是否輪換 master secret？輪換代價（所有裝置都要更新、歷史 sync blob 失效）vs. 不輪換（被踢裝置仍能解出歷史，但無法接收新 sync）。
-2. **Relay 持久化**：目前 `SyncStore` 全在記憶體，relay 重啟即清空。對 pairing 流程而言這是個短窗口的災難；對 steady-state sync 影響較小（下次寫入會重建）。是否需要 KV / R2 持久化？
-3. **Bootstrap 失敗復原**：A 輸入 code 後 B 端離線，A 永遠拿不到 endorsement。是否需要在 A 端加 timeout + retry / 切換到 QR fallback？
-4. **多 relay / 自架 relay**：目前架設假設單一 relay；若使用者自架，pairing flow 跨 relay 行不行？建議第一版只支援同 relay。
+1. **Relay 持久化**：`SyncStore` 全在記憶體，重啟即清空。對 pairing flow 是短窗口災難（QR 過期前必須完成）；steady-state sync 影響較小（下次 read-modify-write 重建）。是否需要 KV / R2 持久化？
+2. **Pairing fallback**：QR + relay mailbox 流程在 relay 不可用時怎麼辦？目前傾向走 OOB QR 直送（B 端把 sealed-box 編成第二張 QR）作為手動 fallback。
+3. **Agent 端 rekey 自動化**：group reset 時 agent 連線資訊也得重建，目前需手動跑 `quicksave pair`。能否在 PWA 端 `rotate-keys` 時自動產生新 invite link 給每台 agent？
 
 ## Maintenance
 
 修改以下任一處時，**同步更新本文件**：
 
-- `packages/shared/src/crypto.ts` 中的 sign / verify / encrypt 函式
-- `apps/relay/src/syncStore.ts` 的 slot 結構或 mutex 邏輯
-- `apps/pwa/src/lib/syncClient.ts` / `syncMerge.ts` 的 payload schema 或合併邏輯
-- `apps/pwa/src/stores/identityStore.ts` 的 `PairedDevice` 結構
-- 新增的 pairing 流程或 revocation 機制
+- `packages/shared/src/crypto.ts` 的 sign / verify / encrypt / seed-keypair 派生
+- `apps/relay/src/syncStore.ts` 的 slot / mutex / in-flight 結構
+- `apps/pwa/src/lib/syncClient.ts` 或 `syncMerge.ts` 的 envelope schema、read-modify-write 流程
+- Pairing flow（QR 產生 / mailbox 暫存 / sealed-box bootstrap）
+- Group reset / tombstone 行為

@@ -27,7 +27,7 @@ self.addEventListener('push', (event: PushEvent) => {
   const title = payload.title ?? 'Quicksave';
   const body = payload.body ?? '';
   const tag = payload.tag ?? payload.sessionId ?? 'quicksave-generic';
-  const url = payload.url ?? (payload.sessionId ? `/#/s/${payload.sessionId}` : '/');
+  const url = payload.url ?? '/';
 
   // `renotify` is widely supported by browsers but still missing from TS DOM lib.
   const options: NotificationOptions & { renotify?: boolean } = {

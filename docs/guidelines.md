@@ -78,13 +78,15 @@ Before designing or implementing any feature, check the relevant guidelines belo
 ## PWA ↔ PWA Sync Security
 
 **`docs/guidelines/sync-security.md`** — 多台 PWA client 同步「設備 / 帳號設定」的安全設計。涵蓋：
-- Threat model（單用戶、跨用戶共享 relay、外部攻擊者已知 mailbox key）
-- 五層防線（sender 簽章 + paired-devices 白名單 / per-IP rate-limit / 單槽 mailbox + per-key in-flight mutex / signed cancel / pairing code）
-- `SignedSyncPayload V4` schema 與收件端驗章流程
-- Pairing code bootstrap 流程（OOB、5 分鐘有效、一次性）
-- 對應的 file map（`syncStore.ts`、`syncClient.ts`、`identityStore.ts` 等）
+- Threat model（單用戶、跨用戶共享 relay、`masterSecret` 外洩 = 完全失守）
+- Identity model：所有 PWA 共用 `masterSecret`，X25519 / Ed25519 keypair 由它派生（無 per-PWA crypto identity、無白名單）
+- 單槽 mailbox + read-modify-write + per-mailbox in-flight mutex + LWW 收斂
+- `SignedSyncEnvelope` schema 與 relay 端 Ed25519 verify
+- Pairing flow：QR(ephemeral X25519 pubkey) + sealed-box 直送 `masterSecret`
+- 退役（清 browser storage）vs. 群組 reset（tombstone + 換 `masterSecret`）
+- 與 Happy Coder 的差異（Quicksave 維持 stateless relay）
 
-**維護規則**：修改 `packages/shared/src/crypto.ts` 的 sign/verify/encrypt、`apps/relay/src/syncStore.ts` 的 slot/mutex、`apps/pwa/src/lib/syncClient.ts` 或 `syncMerge.ts` 的 payload schema、`identityStore.ts` 的 `PairedDevice` 結構、或 pairing / revocation 流程時，同步更新此文件。
+**維護規則**：修改 `packages/shared/src/crypto.ts` 的 sign/verify/encrypt/seed-keypair 派生、`apps/relay/src/syncStore.ts` 的 slot/mutex/in-flight 結構、`apps/pwa/src/lib/syncClient.ts` 或 `syncMerge.ts` 的 envelope schema 或 read-modify-write 流程、pairing flow（QR / sealed-box bootstrap）、或 group reset / tombstone 行為時，同步更新此文件。
 
 ---
 

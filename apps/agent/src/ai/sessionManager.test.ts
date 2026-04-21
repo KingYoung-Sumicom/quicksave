@@ -819,6 +819,189 @@ describe('SessionManager', () => {
       expect(updateEvents).toHaveLength(0);
     });
 
+    it('resolves two simultaneous permission requests on different sessions independently', async () => {
+      // Regression: with two sessions on the same agent each holding a pending
+      // permission request, resolving one must NOT disturb the other. The
+      // pending map is keyed by globally-unique requestId, but each lookup
+      // must use the request's own stored sessionId — never the response's
+      // sessionId — so cross-session resolves stay isolated.
+      const sessionA = 'two-sessions-A';
+      const sessionB = 'two-sessions-B';
+
+      // Each startSession needs its own mock return.
+      (provider.startSession as Mock)
+        .mockResolvedValueOnce({ sessionId: sessionA, session: createMockProviderSession() })
+        .mockResolvedValueOnce({ sessionId: sessionB, session: createMockProviderSession() });
+
+      await manager.startSession({ prompt: 'Hi A', cwd: '/tmp/a', streamId: 'stream-A' });
+      await manager.startSession({ prompt: 'Hi B', cwd: '/tmp/b', streamId: 'stream-B' });
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+
+      const permA = callbacks.handlePermissionRequest(sessionA, {
+        toolName: 'Bash',
+        toolInput: { command: 'echo A' },
+        toolUseId: 'tu-A',
+      });
+      const permB = callbacks.handlePermissionRequest(sessionB, {
+        toolName: 'Bash',
+        toolInput: { command: 'echo B' },
+        toolUseId: 'tu-B',
+      });
+
+      const pending = manager.getPendingInputRequests();
+      expect(pending).toHaveLength(2);
+      const reqA = pending.find(p => p.sessionId === sessionA)!;
+      const reqB = pending.find(p => p.sessionId === sessionB)!;
+      expect(reqA).toBeDefined();
+      expect(reqB).toBeDefined();
+      expect(reqA.requestId).not.toBe(reqB.requestId);
+
+      const resolvedEvents: any[] = [];
+      manager.on('user-input-resolved', (e) => resolvedEvents.push(e));
+
+      // Resolve A first.
+      const okA = manager.resolveUserInput({
+        sessionId: sessionA,
+        requestId: reqA.requestId,
+        action: 'allow',
+      });
+      expect(okA).toBe(true);
+      const resultA = await permA;
+      expect(resultA.action).toBe('allow');
+
+      // Map should still hold B's pending entry.
+      expect(manager.getPendingInputRequests()).toHaveLength(1);
+      expect(manager.getPendingInputRequests()[0].requestId).toBe(reqB.requestId);
+
+      // Resolve B — must succeed independently and resolve B's promise.
+      const okB = manager.resolveUserInput({
+        sessionId: sessionB,
+        requestId: reqB.requestId,
+        action: 'deny',
+        response: 'no thanks',
+      });
+      expect(okB).toBe(true);
+      const resultB = await permB;
+      expect(resultB.action).toBe('deny');
+      expect(resultB.response).toBe('no thanks');
+
+      expect(manager.getPendingInputRequests()).toHaveLength(0);
+
+      // Both resolves should have emitted user-input-resolved with the
+      // correct sessionId — proving cross-session isolation.
+      expect(resolvedEvents).toHaveLength(2);
+      const aResolve = resolvedEvents.find(e => e.requestId === reqA.requestId);
+      const bResolve = resolvedEvents.find(e => e.requestId === reqB.requestId);
+      expect(aResolve.sessionId).toBe(sessionA);
+      expect(bResolve.sessionId).toBe(sessionB);
+    });
+
+    it('routes the cleared-pending card-event to the originating session, not the response sessionId', async () => {
+      // Regression: the agent must use the *stored* sessionId from the pending
+      // request when clearing the card, not the sessionId echoed back by the
+      // PWA. If a buggy PWA sent the wrong sessionId, the agent should still
+      // clear the right card. Likewise, the card-event emitted must carry the
+      // originating sessionId so per-session subscribers route it correctly.
+      const sessionA = 'card-route-A';
+      const sessionB = 'card-route-B';
+
+      // Build a real-ish cardBuilder per session so we can observe which
+      // builder receives the clearPendingInput call. The constructor is
+      // called with sessionId='pending' and then updated via updateSessionId
+      // once the provider returns the real id, so we key the builders map by
+      // streamId (which is stable from creation) and snapshot the real
+      // sessionId when updateSessionId fires.
+      const builders = new Map<string, any>();
+      const { StreamCardBuilder } = await import('./cardBuilder.js');
+      (StreamCardBuilder as Mock).mockImplementation((initialSessionId: string, streamId: string, cwd: string) => {
+        const builder: any = {
+          sessionId: initialSessionId,
+          streamId,
+          cwd,
+          jsonlCutoff: null,
+          updateSessionId: vi.fn().mockImplementation((newId: string) => {
+            builder.sessionId = newId;
+            builders.set(newId, builder);
+          }),
+          snapshotCutoff: vi.fn().mockResolvedValue(undefined),
+          getCards: vi.fn().mockReturnValue([]),
+          userMessage: vi.fn(),
+          clearPendingInput: vi.fn().mockImplementation((_requestId: string) => ({
+            type: 'update',
+            cardId: `c-${builder.sessionId}`,
+            sessionId: builder.sessionId,
+            streamId,
+            patch: { pendingInput: null },
+          })),
+          toolCallFromPermission: vi.fn().mockImplementation(() => ({
+            type: 'add',
+            card: { type: 'tool_call', id: `c-${builder.sessionId}`, toolName: 'Bash', toolUseId: 'tu' },
+          })),
+          startNewTurn: vi.fn(),
+        };
+        builders.set(streamId, builder);
+        return builder;
+      });
+
+      (provider.startSession as Mock)
+        .mockResolvedValueOnce({ sessionId: sessionA, session: createMockProviderSession() })
+        .mockResolvedValueOnce({ sessionId: sessionB, session: createMockProviderSession() });
+
+      await manager.startSession({ prompt: 'Hi A', cwd: '/tmp/a', streamId: 'stream-A' });
+      await manager.startSession({ prompt: 'Hi B', cwd: '/tmp/b', streamId: 'stream-B' });
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+
+      const permA = callbacks.handlePermissionRequest(sessionA, {
+        toolName: 'Bash',
+        toolInput: { command: 'echo A' },
+        toolUseId: 'tu-A',
+      });
+      const permB = callbacks.handlePermissionRequest(sessionB, {
+        toolName: 'Bash',
+        toolInput: { command: 'echo B' },
+        toolUseId: 'tu-B',
+      });
+
+      const pending = manager.getPendingInputRequests();
+      const reqA = pending.find(p => p.sessionId === sessionA)!;
+      const reqB = pending.find(p => p.sessionId === sessionB)!;
+
+      const cardEvents: any[] = [];
+      manager.on('card-event', (e) => cardEvents.push(e));
+
+      // Resolve A — even if the response's sessionId is wrong (e.g. PWA bug),
+      // the clear must hit A's builder.
+      manager.resolveUserInput({
+        sessionId: 'WRONG-SESSION-ID',
+        requestId: reqA.requestId,
+        action: 'allow',
+      });
+      await permA;
+
+      expect(builders.get(sessionA)!.clearPendingInput).toHaveBeenCalledWith(reqA.requestId);
+      expect(builders.get(sessionB)!.clearPendingInput).not.toHaveBeenCalled();
+
+      const aClearEvent = cardEvents.find(e => e.type === 'update' && e.sessionId === sessionA);
+      expect(aClearEvent).toBeDefined();
+      expect(aClearEvent.patch.pendingInput).toBeNull();
+
+      // Resolve B — must reach B's builder and emit B's sessionId.
+      manager.resolveUserInput({
+        sessionId: sessionB,
+        requestId: reqB.requestId,
+        action: 'allow',
+      });
+      await permB;
+
+      expect(builders.get(sessionB)!.clearPendingInput).toHaveBeenCalledWith(reqB.requestId);
+
+      const bClearEvent = cardEvents.find(e => e.type === 'update' && e.sessionId === sessionB);
+      expect(bClearEvent).toBeDefined();
+      expect(bClearEvent.patch.pendingInput).toBeNull();
+    });
+
     it('should be a no-op when called for a request that closeSession already drained', async () => {
       // closeSession auto-resolves pending inputs (see edge.test.ts), so a
       // racing user response should NOT find an entry to resolve. The CLI

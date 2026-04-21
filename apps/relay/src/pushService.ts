@@ -11,7 +11,7 @@ export interface NotifyPayload {
   body: string;
   sessionId: string;
   agentId?: string;
-  /** Optional deep-link path within the PWA. Defaults to `/s/${sessionId}`. */
+  /** Optional deep-link path within the PWA. Defaults to `/` (home / ticket list). */
   url?: string;
   tag?: string;
 }
