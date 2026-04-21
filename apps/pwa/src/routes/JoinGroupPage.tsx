@@ -130,7 +130,18 @@ export function JoinGroupPage() {
           </div>
         )}
 
-        {phase === 'error' && error && <ErrorBox>{error}</ErrorBox>}
+        {phase === 'error' && error && (
+          <div className="space-y-3">
+            <ErrorBox>{error}</ErrorBox>
+            <button
+              type="button"
+              onClick={() => navigate('/', { replace: true })}
+              className="w-full py-2 px-4 bg-slate-700 hover:bg-slate-600 rounded-md text-sm"
+            >
+              返回主畫面
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
