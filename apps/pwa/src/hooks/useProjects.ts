@@ -35,7 +35,7 @@ export function useProjects(): ProjectEntry[] {
     // (updates on every streaming event — causes projects to jump in the list).
     const liveStats = new Map<string, { lastActivityAt: number; sessionCount: number; lastSessionTitle?: string; hasActiveSession: boolean }>();
     for (const session of Object.values(sessions)) {
-      if (!session.cwd || !session.machineAgentId) continue;
+      if (!session.cwd || !session.machineAgentId || session.archived) continue;
       const key = `${session.machineAgentId}\0${session.cwd}`;
       const ts = session.lastPromptAt ?? session.lastModified;
       const existing = liveStats.get(key);

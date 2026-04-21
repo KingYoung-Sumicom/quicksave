@@ -39,7 +39,7 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
 
   const flatSessions = useMemo(() => {
     return Object.values(sessions)
-      .filter((s) => s.cwd && s.machineAgentId)
+      .filter((s) => s.cwd && s.machineAgentId && !s.archived)
       .sort((a, b) => {
         const rankA = a.isStreaming ? 2 : a.isActive ? 1 : 0;
         const rankB = b.isStreaming ? 2 : b.isActive ? 1 : 0;

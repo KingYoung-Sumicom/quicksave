@@ -105,7 +105,7 @@ export function ProjectDetail({
   // string (e.g. `/home/user/foo` on two Linux boxes) and the store now
   // holds sessions from every connected agent.
   const cwdSessions = Object.values(sessions)
-    .filter((s) => (!s.machineAgentId || s.machineAgentId === agentId) && (s.cwd === cwd || (!s.cwd && isReady)))
+    .filter((s) => (!s.machineAgentId || s.machineAgentId === agentId) && (s.cwd === cwd || (!s.cwd && isReady)) && !s.archived)
     .sort((a, b) => {
       const rankA = a.isStreaming ? 2 : a.isActive ? 1 : 0;
       const rankB = b.isStreaming ? 2 : b.isActive ? 1 : 0;
