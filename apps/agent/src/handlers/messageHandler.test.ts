@@ -91,7 +91,7 @@ describe('MessageHandler', () => {
       expect(response.type).toBe('handshake:ack');
       expect(response.id).toBe(message.id);
       expect((response.payload as any).success).toBe(true);
-      expect((response.payload as any).agentVersion).toBe('0.8.0');
+      expect((response.payload as any).agentVersion).toBe('0.8.1');
       expect((response.payload as any).repoPath).toBe(testRepoPath);
     });
   });
