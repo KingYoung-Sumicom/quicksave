@@ -118,7 +118,7 @@ describe('connectionStore', () => {
       // Set up some state
       useConnectionStore.getState().setConnecting('agent-123');
       useConnectionStore.getState().setConnected('/repo', true,
-        [{ path: '/repo', name: 'repo' }], [], '1.0.0', '1.1.0', true);
+        [{ path: '/repo', name: 'repo' }], [], '1.0.0', '1.1.0');
       useConnectionStore.getState().setCodexModels([{ id: 'o4-mini', name: 'o4-mini' }]);
       useConnectionStore.getState().setAgentOnline(true);
 
@@ -135,7 +135,6 @@ describe('connectionStore', () => {
       expect(state.agentVersion).toBeNull();
       expect(state.latestVersion).toBeNull();
       expect(state.codexModels).toEqual([]);
-      expect(state.devBuild).toBe(false);
       expect(state.reconnectAttempt).toBeNull();
       expect(state.maxReconnectAttempts).toBeNull();
       expect(state.connectionStep).toBeNull();

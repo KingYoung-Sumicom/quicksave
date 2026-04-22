@@ -510,10 +510,10 @@ function AppContent() {
           useConnectionStore.getState().setCodexModels(codexModels);
         }
         // Update legacy single-agent state
-        handlersRef.current.setConnected(path, pro, availableRepos, availableCodingPaths, agentVersion, latestVersion, devBuild);
+        handlersRef.current.setConnected(path, pro, availableRepos, availableCodingPaths, agentVersion, latestVersion);
         handlersRef.current.setCurrentRepoPath(path);
         // Update multi-agent connection map
-        useConnectionStore.getState().setAgentConnected(agentId, path, pro, availableRepos, availableCodingPaths, agentVersion);
+        useConnectionStore.getState().setAgentConnected(agentId, path, pro, availableRepos, availableCodingPaths, agentVersion, devBuild);
         const repoPaths = availableRepos?.map((r) => r.path);
         const codingPaths = availableCodingPaths?.map((p) => p.path);
         handlersRef.current.recordConnection(agentId, path, pro, repoPaths, codingPaths);

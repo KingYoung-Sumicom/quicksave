@@ -11,6 +11,7 @@ export interface AgentConnectionState {
   availableCodingPaths: CodingPath[];
   isPro: boolean;
   agentVersion: string | null;
+  devBuild: boolean;
   connectedAt: number | null;
   error: string | null;
   /** Relay's view of whether the agent is reachable.
@@ -36,7 +37,6 @@ interface ConnectionStore {
   agentVersion: string | null;
   latestVersion: string | null;
   codexModels: CodexModelInfo[];
-  devBuild: boolean;
   reconnectAttempt: number | null;
   maxReconnectAttempts: number | null;
   connectionStep: ConnectionStep | null;
@@ -49,7 +49,7 @@ interface ConnectionStore {
   // Active-agent actions (mirror writes; per-agent versions live below)
   setConnecting: (agentId: string) => void;
   setSignaling: () => void;
-  setConnected: (repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string, latestVersion?: string, devBuild?: boolean) => void;
+  setConnected: (repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string, latestVersion?: string) => void;
   setAgentVersion: (version: string) => void;
   setLatestVersion: (version: string) => void;
   setCodexModels: (models: CodexModelInfo[]) => void;
@@ -67,7 +67,7 @@ interface ConnectionStore {
 
   // Multi-agent actions
   setAgentConnecting: (agentId: string) => void;
-  setAgentConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string) => void;
+  setAgentConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string, devBuild?: boolean) => void;
   setAgentDisconnected: (agentId: string) => void;
   setAgentError: (agentId: string, error: string) => void;
   setAgentOnlineFor: (agentId: string, online: boolean) => void;
@@ -106,7 +106,6 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
   agentVersion: null,
   latestVersion: null,
   codexModels: [],
-  devBuild: false,
   reconnectAttempt: null,
   maxReconnectAttempts: null,
   connectionStep: null,
@@ -127,7 +126,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       state: 'connecting',
     }),
 
-  setConnected: (repoPath, isPro, availableRepos, availableCodingPaths, agentVersion, latestVersion, devBuild) =>
+  setConnected: (repoPath, isPro, availableRepos, availableCodingPaths, agentVersion, latestVersion) =>
     set({
       state: 'connected',
       repoPath: repoPath || null,
@@ -137,7 +136,6 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       isPro,
       agentVersion: agentVersion || null,
       latestVersion: latestVersion || null,
-      devBuild: devBuild || false,
       error: null,
       connectionStep: null,
       keyExchangeAttempt: null,
@@ -214,7 +212,6 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       agentVersion: null,
       latestVersion: null,
       codexModels: [],
-      devBuild: false,
       reconnectAttempt: null,
       maxReconnectAttempts: null,
       connectionStep: null,
@@ -234,13 +231,14 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
           availableCodingPaths: [],
           isPro: false,
           agentVersion: null,
+          devBuild: false,
           connectedAt: null,
           error: null,
         },
       },
     })),
 
-  setAgentConnected: (agentId, repoPath, isPro, availableRepos, availableCodingPaths, agentVersion) =>
+  setAgentConnected: (agentId, repoPath, isPro, availableRepos, availableCodingPaths, agentVersion, devBuild) =>
     set((state) => ({
       agentConnections: {
         ...state.agentConnections,
@@ -251,6 +249,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
           availableCodingPaths: availableCodingPaths || [],
           isPro,
           agentVersion: agentVersion || null,
+          devBuild: devBuild || false,
           connectedAt: Date.now(),
           error: null,
         },
@@ -270,7 +269,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
         [agentId]: {
           ...(state.agentConnections[agentId] || {
             state: 'error', repoPath: null, availableRepos: [],
-            availableCodingPaths: [], isPro: false, agentVersion: null, connectedAt: null,
+            availableCodingPaths: [], isPro: false, agentVersion: null, devBuild: false, connectedAt: null,
           }),
           state: 'error',
           error,

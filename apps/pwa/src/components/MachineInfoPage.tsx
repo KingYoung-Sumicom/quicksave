@@ -40,12 +40,13 @@ export function MachineInfoPage({
     [allProjects, agentId],
   );
 
-  // The per-agent shape only stores agentVersion; latestVersion/devBuild are
-  // mirrored from the *active* agent's connection. Routing the active agent
-  // to this machine on mount lines up the globals with what we display.
+  // agentVersion and devBuild are per-agent; latestVersion is a global (the
+  // npm "latest" tag applies to all agents equally). Routing the active agent
+  // to this machine on mount so the version-check/update/restart handlers
+  // target the right peer.
   const agentVersion = conn?.agentVersion ?? null;
+  const devBuild = conn?.devBuild ?? false;
   const latestVersion = useConnectionStore((s) => s.latestVersion);
-  const devBuild = useConnectionStore((s) => s.devBuild);
   const setLatestVersion = useConnectionStore((s) => s.setLatestVersion);
 
   useEffect(() => {
