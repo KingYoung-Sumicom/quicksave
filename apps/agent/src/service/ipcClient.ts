@@ -15,7 +15,7 @@ import type {
 import { IPC_VERSION, BUILD_ID } from './types.js';
 
 // Package version — matches package.json
-const PACKAGE_VERSION = '0.7.1';
+const PACKAGE_VERSION = '0.8.0';
 
 interface PendingRequest {
   resolve: (result: unknown) => void;
