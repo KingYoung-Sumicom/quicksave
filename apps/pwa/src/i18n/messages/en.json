@@ -51,6 +51,10 @@
   "settings.machines.edit.icon.label": "Icon",
   "settings.machines.edit.save": "Save changes",
 
+  "machineInfo.projects.title": "Projects",
+  "machineInfo.projects.empty": "No projects on this machine yet.",
+  "machineInfo.projects.sessionCount": "{count, plural, one {# task} other {# tasks}}",
+
   "settings.notifications.title": "Notifications",
   "settings.notifications.description": "Get alerted when a task needs your attention.",
   "settings.notifications.unsupported": "Push notifications aren't available in this browser.",

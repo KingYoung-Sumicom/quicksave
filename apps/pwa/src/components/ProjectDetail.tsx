@@ -97,7 +97,7 @@ export function ProjectDetail({
       return;
     }
     removeProject(agentId, cwd);
-    navigate('/', { replace: true });
+    navigate(-1);
   }, [cwd, agentId, onDeleteProject, removeProject, navigate]);
 
   // Filter sessions for this project: must match both the resolved cwd AND

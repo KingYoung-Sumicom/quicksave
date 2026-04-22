@@ -51,6 +51,10 @@
   "settings.machines.edit.icon.label": "圖示",
   "settings.machines.edit.save": "儲存變更",
 
+  "machineInfo.projects.title": "專案",
+  "machineInfo.projects.empty": "這台機器還沒有專案。",
+  "machineInfo.projects.sessionCount": "{count} 個任務",
+
   "settings.notifications.title": "通知",
   "settings.notifications.description": "當有任務需要你處理時提醒你。",
   "settings.notifications.unsupported": "這個瀏覽器不支援推播通知。",

@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { FormattedMessage } from 'react-intl';
 import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { Spinner } from './ui/Spinner';
 import { useMachineStore } from '../stores/machineStore';
 import { useConnectionStore } from '../stores/connectionStore';
+import { useProjects } from '../hooks/useProjects';
 
 interface MachineInfoPageProps {
   onSetActiveAgent: (agentId: string) => void;
@@ -31,6 +33,12 @@ export function MachineInfoPage({
   const machine = useMachineStore((s) => s.machines.find((m) => m.agentId === agentId));
   const conn = useConnectionStore((s) => (agentId ? s.agentConnections[agentId] : undefined));
   const isOnline = conn?.state === 'connected' && conn?.online !== false;
+
+  const allProjects = useProjects();
+  const machineProjects = useMemo(
+    () => allProjects.filter((p) => p.agentId === agentId),
+    [allProjects, agentId],
+  );
 
   // The per-agent shape only stores agentVersion; latestVersion/devBuild are
   // mirrored from the *active* agent's connection. Routing the active agent
@@ -245,6 +253,49 @@ export function MachineInfoPage({
                   )}
                 </button>
               </>
+            )}
+          </div>
+
+          {/* Projects section — lists the projects/cwds that exist on this
+              machine, navigable to the project detail page. */}
+          <div className="space-y-3">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+              <FormattedMessage id="machineInfo.projects.title" />
+            </h3>
+
+            {machineProjects.length === 0 ? (
+              <p className="text-xs text-slate-500">
+                <FormattedMessage id="machineInfo.projects.empty" />
+              </p>
+            ) : (
+              <div className="divide-y divide-slate-700/40 rounded-lg bg-slate-700/30 overflow-hidden">
+                {machineProjects.map((project) => (
+                  <button
+                    key={project.projectId}
+                    onClick={() => navigate(`/p/${project.projectId}`)}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-slate-700/60 active:bg-slate-700/80 transition-colors"
+                  >
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${project.isConnected ? 'bg-emerald-400' : 'bg-slate-500'}`}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-white truncate">{project.displayName}</div>
+                      <div className="text-[11px] text-slate-500 font-mono truncate">{project.cwd}</div>
+                    </div>
+                    {project.sessionCount > 0 && (
+                      <span className="text-[11px] text-slate-400 shrink-0">
+                        <FormattedMessage
+                          id="machineInfo.projects.sessionCount"
+                          values={{ count: project.sessionCount }}
+                        />
+                      </span>
+                    )}
+                    <svg className="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                ))}
+              </div>
             )}
           </div>
         </div>
