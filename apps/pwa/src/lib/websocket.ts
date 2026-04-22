@@ -197,9 +197,23 @@ export class WebSocketClient {
     // Clean up existing session for this agent if any
     this.cleanupAgentSession(agentId);
 
+    // Stored keys can be corrupted — malformed paste, partial sync, legacy
+    // data — and decodeBase64 throws a raw TypeError on bad input. Catch
+    // here so auto-connect can continue with the other machines instead of
+    // tearing down the whole page.
+    let agentPublicKey: Uint8Array;
+    try {
+      agentPublicKey = decodeBase64(publicKey);
+    } catch {
+      console.error(`Invalid public key for agent ${agentId}; skipping connect`);
+      this.eventHandlers.onError(new Error('Stored machine public key is invalid'));
+      this.eventHandlers.onDisconnected(agentId);
+      return;
+    }
+
     const session: AgentSession = {
       agentId,
-      agentPublicKey: decodeBase64(publicKey),
+      agentPublicKey,
       sessionDEK: null,
       keyExchangeComplete: false,
       keyPair: generateKeyPair(),

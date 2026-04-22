@@ -16,6 +16,7 @@ import {
   encodeKeyPair,
   decodeKeyPair,
   generateAgentId,
+  isValidBase64Key,
   encodeBase64,
   decodeBase64,
   createTombstone,
@@ -333,6 +334,42 @@ describe('Agent ID Generation', () => {
       ids.add(generateAgentId());
     }
     expect(ids.size).toBe(100);
+  });
+});
+
+describe('isValidBase64Key', () => {
+  it('accepts a 32-byte standard base64 key', () => {
+    const pk = encodeBase64(nacl.randomBytes(32));
+    expect(isValidBase64Key(pk)).toBe(true);
+  });
+
+  it('rejects wrong byte length', () => {
+    const sixteen = encodeBase64(nacl.randomBytes(16));
+    expect(isValidBase64Key(sixteen)).toBe(false);
+    expect(isValidBase64Key(sixteen, 16)).toBe(true);
+  });
+
+  it('rejects empty string', () => {
+    expect(isValidBase64Key('')).toBe(false);
+  });
+
+  it('rejects non-string input', () => {
+    expect(isValidBase64Key(null)).toBe(false);
+    expect(isValidBase64Key(undefined)).toBe(false);
+    expect(isValidBase64Key(42)).toBe(false);
+    expect(isValidBase64Key({})).toBe(false);
+  });
+
+  it('rejects base64url (agentId-style) input', () => {
+    // generateAgentId uses URL-safe alphabet + no padding; tweetnacl-util
+    // only accepts standard base64, so these must be rejected.
+    expect(isValidBase64Key('FTjVcBEtjSGurpvw34_oWw')).toBe(false);
+    expect(isValidBase64Key(generateAgentId())).toBe(false);
+  });
+
+  it('rejects garbage strings', () => {
+    expect(isValidBase64Key('not base64!')).toBe(false);
+    expect(isValidBase64Key('###')).toBe(false);
   });
 });
 

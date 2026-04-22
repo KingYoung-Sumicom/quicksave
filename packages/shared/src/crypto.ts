@@ -414,6 +414,20 @@ export function decodeKeyPair(encoded: { publicKey: string; secretKey: string })
 }
 
 /**
+ * Validate that a string is a base64-encoded key of the expected byte length.
+ * Curve25519/Ed25519 public/secret keys are 32 bytes → 44 base64 chars.
+ * Returns false for empty strings, non-base64 input, or wrong-length decodes.
+ */
+export function isValidBase64Key(s: unknown, expectedBytes = 32): s is string {
+  if (typeof s !== 'string' || s.length === 0) return false;
+  try {
+    return decodeBase64(s).length === expectedBytes;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Generate a random agent ID (used for signaling)
  */
 export function generateAgentId(): string {

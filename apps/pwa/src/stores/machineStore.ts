@@ -1,5 +1,17 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { isValidBase64Key } from '@sumicom/quicksave-shared';
+
+/** A Machine is only persistable if its identity fields are well-formed.
+ *  Guards the store against partial/corrupted writes so stale bad data
+ *  can't survive a reload and crash auto-connect. */
+function isValidMachineIdentity(m: Pick<Machine, 'agentId' | 'publicKey' | 'signPublicKey'>): boolean {
+  if (typeof m.agentId !== 'string' || m.agentId.length === 0) return false;
+  if (!isValidBase64Key(m.publicKey)) return false;
+  // signPublicKey is optional, but if present must be valid.
+  if (m.signPublicKey !== undefined && !isValidBase64Key(m.signPublicKey)) return false;
+  return true;
+}
 
 export interface CachedRepoInfo {
   path: string;
@@ -91,6 +103,13 @@ export const useMachineStore = create<MachineStore>()(
 
       addMachine: (machine) =>
         set((state) => {
+          if (!isValidMachineIdentity(machine)) {
+            console.error('[machineStore] refusing addMachine with invalid key material', {
+              agentId: machine.agentId,
+              pkLen: machine.publicKey?.length,
+            });
+            return state;
+          }
           if (state.machines.some((m) => m.agentId === machine.agentId)) {
             return state;
           }
@@ -118,13 +137,25 @@ export const useMachineStore = create<MachineStore>()(
 
       updateMachine: (agentId, updates) =>
         set((state) => {
-          const touchesSynced = Object.keys(updates).some((k) =>
+          // Strip key fields if they'd produce an invalid identity — the
+          // rest of the update still applies.
+          const sanitized: Partial<Omit<Machine, 'agentId'>> = { ...updates };
+          if ('publicKey' in sanitized && !isValidBase64Key(sanitized.publicKey)) {
+            console.error(`[machineStore] dropping invalid publicKey update for ${agentId}`);
+            delete sanitized.publicKey;
+          }
+          if ('signPublicKey' in sanitized && sanitized.signPublicKey !== undefined
+              && !isValidBase64Key(sanitized.signPublicKey)) {
+            console.error(`[machineStore] dropping invalid signPublicKey update for ${agentId}`);
+            delete sanitized.signPublicKey;
+          }
+          const touchesSynced = Object.keys(sanitized).some((k) =>
             SYNCED_MACHINE_FIELDS.has(k as keyof Machine)
           );
           return {
             machines: state.machines.map((m) =>
               m.agentId === agentId
-                ? { ...m, ...updates, ...(touchesSynced ? { updatedAt: Date.now() } : {}) }
+                ? { ...m, ...sanitized, ...(touchesSynced ? { updatedAt: Date.now() } : {}) }
                 : m
             ),
           };
@@ -191,7 +222,8 @@ export const useMachineStore = create<MachineStore>()(
           }),
         })),
 
-      overwriteMachines: (machines) => set({ machines }),
+      overwriteMachines: (machines) =>
+        set({ machines: machines.filter(isValidMachineIdentity) }),
 
       getMachine: (agentId) => get().machines.find((m) => m.agentId === agentId),
 
@@ -265,7 +297,7 @@ export const useMachineStore = create<MachineStore>()(
 
       applySyncedState: (next) =>
         set(() => ({
-          machines: next.machines,
+          machines: next.machines.filter(isValidMachineIdentity),
           machineTombstones: next.machineTombstones,
         })),
 
@@ -281,7 +313,7 @@ export const useMachineStore = create<MachineStore>()(
     }),
     {
       name: 'quicksave-machines',
-      version: 5,
+      version: 6,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as {
           machines: Machine[];
@@ -309,6 +341,16 @@ export const useMachineStore = create<MachineStore>()(
         }
         if (version < 5) {
           delete state.pinnedProjects;
+        }
+        if (version < 6) {
+          // One-time prune: drop any machine with an invalid publicKey so
+          // stale corrupted rows (pre-guard) don't crash auto-connect.
+          const before = state.machines.length;
+          state.machines = state.machines.filter(isValidMachineIdentity);
+          const dropped = before - state.machines.length;
+          if (dropped > 0) {
+            console.warn(`[machineStore] migration v6 pruned ${dropped} machine(s) with invalid keys`);
+          }
         }
         return state;
       },

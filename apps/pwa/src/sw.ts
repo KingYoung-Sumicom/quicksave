@@ -3,10 +3,19 @@ import { precacheAndRoute, cleanupOutdatedCaches } from 'workbox-precaching';
 
 declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<{ url: string; revision: string | null }>;
+  __WB_DISABLE_DEV_LOGS?: boolean;
 };
 
-cleanupOutdatedCaches();
-precacheAndRoute(self.__WB_MANIFEST);
+// In Vite dev, __WB_MANIFEST is populated with un-hashed /src/* and Vite-dep
+// URLs that will never be requested as-is (the browser hits them with ?v=
+// query strings or via HMR), so precacheAndRoute floods the console with
+// "No route found" warnings. Skip precaching entirely in dev and silence
+// any remaining workbox dev-log chatter.
+self.__WB_DISABLE_DEV_LOGS = true;
+if (import.meta.env.PROD) {
+  cleanupOutdatedCaches();
+  precacheAndRoute(self.__WB_MANIFEST);
+}
 
 interface PushPayload {
   title?: string;
