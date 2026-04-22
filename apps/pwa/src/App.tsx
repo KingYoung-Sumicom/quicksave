@@ -1267,7 +1267,17 @@ function ProjectRouteSession({
               const { setActiveSession, clearCards } = useClaudeStore.getState();
               setActiveSession(null);
               clearCards();
-              navigate('/', { replace: true });
+              // Navigate explicitly — can't rely on the `viewedArchived` bounce
+              // effect because `onCloseSession` may remove the session from the
+              // store before `archived:true` propagates, so the selector never
+              // flips to true. Mirror the bounce effect's pattern: prefer
+              // `navigate(-1)` to pop the defunct entry; fall back when there's
+              // no prior entry (deep-link / refresh).
+              if (location.key !== 'default') {
+                navigate(-1);
+              } else {
+                navigate(projectBasePath, { replace: true });
+              }
             }
           }}
           onCancelSession={() => {

@@ -37,7 +37,7 @@ export function NotificationPrompt({ onOffer }: NotificationPromptProps) {
   };
 
   return (
-    <div className="fixed left-0 right-0 bottom-0 z-40 pointer-events-none safe-area-bottom">
+    <div className="fixed left-0 right-0 bottom-0 z-40 pointer-events-none safe-area-bottom safe-area-x">
       <div className="mx-auto max-w-md px-4 pb-4 pointer-events-auto">
         <div className="p-3 bg-blue-500/10 border border-blue-500/30 backdrop-blur-sm rounded-lg shadow-lg flex items-center gap-3">
           <div className="flex-1 text-sm text-blue-300">

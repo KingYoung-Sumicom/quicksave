@@ -103,7 +103,7 @@ export function SwipeableDrawer({
       {/* Drawer panel */}
       <div
         ref={drawerRef}
-        className={`fixed inset-y-0 z-50 ${side === 'left' ? 'left-0' : 'right-0'}${isOpen && !isDragging && !skipSlideAnimation ? ` ${slideClass}` : ''} ${className}`}
+        className={`fixed inset-y-0 z-50 ${side === 'left' ? 'left-0 safe-area-left' : 'right-0 safe-area-right'}${isOpen && !isDragging && !skipSlideAnimation ? ` ${slideClass}` : ''} ${className}`}
         style={!isOpen && isDragging ? hiddenStyle : undefined}
       >
         {children}

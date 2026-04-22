@@ -175,7 +175,7 @@ export function PathBrowser({
       <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
 
       {/* Drawer - slides up from bottom */}
-      <div className="fixed inset-x-0 bottom-0 z-50 bg-slate-800 rounded-t-2xl max-h-[80vh] flex flex-col safe-area-bottom">
+      <div className="fixed inset-x-0 bottom-0 z-50 bg-slate-800 rounded-t-2xl max-h-[80vh] flex flex-col safe-area-bottom safe-area-x">
         {/* Handle */}
         <div className="flex justify-center py-3">
           <div className="w-10 h-1 bg-slate-600 rounded-full" />

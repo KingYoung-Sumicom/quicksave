@@ -29,7 +29,7 @@ export function FloatingActionButton({
   };
 
   return (
-    <div className="floating-action-button fixed bottom-20 right-4 flex flex-col gap-2 z-50 animate-slide-up bg-slate-600/70 backdrop-blur-md rounded-2xl p-2 shadow-xl">
+    <div className="floating-action-button fixed bottom-20 right-[calc(1rem+env(safe-area-inset-right))] flex flex-col gap-2 z-50 animate-slide-up bg-slate-600/70 backdrop-blur-md rounded-2xl p-2 shadow-xl">
       {/* Clear button */}
       <button
         onClick={onClear}

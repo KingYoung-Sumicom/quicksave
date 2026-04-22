@@ -60,7 +60,7 @@ export function GitignoreEditor({ isOpen, onClose, onRead, onWrite }: GitignoreE
       <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
 
       {/* Modal */}
-      <div className="fixed inset-x-4 top-16 bottom-16 z-50 flex flex-col bg-slate-800 rounded-lg shadow-xl border border-slate-700 overflow-hidden">
+      <div className="fixed left-[calc(1rem+env(safe-area-inset-left))] right-[calc(1rem+env(safe-area-inset-right))] top-16 bottom-16 z-50 flex flex-col bg-slate-800 rounded-lg shadow-xl border border-slate-700 overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
           <h2 className="font-medium">.gitignore</h2>

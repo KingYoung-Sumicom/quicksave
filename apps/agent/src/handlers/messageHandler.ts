@@ -359,7 +359,10 @@ export class MessageHandler {
     message: Message,
     peerAddress: string = 'default',
   ): Promise<Message> {
-    const isVerbose = message.type.startsWith('claude:') || message.type.startsWith('agent:add');
+    const isVerbose =
+      message.type.startsWith('claude:') ||
+      message.type.startsWith('agent:add') ||
+      message.type.startsWith('project:');
     if (isVerbose) {
       console.log(`[msg] ${message.type} from ${peerAddress.slice(0, 12)}`);
     }
@@ -2119,10 +2122,9 @@ export class MessageHandler {
     const { cwd } = message.payload;
     const registry = getSessionRegistry();
 
-    for (const s of this.claudeService.getActiveSessions()) {
-      if (s.cwd === cwd) {
-        this.claudeService.closeSession(s.sessionId);
-      }
+    const liveHere = this.claudeService.getActiveSessions().filter((s) => s.cwd === cwd);
+    for (const s of liveHere) {
+      this.claudeService.closeSession(s.sessionId);
     }
 
     const active = registry.getEntriesForProject(cwd);
@@ -2135,10 +2137,15 @@ export class MessageHandler {
       }
     }
 
-    if (this.codingPaths.has(cwd)) {
+    const hadCodingPath = this.codingPaths.has(cwd);
+    if (hadCodingPath) {
       this.codingPaths.delete(cwd);
       removeManagedCodingPath(cwd);
     }
+
+    console.log(
+      `[project:delete] cwd=${cwd} closedSessions=${liveHere.length} archived=${archivedCount} removedCodingPath=${hadCodingPath}`,
+    );
 
     const response = createMessage<ProjectDeleteResponsePayload>(
       'project:delete:response',

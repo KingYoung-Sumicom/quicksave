@@ -147,12 +147,14 @@ export async function runDaemon(): Promise<void> {
     const oldPid = process.pid;
     // Escape single quotes in paths for safe shell interpolation
     const sq = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-    // Detached shell: verify → kill old → start new
+    // Detached shell: verify → kill old → start new.
+    // Sanity check + its `||` fallback must stay in a single array element —
+    // if we split them and `.join(' && ')`, the result becomes `… && || { … }`
+    // which is a shell syntax error and the whole launcher silently aborts.
     const script = [
       `sleep 1`,
       // Sanity-check: if new binary can't even print version, abort
-      `${sq(node)} ${nf}${sq(entryPath)} --version > /dev/null 2>&1`,
-      `|| { echo "[upgrade] new binary failed sanity check, aborting" >> ${sq(logPath)}; exit 1; }`,
+      `${sq(node)} ${nf}${sq(entryPath)} --version > /dev/null 2>&1 || { echo "[upgrade] new binary failed sanity check, aborting" >> ${sq(logPath)}; exit 1; }`,
       // New binary works — kill old daemon (graceful shutdown releases lock)
       `kill ${oldPid}`,
       // Wait for old daemon to fully exit and release lock

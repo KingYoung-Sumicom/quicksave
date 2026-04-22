@@ -17,7 +17,7 @@ export function ConnectingOverlay({ onAbort, onRetry }: ConnectingOverlayProps) 
   // Error state
   if (state === 'error' && error) {
     return (
-      <div className="fixed inset-0 z-50 bg-slate-900/90 flex items-center justify-center safe-area-top safe-area-bottom">
+      <div className="fixed inset-0 z-50 bg-slate-900/90 flex items-center justify-center safe-area-top safe-area-bottom safe-area-x">
         <div className="w-full max-w-sm text-center px-6">
           <div className="w-16 h-16 mx-auto mb-6 rounded-full bg-red-500/20 flex items-center justify-center">
             <svg className="w-8 h-8 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
