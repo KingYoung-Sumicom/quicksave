@@ -1267,7 +1267,7 @@ function ProjectRouteSession({
               const { setActiveSession, clearCards } = useClaudeStore.getState();
               setActiveSession(null);
               clearCards();
-              navigate(projectBasePath, { replace: true });
+              navigate('/', { replace: true });
             }
           }}
           onCancelSession={() => {
