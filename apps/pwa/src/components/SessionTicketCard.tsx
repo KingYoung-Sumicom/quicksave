@@ -39,22 +39,14 @@ function Chevron() {
   );
 }
 
-/**
- * Choose the dot driving the leading status pip.
- *  - blocked → red, overrides everything
- *  - active runtime states (thinking/pending) → use SESSION_STATUS dot for live signal
- *  - else fall back to ticket stage color
- *  - else neutral slate
- */
+// The leading dot always tracks the runtime session status (standby/pending/
+// thinking/closed) so the classic green/orange/blue scheme keeps surfacing
+// sessions that need handling — in particular pending permission / pending
+// user input. Ticket metadata (stage, blocked) is communicated through the
+// chip labels below, not the dot color, so it can't mask a live signal.
 function pickDot(session: ClaudeSessionSummary): { color: string; pulse: boolean } {
-  if (session.blocked) return { color: BLOCKED_META.dotColor, pulse: true };
-  const runtime = sessionStatusKey(session);
-  if (runtime === 'thinking' || runtime === 'pending') {
-    const s = SESSION_STATUS[runtime];
-    return { color: s.dotColor, pulse: s.pulse };
-  }
-  if (session.stage) return { color: STAGE_META[session.stage].dotColor, pulse: false };
-  return { color: 'bg-slate-500', pulse: false };
+  const s = SESSION_STATUS[sessionStatusKey(session)];
+  return { color: s.dotColor, pulse: s.pulse };
 }
 
 export function SessionTicketCard({ session, onClick, compact, isActive, className, projectName }: SessionTicketCardProps) {

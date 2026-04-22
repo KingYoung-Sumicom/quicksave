@@ -2099,19 +2099,33 @@ export class MessageHandler {
   }
 
   /**
-   * Hide a project without touching the filesystem. Archives every active
-   * session under `cwd` (each archive fires `/sessions/history` so PWAs drop
-   * the sessions from their live view) and removes the cwd from managed
+   * Hide a project without touching the filesystem. Closes every live
+   * Claude session under `cwd` (so a stray resume can't re-materialize an
+   * active registry entry — see note below), archives every registry entry
+   * under `cwd` (each archive fires `/sessions/history` so PWAs drop the
+   * sessions from their live view), and removes the cwd from managed
    * coding paths so it stops surfacing as an empty workspace. Archived
    * session JSON stays on disk and can be restored individually.
+   *
+   * Why close live sessions first: `handleClaudeResume` builds a fresh
+   * active registry entry when `getEntry` returns undefined (archived
+   * entries aren't in memory). Without this step, any subsequent resume
+   * of a still-running session re-creates the active entry and the
+   * project reappears on the next project:list-summaries.
    */
   private handleDeleteProject(
     message: Message<ProjectDeleteRequestPayload>,
   ): Message<ProjectDeleteResponsePayload> {
     const { cwd } = message.payload;
     const registry = getSessionRegistry();
-    const active = registry.getEntriesForProject(cwd);
 
+    for (const s of this.claudeService.getActiveSessions()) {
+      if (s.cwd === cwd) {
+        this.claudeService.closeSession(s.sessionId);
+      }
+    }
+
+    const active = registry.getEntriesForProject(cwd);
     let archivedCount = 0;
     for (const entry of active) {
       const updated = registry.updateEntry(cwd, entry.sessionId, { archived: true });

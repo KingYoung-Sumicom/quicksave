@@ -848,5 +848,28 @@ describe('MessageHandler', () => {
       const afterProjects = (after.payload as any).projects as Array<{ cwd: string }>;
       expect(afterProjects.some((p) => p.cwd === projectDir)).toBe(false);
     });
+
+    it('closes every live Claude session under the deleted cwd', async () => {
+      const claudeService = (handler as unknown as {
+        claudeService: {
+          getActiveSessions: () => Array<{ sessionId: string; cwd: string }>;
+          closeSession: (sessionId: string) => boolean;
+        };
+      }).claudeService;
+
+      const otherCwd = join(tmpdir(), `qs-other-${Date.now()}`);
+      vi.spyOn(claudeService, 'getActiveSessions').mockReturnValue([
+        { sessionId: 'live-1', cwd: projectDir } as any,
+        { sessionId: 'live-2', cwd: projectDir } as any,
+        { sessionId: 'live-other', cwd: otherCwd } as any,
+      ]);
+      const closeSpy = vi.spyOn(claudeService, 'closeSession').mockReturnValue(true);
+
+      await handler.handleMessage(createMessage('project:delete', { cwd: projectDir }));
+
+      const closedIds = closeSpy.mock.calls.map((c) => c[0]).sort();
+      expect(closedIds).toEqual(['live-1', 'live-2']);
+      expect(closedIds).not.toContain('live-other');
+    });
   });
 });
