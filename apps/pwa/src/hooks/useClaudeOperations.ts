@@ -224,13 +224,27 @@ export function useClaudeOperations(
         } else {
           // Cold resume: set as the only active streamId
           setActiveSession(actualSessionId, response.streamId ?? null);
+          // Cold resume can fork the session_id (CLI emits a new id when
+          // resuming an existing transcript). The PWA's card subscription is
+          // keyed by sessionId, so bus updates for the new id would never
+          // reach the store. Rebind: drop the old subscription, attach to
+          // the new one. ClaudePanel's nav effect early-returns when
+          // urlSessionId still matches the old id, so it can't do this for us.
+          if (actualSessionId !== sessionId) {
+            const oldUnsub = cardsUnsubsRef.current.get(sessionId);
+            if (oldUnsub) {
+              cardsUnsubsRef.current.delete(sessionId);
+              oldUnsub();
+            }
+            getSessionCards(actualSessionId, 0, 50, cwd, /* subscribeOnly */ true);
+          }
         }
       } catch (error) {
         setStreaming(false);
         setStreamError(error instanceof Error ? error.message : 'Failed to resume session');
       }
     },
-    [sendCommand, setStreaming, setStreamError, setActiveSession, appendCard, upsertSession]
+    [sendCommand, setStreaming, setStreamError, setActiveSession, appendCard, upsertSession, getSessionCards]
   );
 
   const cancelSession = useCallback(

@@ -1183,14 +1183,31 @@ function ProjectRouteSession({
     }
   }, [targetAgentId, onSetActiveAgent]);
 
-  // When a session starts, update URL
+  // Cold-resume fork rerouter: when a CLI cold resume returns a different
+  // session_id than the one we asked for, the daemon migrates state under the
+  // new id and the old id is now defunct. If the user is still viewing the
+  // old id's URL, the page would silently route bus traffic to the wrong
+  // topic — visually empty until they navigate away. Move them to the new id
+  // in that narrow case only.
+  //
+  // Why not unconditional: the user finds being yanked to a different URL
+  // jarring. AddNewPage already navigates explicitly when it spins up a
+  // brand-new session (null → Y), and SessionList navigates URL-first when a
+  // user picks a session (so the URL is already at the new id by the time
+  // activeSessionId catches up). The only case left is fork.
   const prevActiveRef = useRef(activeSessionId);
   useEffect(() => {
-    if (activeSessionId && activeSessionId !== prevActiveRef.current) {
+    const prev = prevActiveRef.current;
+    prevActiveRef.current = activeSessionId;
+    if (
+      prev &&
+      activeSessionId &&
+      prev !== activeSessionId &&
+      urlSessionId === prev
+    ) {
       navigate(`${projectBasePath}/s/${activeSessionId}`, { replace: true });
     }
-    prevActiveRef.current = activeSessionId;
-  }, [activeSessionId, projectBasePath, navigate]);
+  }, [activeSessionId, urlSessionId, projectBasePath, navigate]);
 
   // Archived session bounce: if the session on this page gets archived on
   // the daemon, navigate back. Prefer `navigate(-1)` so the defunct entry
