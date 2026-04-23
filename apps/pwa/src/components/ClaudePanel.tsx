@@ -108,6 +108,24 @@ export function ClaudePanel({
     });
   }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // iOS mitigation: the first real focus on a textarea reports
+  // visualViewport.height without subtracting the keyboard accessory bar,
+  // so the bar overlaps the input. Pre-focus+blur once on mount to prime
+  // WebKit's cached accessory-bar height before the user taps in.
+  const hasPrimedFocusRef = useRef(false);
+  useEffect(() => {
+    if (hasPrimedFocusRef.current) return;
+    if (!isChat) return;
+    const el = inputRef.current;
+    if (!el) return;
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+      || (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints ?? 0) > 1);
+    if (!isIOS) return;
+    hasPrimedFocusRef.current = true;
+    el.focus({ preventScroll: true });
+    el.blur();
+  }, [isChat]);
+
   const connectionState = useConnectionStore((s) => s.state);
   const agentOnline = useConnectionStore((s) => s.agentOnline);
 
