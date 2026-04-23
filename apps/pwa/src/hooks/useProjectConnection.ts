@@ -48,5 +48,9 @@ export function useProjectConnection(
     isError: !!isError,
     cwd,
     agentId: targetAgentId,
+    // Bumps on every successful handshake (including post-resume reconnect).
+    // Callers depend on this to re-issue switch-repo/refresh after the agent
+    // has reset the peer's clientRepos entry.
+    connectedAt: agentState?.connectedAt ?? null,
   };
 }

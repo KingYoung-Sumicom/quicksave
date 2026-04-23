@@ -59,6 +59,7 @@ import {
   type SessionConfigUpdatedPayload,
   type SessionHistoryUpdatedPayload,
   type SessionUpdatePayload,
+  type CodexLoginState,
 } from '@sumicom/quicksave-shared';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { getEventStore } from '../storage/eventStore.js';
@@ -376,6 +377,20 @@ export async function runDaemon(): Promise<void> {
     bus.publish<CommitSummaryState>('/repos/commit-summary', state);
   });
 
+  // Codex OAuth device-auth state. The PWA subscribes while the login
+  // modal is open; `snap` delivers the current state (idle, in-progress,
+  // or logged-in) and every subsequent `upd` reflects a transition. The
+  // push is how we notify the PWA that the user just finished the OAuth
+  // dance on their phone without forcing it to poll.
+  const codexLoginManager = messageHandler.getCodexLoginManager();
+  codexLoginManager.setUpdateHandler((state) => {
+    bus.publish<CodexLoginState>('/codex/login', state);
+  });
+  bus.onSubscribe<'/codex/login', CodexLoginState, CodexLoginState>(
+    '/codex/login',
+    { snapshot: () => codexLoginManager.getStatus() },
+  );
+
   // ── MessageBus command adapter ────────────────────────────────────────────
   // Every request-response verb from the legacy MessageHandler is exposed as a
   // bus command so the PWA can `bus.command(verb, payload)` instead of going
@@ -433,6 +448,9 @@ export async function runDaemon(): Promise<void> {
     'agent:restart',
     // codex
     'codex:list-models',
+    'codex:login-start',
+    'codex:login-status',
+    'codex:login-cancel',
     // claude
     'claude:start',
     'claude:resume',

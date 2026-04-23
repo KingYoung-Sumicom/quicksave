@@ -154,6 +154,43 @@ async function listSubagentIdsFromDisk(sessionId: string, cwd: string): Promise<
   } catch { return []; }
 }
 
+/**
+ * Normalize an AskUserQuestion answers map from the CLI's persisted
+ * `toolUseResult.answers`. Handles two shapes:
+ *
+ * 1. Correct: one key per question, each value is the user's answer for
+ *    that question. Pass through untouched.
+ * 2. Legacy broken shape (pre-fix sessions): all per-question answers
+ *    crammed into questions[0]'s key, joined by `\n`. Detect by `\n` in
+ *    the single value and split back across the input's questions array.
+ *
+ * Returns undefined if there's nothing usable.
+ */
+function reconcileAskUserAnswers(
+  answers: Record<string, string> | undefined,
+  questions: Array<{ question?: string }> | undefined,
+): Record<string, string> | undefined {
+  if (!answers || typeof answers !== 'object') return undefined;
+  const keys = Object.keys(answers);
+  if (keys.length === 0) return undefined;
+
+  // Legacy shape: one key, value contains newlines, and we have multiple questions.
+  if (keys.length === 1 && questions && questions.length > 1) {
+    const onlyValue = answers[keys[0]];
+    if (typeof onlyValue === 'string' && onlyValue.includes('\n')) {
+      const parts = onlyValue.split('\n');
+      const unscrambled: Record<string, string> = {};
+      for (let i = 0; i < questions.length; i++) {
+        const q = questions[i]?.question;
+        if (!q) continue;
+        unscrambled[q] = parts[i] ?? '';
+      }
+      return unscrambled;
+    }
+  }
+  return answers;
+}
+
 /** Extract readable text from tool_result content (string or array of blocks). */
 function extractToolResultText(content: unknown): string {
   if (typeof content === 'string') return content;
@@ -515,6 +552,13 @@ export class StreamCardBuilder {
     });
   }
 
+  /** Attach AskUserQuestion answers to the matching ToolCallCard. */
+  setToolAnswers(toolUseId: string, answers: Record<string, string>): CardEvent | null {
+    const cardId = this.toolUseIdToCardId.get(toolUseId);
+    if (!cardId) return null;
+    return this.updateEvent(cardId, { answers });
+  }
+
   subagentStart(description: string, agentId: string, toolUseId?: string): CardEvent {
     this.currentTextCardId = null;
     const id = this.nextId();
@@ -629,9 +673,14 @@ export async function buildCardsFromHistory(
   const agentToolUseIds = new Set<string>();
   // toolUseId → tool_result data (for pairing)
   const toolResults = new Map<string, { content: string; isError: boolean }>();
+  // toolUseId → AskUserQuestion structured result (questions + answers).
+  // The Claude CLI stores this as `toolUseResult` at the message envelope
+  // level, separate from the human-readable tool_result.content string.
+  const askUserResults = new Map<string, { questions?: any[]; answers?: Record<string, string> }>();
 
   for (const msg of allMessages) {
     const rawMsg = (msg as any).message as any;
+    const toolUseResult = (msg as any).toolUseResult;
     if (!Array.isArray(rawMsg?.content)) continue;
     for (const block of rawMsg.content) {
       if (block.type === 'tool_use' && block.name === 'Agent' && block.id) {
@@ -640,6 +689,12 @@ export async function buildCardsFromHistory(
       if (block.type === 'tool_result' && block.tool_use_id) {
         const text = extractToolResultText(block.content);
         toolResults.set(block.tool_use_id, { content: text, isError: !!block.is_error });
+        if (toolUseResult && typeof toolUseResult === 'object' && 'answers' in toolUseResult) {
+          askUserResults.set(block.tool_use_id, {
+            questions: Array.isArray(toolUseResult.questions) ? toolUseResult.questions : undefined,
+            answers: typeof toolUseResult.answers === 'object' ? toolUseResult.answers : undefined,
+          });
+        }
       }
     }
   }
@@ -798,6 +853,14 @@ export async function buildCardsFromHistory(
                   truncated,
                 };
               }
+              let answers: Record<string, string> | undefined;
+              if (block.name === 'AskUserQuestion') {
+                const rec = askUserResults.get(block.id);
+                const inputQuestions = Array.isArray((block.input as any)?.questions)
+                  ? (block.input as any).questions
+                  : undefined;
+                answers = reconcileAskUserAnswers(rec?.answers, inputQuestions ?? rec?.questions);
+              }
               cards.push({
                 type: 'tool_call',
                 id: nextId(),
@@ -806,6 +869,7 @@ export async function buildCardsFromHistory(
                 toolInput,
                 toolUseId: block.id,
                 result: pairedResult,
+                ...(answers ? { answers } : {}),
               });
             }
             break;

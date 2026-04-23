@@ -136,6 +136,13 @@ export type MessageType =
   // Codex
   | 'codex:list-models'
   | 'codex:list-models:response'
+  | 'codex:login-start'           // pwa-request: spawn `codex login --device-auth` and return URL + code
+  | 'codex:login-start:response'
+  | 'codex:login-status'          // pwa-request: current login state (logged in / in-progress / idle)
+  | 'codex:login-status:response'
+  | 'codex:login-cancel'          // pwa-request: cancel an in-progress login attempt
+  | 'codex:login-cancel:response'
+  | 'codex:login-updated'         // agent-push: login state changed (success, failure, cancel)
   // Project summaries
   | 'project:list-summaries'
   | 'project:list-summaries:response'
@@ -532,7 +539,39 @@ export interface CodexModelInfo {
 export interface CodexListModelsResponsePayload {
   models: CodexModelInfo[];
   error?: string;
+  /** Whether the daemon currently has valid Codex credentials. When
+   *  false the PWA should offer to kick off the OAuth device flow. */
+  loggedIn?: boolean;
 }
+
+/** Device-code OAuth state mirrored from the spawned `codex login --device-auth`. */
+export interface CodexLoginState {
+  /** True once auth credentials appear (either ChatGPT OAuth or OPENAI_API_KEY). */
+  loggedIn: boolean;
+  /** True while a `codex login --device-auth` subprocess is running. */
+  inProgress: boolean;
+  method?: 'chatgpt' | 'api-key';
+  /** Verification URL user opens in a browser (e.g. https://auth.openai.com/codex/device). */
+  verificationUrl?: string;
+  /** One-time device code (e.g. "YKFF-30JQC"). */
+  userCode?: string;
+  /** Absolute unix-ms expiry of the device code (~15 min after start). */
+  expiresAt?: number;
+  /** Populated when the most recent attempt failed or was cancelled. */
+  error?: string;
+}
+
+export interface CodexLoginStartResponsePayload extends CodexLoginState {
+  ok: boolean;
+}
+
+export type CodexLoginStatusResponsePayload = CodexLoginState;
+
+export interface CodexLoginCancelResponsePayload {
+  ok: boolean;
+}
+
+export type CodexLoginUpdatedPayload = CodexLoginState;
 
 // Status
 export interface StatusRequestPayload {

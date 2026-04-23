@@ -64,6 +64,12 @@ export interface ToolCallCard extends CardBase {
   toolUseId: string;
   /** Paired result — populated by the agent when tool_result arrives. */
   result?: ToolCallResult;
+  /**
+   * AskUserQuestion only: map of question text → answer text the user picked.
+   * Populated by the agent the moment the user responds, so the UI can show
+   * selections without waiting for (or parsing) the CLI's tool_result.
+   */
+  answers?: Record<string, string>;
 }
 
 export interface ToolCallResult {

@@ -15,9 +15,10 @@ export const CLAUDE_MODELS = [
 
 /** Fallback when dynamic model list isn't available */
 export const CODEX_MODELS_FALLBACK = [
-  { value: 'o4-mini', label: 'o4-mini' },
-  { value: 'o3', label: 'o3' },
-  { value: 'gpt-4.1', label: 'GPT-4.1' },
+  { value: 'gpt-5.4', label: 'GPT-5.4' },
+  { value: 'gpt-5.4-mini', label: 'GPT-5.4-Mini' },
+  { value: 'gpt-5.3-codex', label: 'GPT-5.3-Codex' },
+  { value: 'gpt-5.2', label: 'GPT-5.2' },
 ];
 
 /** @deprecated Use CLAUDE_MODELS instead */

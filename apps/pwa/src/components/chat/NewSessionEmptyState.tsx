@@ -8,6 +8,8 @@ import { ButtonGroup } from '../ui/ButtonGroup';
 import { ToggleSwitch } from '../ui/ToggleSwitch';
 import type { ProjectEntry } from '../../hooks/useProjects';
 import { MachineIcon } from '../icons/MachineIcon';
+import { CodexLoginBanner } from './CodexLogin';
+import { useCodexLogin } from '../../hooks/useCodexLogin';
 
 export interface NewSessionEmptyStateProps {
   cwd?: string;
@@ -38,6 +40,11 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
   const models = getModelsForAgent(selectedAgent, codexModels);
   const supportsReasoning = isClaudeAgent || selectedAgent === 'codex';
   const [sandboxHelpOpen, setSandboxHelpOpen] = useState(false);
+  // Codex login gate: when the agent picker points at Codex but the daemon
+  // has no credentials, surface a banner + device-auth modal so a remote
+  // user can complete OAuth without touching the machine the daemon runs on.
+  const { loginState } = useCodexLogin();
+  const showCodexLoginGate = selectedAgent === 'codex' && loginState?.loggedIn === false;
 
   const reasoningEfforts = [
     { value: 'low', label: intl.formatMessage({ id: 'newSession.reasoningEffort.low' }) },
@@ -82,6 +89,7 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
 
         {/* Selectors */}
         <ButtonGroup label={intl.formatMessage({ id: 'newSession.agent' })} options={AGENT_TYPES} value={selectedAgent} onSelect={(agent) => setSelectedAgent(agent.value)} size="sm" />
+        {showCodexLoginGate && <CodexLoginBanner />}
         <ButtonGroup label={intl.formatMessage({ id: 'newSession.model' })} options={models} value={selectedModel} onSelect={(m) => setSelectedModel(m.value)} size="sm" />
         {supportsReasoning && (
           <ButtonGroup label={intl.formatMessage({ id: 'newSession.reasoningEffort' })} options={reasoningEfforts} value={selectedReasoningEffort} onSelect={(e) => setSelectedReasoningEffort(e.value as 'low' | 'medium' | 'high' | 'max')} size="sm" />

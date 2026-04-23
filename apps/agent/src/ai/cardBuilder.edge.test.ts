@@ -642,6 +642,84 @@ describe('buildCardsFromHistory with corrupted/edge-case JSONL', () => {
     // Empty thinking blocks are skipped (falsy check: `if (block.thinking)`)
     expect(result.cards).toHaveLength(0);
   });
+
+  it('attaches AskUserQuestion answers from toolUseResult envelope', async () => {
+    const jsonl = [
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            id: 'tu-ask',
+            name: 'AskUserQuestion',
+            input: {
+              questions: [
+                { question: 'Q1', options: [{ label: 'A' }, { label: 'B' }] },
+                { question: 'Q2', options: [{ label: 'X' }, { label: 'Y' }] },
+              ],
+            },
+          }],
+        },
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tu-ask',
+            content: 'User has answered your questions.',
+          }],
+        },
+        toolUseResult: { questions: [], answers: { 'Q1': 'A', 'Q2': 'Y' } },
+      }),
+    ].join('\n');
+
+    mockJSONL(jsonl);
+
+    const result = await buildCardsFromHistory('sess-ask', '/test/cwd');
+    const tc = result.cards.find(c => c.type === 'tool_call') as ToolCallCard;
+    expect(tc).toBeDefined();
+    expect(tc.answers).toEqual({ 'Q1': 'A', 'Q2': 'Y' });
+  });
+
+  it('unscrambles legacy multi-question answers crammed into questions[0]', async () => {
+    // Legacy shape: all answers stuffed under the first question, joined by \n
+    const jsonl = [
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            id: 'tu-legacy',
+            name: 'AskUserQuestion',
+            input: {
+              questions: [
+                { question: 'Q1' },
+                { question: 'Q2' },
+              ],
+            },
+          }],
+        },
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tu-legacy',
+            content: 'User has answered your questions.',
+          }],
+        },
+        toolUseResult: { answers: { 'Q1': 'answer1\nanswer2' } },
+      }),
+    ].join('\n');
+
+    mockJSONL(jsonl);
+
+    const result = await buildCardsFromHistory('sess-legacy', '/test/cwd');
+    const tc = result.cards.find(c => c.type === 'tool_call') as ToolCallCard;
+    expect(tc.answers).toEqual({ 'Q1': 'answer1', 'Q2': 'answer2' });
+  });
 });
 
 // ============================================================================

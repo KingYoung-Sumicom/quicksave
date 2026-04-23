@@ -56,12 +56,13 @@ function InlineToolResult({ content, toolName, suppressContent, expanded }: {
   );
 }
 
-export function ToolCallMessage({ toolName, toolInput, content, toolResultContent, toolResultIsError, pendingInputRequest, onRespond }: {
+export function ToolCallMessage({ toolName, toolInput, content, toolResultContent, toolResultIsError, toolAnswers, pendingInputRequest, onRespond }: {
   toolName?: string;
   toolInput?: string;
   content: string;
   toolResultContent?: string;
   toolResultIsError?: boolean;
+  toolAnswers?: Record<string, string>;
   pendingInputRequest?: ClaudeUserInputRequestPayload;
   onRespond?: (action: 'allow' | 'deny', response?: string, allowPattern?: string) => void;
 }) {
@@ -77,6 +78,9 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
   if (toolResultContent) {
     try { parsedResult = JSON.parse(toolResultContent); } catch { /* ignore */ }
   }
+  // Prefer the agent-attached answers (set the moment the user responds);
+  // fall back to anything embedded in the CLI tool_result.
+  const askAnswers = toolAnswers ?? (parsedResult as { answers?: Record<string, string> } | undefined)?.answers;
 
   const hasPending = !!pendingInputRequest;
 
@@ -137,7 +141,7 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
       <div className={`bg-slate-800/60 border-l-2 ${accentColor} rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-slate-300 ${toolName === 'ExitPlanMode' ? 'text-sm overflow-x-auto' : 'text-xs overflow-hidden'}`}>
         <div className="min-w-0">
           {toolName === 'AskUserQuestion'
-            ? <AskUserQuestionToolView input={parsedInput} answers={(parsedResult as any)?.answers} />
+            ? <AskUserQuestionToolView input={parsedInput} answers={askAnswers} />
             : toolName === 'ExitPlanMode'
               ? <ExitPlanModeToolView input={parsedInput} plan={parsedInput.plan as string} isRejected={toolResultIsError} />
               : ToolView

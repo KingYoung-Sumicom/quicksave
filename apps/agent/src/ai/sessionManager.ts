@@ -85,6 +85,34 @@ function isSessionStage(value: string): value is SessionStage {
   return (SESSION_STAGES as readonly string[]).includes(value);
 }
 
+/**
+ * Map a user response string back to each question in an AskUserQuestion call.
+ *
+ * Single question: response is the raw answer (may contain commas for multi-select).
+ * Multiple questions: PWA joins per-question answers with `\n` (see
+ * InteractiveQuestionView.handleSubmitAll). We split on `\n` and pair each line
+ * with questions[i].question as the key — matching the shape the SDK's
+ * AskUserQuestionOutput.answers uses.
+ */
+function buildAskUserAnswers(
+  questions: Array<{ question?: string }> | undefined,
+  responseText: string,
+): Record<string, string> {
+  const answers: Record<string, string> = {};
+  if (!questions || questions.length === 0) return answers;
+  if (questions.length === 1) {
+    if (questions[0]?.question) answers[questions[0].question] = responseText;
+    return answers;
+  }
+  const parts = responseText.split('\n');
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i]?.question;
+    if (!q) continue;
+    answers[q] = parts[i] ?? '';
+  }
+  return answers;
+}
+
 function normalizeAgentId(value: unknown): AgentId | undefined {
   if (value === 'claude-code' || value === 'claude-cli' || value === 'claude-sdk') {
     return 'claude-code';
@@ -1021,10 +1049,16 @@ export class SessionManager extends EventEmitter {
 
     // For AskUserQuestion, inject answer
     if (isQuestion && response.response) {
-      const answers: Record<string, string> = {};
-      if (questions?.[0]?.question) {
-        answers[questions[0].question] = response.response;
+      const answers = buildAskUserAnswers(questions, response.response);
+
+      // Mirror the answers onto the ToolCallCard so the PWA can render the
+      // user's selections immediately — regardless of what the CLI later
+      // emits as the tool_result content.
+      if (cb && Object.keys(answers).length > 0) {
+        const evt = cb.setToolAnswers(toolUseId, answers);
+        if (evt) this.emit('card-event', evt);
       }
+
       return { action: 'allow', updatedInput: { ...toolInput, answers } };
     }
 

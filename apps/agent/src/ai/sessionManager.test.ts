@@ -28,6 +28,11 @@ vi.mock('./cardBuilder.js', () => {
       type: 'add',
       card: { type: 'tool_call', id: 'tc1', toolName: 'Bash', toolUseId: 'tu1' },
     }),
+    setToolAnswers: vi.fn().mockImplementation((toolUseId: string, answers: Record<string, string>) => ({
+      type: 'update',
+      cardId: `tc:${toolUseId}`,
+      patch: { answers },
+    })),
     startNewTurn: vi.fn(),
   }));
   return {
@@ -946,7 +951,10 @@ describe('SessionManager', () => {
       expect(resolvedEvents[0].requestId).toBe(pending[0].requestId);
     });
 
-    it('should handle AskUserQuestion with injected answers', async () => {
+    it('should handle AskUserQuestion with injected answers and emit card update', async () => {
+      const cardEvents: any[] = [];
+      manager.on('card-event', (e) => cardEvents.push(e));
+
       const permPromise = callbacks.handlePermissionRequest(sessionId, {
         toolName: 'AskUserQuestion',
         toolInput: { questions: [{ question: 'What color?', options: [{ label: 'Red' }, { label: 'Blue' }] }] },
@@ -968,6 +976,47 @@ describe('SessionManager', () => {
       expect(result.action).toBe('allow');
       expect(result.updatedInput).toBeDefined();
       expect((result.updatedInput as any).answers['What color?']).toBe('Blue');
+
+      // The agent must also mirror answers onto the ToolCallCard so the PWA
+      // can render the user's selection without waiting on the CLI tool_result.
+      const answerPatches = cardEvents.filter(e => e.type === 'update' && e.patch?.answers);
+      expect(answerPatches).toHaveLength(1);
+      expect(answerPatches[0].patch.answers['What color?']).toBe('Blue');
+    });
+
+    it('should map multi-question answers to each question text', async () => {
+      const cardEvents: any[] = [];
+      manager.on('card-event', (e) => cardEvents.push(e));
+
+      const permPromise = callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'AskUserQuestion',
+        toolInput: {
+          questions: [
+            { question: 'What color?', options: [{ label: 'Red' }, { label: 'Blue' }] },
+            { question: 'What size?', options: [{ label: 'Small' }, { label: 'Large' }] },
+          ],
+        },
+        toolUseId: 'tu-multi',
+      });
+
+      const pending = manager.getPendingInputRequests();
+      // PWA joins multi-question answers with '\n' (see InteractiveQuestionView).
+      manager.resolveUserInput({
+        sessionId,
+        requestId: pending[0].requestId,
+        action: 'allow',
+        response: 'Blue\nLarge',
+      });
+
+      const result = await permPromise;
+      const answers = (result.updatedInput as any).answers;
+      expect(answers['What color?']).toBe('Blue');
+      expect(answers['What size?']).toBe('Large');
+
+      const answerPatches = cardEvents.filter(e => e.type === 'update' && e.patch?.answers);
+      expect(answerPatches).toHaveLength(1);
+      expect(answerPatches[0].patch.answers['What color?']).toBe('Blue');
+      expect(answerPatches[0].patch.answers['What size?']).toBe('Large');
     });
   });
 
@@ -1140,6 +1189,7 @@ describe('SessionManager', () => {
             type: 'add',
             card: { type: 'tool_call', id: `c-${builder.sessionId}`, toolName: 'Bash', toolUseId: 'tu' },
           })),
+          setToolAnswers: vi.fn().mockReturnValue(null),
           startNewTurn: vi.fn(),
         };
         builders.set(streamId, builder);
@@ -1424,6 +1474,7 @@ describe('SessionManager', () => {
         userMessage: vi.fn(),
         clearPendingInput: vi.fn(),
         toolCallFromPermission: vi.fn(),
+        setToolAnswers: vi.fn().mockReturnValue(null),
         startNewTurn: vi.fn(),
       };
 

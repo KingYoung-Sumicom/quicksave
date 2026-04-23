@@ -50,6 +50,7 @@ export function CardRenderer({ card, isLast, onRespondToInput }: {
           content={JSON.stringify(tc.toolInput)}
           toolResultContent={tc.result?.content}
           toolResultIsError={tc.result?.isError}
+          toolAnswers={tc.answers}
           pendingInputRequest={tc.pendingInput ? toLegacyPending(tc.pendingInput, tc.toolName, tc.toolInput) : undefined}
           onRespond={tc.pendingInput && onRespondToInput
             ? (action, response, allowPattern) => onRespondToInput(tc.pendingInput!.requestId, action, response, allowPattern)
