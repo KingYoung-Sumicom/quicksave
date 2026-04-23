@@ -101,6 +101,7 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
                     compact={compact}
                     projectName={projectName}
                     machineName={machine?.nickname}
+                    agent={session.agent}
                     onClick={() => navigate(`/p/${projectId}/s/${session.sessionId}`)}
                   />
                 );

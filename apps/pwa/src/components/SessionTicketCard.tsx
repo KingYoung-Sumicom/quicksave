@@ -1,6 +1,6 @@
 import { clsx } from 'clsx';
 import { FormattedMessage } from 'react-intl';
-import type { ClaudeSessionSummary, SessionStage } from '@sumicom/quicksave-shared';
+import type { AgentId, ClaudeSessionSummary, SessionStage } from '@sumicom/quicksave-shared';
 import { sessionStatusKey, SESSION_STATUS } from './SessionStatusBadge';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
 import { MachineIcon } from './icons/MachineIcon';
@@ -28,6 +28,13 @@ interface SessionTicketCardProps {
    * machine.
    */
   machineName?: string;
+  /**
+   * Coding agent running this session. Shown on the flat home list as a
+   * neutral text chip so agents can be told apart at a glance. Omit when
+   * context already implies the agent (e.g. inside ProjectDetail). Rendered
+   * as plain text — no official logos — to stay within nominative fair use.
+   */
+  agent?: AgentId;
 }
 
 const STAGE_META: Record<SessionStage, { labelId: string; dotColor: string; chipText: string; chipBg: string }> = {
@@ -38,6 +45,14 @@ const STAGE_META: Record<SessionStage, { labelId: string; dotColor: string; chip
 };
 
 const BLOCKED_META = { labelId: 'sessionStage.blocked', dotColor: 'bg-red-500', chipText: 'text-red-300', chipBg: 'bg-red-500/10' };
+
+// Product names surfaced as a neutral text chip — intentionally no official
+// logos, to stay clear of Anthropic/OpenAI brand guidelines. Labels are
+// nominative use and not translated.
+const AGENT_LABEL: Record<AgentId, string> = {
+  'claude-code': 'Claude',
+  'codex': 'Codex',
+};
 
 function Chevron() {
   return (
@@ -87,7 +102,7 @@ function pickDot(session: ClaudeSessionSummary): { color: string; pulse: boolean
   return { color: s.dotColor, pulse: s.pulse };
 }
 
-export function SessionTicketCard({ session, onClick, compact, isActive, className, projectName, machineName }: SessionTicketCardProps) {
+export function SessionTicketCard({ session, onClick, compact, isActive, className, projectName, machineName, agent }: SessionTicketCardProps) {
   const dot = pickDot(session);
   const stageMeta = session.stage ? STAGE_META[session.stage] : null;
 
@@ -133,6 +148,11 @@ export function SessionTicketCard({ session, onClick, compact, isActive, classNa
               <FormattedMessage id={stageMeta.labelId} />
             </span>
           ) : null}
+          {agent && AGENT_LABEL[agent] && (
+            <span className="px-1.5 py-px rounded font-medium bg-slate-500/15 text-slate-300">
+              {AGENT_LABEL[agent]}
+            </span>
+          )}
           {projectName && (
             <span className="inline-flex items-center gap-1 text-slate-400 font-medium">
               <FolderIcon />
