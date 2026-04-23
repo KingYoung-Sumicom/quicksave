@@ -11,11 +11,3 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     </IntlProvider>
   </React.StrictMode>
 );
-
-requestAnimationFrame(() => {
-  const splash = document.getElementById('app-splash');
-  if (!splash) return;
-  splash.classList.add('fade-out');
-  splash.addEventListener('transitionend', () => splash.remove(), { once: true });
-  setTimeout(() => splash.remove(), 600);
-});

@@ -6,8 +6,60 @@ interface ConnectingOverlayProps {
   onRetry: () => void;
 }
 
+/**
+ * Inline stages indicator (spinner + title/subtitle + step dots). Safe to
+ * embed anywhere — reads connection progress from the global store. No
+ * backdrop, no actions. For the full-screen gated overlay with cancel/retry,
+ * use ConnectingOverlay.
+ */
+export function ConnectingStages() {
+  const { state, connectionStep, keyExchangeAttempt, agentOnline } = useConnectionStore();
+  const isAgentOffline = connectionStep === 'waiting-for-agent' && agentOnline === false;
+  const stepIndex = getStepIndex(connectionStep);
+
+  return (
+    <div className="w-full max-w-sm text-center px-6">
+      <div className="relative w-20 h-20 mx-auto mb-8">
+        {isAgentOffline ? (
+          <>
+            <div className="absolute inset-0 rounded-full border-4 border-amber-500/30" />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-4 h-4 bg-amber-500 rounded-full animate-pulse" />
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="absolute inset-0 rounded-full border-4 border-slate-700" />
+            <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-blue-500 animate-spin" />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-4 h-4 bg-blue-500 rounded-full animate-pulse" />
+            </div>
+          </>
+        )}
+      </div>
+
+      <h1 className="text-xl font-semibold text-white mb-2">
+        <FormattedMessage id={getTitleMessageId(state, isAgentOffline, connectionStep)} />
+      </h1>
+      <p className="text-slate-400 text-sm">
+        <FormattedMessage
+          id={getSubtitleMessageId(state, isAgentOffline, connectionStep, agentOnline, keyExchangeAttempt)}
+          values={{ attempt: keyExchangeAttempt ?? 0 }}
+        />
+      </p>
+
+      <div className="mt-8 flex justify-center gap-3">
+        <StepDot active={stepIndex >= 0} completed={stepIndex > 0} labelId="connecting.step.server" />
+        <StepDot active={stepIndex >= 1} completed={stepIndex > 1} warn={isAgentOffline} labelId="connecting.step.agent" />
+        <StepDot active={stepIndex >= 2} completed={stepIndex > 2} labelId="connecting.step.key" />
+        <StepDot active={stepIndex >= 3} completed={false} labelId="connecting.step.secure" />
+      </div>
+    </div>
+  );
+}
+
 export function ConnectingOverlay({ onAbort, onRetry }: ConnectingOverlayProps) {
-  const { state, error, connectionStep, keyExchangeAttempt, agentOnline } = useConnectionStore();
+  const { state, error, connectionStep, agentOnline } = useConnectionStore();
 
   // Only show for connecting/reconnecting states
   if (state !== 'connecting' && state !== 'reconnecting' && !(state === 'error' && error)) {
@@ -40,66 +92,25 @@ export function ConnectingOverlay({ onAbort, onRetry }: ConnectingOverlayProps) 
   }
 
   const isAgentOffline = connectionStep === 'waiting-for-agent' && agentOnline === false;
-  const stepIndex = getStepIndex(connectionStep);
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/90 flex items-center justify-center safe-area-top safe-area-bottom">
-      <div className="w-full max-w-sm text-center px-6">
-        {/* Animated indicator */}
-        <div className="relative w-20 h-20 mx-auto mb-8">
-          {isAgentOffline ? (
-            <>
-              <div className="absolute inset-0 rounded-full border-4 border-amber-500/30" />
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="w-4 h-4 bg-amber-500 rounded-full animate-pulse" />
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="absolute inset-0 rounded-full border-4 border-slate-700" />
-              <div className="absolute inset-0 rounded-full border-4 border-transparent border-t-blue-500 animate-spin" />
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="w-4 h-4 bg-blue-500 rounded-full animate-pulse" />
-              </div>
-            </>
-          )}
-        </div>
-
-        <h1 className="text-xl font-semibold text-white mb-2">
-          <FormattedMessage id={getTitleMessageId(state, isAgentOffline, connectionStep)} />
-        </h1>
-        <p className="text-slate-400 text-sm">
-          <FormattedMessage
-            id={getSubtitleMessageId(state, isAgentOffline, connectionStep, agentOnline, keyExchangeAttempt)}
-            values={{ attempt: keyExchangeAttempt ?? 0 }}
-          />
-        </p>
-
-        {/* Steps */}
-        <div className="mt-8 flex justify-center gap-3">
-          <StepDot active={stepIndex >= 0} completed={stepIndex > 0} labelId="connecting.step.server" />
-          <StepDot active={stepIndex >= 1} completed={stepIndex > 1} warn={isAgentOffline} labelId="connecting.step.agent" />
-          <StepDot active={stepIndex >= 2} completed={stepIndex > 2} labelId="connecting.step.key" />
-          <StepDot active={stepIndex >= 3} completed={false} labelId="connecting.step.secure" />
-        </div>
-
-        {/* Actions */}
-        <div className="mt-8 flex items-center justify-center gap-4">
+    <div className="fixed inset-0 z-50 bg-slate-900/90 flex flex-col items-center justify-center safe-area-top safe-area-bottom">
+      <ConnectingStages />
+      <div className="mt-8 flex items-center justify-center gap-4">
+        <button
+          onClick={onAbort}
+          className="px-5 py-2 text-sm bg-slate-800 hover:bg-slate-700 text-red-400 rounded-lg font-medium transition-colors"
+        >
+          <FormattedMessage id="connecting.cancel" />
+        </button>
+        {isAgentOffline && (
           <button
-            onClick={onAbort}
-            className="px-5 py-2 text-sm bg-slate-800 hover:bg-slate-700 text-red-400 rounded-lg font-medium transition-colors"
+            onClick={onRetry}
+            className="px-5 py-2 text-sm bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-medium transition-colors"
           >
-            <FormattedMessage id="connecting.cancel" />
+            <FormattedMessage id="connecting.retry" />
           </button>
-          {isAgentOffline && (
-            <button
-              onClick={onRetry}
-              className="px-5 py-2 text-sm bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-medium transition-colors"
-            >
-              <FormattedMessage id="connecting.retry" />
-            </button>
-          )}
-        </div>
+        )}
       </div>
     </div>
   );

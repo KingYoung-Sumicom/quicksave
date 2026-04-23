@@ -12,7 +12,7 @@ import { WebSocketClient } from './lib/websocket';
 import { BusClientTransport } from './lib/busClientTransport';
 import { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { ConnectionSetup } from './components/ConnectionSetup';
-import { ConnectingOverlay } from './components/ConnectingOverlay';
+import { ConnectingOverlay, ConnectingStages } from './components/ConnectingOverlay';
 import { FleetStatusBar } from './components/FleetStatusBar';
 import { SessionAppBar } from './components/SessionAppBar';
 import { NewSessionAppBar } from './components/NewSessionAppBar';
@@ -1223,12 +1223,11 @@ function ProjectRouteSession({
   );
 
   if (!isReady) {
-    // Show connecting/loading state
     return (
       <div className="flex flex-col h-full overflow-hidden">
         <NewSessionAppBar cwd={cwd} onOpenMenu={() => {}} backTo={projectBasePath} />
         <div className="flex-1 flex items-center justify-center">
-          {isConnecting && <div className="text-sm text-slate-400">Connecting...</div>}
+          {isConnecting ? <ConnectingStages /> : <Spinner size="w-8 h-8" color="border-blue-500" />}
         </div>
       </div>
     );
@@ -1346,6 +1345,37 @@ function ConnectHandler({ onConnect }: { onConnect: (agentId: string, publicKey:
 }
 
 function App() {
+  useEffect(() => {
+    const splash = document.getElementById('app-splash');
+    if (!splash) return;
+
+    const hide = () => {
+      requestAnimationFrame(() => splash.classList.add('fade-out'));
+    };
+    const show = () => splash.classList.remove('fade-out');
+
+    hide();
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        show();
+      } else {
+        hide();
+      }
+    };
+    const onPageShow = () => hide();
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pageshow', onPageShow);
+    window.addEventListener('pagehide', show);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pageshow', onPageShow);
+      window.removeEventListener('pagehide', show);
+    };
+  }, []);
+
   return (
     <HashRouter>
       <AppContent />
