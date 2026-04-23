@@ -25,6 +25,7 @@ import { ClaudePanel } from './components/ClaudePanel';
 import {
   type ClaudePreferences,
   type ClaudeUserInputResponsePayload,
+  type CodexLoginState,
   type CommitSummaryState,
   type ConfigValue,
   type Message,
@@ -34,6 +35,8 @@ import {
   type BroadcastSessionEntry,
   type SessionUpdatePayload,
 } from '@sumicom/quicksave-shared';
+import { useCodexLoginStore } from './stores/codexLoginStore';
+import { registerActiveBusGetter } from './lib/busRegistry';
 import { applySessionUpdate } from './lib/applySessionUpdate';
 import { applyHistoryEntry, applyHistoryAction } from './lib/applyHistoryEntry';
 import { NotificationPrompt } from './components/NotificationPrompt';
@@ -118,6 +121,12 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
     onUpdate: ({ sessionId, config }) => useClaudeStore.getState().applySessionConfig(sessionId, config),
     onError: (err) => console.warn('[bus] /sessions/config error:', err),
   });
+
+  bus.subscribe<CodexLoginState, CodexLoginState>('/codex/login', {
+    onSnapshot: (state) => useCodexLoginStore.getState().set(agentId, state),
+    onUpdate: (state) => useCodexLoginStore.getState().set(agentId, state),
+    onError: (err) => console.warn('[bus] /codex/login error:', err),
+  });
 }
 
 function applyPreferencesToStore(prefs: ClaudePreferences): void {
@@ -181,6 +190,12 @@ function AppContent() {
     return busesRef.current.get(aid)?.bus ?? null;
   }, []);
 
+  // Register the active-bus getter for hooks (e.g. useCodexLogin) that live
+  // too deep to receive it via props. See lib/busRegistry.ts.
+  useEffect(() => {
+    registerActiveBusGetter(getActiveBus);
+  }, [getActiveBus]);
+
   // Lazily create the per-agent bus + transport and register its
   // subscriptions. Called on each agent's handshake:ack; idempotent so
   // reconnects reuse the same bus (preserves the subscription cache and
@@ -237,10 +252,29 @@ function AppContent() {
    * previous agent. Without the cancel, a late status/diff response from the
    * old agent would overwrite the gitStore right after the user navigates
    * to a different workspace.
+   *
+   * Also rehydrate the single-agent mirror (`useConnectionStore.repoPath` /
+   * `availableRepos`) from the newly active agent's per-agent state. Without
+   * this, the mirror keeps showing whichever agent last handshaked — after
+   * a multi-agent reconnect on resume that can be a different machine than
+   * the one the user is viewing.
    */
   const setActiveAgent = useCallback((agentId: string) => {
     cancelPendingGit();
     clientRef.current?.setActiveAgent(agentId);
+    const connState = useConnectionStore.getState();
+    const perAgent = connState.agentConnections[agentId];
+    if (perAgent?.state === 'connected') {
+      connState.setConnected(
+        perAgent.repoPath ?? '',
+        perAgent.isPro,
+        perAgent.availableRepos,
+        perAgent.availableCodingPaths,
+        perAgent.agentVersion ?? undefined,
+        connState.latestVersion ?? undefined,
+      );
+      useGitStore.getState().setCurrentRepoPath(perAgent.repoPath);
+    }
   }, [cancelPendingGit]);
 
   const {
@@ -509,10 +543,18 @@ function AppContent() {
         if (codexModels?.length) {
           useConnectionStore.getState().setCodexModels(codexModels);
         }
-        // Update legacy single-agent state
-        handlersRef.current.setConnected(path, pro, availableRepos, availableCodingPaths, agentVersion, latestVersion);
-        handlersRef.current.setCurrentRepoPath(path);
-        // Update multi-agent connection map
+        // Update the single-agent mirror only when this agent is the one
+        // the client treats as active (or no active has been chosen yet).
+        // Without this gate, two machines reconnecting in parallel after a
+        // PWA resume race to overwrite repoPath/availableRepos with
+        // whichever handshake lands last, leaving UI bound to the wrong
+        // machine and subsequent switch-repo hitting the wrong agent.
+        const currentActive = clientRef.current?.getActiveAgentId() ?? null;
+        if (!currentActive || currentActive === agentId) {
+          handlersRef.current.setConnected(path, pro, availableRepos, availableCodingPaths, agentVersion, latestVersion);
+          handlersRef.current.setCurrentRepoPath(path);
+        }
+        // Update multi-agent connection map (authoritative per-agent state)
         useConnectionStore.getState().setAgentConnected(agentId, path, pro, availableRepos, availableCodingPaths, agentVersion, devBuild);
         const repoPaths = availableRepos?.map((r) => r.path);
         const codingPaths = availableCodingPaths?.map((p) => p.path);
@@ -805,6 +847,7 @@ function AppContent() {
     <ProjectRouteRepo
       onConnect={handleConnect}
       onSwitchMachine={handleSwitchMachine}
+      onSetActiveAgent={setActiveAgent}
       onSwitchRepo={switchRepo}
       onRefresh={fetchStatus}
       onFetchDiff={fetchDiff}
@@ -982,6 +1025,7 @@ function AppContent() {
 function ProjectRouteRepo({
   onConnect,
   onSwitchMachine,
+  onSetActiveAgent,
   onSwitchRepo,
   onRefresh,
   onFetchDiff,
@@ -1000,15 +1044,15 @@ function ProjectRouteRepo({
 }: {
   onConnect: (agentId: string, publicKey: string) => void;
   onSwitchMachine: (agentId: string) => void;
+  onSetActiveAgent: (agentId: string) => void;
   onSwitchRepo: (path: string) => void;
 } & Omit<React.ComponentProps<typeof RepoView>, 'onSwitchRepo'> & {
   onSwitchRepo: (path: string) => void;
 }) {
   const { projectId, repoId } = useParams<{ projectId: string; repoId: string }>();
   const navigate = useNavigate();
-  const { isReady, isConnecting, agentId } = useProjectConnection(projectId, onConnect, onSwitchMachine);
+  const { isReady, isConnecting, agentId, connectedAt } = useProjectConnection(projectId, onConnect, onSwitchMachine);
   const status = useGitStore((s) => s.status);
-  const repoPath = useConnectionStore((s) => s.repoPath);
 
   // Resolve repoId hash → full repo path. Recompute on connect since
   // getAllKnownPaths can grow when project repos load.
@@ -1017,12 +1061,45 @@ function ProjectRouteRepo({
     [agentId, repoId, isReady],
   );
 
-  // Switch to the URL-specified repo once connected.
+  // Bind the git UI to the URL-specified repo on every new handshake.
+  // Keying this effect on `connectedAt` (bumped by every handshake)
+  // re-issues switch-repo whenever the agent comes back, even if the
+  // single-agent mirror happens to still match the URL target from
+  // before the suspend.
+  //
+  // We also point `gitStore.currentRepoPath` at the target eagerly so
+  // any racing `git:status` (from RepoView's mount effect or
+  // AppContent's state-based fetch) gets stamped with the target path.
+  // The agent rejects mismatched stamps with REPO_MISMATCH — the PWA
+  // converts that to SUPERSEDED — which prevents the pre-switch repo's
+  // (often clean) status from flashing on screen before our switch-repo
+  // lands. Without this, `onSetActiveAgent` rehydrates the store to the
+  // handshake-ack's repoPath, which on first connect is the agent's
+  // default repo, not the URL target.
   useEffect(() => {
-    if (isReady && targetRepoPath && targetRepoPath !== repoPath) {
-      onSwitchRepo(targetRepoPath);
-    }
-  }, [isReady, targetRepoPath, repoPath, onSwitchRepo]);
+    if (!isReady || !agentId || !targetRepoPath) return;
+    onSetActiveAgent(agentId);
+    useGitStore.getState().setCurrentRepoPath(targetRepoPath);
+    onSwitchRepo(targetRepoPath);
+  }, [isReady, agentId, targetRepoPath, connectedAt, onSetActiveAgent, onSwitchRepo]);
+
+  // On visibility return, force a status refresh. Covers the case where
+  // the app was backgrounded but WebRTC stayed up (no new handshake, so
+  // the effect above won't re-fire), yet the git status may still be
+  // stale.
+  useEffect(() => {
+    if (!isReady || !targetRepoPath) return;
+    const resync = () => {
+      if (document.visibilityState !== 'visible') return;
+      onRefresh();
+    };
+    document.addEventListener('visibilitychange', resync);
+    window.addEventListener('pageshow', resync);
+    return () => {
+      document.removeEventListener('visibilitychange', resync);
+      window.removeEventListener('pageshow', resync);
+    };
+  }, [isReady, targetRepoPath, onRefresh]);
 
   if (!isReady || !targetRepoPath) {
     return (

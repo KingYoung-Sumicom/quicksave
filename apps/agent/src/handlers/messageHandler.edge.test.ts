@@ -564,7 +564,7 @@ describe('MessageHandler — edge cases', () => {
       expect(() => handler.removeClient(peerA)).not.toThrow();
     });
 
-    it('should reset client repo to default after removeClient', async () => {
+    it('should preserve client repo pin after removeClient (survives disconnect)', async () => {
       // Create a second repo for switching
       const secondRepo = await createTestRepo('second');
       try {
@@ -582,13 +582,38 @@ describe('MessageHandler — edge cases', () => {
         const list1 = await multiHandler.handleMessage(listMsg1, peerA);
         expect((list1.payload as any).current).toBe(secondRepo);
 
-        // Remove client
+        // Remove client (simulates WebRTC disconnect)
         multiHandler.removeClient(peerA);
 
-        // After removal, should be back to default
+        // On reconnect the peer must still see its pinned repo. If this
+        // reset to default, the PWA would race switch-repo against
+        // git:status after resume and paint the default repo's status.
         const listMsg2 = createMessage('agent:list-repos', {} as any);
         const list2 = await multiHandler.handleMessage(listMsg2, peerA);
-        expect((list2.payload as any).current).toBe(repoPath);
+        expect((list2.payload as any).current).toBe(secondRepo);
+      } finally {
+        await rm(secondRepo, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it('should drop pinned repo when that repo is removed', async () => {
+      const secondRepo = await createTestRepo('second');
+      try {
+        const multiHandler = new MessageHandler([
+          { path: repoPath, name: 'main' },
+          { path: secondRepo, name: 'second' },
+        ]);
+
+        const switchMsg = createMessage('agent:switch-repo', { path: secondRepo } as any);
+        await multiHandler.handleMessage(switchMsg, peerA);
+
+        // User removes the repo peerA is pinned to
+        multiHandler.removeRepo(secondRepo);
+
+        // Next list should fall back to default, not return a dangling path
+        const listMsg = createMessage('agent:list-repos', {} as any);
+        const list = await multiHandler.handleMessage(listMsg, peerA);
+        expect((list.payload as any).current).toBe(repoPath);
       } finally {
         await rm(secondRepo, { recursive: true, force: true }).catch(() => {});
       }

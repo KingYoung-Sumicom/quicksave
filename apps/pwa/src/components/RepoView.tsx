@@ -144,6 +144,7 @@ export function RepoView({
     clearSelection,
     setSelectionOperationPending,
   } = useGitStore();
+  const status = useGitStore((s) => s.status);
   const staged = useGitStore(selectStagedFiles);
   const unstaged = useGitStore(selectUnstagedFiles);
   const untracked = useGitStore(selectUntrackedFiles);
@@ -256,6 +257,11 @@ export function RepoView({
   ]);
 
   const totalChanges = staged.length + unstaged.length + untracked.length;
+  // `status === null` means we haven't received a response for the current
+  // repo yet (initial mount or post-switch-repo). Hold off the "No Changes"
+  // empty state until real data arrives so the user doesn't see a clean-tree
+  // flash while the fetch is still in flight.
+  const hasStatus = status !== null;
 
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden safe-area-bottom">
@@ -266,7 +272,7 @@ export function RepoView({
         )}
 
         {/* Loading Indicator */}
-        {isLoading && (
+        {(isLoading || !hasStatus) && (
           <div className="flex items-center justify-center py-4">
             <div className="flex gap-1">
               <span className="loading-dot w-2 h-2 bg-blue-500 rounded-full" />
@@ -277,7 +283,7 @@ export function RepoView({
         )}
 
         {/* No Changes */}
-        {!isLoading && totalChanges === 0 && (
+        {!isLoading && hasStatus && totalChanges === 0 && (
           <div className="text-center py-12">
             <svg
               className="w-16 h-16 mx-auto text-slate-600 mb-4"

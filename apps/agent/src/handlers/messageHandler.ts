@@ -95,6 +95,9 @@ import {
   SessionListArchivedResponsePayload,
   CodexModelInfo,
   CodexListModelsResponsePayload,
+  CodexLoginStartResponsePayload,
+  CodexLoginStatusResponsePayload,
+  CodexLoginCancelResponsePayload,
   ProjectListSummariesResponsePayload,
   ProjectSummary,
   ProjectDeleteRequestPayload,
@@ -114,6 +117,7 @@ import { CommitSummaryStateStore } from '../ai/commitSummaryStore.js';
 import { SessionManager } from '../ai/sessionManager.js';
 import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
 import { CodexSdkProvider } from '../ai/codexSdkProvider.js';
+import { CodexLoginManager } from '../ai/codexLogin.js';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { enrichEntry } from '../ai/enrichEntry.js';
 import { getEventStore } from '../storage/eventStore.js';
@@ -147,6 +151,7 @@ export class MessageHandler {
   private versionCheckInFlight: Promise<string | null> | null = null;
   private codexModelsCache: { models: CodexModelInfo[]; checkedAt: number } | null = null;
   private codexModelsCheckInFlight: Promise<CodexModelInfo[] | null> | null = null;
+  private codexLoginManager = new CodexLoginManager();
   onHistoryUpdated?: (cwd: string, entry: SessionRegistryEntry, action: 'upsert' | 'delete') => void;
 
   private productionBuild: boolean;
@@ -205,9 +210,18 @@ export class MessageHandler {
   }
 
   /**
-   * Fetch available Codex models from OpenAI /v1/models. Reads API key from
-   * ~/.codex/auth.json (ChatGPT OAuth token or OPENAI_API_KEY). Cached for 12h
-   * with concurrent-request dedup — same pattern as checkLatestVersion.
+   * Resolve the Codex model list for the current user.
+   *
+   * Priority:
+   *   1. `~/.codex/models_cache.json` — the Codex CLI's own cache of
+   *      models the signed-in account can actually use. This is the
+   *      authoritative list for ChatGPT-OAuth logins (the common case)
+   *      and is kept fresh by the CLI itself.
+   *   2. `OPENAI_API_KEY` env var + OpenAI `/v1/models` — fallback for
+   *      API-key users, who are rare but still supported.
+   *
+   * Returns `null` when neither source is available (not logged in and no
+   * API key set). Cached for 12h with concurrent-request dedup.
    */
   private async fetchCodexModels(force = false): Promise<CodexModelInfo[] | null> {
     if (!force && this.codexModelsCache &&
@@ -219,37 +233,19 @@ export class MessageHandler {
 
     this.codexModelsCheckInFlight = (async () => {
       try {
-        // Resolve API key: env var first, then ~/.codex/auth.json
-        let apiKey = process.env.OPENAI_API_KEY;
-        if (!apiKey) {
-          try {
-            const authPath = join(homedir(), '.codex', 'auth.json');
-            const raw = await readFile(authPath, 'utf-8');
-            const auth = JSON.parse(raw) as {
-              OPENAI_API_KEY?: string;
-              tokens?: { access_token?: string };
-            };
-            apiKey = auth.OPENAI_API_KEY || auth.tokens?.access_token;
-          } catch { /* no auth file */ }
+        const fromCache = await this.readCodexModelsCacheFile();
+        if (fromCache && fromCache.length > 0) {
+          this.codexModelsCache = { models: fromCache, checkedAt: Date.now() };
+          return fromCache;
         }
-        if (!apiKey) return null;
 
-        const res = await fetch('https://api.openai.com/v1/models', {
-          headers: { Authorization: `Bearer ${apiKey}` },
-          signal: AbortSignal.timeout(10_000),
-        });
-        if (!res.ok) return null;
-        const data = await res.json() as { data?: Array<{ id: string }> };
-        if (!Array.isArray(data.data)) return null;
+        const fromApi = await this.fetchCodexModelsFromOpenAI();
+        if (fromApi && fromApi.length > 0) {
+          this.codexModelsCache = { models: fromApi, checkedAt: Date.now() };
+          return fromApi;
+        }
 
-        // Filter to chat-capable models (gpt-*, o*) and sort descending
-        const models: CodexModelInfo[] = data.data
-          .filter((m) => /^(gpt-|o\d)/.test(m.id))
-          .map((m) => ({ id: m.id, name: m.id }))
-          .sort((a, b) => b.id.localeCompare(a.id));
-
-        this.codexModelsCache = { models, checkedAt: Date.now() };
-        return models;
+        return null;
       } catch {
         return null;
       } finally {
@@ -258,6 +254,76 @@ export class MessageHandler {
     })();
 
     return this.codexModelsCheckInFlight;
+  }
+
+  /**
+   * Read models from the Codex CLI's local cache. File shape (as of codex
+   * CLI v0.118): `{ models: [{ slug, display_name, visibility, supported_in_api, ... }] }`.
+   * We surface only entries that are listable and API-supported, so hidden
+   * internal models (e.g. `codex-auto-review`) don't leak into the picker.
+   */
+  private async readCodexModelsCacheFile(): Promise<CodexModelInfo[] | null> {
+    try {
+      const cachePath = join(homedir(), '.codex', 'models_cache.json');
+      const raw = await readFile(cachePath, 'utf-8');
+      const parsed = JSON.parse(raw) as {
+        models?: Array<{
+          slug?: string;
+          display_name?: string;
+          visibility?: string;
+          supported_in_api?: boolean;
+        }>;
+      };
+      if (!Array.isArray(parsed.models)) return null;
+      const models = parsed.models
+        .filter((m) => m.slug && m.visibility === 'list' && m.supported_in_api !== false)
+        .map((m) => ({ id: m.slug!, name: m.display_name || m.slug! }));
+      return models;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Fallback for API-key users (no ChatGPT OAuth). */
+  private async fetchCodexModelsFromOpenAI(): Promise<CodexModelInfo[] | null> {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return null;
+    try {
+      const res = await fetch('https://api.openai.com/v1/models', {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) return null;
+      const data = await res.json() as { data?: Array<{ id: string }> };
+      if (!Array.isArray(data.data)) return null;
+      return data.data
+        .filter((m) => /^(gpt-|o\d)/.test(m.id))
+        .map((m) => ({ id: m.id, name: m.id }))
+        .sort((a, b) => b.id.localeCompare(a.id));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Best-effort check for whether the local Codex CLI has valid auth.
+   * Matches how `fetchCodexModels` resolves credentials, so the PWA can
+   * prompt for login when this returns false. Does not validate the
+   * token — just checks that a credential source exists.
+   */
+  private async getCodexLoginStatus(): Promise<{ loggedIn: boolean; method?: 'chatgpt' | 'api-key' }> {
+    if (process.env.OPENAI_API_KEY) return { loggedIn: true, method: 'api-key' };
+    try {
+      const authPath = join(homedir(), '.codex', 'auth.json');
+      const raw = await readFile(authPath, 'utf-8');
+      const auth = JSON.parse(raw) as {
+        OPENAI_API_KEY?: string;
+        tokens?: { access_token?: string };
+      };
+      if (auth.OPENAI_API_KEY) return { loggedIn: true, method: 'api-key' };
+      if (auth.tokens?.access_token) return { loggedIn: true, method: 'chatgpt' };
+    } catch { /* no auth file */ }
+    return { loggedIn: false };
   }
 
   addRepo(repo: Repository): void {
@@ -274,6 +340,11 @@ export class MessageHandler {
     this.availableRepos = this.availableRepos.filter((r) => r.path !== path);
     if (this.defaultRepoPath === path) {
       this.defaultRepoPath = this.availableRepos.length > 0 ? this.availableRepos[0].path : '';
+    }
+    // Drop stale per-peer pins to this path so the next handshake-ack
+    // doesn't return a deleted repo.
+    for (const [peer, repo] of this.clientRepos) {
+      if (repo === path) this.clientRepos.delete(peer);
     }
   }
 
@@ -306,7 +377,14 @@ export class MessageHandler {
   }
 
   removeClient(peerAddress: string): void {
-    this.clientRepos.delete(peerAddress);
+    // Intentionally keep `clientRepos[peer]`: peer identity is a stable
+    // public key, and the PWA keeps its selected repo across reconnects
+    // (e.g., background → resume). Clearing would force the next
+    // handshake-ack to return `defaultRepoPath`, which the PWA would then
+    // hydrate into gitStore before its post-reconnect `agent:switch-repo`
+    // can land — racing `git:status` requests stamped with the default
+    // path would pass the REPO_MISMATCH guard and paint the default
+    // repo's (typically clean) status over the user's real repo view.
     for (const [repoPath, holder] of this.repoLocks) {
       if (holder === peerAddress) {
         this.repoLocks.delete(repoPath);
@@ -475,6 +553,12 @@ export class MessageHandler {
           return this.handleAgentRestart(message);
         case 'codex:list-models':
           return this.handleCodexListModels(message);
+        case 'codex:login-start':
+          return this.handleCodexLoginStart(message);
+        case 'codex:login-status':
+          return this.handleCodexLoginStatus(message);
+        case 'codex:login-cancel':
+          return this.handleCodexLoginCancel(message);
         // Claude Code SDK
         case 'claude:start':
           return this.handleClaudeStart(message as Message<ClaudeStartRequestPayload>, peerAddress);
@@ -1602,21 +1686,75 @@ export class MessageHandler {
     message: Message,
   ): Promise<Message<CodexListModelsResponsePayload>> {
     try {
-      const models = await this.fetchCodexModels(/* force */ true);
+      const [models, auth] = await Promise.all([
+        this.fetchCodexModels(/* force */ true),
+        this.getCodexLoginStatus(),
+      ]);
       const response = createMessage<CodexListModelsResponsePayload>(
         'codex:list-models:response',
-        { models: models ?? [] },
+        { models: models ?? [], loggedIn: auth.loggedIn },
       );
       response.id = message.id;
       return response;
     } catch (error) {
       const response = createMessage<CodexListModelsResponsePayload>(
         'codex:list-models:response',
-        { models: [], error: error instanceof Error ? error.message : 'Failed to fetch models' },
+        {
+          models: [],
+          error: error instanceof Error ? error.message : 'Failed to fetch models',
+          loggedIn: false,
+        },
       );
       response.id = message.id;
       return response;
     }
+  }
+
+  /**
+   * Kick off the Codex device-auth OAuth flow on the daemon. Returns the
+   * one-time verification URL + user code so the PWA can display them — the
+   * user typically completes this on a different device (e.g. phone).
+   */
+  private async handleCodexLoginStart(
+    message: Message,
+  ): Promise<Message<CodexLoginStartResponsePayload>> {
+    const state = await this.codexLoginManager.start();
+    const ok = state.loggedIn || Boolean(state.userCode && state.verificationUrl);
+    const response = createMessage<CodexLoginStartResponsePayload>(
+      'codex:login-start:response',
+      { ok, ...state },
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleCodexLoginStatus(
+    message: Message,
+  ): Promise<Message<CodexLoginStatusResponsePayload>> {
+    const state = await this.codexLoginManager.getStatus();
+    const response = createMessage<CodexLoginStatusResponsePayload>(
+      'codex:login-status:response',
+      state,
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleCodexLoginCancel(
+    message: Message,
+  ): Promise<Message<CodexLoginCancelResponsePayload>> {
+    this.codexLoginManager.cancel();
+    const response = createMessage<CodexLoginCancelResponsePayload>(
+      'codex:login-cancel:response',
+      { ok: true },
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  /** Expose for the daemon to wire login-state updates into bus broadcasts. */
+  getCodexLoginManager(): CodexLoginManager {
+    return this.codexLoginManager;
   }
 
   // ============================================================================

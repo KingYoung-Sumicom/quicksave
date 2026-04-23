@@ -445,18 +445,20 @@ describe('MessageHandler', () => {
       expect((handshakeResp.payload as any).repoPath).toBe(testRepoPath);
     });
 
-    it('should clean up client state on removeClient', async () => {
+    it('should preserve client repo pin across removeClient (reconnect flow)', async () => {
       // Client A switches repo
       const switchMsg = createMessage('agent:switch-repo', { path: secondRepoPath });
       await handler.handleMessage(switchMsg, clientA);
 
-      // Remove client A
+      // Simulate disconnect
       handler.removeClient(clientA);
 
-      // Client A reconnecting should get default repo again
+      // Client A reconnecting should still see its previously selected repo
+      // as the current one. Clearing it would force the PWA to race
+      // switch-repo against git:status on resume.
       const listMsg = createMessage('agent:list-repos', {});
       const listResp = await handler.handleMessage(listMsg, clientA);
-      expect((listResp.payload as any).current).toBe(testRepoPath);
+      expect((listResp.payload as any).current).toBe(secondRepoPath);
     });
 
     it('should allow sequential mutating ops from different clients', async () => {

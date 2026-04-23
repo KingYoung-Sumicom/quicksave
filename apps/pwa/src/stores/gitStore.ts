@@ -136,7 +136,7 @@ interface GitStore {
   isSelectionOperationPending: boolean;
 
   // Actions
-  setStatus: (status: GitStatus) => void;
+  setStatus: (status: GitStatus | null) => void;
   toggleFileExpanded: (key: SelectionKey) => boolean; // Returns true if now expanded (needs fetch)
   setFileDiff: (key: SelectionKey, diff: FileDiff) => void;
   setDiffLoading: (key: SelectionKey, loading: boolean) => void;
