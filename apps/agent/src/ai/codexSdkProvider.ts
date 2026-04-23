@@ -24,9 +24,13 @@ function mapApprovalPolicy(level: PermissionLevel): ApprovalMode {
   switch (level) {
     case 'bypassPermissions': return 'never';
     case 'acceptEdits':       return 'on-request';
-    case 'plan':
+    // `untrusted` blocks apply_patch in `codex exec` mode (the SDK's transport)
+    // because exec cannot surface approval prompts — patches get rejected and
+    // the model falls back to shell writes, which we can't surface as Edit/Write
+    // cards. `on-request` matches codex CLI's `--full-auto` convention.
+    case 'plan':              return 'untrusted';
     case 'default':
-    default:                  return 'untrusted';
+    default:                  return 'on-request';
   }
 }
 
@@ -136,7 +140,7 @@ export async function consumeCodexStream(
 
         case 'item.completed':
           flushText();
-          routeItemCompleted(event.item, cb, emitCard);
+          routeItemCompleted(event.item, cb, emitCard, tracker);
           break;
 
         case 'error':
@@ -209,6 +213,10 @@ function routeItemStarted(
       flushText();
       emitCard(cb.toolUse('WebSearch', { query: item.query }, item.id));
       break;
+    case 'todo_list':
+      flushText();
+      emitCard(cb.toolUse('TodoWrite', { todos: item.items }, item.id));
+      break;
     case 'error':
       emitCard(cb.systemMessage(item.message, 'error'));
       break;
@@ -240,6 +248,14 @@ function routeItemUpdated(
       if (delta.trim()) emitCard(cb.thinkingBlock(delta));
       break;
     }
+    case 'todo_list': {
+      // TodoWrite's card body reads from the tool input, which we update via
+      // a fresh toolUse call (the cardBuilder dedupes by toolUseId and patches
+      // in place).
+      const cardEvt = cb.toolUse('TodoWrite', { todos: item.items }, item.id);
+      if (cardEvt) emitCard(cardEvt);
+      break;
+    }
   }
 }
 
@@ -247,15 +263,26 @@ function routeItemCompleted(
   item: ThreadItem,
   cb: StreamCardBuilder,
   emitCard: (e: CardEvent) => void,
+  tracker: TextTracker,
 ): void {
   switch (item.type) {
     case 'agent_message': {
-      // Finalize streaming text
+      // Defensive: emit any text not yet surfaced via item.started/updated.
+      // Codex's experimental-json can deliver agent_message as a single
+      // item.completed with no prior started/updated — without this, the
+      // model's narration silently disappears.
+      const delta = item.text.slice(tracker.lastAssistantText.length);
+      tracker.lastAssistantText = item.text;
+      if (delta) emitCard(cb.assistantText(delta));
       const fin = cb.finalizeAssistantText();
       if (fin) emitCard(fin);
       break;
     }
     case 'command_execution': {
+      // Ensure the tool card exists — some streams skip item.started.
+      if (!cb.hasToolCard(item.id)) {
+        emitCard(cb.toolUse('Bash', { command: item.command }, item.id));
+      }
       const resultText = item.aggregated_output
         + (item.exit_code != null ? `\n[exit code: ${item.exit_code}]` : '');
       const cardEvt = cb.toolResult(item.id, resultText, item.status === 'failed');
@@ -263,12 +290,28 @@ function routeItemCompleted(
       break;
     }
     case 'file_change': {
+      // Per the SDK, file_change is "emitted once the patch succeeds or fails"
+      // — it never arrives via item.started, so the tool card has to be
+      // created here, or we'd drop the entire edit silently.
+      if (!cb.hasToolCard(item.id)) {
+        const paths = item.changes.map(c => c.path);
+        const kinds = item.changes.map(c => c.kind);
+        const toolName = kinds.every(k => k === 'add') ? 'Write' : 'Edit';
+        emitCard(cb.toolUse(toolName, { files: paths }, item.id));
+      }
       const resultText = item.changes.map(c => `${c.kind}: ${c.path}`).join('\n');
       const cardEvt = cb.toolResult(item.id, resultText, item.status === 'failed');
       if (cardEvt) emitCard(cardEvt);
       break;
     }
     case 'mcp_tool_call': {
+      if (!cb.hasToolCard(item.id)) {
+        emitCard(cb.toolUse(
+          `${item.server}:${item.tool}`,
+          item.arguments as Record<string, unknown> ?? {},
+          item.id,
+        ));
+      }
       let resultText = '';
       if (item.error) {
         resultText = `Error: ${item.error.message}`;
@@ -282,7 +325,26 @@ function routeItemCompleted(
       break;
     }
     case 'web_search': {
+      if (!cb.hasToolCard(item.id)) {
+        emitCard(cb.toolUse('WebSearch', { query: item.query }, item.id));
+      }
       const cardEvt = cb.toolResult(item.id, `Search: ${item.query}`, false);
+      if (cardEvt) emitCard(cardEvt);
+      break;
+    }
+    case 'reasoning': {
+      // Like agent_message: emit any un-surfaced text defensively.
+      const delta = item.text.slice(tracker.lastReasoningText.length);
+      tracker.lastReasoningText = item.text;
+      if (delta.trim()) emitCard(cb.thinkingBlock(delta));
+      break;
+    }
+    case 'todo_list': {
+      // Patch-or-create the TodoWrite card with the final list.
+      emitCard(cb.toolUse('TodoWrite', { todos: item.items }, item.id));
+      const completedCount = item.items.filter((t) => t.completed).length;
+      const resultText = `${completedCount}/${item.items.length} completed`;
+      const cardEvt = cb.toolResult(item.id, resultText, false);
       if (cardEvt) emitCard(cardEvt);
       break;
     }

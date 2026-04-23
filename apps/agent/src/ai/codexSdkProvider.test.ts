@@ -657,15 +657,175 @@ describe('approval policy mapping', () => {
     // This is a mapping reference, not a runtime test.
     // bypassPermissions → never
     // acceptEdits → on-request
-    // default → untrusted
+    // default → on-request (was `untrusted`; exec mode can't surface
+    //   approval prompts, so `untrusted` silently blocks apply_patch)
     // plan → untrusted + read-only sandbox
     const mapping = {
       bypassPermissions: 'never',
       acceptEdits: 'on-request',
-      default: 'untrusted',
+      default: 'on-request',
       plan: 'untrusted',
     };
     expect(mapping.bypassPermissions).toBe('never');
+    expect(mapping.default).toBe('on-request');
     expect(mapping.plan).toBe('untrusted');
+  });
+});
+
+// ============================================================================
+// Robustness: item.completed without prior item.started
+// ============================================================================
+
+describe('item.completed without prior item.started', () => {
+  let cb: InstanceType<typeof StreamCardBuilder>;
+
+  beforeEach(() => {
+    cb = createCardBuilder();
+    vi.useFakeTimers();
+  });
+
+  it('emits assistant_text for an agent_message that only arrives as item.completed', async () => {
+    const { callbacks, cardEvents } = createCallbacks();
+
+    // No item.started or item.updated — just a single item.completed
+    const events = eventStream([
+      {
+        type: 'item.completed',
+        item: { id: 'msg-1', type: 'agent_message', text: '我先看一下專案結構' },
+      } as ThreadEvent,
+      { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 } },
+    ]);
+
+    const promise = consumeCodexStream(events, createMockThread('th-1'), {
+      cb, callbacks, streamId: 's1',
+    });
+    await vi.advanceTimersByTimeAsync(200);
+    await promise;
+
+    const cards = getAddedCards(cardEvents);
+    const textCards = cards.filter(c => c.type === 'assistant_text');
+    expect(textCards).toHaveLength(1);
+    expect((textCards[0] as any).text).toBe('我先看一下專案結構');
+  });
+
+  it('creates a tool_call card for file_change (which only ever arrives via item.completed per SDK)', async () => {
+    const { callbacks, cardEvents } = createCallbacks();
+
+    const events = eventStream([
+      {
+        type: 'item.completed',
+        item: {
+          id: 'fc-1', type: 'file_change',
+          changes: [{ path: 'src/foo.ts', kind: 'update' }],
+          status: 'completed',
+        },
+      } as ThreadEvent,
+      { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 } },
+    ]);
+
+    await consumeCodexStream(events, createMockThread('th-1'), {
+      cb, callbacks, streamId: 's1',
+    });
+
+    const cards = getAddedCards(cardEvents);
+    const toolCards = cards.filter(c => c.type === 'tool_call');
+    expect(toolCards).toHaveLength(1);
+    expect((toolCards[0] as any).toolName).toBe('Edit');
+    expect((toolCards[0] as any).toolInput.files).toEqual(['src/foo.ts']);
+  });
+
+  it('picks tool name Write when all changes are additions', async () => {
+    const { callbacks, cardEvents } = createCallbacks();
+
+    const events = eventStream([
+      {
+        type: 'item.completed',
+        item: {
+          id: 'fc-2', type: 'file_change',
+          changes: [{ path: 'src/new.ts', kind: 'add' }],
+          status: 'completed',
+        },
+      } as ThreadEvent,
+      { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 } },
+    ]);
+
+    await consumeCodexStream(events, createMockThread('th-1'), {
+      cb, callbacks, streamId: 's1',
+    });
+
+    const cards = getAddedCards(cardEvents);
+    const toolCards = cards.filter(c => c.type === 'tool_call');
+    expect((toolCards[0] as any).toolName).toBe('Write');
+  });
+
+  it('creates a Bash tool card if command_execution only arrives as item.completed', async () => {
+    const { callbacks, cardEvents } = createCallbacks();
+
+    const events = eventStream([
+      {
+        type: 'item.completed',
+        item: {
+          id: 'cmd-1', type: 'command_execution',
+          command: 'ls -la', aggregated_output: 'total 0', exit_code: 0, status: 'completed',
+        },
+      } as ThreadEvent,
+      { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 } },
+    ]);
+
+    await consumeCodexStream(events, createMockThread('th-1'), {
+      cb, callbacks, streamId: 's1',
+    });
+
+    const cards = getAddedCards(cardEvents);
+    const toolCards = cards.filter(c => c.type === 'tool_call');
+    expect(toolCards).toHaveLength(1);
+    expect((toolCards[0] as any).toolName).toBe('Bash');
+    expect((toolCards[0] as any).toolInput.command).toBe('ls -la');
+  });
+
+  it('creates a WebSearch tool card if web_search only arrives as item.completed', async () => {
+    const { callbacks, cardEvents } = createCallbacks();
+
+    const events = eventStream([
+      {
+        type: 'item.completed',
+        item: { id: 'ws-1', type: 'web_search', query: 'react hooks' },
+      } as ThreadEvent,
+      { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 } },
+    ]);
+
+    await consumeCodexStream(events, createMockThread('th-1'), {
+      cb, callbacks, streamId: 's1',
+    });
+
+    const cards = getAddedCards(cardEvents);
+    const toolCards = cards.filter(c => c.type === 'tool_call');
+    expect(toolCards).toHaveLength(1);
+    expect((toolCards[0] as any).toolName).toBe('WebSearch');
+  });
+
+  it('creates a TodoWrite card for todo_list items', async () => {
+    const { callbacks, cardEvents } = createCallbacks();
+
+    const events = eventStream([
+      {
+        type: 'item.completed',
+        item: {
+          id: 'todo-1', type: 'todo_list',
+          items: [{ text: 'Step 1', completed: true }, { text: 'Step 2', completed: false }],
+        },
+      } as ThreadEvent,
+      { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 } },
+    ]);
+
+    await consumeCodexStream(events, createMockThread('th-1'), {
+      cb, callbacks, streamId: 's1',
+    });
+
+    const cards = getAddedCards(cardEvents);
+    const toolCards = cards.filter(c => c.type === 'tool_call');
+    expect(toolCards).toHaveLength(1);
+    expect((toolCards[0] as any).toolName).toBe('TodoWrite');
+    expect((toolCards[0] as any).toolInput.todos).toHaveLength(2);
   });
 });
