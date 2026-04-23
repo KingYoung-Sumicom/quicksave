@@ -121,7 +121,6 @@
 
   "projectList.empty.noProjects": "還沒有專案",
   "projectList.empty.addMachine": "+ 新增機器",
-  "projectList.projects": "專案",
   "projectList.empty.noTasks": "還沒有任務。",
 
   "projectDetail.settings.aria": "專案設定",

@@ -121,7 +121,6 @@
 
   "projectList.empty.noProjects": "No projects yet",
   "projectList.empty.addMachine": "+ Add Machine",
-  "projectList.projects": "Projects",
   "projectList.empty.noTasks": "No tasks yet.",
 
   "projectDetail.settings.aria": "Project settings",

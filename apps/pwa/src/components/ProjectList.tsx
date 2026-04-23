@@ -17,8 +17,7 @@ interface ProjectListProps {
 /**
  * Home screen — flat ticket list across all projects/machines, sorted by
  * recency. Project context lives on each ticket (project-name pill in the
- * meta line). Projects with zero sessions get a small footer section so they
- * stay reachable without re-introducing the project-card hierarchy.
+ * meta line).
  */
 export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachine }: ProjectListProps) {
   const projects = useProjects();
@@ -49,11 +48,6 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
         return tsB - tsA;
       });
   }, [sessions]);
-
-  const emptyProjects = useMemo(
-    () => projects.filter((p) => p.sessionCount === 0),
-    [projects],
-  );
 
   if (projects.length === 0) {
     return (
@@ -102,38 +96,7 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
             </div>
           )}
 
-          {/* Empty-project footer — keeps navigation reachable without
-              reintroducing the project-card hierarchy. */}
-          {emptyProjects.length > 0 && (
-            <div>
-              <p className="text-[12px] font-medium text-slate-500 uppercase tracking-wider px-5 mb-1.5">
-                <FormattedMessage id="projectList.projects" />
-              </p>
-              <div className="divide-y divide-slate-700/40">
-                {emptyProjects.map((project) => (
-                  <button
-                    key={project.projectId}
-                    onClick={() => navigate(`/p/${project.projectId}`)}
-                    className={`w-full flex items-center gap-3 py-2.5 text-left active:bg-slate-700/60 transition-colors ${compact ? 'px-2' : 'px-4'}`}
-                  >
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${project.isConnected ? 'bg-emerald-400' : 'bg-red-500'}`}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="list-title text-[14px] truncate">{project.displayName}</div>
-                      <div className="list-subtitle text-[11px] truncate">{project.machineName}</div>
-                    </div>
-                    <svg className="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Both empty: helpful prompt. */}
-          {flatSessions.length === 0 && emptyProjects.length === 0 && (
+          {flatSessions.length === 0 && (
             <p className="text-center text-sm text-slate-500 py-12">
               <FormattedMessage id="projectList.empty.noTasks" />
             </p>

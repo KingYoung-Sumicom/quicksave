@@ -39,6 +39,36 @@ function Chevron() {
   );
 }
 
+// Inline glyphs for the meta line. Sized to sit on the text baseline; color
+// inherits from the surrounding span so each item keeps its own emphasis.
+function FolderIcon() {
+  return (
+    <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 7a2 2 0 0 1 2-2h3.6a2 2 0 0 1 1.4.6L11.4 7H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" />
+    </svg>
+  );
+}
+
+function BranchIcon() {
+  return (
+    <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+      <circle cx="6" cy="5" r="2" />
+      <circle cx="6" cy="19" r="2" />
+      <circle cx="18" cy="9" r="2" />
+      <path strokeLinecap="round" d="M6 7v10M18 11c0 3-4 4-6 4H6" />
+    </svg>
+  );
+}
+
+function ClockIcon() {
+  return (
+    <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
 // The leading dot always tracks the runtime session status (standby/pending/
 // thinking/closed) so the classic green/orange/blue scheme keeps surfacing
 // sessions that need handling — in particular pending permission / pending
@@ -95,12 +125,25 @@ export function SessionTicketCard({ session, onClick, compact, isActive, classNa
               <FormattedMessage id={stageMeta.labelId} />
             </span>
           ) : null}
-          {projectName && <span className="text-slate-400 font-medium">{projectName}</span>}
-          {session.gitBranch && <span>{session.gitBranch}</span>}
-          <span>{formatRelativeTime(session.lastModified)}</span>
+          {projectName && (
+            <span className="inline-flex items-center gap-1 text-slate-400 font-medium">
+              <FolderIcon />
+              {projectName}
+            </span>
+          )}
+          {session.gitBranch && (
+            <span className="inline-flex items-center gap-1">
+              <BranchIcon />
+              {session.gitBranch}
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1">
+            <ClockIcon />
+            {formatRelativeTime(session.lastModified)}
+          </span>
         </div>
         {!compact && session.note && (
-          <p className="text-[11px] italic text-slate-500 mt-0.5 truncate">
+          <p className="text-[11px] text-slate-200 mt-0.5 line-clamp-3 whitespace-pre-wrap break-words">
             ─ {session.note}
           </p>
         )}
