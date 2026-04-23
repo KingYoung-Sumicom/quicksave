@@ -3,6 +3,7 @@ import { FormattedMessage } from 'react-intl';
 import type { ClaudeSessionSummary, SessionStage } from '@sumicom/quicksave-shared';
 import { sessionStatusKey, SESSION_STATUS } from './SessionStatusBadge';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
+import { MachineIcon } from './icons/MachineIcon';
 
 interface SessionTicketCardProps {
   session: ClaudeSessionSummary;
@@ -20,6 +21,13 @@ interface SessionTicketCardProps {
    * `ProjectDetail`).
    */
   projectName?: string;
+  /**
+   * Machine nickname to surface in the meta line. Same scoping rationale as
+   * `projectName`: shown on the flat home list so the user can tell which
+   * machine a ticket lives on. Omit when context already implies the
+   * machine.
+   */
+  machineName?: string;
 }
 
 const STAGE_META: Record<SessionStage, { labelId: string; dotColor: string; chipText: string; chipBg: string }> = {
@@ -79,7 +87,7 @@ function pickDot(session: ClaudeSessionSummary): { color: string; pulse: boolean
   return { color: s.dotColor, pulse: s.pulse };
 }
 
-export function SessionTicketCard({ session, onClick, compact, isActive, className, projectName }: SessionTicketCardProps) {
+export function SessionTicketCard({ session, onClick, compact, isActive, className, projectName, machineName }: SessionTicketCardProps) {
   const dot = pickDot(session);
   const stageMeta = session.stage ? STAGE_META[session.stage] : null;
 
@@ -129,6 +137,12 @@ export function SessionTicketCard({ session, onClick, compact, isActive, classNa
             <span className="inline-flex items-center gap-1 text-slate-400 font-medium">
               <FolderIcon />
               {projectName}
+            </span>
+          )}
+          {machineName && (
+            <span className="inline-flex items-center gap-1 text-slate-400 font-medium">
+              <MachineIcon className="w-3 h-3 shrink-0" />
+              {machineName}
             </span>
           )}
           {session.gitBranch && (

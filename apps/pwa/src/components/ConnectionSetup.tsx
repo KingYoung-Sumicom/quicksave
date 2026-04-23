@@ -25,7 +25,7 @@ export function ConnectionSetup({ onConnect }: Props) {
         agentId: agentId.trim(),
         publicKey: publicKey.trim(),
         nickname: `Machine ${agentId.trim().slice(0, 8)}`,
-        icon: '💻',
+        icon: '',
       });
       onConnect(agentId.trim(), publicKey.trim());
     }
@@ -144,7 +144,7 @@ export function ConnectionSetup({ onConnect }: Props) {
                     publicKey: pk,
                     signPublicKey: spk,
                     nickname: `Machine ${id.slice(0, 8)}`,
-                    icon: '💻',
+                    icon: '',
                   });
                   onConnect(id, pk);
                 }}

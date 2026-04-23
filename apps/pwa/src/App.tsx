@@ -1327,7 +1327,7 @@ function ConnectHandler({ onConnect }: { onConnect: (agentId: string, publicKey:
     if (pk) {
       // New machine from QR code
       if (!getMachine(agentId)) {
-        addMachine({ agentId, publicKey: pk, signPublicKey: spk, nickname: name || `Machine ${agentId.slice(0, 8)}`, icon: '💻' });
+        addMachine({ agentId, publicKey: pk, signPublicKey: spk, nickname: name || `Machine ${agentId.slice(0, 8)}`, icon: '' });
       }
       onConnect(agentId, pk);
     } else {

@@ -1,5 +1,9 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { SessionManager, type ManagedSession } from './sessionManager.js';
+import { setQuicksaveDir } from '../service/singleton.js';
 import type {
   CodingAgentProvider,
   ProviderSession,
@@ -85,11 +89,22 @@ function createMockProvider(
 describe('SessionManager — adversarial edge cases', () => {
   let manager: SessionManager;
   let provider: CodingAgentProvider;
+  let tmpQuicksaveDir: string;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    tmpQuicksaveDir = mkdtempSync(join(tmpdir(), 'qs-session-edge-test-'));
+    setQuicksaveDir(tmpQuicksaveDir);
     provider = createMockProvider();
     manager = new SessionManager([provider]);
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tmpQuicksaveDir, { recursive: true, force: true });
+    } catch {
+      // Ignore
+    }
   });
 
   // ── 1. Concurrent session starts ──

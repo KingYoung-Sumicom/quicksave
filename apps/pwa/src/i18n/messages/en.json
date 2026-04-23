@@ -48,7 +48,6 @@
   "settings.machines.edit.title": "Edit machine",
   "settings.machines.edit.nickname.label": "Nickname",
   "settings.machines.edit.nickname.placeholder": "e.g., Work laptop, Home desktop",
-  "settings.machines.edit.icon.label": "Icon",
   "settings.machines.edit.save": "Save changes",
 
   "machineInfo.projects.title": "Projects",

@@ -6,6 +6,7 @@ import { Spinner } from './ui/Spinner';
 import { useMachineStore } from '../stores/machineStore';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useProjects } from '../hooks/useProjects';
+import { MachineIcon } from './icons/MachineIcon';
 
 interface MachineInfoPageProps {
   onSetActiveAgent: (agentId: string) => void;
@@ -85,8 +86,8 @@ export function MachineInfoPage({
 
           {/* Identity card */}
           <div className="flex items-center gap-3 p-3 bg-slate-700/50 rounded-lg">
-            <div className="relative w-12 h-12 bg-slate-700 rounded-lg flex items-center justify-center text-2xl flex-shrink-0">
-              {machine.icon}
+            <div className="relative w-12 h-12 bg-slate-700 rounded-lg flex items-center justify-center text-slate-300 flex-shrink-0">
+              <MachineIcon className="w-6 h-6" />
               <span
                 className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-slate-800 ${
                   isOnline ? 'bg-green-500' : 'bg-slate-500'

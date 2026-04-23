@@ -51,6 +51,10 @@ export interface StartSessionOpts {
   permissionLevel: PermissionLevel;
   sandboxed: boolean;
   systemPrompt?: string;
+  /** Absolute path to the daemon-owned sentinel file the CLI's PermissionRequest
+   *  hook consults to auto-approve every tool. Presence of the file means bypass
+   *  is active. Only ClaudeCliProvider uses it; other providers ignore it. */
+  bypassFlagPath?: string;
 }
 
 export interface ResumeSessionOpts {
@@ -62,6 +66,7 @@ export interface ResumeSessionOpts {
   permissionLevel: PermissionLevel;
   sandboxed: boolean;
   systemPrompt?: string;
+  bypassFlagPath?: string;
 }
 
 export interface CodingAgentProvider {

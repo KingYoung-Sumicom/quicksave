@@ -10,14 +10,11 @@ interface AddMachineModalProps {
   onConnect: (agentId: string, publicKey: string) => void;
 }
 
-const MACHINE_ICONS = ['💻', '🖥️', '💼', '🏠', '🏢', '🔧', '⚡', '🚀'];
-
 export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
   const [agentId, setAgentId] = useState('');
   const [publicKey, setPublicKey] = useState('');
   const [signPublicKey, setSignPublicKey] = useState<string | undefined>(undefined);
   const [nickname, setNickname] = useState('');
-  const [icon, setIcon] = useState('💻');
   const [mode, setMode] = useState<'scan' | 'manual'>('manual');
   const [saveOnly, setSaveOnly] = useState(false);
 
@@ -52,7 +49,7 @@ export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
       publicKey: publicKey.trim(),
       signPublicKey: signPublicKey?.trim() || undefined,
       nickname: machineName,
-      icon,
+      icon: '',
     });
 
     if (saveOnly) {
@@ -145,29 +142,6 @@ export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
                   className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   disabled={isConnecting}
                 />
-              </div>
-
-              {/* Icon Selector */}
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-2">
-                  Icon
-                </label>
-                <div className="flex gap-2 flex-wrap">
-                  {MACHINE_ICONS.map((emoji) => (
-                    <button
-                      key={emoji}
-                      type="button"
-                      onClick={() => setIcon(emoji)}
-                      className={`w-10 h-10 rounded-md text-xl flex items-center justify-center transition-colors ${
-                        icon === emoji
-                          ? 'bg-blue-600'
-                          : 'bg-slate-700 hover:bg-slate-600'
-                      }`}
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
               </div>
 
               {/* Error */}

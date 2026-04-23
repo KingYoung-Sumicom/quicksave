@@ -1,6 +1,9 @@
 import { EventEmitter } from 'events';
+import { randomUUID } from 'crypto';
 import { resolve, join } from 'path';
 import { readFile, writeFile, mkdir } from 'fs/promises';
+import { mkdirSync, writeFileSync, rmSync } from 'fs';
+import { getRunDir } from '../service/singleton.js';
 import type {
   AgentId,
   ClaudeSessionSummary,
@@ -103,6 +106,31 @@ export interface ManagedSession {
   cardBuilder: StreamCardBuilder | null;
   /** Model the current provider process was spawned with. Used to force cold resume when model changes. */
   spawnedModel?: string;
+  /** Per-session UUID baked into the PermissionRequest hook command. The daemon
+   *  toggles bypass by creating/removing the sentinel file at `bypassFlagPath(bypassToken)`. */
+  bypassToken: string;
+}
+
+/** Absolute path to the per-session bypass sentinel file. Hook command checks
+ *  `[ -f <path> ]` — presence means auto-approve every tool. */
+export function bypassFlagPath(token: string): string {
+  return join(getRunDir(), 'bypass', token);
+}
+
+/** Create or remove the sentinel file atomically. Swallows I/O errors — a
+ *  missing/unwritable sentinel just falls through to the prompt-tool flow. */
+function applyBypassFlag(token: string, active: boolean): void {
+  const path = bypassFlagPath(token);
+  try {
+    if (active) {
+      mkdirSync(join(getRunDir(), 'bypass'), { recursive: true });
+      writeFileSync(path, '');
+    } else {
+      rmSync(path, { force: true });
+    }
+  } catch (err) {
+    console.warn(`[session-manager] bypass flag ${active ? 'set' : 'clear'} failed for ${token.slice(0, 8)}:`, err);
+  }
 }
 
 interface PendingUserInput {
@@ -294,6 +322,12 @@ export class SessionManager extends EventEmitter {
     const systemPrompt = buildSystemPrompt(opts.systemPrompt);
     const provider = this.getProvider(opts.agent);
 
+    // Mint a per-session bypass token up front. The CLI bakes its path into
+    // the PermissionRequest hook at spawn time; later toggles just touch/rm
+    // the sentinel file without a respawn.
+    const bypassToken = randomUUID();
+    applyBypassFlag(bypassToken, level === 'bypassPermissions');
+
     // Create cardBuilder with 'pending' sessionId — will be updated after provider returns real one
     const cardBuilder = new StreamCardBuilder('pending', opts.streamId, opts.cwd);
 
@@ -308,6 +342,7 @@ export class SessionManager extends EventEmitter {
         permissionLevel: level,
         sandboxed,
         systemPrompt,
+        bypassFlagPath: bypassFlagPath(bypassToken),
       },
       cardBuilder,
       callbacks,
@@ -349,6 +384,7 @@ export class SessionManager extends EventEmitter {
       sandboxed,
       cardBuilder,
       spawnedModel: opts.model,
+      bypassToken,
     };
     this.sessions.set(sessionId, managed);
     this.emitSessionUpdate(sessionId);
@@ -449,6 +485,12 @@ export class SessionManager extends EventEmitter {
       const sessionConfig = this.sessionConfigs.get(opts.sessionId);
       const resumeModel = (sessionConfig?.model as string | undefined) ?? this.preferences.model;
 
+      // Reuse the existing session's bypass token if present; otherwise mint a
+      // fresh one (happens when cold-resuming a session we don't have in memory,
+      // e.g. after a daemon restart).
+      const bypassToken = existing?.bypassToken ?? randomUUID();
+      applyBypassFlag(bypassToken, level === 'bypassPermissions');
+
       const { sessionId, session: providerSession } = await provider.resumeSession(
         {
           sessionId: opts.sessionId,
@@ -459,6 +501,7 @@ export class SessionManager extends EventEmitter {
           permissionLevel: level,
           sandboxed,
           systemPrompt: buildSystemPrompt(),
+          bypassFlagPath: bypassFlagPath(bypassToken),
         },
         cardBuilder,
         callbacks,
@@ -494,6 +537,7 @@ export class SessionManager extends EventEmitter {
           sandboxed,
           cardBuilder,
           spawnedModel: resumeModel,
+          bypassToken,
         };
         this.sessions.set(sessionId, managed);
       }
@@ -545,6 +589,7 @@ export class SessionManager extends EventEmitter {
       ps.providerSession.kill();
       ps.providerSession = null;
     }
+    if (ps.bypassToken) applyBypassFlag(ps.bypassToken, false);
     this.sessions.delete(sessionId);
     // Drop any pending permission promises for this session — the CLI is dead
     // so any later resolveUserInput would land on an orphan promise, and the
@@ -574,14 +619,26 @@ export class SessionManager extends EventEmitter {
     if (ps) ps.permissionLevel = level;
     this.sessionPermissions.set(sessionId, level);
 
+    // bypass is driven by the daemon-owned sentinel file the CLI's hook
+    // checks. Toggle it first so the next tool call sees the right state.
+    if (ps?.bypassToken) {
+      applyBypassFlag(ps.bypassToken, level === 'bypassPermissions');
+    }
+
     const session = ps?.providerSession as any;
     if (session?.alive && typeof session.sendControlRequest === 'function') {
+      // bypassPermissions is handled entirely on the daemon side (hook + AUTO_APPROVE).
+      // Send `default` to the CLI so it never enters its own bypass mode.
+      const cliMode = level === 'bypassPermissions' ? 'default' : level;
       try {
-        await session.sendControlRequest('set_permission_mode', { mode: level });
+        await session.sendControlRequest('set_permission_mode', { mode: cliMode });
       } catch (err) {
         // CLI rejected — roll back in-memory state so config stays consistent with the CLI.
         if (ps) ps.permissionLevel = prevLevel;
         this.sessionPermissions.set(sessionId, prevLevel);
+        if (ps?.bypassToken) {
+          applyBypassFlag(ps.bypassToken, prevLevel === 'bypassPermissions');
+        }
         this.emitSessionUpdate(sessionId);
         throw err;
       }
@@ -883,6 +940,7 @@ export class SessionManager extends EventEmitter {
         console.log(`[session-manager] provider exited session=${sessionId.slice(0, 8)} — marking inactive`);
         ps.providerSession = null;
         ps.streaming = false;
+        if (ps.bypassToken) applyBypassFlag(ps.bypassToken, false);
         this.sessions.delete(sessionId);
         this.cancelPendingInputsForSession(sessionId);
         this.emitSessionUpdate(sessionId);

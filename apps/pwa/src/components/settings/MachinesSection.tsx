@@ -5,6 +5,7 @@ import { useMachineStore, selectSortedMachines, type Machine } from '../../store
 import { useConnectionStore } from '../../stores/connectionStore';
 import { EditMachineModal } from '../EditMachineModal';
 import { ConfirmModal } from '../ui/ConfirmModal';
+import { MachineIcon } from '../icons/MachineIcon';
 
 export function MachinesSection() {
   const navigate = useNavigate();
@@ -51,8 +52,8 @@ export function MachinesSection() {
             const isConnected = conn?.state === 'connected' && conn?.online !== false;
             const rowContent = (
               <>
-                <div className="relative w-9 h-9 bg-slate-700 rounded-lg flex items-center justify-center text-lg flex-shrink-0">
-                  {machine.icon}
+                <div className="relative w-9 h-9 bg-slate-700 rounded-lg flex items-center justify-center text-slate-300 flex-shrink-0">
+                  <MachineIcon className="w-4 h-4" />
                   <span
                     className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-800 ${
                       isConnected ? 'bg-green-500' : 'bg-slate-500'

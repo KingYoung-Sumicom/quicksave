@@ -19,6 +19,97 @@ import type {
 const __ownDir = dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Build the argv passed to `claude` when spawning a new or resumed session.
+ *
+ * Exported for unit testing; production callers go through `ClaudeCliProvider`.
+ *
+ * Permission mode handling: `bypassPermissions` is translated to `default` on
+ * the wire. Auto-approval is driven by a PermissionRequest hook whose command
+ * consults a daemon-owned sentinel file (`opts.bypassFlagPath`). The daemon
+ * creates/removes that file in `setPermissionLevel`, so the user can toggle
+ * bypass mode at any time without re-spawning the CLI. Running the CLI in its
+ * own `bypassPermissions` mode would suppress permission-prompt-tool calls and
+ * freeze the decision at spawn time; the hook indirection keeps both tool-call
+ * visibility and dynamic toggling.
+ */
+export function buildClaudeCliArgs(opts: {
+  cwd: string;
+  ownDir: string;
+  model?: string;
+  permissionMode?: PermissionLevel;
+  systemPrompt?: string;
+  resumeSessionId?: string;
+  sandboxed?: boolean;
+  bypassFlagPath?: string;
+}): string[] {
+  const args: string[] = [
+    '--output-format', 'stream-json',
+    '--input-format', 'stream-json',
+    '--permission-prompt-tool', 'stdio',
+    '--verbose',
+    '-p', '',  // empty print flag — prompt sent via stdin
+    '--replay-user-messages',  // keep CLI alive across stdin user messages (enables hot resume)
+  ];
+
+  if (opts.systemPrompt) {
+    args.push('--append-system-prompt', opts.systemPrompt);
+  }
+
+  if (opts.model) {
+    args.push('--model', opts.model);
+  }
+
+  if (opts.permissionMode) {
+    const cliMode = opts.permissionMode === 'bypassPermissions' ? 'default'
+      : opts.permissionMode === 'acceptEdits' ? 'acceptEdits'
+      : opts.permissionMode === 'plan' ? 'plan'
+      : opts.permissionMode === 'auto' ? 'auto'
+      : 'default';
+    args.push('--permission-mode', cliMode);
+  }
+
+  if (opts.resumeSessionId) {
+    args.push('--resume', opts.resumeSessionId);
+  }
+
+  const permissionRequestHooks: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }> = [];
+  const sandboxAllowHook = {
+    type: 'command',
+    command: `printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'`,
+  };
+  if (opts.sandboxed) {
+    permissionRequestHooks.push({ matcher: SANDBOX_BASH_TOOL, hooks: [sandboxAllowHook] });
+  }
+  if (opts.bypassFlagPath) {
+    // Universal hook: if the sentinel file exists, approve the tool; otherwise
+    // emit nothing so the CLI continues to the permission-prompt-tool (which
+    // the daemon serves from AUTO_APPROVE + user interaction).
+    const escapedPath = opts.bypassFlagPath.replace(/"/g, '\\"');
+    const conditionalCommand = `[ -f "${escapedPath}" ] && printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}' || true`;
+    permissionRequestHooks.push({
+      matcher: '*',
+      hooks: [{ type: 'command', command: conditionalCommand }],
+    });
+  }
+  if (permissionRequestHooks.length > 0) {
+    args.push('--settings', JSON.stringify({ hooks: { PermissionRequest: permissionRequestHooks } }));
+  }
+
+  const mcpConfig = {
+    mcpServers: {
+      [SANDBOX_MCP_NAME]: buildSandboxMcpServerConfig({
+        ownDir: opts.ownDir,
+        cwd: opts.cwd,
+        sessionId: opts.resumeSessionId,
+      }),
+    },
+  };
+  args.push('--mcp-config', JSON.stringify(mcpConfig));
+
+  return args;
+}
+
+/**
  * Resolve the absolute path to the `claude` CLI binary.
  * When the daemon runs as a background service, PATH may not include the
  * directory where `claude` is installed, causing spawn ENOENT errors.
@@ -230,6 +321,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       permissionMode: opts.permissionLevel,
       systemPrompt: opts.systemPrompt,
       sandboxed: opts.sandboxed,
+      bypassFlagPath: opts.bypassFlagPath,
     });
 
     return this.spawnAndConsume(args, opts.cwd, opts.streamId, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model);
@@ -248,6 +340,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       systemPrompt: opts.systemPrompt,
       resumeSessionId: opts.sessionId,
       sandboxed: opts.sandboxed,
+      bypassFlagPath: opts.bypassFlagPath,
     });
 
     return this.spawnAndConsume(args, opts.cwd, opts.streamId, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model);
@@ -263,67 +356,9 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     systemPrompt?: string;
     resumeSessionId?: string;
     sandboxed?: boolean;
+    bypassFlagPath?: string;
   }): string[] {
-    const args: string[] = [
-      '--output-format', 'stream-json',
-      '--input-format', 'stream-json',
-      '--permission-prompt-tool', 'stdio',
-      '--verbose',
-      '-p', '',  // empty print flag — prompt sent via stdin
-      '--replay-user-messages',  // keep CLI alive across stdin user messages (enables hot resume)
-    ];
-
-    if (opts.systemPrompt) {
-      args.push('--append-system-prompt', opts.systemPrompt);
-    }
-
-    if (opts.model) {
-      args.push('--model', opts.model);
-    }
-
-    if (opts.permissionMode) {
-      const cliMode = opts.permissionMode === 'bypassPermissions' ? 'bypassPermissions'
-        : opts.permissionMode === 'acceptEdits' ? 'acceptEdits'
-        : opts.permissionMode === 'plan' ? 'plan'
-        : opts.permissionMode === 'auto' ? 'auto'
-        : 'default';
-      args.push('--permission-mode', cliMode);
-    }
-
-    if (opts.resumeSessionId) {
-      args.push('--resume', opts.resumeSessionId);
-    }
-
-    // When sandboxed, inject a PermissionRequest hook that auto-approves SandboxBash.
-    // This works in any project directory — no project-level settings needed.
-    if (opts.sandboxed) {
-      const hookSettings = {
-        hooks: {
-          PermissionRequest: [{
-            matcher: SANDBOX_BASH_TOOL,
-            hooks: [{
-              type: 'command',
-              command: `printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'`,
-            }],
-          }],
-        },
-      };
-      args.push('--settings', JSON.stringify(hookSettings));
-    }
-
-    // Always inject sandbox MCP server — approve/deny controlled by sandboxed flag at runtime
-    const mcpConfig = {
-      mcpServers: {
-        [SANDBOX_MCP_NAME]: buildSandboxMcpServerConfig({
-          ownDir: __ownDir,
-          cwd: opts.cwd,
-          sessionId: opts.resumeSessionId,
-        }),
-      },
-    };
-    args.push('--mcp-config', JSON.stringify(mcpConfig));
-
-    return args;
+    return buildClaudeCliArgs({ ...opts, ownDir: __ownDir });
   }
 
   // ── Private: Spawn & Consume ──

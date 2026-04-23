@@ -10,7 +10,6 @@ export interface ProjectEntry {
   cwd: string;
   displayName: string;
   machineName: string;
-  machineIcon: string;
   lastActivityAt: number;
   sessionCount: number;
   lastSessionTitle?: string;
@@ -78,7 +77,6 @@ export function useProjects(): ProjectEntry[] {
           cwd,
           displayName: cwd.split('/').pop() || cwd,
           machineName: machine.nickname,
-          machineIcon: machine.icon,
           lastActivityAt: live ? Math.max(live.lastActivityAt, cached.lastActivityAt) : cached.lastActivityAt,
           sessionCount: live ? live.sessionCount : cached.sessionCount,
           lastSessionTitle: live?.lastSessionTitle ?? cached.lastSessionTitle,
@@ -98,7 +96,6 @@ export function useProjects(): ProjectEntry[] {
           cwd,
           displayName: cwd.split('/').pop() || cwd,
           machineName: machine.nickname,
-          machineIcon: machine.icon,
           lastActivityAt: live?.lastActivityAt ?? machine.lastConnectedAt ?? machine.addedAt,
           sessionCount: live?.sessionCount ?? 0,
           lastSessionTitle: live?.lastSessionTitle,

@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { FormattedMessage } from 'react-intl';
 import { useProjects } from '../hooks/useProjects';
 import { useClaudeStore } from '../stores/claudeStore';
+import { useMachineStore } from '../stores/machineStore';
 import { DesktopSideMenuAppBar } from './DesktopSideMenuAppBar';
 import { SessionTicketCard } from './SessionTicketCard';
 import { toProjectId } from '../lib/projectId';
@@ -27,6 +28,7 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
   const activeSessionId = sessionMatch?.[1];
 
   const sessions = useClaudeStore((s) => s.sessions);
+  const machines = useMachineStore((s) => s.machines);
 
   // Build a cwd → ProjectEntry index so we can attach a project name + route to
   // each session without recomputing per row.
@@ -35,6 +37,14 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
     for (const p of projects) map.set(`${p.agentId}\0${p.cwd}`, p);
     return map;
   }, [projects]);
+
+  // agentId → machine lookup. Covers sessions whose project isn't indexed yet
+  // (no cached/known entry) so the machine tag still renders.
+  const machineById = useMemo(() => {
+    const map = new Map<string, typeof machines[number]>();
+    for (const m of machines) map.set(m.agentId, m);
+    return map;
+  }, [machines]);
 
   const flatSessions = useMemo(() => {
     return Object.values(sessions)
@@ -82,6 +92,7 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
                 const project = projectByCwd.get(`${session.machineAgentId}\0${session.cwd}`);
                 const projectName = project?.displayName ?? session.cwd?.split('/').pop() ?? '';
                 const projectId = project?.projectId ?? toProjectId(session.machineAgentId!, session.cwd!);
+                const machine = session.machineAgentId ? machineById.get(session.machineAgentId) : undefined;
                 return (
                   <SessionTicketCard
                     key={session.sessionId}
@@ -89,6 +100,7 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
                     isActive={activeSessionId === session.sessionId}
                     compact={compact}
                     projectName={projectName}
+                    machineName={machine?.nickname}
                     onClick={() => navigate(`/p/${projectId}/s/${session.sessionId}`)}
                   />
                 );

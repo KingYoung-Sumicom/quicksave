@@ -48,7 +48,6 @@
   "settings.machines.edit.title": "編輯 machine",
   "settings.machines.edit.nickname.label": "暱稱",
   "settings.machines.edit.nickname.placeholder": "例如:工作筆電、家用桌機",
-  "settings.machines.edit.icon.label": "圖示",
   "settings.machines.edit.save": "儲存變更",
 
   "machineInfo.projects.title": "專案",

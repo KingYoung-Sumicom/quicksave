@@ -7,6 +7,7 @@ import { PERMISSION_MODES, AGENT_TYPES, getModelsForAgent } from '../../lib/clau
 import { ButtonGroup } from '../ui/ButtonGroup';
 import { ToggleSwitch } from '../ui/ToggleSwitch';
 import type { ProjectEntry } from '../../hooks/useProjects';
+import { MachineIcon } from '../icons/MachineIcon';
 
 export interface NewSessionEmptyStateProps {
   cwd?: string;
@@ -217,7 +218,7 @@ function ProjectRow({ project, offlineLabel }: { project: ProjectEntry; offlineL
   return (
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-sm text-slate-200">
-        <span className="shrink-0">{project.machineIcon}</span>
+        <MachineIcon className="w-3.5 h-3.5 shrink-0 text-slate-400" />
         <span className="font-medium break-words">{project.displayName}</span>
         <span className="text-slate-400 break-words">· {project.machineName}</span>
         {!project.isConnected && (

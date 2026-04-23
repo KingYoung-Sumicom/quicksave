@@ -1,5 +1,9 @@
-import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
-import { SessionManager, type ManagedSession } from './sessionManager.js';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { SessionManager, bypassFlagPath, type ManagedSession } from './sessionManager.js';
+import { setQuicksaveDir } from '../service/singleton.js';
 import type {
   CodingAgentProvider,
   ProviderSession,
@@ -85,11 +89,23 @@ function createMockProvider(
 describe('SessionManager', () => {
   let manager: SessionManager;
   let provider: CodingAgentProvider;
+  let tmpQuicksaveDir: string;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Redirect writes (bypass sentinel files, etc.) off of ~/.quicksave.
+    tmpQuicksaveDir = mkdtempSync(join(tmpdir(), 'qs-session-manager-test-'));
+    setQuicksaveDir(tmpQuicksaveDir);
     provider = createMockProvider();
     manager = new SessionManager([provider]);
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tmpQuicksaveDir, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
   });
 
   // ── Constructor ──
@@ -370,6 +386,51 @@ describe('SessionManager', () => {
       expect(manager.getPermissionLevel(sessionId)).toBe('bypassPermissions');
     });
 
+    it('should send set_permission_mode with "default" when switching to bypassPermissions', async () => {
+      const sessionId = 'perm-bypass-wire';
+      const sendControlRequest = vi.fn().mockResolvedValue(undefined);
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession({ sendControlRequest } as any),
+      });
+
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        streamId: 'stream-1',
+      });
+
+      await manager.setPermissionLevel(sessionId, 'bypassPermissions');
+
+      // Daemon-side state is still bypass so AUTO_APPROVE works via prompt-tool.
+      expect(manager.getPermissionLevel(sessionId)).toBe('bypassPermissions');
+      // But the CLI was never told to enter its native bypass mode.
+      expect(sendControlRequest).toHaveBeenCalledWith('set_permission_mode', { mode: 'default' });
+      expect(sendControlRequest).not.toHaveBeenCalledWith(
+        'set_permission_mode',
+        expect.objectContaining({ mode: 'bypassPermissions' }),
+      );
+    });
+
+    it('should send set_permission_mode with the raw mode for non-bypass levels', async () => {
+      const sessionId = 'perm-plan-wire';
+      const sendControlRequest = vi.fn().mockResolvedValue(undefined);
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession({ sendControlRequest } as any),
+      });
+
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        streamId: 'stream-1',
+      });
+
+      await manager.setPermissionLevel(sessionId, 'plan');
+
+      expect(sendControlRequest).toHaveBeenCalledWith('set_permission_mode', { mode: 'plan' });
+    });
+
     it('should emit session-updated with new permissionMode', async () => {
       const sessionId = 'perm-emit';
       (provider.startSession as Mock).mockResolvedValue({
@@ -426,6 +487,147 @@ describe('SessionManager', () => {
         'cold-session',
         { permissionMode: 'plan' },
       );
+    });
+  });
+
+  // ── Dynamic bypass sentinel file ──
+
+  describe('bypass sentinel file', () => {
+    async function startBypassSession(sessionId: string, opts: { permissionMode?: string; sendControlRequest?: Mock } = {}): Promise<ManagedSession> {
+      const session = createMockProviderSession(
+        opts.sendControlRequest ? ({ sendControlRequest: opts.sendControlRequest } as any) : undefined,
+      );
+      (provider.startSession as Mock).mockResolvedValue({ sessionId, session });
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        streamId: 'stream-1',
+        ...(opts.permissionMode ? { permissionMode: opts.permissionMode } : {}),
+      });
+      // Pull the managed entry out via the internal map (exposed through getActiveSessions).
+      // We need the bypassToken, which is only on the ManagedSession itself.
+      // @ts-expect-error — reaching into the private sessions map for assertion only.
+      return manager.sessions.get(sessionId)!;
+    }
+
+    it('mints a UUID bypass token per session and bakes it into the provider args', async () => {
+      const sessionId = 'token-mint';
+      const managed = await startBypassSession(sessionId);
+
+      expect(managed.bypassToken).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+      const startOpts = (provider.startSession as Mock).mock.calls[0][0];
+      expect(startOpts.bypassFlagPath).toBe(bypassFlagPath(managed.bypassToken));
+    });
+
+    it('starts with the sentinel file ABSENT when permissionMode is acceptEdits', async () => {
+      const managed = await startBypassSession('no-sentinel-at-start');
+      const fs = await import('fs');
+      expect(fs.existsSync(bypassFlagPath(managed.bypassToken))).toBe(false);
+    });
+
+    it('creates the sentinel file at start when permissionMode is bypassPermissions', async () => {
+      const managed = await startBypassSession('sentinel-at-start', { permissionMode: 'bypassPermissions' });
+      const fs = await import('fs');
+      expect(fs.existsSync(bypassFlagPath(managed.bypassToken))).toBe(true);
+    });
+
+    it('creates the sentinel file when setPermissionLevel flips to bypassPermissions', async () => {
+      const sendControlRequest = vi.fn().mockResolvedValue(undefined);
+      const managed = await startBypassSession('flip-to-bypass', { sendControlRequest });
+
+      const fs = await import('fs');
+      const path = bypassFlagPath(managed.bypassToken);
+      expect(fs.existsSync(path)).toBe(false);
+
+      await manager.setPermissionLevel('flip-to-bypass', 'bypassPermissions');
+      expect(fs.existsSync(path)).toBe(true);
+    });
+
+    it('removes the sentinel file when setPermissionLevel flips OFF of bypassPermissions', async () => {
+      const sendControlRequest = vi.fn().mockResolvedValue(undefined);
+      const managed = await startBypassSession('flip-off-bypass', {
+        permissionMode: 'bypassPermissions',
+        sendControlRequest,
+      });
+
+      const fs = await import('fs');
+      const path = bypassFlagPath(managed.bypassToken);
+      expect(fs.existsSync(path)).toBe(true);
+
+      await manager.setPermissionLevel('flip-off-bypass', 'default');
+      expect(fs.existsSync(path)).toBe(false);
+    });
+
+    it('rolls the sentinel back if the CLI rejects set_permission_mode', async () => {
+      const sendControlRequest = vi.fn().mockRejectedValue(new Error('CLI said no'));
+      const managed = await startBypassSession('rollback-on-reject', { sendControlRequest });
+
+      const fs = await import('fs');
+      const path = bypassFlagPath(managed.bypassToken);
+      expect(fs.existsSync(path)).toBe(false);
+
+      // Attempt to flip to bypass — CLI rejects, so the sentinel (created
+      // optimistically) must be cleaned back up.
+      await expect(manager.setPermissionLevel('rollback-on-reject', 'bypassPermissions')).rejects.toThrow('CLI said no');
+
+      expect(fs.existsSync(path)).toBe(false);
+      // The daemon-side permission level also rolled back so AUTO_APPROVE stays consistent.
+      expect(manager.getPermissionLevel('rollback-on-reject')).toBe('acceptEdits');
+    });
+
+    it('removes the sentinel on closeSession', async () => {
+      const managed = await startBypassSession('close-cleans-up', { permissionMode: 'bypassPermissions' });
+      const fs = await import('fs');
+      const path = bypassFlagPath(managed.bypassToken);
+      expect(fs.existsSync(path)).toBe(true);
+
+      manager.closeSession('close-cleans-up');
+      expect(fs.existsSync(path)).toBe(false);
+    });
+
+    it('removes the sentinel when the provider process exits (onSessionExited)', async () => {
+      const managed = await startBypassSession('exit-cleans-up', { permissionMode: 'bypassPermissions' });
+      const fs = await import('fs');
+      const path = bypassFlagPath(managed.bypassToken);
+      expect(fs.existsSync(path)).toBe(true);
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      callbacks.onSessionExited?.('exit-cleans-up', managed.providerSession!);
+
+      expect(fs.existsSync(path)).toBe(false);
+    });
+
+    it('preserves the bypass token across cold resume so the baked-in hook path keeps working', async () => {
+      const sessionId = 'token-preserved';
+      const managed = await startBypassSession(sessionId, { permissionMode: 'bypassPermissions' });
+      const originalToken = managed.bypassToken;
+
+      // Simulate the CLI dying so the next prompt forces a cold resume.
+      managed.providerSession = null;
+      managed.streaming = false;
+
+      (provider.resumeSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+
+      await manager.resumeSession({
+        sessionId,
+        prompt: 'continue',
+        cwd: '/tmp/test',
+        streamId: 'stream-2',
+      });
+
+      // The hook command baked into the CLI at resume time must reference the
+      // same sentinel path the daemon manages — otherwise a later toggle would
+      // leave the CLI pointed at a stale/unwritten path.
+      const resumeOpts = (provider.resumeSession as Mock).mock.calls[0][0];
+      expect(resumeOpts.bypassFlagPath).toBe(bypassFlagPath(originalToken));
+
+      // @ts-expect-error — private map access for assertion.
+      const rekeyed = manager.sessions.get(sessionId)! as ManagedSession;
+      expect(rekeyed.bypassToken).toBe(originalToken);
     });
   });
 

@@ -5,6 +5,7 @@ import type { Machine } from '../stores/machineStore';
 import { useLongPress } from '../hooks/useLongPress';
 import { ChevronIcon } from './ui/ChevronIcon';
 import { Spinner } from './ui/Spinner';
+import { MachineIcon } from './icons/MachineIcon';
 
 interface MachineCardProps {
   machine: Machine;
@@ -95,8 +96,8 @@ export function MachineCard({
         )}
       >
         {/* Machine Icon */}
-        <div className="w-10 h-10 bg-slate-700 rounded-lg flex items-center justify-center text-xl flex-shrink-0">
-          {machine.icon}
+        <div className="w-10 h-10 bg-slate-700 rounded-lg flex items-center justify-center text-slate-300 flex-shrink-0">
+          <MachineIcon className="w-5 h-5" />
         </div>
 
         {/* Machine Info */}

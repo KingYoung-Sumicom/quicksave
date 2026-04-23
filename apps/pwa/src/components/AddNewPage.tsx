@@ -487,7 +487,7 @@ function MachineTab({
       agentId: id,
       publicKey: pk,
       nickname: `Machine ${id.slice(0, 8)}`,
-      icon: '💻',
+      icon: '',
     });
     onConnect(id, pk);
   };
@@ -526,7 +526,7 @@ function MachineTab({
                 publicKey: pk,
                 signPublicKey: spk,
                 nickname: `Machine ${id.slice(0, 8)}`,
-                icon: '💻',
+                icon: '',
               });
               onConnect(id, pk);
             }}
