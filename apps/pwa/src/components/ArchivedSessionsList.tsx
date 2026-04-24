@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import type { BroadcastSessionEntry, SessionListArchivedResponsePayload } from '@sumicom/quicksave-shared';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
 import { Spinner } from './ui/Spinner';
@@ -17,24 +17,40 @@ export function ArchivedSessionsList({ cwd, onListArchived, onRestore }: Archive
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [tried, setTried] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
+  const reqIdRef = useRef(0);
+
+  // When the project changes, discard the prior project's page and any
+  // in-flight response, so we re-fetch for the new cwd on next expand.
+  useEffect(() => {
+    reqIdRef.current++;
+    setEntries([]);
+    setTotal(0);
+    setOffset(0);
+    setTried(false);
+    setLoading(false);
+  }, [cwd]);
 
   const fetchPage = useCallback(async (nextOffset: number) => {
+    const myReq = ++reqIdRef.current;
     setLoading(true);
     const res = await onListArchived(cwd, nextOffset, PAGE_SIZE);
+    if (myReq !== reqIdRef.current) return; // superseded by a newer fetch or cwd change
     if (res) {
       setEntries(res.entries);
       setTotal(res.total);
       setOffset(res.offset);
     }
+    setTried(true);
     setLoading(false);
   }, [cwd, onListArchived]);
 
   useEffect(() => {
-    if (expanded && entries.length === 0 && !loading) {
+    if (expanded && !tried && !loading) {
       fetchPage(0);
     }
-  }, [expanded, entries.length, loading, fetchPage]);
+  }, [expanded, tried, loading, fetchPage]);
 
   const handleRestore = useCallback(async (sessionId: string) => {
     setRestoring(sessionId);

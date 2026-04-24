@@ -117,7 +117,8 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
     : toolName ? (TOOL_COLORS[toolName] || 'border-slate-500/60') : 'border-slate-500/60';
 
   // Inline result expand state (lifted so chevron can live in header row)
-  const isInlineResultTool = !!(toolName && INLINE_RESULT_TOOLS.has(toolName) && toolResultContent);
+  const isMcpTool = !!toolName?.startsWith('mcp__');
+  const isInlineResultTool = !!(toolName && toolResultContent && (INLINE_RESULT_TOOLS.has(toolName) || isMcpTool));
   const resultContent = toolResultContent || '';
   const resultLineCount = resultContent.trimEnd().split('\n').length;
   const resultAutoExpand = !resultContent.trim() || resultLineCount <= 2;
