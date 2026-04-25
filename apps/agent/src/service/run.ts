@@ -60,10 +60,15 @@ import {
   type SessionHistoryUpdatedPayload,
   type SessionUpdatePayload,
   type CodexLoginState,
+  type TerminalSummary,
+  type TerminalsUpdate,
+  type TerminalOutputSnapshot,
+  type TerminalOutputChunk,
 } from '@sumicom/quicksave-shared';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { getEventStore } from '../storage/eventStore.js';
 import { enrichEntry } from '../ai/enrichEntry.js';
+import { getTerminalManager } from '../terminal/terminalManager.js';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const PACKAGE_VERSION = '0.8.1';
@@ -237,6 +242,30 @@ export async function runDaemon(): Promise<void> {
     '/sessions/:sessionId/attention',
     { snapshot: () => null },
   );
+
+  // ── Terminals (PTY-backed interactive shells) ──────────────────────────
+  // `/terminals`          — full list + upsert/remove events.
+  // `/terminals/:id/output` — scrollback snapshot + live output chunks.
+  const terminalManager = getTerminalManager();
+  bus.onSubscribe<'/terminals', TerminalSummary[], TerminalsUpdate>(
+    '/terminals',
+    { snapshot: () => terminalManager.listSummaries() },
+  );
+  bus.onSubscribe<'/terminals/:terminalId/output', TerminalOutputSnapshot | null, TerminalOutputChunk>(
+    '/terminals/:terminalId/output',
+    {
+      snapshot: ({ params }) => terminalManager.outputSnapshot(params.terminalId),
+    },
+  );
+  terminalManager.on('terminals-updated', (update: TerminalsUpdate) => {
+    bus.publish<TerminalsUpdate>('/terminals', update);
+  });
+  terminalManager.on('terminal-updated', (summary: TerminalSummary) => {
+    bus.publish<TerminalsUpdate>('/terminals', { kind: 'upsert', terminal: summary });
+  });
+  terminalManager.on('output', (chunk: TerminalOutputChunk) => {
+    bus.publish<TerminalOutputChunk>(`/terminals/${chunk.terminalId}/output`, chunk);
+  });
 
   claudeService.on('card-event', (event: CardEvent) => {
     bus.publish<SessionCardsUpdate>(
@@ -471,6 +500,12 @@ export async function runDaemon(): Promise<void> {
     'project:list-repos',
     // push
     'push:subscription-offer',
+    // terminal
+    'terminal:create',
+    'terminal:input',
+    'terminal:resize',
+    'terminal:close',
+    'terminal:rename',
   ];
 
   for (const verb of LEGACY_BUS_VERBS) {
@@ -644,6 +679,7 @@ export async function runDaemon(): Promise<void> {
     }
 
     messageHandler.cleanup();
+    terminalManager.shutdown();
     connection.disconnect();
     if (debugHttpServer) await debugHttpServer.close();
     await ipcServer.close();

@@ -150,6 +150,22 @@ export type MessageType =
   | 'project:list-repos:response'
   | 'project:delete'
   | 'project:delete:response'
+  // Terminals — PTY-backed shells the user can drive from the PWA
+  | 'terminal:create'
+  | 'terminal:create:response'
+  | 'terminal:close'
+  | 'terminal:close:response'
+  | 'terminal:input'         // pwa-request: send keystrokes / paste
+  | 'terminal:input:response'
+  | 'terminal:resize'        // pwa-request: update cols/rows
+  | 'terminal:resize:response'
+  | 'terminal:rename'        // pwa-request: rename a terminal tab
+  | 'terminal:rename:response'
+  // File browser — read-only directory listing + text file previews
+  | 'files:list'             // pwa-request: list a directory under a project root
+  | 'files:list:response'
+  | 'files:read'             // pwa-request: read a text file (binary / oversized return a placeholder)
+  | 'files:read:response'
   // Message bus envelope (transports opaque bus frames; see packages/message-bus)
   | 'bus:frame'
   | 'error';
@@ -1412,4 +1428,200 @@ export interface ClaudeUserInputResponsePayload {
   selectedKey?: string;
   /** Wildcard pattern to persist in project .claude/settings.local.json allow list */
   allowPattern?: string;
+}
+
+// ============================================================================
+// Terminal (PTY-backed interactive shell) Types
+// ============================================================================
+
+/**
+ * Summary for one live terminal — delivered via the `/terminals` bus
+ * subscription (snapshot = all terminals; updates = one `TerminalSummary`
+ * per upsert or a `TerminalRemovedPayload` for close).
+ */
+export interface TerminalSummary {
+  terminalId: string;
+  title: string;
+  cwd: string;
+  shell: string;
+  cols: number;
+  rows: number;
+  createdAt: number;
+  lastActivityAt: number;
+  exited: boolean;
+  exitCode?: number | null;
+}
+
+export type TerminalsUpdate =
+  | { kind: 'upsert'; terminal: TerminalSummary }
+  | { kind: 'remove'; terminalId: string };
+
+/**
+ * Incremental payload on the `/terminals/:terminalId/output` stream.
+ * Snapshot returns `TerminalOutputSnapshot` (the current scrollback buffer +
+ * last known cols/rows); each update carries a fresh `chunk` of output that
+ * the PWA feeds to xterm.js.
+ */
+export interface TerminalOutputSnapshot {
+  terminalId: string;
+  /** Scrollback buffer — concatenated raw output (may contain ANSI escapes). */
+  buffer: string;
+  /** Monotonic sequence number of the last byte included in `buffer`. */
+  seq: number;
+  cols: number;
+  rows: number;
+  exited: boolean;
+  exitCode?: number | null;
+}
+
+export interface TerminalOutputChunk {
+  terminalId: string;
+  /** Sequence number of this chunk — strictly increasing. */
+  seq: number;
+  chunk: string;
+  /** True when this chunk carries the final exit notification. */
+  exited?: boolean;
+  exitCode?: number | null;
+}
+
+export interface TerminalCreateRequestPayload {
+  cwd: string;
+  /** Optional shell override; defaults to $SHELL or /bin/bash. */
+  shell?: string;
+  /** Optional explicit shell args — if omitted, a login flag appropriate to
+   *  the chosen shell is used (`-l`). */
+  args?: string[];
+  /** Initial viewport size — the PWA should send an accurate resize after
+   *  xterm.js lays out. */
+  cols?: number;
+  rows?: number;
+  /** Optional display name; defaults to basename(shell). */
+  title?: string;
+}
+
+export interface TerminalCreateResponsePayload {
+  success: boolean;
+  terminal?: TerminalSummary;
+  error?: string;
+}
+
+export interface TerminalInputRequestPayload {
+  terminalId: string;
+  /** Raw bytes (as string) to write to the PTY master. */
+  data: string;
+}
+
+export interface TerminalInputResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+export interface TerminalResizeRequestPayload {
+  terminalId: string;
+  cols: number;
+  rows: number;
+}
+
+export interface TerminalResizeResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+export interface TerminalCloseRequestPayload {
+  terminalId: string;
+  /** When true, kill the PTY even if the child is still running. */
+  force?: boolean;
+}
+
+export interface TerminalCloseResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+export interface TerminalRenameRequestPayload {
+  terminalId: string;
+  title: string;
+}
+
+export interface TerminalRenameResponsePayload {
+  success: boolean;
+  terminal?: TerminalSummary;
+  error?: string;
+}
+
+// ============================================================================
+// File Browser Types
+// ============================================================================
+//
+// Read-only surface for browsing files under a project root. The agent
+// resolves `cwd + path` and rejects anything that escapes the root, so the
+// PWA can navigate with user-supplied relative paths without exfiltration
+// risk. Binary files and files above a size cap return metadata only — the
+// PWA renders a placeholder instead of loading megabytes over the wire.
+
+export type FileEntryKind = 'file' | 'directory' | 'symlink' | 'other';
+
+export interface FileEntry {
+  /** Basename only — the agent never returns full paths here. */
+  name: string;
+  kind: FileEntryKind;
+  /** Bytes. Zero for directories. */
+  size: number;
+  /** Modification time, ms since epoch. */
+  mtime: number;
+  /** Files only: true when `size` exceeds the default preview cap so the UI
+   *  can gray out / warn before the user clicks. `files:read` still succeeds
+   *  for these and returns `kind: 'oversized'`. */
+  oversized?: boolean;
+  /** Symlinks only: true when the target resolves to a directory (treat the
+   *  entry as navigable). Undefined when the link is broken. */
+  targetIsDirectory?: boolean;
+}
+
+export interface FilesListRequestPayload {
+  /** Project root — every resolved path must stay inside this directory. */
+  cwd: string;
+  /** Path relative to `cwd`. Empty or '.' lists the root itself. */
+  path: string;
+}
+
+export interface FilesListResponsePayload {
+  success: boolean;
+  /** Echoed request fields — lets the PWA reconcile against a stale response. */
+  cwd?: string;
+  path?: string;
+  /** Canonical absolute path the agent actually read. */
+  absolutePath?: string;
+  /** Directories first, files second, alpha within each group. */
+  entries?: FileEntry[];
+  error?: string;
+}
+
+export interface FilesReadRequestPayload {
+  cwd: string;
+  path: string;
+  /** Override the default 100 KiB preview cap. The agent clamps this to an
+   *  internal hard cap so payloads stay bounded. */
+  maxBytes?: number;
+}
+
+/** Discriminator explaining whether `content` is present on a successful read. */
+export type FileReadKind = 'text' | 'binary' | 'oversized';
+
+export interface FilesReadResponsePayload {
+  success: boolean;
+  cwd?: string;
+  path?: string;
+  absolutePath?: string;
+  /** Present on success — tags whether the UI should render text or a
+   *  placeholder. Absent only on failures (see `error`). */
+  kind?: FileReadKind;
+  /** UTF-8 decoded file body. Only populated when `kind === 'text'`. */
+  content?: string;
+  encoding?: 'utf-8';
+  /** File size in bytes — present for every successful read (including
+   *  binary/oversized) so the UI can show "3.2 MB binary file". */
+  size?: number;
+  mtime?: number;
+  error?: string;
 }

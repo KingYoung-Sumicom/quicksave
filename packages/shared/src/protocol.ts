@@ -103,4 +103,13 @@ export const REQUEST_RESPONSE_MAP: Record<string, string> = {
   'session:update-history': 'session:update-history:response',
   'session:delete-history': 'session:delete-history:response',
   'session:list-archived': 'session:list-archived:response',
+  // Terminals
+  'terminal:create': 'terminal:create:response',
+  'terminal:close': 'terminal:close:response',
+  'terminal:input': 'terminal:input:response',
+  'terminal:resize': 'terminal:resize:response',
+  'terminal:rename': 'terminal:rename:response',
+  // File browser
+  'files:list': 'files:list:response',
+  'files:read': 'files:read:response',
 };

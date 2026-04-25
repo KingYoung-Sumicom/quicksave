@@ -67,6 +67,10 @@ QUICKSAVE_DEBUG=1 quicksave service resolve <id>   # force-resolve stuck permiss
 - Generates commit messages either via Anthropic API (user-supplied key)
   or via an agentic `claude -p` loop that uses the user's local Claude
   subscription.
+- Hosts a pool of PTY-backed interactive shells (`src/terminal/terminalManager.ts`,
+  via `node-pty`) that the PWA can drive remotely. Each terminal keeps a
+  bounded scrollback buffer so a reconnecting PWA can redraw the current
+  screen without the shell having to repaint.
 - Serves an IPC (Unix socket) JSON-RPC API for the CLI to query state and
   issue debug commands.
 - Triggers Web Push notifications through the relay when a permission

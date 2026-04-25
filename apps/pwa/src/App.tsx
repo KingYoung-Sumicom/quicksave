@@ -34,8 +34,11 @@ import {
   type SessionHistoryUpdatedPayload,
   type BroadcastSessionEntry,
   type SessionUpdatePayload,
+  type TerminalSummary,
+  type TerminalsUpdate,
 } from '@sumicom/quicksave-shared';
 import { useCodexLoginStore } from './stores/codexLoginStore';
+import { useTerminalStore } from './stores/terminalStore';
 import { registerActiveBusGetter } from './lib/busRegistry';
 import { applySessionUpdate } from './lib/applySessionUpdate';
 import { applyHistoryEntry, applyHistoryAction } from './lib/applyHistoryEntry';
@@ -48,6 +51,8 @@ import { AddNewPage } from './components/AddNewPage';
 import { JoinGroupPage } from './routes/JoinGroupPage';
 import { ProjectList } from './components/ProjectList';
 import { ProjectDetail } from './components/ProjectDetail';
+import { TerminalPage } from './components/terminal/TerminalPage';
+import { FileBrowserPage } from './components/files/FileBrowserPage';
 import { useProjectConnection } from './hooks/useProjectConnection';
 import { resolveHash, getAllKnownPaths } from './lib/pathHash';
 import {
@@ -126,6 +131,16 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
     onSnapshot: (state) => useCodexLoginStore.getState().set(agentId, state),
     onUpdate: (state) => useCodexLoginStore.getState().set(agentId, state),
     onError: (err) => console.warn('[bus] /codex/login error:', err),
+  });
+
+  bus.subscribe<TerminalSummary[], TerminalsUpdate>('/terminals', {
+    onSnapshot: (list) => useTerminalStore.getState().applySnapshot(agentId, list),
+    onUpdate: (upd) => {
+      const store = useTerminalStore.getState();
+      if (upd.kind === 'upsert') store.upsert(agentId, upd.terminal);
+      else store.remove(agentId, upd.terminalId);
+    },
+    onError: (err) => console.warn('[bus] /terminals error:', err),
   });
 }
 
@@ -967,6 +982,9 @@ function AppContent() {
                 <Route path="/p/:projectId" element={projectDetailElement} />
                 <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
                 <Route path="/p/:projectId/r/:repoId" element={projectRepoElement} />
+                <Route path="/p/:projectId/t/:terminalId" element={<TerminalPage />} />
+                <Route path="/p/:projectId/files" element={<FileBrowserPage />} />
+                <Route path="/p/:projectId/files/*" element={<FileBrowserPage />} />
                 <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} onConnect={handleConnect} onStartSession={startSession} />} />
                 <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />} />
                 <Route path="/settings/m/:agentId" element={<MachineInfoPage onSetActiveAgent={setActiveAgent} onCheckAgentUpdate={checkAgentUpdate} onUpdateAgent={updateAgent} onRestartAgent={restartAgent} />} />
@@ -984,6 +1002,9 @@ function AppContent() {
           <Route path="/p/:projectId" element={projectDetailElement} />
           <Route path="/p/:projectId/s/:sessionId" element={projectSessionElement} />
           <Route path="/p/:projectId/r/:repoId" element={projectRepoElement} />
+          <Route path="/p/:projectId/t/:terminalId" element={<TerminalPage />} />
+          <Route path="/p/:projectId/files" element={<FileBrowserPage />} />
+          <Route path="/p/:projectId/files/*" element={<FileBrowserPage />} />
           <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} onConnect={handleConnect} onStartSession={startSession} />} />
           <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />} />
           <Route path="/settings/m/:agentId" element={<MachineInfoPage onSetActiveAgent={setActiveAgent} onCheckAgentUpdate={checkAgentUpdate} onUpdateAgent={updateAgent} onRestartAgent={restartAgent} />} />

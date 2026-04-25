@@ -107,6 +107,20 @@ import {
   ProjectRepo,
   PushSubscriptionOfferPayload,
   PushSubscriptionOfferResponsePayload,
+  TerminalCreateRequestPayload,
+  TerminalCreateResponsePayload,
+  TerminalInputRequestPayload,
+  TerminalInputResponsePayload,
+  TerminalResizeRequestPayload,
+  TerminalResizeResponsePayload,
+  TerminalCloseRequestPayload,
+  TerminalCloseResponsePayload,
+  TerminalRenameRequestPayload,
+  TerminalRenameResponsePayload,
+  FilesListRequestPayload,
+  FilesListResponsePayload,
+  FilesReadRequestPayload,
+  FilesReadResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { GitOperations } from '../git/operations.js';
 import type { PushClient } from '../service/pushClient.js';
@@ -118,6 +132,8 @@ import { SessionManager } from '../ai/sessionManager.js';
 import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
 import { CodexSdkProvider } from '../ai/codexSdkProvider.js';
 import { CodexLoginManager } from '../ai/codexLogin.js';
+import { getTerminalManager } from '../terminal/terminalManager.js';
+import { getFileBrowser } from '../files/fileBrowser.js';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { enrichEntry } from '../ai/enrichEntry.js';
 import { getEventStore } from '../storage/eventStore.js';
@@ -594,6 +610,20 @@ export class MessageHandler {
           return this.handleDeleteProject(message as Message<ProjectDeleteRequestPayload>);
         case 'push:subscription-offer':
           return this.handlePushSubscriptionOffer(message as Message<PushSubscriptionOfferPayload>);
+        case 'terminal:create':
+          return this.handleTerminalCreate(message as Message<TerminalCreateRequestPayload>);
+        case 'terminal:input':
+          return this.handleTerminalInput(message as Message<TerminalInputRequestPayload>);
+        case 'terminal:resize':
+          return this.handleTerminalResize(message as Message<TerminalResizeRequestPayload>);
+        case 'terminal:close':
+          return this.handleTerminalClose(message as Message<TerminalCloseRequestPayload>);
+        case 'terminal:rename':
+          return this.handleTerminalRename(message as Message<TerminalRenameRequestPayload>);
+        case 'files:list':
+          return this.handleFilesList(message as Message<FilesListRequestPayload>);
+        case 'files:read':
+          return this.handleFilesRead(message as Message<FilesReadRequestPayload>);
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
     }
@@ -2333,6 +2363,123 @@ export class MessageHandler {
       payload = result.ok ? { success: true } : { success: false, error: result.error ?? `http-${result.status}` };
     }
     const response = createMessage<PushSubscriptionOfferResponsePayload>('push:subscription-offer:response', payload);
+    response.id = message.id;
+    return response;
+  }
+
+  // ── Terminal (PTY) handlers ──────────────────────────────────────────────
+  private async handleTerminalCreate(
+    message: Message<TerminalCreateRequestPayload>,
+  ): Promise<Message<TerminalCreateResponsePayload>> {
+    let payload: TerminalCreateResponsePayload;
+    try {
+      const summary = await getTerminalManager().create(message.payload);
+      payload = { success: true, terminal: summary };
+    } catch (err) {
+      payload = {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const response = createMessage<TerminalCreateResponsePayload>('terminal:create:response', payload);
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleTerminalInput(
+    message: Message<TerminalInputRequestPayload>,
+  ): Promise<Message<TerminalInputResponsePayload>> {
+    let payload: TerminalInputResponsePayload;
+    try {
+      getTerminalManager().write(message.payload.terminalId, message.payload.data);
+      payload = { success: true };
+    } catch (err) {
+      payload = {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const response = createMessage<TerminalInputResponsePayload>('terminal:input:response', payload);
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleTerminalResize(
+    message: Message<TerminalResizeRequestPayload>,
+  ): Promise<Message<TerminalResizeResponsePayload>> {
+    let payload: TerminalResizeResponsePayload;
+    try {
+      getTerminalManager().resize(
+        message.payload.terminalId,
+        message.payload.cols,
+        message.payload.rows,
+      );
+      payload = { success: true };
+    } catch (err) {
+      payload = {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const response = createMessage<TerminalResizeResponsePayload>('terminal:resize:response', payload);
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleTerminalClose(
+    message: Message<TerminalCloseRequestPayload>,
+  ): Promise<Message<TerminalCloseResponsePayload>> {
+    let payload: TerminalCloseResponsePayload;
+    try {
+      getTerminalManager().close(message.payload.terminalId, message.payload.force ?? false);
+      payload = { success: true };
+    } catch (err) {
+      payload = {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const response = createMessage<TerminalCloseResponsePayload>('terminal:close:response', payload);
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleTerminalRename(
+    message: Message<TerminalRenameRequestPayload>,
+  ): Promise<Message<TerminalRenameResponsePayload>> {
+    let payload: TerminalRenameResponsePayload;
+    try {
+      const summary = getTerminalManager().rename(
+        message.payload.terminalId,
+        message.payload.title,
+      );
+      payload = { success: true, terminal: summary };
+    } catch (err) {
+      payload = {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    const response = createMessage<TerminalRenameResponsePayload>('terminal:rename:response', payload);
+    response.id = message.id;
+    return response;
+  }
+
+  // ── File browser handlers ────────────────────────────────────────────────
+  private async handleFilesList(
+    message: Message<FilesListRequestPayload>,
+  ): Promise<Message<FilesListResponsePayload>> {
+    const payload = await getFileBrowser().list(message.payload);
+    const response = createMessage<FilesListResponsePayload>('files:list:response', payload);
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleFilesRead(
+    message: Message<FilesReadRequestPayload>,
+  ): Promise<Message<FilesReadResponsePayload>> {
+    const payload = await getFileBrowser().read(message.payload);
+    const response = createMessage<FilesReadResponsePayload>('files:read:response', payload);
     response.id = message.id;
     return response;
   }
