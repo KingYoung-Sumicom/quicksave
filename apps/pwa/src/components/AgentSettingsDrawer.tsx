@@ -27,8 +27,11 @@ interface AgentSettingsDrawerProps {
   onSetSessionConfig?: (key: string, value: ConfigValue) => void;
   onSendControlRequest?: (sessionId: string, subtype: string, params?: Record<string, unknown>) => Promise<SessionControlRequestResponsePayload>;
   onCancelSession?: () => void;
+  /** Terminate the underlying CLI process only — registry entry stays active. */
   onCloseSession?: () => void;
-  onArchiveSession?: () => void;
+  /** End the task: terminate process AND archive the registry entry so the
+   *  session leaves the active list. */
+  onEndSession?: () => void;
 }
 
 export function AgentSettingsDrawer({
@@ -43,17 +46,20 @@ export function AgentSettingsDrawer({
   onSendControlRequest,
   onCancelSession,
   onCloseSession,
-  onArchiveSession,
+  onEndSession,
 }: AgentSettingsDrawerProps) {
   const navigate = useNavigate();
-  const [showControlPalette, setShowControlPalette] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [showControlPalette, setShowControlPalette] = useState(false);
   const storeSessionId = useClaudeStore((s) => s.activeSessionId);
   const activeSessionId = storeSessionId || sessionIdProp || null;
   const localIsStreaming = useClaudeStore((s) => s.isStreaming);
   const sessions = useClaudeStore((s) => s.sessions);
   const activeSession = activeSessionId ? sessions[activeSessionId] : undefined;
   const isStreaming = localIsStreaming || !!activeSession?.isStreaming;
+  // Codex sessions don't speak the Claude CLI control_request protocol — only
+  // expose the palette when the active session is Claude Code.
+  const isClaudeCode = activeSession?.agent === 'claude-code';
 
   // Repos under this project's cwd. `listProjectRepos` walks the tree and
   // returns submodules + nested repos + dirty state; we prefer its output
@@ -128,10 +134,11 @@ export function AgentSettingsDrawer({
             </div>
           )}
 
-          {/* Section: Session Controls — only when there's an active session.
-              End Session lives in Advanced now to keep destructive actions out
-              of the primary surface. */}
-          {activeSessionId && (onCancelSession || onArchiveSession) && (
+          {/* Section: Task — Stop interrupts the current turn; End Task closes
+              the session AND archives it (it disappears from the active list).
+              Force-killing just the CLI process without archiving lives under
+              Advanced. */}
+          {activeSessionId && (onCancelSession || onEndSession) && (
             <div className="space-y-3">
               <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
                 Task
@@ -146,12 +153,12 @@ export function AgentSettingsDrawer({
                     Stop
                   </button>
                 )}
-                {onArchiveSession && (
+                {onEndSession && (
                   <button
-                    onClick={() => { onArchiveSession(); onClose(); }}
-                    className="flex-1 py-2 px-3 bg-slate-700 hover:bg-slate-600 rounded-md text-sm font-medium text-slate-300 transition-colors"
+                    onClick={() => { onEndSession(); onClose(); }}
+                    className="flex-1 py-2 px-3 bg-red-600/20 hover:bg-red-600/30 border border-red-600/50 rounded-md text-sm font-medium text-red-400 transition-colors"
                   >
-                    Archive
+                    End Task
                   </button>
                 )}
               </div>
@@ -224,9 +231,11 @@ export function AgentSettingsDrawer({
             </div>
           )}
 
-          {/* Section: Advanced — collapsed by default. Holds the destructive
-              End Session action plus the control-request palette. */}
-          {activeSessionId && (onCloseSession || onSendControlRequest) && (
+          {/* Section: Advanced — collapsed by default. Holds the force-kill
+              option that terminates the underlying CLI process without
+              archiving the session, so a stuck CLI can be restarted while
+              keeping the entry in the active list. */}
+          {activeSessionId && onCloseSession && (
             <>
               <div className="border-t border-slate-700" />
               <div className="space-y-3">
@@ -250,7 +259,7 @@ export function AgentSettingsDrawer({
                 </button>
                 {advancedOpen && (
                   <div className="space-y-2">
-                    {onSendControlRequest && (
+                    {isClaudeCode && onSendControlRequest && (
                       <button
                         type="button"
                         onClick={() => setShowControlPalette(true)}
@@ -262,14 +271,12 @@ export function AgentSettingsDrawer({
                         </svg>
                       </button>
                     )}
-                    {onCloseSession && (
-                      <button
-                        onClick={() => { onCloseSession(); onClose(); }}
-                        className="w-full py-2 px-3 bg-red-600/20 hover:bg-red-600/30 border border-red-600/50 rounded-md text-sm font-medium text-red-400 transition-colors"
-                      >
-                        End Task
-                      </button>
-                    )}
+                    <button
+                      onClick={() => { onCloseSession(); onClose(); }}
+                      className="w-full py-2 px-3 bg-red-600/20 hover:bg-red-600/30 border border-red-600/50 rounded-md text-sm font-medium text-red-400 transition-colors"
+                    >
+                      Terminate Coding Agent Process
+                    </button>
                   </div>
                 )}
               </div>

@@ -21,6 +21,7 @@ import { AgentConnection } from '../connection/connection.js';
 import { BusServerTransport } from '../messageBus/busServerTransport.js';
 import { MessageBusServer } from '@sumicom/quicksave-message-bus';
 import { MessageHandler } from '../handlers/messageHandler.js';
+import { wireLegacyBusVerbs } from '../handlers/legacyBusAdapter.js';
 import { GitOperations } from '../git/operations.js';
 import { IpcServer } from './ipcServer.js';
 import { DebugHttpServer } from './debugHttpServer.js';
@@ -44,7 +45,6 @@ import type {
   UnlockPairingResult,
 } from './types.js';
 import {
-  createMessage,
   type CardEvent,
   type CardHistoryResponse,
   type CardStreamEnd,
@@ -52,7 +52,6 @@ import {
   type CommitSummaryState,
   type ConfigValue,
   type Message,
-  type MessageType,
   type Repository,
   type SessionCardsUpdate,
   type BroadcastSessionEntry,
@@ -306,6 +305,12 @@ export async function runDaemon(): Promise<void> {
     const outputTokens = result.tokenUsage?.output ?? 0;
     const cacheCreationTokens = result.tokenUsage?.cacheCreation ?? 0;
     const cacheReadTokens = result.tokenUsage?.cacheRead ?? 0;
+    // Codex-only: thread-cumulative counters carried alongside the per-turn
+    // deltas so a cold-resumed daemon can continue emitting deltas without
+    // double-counting the prior turns.
+    const cumulativeInputTokens = result.tokenUsage?.cumulativeInput;
+    const cumulativeOutputTokens = result.tokenUsage?.cumulativeOutput;
+    const cumulativeCachedInputTokens = result.tokenUsage?.cumulativeCachedInput;
     const costUsd = result.totalCostUsd ?? 0;
 
     // Fetch the CLI's context-window breakdown before recording the turn.
@@ -327,6 +332,9 @@ export async function runDaemon(): Promise<void> {
           cacheCreationTokens,
           cacheReadTokens,
           costUsd,
+          ...(cumulativeInputTokens !== undefined ? { cumulativeInputTokens } : {}),
+          ...(cumulativeOutputTokens !== undefined ? { cumulativeOutputTokens } : {}),
+          ...(cumulativeCachedInputTokens !== undefined ? { cumulativeCachedInputTokens } : {}),
           ...(contextUsage ? { contextUsage: { ...contextUsage, capturedAt: Date.now() } } : {}),
         },
       });
@@ -437,123 +445,11 @@ export async function runDaemon(): Promise<void> {
 
   // ── MessageBus command adapter ────────────────────────────────────────────
   // Every request-response verb from the legacy MessageHandler is exposed as a
-  // bus command so the PWA can `bus.command(verb, payload)` instead of going
-  // through the legacy pendingRequests machinery.
-  //
-  // The adapter wraps the payload into a Message envelope, dispatches through
-  // `MessageHandler.handleMessage`, and translates the response into either a
-  // resolved payload or a rejected error. Structured errors (e.g. the
-  // REPO_MISMATCH guard on git:* requests) are encoded as `"CODE: message"` so
-  // callers can parse specific codes.
-  //
-  // `git:*` commands carry their expected repoPath through a reserved
-  // `__repoPath` payload slot — the bus protocol has no envelope-level
-  // metadata, so we smuggle it. The adapter lifts it onto `msg.repoPath` for
-  // the guard and mirrors the server's stamped repoPath back into the response
-  // payload so the PWA's scope check has the data it needs.
-  const LEGACY_BUS_VERBS: MessageType[] = [
-    'ping',
-    // git
-    'git:status',
-    'git:diff',
-    'git:stage',
-    'git:unstage',
-    'git:stage-patch',
-    'git:unstage-patch',
-    'git:commit',
-    'git:log',
-    'git:branches',
-    'git:checkout',
-    'git:discard',
-    'git:untrack',
-    'git:submodules',
-    'git:config-get',
-    'git:config-set',
-    'git:gitignore-add',
-    'git:gitignore-read',
-    'git:gitignore-write',
-    // ai
-    'ai:generate-commit-summary',
-    'ai:commit-summary:clear',
-    'ai:set-api-key',
-    'ai:get-api-key-status',
-    // agent
-    'agent:list-repos',
-    'agent:switch-repo',
-    'agent:browse-directory',
-    'agent:add-repo',
-    'agent:remove-repo',
-    'agent:clone-repo',
-    'agent:list-coding-paths',
-    'agent:add-coding-path',
-    'agent:remove-coding-path',
-    'agent:check-update',
-    'agent:update',
-    'agent:restart',
-    // codex
-    'codex:list-models',
-    'codex:login-start',
-    'codex:login-status',
-    'codex:login-cancel',
-    // claude
-    'claude:start',
-    'claude:resume',
-    'claude:cancel',
-    'claude:close',
-    'claude:user-input-response',
-    'claude:set-preferences',
-    'claude:set-session-permission',
-    'claude:get-cards',
-    // session
-    'session:set-config',
-    'session:control-request',
-    'session:update-history',
-    'session:delete-history',
-    'session:list-archived',
-    // project
-    'project:list-summaries',
-    'project:list-repos',
-    // push
-    'push:subscription-offer',
-    // terminal
-    'terminal:create',
-    'terminal:input',
-    'terminal:resize',
-    'terminal:close',
-    'terminal:rename',
-    // files
-    'files:list',
-    'files:read',
-  ];
-
-  for (const verb of LEGACY_BUS_VERBS) {
-    bus.onCommand(verb, async (rawPayload: unknown, { peer }) => {
-      let repoPath: string | undefined;
-      let payload: unknown = rawPayload;
-      if (payload && typeof payload === 'object' && '__repoPath' in payload) {
-        const obj = payload as Record<string, unknown>;
-        if (typeof obj.__repoPath === 'string') repoPath = obj.__repoPath;
-        const { __repoPath: _omit, ...rest } = obj;
-        void _omit;
-        payload = rest;
-      }
-      const msg = createMessage(verb, payload);
-      if (repoPath !== undefined) msg.repoPath = repoPath;
-      const response = await messageHandler.handleMessage(msg, peer);
-      if (response.type === 'error') {
-        const err = response.payload as { code?: string; message?: string };
-        const code = err.code ?? '';
-        const text = err.message ?? 'Handler error';
-        throw new Error(code ? `${code}: ${text}` : text);
-      }
-      if (verb.startsWith('git:') && typeof response.repoPath === 'string') {
-        // Echo the server's stamped repoPath into the data payload so the
-        // PWA can validate against its scope snapshot after the bus resolves.
-        return { ...(response.payload as object), __repoPath: response.repoPath };
-      }
-      return response.payload;
-    });
-  }
+  // bus command via `wireLegacyBusVerbs`, so the PWA can
+  // `bus.command(verb, payload)` instead of going through the legacy
+  // pendingRequests machinery. See `handlers/legacyBusAdapter.ts` for the
+  // verb list, the `__repoPath` smuggling rule, and the error encoding.
+  wireLegacyBusVerbs(bus, messageHandler);
 
   // Init preferences from the last session's JSONL (best-effort, non-blocking)
   claudeService.initPreferences().catch(() => {});

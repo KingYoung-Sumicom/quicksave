@@ -4,11 +4,16 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import type { TerminalOutputSnapshot, TerminalOutputChunk } from '@sumicom/quicksave-shared';
+import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { useTerminalOps } from '../../hooks/useTerminalOps';
-import { getActiveBus } from '../../lib/busRegistry';
 
 interface TerminalViewProps {
   terminalId: string;
+  /**
+   * Resolves the bus for the agent that owns this terminal. Must NOT be
+   * `getActiveBus` — see TerminalPage for why.
+   */
+  getBus: () => MessageBusClient | null;
   /** Called when the underlying terminal closes so parent can navigate away. */
   onExit?: () => void;
 }
@@ -24,7 +29,22 @@ interface TerminalViewProps {
  * of budget).
  */
 const STANDARD_COLS = 80;
+/**
+ * Cap rows at 24 (classic VT100) for consistent rendering of TUI tools
+ * (vim, top, less, fzf) — they paint to whatever rows the PTY reports
+ * and look very different at 50+ rows. On tall screens we leave vertical
+ * margin below the terminal rather than show a stretched 50-row view.
+ * On short screens (mobile portrait + on-screen keyboard) the natural
+ * fit is already < 24, so the cap is a no-op there.
+ */
+const STANDARD_ROWS = 24;
 const MIN_FONT_SIZE = 6;
+/**
+ * Cap the auto-scaled font so that on a wide desktop window the terminal
+ * doesn't blow up to giant lettering. Above this we stop scaling up and
+ * just leave horizontal margin (cols stay at 80 — see end of fit).
+ */
+const MAX_FONT_SIZE = 16;
 
 function fitToStandardCols(term: Terminal, fit: FitAddon): void {
   let font = term.options.fontSize ?? 13;
@@ -37,16 +57,27 @@ function fitToStandardCols(term: Terminal, fit: FitAddon): void {
     const cols = term.cols;
     if (cols === STANDARD_COLS) break;
     const scale = cols / STANDARD_COLS;
-    const next = Math.max(MIN_FONT_SIZE, Math.round(font * scale * 10) / 10);
+    const next = Math.min(
+      MAX_FONT_SIZE,
+      Math.max(MIN_FONT_SIZE, Math.round(font * scale * 10) / 10),
+    );
     if (Math.abs(next - font) < 0.1) break;
     font = next;
     term.options.fontSize = next;
   }
-  // Final fit + force exact cols (rounding may leave us at 79 or 81).
+  // Final fit + cap dims:
+  //   cols: always exactly 80 (clamp wide screens; small screens already
+  //         scaled font down to fit).
+  //   rows: cap at STANDARD_ROWS so tall windows don't blow past 24 rows;
+  //         small screens keep their natural smaller fit.
   try {
     fit.fit();
   } catch { /* container not ready */ }
-  if (term.cols !== STANDARD_COLS) term.resize(STANDARD_COLS, term.rows);
+  const targetCols = STANDARD_COLS;
+  const targetRows = Math.min(term.rows, STANDARD_ROWS);
+  if (term.cols !== targetCols || term.rows !== targetRows) {
+    term.resize(targetCols, targetRows);
+  }
 }
 
 /**
@@ -59,18 +90,32 @@ function fitToStandardCols(term: Terminal, fit: FitAddon): void {
  *   - A ResizeObserver refits whenever the container's size changes.
  *   - Every fit sends `terminal:resize` to the agent.
  */
-export function TerminalView({ terminalId, onExit }: TerminalViewProps) {
+export function TerminalView({ terminalId, getBus, onExit }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const seqRef = useRef(0);
-  const { sendInput, resizeTerminal, subscribeOutput } = useTerminalOps(getActiveBus);
+  const { sendInput, resizeTerminal, subscribeOutput } = useTerminalOps(getBus);
   const [exitCode, setExitCode] = useState<number | null | undefined>(undefined);
-  const [connected, setConnected] = useState(false);
+  // Optimistic: assume the terminal we just navigated to exists. Without
+  // this, the brief window between mount and the first snapshot arrival
+  // leaves VirtualKeys disabled, and a fast tap on a virtual key gets
+  // swallowed. applySnapshot demotes us to false if the agent reports the
+  // terminal is gone.
+  const [connected, setConnected] = useState(true);
 
   // Mount xterm once per terminalId.
   useEffect(() => {
-    if (!containerRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
+    // xterm's dispose() removes event listeners but does NOT remove the
+    // helper textarea / char-measure span / .xterm div it appended in open().
+    // On a fresh React mount the container is a new DOM node so this is a
+    // no-op, but StrictMode's mount→cleanup→mount cycle reuses the same
+    // container; without this, the second open() stacks DOM on top of
+    // orphans from the disposed first instance and the terminal renders
+    // black. Clear at both ends to be safe.
+    container.replaceChildren();
     const term = new Terminal({
       cursorBlink: true,
       fontFamily:
@@ -91,14 +136,43 @@ export function TerminalView({ terminalId, onExit }: TerminalViewProps) {
     const links = new WebLinksAddon();
     term.loadAddon(fit);
     term.loadAddon(links);
-    term.open(containerRef.current);
+    term.open(container);
     termRef.current = term;
     fitRef.current = fit;
 
+    // iOS Safari quirk: the on-screen keyboard's default "return" key has
+    // `enterkeyhint=enter`, which dismisses the keyboard whenever the user
+    // hits it. xterm's helper textarea doesn't override this, so typing
+    // Enter in a shell tears down the keyboard mid-session and the user
+    // has to re-tap the terminal. Setting `enterkeyhint="send"` keeps the
+    // keyboard up and just delivers the keystroke. Also set
+    // `autocapitalize`/`autocorrect`/`spellcheck` off so iOS doesn't fight
+    // the shell with autocorrect popups.
+    const ta = term.textarea;
+    if (ta) {
+      ta.setAttribute('enterkeyhint', 'send');
+      ta.setAttribute('autocapitalize', 'off');
+      ta.setAttribute('autocorrect', 'off');
+      ta.setAttribute('autocomplete', 'off');
+      ta.setAttribute('spellcheck', 'false');
+    }
+
+    // Debounce resize cmds. ResizeObserver and the fit RAF can fire many
+    // times during a single layout shift (iOS keyboard slide-in, window
+    // drag, font-size loop in fitToStandardCols), and each call sends a
+    // round-trip terminal:resize. The agent only cares about the final
+    // size, so coalesce all calls within ~150ms into the last one. This
+    // prevents bursty resize traffic from eating the relay's per-peer
+    // message quota.
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     const pushSize = () => {
-      resizeTerminal(terminalId, term.cols, term.rows).catch(() => {
-        /* best effort — next output will work with whatever size the agent had */
-      });
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null;
+        resizeTerminal(terminalId, term.cols, term.rows).catch(() => {
+          /* best effort — next output will work with whatever size the agent had */
+        });
+      }, 150);
     };
 
     // Kick off an initial fit once layout has happened.
@@ -117,12 +191,14 @@ export function TerminalView({ terminalId, onExit }: TerminalViewProps) {
       fitToStandardCols(term, fit);
       pushSize();
     });
-    if (containerRef.current) ro.observe(containerRef.current);
+    ro.observe(container);
 
     return () => {
       onData.dispose();
       ro.disconnect();
+      if (resizeTimer) clearTimeout(resizeTimer);
       term.dispose();
+      container.replaceChildren();
       termRef.current = null;
       fitRef.current = null;
     };
@@ -137,21 +213,35 @@ export function TerminalView({ terminalId, onExit }: TerminalViewProps) {
 
     seqRef.current = 0;
     setExitCode(undefined);
-    setConnected(false);
 
     const applySnapshot = (snapshot: TerminalOutputSnapshot | null) => {
       const t = termRef.current;
       if (!t) return;
-      setConnected(true);
       // Reset so resubscribes (after reconnect) redraw cleanly.
       t.reset();
       if (!snapshot) {
+        setConnected(false);
         t.writeln('\x1b[31m[terminal not found]\x1b[0m');
         return;
       }
+      setConnected(true);
       if (snapshot.buffer.length > 0) t.write(snapshot.buffer);
       seqRef.current = snapshot.seq;
       if (snapshot.exited) setExitCode(snapshot.exitCode ?? null);
+      // The initial fit in `useEffect` runs before xterm has measured its
+      // font (the renderer measures lazily on first paint), so FitAddon
+      // sees `cell.width === 0` and silently no-ops, leaving the terminal
+      // stuck at the default 80×24 dims. Refit now that the buffer write
+      // has forced a measurement so cell dims are valid.
+      const fit = fitRef.current;
+      if (fit) {
+        requestAnimationFrame(() => {
+          const t2 = termRef.current;
+          const f2 = fitRef.current;
+          if (!t2 || !f2) return;
+          fitToStandardCols(t2, f2);
+        });
+      }
     };
 
     const applyChunk = (chunk: TerminalOutputChunk) => {

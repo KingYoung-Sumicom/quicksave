@@ -3,7 +3,7 @@ import { clsx } from 'clsx';
 import { useIntl } from 'react-intl';
 import type { ConfigValue } from '@sumicom/quicksave-shared';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
-import { PERMISSION_MODES, getModelsForAgent } from '../../lib/claudePresets';
+import { getModelsForAgent, getPermissionModesForAgent, getReasoningEffortsForModel } from '../../lib/claudePresets';
 import { useConnectionStore } from '../../stores/connectionStore';
 
 interface SessionStatusBarProps {
@@ -20,13 +20,6 @@ const AGENT_LABEL: Record<string, string> = {
   codex: 'Codex',
 };
 
-const REASONING_EFFORTS = [
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'max', label: 'Max' },
-];
-
 export function SessionStatusBar({ sessionId, onSetSessionConfig, children }: SessionStatusBarProps) {
   const intl = useIntl();
   const config = useSessionConfig(sessionId);
@@ -35,16 +28,22 @@ export function SessionStatusBar({ sessionId, onSetSessionConfig, children }: Se
 
   const agent = (config.agent as string) ?? 'claude-code';
   const codexModels = useConnectionStore((s) => s.codexModels);
-  const models = getModelsForAgent(agent as 'claude-code' | 'codex', codexModels);
+  const agentId = agent as 'claude-code' | 'codex';
+  const models = getModelsForAgent(agentId, codexModels);
 
   const currentModel = config.model as string | undefined;
   const currentPermission = config.permissionMode as string | undefined;
   const currentEffort = (config.reasoningEffort as string | undefined) ?? 'medium';
   const sandboxed = !!config.sandboxed;
 
+  // Agent-specific dropdowns: codex picker exposes its own ApprovalMode union
+  // and per-model reasoning levels rather than reusing Claude's labels.
+  const permissionModes = getPermissionModesForAgent(agentId);
+  const reasoningEfforts = getReasoningEffortsForModel(agentId, currentModel, codexModels);
+
   const modelLabel = models.find((m) => m.value === currentModel)?.label ?? currentModel ?? 'Unknown';
-  const permissionLabel = PERMISSION_MODES.find((p) => p.value === currentPermission)?.label ?? currentPermission ?? 'Default';
-  const effortLabel = REASONING_EFFORTS.find((e) => e.value === currentEffort)?.label ?? currentEffort;
+  const permissionLabel = permissionModes.find((p) => p.value === currentPermission)?.label ?? currentPermission ?? 'Default';
+  const effortLabel = reasoningEfforts.find((e) => e.value === currentEffort)?.label ?? currentEffort;
 
   const agentLabel = AGENT_LABEL[agent] ?? AGENT_LABEL['claude-code'];
 
@@ -149,24 +148,29 @@ export function SessionStatusBar({ sessionId, onSetSessionConfig, children }: Se
         </button>
       )}
 
-      {/* Sandbox toggle chip */}
-      <button
-        type="button"
-        onClick={handleToggleSandbox}
-        className={clsx(
-          'flex items-center gap-1 px-2 py-1 rounded-md transition-colors',
-          sandboxed
-            ? 'bg-emerald-600/20 text-emerald-400'
-            : 'bg-slate-700/60 text-slate-400 hover:bg-slate-700 hover:text-slate-300'
-        )}
-        title={intl.formatMessage({ id: sandboxed ? 'sessionStatus.sandbox.titleOn' : 'sessionStatus.sandbox.titleOff' })}
-      >
-        {/* Box icon */}
-        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-        </svg>
-        Sandbox
-      </button>
+      {/* Sandbox toggle chip — hidden for codex because the permission preset
+          already bundles sandbox_mode (read-only / workspace-write /
+          danger-full-access). Showing both axes would let the user pick
+          contradictory settings. */}
+      {agentId !== 'codex' && (
+        <button
+          type="button"
+          onClick={handleToggleSandbox}
+          className={clsx(
+            'flex items-center gap-1 px-2 py-1 rounded-md transition-colors',
+            sandboxed
+              ? 'bg-emerald-600/20 text-emerald-400'
+              : 'bg-slate-700/60 text-slate-400 hover:bg-slate-700 hover:text-slate-300'
+          )}
+          title={intl.formatMessage({ id: sandboxed ? 'sessionStatus.sandbox.titleOn' : 'sessionStatus.sandbox.titleOff' })}
+        >
+          {/* Box icon */}
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+          </svg>
+          Sandbox
+        </button>
+      )}
 
       {children}
 
@@ -194,7 +198,7 @@ export function SessionStatusBar({ sessionId, onSetSessionConfig, children }: Se
       {/* Popover — Permission */}
       {openPopover === 'permission' && (
         <div className="absolute bottom-full left-0 mb-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[180px] z-50">
-          {PERMISSION_MODES.map((p) => (
+          {permissionModes.map((p) => (
             <button
               key={p.value}
               type="button"
@@ -215,7 +219,7 @@ export function SessionStatusBar({ sessionId, onSetSessionConfig, children }: Se
       {/* Popover — Reasoning effort */}
       {openPopover === 'effort' && (
         <div className="absolute bottom-full left-0 mb-1 bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 min-w-[180px] z-50">
-          {REASONING_EFFORTS.map((e) => (
+          {reasoningEfforts.map((e) => (
             <button
               key={e.value}
               type="button"

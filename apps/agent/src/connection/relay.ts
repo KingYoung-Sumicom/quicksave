@@ -134,6 +134,18 @@ export class SignalingClient extends EventEmitter {
         }
         break;
       }
+      case 'error': {
+        // Surface relay-side errors (most importantly RATE_LIMITED) so they
+        // don't disappear silently. Without this, hitting the relay's per-
+        // peer message rate limit during an interactive terminal session
+        // manifests as "PWA stops receiving updates" with zero indication
+        // that the relay is the one dropping them.
+        const payload = message.payload as { code?: string; message?: string } | undefined;
+        const code = payload?.code ?? 'UNKNOWN';
+        const text = payload?.message ?? '';
+        console.warn(`[relay] error from signaling server: ${code} ${text}`);
+        break;
+      }
       case 'tombstone-event': {
         const payload = message.payload as
           | { keyHash?: string; data?: string }

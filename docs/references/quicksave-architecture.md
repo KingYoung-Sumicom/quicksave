@@ -144,6 +144,17 @@ claude:cancel → SessionManager.cancelSession(sessionId)
 claude:close → SessionManager.closeSession(sessionId)
   → ClaudeCliProvider.closeSession()
     → process.kill('SIGTERM')
+  （只 kill 底層 CLI process；registry entry 維持在 active 列表，
+   給 Advanced > Terminate Coding Agent Process 使用）
+
+claude:end-task → handleClaudeEndTask
+  → 1. 先抓 SessionManager.getSessionCwd(sessionId) 拿 cwd（process 還活著時）
+       若 session 不在 in-memory map，fall back getSessionRegistry().findBySessionId
+       以便冷掉的 session 也能 archive。
+  → 2. SessionManager.closeSession(sessionId) — kill live process（如果有）
+  → 3. registry.updateEntry(cwd, sessionId, { archived: true })
+       + onHistoryUpdated(cwd, entry, 'upsert') 廣播 /sessions/history
+  PWA 端 End Task 按鈕走這條，session 從 active 列表消失、進 archived。
 
 CLI process 自然退出 (stdout EOF 或 crash):
   → consumeStream finally block:
@@ -472,7 +483,8 @@ PWA↔Agent 的 session / cards / preferences 事件現在都走 MessageBus 的 
 | `claude:start` | PWA→Agent | `bus.command('claude:start', …)` | 啟動新 session |
 | `claude:resume` | PWA→Agent | `bus.command('claude:resume', …)` | 繼續 session |
 | `claude:cancel` | PWA→Agent | `bus.command('claude:cancel', …)` | 取消 streaming |
-| `claude:close` | PWA→Agent | `bus.command('claude:close', …)` | 關閉 session |
+| `claude:close` | PWA→Agent | `bus.command('claude:close', …)` | 只 kill 底層 CLI process；registry 不變（用於 Advanced > Terminate） |
+| `claude:end-task` | PWA→Agent | `bus.command('claude:end-task', …)` | kill process **並** archive registry entry（End Task 按鈕） |
 | `claude:get-cards` | PWA→Agent | `bus.command('claude:get-cards', …)` | 分頁讀取歷史 cards（offset>0） |
 | `claude:user-input-response` | PWA→Agent | `bus.command('claude:user-input-response', …)` | 回應工具審批／permission |
 | `claude:set-preferences` | PWA→Agent | `bus.command('claude:set-preferences', …)` | 全域偏好寫入（讀取走 `/preferences` sub） |

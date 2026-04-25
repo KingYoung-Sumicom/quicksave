@@ -51,6 +51,11 @@ export interface StartSessionOpts {
   permissionLevel: PermissionLevel;
   sandboxed: boolean;
   systemPrompt?: string;
+  /** Per-session reasoning depth. Currently only the Codex provider honors
+   *  this — it maps to the SDK's `modelReasoningEffort` (minimal/low/medium/
+   *  high/xhigh). Claude providers ignore it (their depth is decided by the
+   *  model variant, not a per-turn knob). */
+  reasoningEffort?: string;
   /** Absolute path to the daemon-owned sentinel file the CLI's PermissionRequest
    *  hook consults to auto-approve every tool. Presence of the file means bypass
    *  is active. Only ClaudeCliProvider uses it; other providers ignore it. */
@@ -66,6 +71,7 @@ export interface ResumeSessionOpts {
   permissionLevel: PermissionLevel;
   sandboxed: boolean;
   systemPrompt?: string;
+  reasoningEffort?: string;
   bypassFlagPath?: string;
 }
 

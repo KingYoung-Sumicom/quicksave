@@ -273,6 +273,71 @@ describe('claudeStore', () => {
     });
   });
 
+  // ── per-agent pref isolation ───────────────────────────────────────────
+
+  describe('per-agent prefs', () => {
+    it('keeps each agent\'s prefs independent across switches', () => {
+      const { setSelectedAgent, setSelectedModel, setSelectedPermissionMode } = useClaudeStore.getState();
+
+      // Configure claude bucket.
+      setSelectedAgent('claude-code');
+      setSelectedModel('claude-opus-4-7');
+      setSelectedPermissionMode('plan');
+      // Configure codex bucket.
+      setSelectedAgent('codex');
+      setSelectedModel('gpt-5.5');
+      setSelectedPermissionMode('full-access');
+
+      // Switching back to claude must restore claude's values, not retain codex's.
+      setSelectedAgent('claude-code');
+      expect(useClaudeStore.getState().selectedModel).toBe('claude-opus-4-7');
+      expect(useClaudeStore.getState().selectedPermissionMode).toBe('plan');
+
+      // And codex's bucket is still intact.
+      setSelectedAgent('codex');
+      expect(useClaudeStore.getState().selectedModel).toBe('gpt-5.5');
+      expect(useClaudeStore.getState().selectedPermissionMode).toBe('full-access');
+    });
+
+    it('setAgentPref writes to a specific bucket without disturbing the active flat view', () => {
+      const { setSelectedAgent, setAgentPref } = useClaudeStore.getState();
+      setSelectedAgent('codex');
+      const beforeFlat = useClaudeStore.getState().selectedModel;
+
+      // Server-pushed Claude prefs should NOT change what the user sees on Codex.
+      setAgentPref('claude-code', 'model', 'claude-opus-4-7');
+      expect(useClaudeStore.getState().selectedModel).toBe(beforeFlat);
+      expect(useClaudeStore.getState().agentPrefs['claude-code'].model).toBe('claude-opus-4-7');
+    });
+
+    it('migrates legacy flat localStorage shape into the active agent\'s bucket', () => {
+      localStorageMock.setItem(
+        'quicksave:session-prefs',
+        JSON.stringify({
+          selectedAgent: 'codex',
+          selectedModel: 'gpt-5.5',
+          selectedPermissionMode: 'full-access',
+          selectedReasoningEffort: 'high',
+          sandboxEnabled: false,
+        }),
+      );
+
+      // setActiveSession(null) re-reads localStorage via loadPrefs(), so it
+      // exercises the migration path without remounting the store.
+      useClaudeStore.getState().setActiveSession(null);
+
+      const state = useClaudeStore.getState();
+      expect(state.selectedAgent).toBe('codex');
+      expect(state.selectedModel).toBe('gpt-5.5');
+      expect(state.selectedPermissionMode).toBe('full-access');
+      expect(state.agentPrefs.codex.reasoningEffort).toBe('high');
+      // Other agent untouched (defaults).
+      expect(state.agentPrefs['claude-code'].model).toBeTruthy();
+
+      localStorageMock.removeItem('quicksave:session-prefs');
+    });
+  });
+
   // ── setStreaming ───────────────────────────────────────────────────────
 
   describe('setStreaming', () => {

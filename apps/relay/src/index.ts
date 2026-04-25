@@ -203,6 +203,16 @@ relay = createRelay({
   port: PORT,
   keyStore: false, // Open access — Quicksave handles its own crypto-based authentication
   blobStore: false, // Sync store is handled via onHttpRequest hook
+  // ws-relay default is 100 messages / 60s per peer, which silently drops
+  // any message past the limit (only the SENDER gets RATE_LIMITED back).
+  // Interactive terminals can easily exceed this: every keystroke triggers
+  // an input cmd + result + multiple PTY echo chunks + occasional resize
+  // cmds, so a few seconds of fast typing can blow the quota and the
+  // resulting drop manifests as "PWA stops receiving terminal output".
+  // Bump to 5000/60s — generous enough that bursty terminal + bus traffic
+  // never trips it, while still catching genuinely abusive clients.
+  rateLimitMaxMessages: 5000,
+  rateLimitWindow: 60_000,
 
   channels: [
     {

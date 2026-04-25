@@ -643,6 +643,17 @@ export class WebSocketClient {
 
     // Only attempt reconnect if we were previously connected
     if (this.wasConnected && this.autoReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
+      // Notify per-agent listeners that the underlying socket is gone so
+      // bus transports can flip to disconnected state and reject in-flight
+      // commands. Without this, a brief reconnect leaves pending commands
+      // waiting on the dead socket until they hit their own timeout (15s
+      // for bus.command), even though we're about to reopen — the bus
+      // doesn't know to retry because as far as it knows the link is up.
+      // The new connect path (`onConnected` per agent) will re-flip them
+      // to connected once key exchange completes.
+      for (const agentId of this.sessions.keys()) {
+        this.eventHandlers.onDisconnected(agentId);
+      }
       this.scheduleReconnect();
     } else {
       this.cleanupAllSessions();

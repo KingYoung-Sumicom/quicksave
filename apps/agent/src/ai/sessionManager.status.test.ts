@@ -36,6 +36,7 @@ vi.mock('./cardBuilder.js', () => {
 const registryMock = {
   getEntry: vi.fn().mockReturnValue(null),
   getEntriesForProject: vi.fn().mockReturnValue([]),
+  findBySessionId: vi.fn().mockReturnValue(undefined),
   upsertEntry: vi.fn(),
   updateEntry: vi.fn(),
 };

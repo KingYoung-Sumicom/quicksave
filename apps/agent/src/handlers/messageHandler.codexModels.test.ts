@@ -88,6 +88,9 @@ type CacheEntry = {
   display_name: string;
   visibility: 'list' | 'hide';
   supported_in_api: boolean;
+  default_reasoning_level?: string;
+  supported_reasoning_levels?: Array<{ effort: string; description?: string }>;
+  context_window?: number;
 };
 
 async function writeModelsCache(dir: string, models: CacheEntry[]): Promise<void> {
@@ -96,6 +99,29 @@ async function writeModelsCache(dir: string, models: CacheEntry[]): Promise<void
     JSON.stringify({ models }),
     'utf-8',
   );
+}
+
+/**
+ * Create an executable shell script that, when invoked with `debug models`,
+ * prints the given JSON to stdout and exits 0. Mimics the real `codex`
+ * binary's `debug models` subcommand for deterministic testing.
+ */
+async function writeFakeCodexCli(
+  path: string,
+  models: CacheEntry[] | null,
+  exitCode = 0,
+): Promise<void> {
+  const json = models === null ? 'not-json' : JSON.stringify({ models });
+  const script = `#!/usr/bin/env bash
+if [ "$1" = "debug" ] && [ "$2" = "models" ]; then
+  cat <<'EOF'
+${json}
+EOF
+  exit ${exitCode}
+fi
+exit 1
+`;
+  await writeFile(path, script, { encoding: 'utf-8', mode: 0o755 });
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -150,7 +176,7 @@ describe('MessageHandler — Codex models watcher', () => {
       undefined,
       undefined,
       false,
-      { codexCacheDir },
+      { codexCacheDir, codexBin: null },
     );
 
     handler.startCodexModelsWatcher();
@@ -180,7 +206,7 @@ describe('MessageHandler — Codex models watcher', () => {
       undefined,
       undefined,
       false,
-      { codexCacheDir },
+      { codexCacheDir, codexBin: null },
     );
     handler.startCodexModelsWatcher();
     await sleep(100); // let prime resolve
@@ -220,7 +246,7 @@ describe('MessageHandler — Codex models watcher', () => {
       undefined,
       undefined,
       false,
-      { codexCacheDir },
+      { codexCacheDir, codexBin: null },
     );
     handler.startCodexModelsWatcher();
     await sleep(100);
@@ -252,7 +278,7 @@ describe('MessageHandler — Codex models watcher', () => {
       undefined,
       undefined,
       false,
-      { codexCacheDir },
+      { codexCacheDir, codexBin: null },
     );
     handler.startCodexModelsWatcher();
     await sleep(100);
@@ -300,7 +326,7 @@ describe('MessageHandler — Codex models watcher', () => {
       undefined,
       undefined,
       false,
-      { codexCacheDir },
+      { codexCacheDir, codexBin: null },
     );
     handler.startCodexModelsWatcher();
     await sleep(100);
@@ -319,7 +345,7 @@ describe('MessageHandler — Codex models watcher', () => {
       undefined,
       undefined,
       false,
-      { codexCacheDir },
+      { codexCacheDir, codexBin: null },
     );
 
     expect(() => handler!.startCodexModelsWatcher()).not.toThrow();
@@ -344,7 +370,7 @@ describe('MessageHandler — Codex models watcher', () => {
       undefined,
       undefined,
       false,
-      { codexCacheDir },
+      { codexCacheDir, codexBin: null },
     );
     handler.startCodexModelsWatcher();
     await sleep(100);
@@ -384,7 +410,7 @@ describe('MessageHandler — Codex models watcher', () => {
       undefined,
       undefined,
       false,
-      { codexCacheDir },
+      { codexCacheDir, codexBin: null },
     );
     handler.startCodexModelsWatcher();
     await sleep(100);
@@ -396,6 +422,180 @@ describe('MessageHandler — Codex models watcher', () => {
     expect(payload.models).toEqual([
       { id: 'gpt-5', name: 'GPT-5' },
       { id: 'o4-mini', name: 'o4 mini' },
+    ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // 9. `codex debug models` is preferred over the cache file
+  // -------------------------------------------------------------------------
+  it('uses `codex debug models` output when the CLI is available', async () => {
+    await mkdir(codexCacheDir, { recursive: true });
+    // Cache file deliberately missing the new model — this is the bug we fix.
+    await writeModelsCache(codexCacheDir, [
+      { slug: 'gpt-5.4', display_name: 'GPT-5.4', visibility: 'list', supported_in_api: true },
+    ]);
+    const fakeBin = join(codexCacheDir, 'fake-codex.sh');
+    await writeFakeCodexCli(fakeBin, [
+      { slug: 'gpt-5.5', display_name: 'GPT-5.5', visibility: 'list', supported_in_api: true },
+      { slug: 'gpt-5.4', display_name: 'GPT-5.4', visibility: 'list', supported_in_api: true },
+    ]);
+
+    handler = new MessageHandler(
+      [{ path: repoPath, name: 'test-repo' }],
+      undefined,
+      undefined,
+      false,
+      { codexCacheDir, codexBin: fakeBin },
+    );
+    handler.startCodexModelsWatcher();
+    await sleep(300); // CLI spawn + JSON parse
+
+    expect(handler.getCachedCodexModels()).toEqual([
+      { id: 'gpt-5.5', name: 'GPT-5.5' },
+      { id: 'gpt-5.4', name: 'GPT-5.4' },
+    ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // 10. Falls back to cache file when the CLI exits non-zero
+  // -------------------------------------------------------------------------
+  it('falls back to the cache file when `codex debug models` fails', async () => {
+    await mkdir(codexCacheDir, { recursive: true });
+    await writeModelsCache(codexCacheDir, [
+      { slug: 'gpt-5.4', display_name: 'GPT-5.4', visibility: 'list', supported_in_api: true },
+    ]);
+    const fakeBin = join(codexCacheDir, 'fake-codex.sh');
+    await writeFakeCodexCli(fakeBin, [], 1); // exit non-zero
+
+    handler = new MessageHandler(
+      [{ path: repoPath, name: 'test-repo' }],
+      undefined,
+      undefined,
+      false,
+      { codexCacheDir, codexBin: fakeBin },
+    );
+    handler.startCodexModelsWatcher();
+    await sleep(300);
+
+    expect(handler.getCachedCodexModels()).toEqual([
+      { id: 'gpt-5.4', name: 'GPT-5.4' },
+    ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // 11. Falls back when CLI binary doesn't exist (ENOENT)
+  // -------------------------------------------------------------------------
+  it('falls back to the cache file when the codex binary is missing', async () => {
+    await mkdir(codexCacheDir, { recursive: true });
+    await writeModelsCache(codexCacheDir, [
+      { slug: 'gpt-5.4', display_name: 'GPT-5.4', visibility: 'list', supported_in_api: true },
+    ]);
+
+    handler = new MessageHandler(
+      [{ path: repoPath, name: 'test-repo' }],
+      undefined,
+      undefined,
+      false,
+      { codexCacheDir, codexBin: '/nonexistent/codex-binary' },
+    );
+    handler.startCodexModelsWatcher();
+    await sleep(300);
+
+    expect(handler.getCachedCodexModels()).toEqual([
+      { id: 'gpt-5.4', name: 'GPT-5.4' },
+    ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // 12. CLI source filters hidden / non-API models the same as the cache file
+  // -------------------------------------------------------------------------
+  it('CLI source applies the same visibility/api filter as the cache file', async () => {
+    await mkdir(codexCacheDir, { recursive: true });
+    const fakeBin = join(codexCacheDir, 'fake-codex.sh');
+    await writeFakeCodexCli(fakeBin, [
+      { slug: 'gpt-5.5', display_name: 'GPT-5.5', visibility: 'list', supported_in_api: true },
+      { slug: 'codex-internal', display_name: 'Codex Internal', visibility: 'hide', supported_in_api: true },
+      { slug: 'gpt-5.4-no-api', display_name: 'No API', visibility: 'list', supported_in_api: false },
+    ]);
+
+    handler = new MessageHandler(
+      [{ path: repoPath, name: 'test-repo' }],
+      undefined,
+      undefined,
+      false,
+      { codexCacheDir, codexBin: fakeBin },
+    );
+    handler.startCodexModelsWatcher();
+    await sleep(300);
+
+    expect(handler.getCachedCodexModels()).toEqual([
+      { id: 'gpt-5.5', name: 'GPT-5.5' },
+    ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // 13. Surfaces per-model context_window + reasoning levels
+  // -------------------------------------------------------------------------
+  it('surfaces context_window, default_reasoning_level, supported_reasoning_levels', async () => {
+    await mkdir(codexCacheDir, { recursive: true });
+    await writeModelsCache(codexCacheDir, [
+      {
+        slug: 'gpt-5.5',
+        display_name: 'GPT-5.5',
+        visibility: 'list',
+        supported_in_api: true,
+        default_reasoning_level: 'medium',
+        supported_reasoning_levels: [
+          { effort: 'low' }, { effort: 'medium' }, { effort: 'high' }, { effort: 'xhigh' },
+        ],
+        context_window: 272000,
+      },
+    ]);
+
+    handler = new MessageHandler(
+      [{ path: repoPath, name: 'test-repo' }],
+      undefined,
+      undefined,
+      false,
+      { codexCacheDir, codexBin: null },
+    );
+    handler.startCodexModelsWatcher();
+    await sleep(100);
+
+    expect(handler.getCachedCodexModels()).toEqual([
+      {
+        id: 'gpt-5.5',
+        name: 'GPT-5.5',
+        reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+        defaultReasoningEffort: 'medium',
+        contextWindow: 272000,
+      },
+    ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // 14. Bad JSON from CLI degrades to cache file
+  // -------------------------------------------------------------------------
+  it('falls back when CLI prints non-JSON output', async () => {
+    await mkdir(codexCacheDir, { recursive: true });
+    await writeModelsCache(codexCacheDir, [
+      { slug: 'gpt-5.4', display_name: 'GPT-5.4', visibility: 'list', supported_in_api: true },
+    ]);
+    const fakeBin = join(codexCacheDir, 'fake-codex.sh');
+    await writeFakeCodexCli(fakeBin, null); // null → script prints "not-json"
+
+    handler = new MessageHandler(
+      [{ path: repoPath, name: 'test-repo' }],
+      undefined,
+      undefined,
+      false,
+      { codexCacheDir, codexBin: fakeBin },
+    );
+    handler.startCodexModelsWatcher();
+    await sleep(300);
+
+    expect(handler.getCachedCodexModels()).toEqual([
+      { id: 'gpt-5.4', name: 'GPT-5.4' },
     ]);
   });
 });

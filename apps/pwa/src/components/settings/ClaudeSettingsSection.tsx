@@ -2,16 +2,14 @@ import type { ConfigValue } from '@sumicom/quicksave-shared';
 import { DEFAULT_AGENT, DEFAULT_MODEL, DEFAULT_PERMISSION_MODE, DEFAULT_REASONING_EFFORT } from '@sumicom/quicksave-shared';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
 import { useConnectionStore } from '../../stores/connectionStore';
-import { AGENT_TYPES, PERMISSION_MODES, getModelsForAgent } from '../../lib/claudePresets';
+import {
+  AGENT_TYPES,
+  getModelsForAgent,
+  getPermissionModesForAgent,
+  getReasoningEffortsForModel,
+} from '../../lib/claudePresets';
 import { ButtonGroup } from '../ui/ButtonGroup';
 import { ToggleSwitch } from '../ui/ToggleSwitch';
-
-const REASONING_EFFORT_OPTIONS: { value: string; label: string; description: string }[] = [
-  { value: 'low', label: 'Low', description: 'Minimal thinking, fastest responses' },
-  { value: 'medium', label: 'Medium', description: 'Moderate thinking' },
-  { value: 'high', label: 'High', description: 'Deep thinking' },
-  { value: 'max', label: 'Max', description: 'Maximum effort (Opus only)' },
-];
 
 interface ClaudeSettingsSectionProps {
   /** Session ID — null means new session (shows defaults, changes update store only) */
@@ -39,10 +37,13 @@ export function ClaudeSettingsSection({ sessionId, onSetConfig, agentLocked, hid
   const sandboxed = (config['sandboxed'] as boolean | undefined) ?? false;
 
   const isClaudeAgent = selectedAgent === 'claude-code';
+  const isCodexAgent = selectedAgent === 'codex';
   const models = getModelsForAgent(selectedAgent, codexModels);
   const supportsReasoning = isClaudeAgent
     ? selectedModel.startsWith('claude-')
-    : selectedAgent === 'codex';
+    : isCodexAgent;
+  const reasoningOptions = getReasoningEffortsForModel(selectedAgent, selectedModel, codexModels);
+  const permissionOptions = getPermissionModesForAgent(selectedAgent);
 
   return (
     <div className="space-y-5">
@@ -68,7 +69,7 @@ export function ClaudeSettingsSection({ sessionId, onSetConfig, agentLocked, hid
       {!hide.has('reasoningEffort') && supportsReasoning && (
         <ButtonGroup
           label="Reasoning effort"
-          options={REASONING_EFFORT_OPTIONS}
+          options={reasoningOptions}
           value={selectedReasoningEffort}
           onSelect={(opt) => onSetConfig?.('reasoningEffort', opt.value)}
         />
@@ -77,17 +78,19 @@ export function ClaudeSettingsSection({ sessionId, onSetConfig, agentLocked, hid
       {!hide.has('permission') && (
         <ButtonGroup
           label="Permission"
-          options={PERMISSION_MODES}
+          options={permissionOptions}
           value={selectedPermissionMode}
           onSelect={(p) => onSetConfig?.('permissionMode', p.value)}
           layout="grid-2"
         />
       )}
 
-      {!hide.has('sandbox') && (
+      {/* Sandbox toggle is hidden for codex — its permission preset already
+          encodes sandbox_mode (read-only / workspace-write / danger-full-access). */}
+      {!hide.has('sandbox') && !isCodexAgent && (
         <ToggleSwitch
           label="Sandbox"
-          description={selectedAgent === 'codex' ? 'Workspace-write sandbox for Codex' : 'Restrict writes to project directory'}
+          description="Restrict writes to project directory"
           enabled={sandboxed}
           onChange={(v) => onSetConfig?.('sandboxed', v)}
         />

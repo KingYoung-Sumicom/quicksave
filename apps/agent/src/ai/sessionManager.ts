@@ -341,10 +341,19 @@ export class SessionManager extends EventEmitter {
     model?: string;
     permissionMode?: string;
     sandboxed?: boolean;
+    reasoningEffort?: string;
   }): Promise<string> {
-    const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto'] as const;
-    const level: PermissionLevel = validModes.includes(opts.permissionMode as any)
-      ? (opts.permissionMode as PermissionLevel) : 'acceptEdits';
+    // Accept both Claude-style modes and Codex preset ids; either can arrive
+    // depending on which agent's picker the PWA showed. Codex preset ids
+    // bundle approval+sandbox; the codex provider expands them via
+    // resolveCodexPermissionPreset.
+    const validModes = new Set([
+      'default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto',
+      'read-only', 'auto-review', 'full-access',
+    ]);
+    const level = (validModes.has(opts.permissionMode ?? '')
+      ? opts.permissionMode
+      : 'acceptEdits') as PermissionLevel;
 
     const sandboxed = !!opts.sandboxed;
     const systemPrompt = buildSystemPrompt(opts.systemPrompt);
@@ -370,6 +379,7 @@ export class SessionManager extends EventEmitter {
         permissionLevel: level,
         sandboxed,
         systemPrompt,
+        reasoningEffort: opts.reasoningEffort,
         bypassFlagPath: bypassFlagPath(bypassToken),
       },
       cardBuilder,
@@ -499,9 +509,12 @@ export class SessionManager extends EventEmitter {
       // Restore session settings from in-memory maps, falling back to persisted
       // registry (survives daemon restarts).
       const registryEntry = getSessionRegistry().getEntry(opts.cwd, opts.sessionId);
-      const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto'] as const;
+      const validModes = new Set([
+        'default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto',
+        'read-only', 'auto-review', 'full-access',
+      ]);
       const restoredLevel = this.sessionPermissions.get(opts.sessionId)
-        ?? (validModes.includes(registryEntry?.permissionMode as any) ? registryEntry!.permissionMode as PermissionLevel : undefined);
+        ?? (validModes.has(registryEntry?.permissionMode ?? '') ? registryEntry!.permissionMode as PermissionLevel : undefined);
       const level: PermissionLevel = restoredLevel ?? 'acceptEdits';
       const sandboxed = this.sessionSandboxed.get(opts.sessionId) ?? registryEntry?.sandboxed ?? false;
       const provider = this.getProvider(agentId);
@@ -512,6 +525,8 @@ export class SessionManager extends EventEmitter {
 
       const sessionConfig = this.sessionConfigs.get(opts.sessionId);
       const resumeModel = (sessionConfig?.model as string | undefined) ?? this.preferences.model;
+      const resumeReasoningEffort = (sessionConfig?.reasoningEffort as string | undefined)
+        ?? this.preferences.reasoningEffort;
 
       // Reuse the existing session's bypass token if present; otherwise mint a
       // fresh one (happens when cold-resuming a session we don't have in memory,
@@ -529,6 +544,7 @@ export class SessionManager extends EventEmitter {
           permissionLevel: level,
           sandboxed,
           systemPrompt: buildSystemPrompt(),
+          reasoningEffort: resumeReasoningEffort,
           bypassFlagPath: bypassFlagPath(bypassToken),
         },
         cardBuilder,
@@ -1231,12 +1247,15 @@ export class SessionManager extends EventEmitter {
       // The "idle" semantic (awaiting user input) is the isActive && !isStreaming
       // substate; consumers derive it rather than receiving it as its own flag.
       isActive: !!ps,
-      // `archived` = session has been removed from the in-memory map
-      // (cold-resume rekey, onSessionExited, or closeSession). PWA uses this
-      // as a signal to navigate away from the now-defunct session page.
-      // Note: isActive=false alone is ambiguous (can also mean "emitted for
-      // an unknown id during reconcile"); archived=true is the strong signal.
-      archived: !ps,
+      // `archived` = session has been retired in the registry (the user ran
+      // End Task, project:delete, or the entry was never created). It is
+      // distinct from `!isActive`: a session that just had its CLI process
+      // killed (claude:close / cold-resume rekey / onSessionExited) is
+      // !isActive but still has an active registry entry, so the PWA must
+      // keep the entry visible and let a follow-up prompt cold-resume it.
+      // PWA uses `archived=true` as the strong "navigate away from the
+      // defunct session page" signal.
+      archived: !ps && !getSessionRegistry().findBySessionId(sessionId),
       agent: ps?.agentId ?? this.sessionAgents.get(sessionId),
       isStreaming: ps?.streaming ?? false,
       hasPendingInput,

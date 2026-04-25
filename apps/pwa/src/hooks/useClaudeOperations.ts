@@ -5,6 +5,7 @@ import {
   type ClaudeResumeResponsePayload,
   type ClaudeCancelResponsePayload,
   type ClaudeCloseResponsePayload,
+  type ClaudeEndTaskResponsePayload,
   type ClaudeGetMessagesRequestPayload,
   type ClaudeUserInputResponsePayload,
   type ClaudePreferences,
@@ -44,18 +45,20 @@ export function useClaudeOperations(
     setLoadingHistory,
     setHistoryError,
     clearCards,
-    setSelectedModel,
     setSelectedPermissionMode,
-    setSelectedReasoningEffort,
+    setAgentPref,
     setSessionConfigKey,
     applySessionConfig,
   } = useClaudeStore();
 
-  // Apply a full or partial ClaudePreferences object to the store
+  // Apply server-pushed preferences. ClaudePreferences is wire-scoped to the
+  // claude-code agent (the daemon doesn't know about codex prefs), so write
+  // directly into that bucket — using the active-agent setters would clobber
+  // the user's codex prefs whenever they're viewing Codex during a reconnect.
   const applyPreferences = useCallback((prefs: Partial<ClaudePreferences>) => {
-    if (prefs.model !== undefined) setSelectedModel(prefs.model);
-    if (prefs.reasoningEffort !== undefined) setSelectedReasoningEffort(prefs.reasoningEffort);
-  }, [setSelectedModel, setSelectedReasoningEffort]);
+    if (prefs.model !== undefined) setAgentPref('claude-code', 'model', prefs.model);
+    if (prefs.reasoningEffort !== undefined) setAgentPref('claude-code', 'reasoningEffort', prefs.reasoningEffort);
+  }, [setAgentPref]);
 
   /**
    * Issue a one-shot bus command. Rejects if the bus isn't ready, on timeout,
@@ -134,7 +137,7 @@ export function useClaudeOperations(
   );
 
   const startSession = useCallback(
-    async (prompt: string, opts?: { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string; sandboxed?: boolean }) => {
+    async (prompt: string, opts?: { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string; sandboxed?: boolean; reasoningEffort?: string }) => {
       clearCards();
       setStreaming(true);
       setStreamError(null);
@@ -152,6 +155,7 @@ export function useClaudeOperations(
             model: opts?.model,
             permissionMode: opts?.permissionMode,
             sandboxed: opts?.sandboxed,
+            reasoningEffort: opts?.reasoningEffort,
             ...(opts?.cwd ? { cwd: opts.cwd } : {}),
           },
           120000,
@@ -271,18 +275,19 @@ export function useClaudeOperations(
     [sendCommand, setStreaming]
   );
 
-  const archiveSession = useCallback(
-    async (sessionId: string, cwd: string) => {
+  // End the task entirely: kill the live process AND archive the registry
+  // entry so the session disappears from the active list. The corresponding
+  // session:history-updated broadcast will reconcile the PWA's session list.
+  const endSession = useCallback(
+    async (sessionId: string) => {
+      setStreaming(false);
       try {
-        await sendCommand<SessionUpdateHistoryResponsePayload>(
-          'session:update-history',
-          { sessionId, cwd, updates: { archived: true } },
-        );
+        await sendCommand<ClaudeEndTaskResponsePayload>('claude:end-task', { sessionId });
       } catch (error) {
-        console.error('Failed to archive session:', error);
+        console.error('Failed to end session:', error);
       }
     },
-    [sendCommand],
+    [sendCommand, setStreaming]
   );
 
   const restoreSession = useCallback(
@@ -444,7 +449,7 @@ export function useClaudeOperations(
     resumeSession,
     cancelSession,
     closeSession,
-    archiveSession,
+    endSession,
     restoreSession,
     listArchivedSessions,
     respondToUserInput,

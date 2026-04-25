@@ -6,42 +6,140 @@ import {
   DEFAULT_PERMISSION_MODE,
   DEFAULT_REASONING_EFFORT,
   DEFAULT_SANDBOXED,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_CODEX_PERMISSION_MODE,
+  DEFAULT_CODEX_REASONING_EFFORT,
 } from '@sumicom/quicksave-shared';
 import { getModelsForAgent } from '../lib/claudePresets';
+
+// --- Per-agent session prefs ---
+//
+// Each agent (claude-code / codex) keeps its own model / permissionMode /
+// reasoningEffort / sandbox so switching agent doesn't clobber the other's
+// last-used settings. The store also surfaces flat `selectedModel` etc.
+// fields that mirror the *active* agent's prefs, so existing readers
+// (ClaudePanel, useSessionConfig, SessionStatusBar, etc.) don't need to
+// know about the per-agent map — only writers do.
+interface AgentPrefs {
+  model: string;
+  permissionMode: string;
+  reasoningEffort: string;
+  sandbox: boolean;
+}
+
+type AgentPrefsMap = Record<AgentId, AgentPrefs>;
+
+function defaultPrefsForAgent(agent: AgentId): AgentPrefs {
+  if (agent === 'codex') {
+    return {
+      model: DEFAULT_CODEX_MODEL,
+      permissionMode: DEFAULT_CODEX_PERMISSION_MODE,
+      reasoningEffort: DEFAULT_CODEX_REASONING_EFFORT,
+      // Codex permission presets bundle sandbox_mode, so this flag is
+      // unused for codex sessions. Kept on the prefs object for shape
+      // symmetry with claude-code.
+      sandbox: false,
+    };
+  }
+  return {
+    model: DEFAULT_MODEL,
+    permissionMode: DEFAULT_PERMISSION_MODE,
+    reasoningEffort: DEFAULT_REASONING_EFFORT,
+    sandbox: DEFAULT_SANDBOXED,
+  };
+}
+
+function defaultAgentPrefsMap(): AgentPrefsMap {
+  return {
+    'claude-code': defaultPrefsForAgent('claude-code'),
+    codex: defaultPrefsForAgent('codex'),
+  };
+}
 
 // --- localStorage persistence for new-session defaults ---
 const PREFS_KEY = 'quicksave:session-prefs';
 
-interface SessionPrefs {
-  selectedModel: string;
+interface PersistedPrefs {
   selectedAgent: AgentId;
-  selectedPermissionMode: string;
-  selectedReasoningEffort: 'low' | 'medium' | 'high' | 'max';
-  sandboxEnabled: boolean;
+  agentPrefs: AgentPrefsMap;
 }
 
-function loadPrefs(): Partial<SessionPrefs> {
+/**
+ * Load the persisted prefs, transparently migrating from the older flat
+ * shape. Older builds wrote `{ selectedModel, selectedAgent, selectedPermissionMode,
+ * selectedReasoningEffort, sandboxEnabled }` — we map those into the active
+ * agent's bucket and seed the other agent with its defaults.
+ */
+function loadPrefs(): PersistedPrefs {
+  const fallback: PersistedPrefs = {
+    selectedAgent: DEFAULT_AGENT,
+    agentPrefs: defaultAgentPrefsMap(),
+  };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
-    return raw ? JSON.parse(raw) : {};
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<PersistedPrefs> & {
+      selectedModel?: string;
+      selectedPermissionMode?: string;
+      selectedReasoningEffort?: string;
+      sandboxEnabled?: boolean;
+    };
+
+    const selectedAgent = parsed.selectedAgent ?? DEFAULT_AGENT;
+    const merged = defaultAgentPrefsMap();
+
+    if (parsed.agentPrefs) {
+      // New shape — overlay saved values on top of defaults so newly added
+      // pref keys still get sensible defaults if absent in storage.
+      for (const agent of Object.keys(merged) as AgentId[]) {
+        merged[agent] = { ...merged[agent], ...(parsed.agentPrefs[agent] ?? {}) };
+      }
+    } else {
+      // Legacy flat shape — migrate values into the previously-active agent.
+      merged[selectedAgent] = {
+        model: parsed.selectedModel ?? merged[selectedAgent].model,
+        permissionMode: parsed.selectedPermissionMode ?? merged[selectedAgent].permissionMode,
+        reasoningEffort: parsed.selectedReasoningEffort ?? merged[selectedAgent].reasoningEffort,
+        sandbox: parsed.sandboxEnabled ?? merged[selectedAgent].sandbox,
+      };
+    }
+
+    return { selectedAgent, agentPrefs: merged };
   } catch {
-    return {};
+    return fallback;
   }
 }
 
-function savePrefs(prefs: SessionPrefs) {
+function savePrefs(prefs: PersistedPrefs) {
   try {
     localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
   } catch { /* quota exceeded — ignore */ }
 }
 
+/** Project an active-agent prefs bundle to the flat `selected*` view fields
+ *  the rest of the app reads. Pure — used by setters that need to recompute
+ *  the view after a write. */
+function flatViewOf(prefs: AgentPrefs) {
+  return {
+    selectedModel: prefs.model,
+    selectedPermissionMode: prefs.permissionMode,
+    selectedReasoningEffort: prefs.reasoningEffort,
+    sandboxEnabled: prefs.sandbox,
+  };
+}
+
 const savedPrefs = loadPrefs();
 
-// Validate that the saved model is compatible with the saved agent
-if (savedPrefs.selectedAgent && savedPrefs.selectedModel) {
-  const models = getModelsForAgent(savedPrefs.selectedAgent);
-  if (!models.some((m) => m.value === savedPrefs.selectedModel)) {
-    savedPrefs.selectedModel = models[0]?.value ?? DEFAULT_MODEL;
+// Validate that the saved Claude model is still recognized by the hardcoded
+// model list. Codex models are not validated at module-load time (the dynamic
+// list arrives later via the daemon handshake — wrongly resetting `gpt-5.5`
+// to a fallback because the hardcoded list isn't current is worse than
+// leaving an unknown id alone).
+{
+  const claudePrefs = savedPrefs.agentPrefs['claude-code'];
+  const claudeModels = getModelsForAgent('claude-code');
+  if (claudePrefs.model && !claudeModels.some((m) => m.value === claudePrefs.model)) {
+    claudePrefs.model = claudeModels[0]?.value ?? DEFAULT_MODEL;
   }
 }
 
@@ -78,11 +176,15 @@ interface ClaudeStore {
   promptInput: string;
   isVisible: boolean;
 
-  // Session preferences (defaults for new sessions)
-  selectedModel: string;
+  // Session preferences (defaults for new sessions). The flat fields below
+  // mirror `agentPrefs[selectedAgent]` and are kept in sync by the setters.
+  // Read either — the flat view is provided so existing components don't
+  // need to know about the per-agent map.
   selectedAgent: AgentId;
+  agentPrefs: AgentPrefsMap;
+  selectedModel: string;
   selectedPermissionMode: string;
-  selectedReasoningEffort: 'low' | 'medium' | 'high' | 'max';
+  selectedReasoningEffort: string;
   sandboxEnabled: boolean;
 
   // Per-session runtime config (keyed by sessionId)
@@ -122,12 +224,23 @@ interface ClaudeStore {
   // Actions — pending input
   clearPendingInput: (requestId: string) => void;
 
-  // Actions — session preferences (new session defaults)
+  // Actions — session preferences (new session defaults).
+  // These setters write to the *active* agent's bucket and update the flat
+  // view in one go.
   setSelectedModel: (model: string) => void;
   setSelectedAgent: (agent: AgentId) => void;
   setSelectedPermissionMode: (mode: string) => void;
-  setSelectedReasoningEffort: (effort: 'low' | 'medium' | 'high' | 'max') => void;
+  setSelectedReasoningEffort: (effort: string) => void;
   setSandboxEnabled: (enabled: boolean) => void;
+  /** Write a single pref field on a specific agent's bucket regardless of
+   *  which agent is currently active. Used by the connection handler when
+   *  the daemon pushes claude-scoped preferences — those must land on
+   *  claude-code's bucket even if the user is currently viewing Codex. */
+  setAgentPref: <K extends keyof AgentPrefs>(
+    agent: AgentId,
+    key: K,
+    value: AgentPrefs[K],
+  ) => void;
 
   // Actions — per-session runtime config
   setSessionConfigKey: (sessionId: string, key: string, value: ConfigValue) => void;
@@ -155,11 +268,9 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   historyError: null,
   promptInput: '',
   isVisible: false,
-  selectedModel: savedPrefs.selectedModel ?? DEFAULT_MODEL,
-  selectedAgent: savedPrefs.selectedAgent ?? DEFAULT_AGENT,
-  selectedPermissionMode: savedPrefs.selectedPermissionMode ?? DEFAULT_PERMISSION_MODE,
-  selectedReasoningEffort: savedPrefs.selectedReasoningEffort ?? DEFAULT_REASONING_EFFORT,
-  sandboxEnabled: savedPrefs.sandboxEnabled ?? DEFAULT_SANDBOXED,
+  selectedAgent: savedPrefs.selectedAgent,
+  agentPrefs: savedPrefs.agentPrefs,
+  ...flatViewOf(savedPrefs.agentPrefs[savedPrefs.selectedAgent]),
   sessionConfigs: {},
 
   // Sessions
@@ -211,26 +322,33 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   // Active session
   setActiveSession: (sessionId, streamId = null) => {
     if (!sessionId) {
-      // New Session: restore saved defaults from localStorage so prior
-      // selections on this screen persist across navigation.
+      // New Session: restore the active agent's saved prefs from localStorage
+      // so prior selections persist across navigation. We re-read storage
+      // (rather than relying on store state) because state.selectedAgent may
+      // have been temporarily overridden by a prior session view.
       const prefs = loadPrefs();
       set({
         activeSessionId: null,
         activeStreamIds: [],
         streamError: null,
-        selectedAgent: prefs.selectedAgent ?? DEFAULT_AGENT,
-        selectedPermissionMode: prefs.selectedPermissionMode ?? DEFAULT_PERMISSION_MODE,
+        selectedAgent: prefs.selectedAgent,
+        agentPrefs: prefs.agentPrefs,
+        ...flatViewOf(prefs.agentPrefs[prefs.selectedAgent]),
       });
       return;
     }
     const session = get().sessions[sessionId];
     const legacyProvider = (session as { provider?: string } | null)?.provider;
+    const sessionAgent: AgentId = (session?.agent as AgentId | undefined)
+      ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : DEFAULT_AGENT);
     set({
       activeSessionId: sessionId,
       activeStreamIds: streamId ? [streamId] : [],
       streamError: null,
-      selectedAgent: (session?.agent as AgentId | undefined)
-        ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : DEFAULT_AGENT),
+      selectedAgent: sessionAgent,
+      // Surface the session's permissionMode in the flat view so the chip
+      // matches the running session. agentPrefs is *not* mutated — these are
+      // session-scoped values, not the user's persisted defaults.
       selectedPermissionMode: session?.permissionMode ?? DEFAULT_PERMISSION_MODE,
     });
   },
@@ -323,30 +441,63 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       return { cards };
     }),
 
-  // Session preferences (new session defaults) — persisted to localStorage
+  // Session preferences (new session defaults) — persisted to localStorage.
+  // Writes go to the active agent's bucket; the flat view is recomputed.
   setSelectedModel: (model) => {
-    set({ selectedModel: model });
-    savePrefs({ ...get(), selectedModel: model });
+    const { selectedAgent, agentPrefs } = get();
+    const updated: AgentPrefsMap = {
+      ...agentPrefs,
+      [selectedAgent]: { ...agentPrefs[selectedAgent], model },
+    };
+    set({ agentPrefs: updated, selectedModel: model });
+    savePrefs({ selectedAgent, agentPrefs: updated });
   },
   setSelectedAgent: (agent) => {
-    const state = get();
-    const models = getModelsForAgent(agent);
-    const modelValid = models.some((m) => m.value === state.selectedModel);
-    const nextModel = modelValid ? state.selectedModel : models[0]?.value ?? DEFAULT_MODEL;
-    set({ selectedAgent: agent, selectedModel: nextModel });
-    savePrefs({ ...state, selectedAgent: agent, selectedModel: nextModel });
+    const { agentPrefs } = get();
+    set({ selectedAgent: agent, ...flatViewOf(agentPrefs[agent]) });
+    savePrefs({ selectedAgent: agent, agentPrefs });
   },
   setSelectedPermissionMode: (mode) => {
-    set({ selectedPermissionMode: mode });
-    savePrefs({ ...get(), selectedPermissionMode: mode });
+    const { selectedAgent, agentPrefs } = get();
+    const updated: AgentPrefsMap = {
+      ...agentPrefs,
+      [selectedAgent]: { ...agentPrefs[selectedAgent], permissionMode: mode },
+    };
+    set({ agentPrefs: updated, selectedPermissionMode: mode });
+    savePrefs({ selectedAgent, agentPrefs: updated });
   },
   setSelectedReasoningEffort: (effort) => {
-    set({ selectedReasoningEffort: effort });
-    savePrefs({ ...get(), selectedReasoningEffort: effort });
+    const { selectedAgent, agentPrefs } = get();
+    const updated: AgentPrefsMap = {
+      ...agentPrefs,
+      [selectedAgent]: { ...agentPrefs[selectedAgent], reasoningEffort: effort },
+    };
+    set({ agentPrefs: updated, selectedReasoningEffort: effort });
+    savePrefs({ selectedAgent, agentPrefs: updated });
   },
   setSandboxEnabled: (enabled) => {
-    set({ sandboxEnabled: enabled });
-    savePrefs({ ...get(), sandboxEnabled: enabled });
+    const { selectedAgent, agentPrefs } = get();
+    const updated: AgentPrefsMap = {
+      ...agentPrefs,
+      [selectedAgent]: { ...agentPrefs[selectedAgent], sandbox: enabled },
+    };
+    set({ agentPrefs: updated, sandboxEnabled: enabled });
+    savePrefs({ selectedAgent, agentPrefs: updated });
+  },
+  setAgentPref: (agent, key, value) => {
+    const { selectedAgent, agentPrefs } = get();
+    const updated: AgentPrefsMap = {
+      ...agentPrefs,
+      [agent]: { ...agentPrefs[agent], [key]: value },
+    };
+    // If the targeted agent IS the active one, also refresh the flat view
+    // so existing readers see the change without a remount.
+    set(
+      agent === selectedAgent
+        ? { agentPrefs: updated, ...flatViewOf(updated[agent]) }
+        : { agentPrefs: updated },
+    );
+    savePrefs({ selectedAgent, agentPrefs: updated });
   },
 
   // Per-session runtime config

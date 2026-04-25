@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { BaseStatusBar, BackButton } from '../BaseStatusBar';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { useTerminalOps } from '../../hooks/useTerminalOps';
-import { getActiveBus } from '../../lib/busRegistry';
+import { getBusForAgent } from '../../lib/busRegistry';
+import { fromProjectId } from '../../lib/projectId';
 import { TerminalView } from './TerminalView';
 
 interface Params extends Record<string, string | undefined> {
@@ -18,7 +19,23 @@ export function TerminalPage() {
   const terminal = useTerminalStore((s) =>
     terminalId ? s.terminals[terminalId] : undefined,
   );
-  const { closeTerminal, renameTerminal } = useTerminalOps(getActiveBus);
+  // Resolve which agent owns this terminal from the URL — the terminal
+  // store row also has machineAgentId, but on a deep-link / fresh PWA
+  // session the store may not be hydrated yet, so the URL is the only
+  // reliable source.
+  const ownerAgentId = useMemo(() => {
+    if (terminal?.machineAgentId) return terminal.machineAgentId;
+    return projectId ? fromProjectId(projectId).agentId : null;
+  }, [projectId, terminal?.machineAgentId]);
+  // Bind ops to the owner agent's bus, NOT getActiveBus. The active agent
+  // can change between visits (user switches workspaces), and querying the
+  // wrong agent's bus for a terminal subscription returns null → renders
+  // "[terminal not found]" even though the terminal is alive elsewhere.
+  const getBus = useCallback(
+    () => (ownerAgentId ? getBusForAgent(ownerAgentId) : null),
+    [ownerAgentId],
+  );
+  const { closeTerminal, renameTerminal } = useTerminalOps(getBus);
   const [showMenu, setShowMenu] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
@@ -140,7 +157,7 @@ export function TerminalPage() {
         }
       />
       <div className="flex-1 min-h-0">
-        <TerminalView terminalId={terminalId} onExit={goBack} />
+        <TerminalView terminalId={terminalId} getBus={getBus} onExit={goBack} />
       </div>
     </div>
   );

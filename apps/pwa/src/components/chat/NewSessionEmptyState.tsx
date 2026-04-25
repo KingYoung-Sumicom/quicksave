@@ -3,7 +3,12 @@ import { clsx } from 'clsx';
 import { FormattedMessage, useIntl } from 'react-intl';
 import { useClaudeStore } from '../../stores/claudeStore';
 import { useConnectionStore } from '../../stores/connectionStore';
-import { PERMISSION_MODES, AGENT_TYPES, getModelsForAgent } from '../../lib/claudePresets';
+import {
+  AGENT_TYPES,
+  getModelsForAgent,
+  getPermissionModesForAgent,
+  getReasoningEffortsForModel,
+} from '../../lib/claudePresets';
 import { ButtonGroup } from '../ui/ButtonGroup';
 import { ToggleSwitch } from '../ui/ToggleSwitch';
 import type { ProjectEntry } from '../../hooks/useProjects';
@@ -36,22 +41,32 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
     setSandboxEnabled,
   } = useClaudeStore();
   const codexModels = useConnectionStore((s) => s.codexModels);
-  const isClaudeAgent = selectedAgent === 'claude-code';
+  const isCodexAgent = selectedAgent === 'codex';
   const models = getModelsForAgent(selectedAgent, codexModels);
-  const supportsReasoning = isClaudeAgent || selectedAgent === 'codex';
+  // Codex permission presets bundle sandbox_mode, so the toggle below is
+  // hidden for codex; Claude has independent axes so it stays visible.
+  const showSandboxToggle = !isCodexAgent;
+  const supportsReasoning = true; // both agents expose a reasoning chip
   const [sandboxHelpOpen, setSandboxHelpOpen] = useState(false);
   // Codex login gate: when the agent picker points at Codex but the daemon
   // has no credentials, surface a banner + device-auth modal so a remote
   // user can complete OAuth without touching the machine the daemon runs on.
   const { loginState } = useCodexLogin();
-  const showCodexLoginGate = selectedAgent === 'codex' && loginState?.loggedIn === false;
+  const showCodexLoginGate = isCodexAgent && loginState?.loggedIn === false;
 
-  const reasoningEfforts = [
-    { value: 'low', label: intl.formatMessage({ id: 'newSession.reasoningEffort.low' }) },
-    { value: 'medium', label: intl.formatMessage({ id: 'newSession.reasoningEffort.medium' }) },
-    { value: 'high', label: intl.formatMessage({ id: 'newSession.reasoningEffort.high' }) },
-    { value: 'max', label: intl.formatMessage({ id: 'newSession.reasoningEffort.max' }) },
-  ];
+  // Permission presets and reasoning levels both differ per agent — derive
+  // both lists from the active agent so the new-session pickers match what
+  // the SessionStatusBar will show once the session starts.
+  const permissionModes = getPermissionModesForAgent(selectedAgent);
+  const reasoningEfforts = getReasoningEffortsForModel(selectedAgent, selectedModel, codexModels);
+  // Localize labels for the Claude reasoning enum (low/medium/high/max);
+  // codex labels stay as-is since they're already short and keyed off the
+  // SDK's own value names.
+  const reasoningEffortOptions = reasoningEfforts.map((e) => {
+    const intlKey = `newSession.reasoningEffort.${e.value}`;
+    const localized = intl.formatMessage({ id: intlKey, defaultMessage: e.label });
+    return { value: e.value, label: localized };
+  });
 
   const selected = projectSelector
     ? projectSelector.projects.find((p) => p.projectId === projectSelector.selectedProjectId) ?? null
@@ -92,11 +107,13 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
         {showCodexLoginGate && <CodexLoginBanner />}
         <ButtonGroup label={intl.formatMessage({ id: 'newSession.model' })} options={models} value={selectedModel} onSelect={(m) => setSelectedModel(m.value)} size="sm" />
         {supportsReasoning && (
-          <ButtonGroup label={intl.formatMessage({ id: 'newSession.reasoningEffort' })} options={reasoningEfforts} value={selectedReasoningEffort} onSelect={(e) => setSelectedReasoningEffort(e.value as 'low' | 'medium' | 'high' | 'max')} size="sm" />
+          <ButtonGroup label={intl.formatMessage({ id: 'newSession.reasoningEffort' })} options={reasoningEffortOptions} value={selectedReasoningEffort} onSelect={(e) => setSelectedReasoningEffort(e.value)} size="sm" />
         )}
-        <ButtonGroup label={intl.formatMessage({ id: 'newSession.permission' })} options={PERMISSION_MODES} value={selectedPermissionMode} onSelect={(p) => setSelectedPermissionMode(p.value)} size="sm" />
+        <ButtonGroup label={intl.formatMessage({ id: 'newSession.permission' })} options={permissionModes} value={selectedPermissionMode} onSelect={(p) => setSelectedPermissionMode(p.value)} size="sm" />
 
-        {/* Sandbox toggle + inline explainer */}
+        {/* Sandbox toggle + inline explainer — hidden for codex because its
+            permission preset already encodes sandbox_mode. */}
+        {showSandboxToggle && (
         <div className="space-y-2">
           <ToggleSwitch
             label={intl.formatMessage({ id: 'newSession.sandbox' })}
@@ -135,6 +152,7 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
             </div>
           )}
         </div>
+        )}
 
         {/* Hint */}
         <p className="text-xs text-slate-600">

@@ -3,6 +3,7 @@ import { FormattedMessage, useIntl } from 'react-intl';
 import { clsx } from 'clsx';
 import type { ContextUsageBreakdown } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../../stores/claudeStore';
+import { useConnectionStore } from '../../stores/connectionStore';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
 import { getModelContextLimit } from '../../lib/claudePresets';
 
@@ -49,7 +50,8 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
   const modelFromBreakdown = breakdown?.model;
   const modelFromConfig = config.model as string | undefined;
   const model = modelFromBreakdown ?? modelFromConfig;
-  const fallbackLimit = getModelContextLimit(modelFromConfig);
+  const codexModels = useConnectionStore((s) => s.codexModels);
+  const fallbackLimit = getModelContextLimit(modelFromConfig, codexModels);
 
   // Fallback (raw turn tokens) — used when breakdown not yet available.
   const input = session?.lastTurnInputTokens ?? 0;

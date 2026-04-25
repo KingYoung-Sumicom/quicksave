@@ -928,4 +928,95 @@ describe('MessageHandler', () => {
       expect(closedIds).not.toContain('live-other');
     });
   });
+
+  describe('handleMessage - claude:end-task', () => {
+    let projectDir: string;
+
+    beforeEach(async () => {
+      projectDir = join(tmpdir(), `qs-end-task-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      await mkdir(projectDir, { recursive: true });
+    });
+
+    afterEach(async () => {
+      try {
+        await rm(projectDir, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
+    });
+
+    function seedEntry(sessionId: string): SessionRegistryEntry {
+      const entry: SessionRegistryEntry = {
+        sessionId,
+        cwd: projectDir,
+        title: `session-${sessionId}`,
+        createdAt: Date.now() - 1000,
+        lastAccessedAt: Date.now(),
+      };
+      getSessionRegistry().upsertEntry(entry);
+      return entry;
+    }
+
+    it('archives the registry entry and broadcasts the upsert', async () => {
+      seedEntry('sess-end');
+
+      const historyEvents: Array<{ cwd: string; entry: SessionRegistryEntry; action: string }> = [];
+      handler.onHistoryUpdated = (cwd, entry, action) => {
+        historyEvents.push({ cwd, entry, action });
+      };
+
+      const msg = createMessage('claude:end-task', { sessionId: 'sess-end' });
+      const response = await handler.handleMessage(msg);
+
+      expect(response.type).toBe('claude:end-task:response');
+      expect(response.id).toBe(msg.id);
+      expect((response.payload as any).success).toBe(true);
+
+      const registry = getSessionRegistry();
+      // Entry leaves the active list
+      expect(registry.getEntriesForProject(projectDir)).toHaveLength(0);
+      // …and lands under archived
+      expect(
+        registry.listArchivedEntries(projectDir).map((e) => e.sessionId),
+      ).toEqual(['sess-end']);
+
+      expect(historyEvents).toHaveLength(1);
+      expect(historyEvents[0].cwd).toBe(projectDir);
+      expect(historyEvents[0].action).toBe('upsert');
+      expect(historyEvents[0].entry.archived).toBe(true);
+    });
+
+    it('returns success=false for an unknown sessionId with no live process and no registry entry', async () => {
+      const msg = createMessage('claude:end-task', { sessionId: 'no-such-session' });
+      const response = await handler.handleMessage(msg);
+
+      expect(response.type).toBe('claude:end-task:response');
+      expect((response.payload as any).success).toBe(false);
+      expect((response.payload as any).error).toBeDefined();
+    });
+
+    it('also kills the live CLI process when the session is active', async () => {
+      seedEntry('sess-live');
+
+      const claudeService = (handler as unknown as {
+        claudeService: {
+          getSessionCwd: (sessionId: string) => string | undefined;
+          closeSession: (sessionId: string) => boolean;
+        };
+      }).claudeService;
+      vi.spyOn(claudeService, 'getSessionCwd').mockReturnValue(projectDir);
+      const closeSpy = vi.spyOn(claudeService, 'closeSession').mockReturnValue(true);
+
+      const msg = createMessage('claude:end-task', { sessionId: 'sess-live' });
+      const response = await handler.handleMessage(msg);
+
+      expect((response.payload as any).success).toBe(true);
+      expect(closeSpy).toHaveBeenCalledWith('sess-live');
+      // Archive still happened
+      expect(getSessionRegistry().getEntriesForProject(projectDir)).toHaveLength(0);
+      expect(
+        getSessionRegistry().listArchivedEntries(projectDir).map((e) => e.sessionId),
+      ).toEqual(['sess-live']);
+    });
+  });
 });

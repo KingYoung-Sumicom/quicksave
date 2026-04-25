@@ -74,7 +74,24 @@ interface PtyEntry {
   seq: number;
   exited: boolean;
   exitCode: number | null;
+  /**
+   * Pending PTY output coalescing: shells often emit several small chunks
+   * for a single keystroke (echo + cursor move + line clear + prompt redraw).
+   * We accumulate them in `pendingChunks` and emit one combined `output`
+   * event per `OUTPUT_FLUSH_MS` window, drastically cutting the number of
+   * relay frames per typing burst (the production relay rate-limits at
+   * 100 msg/60s/peer; without batching, a few seconds of typing trips it).
+   */
+  pendingChunks: string;
+  flushTimer: ReturnType<typeof setTimeout> | null;
 }
+
+/**
+ * Flush window for batched PTY output. 16ms is one ~60Hz frame — short
+ * enough that interactive feel stays snappy, long enough that bursty
+ * shells (prompt redraw, syntax highlighters) collapse into one frame.
+ */
+const OUTPUT_FLUSH_MS = 16;
 
 function toSummary(entry: PtyEntry): TerminalSummary {
   return {
@@ -171,8 +188,27 @@ export class TerminalManager extends EventEmitter {
       seq: 0,
       exited: false,
       exitCode: null,
+      pendingChunks: '',
+      flushTimer: null,
     };
     this.terminals.set(terminalId, entry);
+
+    const flushPending = (extras?: Partial<TerminalOutputChunk>) => {
+      if (entry.flushTimer) {
+        clearTimeout(entry.flushTimer);
+        entry.flushTimer = null;
+      }
+      if (entry.pendingChunks.length === 0 && !extras) return;
+      const data = entry.pendingChunks;
+      entry.pendingChunks = '';
+      const chunk: TerminalOutputChunk = {
+        terminalId,
+        seq: entry.seq,
+        chunk: data,
+        ...extras,
+      };
+      this.emit('output', chunk);
+    };
 
     child.onData((data) => {
       entry.seq += data.length;
@@ -181,12 +217,14 @@ export class TerminalManager extends EventEmitter {
       if (entry.buffer.length > SCROLLBACK_LIMIT) {
         entry.buffer = entry.buffer.slice(entry.buffer.length - SCROLLBACK_LIMIT);
       }
-      const chunk: TerminalOutputChunk = {
-        terminalId,
-        seq: entry.seq,
-        chunk: data,
-      };
-      this.emit('output', chunk);
+      // Coalesce: accumulate into pendingChunks and arm a flush timer if
+      // not already pending. The seq we emit on flush reflects bytes up to
+      // the flush moment, which lines up with how the snapshot's seq is
+      // computed (entry.seq at snapshot time).
+      entry.pendingChunks += data;
+      if (!entry.flushTimer) {
+        entry.flushTimer = setTimeout(() => flushPending(), OUTPUT_FLUSH_MS);
+      }
       // Activity bump — title/lastActivityAt shows up on the list.
       this.emit('terminal-updated', toSummary(entry));
     });
@@ -203,14 +241,10 @@ export class TerminalManager extends EventEmitter {
       if (entry.buffer.length > SCROLLBACK_LIMIT) {
         entry.buffer = entry.buffer.slice(entry.buffer.length - SCROLLBACK_LIMIT);
       }
-      const chunk: TerminalOutputChunk = {
-        terminalId,
-        seq: entry.seq,
-        chunk: tail,
-        exited: true,
-        exitCode: entry.exitCode,
-      };
-      this.emit('output', chunk);
+      // Append exit tail to any pending chunk and flush immediately so
+      // subscribers see the exit promptly (no point waiting another 16ms).
+      entry.pendingChunks += tail;
+      flushPending({ exited: true, exitCode: entry.exitCode });
       this.emit('terminal-updated', toSummary(entry));
     });
 
@@ -255,6 +289,10 @@ export class TerminalManager extends EventEmitter {
   close(terminalId: string, force = false): void {
     const entry = this.terminals.get(terminalId);
     if (!entry) throw new Error(`Unknown terminal: ${terminalId}`);
+    if (entry.flushTimer) {
+      clearTimeout(entry.flushTimer);
+      entry.flushTimer = null;
+    }
     try {
       if (!entry.exited) {
         // Send SIGHUP first (graceful); fall back to SIGKILL if caller asked.

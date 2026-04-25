@@ -27,7 +27,7 @@ interface SessionAppBarProps {
   onSetSessionConfig?: (key: string, value: ConfigValue) => void;
   onSendControlRequest?: (sessionId: string, subtype: string, params?: Record<string, unknown>) => Promise<SessionControlRequestResponsePayload>;
   onCloseSession?: () => void;
-  onArchiveSession?: () => void;
+  onEndSession?: () => void;
   onCancelSession?: () => void;
 }
 
@@ -45,7 +45,7 @@ export function SessionAppBar({
   onSetSessionConfig,
   onSendControlRequest,
   onCloseSession,
-  onArchiveSession,
+  onEndSession,
   onCancelSession,
 }: SessionAppBarProps) {
   const navigate = useNavigate();
@@ -78,7 +78,7 @@ export function SessionAppBar({
         onSendControlRequest={onSendControlRequest}
         onCancelSession={onCancelSession}
         onCloseSession={onCloseSession}
-        onArchiveSession={onArchiveSession}
+        onEndSession={onEndSession}
       />
     </>
   );

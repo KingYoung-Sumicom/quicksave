@@ -6,9 +6,11 @@ import type {
   ThreadOptions,
   ApprovalMode,
   SandboxMode,
+  ModelReasoningEffort,
 } from '@openai/codex-sdk';
 import type { CardEvent, CardStreamEnd } from '@sumicom/quicksave-shared';
 import type { StreamCardBuilder } from './cardBuilder.js';
+import { getEventStore } from '../storage/eventStore.js';
 import type {
   CodingAgentProvider,
   ProviderCallbacks,
@@ -20,24 +22,154 @@ import type {
 
 // ── Mapping helpers ──
 
-function mapApprovalPolicy(level: PermissionLevel): ApprovalMode {
+/**
+ * Codex permission preset → (approval_policy, sandbox_mode) tuple, matching
+ * the official "common sandbox and approval combinations" table:
+ *   https://developers.openai.com/codex/agent-approvals-security
+ *
+ * `auto-review` adds `approvals_reviewer = "auto_review"` to the Codex
+ * instance config — handled separately in `startSession`/`resumeSession`.
+ *
+ * Falls back to legacy Claude-style values (`bypassPermissions`/`acceptEdits`
+ * /`plan`/`default`) so sessions started before the codex picker existed
+ * keep working.
+ */
+function resolveCodexPermissionPreset(
+  level: PermissionLevel | string,
+  sandboxed: boolean,
+): {
+  approvalPolicy: ApprovalMode;
+  sandboxMode: SandboxMode;
+  autoReview: boolean;
+} {
   switch (level) {
-    case 'bypassPermissions': return 'never';
-    case 'acceptEdits':       return 'on-request';
-    // `untrusted` blocks apply_patch in `codex exec` mode (the SDK's transport)
-    // because exec cannot surface approval prompts — patches get rejected and
-    // the model falls back to shell writes, which we can't surface as Edit/Write
-    // cards. `on-request` matches codex CLI's `--full-auto` convention.
-    case 'plan':              return 'untrusted';
+    case 'read-only':
+      return { approvalPolicy: 'on-request', sandboxMode: 'read-only', autoReview: false };
     case 'default':
-    default:                  return 'on-request';
+      return { approvalPolicy: 'on-request', sandboxMode: 'workspace-write', autoReview: false };
+    case 'auto-review':
+      return { approvalPolicy: 'on-request', sandboxMode: 'workspace-write', autoReview: true };
+    case 'full-access':
+      return { approvalPolicy: 'never', sandboxMode: 'danger-full-access', autoReview: false };
+
+    // Legacy Claude-style fallbacks. The sandbox toggle still applies for
+    // these because old sessions persisted both axes independently.
+    case 'bypassPermissions':
+      return {
+        approvalPolicy: 'never',
+        sandboxMode: sandboxed ? 'workspace-write' : 'danger-full-access',
+        autoReview: false,
+      };
+    case 'acceptEdits':
+      return {
+        approvalPolicy: 'on-request',
+        sandboxMode: sandboxed ? 'workspace-write' : 'danger-full-access',
+        autoReview: false,
+      };
+    case 'plan':
+      return { approvalPolicy: 'untrusted', sandboxMode: 'read-only', autoReview: false };
+    case 'default-claude':
+    default:
+      return {
+        approvalPolicy: 'on-request',
+        sandboxMode: sandboxed ? 'workspace-write' : 'danger-full-access',
+        autoReview: false,
+      };
   }
 }
 
-function mapSandboxMode(level: PermissionLevel, sandboxed: boolean): SandboxMode {
-  if (level === 'plan') return 'read-only';
-  if (sandboxed) return 'workspace-write';
-  return 'danger-full-access';
+const CODEX_REASONING_EFFORTS = new Set<ModelReasoningEffort>([
+  'minimal', 'low', 'medium', 'high', 'xhigh',
+]);
+
+function mapReasoningEffort(value: string | undefined): ModelReasoningEffort | undefined {
+  if (!value) return undefined;
+  return CODEX_REASONING_EFFORTS.has(value as ModelReasoningEffort)
+    ? (value as ModelReasoningEffort)
+    : undefined;
+}
+
+// Codex's TodoItem is `{ text, completed }`; the PWA's TodoWrite renderer
+// expects Claude's shape `{ content, status }`. Without this, todo cards
+// show only the default pending icon and no text.
+function normalizeTodoItems(
+  items: ReadonlyArray<{ text: string; completed: boolean }>,
+): Array<{ content: string; status: 'completed' | 'pending' }> {
+  return items.map((t) => ({
+    content: t.text,
+    status: t.completed ? 'completed' : 'pending',
+  }));
+}
+
+type CodexFileChange = { path: string; kind: 'add' | 'delete' | 'update' };
+
+// A Codex `file_change` item bundles every file in one patch; the PWA's
+// Edit/Write views read `{ file_path }` (singular) and have no concept of a
+// `files` array. Emit one card per change so each renders correctly and the
+// per-file kind picks the right tool name.
+function emitFileChangeCards(
+  itemId: string,
+  changes: ReadonlyArray<CodexFileChange>,
+  status: 'completed' | 'failed',
+  cb: StreamCardBuilder,
+  emitCard: (e: CardEvent) => void,
+  emitResult: boolean,
+): void {
+  const isFailure = status === 'failed';
+  for (let i = 0; i < changes.length; i++) {
+    const change = changes[i];
+    const cardId = changes.length === 1 ? itemId : `${itemId}#${i}`;
+    const toolName: 'Write' | 'Edit' = change.kind === 'add' ? 'Write' : 'Edit';
+    if (!cb.hasToolCard(cardId)) {
+      emitCard(cb.toolUse(toolName, { file_path: change.path }, cardId));
+    }
+    if (emitResult) {
+      const cardEvt = cb.toolResult(cardId, `${change.kind}: ${change.path}`, isFailure);
+      if (cardEvt) emitCard(cardEvt);
+    }
+  }
+}
+
+/** Compute the new-text delta for an item whose `text` field is cumulative.
+ *  When the item id differs from the previously-tracked one (e.g. a second
+ *  agent_message item in the same turn) the previous length must NOT be used
+ *  — otherwise the new message gets its leading characters sliced off. */
+function takeAssistantDelta(
+  item: { id: string; text: string },
+  tracker: TextTracker,
+): string {
+  const isSameItem = tracker.lastAssistantItemId === item.id;
+  const knownLength = isSameItem ? tracker.lastAssistantText.length : 0;
+  const delta = item.text.slice(knownLength);
+  tracker.lastAssistantText = item.text;
+  tracker.lastAssistantItemId = item.id;
+  return delta;
+}
+
+function takeReasoningDelta(
+  item: { id: string; text: string },
+  tracker: TextTracker,
+): string {
+  const isSameItem = tracker.lastReasoningItemId === item.id;
+  const knownLength = isSameItem ? tracker.lastReasoningText.length : 0;
+  const delta = item.text.slice(knownLength);
+  tracker.lastReasoningText = item.text;
+  tracker.lastReasoningItemId = item.id;
+  return delta;
+}
+
+// `ErrorItem` has no status field — it's a one-shot. The SDK doesn't pin
+// down which of started/updated/completed it arrives on, so we listen on all
+// three and dedupe by id to avoid emitting the same message multiple times.
+function emitErrorItemOnce(
+  item: { id: string; message: string },
+  cb: StreamCardBuilder,
+  emitCard: (e: CardEvent) => void,
+  tracker: TextTracker,
+): void {
+  if (tracker.emittedErrorIds.has(item.id)) return;
+  tracker.emittedErrorIds.add(item.id);
+  emitCard(cb.systemMessage(item.message, 'error'));
 }
 
 // ── Streaming event consumer (shared between first turn and subsequent turns) ──
@@ -48,6 +180,18 @@ interface TurnContext {
   streamId: string;
   /** Resolves with thread_id when thread.started is received. */
   onThreadStarted?: (threadId: string) => void;
+  /** Codex reports `usage` cumulatively across the thread; the session keeps
+   *  the running snapshot so we can compute per-turn deltas. The consumer
+   *  reads it before turn.completed and writes the freshly observed
+   *  cumulative back into it once the delta is emitted. Optional in tests
+   *  that don't care about deltas — defaults to a zero snapshot. */
+  prevCumulative?: CumulativeUsage;
+}
+
+interface CumulativeUsage {
+  input: number;
+  output: number;
+  cachedInput: number;
 }
 
 /**
@@ -66,7 +210,13 @@ export async function consumeCodexStream(
 
   let textBuffer = '';
   let bufferTimer: ReturnType<typeof setTimeout> | null = null;
-  const tracker: TextTracker = { lastAssistantText: '', lastReasoningText: '' };
+  const tracker: TextTracker = {
+    lastAssistantText: '',
+    lastAssistantItemId: null,
+    lastReasoningText: '',
+    lastReasoningItemId: null,
+    emittedErrorIds: new Set(),
+  };
   let turnEndEmitted = false;
 
   const flushText = () => {
@@ -106,13 +256,30 @@ export async function consumeCodexStream(
           flushText();
           const fin = cb.finalizeAssistantText();
           if (fin) emitCard(fin);
+          let tokenUsage: CardStreamEnd['tokenUsage'];
+          if (event.usage) {
+            // Codex `usage` is thread-cumulative — convert to per-turn deltas
+            // and update the running snapshot so the next turn lines up.
+            const prev = ctx.prevCumulative ?? { input: 0, output: 0, cachedInput: 0 };
+            const cumInput = event.usage.input_tokens;
+            const cumOutput = event.usage.output_tokens;
+            const cumCached = event.usage.cached_input_tokens ?? 0;
+            tokenUsage = {
+              input: Math.max(0, cumInput - prev.input),
+              output: Math.max(0, cumOutput - prev.output),
+              cumulativeInput: cumInput,
+              cumulativeOutput: cumOutput,
+              cumulativeCachedInput: cumCached,
+            };
+            prev.input = cumInput;
+            prev.output = cumOutput;
+            prev.cachedInput = cumCached;
+          }
           emitStreamEnd({
             streamId,
             sessionId: thread.id ?? '',
             success: true,
-            tokenUsage: event.usage
-              ? { input: event.usage.input_tokens, output: event.usage.output_tokens }
-              : undefined,
+            tokenUsage,
           });
           break;
         }
@@ -168,8 +335,17 @@ export async function consumeCodexStream(
 // ── Item event routing ──
 
 interface TextTracker {
+  /** Cumulative text of the *current* agent_message item — the SDK delivers
+   *  text cumulatively per item, so deltas come from `item.text.slice(length)`.
+   *  Reset to "" whenever `lastAssistantItemId` changes so a fresh message
+   *  doesn't slice itself by the previous message's length (which would chop
+   *  off its leading characters). */
   lastAssistantText: string;
+  lastAssistantItemId: string | null;
   lastReasoningText: string;
+  lastReasoningItemId: string | null;
+  /** IDs of ErrorItems already surfaced as system messages — see `emitErrorItemOnce`. */
+  emittedErrorIds: Set<string>;
 }
 
 function routeItemStarted(
@@ -181,24 +357,23 @@ function routeItemStarted(
   tracker: TextTracker,
 ): void {
   switch (item.type) {
-    case 'reasoning':
-      tracker.lastReasoningText = item.text;
-      if (item.text) emitCard(cb.thinkingBlock(item.text));
+    case 'reasoning': {
+      const delta = takeReasoningDelta(item, tracker);
+      if (delta) emitCard(cb.thinkingBlock(delta));
       break;
-    case 'agent_message':
-      tracker.lastAssistantText = item.text;
-      if (item.text) bufferText(item.text);
+    }
+    case 'agent_message': {
+      const delta = takeAssistantDelta(item, tracker);
+      if (delta) bufferText(delta);
       break;
+    }
     case 'command_execution':
       flushText();
       emitCard(cb.toolUse('Bash', { command: item.command }, item.id));
       break;
     case 'file_change': {
       flushText();
-      const paths = item.changes.map(c => c.path);
-      const kinds = item.changes.map(c => c.kind);
-      const toolName = kinds.every(k => k === 'add') ? 'Write' : 'Edit';
-      emitCard(cb.toolUse(toolName, { files: paths }, item.id));
+      emitFileChangeCards(item.id, item.changes, item.status, cb, emitCard, false);
       break;
     }
     case 'mcp_tool_call':
@@ -215,10 +390,10 @@ function routeItemStarted(
       break;
     case 'todo_list':
       flushText();
-      emitCard(cb.toolUse('TodoWrite', { todos: item.items }, item.id));
+      emitCard(cb.toolUse('TodoWrite', { todos: normalizeTodoItems(item.items) }, item.id));
       break;
     case 'error':
-      emitCard(cb.systemMessage(item.message, 'error'));
+      emitErrorItemOnce(item, cb, emitCard, tracker);
       break;
   }
 }
@@ -232,8 +407,7 @@ function routeItemUpdated(
 ): void {
   switch (item.type) {
     case 'agent_message': {
-      const delta = item.text.slice(tracker.lastAssistantText.length);
-      tracker.lastAssistantText = item.text;
+      const delta = takeAssistantDelta(item, tracker);
       if (delta) bufferText(delta);
       break;
     }
@@ -243,8 +417,7 @@ function routeItemUpdated(
       break;
     }
     case 'reasoning': {
-      const delta = item.text.slice(tracker.lastReasoningText.length);
-      tracker.lastReasoningText = item.text;
+      const delta = takeReasoningDelta(item, tracker);
       if (delta.trim()) emitCard(cb.thinkingBlock(delta));
       break;
     }
@@ -252,10 +425,22 @@ function routeItemUpdated(
       // TodoWrite's card body reads from the tool input, which we update via
       // a fresh toolUse call (the cardBuilder dedupes by toolUseId and patches
       // in place).
-      const cardEvt = cb.toolUse('TodoWrite', { todos: item.items }, item.id);
+      const cardEvt = cb.toolUse('TodoWrite', { todos: normalizeTodoItems(item.items) }, item.id);
       if (cardEvt) emitCard(cardEvt);
       break;
     }
+    case 'error':
+      emitErrorItemOnce(item, cb, emitCard, tracker);
+      break;
+    case 'web_search':
+      // Codex emits web_search at item.started with an empty query and only
+      // populates `query` later via item.updated. Without this case the card
+      // shows the empty-query fallback ("?"). cardBuilder dedupes by id so
+      // re-emitting the toolUse just patches the input in place.
+      emitCard(cb.toolUse('WebSearch', { query: item.query }, item.id));
+      break;
+    // file_change / mcp_tool_call have no meaningful intermediate state —
+    // they're surfaced once at started or completed. Intentionally omitted.
   }
 }
 
@@ -271,8 +456,7 @@ function routeItemCompleted(
       // Codex's experimental-json can deliver agent_message as a single
       // item.completed with no prior started/updated — without this, the
       // model's narration silently disappears.
-      const delta = item.text.slice(tracker.lastAssistantText.length);
-      tracker.lastAssistantText = item.text;
+      const delta = takeAssistantDelta(item, tracker);
       if (delta) emitCard(cb.assistantText(delta));
       const fin = cb.finalizeAssistantText();
       if (fin) emitCard(fin);
@@ -290,18 +474,10 @@ function routeItemCompleted(
       break;
     }
     case 'file_change': {
-      // Per the SDK, file_change is "emitted once the patch succeeds or fails"
-      // — it never arrives via item.started, so the tool card has to be
-      // created here, or we'd drop the entire edit silently.
-      if (!cb.hasToolCard(item.id)) {
-        const paths = item.changes.map(c => c.path);
-        const kinds = item.changes.map(c => c.kind);
-        const toolName = kinds.every(k => k === 'add') ? 'Write' : 'Edit';
-        emitCard(cb.toolUse(toolName, { files: paths }, item.id));
-      }
-      const resultText = item.changes.map(c => `${c.kind}: ${c.path}`).join('\n');
-      const cardEvt = cb.toolResult(item.id, resultText, item.status === 'failed');
-      if (cardEvt) emitCard(cardEvt);
+      // file_change is typically emitted only at item.completed per SDK docs,
+      // but the tests show it can also arrive via item.started. The helper
+      // creates per-file Edit/Write cards (deduped by id) so either path works.
+      emitFileChangeCards(item.id, item.changes, item.status, cb, emitCard, true);
       break;
     }
     case 'mcp_tool_call': {
@@ -319,6 +495,11 @@ function routeItemCompleted(
         resultText = item.result.content
           ?.map((block: any) => block.text ?? JSON.stringify(block))
           .join('\n') ?? '';
+        // Some MCP servers return only structured_content (no text blocks);
+        // fall back so the result card isn't empty.
+        if (!resultText && item.result.structured_content !== undefined) {
+          resultText = JSON.stringify(item.result.structured_content);
+        }
       }
       const cardEvt = cb.toolResult(item.id, resultText, item.status === 'failed');
       if (cardEvt) emitCard(cardEvt);
@@ -334,20 +515,22 @@ function routeItemCompleted(
     }
     case 'reasoning': {
       // Like agent_message: emit any un-surfaced text defensively.
-      const delta = item.text.slice(tracker.lastReasoningText.length);
-      tracker.lastReasoningText = item.text;
+      const delta = takeReasoningDelta(item, tracker);
       if (delta.trim()) emitCard(cb.thinkingBlock(delta));
       break;
     }
     case 'todo_list': {
       // Patch-or-create the TodoWrite card with the final list.
-      emitCard(cb.toolUse('TodoWrite', { todos: item.items }, item.id));
+      emitCard(cb.toolUse('TodoWrite', { todos: normalizeTodoItems(item.items) }, item.id));
       const completedCount = item.items.filter((t) => t.completed).length;
       const resultText = `${completedCount}/${item.items.length} completed`;
       const cardEvt = cb.toolResult(item.id, resultText, false);
       if (cardEvt) emitCard(cardEvt);
       break;
     }
+    case 'error':
+      emitErrorItemOnce(item, cb, emitCard, tracker);
+      break;
   }
 }
 
@@ -363,15 +546,23 @@ class CodexSdkSession implements ProviderSession {
   private cardBuilder: StreamCardBuilder;
   private callbacks: ProviderCallbacks;
   private closed = false;
+  /** Running thread-cumulative usage; updated in-place on every turn.completed
+   *  so each turn's tokenUsage is reported as a per-turn delta. Seeded from
+   *  prior persisted turns on resume so deltas survive a daemon restart. */
+  public readonly prevCumulative: CumulativeUsage;
 
   constructor(args: {
     thread: Thread;
     cardBuilder: StreamCardBuilder;
     callbacks: ProviderCallbacks;
+    seedCumulative?: CumulativeUsage;
   }) {
     this.thread = args.thread;
     this.cardBuilder = args.cardBuilder;
     this.callbacks = args.callbacks;
+    this.prevCumulative = args.seedCumulative
+      ? { ...args.seedCumulative }
+      : { input: 0, output: 0, cachedInput: 0 };
   }
 
   get alive(): boolean {
@@ -418,6 +609,7 @@ class CodexSdkSession implements ProviderSession {
         cb,
         callbacks: this.callbacks,
         streamId,
+        prevCumulative: this.prevCumulative,
       }, this.abortController.signal);
     } catch (error) {
       const aborted = this.abortController?.signal.aborted;
@@ -459,8 +651,9 @@ export class CodexSdkProvider implements CodingAgentProvider {
     cardBuilder: StreamCardBuilder,
     callbacks: ProviderCallbacks,
   ): Promise<{ sessionId: string; session: ProviderSession }> {
-    const codex = new Codex({ apiKey: process.env.OPENAI_API_KEY });
-    const threadOptions = buildThreadOptions(opts);
+    const preset = resolveCodexPermissionPreset(opts.permissionLevel, opts.sandboxed);
+    const codex = makeCodex(preset.autoReview);
+    const threadOptions = buildThreadOptions(opts, preset);
     const thread = codex.startThread(threadOptions);
 
     const session = new CodexSdkSession({
@@ -482,8 +675,9 @@ export class CodexSdkProvider implements CodingAgentProvider {
     cardBuilder: StreamCardBuilder,
     callbacks: ProviderCallbacks,
   ): Promise<{ sessionId: string; session: ProviderSession }> {
-    const codex = new Codex({ apiKey: process.env.OPENAI_API_KEY });
-    const threadOptions = buildThreadOptions(opts);
+    const preset = resolveCodexPermissionPreset(opts.permissionLevel, opts.sandboxed);
+    const codex = makeCodex(preset.autoReview);
+    const threadOptions = buildThreadOptions(opts, preset);
     const thread = codex.resumeThread(opts.sessionId, threadOptions);
 
     cardBuilder.updateSessionId(opts.sessionId);
@@ -492,6 +686,7 @@ export class CodexSdkProvider implements CodingAgentProvider {
       thread,
       cardBuilder,
       callbacks,
+      seedCumulative: loadCumulativeSeed(opts.sessionId),
     });
 
     // Already have sessionId — fire and forget
@@ -533,6 +728,7 @@ export class CodexSdkProvider implements CodingAgentProvider {
             cb: cardBuilder,
             callbacks,
             streamId,
+            prevCumulative: session.prevCumulative,
             onThreadStarted: (threadId) => {
               if (!resolved) {
                 resolved = true;
@@ -573,13 +769,44 @@ export class CodexSdkProvider implements CodingAgentProvider {
   }
 }
 
-function buildThreadOptions(opts: StartSessionOpts | ResumeSessionOpts): ThreadOptions {
+/** Load the cumulative usage we last persisted for this thread, so a freshly
+ *  resumed session continues to emit per-turn deltas instead of treating the
+ *  next cumulative report as if the thread had started from zero. Falls back
+ *  to legacy turns recorded before `cumulativeInputTokens` was introduced —
+ *  back then we stored the raw cumulative as `inputTokens`, so that field is
+ *  still a usable seed when the cumulative one is missing. */
+function loadCumulativeSeed(sessionId: string): CumulativeUsage | undefined {
+  const last = getEventStore().getLastTurn(sessionId);
+  if (!last) return undefined;
+  const cumInput = last.cumulativeInputTokens ?? last.inputTokens;
+  const cumOutput = last.cumulativeOutputTokens ?? last.outputTokens;
+  const cumCached = last.cumulativeCachedInputTokens ?? 0;
+  if (!cumInput && !cumOutput && !cumCached) return undefined;
+  return { input: cumInput, output: cumOutput, cachedInput: cumCached };
+}
+
+/** Build a Codex SDK instance, applying `approvals_reviewer = "auto_review"`
+ *  via the SDK's `config` override when the chosen preset wants the
+ *  auto-reviewer subagent. The SDK has no per-thread reviewer, so this is
+ *  set per-instance — fine because each session creates its own Codex. */
+function makeCodex(autoReview: boolean): Codex {
+  return new Codex({
+    apiKey: process.env.OPENAI_API_KEY,
+    ...(autoReview ? { config: { approvals_reviewer: 'auto_review' } } : {}),
+  });
+}
+
+function buildThreadOptions(
+  opts: StartSessionOpts | ResumeSessionOpts,
+  preset: { approvalPolicy: ApprovalMode; sandboxMode: SandboxMode },
+): ThreadOptions {
   const model = 'model' in opts ? opts.model : undefined;
   return {
     model: model && !model.startsWith('claude-') ? model : undefined,
     workingDirectory: opts.cwd,
-    sandboxMode: mapSandboxMode(opts.permissionLevel, opts.sandboxed),
-    approvalPolicy: mapApprovalPolicy(opts.permissionLevel),
+    sandboxMode: preset.sandboxMode,
+    approvalPolicy: preset.approvalPolicy,
+    modelReasoningEffort: mapReasoningEffort(opts.reasoningEffort),
     skipGitRepoCheck: true,
   };
 }

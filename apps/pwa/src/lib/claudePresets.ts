@@ -46,6 +46,65 @@ export const PERMISSION_MODES = [
   { value: 'auto', label: 'Auto' },
 ];
 
+/** Codex permission presets that match the Codex app's labels.
+ *  Each preset bundles (approval_policy, sandbox_mode) — the Codex docs call
+ *  these "common sandbox and approval combinations". Source:
+ *  https://developers.openai.com/codex/agent-approvals-security
+ *
+ *  The agent expands the preset id back into the SDK's two axes:
+ *    read-only   → (on-request, read-only)
+ *    default     → (on-request, workspace-write)        [app: 預設]
+ *    auto-review → (on-request, workspace-write) +      [app: 自動審核]
+ *                  config `approvals_reviewer = auto_review`
+ *    full-access → (never, danger-full-access)          [app: 完整存取權] */
+export const CODEX_PERMISSION_MODES = [
+  { value: 'read-only',   label: 'Read Only' },
+  { value: 'default',     label: 'Default' },
+  { value: 'auto-review', label: 'Auto Review' },
+  { value: 'full-access', label: 'Full Access' },
+];
+
+export function getPermissionModesForAgent(agentId: AgentId) {
+  return agentId === 'codex' ? CODEX_PERMISSION_MODES : PERMISSION_MODES;
+}
+
+/** Claude Code's reasoning levels — these are the values the Claude CLI's
+ *  `thinking_budget` (or equivalent) accepts. Distinct enum from Codex's. */
+export const REASONING_EFFORTS_CLAUDE = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'max', label: 'Max' },
+];
+
+/** Codex SDK's `ModelReasoningEffort` union, used as fallback when a model
+ *  isn't in the dynamic list (so the chip still has something to render). */
+export const REASONING_EFFORTS_CODEX_FALLBACK = [
+  { value: 'minimal', label: 'Minimal' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'X-High' },
+];
+
+/** Build the reasoning-effort dropdown for the current agent + model.
+ *  Claude uses a fixed enum; Codex prefers the per-model
+ *  `supported_reasoning_levels` and falls back to its SDK union. */
+export function getReasoningEffortsForModel(
+  agentId: AgentId,
+  modelId: string | undefined,
+  dynamicCodexModels?: CodexModelInfo[],
+) {
+  if (agentId !== 'codex') return REASONING_EFFORTS_CLAUDE;
+  const model = dynamicCodexModels?.find((m) => m.id === modelId);
+  const efforts = model?.reasoningEfforts;
+  if (!efforts || efforts.length === 0) return REASONING_EFFORTS_CODEX_FALLBACK;
+  return efforts.map((e) => ({
+    value: e,
+    label: e === 'xhigh' ? 'X-High' : e[0].toUpperCase() + e.slice(1),
+  }));
+}
+
 export type AgentType = {
   value: AgentId;
   label: string;
@@ -78,10 +137,17 @@ export function getAgentType(agentId: AgentId): AgentType {
 /**
  * Max context window (tokens) for a given model string.
  * Claude default = 200k; `[1m]` suffix enables 1M context window.
- * Codex/o-series fall back to 200k for a reasonable display.
+ * For Codex models, prefer the per-model `contextWindow` advertised by the
+ * daemon (sourced from `codex debug models`); falls back to 200k for unknown
+ * Codex models so the badge still shows something meaningful.
  */
-export function getModelContextLimit(model?: string): number {
+export function getModelContextLimit(
+  model?: string,
+  dynamicCodexModels?: CodexModelInfo[],
+): number {
   if (!model) return 200_000;
   if (/\[1m\]$/i.test(model)) return 1_000_000;
+  const codexMatch = dynamicCodexModels?.find((m) => m.id === model);
+  if (codexMatch?.contextWindow) return codexMatch.contextWindow;
   return 200_000;
 }

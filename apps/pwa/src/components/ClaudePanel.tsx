@@ -53,6 +53,7 @@ export function ClaudePanel({
     selectedAgent,
     selectedModel,
     selectedPermissionMode,
+    selectedReasoningEffort,
     sandboxEnabled,
     setPromptInput,
     setActiveSession,
@@ -249,11 +250,14 @@ export function ClaudePanel({
         model: selectedModel,
         permissionMode: selectedPermissionMode,
         sandboxed: sandboxEnabled || undefined,
+        // Codex honors reasoningEffort; Claude providers ignore it. Send for both
+        // — the agent layer narrows by provider.
+        ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}),
         ...(selectedAgentType.allowedTools !== undefined ? { allowedTools: selectedAgentType.allowedTools } : {}),
         ...(selectedAgentType.systemPrompt ? { systemPrompt: selectedAgentType.systemPrompt } : {}),
       });
     }
-  }, [promptInput, isStreaming, activeSessionId, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedAgentType, setPromptInput, onResumeSession, onStartSession]);
+  }, [promptInput, isStreaming, activeSessionId, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedReasoningEffort, selectedAgentType, setPromptInput, onResumeSession, onStartSession]);
 
   const handleRespondToInput = useCallback((requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string) => {
     if (!onRespondToUserInput) return;

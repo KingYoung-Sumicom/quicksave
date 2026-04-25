@@ -40,7 +40,7 @@ import {
 } from '@sumicom/quicksave-shared';
 import { useCodexLoginStore } from './stores/codexLoginStore';
 import { useTerminalStore } from './stores/terminalStore';
-import { registerActiveBusGetter } from './lib/busRegistry';
+import { registerActiveBusGetter, registerAgentBusGetter } from './lib/busRegistry';
 import { applySessionUpdate } from './lib/applySessionUpdate';
 import { applyHistoryEntry, applyHistoryAction } from './lib/applyHistoryEntry';
 import { NotificationPrompt } from './components/NotificationPrompt';
@@ -162,9 +162,11 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
 }
 
 function applyPreferencesToStore(prefs: ClaudePreferences): void {
-  const { setSelectedModel, setSelectedReasoningEffort } = useClaudeStore.getState();
-  if (prefs.model !== undefined) setSelectedModel(prefs.model);
-  if (prefs.reasoningEffort !== undefined) setSelectedReasoningEffort(prefs.reasoningEffort);
+  // Server prefs are claude-scoped; write to claude-code's bucket directly
+  // (see useClaudeOperations.applyPreferences for the same reasoning).
+  const { setAgentPref } = useClaudeStore.getState();
+  if (prefs.model !== undefined) setAgentPref('claude-code', 'model', prefs.model);
+  if (prefs.reasoningEffort !== undefined) setAgentPref('claude-code', 'reasoningEffort', prefs.reasoningEffort);
 }
 
 function applyCommitSummary(state: CommitSummaryState): void {
@@ -226,6 +228,7 @@ function AppContent() {
   // too deep to receive it via props. See lib/busRegistry.ts.
   useEffect(() => {
     registerActiveBusGetter(getActiveBus);
+    registerAgentBusGetter((agentId) => busesRef.current.get(agentId)?.bus ?? null);
   }, [getActiveBus]);
 
   // Lazily create the per-agent bus + transport and register its
@@ -315,7 +318,7 @@ function AppContent() {
     resumeSession,
     cancelSession,
     closeSession,
-    archiveSession,
+    endSession,
     restoreSession,
     listArchivedSessions,
     respondToUserInput,
@@ -570,7 +573,9 @@ function AppContent() {
         transport.notifyConnected();
         agentIdRef.current = agentId;
         if (preferences) {
-          useClaudeStore.getState().setSelectedModel(preferences.model);
+          // Server prefs are claude-scoped — write to claude-code's bucket
+          // so codex prefs aren't clobbered when the user is on Codex.
+          useClaudeStore.getState().setAgentPref('claude-code', 'model', preferences.model);
         }
         if (codexModels?.length) {
           useConnectionStore.getState().setCodexModels(codexModels);
@@ -929,7 +934,7 @@ function AppContent() {
             onSetSessionConfig={setSessionConfig}
             onSendControlRequest={sendControlRequest}
             onCloseSession={closeSession}
-            onArchiveSession={archiveSession}
+            onEndSession={endSession}
             onCancelSession={cancelSession}
             onGetSessionCards={getSessionCards}
             onStartSession={startSession}
@@ -1240,7 +1245,7 @@ function ProjectRouteSession({
   onSetSessionConfig,
   onSendControlRequest,
   onCloseSession,
-  onArchiveSession,
+  onEndSession,
   onCancelSession,
   onGetSessionCards,
   onStartSession,
@@ -1259,7 +1264,7 @@ function ProjectRouteSession({
   onSetSessionConfig: (sessionId: string, key: string, value: import('@sumicom/quicksave-shared').ConfigValue) => void;
   onSendControlRequest: (sessionId: string, subtype: string, params?: Record<string, unknown>) => Promise<import('@sumicom/quicksave-shared').SessionControlRequestResponsePayload>;
   onCloseSession: (sessionId: string) => void;
-  onArchiveSession: (sessionId: string, cwd: string) => Promise<void>;
+  onEndSession: (sessionId: string) => void;
   onCancelSession: (sessionId: string) => void;
   onGetSessionCards: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
   onStartSession: (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
@@ -1281,9 +1286,12 @@ function ProjectRouteSession({
   const isNewSession = searchParams.has('new');
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
   // Watch the archived flag on the URL-bound session so we can bounce out
-  // of pages whose sessionId has been retired on the daemon (rekey fork,
-  // CLI process exit, explicit close). isActive alone is too noisy — it
-  // can flip during normal list reconciliation.
+  // of pages whose sessionId has been retired in the registry (End Task,
+  // project:delete). isActive alone is too noisy — it can flip during normal
+  // list reconciliation, plus we now want to KEEP the user on the page when
+  // the CLI process is killed (Terminate Coding Agent Process / unexpected
+  // CLI exit) since the registry entry is still active and cold-resumable.
+  // Cold-resume rekey forks are handled by the separate rerouter below.
   const viewedArchived = useClaudeStore((s) =>
     urlSessionId && urlSessionId !== 'new' ? s.sessions[urlSessionId]?.archived === true : false
   );
@@ -1392,26 +1400,9 @@ function ProjectRouteSession({
             const sid = getSessionId();
             if (sid) onCloseSession(sid);
           }}
-          onArchiveSession={async () => {
+          onEndSession={() => {
             const sid = getSessionId();
-            if (sid && cwd) {
-              await onCloseSession(sid);
-              await onArchiveSession(sid, cwd);
-              const { setActiveSession, clearCards } = useClaudeStore.getState();
-              setActiveSession(null);
-              clearCards();
-              // Navigate explicitly — can't rely on the `viewedArchived` bounce
-              // effect because `onCloseSession` may remove the session from the
-              // store before `archived:true` propagates, so the selector never
-              // flips to true. Mirror the bounce effect's pattern: prefer
-              // `navigate(-1)` to pop the defunct entry; fall back when there's
-              // no prior entry (deep-link / refresh).
-              if (location.key !== 'default') {
-                navigate(-1);
-              } else {
-                navigate(projectBasePath, { replace: true });
-              }
-            }
+            if (sid) onEndSession(sid);
           }}
           onCancelSession={() => {
             const sid = getSessionId();

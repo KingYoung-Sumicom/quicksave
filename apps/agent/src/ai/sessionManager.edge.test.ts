@@ -41,6 +41,7 @@ vi.mock('./sessionRegistry.js', () => ({
   getSessionRegistry: vi.fn().mockReturnValue({
     getEntry: vi.fn().mockReturnValue(null),
     getEntriesForProject: vi.fn().mockReturnValue([]),
+    findBySessionId: vi.fn().mockReturnValue(undefined),
     upsertEntry: vi.fn(),
     updateEntry: vi.fn(),
   }),
@@ -1230,7 +1231,7 @@ describe('SessionManager — adversarial edge cases', () => {
   // ── onSessionExited callback ──
 
   describe('onSessionExited callback', () => {
-    it('fires session-updated with isActive=false and archived=true when provider calls onSessionExited', async () => {
+    it('fires session-updated with isActive=false (archived stays false — registry entry remains) when provider calls onSessionExited', async () => {
       const sessionId = 'exit-mark';
       const mockProvSession = createMockProviderSession({ alive: true });
       (provider.startSession as Mock).mockResolvedValue({
@@ -1239,6 +1240,14 @@ describe('SessionManager — adversarial edge cases', () => {
       });
 
       await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+
+      // Mirror real behavior: startSession upserts an active registry entry,
+      // so subsequent emits should see findBySessionId return it.
+      const { getSessionRegistry } = await import('./sessionRegistry.js');
+      const registry = (getSessionRegistry as Mock)();
+      (registry.findBySessionId as Mock).mockImplementation((id: string) =>
+        id === sessionId ? { sessionId, cwd: '/tmp/test' } : undefined,
+      );
 
       const updates: any[] = [];
       manager.on('session-updated', (e: any) => {
@@ -1250,7 +1259,9 @@ describe('SessionManager — adversarial edge cases', () => {
 
       const last = updates[updates.length - 1];
       expect(last.isActive).toBe(false);
-      expect(last.archived).toBe(true);
+      // Registry entry is still active (user can cold-resume), so archived=false.
+      // The "navigate away" archived=true signal is reserved for End Task.
+      expect(last.archived).toBe(false);
       expect(last.isStreaming).toBe(false);
       expect(manager.getActiveSessions().find(s => s.sessionId === sessionId)).toBeUndefined();
     });
@@ -1303,6 +1314,14 @@ describe('SessionManager — adversarial edge cases', () => {
 
       await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
 
+      // Mirror real behavior: registry has an active entry for oldId after
+      // startSession; rekey doesn't touch the registry directly.
+      const { getSessionRegistry } = await import('./sessionRegistry.js');
+      const registry = (getSessionRegistry as Mock)();
+      (registry.findBySessionId as Mock).mockImplementation((id: string) =>
+        id === oldId ? { sessionId: oldId, cwd: '/tmp/test' } : undefined,
+      );
+
       // Persist some side-map state that should migrate with the rekey
       await manager.setSessionConfig(oldId, 'permissionMode', 'bypassPermissions');
 
@@ -1337,11 +1356,13 @@ describe('SessionManager — adversarial edge cases', () => {
       expect(manager.getSessionConfig(newId).permissionMode).toBe('bypassPermissions');
       expect(manager.getSessionConfig(oldId).permissionMode).toBeUndefined();
 
-      // PWA got an inactive event for the old id and active for the new id
+      // PWA got an inactive event for the old id and active for the new id.
+      // The fork rerouter in the PWA handles cold-resume rekey separately
+      // from `archived` (which is now reserved for the End Task signal).
       const oldInactive = updates.find(u => u.sessionId === oldId && u.isActive === false);
       const newActive = updates.find(u => u.sessionId === newId && u.isActive === true);
       expect(oldInactive).toBeDefined();
-      expect(oldInactive.archived).toBe(true);
+      expect(oldInactive.archived).toBe(false);
       expect(newActive).toBeDefined();
       expect(newActive.archived).toBe(false);
     });

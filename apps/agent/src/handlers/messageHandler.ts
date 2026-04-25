@@ -74,6 +74,8 @@ import {
   ClaudeCancelResponsePayload,
   ClaudeCloseRequestPayload,
   ClaudeCloseResponsePayload,
+  ClaudeEndTaskRequestPayload,
+  ClaudeEndTaskResponsePayload,
   ClaudeGetMessagesRequestPayload,
   ClaudeUserInputResponsePayload,
   ClaudeSetPreferencesRequestPayload,
@@ -139,6 +141,7 @@ import { enrichEntry } from '../ai/enrichEntry.js';
 import { getEventStore } from '../storage/eventStore.js';
 import { readdir, stat, readFile } from 'fs/promises';
 import { existsSync, watch as fsWatch, type FSWatcher } from 'fs';
+import { spawn } from 'child_process';
 import { join, dirname, basename } from 'path';
 import { homedir } from 'os';
 
@@ -146,9 +149,16 @@ const VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
 // Local file read is essentially free + fs.watch invalidates on cache writes.
 // 5 min is just a safety net for missed-event cases (NFS, container fs, etc.).
 const CODEX_MODELS_FILE_TTL_MS = 5 * 60 * 1000;
+// `codex debug models` spawns the CLI (~1s) but is the only source that
+// includes models the user is newly enrolled in (e.g. gpt-5.5) before the
+// cache file catches up. Same TTL as file because the watcher invalidates it.
+const CODEX_MODELS_CLI_TTL_MS = 5 * 60 * 1000;
 // API path hits OpenAI; keep its own longer TTL to avoid hammering the
 // endpoint when the user has no local Codex CLI cache file at all.
 const CODEX_MODELS_API_TTL_MS = 60 * 60 * 1000;
+// Subprocess timeout for `codex debug models` — the CLI normally finishes
+// well under a second; 8s is a generous bound for slow CI / cold starts.
+const CODEX_DEBUG_MODELS_TIMEOUT_MS = 8 * 1000;
 // fs.watch on ~/.codex fires multiple events per write (rename + change on
 // many filesystems). Coalesce into one refresh per burst.
 const CODEX_MODELS_WATCH_DEBOUNCE_MS = 500;
@@ -161,13 +171,17 @@ function codexModelListsEqual(
   if (!a || !b) return false;
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    if (a[i].id !== b[i].id || a[i].name !== b[i].name) return false;
-    const aE = a[i].reasoningEfforts;
-    const bE = b[i].reasoningEfforts;
-    if (aE === bE) continue;
-    if (!aE || !bE) return false;
-    if (aE.length !== bE.length) return false;
-    for (let j = 0; j < aE.length; j++) if (aE[j] !== bE[j]) return false;
+    const ai = a[i], bi = b[i];
+    if (ai.id !== bi.id || ai.name !== bi.name) return false;
+    if (ai.defaultReasoningEffort !== bi.defaultReasoningEffort) return false;
+    if (ai.contextWindow !== bi.contextWindow) return false;
+    const aE = ai.reasoningEfforts;
+    const bE = bi.reasoningEfforts;
+    if (aE !== bE) {
+      if (!aE || !bE) return false;
+      if (aE.length !== bE.length) return false;
+      for (let j = 0; j < aE.length; j++) if (aE[j] !== bE[j]) return false;
+    }
   }
   return true;
 }
@@ -185,20 +199,23 @@ export class MessageHandler {
   /** Per-repo agent-owned commit summary state. The daemon wires the
    *  `state-updated` event to `connection.broadcast` (see service/run.ts). */
   private commitSummaryStore: CommitSummaryStateStore = new CommitSummaryStateStore();
-  private claudeService: SessionManager = new SessionManager([
-    new ClaudeCodeProvider(),
-    new CodexSdkProvider(),
-  ]);
+  private claudeService: SessionManager;
   private pushClient: PushClient | null = null;
   private latestVersionCache: { version: string; checkedAt: number } | null = null;
   private versionCheckInFlight: Promise<string | null> | null = null;
-  private codexModelsCache: { models: CodexModelInfo[]; checkedAt: number; source: 'file' | 'api' } | null = null;
+  private codexModelsCache: { models: CodexModelInfo[]; checkedAt: number; source: 'cli' | 'file' | 'api' } | null = null;
   private codexModelsCheckInFlight: Promise<CodexModelInfo[] | null> | null = null;
   private codexModelsUpdateHandler: ((models: CodexModelInfo[]) => void) | null = null;
   private codexModelsWatcher: FSWatcher | null = null;
   private codexModelsWatchDebounce: ReturnType<typeof setTimeout> | null = null;
   /** Override for tests; defaults to `~/.codex`. */
   private readonly codexCacheDir: string;
+  /**
+   * Path to the `codex` binary, or `null` to disable the `codex debug models`
+   * source (used by tests so they don't pick up the dev machine's real CLI).
+   * Defaults to `'codex'` (resolved via PATH).
+   */
+  private readonly codexBin: string | null;
   private codexLoginManager = new CodexLoginManager();
   onHistoryUpdated?: (cwd: string, entry: SessionRegistryEntry, action: 'upsert' | 'delete') => void;
 
@@ -209,7 +226,17 @@ export class MessageHandler {
     _license?: License,
     codingPaths?: string[],
     productionBuild = false,
-    options?: { codexCacheDir?: string },
+    options?: {
+      codexCacheDir?: string;
+      codexBin?: string | null;
+      /**
+       * Override the default `[ClaudeCodeProvider, CodexSdkProvider]` lineup.
+       * Used by the e2e harness to inject a `StubProvider` that doesn't
+       * spawn real CLIs. When provided, the lineup is wrapped in a fresh
+       * `SessionManager` exactly the same way the daemon does in `run.ts`.
+       */
+      sessionManager?: SessionManager;
+    },
   ) {
     this.repos = new Map();
     for (const repo of repos) {
@@ -218,7 +245,16 @@ export class MessageHandler {
     this.availableRepos = repos;
     this.defaultRepoPath = repos.length > 0 ? repos[0].path : '';
     this.productionBuild = productionBuild;
+    this.claudeService = options?.sessionManager
+      ?? new SessionManager([new ClaudeCodeProvider(), new CodexSdkProvider()]);
     this.codexCacheDir = options?.codexCacheDir ?? join(homedir(), '.codex');
+    // Default to spawning the CLI in production. Under vitest, default to
+    // disabled so tests don't pick up the dev machine's real `codex` binary
+    // (which would race with the explicitly-mocked cache file). Tests can
+    // still exercise the CLI path by passing `codexBin: '<path>'` explicitly.
+    this.codexBin = options?.codexBin === undefined
+      ? (process.env.VITEST ? null : 'codex')
+      : options.codexBin;
 
     // Load explicit coding paths only (repos and coding paths are independent)
     if (codingPaths) {
@@ -268,24 +304,26 @@ export class MessageHandler {
    * Resolve the Codex model list for the current user.
    *
    * Priority:
-   *   1. `~/.codex/models_cache.json` — the Codex CLI's own cache of
-   *      models the signed-in account can actually use. This is the
-   *      authoritative list for ChatGPT-OAuth logins (the common case)
-   *      and is kept fresh by the CLI itself. Reads are essentially free,
-   *      so we use a short 5min in-memory TTL — and `startCodexModelsWatcher`
-   *      invalidates the cache the moment the file is rewritten.
-   *   2. `OPENAI_API_KEY` env var + OpenAI `/v1/models` — fallback for
-   *      API-key users, who are rare but still supported. Held to a 1h
-   *      sub-TTL so we don't hammer OpenAI when the local cache is absent.
+   *   1. `codex debug models` — the only source that includes models the
+   *      user is newly enrolled in but the cache file hasn't picked up yet
+   *      (e.g. gpt-5.5 right after rollout). Spawns the CLI; ~1s, so we
+   *      cache for 5 min and invalidate via the cache-file watcher.
+   *   2. `~/.codex/models_cache.json` — fallback when the CLI binary isn't
+   *      on PATH or the spawn fails. Same shape as (1), just stale-prone.
+   *   3. `OPENAI_API_KEY` env var + OpenAI `/v1/models` — last resort for
+   *      API-key users without a local Codex CLI. Held to a 1h sub-TTL so
+   *      we don't hammer OpenAI when the local sources are absent.
    *
-   * Returns `null` when neither source is available (not logged in and no
-   * API key set). Concurrent calls are deduped.
+   * Returns `null` when no source is available. Concurrent calls are
+   * deduped via `codexModelsCheckInFlight`.
    */
   private async fetchCodexModels(force = false): Promise<CodexModelInfo[] | null> {
     if (!force && this.codexModelsCache) {
-      const ttl = this.codexModelsCache.source === 'file'
-        ? CODEX_MODELS_FILE_TTL_MS
-        : CODEX_MODELS_API_TTL_MS;
+      const ttl = this.codexModelsCache.source === 'cli'
+        ? CODEX_MODELS_CLI_TTL_MS
+        : this.codexModelsCache.source === 'file'
+          ? CODEX_MODELS_FILE_TTL_MS
+          : CODEX_MODELS_API_TTL_MS;
       if (Date.now() - this.codexModelsCache.checkedAt < ttl) {
         return this.codexModelsCache.models;
       }
@@ -295,6 +333,12 @@ export class MessageHandler {
 
     this.codexModelsCheckInFlight = (async () => {
       try {
+        const fromCli = await this.fetchCodexModelsFromDebugCli();
+        if (fromCli && fromCli.length > 0) {
+          this.codexModelsCache = { models: fromCli, checkedAt: Date.now(), source: 'cli' };
+          return fromCli;
+        }
+
         const fromCache = await this.readCodexModelsCacheFile();
         if (fromCache && fromCache.length > 0) {
           this.codexModelsCache = { models: fromCache, checkedAt: Date.now(), source: 'file' };
@@ -387,6 +431,94 @@ export class MessageHandler {
   }
 
   /**
+   * Convert a raw Codex model entry to the lean `CodexModelInfo` shape the
+   * PWA consumes. Shared between the CLI and cache-file sources because they
+   * use the same JSON schema.
+   */
+  private projectCodexModel(raw: {
+    slug?: string;
+    display_name?: string;
+    visibility?: string;
+    supported_in_api?: boolean;
+    default_reasoning_level?: string;
+    supported_reasoning_levels?: Array<{ effort?: string }>;
+    context_window?: number;
+  }): CodexModelInfo | null {
+    if (!raw.slug || raw.visibility !== 'list' || raw.supported_in_api === false) return null;
+    const reasoningEfforts = Array.isArray(raw.supported_reasoning_levels)
+      ? raw.supported_reasoning_levels
+          .map((l) => l?.effort)
+          .filter((e): e is string => typeof e === 'string')
+      : undefined;
+    return {
+      id: raw.slug,
+      name: raw.display_name || raw.slug,
+      reasoningEfforts: reasoningEfforts && reasoningEfforts.length > 0 ? reasoningEfforts : undefined,
+      defaultReasoningEffort: typeof raw.default_reasoning_level === 'string'
+        ? raw.default_reasoning_level
+        : undefined,
+      contextWindow: typeof raw.context_window === 'number' ? raw.context_window : undefined,
+    };
+  }
+
+  /**
+   * Spawn `codex debug models` and parse its JSON output. Same shape as the
+   * cache file (`{ models: [{ slug, display_name, visibility, supported_in_api,
+   * default_reasoning_level, supported_reasoning_levels, context_window, ... }] }`)
+   * but reflects whatever the CLI itself sees right now — including newly
+   * enrolled models that haven't reached the on-disk cache yet.
+   *
+   * Returns `null` on spawn error, non-zero exit, parse failure, or when
+   * `codexBin` was set to `null` (test mode).
+   */
+  private async fetchCodexModelsFromDebugCli(): Promise<CodexModelInfo[] | null> {
+    if (this.codexBin === null) return null;
+    const bin = this.codexBin;
+    return new Promise((resolve) => {
+      let stdout = '';
+      let settled = false;
+      const finish = (value: CodexModelInfo[] | null) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+
+      let cp;
+      try {
+        cp = spawn(bin, ['debug', 'models'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch {
+        finish(null);
+        return;
+      }
+
+      const timer = setTimeout(() => {
+        try { cp.kill('SIGTERM'); } catch { /* already exited */ }
+        finish(null);
+      }, CODEX_DEBUG_MODELS_TIMEOUT_MS);
+
+      cp.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+      cp.stderr.on('data', () => { /* swallow — diagnostics only */ });
+      cp.on('error', () => { clearTimeout(timer); finish(null); });
+      cp.on('close', (code) => {
+        clearTimeout(timer);
+        if (code !== 0) return finish(null);
+        try {
+          const parsed = JSON.parse(stdout) as {
+            models?: Array<Parameters<MessageHandler['projectCodexModel']>[0]>;
+          };
+          if (!Array.isArray(parsed.models)) return finish(null);
+          const models = parsed.models
+            .map((m) => this.projectCodexModel(m))
+            .filter((m): m is CodexModelInfo => m !== null);
+          finish(models);
+        } catch {
+          finish(null);
+        }
+      });
+    });
+  }
+
+  /**
    * Read models from the Codex CLI's local cache. File shape (as of codex
    * CLI v0.125): `{ models: [{ slug, display_name, visibility, supported_in_api, ... }] }`.
    * We surface only entries that are listable and API-supported, so hidden
@@ -397,18 +529,12 @@ export class MessageHandler {
       const cachePath = join(this.codexCacheDir, 'models_cache.json');
       const raw = await readFile(cachePath, 'utf-8');
       const parsed = JSON.parse(raw) as {
-        models?: Array<{
-          slug?: string;
-          display_name?: string;
-          visibility?: string;
-          supported_in_api?: boolean;
-        }>;
+        models?: Array<Parameters<MessageHandler['projectCodexModel']>[0]>;
       };
       if (!Array.isArray(parsed.models)) return null;
-      const models = parsed.models
-        .filter((m) => m.slug && m.visibility === 'list' && m.supported_in_api !== false)
-        .map((m) => ({ id: m.slug!, name: m.display_name || m.slug! }));
-      return models;
+      return parsed.models
+        .map((m) => this.projectCodexModel(m))
+        .filter((m): m is CodexModelInfo => m !== null);
     } catch {
       return null;
     }
@@ -699,6 +825,8 @@ export class MessageHandler {
           return this.handleClaudeCancel(message as Message<ClaudeCancelRequestPayload>);
         case 'claude:close':
           return this.handleClaudeClose(message as Message<ClaudeCloseRequestPayload>);
+        case 'claude:end-task':
+          return this.handleClaudeEndTask(message as Message<ClaudeEndTaskRequestPayload>);
         case 'claude:user-input-response':
           return this.handleClaudeUserInputResponse(message as Message<ClaudeUserInputResponsePayload>);
         case 'claude:set-preferences':
@@ -1910,7 +2038,7 @@ export class MessageHandler {
     message: Message<ClaudeStartRequestPayload>,
     peerAddress: string,
   ): Promise<Message<ClaudeStartResponsePayload>> {
-    const { prompt, cwd: payloadCwd, agent, allowedTools, systemPrompt, model, permissionMode, sandboxed } = message.payload;
+    const { prompt, cwd: payloadCwd, agent, allowedTools, systemPrompt, model, permissionMode, sandboxed, reasoningEffort } = message.payload;
     const legacyProvider = (message.payload as { provider?: 'claude-cli' | 'claude-sdk' | 'codex-mcp' }).provider;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const streamId = generateMessageId();
@@ -1928,6 +2056,7 @@ export class MessageHandler {
         model,
         permissionMode,
         sandboxed,
+        reasoningEffort,
       });
 
       console.log(`[agent:start] session created: ${sessionId} agent=${resolvedAgent ?? 'default'}`);
@@ -2060,6 +2189,47 @@ export class MessageHandler {
     const response = createMessage<ClaudeCloseResponsePayload>(
       'claude:close:response',
       { success, error: success ? undefined : 'Session not found or already closed' }
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  /**
+   * End Task: archive the session's registry entry, then terminate the live
+   * CLI process. Order matters — closeSession emits a session-updated whose
+   * `archived` flag is derived from "no in-memory entry AND no active
+   * registry entry". Archiving first ensures that emit carries archived=true,
+   * which the PWA reads as the "navigate away" signal.
+   *
+   * cwd lookup: prefer the live in-memory entry; fall back to the registry
+   * so users can still archive a stale active entry whose CLI has already
+   * exited (cold-closed sessions still appear in the drawer).
+   */
+  private handleClaudeEndTask(
+    message: Message<ClaudeEndTaskRequestPayload>
+  ): Message<ClaudeEndTaskResponsePayload> {
+    const { sessionId } = message.payload;
+    const cwd = this.claudeService.getSessionCwd(sessionId)
+      ?? getSessionRegistry().findBySessionId(sessionId)?.cwd;
+
+    let archived = false;
+    if (cwd) {
+      const updated = getSessionRegistry().updateEntry(cwd, sessionId, { archived: true });
+      if (updated) {
+        archived = true;
+        this.onHistoryUpdated?.(cwd, updated, 'upsert');
+      }
+    }
+
+    const closed = this.claudeService.closeSession(sessionId);
+
+    const success = closed || archived;
+    console.log(
+      `[agent:end-task] session=${sessionId} closed=${closed} archived=${archived} cwd=${cwd ?? 'unknown'}`,
+    );
+    const response = createMessage<ClaudeEndTaskResponsePayload>(
+      'claude:end-task:response',
+      { success, error: success ? undefined : 'Session not found' },
     );
     response.id = message.id;
     return response;

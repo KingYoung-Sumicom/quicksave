@@ -102,6 +102,8 @@ export type MessageType =
   | 'claude:cancel:response'
   | 'claude:close'
   | 'claude:close:response'
+  | 'claude:end-task'
+  | 'claude:end-task:response'
   | 'claude:get-messages'
   | 'claude:get-messages:response'
   | 'claude:stream'       // agent-push: streaming content
@@ -549,7 +551,16 @@ export interface HandshakeAckPayload {
 export interface CodexModelInfo {
   id: string;
   name: string;
-  reasoningEfforts?: string[]; // e.g. ['low', 'medium', 'high', 'xhigh']
+  /** Reasoning levels this model accepts, e.g. ['low', 'medium', 'high', 'xhigh'].
+   *  Sourced from the Codex `supported_reasoning_levels` per-model list — current
+   *  models drop `minimal` even though the SDK enum permits it. */
+  reasoningEfforts?: string[];
+  /** Per-model default reasoning level (e.g. 'medium'). The PWA seeds the
+   *  reasoning chip from this when no per-session override is set. */
+  defaultReasoningEffort?: string;
+  /** Token capacity reported by Codex (`context_window`). The PWA uses this
+   *  for the context-usage badge instead of the hardcoded 200k Claude default. */
+  contextWindow?: number;
 }
 
 export interface CodexListModelsResponsePayload {
@@ -1271,8 +1282,14 @@ export interface ClaudeStartRequestPayload {
   allowedTools?: string[];
   systemPrompt?: string;
   model?: string;
-  permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
+  /** Claude-style modes (`default`/`acceptEdits`/`bypassPermissions`/`plan`)
+   *  or codex-native modes (`never`/`on-request`/`on-failure`/`untrusted`).
+   *  The agent maps either form to the right provider call. */
+  permissionMode?: string;
   sandboxed?: boolean;
+  /** Per-session reasoning depth — currently honored by the Codex provider
+   *  only. SDK-valid values: `minimal` / `low` / `medium` / `high` / `xhigh`. */
+  reasoningEffort?: string;
 }
 
 export interface ClaudeStartResponsePayload {
@@ -1307,12 +1324,26 @@ export interface ClaudeCancelResponsePayload {
   error?: string;
 }
 
-// Close Session (user explicitly ends a session)
+// Close Session (user explicitly ends a session) — terminates the underlying
+// CLI process and drops the session from the active in-memory map. Registry
+// entry is left untouched, so the session stays visible in the active list and
+// can be cold-resumed.
 export interface ClaudeCloseRequestPayload {
   sessionId: string;
 }
 
 export interface ClaudeCloseResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+// End Task — close the live process AND archive the session's registry entry,
+// so it disappears from the active list and lands in the archived list.
+export interface ClaudeEndTaskRequestPayload {
+  sessionId: string;
+}
+
+export interface ClaudeEndTaskResponsePayload {
   success: boolean;
   error?: string;
 }

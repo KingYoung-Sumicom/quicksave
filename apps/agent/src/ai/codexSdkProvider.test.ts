@@ -163,6 +163,70 @@ describe('consumeCodexStream', () => {
       expect(fullText).toContain('Hello world');
     });
 
+    it('does not lose the leading character when a second agent_message follows the first', async () => {
+      // Regression: the per-stream tracker.lastAssistantText used to leak
+      // across items, so msg-2's delta would slice off N chars where N was
+      // msg-1's length — visibly missing the first character of msg-2.
+      const { callbacks, cardEvents } = createCallbacks();
+
+      const events = eventStream([
+        { type: 'item.started',   item: { id: 'msg-1', type: 'agent_message', text: 'A' } },
+        { type: 'item.completed', item: { id: 'msg-1', type: 'agent_message', text: 'A' } },
+        { type: 'item.started',   item: { id: 'msg-2', type: 'agent_message', text: '' } },
+        { type: 'item.updated',   item: { id: 'msg-2', type: 'agent_message', text: 'Hello world' } },
+        { type: 'item.completed', item: { id: 'msg-2', type: 'agent_message', text: 'Hello world' } },
+        { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
+      ]);
+
+      const promise = consumeCodexStream(events, createMockThread('th-1'), {
+        cb, callbacks, streamId: 's1',
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      await promise;
+
+      // Concatenate all text emitted across both messages and assert msg-2
+      // shows up intact.
+      let fullText = '';
+      for (const evt of cardEvents) {
+        if (evt.type === 'add' && evt.card.type === 'assistant_text') {
+          fullText += (evt.card as any).text;
+        } else if (evt.type === 'append_text') {
+          fullText += evt.text;
+        }
+      }
+      // Both messages, in order, with no truncation.
+      expect(fullText).toBe('AHello world');
+    });
+
+    it('handles a second message that arrives only via item.completed', async () => {
+      // Same regression class — when only completed fires (Codex's
+      // experimental-json shortcut), the slice math previously chopped
+      // the first character of the second message.
+      const { callbacks, cardEvents } = createCallbacks();
+
+      const events = eventStream([
+        { type: 'item.completed', item: { id: 'msg-1', type: 'agent_message', text: 'X' } },
+        { type: 'item.completed', item: { id: 'msg-2', type: 'agent_message', text: 'Hello' } },
+        { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
+      ]);
+
+      const promise = consumeCodexStream(events, createMockThread('th-1'), {
+        cb, callbacks, streamId: 's1',
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      await promise;
+
+      let fullText = '';
+      for (const evt of cardEvents) {
+        if (evt.type === 'add' && evt.card.type === 'assistant_text') {
+          fullText += (evt.card as any).text;
+        } else if (evt.type === 'append_text') {
+          fullText += evt.text;
+        }
+      }
+      expect(fullText).toContain('XHello');
+    });
+
     it('should finalize assistant text on item.completed', async () => {
       const { callbacks, cardEvents } = createCallbacks();
 
@@ -352,7 +416,7 @@ describe('consumeCodexStream', () => {
       const toolCards = cards.filter(c => c.type === 'tool_call');
       expect(toolCards).toHaveLength(1);
       expect((toolCards[0] as any).toolName).toBe('Edit');
-      expect((toolCards[0] as any).toolInput).toEqual({ files: ['src/main.ts'] });
+      expect((toolCards[0] as any).toolInput).toEqual({ file_path: 'src/main.ts' });
     });
 
     it('should emit Write tool_call when all changes are additions', async () => {
@@ -379,7 +443,12 @@ describe('consumeCodexStream', () => {
 
       const cards = getAddedCards(cardEvents);
       const toolCards = cards.filter(c => c.type === 'tool_call');
+      // One Write card per file (Codex bundles them in a single file_change item).
+      expect(toolCards).toHaveLength(2);
       expect((toolCards[0] as any).toolName).toBe('Write');
+      expect((toolCards[0] as any).toolInput).toEqual({ file_path: 'new-file.ts' });
+      expect((toolCards[1] as any).toolName).toBe('Write');
+      expect((toolCards[1] as any).toolInput).toEqual({ file_path: 'another.ts' });
     });
 
     it('should emit tool_result on item.completed', async () => {
@@ -416,6 +485,40 @@ describe('consumeCodexStream', () => {
       expect(resultUpdate).toBeDefined();
       expect((resultUpdate as any).patch.result.content).toContain('update: src/main.ts');
     });
+
+    it('emits per-file Edit/Write cards for mixed-kind patches', async () => {
+      const { callbacks, cardEvents } = createCallbacks();
+
+      const events = eventStream([
+        {
+          type: 'item.completed',
+          item: {
+            id: 'fc-mix', type: 'file_change',
+            changes: [
+              { path: 'a.ts', kind: 'add' },
+              { path: 'b.ts', kind: 'update' },
+              { path: 'c.ts', kind: 'delete' },
+            ],
+            status: 'completed',
+          },
+        } as ThreadEvent,
+        { type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 } },
+      ]);
+
+      await consumeCodexStream(events, createMockThread('th-1'), {
+        cb, callbacks, streamId: 's1',
+      });
+
+      const cards = getAddedCards(cardEvents);
+      const toolCards = cards.filter(c => c.type === 'tool_call');
+      expect(toolCards).toHaveLength(3);
+      expect((toolCards[0] as any).toolName).toBe('Write');
+      expect((toolCards[0] as any).toolInput.file_path).toBe('a.ts');
+      expect((toolCards[1] as any).toolName).toBe('Edit');
+      expect((toolCards[1] as any).toolInput.file_path).toBe('b.ts');
+      expect((toolCards[2] as any).toolName).toBe('Edit');
+      expect((toolCards[2] as any).toolInput.file_path).toBe('c.ts');
+    });
   });
 
   // ── mcp_tool_call ──
@@ -446,6 +549,35 @@ describe('consumeCodexStream', () => {
       expect(toolCards).toHaveLength(1);
       expect((toolCards[0] as any).toolName).toBe('my-server:my-tool');
       expect((toolCards[0] as any).toolInput).toEqual({ key: 'value' });
+    });
+
+    it('falls back to structured_content when result.content is empty', async () => {
+      const { callbacks, cardEvents } = createCallbacks();
+
+      const events = eventStream([
+        {
+          type: 'item.completed',
+          item: {
+            id: 'mcp-2', type: 'mcp_tool_call',
+            server: 'srv', tool: 'fetch',
+            arguments: {},
+            result: { content: [], structured_content: { rows: 3, ok: true } },
+            status: 'completed',
+          },
+        } as ThreadEvent,
+        { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
+      ]);
+
+      await consumeCodexStream(events, createMockThread('th-1'), {
+        cb, callbacks, streamId: 's1',
+      });
+
+      const updates = cardEvents.filter(e => e.type === 'update');
+      const resultUpdate = updates.find(e =>
+        e.type === 'update' && (e as any).patch?.result,
+      );
+      expect(resultUpdate).toBeDefined();
+      expect((resultUpdate as any).patch.result.content).toBe('{"rows":3,"ok":true}');
     });
   });
 
@@ -498,6 +630,44 @@ describe('consumeCodexStream', () => {
       expect(systemCards).toHaveLength(1);
       expect((systemCards[0] as any).text).toBe('Something went wrong');
     });
+
+    it('emits the error only once across started/updated/completed', async () => {
+      const { callbacks, cardEvents } = createCallbacks();
+
+      const events = eventStream([
+        { type: 'item.started',   item: { id: 'err-2', type: 'error', message: 'boom' } } as ThreadEvent,
+        { type: 'item.updated',   item: { id: 'err-2', type: 'error', message: 'boom' } } as ThreadEvent,
+        { type: 'item.completed', item: { id: 'err-2', type: 'error', message: 'boom' } } as ThreadEvent,
+        { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
+      ]);
+
+      await consumeCodexStream(events, createMockThread('th-1'), {
+        cb, callbacks, streamId: 's1',
+      });
+
+      const cards = getAddedCards(cardEvents);
+      const systemCards = cards.filter(c => c.type === 'system');
+      expect(systemCards).toHaveLength(1);
+      expect((systemCards[0] as any).text).toBe('boom');
+    });
+
+    it('emits the error if it only arrives via item.completed', async () => {
+      const { callbacks, cardEvents } = createCallbacks();
+
+      const events = eventStream([
+        { type: 'item.completed', item: { id: 'err-3', type: 'error', message: 'late' } } as ThreadEvent,
+        { type: 'turn.completed', usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
+      ]);
+
+      await consumeCodexStream(events, createMockThread('th-1'), {
+        cb, callbacks, streamId: 's1',
+      });
+
+      const cards = getAddedCards(cardEvents);
+      const systemCards = cards.filter(c => c.type === 'system');
+      expect(systemCards).toHaveLength(1);
+      expect((systemCards[0] as any).text).toBe('late');
+    });
   });
 
   // ── turn.completed ──
@@ -519,8 +689,47 @@ describe('consumeCodexStream', () => {
 
       expect(streamEnds).toHaveLength(1);
       expect(streamEnds[0].success).toBe(true);
-      expect(streamEnds[0].tokenUsage).toEqual({ input: 100, output: 200 });
+      // Codex `usage` is thread-cumulative; we emit per-turn deltas (here
+      // equal to the full counts since the running snapshot starts at 0)
+      // and surface the raw cumulative for resume-time seeding.
+      expect(streamEnds[0].tokenUsage).toEqual({
+        input: 100,
+        output: 200,
+        cumulativeInput: 100,
+        cumulativeOutput: 200,
+        cumulativeCachedInput: 50,
+      });
       expect(streamEnds[0].sessionId).toBe('th-1');
+    });
+
+    it('emits per-turn deltas across two turns when the running snapshot is shared', async () => {
+      const { callbacks, streamEnds } = createCallbacks();
+      const prevCumulative = { input: 0, output: 0, cachedInput: 0 };
+
+      // Turn 1: cumulative starts at 0 → delta equals the reported counts.
+      await consumeCodexStream(
+        eventStream([
+          { type: 'turn.completed', usage: { input_tokens: 14286, cached_input_tokens: 3456, output_tokens: 5 } },
+        ]),
+        createMockThread('th-1'),
+        { cb, callbacks, streamId: 's1', prevCumulative },
+      );
+
+      // Turn 2: cumulative grew — delta = current - previous cumulative.
+      await consumeCodexStream(
+        eventStream([
+          { type: 'turn.completed', usage: { input_tokens: 28589, cached_input_tokens: 17664, output_tokens: 10 } },
+        ]),
+        createMockThread('th-1'),
+        { cb, callbacks, streamId: 's2', prevCumulative },
+      );
+
+      expect(streamEnds).toHaveLength(2);
+      expect(streamEnds[0].tokenUsage).toMatchObject({ input: 14286, output: 5 });
+      expect(streamEnds[1].tokenUsage).toMatchObject({ input: 14303, output: 5 });
+      expect(streamEnds[1].tokenUsage?.cumulativeInput).toBe(28589);
+      // Snapshot ends pinned at the most recent cumulative.
+      expect(prevCumulative).toEqual({ input: 28589, output: 10, cachedInput: 17664 });
     });
   });
 
@@ -636,7 +845,13 @@ describe('consumeCodexStream', () => {
       // Stream should end successfully
       expect(streamEnds).toHaveLength(1);
       expect(streamEnds[0].success).toBe(true);
-      expect(streamEnds[0].tokenUsage).toEqual({ input: 500, output: 100 });
+      expect(streamEnds[0].tokenUsage).toEqual({
+        input: 500,
+        output: 100,
+        cumulativeInput: 500,
+        cumulativeOutput: 100,
+        cumulativeCachedInput: 200,
+      });
     });
   });
 });
@@ -731,7 +946,7 @@ describe('item.completed without prior item.started', () => {
     const toolCards = cards.filter(c => c.type === 'tool_call');
     expect(toolCards).toHaveLength(1);
     expect((toolCards[0] as any).toolName).toBe('Edit');
-    expect((toolCards[0] as any).toolInput.files).toEqual(['src/foo.ts']);
+    expect((toolCards[0] as any).toolInput.file_path).toBe('src/foo.ts');
   });
 
   it('picks tool name Write when all changes are additions', async () => {
@@ -826,6 +1041,9 @@ describe('item.completed without prior item.started', () => {
     const toolCards = cards.filter(c => c.type === 'tool_call');
     expect(toolCards).toHaveLength(1);
     expect((toolCards[0] as any).toolName).toBe('TodoWrite');
-    expect((toolCards[0] as any).toolInput.todos).toHaveLength(2);
+    expect((toolCards[0] as any).toolInput.todos).toEqual([
+      { content: 'Step 1', status: 'completed' },
+      { content: 'Step 2', status: 'pending' },
+    ]);
   });
 });

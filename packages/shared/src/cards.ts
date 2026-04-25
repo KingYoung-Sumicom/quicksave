@@ -202,5 +202,11 @@ export interface CardStreamEnd {
     cacheCreation?: number;
     /** Tokens read from the prompt cache this turn (Claude only). */
     cacheRead?: number;
+    /** Codex reports usage as session-cumulative; the provider converts to
+     *  per-turn deltas above and surfaces the raw cumulative here so the
+     *  agent can persist it and seed `prev` after a daemon restart. */
+    cumulativeInput?: number;
+    cumulativeOutput?: number;
+    cumulativeCachedInput?: number;
   };
 }

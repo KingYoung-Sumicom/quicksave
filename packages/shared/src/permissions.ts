@@ -1,12 +1,16 @@
 /**
- * Check whether a tool call matches a Claude Code allow-list pattern.
+ * Check whether a tool call matches a Claude Code allow-list pattern,
+ * and generate suggested patterns from a tool call.
  *
- * Pattern formats:
- *   - `ToolName`              — matches all invocations of that tool
- *   - `ToolName(pattern)`     — matches the tool's primary input against pattern
- *   - `*` in pattern          — matches any characters within a single path/command segment
- *   - `**` in pattern         — matches any characters across segments (recursive)
- *   - For Bash, `:` separates command words: `Bash(docker:*)` matches `docker compose up`
+ * Pattern formats follow Claude Code's `settings.json` permission rules
+ * (validated by the SDK's `lY1` rule validator):
+ *
+ *   - `ToolName`                       — matches all invocations of that tool
+ *   - `Bash(prefix:*)`                 — legacy command-prefix match (e.g. `Bash(npm:*)` → `npm install`)
+ *   - `Bash(npm run *)`                — wildcard match anywhere in the command
+ *   - `WebFetch(domain:host)`          — exact host match (`*` allowed in host: `domain:*.example.com`)
+ *   - `Read(./relative/**)` / `Read(//absolute/**)` — file-glob match (`//` prefix = absolute path)
+ *   - `WebSearch`                      — pattern not supported by SDK; only the bare form
  */
 export function matchAllowPattern(
   pattern: string,
@@ -26,40 +30,110 @@ export function matchAllowPattern(
   // Extract the argument pattern (strip trailing ')')
   const argPattern = pattern.slice(parenIdx + 1, pattern.endsWith(')') ? -1 : undefined);
 
-  // Get the tool's primary input value
-  const inputValue = getPrimaryInput(toolName, toolInput);
-  if (inputValue === null) return false;
-
-  // For Bash: if the command contains shell metacharacters (chaining, piping,
-  // redirection, subshells, etc.), refuse to auto-match — fall through to
-  // permission prompt. Trying to split/parse shell syntax ourselves would
-  // inevitably diverge from real bash behavior and create security holes.
   if (toolName === 'Bash') {
-    if (hasShellMetachars(inputValue)) return false;
-    const normalized = inputValue.trim().replace(/\s+/g, ':');
-    return wildcardMatch(argPattern, normalized);
+    const command = (toolInput.command as string | undefined)?.trim();
+    if (!command) return false;
+    // Refuse to auto-match if the command contains shell metacharacters that
+    // could chain or redirect execution. We can't safely parse shell syntax,
+    // so fall through to the permission prompt.
+    if (hasShellMetachars(command)) return false;
+    return matchBashPattern(argPattern, command);
   }
 
-  return wildcardMatch(argPattern, inputValue);
+  if (toolName === 'WebFetch') {
+    const url = toolInput.url as string | undefined;
+    if (!url) return false;
+    return matchWebFetchPattern(argPattern, url);
+  }
+
+  if (FILE_PATTERN_TOOLS.has(toolName)) {
+    const filePath = getFilePath(toolName, toolInput);
+    if (!filePath) return false;
+    return matchFilePattern(argPattern, filePath);
+  }
+
+  return false;
 }
 
-/** Extract the primary input value used for pattern matching. */
-function getPrimaryInput(toolName: string, input: Record<string, unknown>): string | null {
-  switch (toolName) {
-    case 'Bash':
-      return (input.command as string) ?? null;
-    case 'WebFetch':
-      return (input.url as string) ?? null;
-    case 'WebSearch':
-      return (input.query as string) ?? null;
-    case 'Read':
-    case 'Write':
-    case 'Edit':
-    case 'NotebookEdit':
-      return ((input.file_path ?? input.path) as string) ?? null;
-    default:
-      return null;
+const FILE_PATTERN_TOOLS = new Set([
+  'Read',
+  'Write',
+  'Edit',
+  'NotebookEdit',
+  'NotebookRead',
+  'Glob',
+]);
+
+/** Extract the file path from a file-pattern-tool's input. */
+function getFilePath(toolName: string, input: Record<string, unknown>): string | null {
+  if (toolName === 'NotebookEdit' || toolName === 'NotebookRead') {
+    return (input.notebook_path as string) ?? null;
   }
+  if (toolName === 'Glob') {
+    // Glob's primary input is `pattern`; matched directly as a file pattern.
+    return (input.pattern as string) ?? null;
+  }
+  return ((input.file_path ?? input.path) as string) ?? null;
+}
+
+/**
+ * Match a Bash command against a permission pattern.
+ *
+ * Two pattern syntaxes are supported (matching SDK behaviour):
+ *  - Legacy prefix:   `prefix:*` — matches if the command equals `prefix` or starts with `prefix `.
+ *                     Everything before `:*` is a literal prefix; embedded spaces are allowed
+ *                     (e.g. `git diff:*` matches `git diff --staged`).
+ *  - Wildcard:        any pattern using `*` — matches with `*` spanning any characters.
+ */
+function matchBashPattern(argPattern: string, command: string): boolean {
+  if (argPattern.endsWith(':*')) {
+    const prefix = argPattern.slice(0, -2);
+    if (!prefix) return false; // `:*` alone is invalid per SDK
+    return command === prefix || command.startsWith(prefix + ' ');
+  }
+  // Wildcard match. For Bash, `*` should span any characters (including '/'
+  // and spaces) so that patterns like `Bash(npm run *)` match
+  // `npm run test --watch`.
+  return wildcardMatch(argPattern, command, { crossSegments: true });
+}
+
+/**
+ * Match a WebFetch URL against a `domain:host` pattern.
+ *
+ * The host portion supports `*` wildcards (e.g. `domain:*.example.com`).
+ * The pattern must use the `domain:` prefix; the SDK validator rejects
+ * raw URL patterns.
+ */
+function matchWebFetchPattern(argPattern: string, url: string): boolean {
+  if (!argPattern.startsWith('domain:')) return false;
+  const hostPattern = argPattern.slice('domain:'.length);
+  if (!hostPattern) return false;
+  let hostname: string;
+  try {
+    hostname = new URL(url).hostname;
+  } catch {
+    return false;
+  }
+  return wildcardMatch(hostPattern, hostname);
+}
+
+/**
+ * Match a file path against a permission pattern.
+ *
+ * Patterns may use:
+ *  - `//absolute/path/**` — leading `//` denotes an absolute path; the extra
+ *    slash is stripped before comparison so it matches values like `/absolute/path/file`.
+ *  - `./relative/path/**` — project-relative; matched literally against the
+ *    input value (which may already include `./`).
+ *  - `~/home/relative` — left as-is; the matcher is not cwd-aware so user-edited
+ *    `~` patterns will only match if the input value also begins with `~`.
+ */
+function matchFilePattern(argPattern: string, filePath: string): boolean {
+  let pattern = argPattern;
+  if (pattern.startsWith('//')) {
+    pattern = pattern.slice(1); // // → / (absolute path convention)
+  }
+  return wildcardMatch(pattern, filePath);
 }
 
 /** Returns true if the command contains shell metacharacters that could chain
@@ -75,26 +149,40 @@ function hasShellMetachars(command: string): boolean {
   return /&&|\|\||[;|`]|[<>]{1,2}|\$\(|\{.*\}/.test(stripped);
 }
 
-/** Simple wildcard matcher supporting `*` (single segment) and `**` (recursive). */
-function wildcardMatch(pattern: string, value: string): boolean {
-  // Convert wildcard pattern to regex
-  // Escape regex special chars, then convert wildcards
-  let regex = pattern
+/**
+ * Simple wildcard matcher.
+ *
+ * - `**` matches any characters (across `/`).
+ * - `*`  matches any characters within a single path segment by default
+ *   (i.e. excludes `/`). Pass `crossSegments: true` to make `*` span any chars,
+ *   which is the right semantic for Bash commands and domain hostnames.
+ */
+function wildcardMatch(
+  pattern: string,
+  value: string,
+  opts: { crossSegments?: boolean } = {},
+): boolean {
+  const singleStar = opts.crossSegments ? '.*' : '[^/]*';
+  // Convert wildcard pattern to regex. Escape regex specials, then convert
+  // `**` and `*` to regex equivalents.
+  const regex = pattern
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')  // escape regex chars (not * and ?)
     .replace(/\*\*/g, '\0')                  // placeholder for **
-    .replace(/\*/g, '[^/]*')                 // * = anything except /
-    .replace(/\0/g, '.*');                   // ** = anything
+    .replace(/\*/g, singleStar)              // * = single segment (or any)
+    .replace(/\0/g, '.*');                   // ** = any
   return new RegExp(`^${regex}$`).test(value);
 }
 
 /**
  * Generate a suggested allow-list wildcard pattern from a tool call.
  *
- * The returned string follows the Claude Code `settings.local.json` syntax:
- *   - `Bash(cmd:*)`           — command-prefix match
- *   - `WebFetch(https://host/path/*)`  — URL-prefix match
- *   - `Read(//absolute/dir/**)`        — recursive glob
- *   - `ToolName`                       — allow all invocations
+ * Returned patterns conform to Claude Code's `settings.json` allow-rule syntax
+ * (validated by the SDK):
+ *   - `Bash(cmd:*)`                  — legacy command-prefix match
+ *   - `WebFetch(domain:host)`        — host match (no scheme/path)
+ *   - `Read(//absolute/dir/**)`      — recursive glob, `//` prefix = absolute
+ *   - `Read(./relative/dir/**)`      — recursive glob, project-relative
+ *   - `ToolName`                     — allow all invocations
  */
 export function generateAllowPattern(
   toolName: string,
@@ -106,31 +194,31 @@ export function generateAllowPattern(
       if (!raw) return toolName;
       try {
         const u = new URL(raw);
-        // Keep origin + first path segment, wildcard the rest
-        const segments = u.pathname.split('/').filter(Boolean);
-        const prefix = segments.length > 0 ? `/${segments[0]}` : '';
-        return `WebFetch(${u.origin}${prefix}/*)`;
+        return `WebFetch(domain:${u.hostname})`;
       } catch {
-        return `WebFetch(${raw})`;
+        return 'WebFetch';
       }
     }
 
     case 'WebSearch':
-      // Queries aren't pattern-matchable, allow all searches
+      // SDK validator rejects WebSearch patterns containing `*` or `?`.
+      // We don't have a meaningful query-prefix to suggest, so allow all.
       return 'WebSearch';
 
     case 'Bash': {
       const cmd = toolInput.command as string | undefined;
       if (!cmd) return toolName;
       const firstWord = cmd.trim().split(/\s+/)[0];
+      if (!firstWord) return toolName;
       return `Bash(${firstWord}:*)`;
     }
 
     case 'Read':
     case 'Write':
     case 'Edit':
-    case 'NotebookEdit': {
-      const filePath = (toolInput.file_path ?? toolInput.path) as string | undefined;
+    case 'NotebookEdit':
+    case 'NotebookRead': {
+      const filePath = getFilePath(toolName, toolInput);
       if (!filePath) return toolName;
       const dir = filePath.replace(/\/[^/]+$/, '');
       // Double-slash prefix for absolute paths (Claude Code convention)

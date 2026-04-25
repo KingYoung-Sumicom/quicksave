@@ -14,8 +14,16 @@ describe('EventStore', () => {
   });
 
   afterEach(() => {
-    store.close();
-    rmSync(tempDir, { recursive: true, force: true });
+    // Always clean up the temp dir even if close() throws — better-sqlite3
+    // can fail to close cleanly under certain conditions, and a thrown
+    // close() left the previous version of this test leaking ~one
+    // mkdtemp dir per failed teardown into /tmp (eventually filling
+    // tmpfs).
+    try {
+      store.close();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   describe('record + getSessionEvents', () => {

@@ -46,6 +46,7 @@ vi.mock('./sessionRegistry.js', () => ({
   getSessionRegistry: vi.fn().mockReturnValue({
     getEntry: vi.fn().mockReturnValue(null),
     getEntriesForProject: vi.fn().mockReturnValue([]),
+    findBySessionId: vi.fn().mockReturnValue(undefined),
     upsertEntry: vi.fn(),
     updateEntry: vi.fn(),
   }),

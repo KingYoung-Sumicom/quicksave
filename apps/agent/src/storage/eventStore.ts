@@ -48,6 +48,12 @@ export interface LastTurnInfo {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   costUsd: number;
+  /** Codex-only: thread-cumulative token counts at end of this turn. Used to
+   *  compute per-turn deltas after a daemon restart. Absent for Claude turns
+   *  and for codex turns recorded before this field was introduced. */
+  cumulativeInputTokens?: number;
+  cumulativeOutputTokens?: number;
+  cumulativeCachedInputTokens?: number;
   /** Category-level context-window breakdown from the provider. Shape mirrors
    * `ContextUsageBreakdown` in @sumicom/quicksave-shared. Present only when
    * the CLI answered `get_context_usage` successfully at turn end. */
@@ -168,6 +174,9 @@ export class EventStore {
       cacheCreationTokens: Number(data.cacheCreationTokens ?? 0),
       cacheReadTokens: Number(data.cacheReadTokens ?? 0),
       costUsd: Number(data.costUsd ?? 0),
+      cumulativeInputTokens: typeof data.cumulativeInputTokens === 'number' ? data.cumulativeInputTokens : undefined,
+      cumulativeOutputTokens: typeof data.cumulativeOutputTokens === 'number' ? data.cumulativeOutputTokens : undefined,
+      cumulativeCachedInputTokens: typeof data.cumulativeCachedInputTokens === 'number' ? data.cumulativeCachedInputTokens : undefined,
       contextUsage: data.contextUsage ?? undefined,
     };
   }
