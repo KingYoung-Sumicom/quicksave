@@ -718,6 +718,60 @@ describe('MessageHandler', () => {
     });
   });
 
+  describe('handleMessage - project:list-repos', () => {
+    it('returns the root repo with branch and dirty state for a healthy git repo', async () => {
+      const msg = createMessage('project:list-repos', { cwd: testRepoPath });
+      const response = await handler.handleMessage(msg);
+
+      expect(response.type).toBe('project:list-repos:response');
+      const repos = (response.payload as any).repos as Array<{
+        path: string;
+        name: string;
+        currentBranch?: string;
+        hasChanges?: boolean;
+      }>;
+      const root = repos.find((r) => r.path === testRepoPath);
+      expect(root).toBeDefined();
+      expect(root!.currentBranch).toBe(defaultBranch);
+      expect(root!.hasChanges).toBe(false);
+    });
+
+    it('still returns the root repo when git metadata calls fail (so the PWA Git section does not flash empty under transient git errors)', async () => {
+      // Break refs so `git branch -a` fails, but keep `.git` present.
+      // Mirrors real-world transient failures (EAGAIN under daemon load,
+      // refs being rewritten by a concurrent fetch/gc).
+      await rm(join(testRepoPath, '.git', 'HEAD'));
+
+      const msg = createMessage('project:list-repos', { cwd: testRepoPath });
+      const response = await handler.handleMessage(msg);
+
+      const repos = (response.payload as any).repos as Array<{
+        path: string;
+        name: string;
+        currentBranch?: string;
+        hasChanges?: boolean;
+      }>;
+      const root = repos.find((r) => r.path === testRepoPath);
+      expect(root).toBeDefined();
+      expect(root!.currentBranch).toBeUndefined();
+      // hasChanges may be undefined when status fails; we only require the
+      // repo entry itself to survive.
+    });
+
+    it('returns no entries when cwd has no .git', async () => {
+      const nonRepo = join(tmpdir(), `qs-list-repos-norepo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      await mkdir(nonRepo, { recursive: true });
+      try {
+        const msg = createMessage('project:list-repos', { cwd: nonRepo });
+        const response = await handler.handleMessage(msg);
+        const repos = (response.payload as any).repos as unknown[];
+        expect(repos).toEqual([]);
+      } finally {
+        await rm(nonRepo, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('handleMessage - project:list-summaries', () => {
     it('should include managed coding paths with no sessions', async () => {
       const codingPath = join(tmpdir(), `qs-list-summaries-${Date.now()}-${Math.random().toString(36).slice(2)}`);

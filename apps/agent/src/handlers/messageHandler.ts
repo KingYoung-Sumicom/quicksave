@@ -2302,20 +2302,25 @@ export class MessageHandler {
     const seen = new Set<string>();
 
     try {
-      // 1. Check if cwd itself is a git repo
-      const rootBranch = await this.getGitBranchQuiet(cwd);
-      if (rootBranch !== undefined) {
+      // 1. Check if cwd itself is a git repo. Use the cheap fs check rather
+      // than spawning `git branch -a` so a transient git failure (EAGAIN
+      // under daemon load, refs being rewritten by a concurrent fetch/gc,
+      // detached HEAD returning empty `current`) doesn't drop the root
+      // and make the PWA's Git section flash empty. Branch + dirty are
+      // filled in best-effort below; undefined just means "unknown".
+      const isRootRepo = existsSync(join(cwd, '.git'));
+      if (isRootRepo) {
         repos.push({
           path: cwd,
           name: basename(cwd),
-          currentBranch: rootBranch || undefined,
+          currentBranch: (await this.getGitBranchQuiet(cwd)) || undefined,
           hasChanges: await this.getGitDirtyQuiet(cwd),
         });
         seen.add(cwd);
       }
 
       // 2. Find submodules via git
-      if (rootBranch !== undefined) {
+      if (isRootRepo) {
         try {
           const git = new GitOperations(cwd);
           const submodules = await git.getSubmodules();
