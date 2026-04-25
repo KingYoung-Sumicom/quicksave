@@ -82,6 +82,7 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   // project
   'project:list-summaries',
   'project:list-repos',
+  'project:delete',
   // push
   'push:subscription-offer',
   // terminal
