@@ -90,6 +90,12 @@ export function AgentSettingsDrawer({
     onClose();
   };
 
+  const handleOpenFiles = () => {
+    if (!projectId) return;
+    navigate(`/p/${projectId}/files`);
+    onClose();
+  };
+
   return (
     <SwipeableDrawer isOpen={isOpen} onClose={onClose} side="right" drawerWidth={400} className="w-[90%] max-w-[400px] bg-slate-800 flex flex-col shadow-xl">
         {/* Header */}
@@ -193,6 +199,28 @@ export function AgentSettingsDrawer({
                   </button>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Section: Files — read-only browser for the project tree. */}
+          {projectId && (
+            <div className="space-y-3">
+              <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                Files
+              </h3>
+              <button
+                type="button"
+                onClick={handleOpenFiles}
+                className="w-full flex items-center gap-2 py-2 px-3 bg-slate-700 hover:bg-slate-600 rounded-md text-sm font-medium text-slate-200 transition-colors text-left"
+              >
+                <svg className="w-4 h-4 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+                </svg>
+                <span className="flex-1 truncate">Browse project files</span>
+                <svg className="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
             </div>
           )}
 
