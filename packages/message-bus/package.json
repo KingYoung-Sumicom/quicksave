@@ -1,6 +1,6 @@
 {
   "name": "@sumicom/quicksave-message-bus",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Transport-agnostic command + subscribe message bus for Quicksave",
   "license": "MIT",
   "repository": {

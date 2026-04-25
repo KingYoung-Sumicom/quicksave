@@ -32,7 +32,7 @@ describe('IPC Server + Client', () => {
 
   async function createServer(): Promise<string> {
     const sock = socketPath();
-    server = new IpcServer({ version: '0.8.1' });
+    server = new IpcServer({ version: '0.8.2' });
     await server.listen(sock);
     return sock;
   }
@@ -48,7 +48,7 @@ describe('IPC Server + Client', () => {
     const sock = await createServer();
     const { hello } = await createClient(sock);
 
-    expect(hello.daemonVersion).toBe('0.8.1');
+    expect(hello.daemonVersion).toBe('0.8.2');
     expect(hello.daemonIpcVersion).toBe(1);
     expect(hello.daemonPid).toBe(process.pid);
     expect(typeof hello.daemonBuildId).toBe('string');
@@ -59,7 +59,7 @@ describe('IPC Server + Client', () => {
     const { client } = await createClient(sock);
 
     const result = await client.request<any>('ping');
-    expect(result.version).toBe('0.8.1');
+    expect(result.version).toBe('0.8.2');
     expect(result.ipcVersion).toBe(1);
     expect(typeof result.uptime).toBe('number');
     expect(result.uptime).toBeGreaterThanOrEqual(0);
@@ -71,7 +71,7 @@ describe('IPC Server + Client', () => {
 
     const result = await client.request<any>('status');
     expect(result.pid).toBe(process.pid);
-    expect(result.version).toBe('0.8.1');
+    expect(result.version).toBe('0.8.2');
     expect(typeof result.uptime).toBe('number');
     expect(result.connectionState).toBe('disconnected');
     expect(result.peerCount).toBe(0);
@@ -101,8 +101,8 @@ describe('IPC Server + Client', () => {
     const r1 = await c1.request<any>('ping');
     const r2 = await c2.request<any>('ping');
 
-    expect(r1.version).toBe('0.8.1');
-    expect(r2.version).toBe('0.8.1');
+    expect(r1.version).toBe('0.8.2');
+    expect(r2.version).toBe('0.8.2');
     expect(server.getClientCount()).toBe(2);
   });
 

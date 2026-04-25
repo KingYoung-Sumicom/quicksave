@@ -72,7 +72,7 @@ import { enrichEntry } from '../ai/enrichEntry.js';
 import { getTerminalManager } from '../terminal/terminalManager.js';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
-const PACKAGE_VERSION = '0.8.1';
+const PACKAGE_VERSION = '0.8.2';
 
 export async function runDaemon(): Promise<void> {
   ensureDirectories();
