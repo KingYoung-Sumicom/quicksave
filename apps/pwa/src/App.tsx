@@ -26,6 +26,7 @@ import {
   type ClaudePreferences,
   type ClaudeUserInputResponsePayload,
   type CodexLoginState,
+  type CodexModelInfo,
   type CommitSummaryState,
   type ConfigValue,
   type Message,
@@ -131,6 +132,21 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
     onSnapshot: (state) => useCodexLoginStore.getState().set(agentId, state),
     onUpdate: (state) => useCodexLoginStore.getState().set(agentId, state),
     onError: (err) => console.warn('[bus] /codex/login error:', err),
+  });
+
+  // Live local Codex model list. Daemon's fs.watch on ~/.codex/models_cache.json
+  // pushes here whenever the codex CLI updates its cache (binary upgrade,
+  // first login, etc.) — keeps the picker fresh without re-issuing the
+  // command. Empty snapshots are skipped so we don't clobber a previously
+  // populated list during a transient daemon-side load.
+  bus.subscribe<CodexModelInfo[], CodexModelInfo[]>('/codex/models', {
+    onSnapshot: (models) => {
+      if (models.length > 0) useConnectionStore.getState().setCodexModels(models);
+    },
+    onUpdate: (models) => {
+      if (models.length > 0) useConnectionStore.getState().setCodexModels(models);
+    },
+    onError: (err) => console.warn('[bus] /codex/models error:', err),
   });
 
   bus.subscribe<TerminalSummary[], TerminalsUpdate>('/terminals', {

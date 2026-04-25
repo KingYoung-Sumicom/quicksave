@@ -138,12 +138,39 @@ import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { enrichEntry } from '../ai/enrichEntry.js';
 import { getEventStore } from '../storage/eventStore.js';
 import { readdir, stat, readFile } from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, watch as fsWatch, type FSWatcher } from 'fs';
 import { join, dirname, basename } from 'path';
 import { homedir } from 'os';
 
 const VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
-const CODEX_MODELS_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
+// Local file read is essentially free + fs.watch invalidates on cache writes.
+// 5 min is just a safety net for missed-event cases (NFS, container fs, etc.).
+const CODEX_MODELS_FILE_TTL_MS = 5 * 60 * 1000;
+// API path hits OpenAI; keep its own longer TTL to avoid hammering the
+// endpoint when the user has no local Codex CLI cache file at all.
+const CODEX_MODELS_API_TTL_MS = 60 * 60 * 1000;
+// fs.watch on ~/.codex fires multiple events per write (rename + change on
+// many filesystems). Coalesce into one refresh per burst.
+const CODEX_MODELS_WATCH_DEBOUNCE_MS = 500;
+
+function codexModelListsEqual(
+  a: CodexModelInfo[] | undefined,
+  b: CodexModelInfo[] | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].id !== b[i].id || a[i].name !== b[i].name) return false;
+    const aE = a[i].reasoningEfforts;
+    const bE = b[i].reasoningEfforts;
+    if (aE === bE) continue;
+    if (!aE || !bE) return false;
+    if (aE.length !== bE.length) return false;
+    for (let j = 0; j < aE.length; j++) if (aE[j] !== bE[j]) return false;
+  }
+  return true;
+}
 
 export class MessageHandler {
   private repos: Map<string, GitOperations>;
@@ -165,14 +192,25 @@ export class MessageHandler {
   private pushClient: PushClient | null = null;
   private latestVersionCache: { version: string; checkedAt: number } | null = null;
   private versionCheckInFlight: Promise<string | null> | null = null;
-  private codexModelsCache: { models: CodexModelInfo[]; checkedAt: number } | null = null;
+  private codexModelsCache: { models: CodexModelInfo[]; checkedAt: number; source: 'file' | 'api' } | null = null;
   private codexModelsCheckInFlight: Promise<CodexModelInfo[] | null> | null = null;
+  private codexModelsUpdateHandler: ((models: CodexModelInfo[]) => void) | null = null;
+  private codexModelsWatcher: FSWatcher | null = null;
+  private codexModelsWatchDebounce: ReturnType<typeof setTimeout> | null = null;
+  /** Override for tests; defaults to `~/.codex`. */
+  private readonly codexCacheDir: string;
   private codexLoginManager = new CodexLoginManager();
   onHistoryUpdated?: (cwd: string, entry: SessionRegistryEntry, action: 'upsert' | 'delete') => void;
 
   private productionBuild: boolean;
 
-  constructor(repos: Repository[], _license?: License, codingPaths?: string[], productionBuild = false) {
+  constructor(
+    repos: Repository[],
+    _license?: License,
+    codingPaths?: string[],
+    productionBuild = false,
+    options?: { codexCacheDir?: string },
+  ) {
     this.repos = new Map();
     for (const repo of repos) {
       this.repos.set(repo.path, new GitOperations(repo.path));
@@ -180,6 +218,7 @@ export class MessageHandler {
     this.availableRepos = repos;
     this.defaultRepoPath = repos.length > 0 ? repos[0].path : '';
     this.productionBuild = productionBuild;
+    this.codexCacheDir = options?.codexCacheDir ?? join(homedir(), '.codex');
 
     // Load explicit coding paths only (repos and coding paths are independent)
     if (codingPaths) {
@@ -232,17 +271,24 @@ export class MessageHandler {
    *   1. `~/.codex/models_cache.json` — the Codex CLI's own cache of
    *      models the signed-in account can actually use. This is the
    *      authoritative list for ChatGPT-OAuth logins (the common case)
-   *      and is kept fresh by the CLI itself.
+   *      and is kept fresh by the CLI itself. Reads are essentially free,
+   *      so we use a short 5min in-memory TTL — and `startCodexModelsWatcher`
+   *      invalidates the cache the moment the file is rewritten.
    *   2. `OPENAI_API_KEY` env var + OpenAI `/v1/models` — fallback for
-   *      API-key users, who are rare but still supported.
+   *      API-key users, who are rare but still supported. Held to a 1h
+   *      sub-TTL so we don't hammer OpenAI when the local cache is absent.
    *
    * Returns `null` when neither source is available (not logged in and no
-   * API key set). Cached for 12h with concurrent-request dedup.
+   * API key set). Concurrent calls are deduped.
    */
   private async fetchCodexModels(force = false): Promise<CodexModelInfo[] | null> {
-    if (!force && this.codexModelsCache &&
-        Date.now() - this.codexModelsCache.checkedAt < CODEX_MODELS_CHECK_INTERVAL_MS) {
-      return this.codexModelsCache.models;
+    if (!force && this.codexModelsCache) {
+      const ttl = this.codexModelsCache.source === 'file'
+        ? CODEX_MODELS_FILE_TTL_MS
+        : CODEX_MODELS_API_TTL_MS;
+      if (Date.now() - this.codexModelsCache.checkedAt < ttl) {
+        return this.codexModelsCache.models;
+      }
     }
 
     if (this.codexModelsCheckInFlight) return this.codexModelsCheckInFlight;
@@ -251,13 +297,13 @@ export class MessageHandler {
       try {
         const fromCache = await this.readCodexModelsCacheFile();
         if (fromCache && fromCache.length > 0) {
-          this.codexModelsCache = { models: fromCache, checkedAt: Date.now() };
+          this.codexModelsCache = { models: fromCache, checkedAt: Date.now(), source: 'file' };
           return fromCache;
         }
 
         const fromApi = await this.fetchCodexModelsFromOpenAI();
         if (fromApi && fromApi.length > 0) {
-          this.codexModelsCache = { models: fromApi, checkedAt: Date.now() };
+          this.codexModelsCache = { models: fromApi, checkedAt: Date.now(), source: 'api' };
           return fromApi;
         }
 
@@ -272,15 +318,83 @@ export class MessageHandler {
     return this.codexModelsCheckInFlight;
   }
 
+  /** Snapshot accessor for the bus `/codex/models` subscription. */
+  getCachedCodexModels(): CodexModelInfo[] {
+    return this.codexModelsCache?.models ?? [];
+  }
+
+  /**
+   * Wire the daemon's bus broadcast for unsolicited model-list pushes.
+   * Called once during daemon boot; the watcher invokes this on cache change.
+   */
+  setCodexModelsUpdateHandler(handler: (models: CodexModelInfo[]) => void): void {
+    this.codexModelsUpdateHandler = handler;
+  }
+
+  /**
+   * Watch the Codex CLI cache directory and refresh the in-memory model list
+   * the moment the CLI rewrites it (typically after a `codex` startup or
+   * upgrade). Tolerant of a missing `~/.codex` directory — falls back to TTL
+   * alone if the watch can't be set up. Idempotent.
+   */
+  startCodexModelsWatcher(): void {
+    if (this.codexModelsWatcher) return;
+    // Prime the in-memory cache so the first /codex/models subscriber gets a
+    // populated snapshot instead of an empty one (the handshake also fires
+    // this; dedup via codexModelsCheckInFlight makes it cheap).
+    void this.fetchCodexModels().catch(() => {});
+    try {
+      // Watch the directory rather than the file directly so we react to
+      // first-time creation too. Many editors / cli tools rewrite atomically
+      // (write tmp + rename), which fires events for the directory, not the
+      // old file inode.
+      this.codexModelsWatcher = fsWatch(this.codexCacheDir, (_event, filename) => {
+        if (filename && filename !== 'models_cache.json') return;
+        this.scheduleCodexModelsRefresh();
+      });
+    } catch {
+      // Directory missing or unwatchable — quietly skip; the 5min TTL still
+      // catches the next refresh once a request comes in.
+    }
+  }
+
+  /** Tear down the fs.watch handle (test cleanup). */
+  stopCodexModelsWatcher(): void {
+    if (this.codexModelsWatchDebounce) {
+      clearTimeout(this.codexModelsWatchDebounce);
+      this.codexModelsWatchDebounce = null;
+    }
+    if (this.codexModelsWatcher) {
+      this.codexModelsWatcher.close();
+      this.codexModelsWatcher = null;
+    }
+  }
+
+  private scheduleCodexModelsRefresh(): void {
+    if (this.codexModelsWatchDebounce) clearTimeout(this.codexModelsWatchDebounce);
+    this.codexModelsWatchDebounce = setTimeout(() => {
+      this.codexModelsWatchDebounce = null;
+      void this.refreshCodexModelsAndPublish();
+    }, CODEX_MODELS_WATCH_DEBOUNCE_MS);
+  }
+
+  private async refreshCodexModelsAndPublish(): Promise<void> {
+    const before = this.codexModelsCache?.models;
+    const after = await this.fetchCodexModels(/* force */ true);
+    if (!after) return;
+    if (codexModelListsEqual(before, after)) return;
+    this.codexModelsUpdateHandler?.(after);
+  }
+
   /**
    * Read models from the Codex CLI's local cache. File shape (as of codex
-   * CLI v0.118): `{ models: [{ slug, display_name, visibility, supported_in_api, ... }] }`.
+   * CLI v0.125): `{ models: [{ slug, display_name, visibility, supported_in_api, ... }] }`.
    * We surface only entries that are listable and API-supported, so hidden
    * internal models (e.g. `codex-auto-review`) don't leak into the picker.
    */
   private async readCodexModelsCacheFile(): Promise<CodexModelInfo[] | null> {
     try {
-      const cachePath = join(homedir(), '.codex', 'models_cache.json');
+      const cachePath = join(this.codexCacheDir, 'models_cache.json');
       const raw = await readFile(cachePath, 'utf-8');
       const parsed = JSON.parse(raw) as {
         models?: Array<{
@@ -330,7 +444,7 @@ export class MessageHandler {
   private async getCodexLoginStatus(): Promise<{ loggedIn: boolean; method?: 'chatgpt' | 'api-key' }> {
     if (process.env.OPENAI_API_KEY) return { loggedIn: true, method: 'api-key' };
     try {
-      const authPath = join(homedir(), '.codex', 'auth.json');
+      const authPath = join(this.codexCacheDir, 'auth.json');
       const raw = await readFile(authPath, 'utf-8');
       const auth = JSON.parse(raw) as {
         OPENAI_API_KEY?: string;
@@ -411,6 +525,7 @@ export class MessageHandler {
   }
 
   cleanup(): void {
+    this.stopCodexModelsWatcher();
     this.claudeService.cleanup();
   }
 

@@ -60,6 +60,7 @@ import {
   type SessionHistoryUpdatedPayload,
   type SessionUpdatePayload,
   type CodexLoginState,
+  type CodexModelInfo,
   type TerminalSummary,
   type TerminalsUpdate,
   type TerminalOutputSnapshot,
@@ -419,6 +420,20 @@ export async function runDaemon(): Promise<void> {
     '/codex/login',
     { snapshot: () => codexLoginManager.getStatus() },
   );
+
+  // Local Codex model list. Snapshot delivers whatever the daemon currently
+  // has cached; updates fire when the codex CLI rewrites
+  // `~/.codex/models_cache.json` (typically right after a binary upgrade or a
+  // fresh login). The fs.watch keeps the PWA picker fresh without anyone
+  // having to re-issue `codex:list-models`.
+  messageHandler.setCodexModelsUpdateHandler((models) => {
+    bus.publish<CodexModelInfo[]>('/codex/models', models);
+  });
+  bus.onSubscribe<'/codex/models', CodexModelInfo[], CodexModelInfo[]>(
+    '/codex/models',
+    { snapshot: () => messageHandler.getCachedCodexModels() },
+  );
+  messageHandler.startCodexModelsWatcher();
 
   // ── MessageBus command adapter ────────────────────────────────────────────
   // Every request-response verb from the legacy MessageHandler is exposed as a
