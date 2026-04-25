@@ -1,10 +1,15 @@
 /**
  * FileBrowser — read-only directory listings and text file previews.
  *
- * Every request names a project root (`cwd`) and a relative path. The
- * agent resolves `cwd + path` against the canonical root and rejects
- * anything that escapes it, so the PWA can pass raw user input without
- * path-traversal risk.
+ * Path resolution rules:
+ *   - Absolute `path` is used as-is (cwd is ignored — useful for clickable
+ *     links pointing outside the project, e.g. /etc/hosts in a tool log).
+ *   - Relative `path` is resolved against `cwd`; cwd is required in this
+ *     case but no inside-root assertion is performed.
+ *
+ * No sandbox: the daemon already exposes a full PTY via `terminal:*`, so
+ * clamping reads to a project root would be security theatre on the same
+ * E2E channel. The trust boundary is the WebRTC peer pin, not the path.
  *
  * Binary files and files over a size cap return metadata only (kind tag
  * + size/mtime) so the PWA can render a placeholder instead of pulling
@@ -13,7 +18,7 @@
 
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import type {
   FileEntry,
   FileEntryKind,
@@ -33,7 +38,7 @@ const SNIFF_BYTES = 8 * 1024;
 export class FileBrowser {
   async list(payload: FilesListRequestPayload): Promise<FilesListResponsePayload> {
     try {
-      const { targetAbs } = await resolveWithinRoot(payload.cwd, payload.path);
+      const targetAbs = await resolveTarget(payload.cwd, payload.path);
       const stats = await stat(targetAbs);
       if (!stats.isDirectory()) {
         return {
@@ -69,7 +74,7 @@ export class FileBrowser {
 
   async read(payload: FilesReadRequestPayload): Promise<FilesReadResponsePayload> {
     try {
-      const { targetAbs } = await resolveWithinRoot(payload.cwd, payload.path);
+      const targetAbs = await resolveTarget(payload.cwd, payload.path);
       const stats = await stat(targetAbs);
       if (!stats.isFile()) {
         return {
@@ -119,29 +124,23 @@ export class FileBrowser {
 }
 
 /**
- * Resolve `cwd + path` to an absolute path and assert it stays under the
- * canonical root. We canonicalise the root with `realpath` so symlinked
- * project directories work, but we resolve the child purely lexically —
- * stat'ing a non-existent path surfaces a readable "no such file" error
- * instead of failing inside `realpath`.
+ * Resolve `cwd + path` to an absolute path. No sandbox check — see module
+ * docstring for the rationale.
+ *
+ *   - Absolute `path` is returned verbatim (cwd ignored).
+ *   - Relative `path` is resolved against `realpath(cwd)`; cwd is required
+ *     in this case. We canonicalise the root with `realpath` so symlinked
+ *     project directories work, but resolve the child purely lexically so
+ *     a non-existent target surfaces a readable error from `stat()`
+ *     instead of failing inside `realpath`.
  */
-async function resolveWithinRoot(
-  cwd: string,
-  relPath: string,
-): Promise<{ rootAbs: string; targetAbs: string }> {
-  if (!cwd || typeof cwd !== 'string') throw new Error('cwd is required');
-  const rootAbs = await realpath(resolve(cwd));
-  const targetAbs = resolve(rootAbs, relPath || '.');
-  if (!isInside(targetAbs, rootAbs)) {
-    throw new Error('Path is outside project root');
+async function resolveTarget(cwd: string, relPath: string): Promise<string> {
+  if (relPath && isAbsolute(relPath)) return relPath;
+  if (!cwd || typeof cwd !== 'string') {
+    throw new Error('cwd is required when path is relative');
   }
-  return { rootAbs, targetAbs };
-}
-
-function isInside(target: string, root: string): boolean {
-  if (target === root) return true;
-  const prefix = root.endsWith(sep) ? root : root + sep;
-  return target.startsWith(prefix);
+  const rootAbs = await realpath(resolve(cwd));
+  return resolve(rootAbs, relPath || '.');
 }
 
 async function describeEntry(dirAbs: string, dirent: Dirent): Promise<FileEntry> {

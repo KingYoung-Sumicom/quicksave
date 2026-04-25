@@ -1,12 +1,12 @@
 import { useRef, useState, useEffect } from 'react';
 import { ChevronIcon } from '../../ui/ChevronIcon';
+import { FilePathLink } from '../FilePathLink';
 
 const SIDE_BY_SIDE_MIN_WIDTH = 640;
 const AUTO_EXPAND_THRESHOLD = 2; // lines
 
 export function EditToolView({ input }: { input: Record<string, unknown> }) {
-  const filePath = (input.file_path as string) || '?';
-  const basename = filePath.split('/').pop() || filePath;
+  const filePath = (input.file_path as string) || '';
   const oldStr = (input.old_string as string) || '';
   const newStr = (input.new_string as string) || '';
 
@@ -72,7 +72,11 @@ export function EditToolView({ input }: { input: Record<string, unknown> }) {
     <div ref={containerRef}>
       <div className="flex items-center gap-1.5">
         <span className="text-yellow-400">Edit</span>{' '}
-        <span className="text-blue-400 font-mono" title={filePath}>{basename}</span>
+        {filePath ? (
+          <FilePathLink path={filePath} />
+        ) : (
+          <span className="text-slate-500 font-mono">?</span>
+        )}
         <span className="text-slate-500">(</span>
         <span className="text-red-400">-{oldStr.length}</span>
         <span className="text-slate-500">/</span>

@@ -1,34 +1,37 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import type {
-  FileEntry,
-  FilesListResponsePayload,
-  FilesReadResponsePayload,
-} from '@sumicom/quicksave-shared';
+import type { FileEntry, FilesListResponsePayload } from '@sumicom/quicksave-shared';
 import { BaseStatusBar, BackButton } from '../BaseStatusBar';
 import { Spinner } from '../ui/Spinner';
 import { useFileOps } from '../../hooks/useFileOps';
 import { getActiveBus } from '../../lib/busRegistry';
 import { resolveProjectCwd } from '../../lib/projectId';
 import { useMachineStore } from '../../stores/machineStore';
+import { useFilePreviewStore } from '../../stores/filePreviewStore';
 
 interface Params extends Record<string, string | undefined> {
   projectId: string;
 }
 
-type Mode = 'd' | 'f';
-
 /**
- * Parses the splat after `/files/` into `(mode, relPath)`.
- * Format: `d/<rel>` for a directory listing, `f/<rel>` for a file preview.
- * Empty / unprefixed input falls back to a directory listing of `<rel>`.
+ * Parses the splat after `/files/` into a relative directory path. Files
+ * are no longer addressable via the URL — clicking a file opens the
+ * `FilePreviewModal` instead. Legacy `d/<rel>` and `f/<rel>` prefixes
+ * still work: `d/` is stripped, `f/` falls back to listing the file's
+ * containing directory (so old links don't 404).
  */
-function parseSplat(splat: string): { mode: Mode; relPath: string } {
-  if (!splat) return { mode: 'd', relPath: '' };
-  if (splat === 'd' || splat === 'f') return { mode: splat as Mode, relPath: '' };
-  if (splat.startsWith('d/')) return { mode: 'd', relPath: splat.slice(2) };
-  if (splat.startsWith('f/')) return { mode: 'f', relPath: splat.slice(2) };
-  return { mode: 'd', relPath: splat };
+function parseSplat(splat: string): string {
+  if (!splat) return '';
+  if (splat === 'd') return '';
+  if (splat.startsWith('d/')) return splat.slice(2);
+  if (splat === 'f') return '';
+  if (splat.startsWith('f/')) {
+    // Drop the trailing filename — show its parent directory instead.
+    const rest = splat.slice(2);
+    const idx = rest.lastIndexOf('/');
+    return idx < 0 ? '' : rest.slice(0, idx);
+  }
+  return splat;
 }
 
 function toUrlPath(rel: string): string {
@@ -41,12 +44,6 @@ function joinRel(parent: string, name: string): string {
   return `${parent}/${name}`;
 }
 
-function basenameOf(rel: string): string {
-  if (!rel) return '';
-  const idx = rel.lastIndexOf('/');
-  return idx < 0 ? rel : rel.slice(idx + 1);
-}
-
 function formatSize(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
@@ -57,11 +54,10 @@ export function FileBrowserPage() {
   const { projectId } = useParams<Params>();
   const params = useParams();
   const splat = params['*'] ?? '';
-  const { mode, relPath } = parseSplat(splat);
+  const relPath = parseSplat(splat);
 
   const navigate = useNavigate();
   const location = useLocation();
-  const { listFiles, readFile } = useFileOps(getActiveBus);
 
   const machines = useMachineStore((s) => s.machines);
   const resolved = useMemo(() => (projectId ? resolveProjectCwd(projectId) : null), [projectId]);
@@ -89,30 +85,17 @@ export function FileBrowserPage() {
     );
   }
 
-  const titleParts = relPath ? relPath.split('/').filter(Boolean) : [];
-  const headerTitle = mode === 'f' && titleParts.length > 0
-    ? titleParts[titleParts.length - 1]
-    : projectName;
   const headerSubtitle = relPath ? `${cwd}/${relPath}` : cwd;
 
   return (
-    <PageShell title={headerTitle} subtitle={headerSubtitle} goBack={goBack} machineName={machine?.nickname}>
-      <Breadcrumb projectId={projectId} relPath={relPath} mode={mode} projectName={projectName} navigate={navigate} />
-      {mode === 'd' ? (
-        <DirectoryView
-          projectId={projectId}
-          cwd={cwd}
-          relPath={relPath}
-          listFiles={listFiles}
-          navigate={navigate}
-        />
-      ) : (
-        <FileView
-          cwd={cwd}
-          relPath={relPath}
-          readFile={readFile}
-        />
-      )}
+    <PageShell title={projectName} subtitle={headerSubtitle} goBack={goBack} machineName={machine?.nickname}>
+      <Breadcrumb projectId={projectId} relPath={relPath} projectName={projectName} navigate={navigate} />
+      <DirectoryView
+        projectId={projectId}
+        cwd={cwd}
+        relPath={relPath}
+        navigate={navigate}
+      />
     </PageShell>
   );
 }
@@ -161,13 +144,11 @@ function Empty({ children }: { children: React.ReactNode }) {
 function Breadcrumb({
   projectId,
   relPath,
-  mode,
   projectName,
   navigate,
 }: {
   projectId: string;
   relPath: string;
-  mode: Mode;
   projectName: string;
   navigate: ReturnType<typeof useNavigate>;
 }) {
@@ -188,12 +169,11 @@ function Breadcrumb({
       {segments.map((seg, i) => {
         const accum = segments.slice(0, i + 1).join('/');
         const isLast = i === segments.length - 1;
-        const isFile = isLast && mode === 'f';
         return (
           <span key={accum} className="flex items-center gap-1 min-w-0">
             <span className="text-slate-600">/</span>
             {isLast ? (
-              <span className={isFile ? 'text-slate-200 truncate' : 'text-slate-200 truncate'}>{seg}</span>
+              <span className="text-slate-200 truncate">{seg}</span>
             ) : (
               <button
                 onClick={() => goToDir(accum)}
@@ -213,15 +193,15 @@ function DirectoryView({
   projectId,
   cwd,
   relPath,
-  listFiles,
   navigate,
 }: {
   projectId: string;
   cwd: string;
   relPath: string;
-  listFiles: ReturnType<typeof useFileOps>['listFiles'];
   navigate: ReturnType<typeof useNavigate>;
 }) {
+  const { listFiles } = useFileOps(getActiveBus);
+  const openPreview = useFilePreviewStore((s) => s.open);
   const [data, setData] = useState<FilesListResponsePayload | null>(null);
   const [loading, setLoading] = useState(true);
   const reqIdRef = useRef(0);
@@ -281,7 +261,7 @@ function DirectoryView({
       return;
     }
     if (e.kind === 'file' || e.kind === 'symlink') {
-      navigate(`/p/${projectId}/files/f/${toUrlPath(next)}`);
+      openPreview({ cwd, path: next });
       return;
     }
   };
@@ -330,103 +310,5 @@ function EntryIcon({ entry }: { entry: FileEntry }) {
     <svg className="w-4 h-4 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z" />
     </svg>
-  );
-}
-
-function FileView({
-  cwd,
-  relPath,
-  readFile,
-}: {
-  cwd: string;
-  relPath: string;
-  readFile: ReturnType<typeof useFileOps>['readFile'];
-}) {
-  const [data, setData] = useState<FilesReadResponsePayload | null>(null);
-  const [loading, setLoading] = useState(true);
-  const reqIdRef = useRef(0);
-
-  useEffect(() => {
-    setLoading(true);
-    setData(null);
-    const myId = ++reqIdRef.current;
-    readFile({ cwd, path: relPath })
-      .then((res) => {
-        if (myId !== reqIdRef.current) return;
-        setData(res);
-      })
-      .catch((err) => {
-        if (myId !== reqIdRef.current) return;
-        setData({
-          success: false,
-          cwd,
-          path: relPath,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      })
-      .finally(() => {
-        if (myId === reqIdRef.current) setLoading(false);
-      });
-  }, [cwd, relPath, readFile]);
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Spinner size="w-5 h-5" color="border-blue-400" />
-      </div>
-    );
-  }
-
-  if (!data?.success) {
-    return (
-      <div className="px-4 py-6 text-sm text-red-400">
-        {data?.error ?? 'Failed to read file.'}
-      </div>
-    );
-  }
-
-  const meta = (
-    <div className="px-4 py-2 border-b border-slate-700/50 text-[11px] text-slate-500 flex items-center gap-2">
-      <span>{basenameOf(relPath)}</span>
-      <span className="opacity-60">·</span>
-      <span>{typeof data.size === 'number' ? formatSize(data.size) : '—'}</span>
-      {data.kind && data.kind !== 'text' && (
-        <>
-          <span className="opacity-60">·</span>
-          <span className="text-amber-400">{data.kind}</span>
-        </>
-      )}
-    </div>
-  );
-
-  if (data.kind === 'binary') {
-    return (
-      <>
-        {meta}
-        <div className="px-4 py-12 text-center text-sm text-slate-500">
-          Binary file — preview not shown.
-        </div>
-      </>
-    );
-  }
-
-  if (data.kind === 'oversized') {
-    return (
-      <>
-        {meta}
-        <div className="px-4 py-12 text-center text-sm text-slate-500">
-          File is larger than the 100 KB preview cap.
-        </div>
-      </>
-    );
-  }
-
-  return (
-    <>
-      {meta}
-      <pre className="px-4 py-3 text-[12px] leading-snug text-slate-200 whitespace-pre overflow-x-auto font-mono">
-        {data.content ?? ''}
-      </pre>
-    </>
   );
 }

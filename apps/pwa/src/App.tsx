@@ -54,6 +54,7 @@ import { ProjectList } from './components/ProjectList';
 import { ProjectDetail } from './components/ProjectDetail';
 import { TerminalPage } from './components/terminal/TerminalPage';
 import { FileBrowserPage } from './components/files/FileBrowserPage';
+import { FilePreviewModal } from './components/files/FilePreviewModal';
 import { useProjectConnection } from './hooks/useProjectConnection';
 import { resolveHash, getAllKnownPaths } from './lib/pathHash';
 import {
@@ -1029,6 +1030,7 @@ function AppContent() {
         </Routes>
       )}
       {showOverlay && <ConnectingOverlay onAbort={handleAbortConnection} onRetry={handleRetryConnection} />}
+      <FilePreviewModal />
       <PathBrowser
         isOpen={showPathBrowser}
         mode="repo"

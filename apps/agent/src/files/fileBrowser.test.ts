@@ -35,48 +35,81 @@ describe('FileBrowser', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Path sandboxing (security)
+  // Path resolution (no sandbox — see module docstring)
   // -------------------------------------------------------------------------
-  describe('path sandboxing', () => {
-    it('read() rejects ../ traversal escaping the root', async () => {
-      // Create a file in the root so the path syntactically resolves to
-      // something — but the leading `..` must take us outside cwd.
-      writeFileSync(join(root, 'inside.txt'), 'inside');
-      const res = await fb.read({ cwd: root, path: '../somefile' });
-      expect(res.success).toBe(false);
-      expect(res.error).toBeTruthy();
-      expect(typeof res.error).toBe('string');
-      expect(res.content).toBeUndefined();
+  describe('path resolution', () => {
+    it('read() with absolute path uses it verbatim regardless of cwd', async () => {
+      // A file outside `root` (in a sibling tmpdir) must still be readable
+      // when addressed by absolute path.
+      const otherRoot = mkdtempSync(join(tmpdir(), 'quicksave-fb-other-'));
+      try {
+        const target = join(otherRoot, 'outside.txt');
+        writeFileSync(target, 'outside content');
+        const res = await fb.read({ cwd: root, path: target });
+        expect(res.success).toBe(true);
+        expect(res.kind).toBe('text');
+        expect(res.content).toBe('outside content');
+      } finally {
+        rmSync(otherRoot, { recursive: true, force: true });
+      }
     });
 
-    it('list() rejects ../.. traversal escaping the root', async () => {
-      const res = await fb.list({ cwd: root, path: '../..' });
-      expect(res.success).toBe(false);
-      expect(res.error).toBeTruthy();
-      expect(res.entries).toBeUndefined();
+    it('list() with absolute path uses it verbatim regardless of cwd', async () => {
+      const otherRoot = mkdtempSync(join(tmpdir(), 'quicksave-fb-other-'));
+      try {
+        writeFileSync(join(otherRoot, 'a.txt'), 'a');
+        const res = await fb.list({ cwd: root, path: otherRoot });
+        expect(res.success).toBe(true);
+        expect(res.entries!.map((e) => e.name)).toContain('a.txt');
+      } finally {
+        rmSync(otherRoot, { recursive: true, force: true });
+      }
     });
 
-    it('rejects absolute paths that resolve outside cwd', async () => {
-      // /etc is essentially never inside a tmpdir, so this must escape.
-      const res = await fb.list({ cwd: root, path: '/etc' });
+    it('absolute path works with empty cwd', async () => {
+      const otherRoot = mkdtempSync(join(tmpdir(), 'quicksave-fb-other-'));
+      try {
+        writeFileSync(join(otherRoot, 'a.txt'), 'hello');
+        const res = await fb.read({ cwd: '', path: join(otherRoot, 'a.txt') });
+        expect(res.success).toBe(true);
+        expect(res.content).toBe('hello');
+      } finally {
+        rmSync(otherRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('relative path with empty cwd fails with a clear error', async () => {
+      const res = await fb.read({ cwd: '', path: 'a.txt' });
       expect(res.success).toBe(false);
       expect(res.error).toBeTruthy();
     });
 
-    it("read() rejects absolute paths that resolve outside cwd", async () => {
-      const res = await fb.read({ cwd: root, path: '/etc/hostname' });
-      expect(res.success).toBe(false);
-      expect(res.error).toBeTruthy();
+    it('relative ".." traversal is allowed (no sandbox)', async () => {
+      // Create a file in the parent of `root` and read it via "../<name>".
+      // It will be inside the tmpdir, just outside the project root.
+      const sibling = mkdtempSync(join(tmpdir(), 'quicksave-fb-sib-'));
+      try {
+        writeFileSync(join(sibling, 'parent.txt'), 'from parent');
+        // From inside `root`, `../<basename(sibling)>/parent.txt` walks up
+        // to the shared tmpdir then back down into the sibling.
+        const rel = `../${sibling.split('/').pop()}/parent.txt`;
+        const res = await fb.read({ cwd: root, path: rel });
+        expect(res.success).toBe(true);
+        expect(res.kind).toBe('text');
+        expect(res.content).toBe('from parent');
+      } finally {
+        rmSync(sibling, { recursive: true, force: true });
+      }
     });
 
-    it('accepts path === "" (lists root itself)', async () => {
+    it('accepts path === "" (lists cwd itself)', async () => {
       writeFileSync(join(root, 'a.txt'), 'a');
       const res = await fb.list({ cwd: root, path: '' });
       expect(res.success).toBe(true);
       expect(res.entries).toBeDefined();
     });
 
-    it('accepts path === "." (lists root itself)', async () => {
+    it('accepts path === "." (lists cwd itself)', async () => {
       writeFileSync(join(root, 'a.txt'), 'a');
       const res = await fb.list({ cwd: root, path: '.' });
       expect(res.success).toBe(true);

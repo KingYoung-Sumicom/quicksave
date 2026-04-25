@@ -8,6 +8,10 @@ import { ExitPlanModeToolView, ExitPlanModeInteractiveView } from './toolViews/P
 import { FallbackToolView } from './toolViews/FallbackToolView';
 import { InlinePermissionActions } from './InlinePermissionActions';
 import { InteractiveQuestionView } from './InteractiveQuestionView';
+import { linkifyPaths } from './linkifyPaths';
+
+/** Tools whose stdout typically contains paths worth linkifying. */
+const LINKIFY_RESULT_TOOLS = new Set(['Bash', 'Glob', 'Grep']);
 
 const INLINE_RESULT_TOOLS = new Set(['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep']);
 const INLINE_RESULT_BORDER: Record<string, string> = {
@@ -47,10 +51,14 @@ function InlineToolResult({ content, toolName, suppressContent, expanded }: {
 
   if (!expanded) return null;
 
+  const body = toolName && LINKIFY_RESULT_TOOLS.has(toolName)
+    ? linkifyPaths(content)
+    : content;
+
   return (
     <div className={`mt-1.5 border-t ${borderColor}`}>
       <pre className="mt-1 min-w-0 whitespace-pre-wrap break-all text-slate-400 overflow-x-auto pt-1">
-        {content}
+        {body}
       </pre>
     </div>
   );

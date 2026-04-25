@@ -521,6 +521,9 @@ export async function runDaemon(): Promise<void> {
     'terminal:resize',
     'terminal:close',
     'terminal:rename',
+    // files
+    'files:list',
+    'files:read',
   ];
 
   for (const verb of LEGACY_BUS_VERBS) {
