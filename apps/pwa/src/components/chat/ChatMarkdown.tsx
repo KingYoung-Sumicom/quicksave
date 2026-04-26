@@ -15,6 +15,10 @@ import { FilePathLink } from './FilePathLink';
  */
 const SINGLE_PATH_RE = /^(\/?[\w@.~-]+(?:\/[\w@.~-]+)+)(?::\d+(?:[-:]\d+)?)?$/;
 
+/** Schemes we treat as "external" — open in a new tab. Anything else with
+ *  no scheme is treated as a file path candidate. */
+const EXTERNAL_SCHEME_RE = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
+
 export function ChatMarkdown({ children }: { children: string }) {
   return (
     <ReactMarkdown
@@ -50,6 +54,37 @@ export function ChatMarkdown({ children }: { children: string }) {
             }
           }
           return <code className={className} {...rest}>{children}</code>;
+        },
+        // Default `<a>` would either SPA-navigate (relative paths) or pull
+        // the user out of the PWA (external URLs). Route file-shaped hrefs
+        // to the same preview modal as inline code paths, and force
+        // external links to open in a new tab.
+        a: ({ href, children, ...rest }) => {
+          const url = typeof href === 'string' ? href : '';
+          if (url && !EXTERNAL_SCHEME_RE.test(url) && !url.startsWith('#')) {
+            const m = url.match(SINGLE_PATH_RE);
+            if (m) {
+              return (
+                <FilePathLink
+                  path={m[1]}
+                  className="inline-block align-baseline text-blue-400 hover:text-blue-300 font-bold underline transition-colors"
+                >
+                  {children}
+                </FilePathLink>
+              );
+            }
+          }
+          return (
+            <a
+              {...rest}
+              href={url || undefined}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-400 hover:text-blue-300 underline transition-colors"
+            >
+              {children}
+            </a>
+          );
         },
       }}
     >
