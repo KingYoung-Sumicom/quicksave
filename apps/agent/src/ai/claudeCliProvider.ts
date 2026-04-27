@@ -206,7 +206,7 @@ function extractToolResultText(content: unknown): string {
 // CliProviderSession — wraps a ChildProcess for ProviderSession interface
 // ============================================================================
 
-class CliProviderSession implements ProviderSession {
+export class CliProviderSession implements ProviderSession {
   public process: ChildProcess | null;
   /** StreamIds queued by hot resume during an active turn — consumeStream
    * pops after each result to start the next turn. Idle hot resume (CLI
@@ -228,6 +228,10 @@ class CliProviderSession implements ProviderSession {
    * process death counts as an unexpected exit. Reset externally on idle hot
    * resume (the new turn hasn't seen its result yet). */
   public resultEmitted: boolean = false;
+  /** Card builder for this session — used by sendUserMessage to record the
+   * follow-up prompt in streamingCards so getCards on refresh returns it
+   * before the CLI has flushed it to the session JSONL. */
+  public cardBuilder: StreamCardBuilder | null = null;
 
   constructor(proc: ChildProcess) {
     this.process = proc;
@@ -276,6 +280,13 @@ class CliProviderSession implements ProviderSession {
 
   sendUserMessage(prompt: string): void {
     if (!this.process || this.process.killed) return;
+    // Record the prompt in the cardBuilder so getCards on reconnect/refresh
+    // returns it before the CLI has flushed it to the session JSONL. The PWA
+    // already shows an optimistic user card, so we don't emit a card-event.
+    // (--replay-user-messages will echo this prompt back to us; the
+    // `isReplay` filter in routeMessage relies on this entry already
+    // existing to dedupe.)
+    this.cardBuilder?.userMessage(prompt);
     // Pause the idle clock immediately — CLI will start a new turn once it
     // reads this stdin, even before it emits the first stream event.
     this.activeTurn = true;
@@ -478,6 +489,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     });
 
     const cliSession = new CliProviderSession(proc);
+    cliSession.cardBuilder = cardBuilder;
     const debugLog = new DebugLogger(sessionId);
     cliSession.debugLog = debugLog;
 

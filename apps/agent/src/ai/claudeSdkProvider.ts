@@ -41,19 +41,29 @@ function extractToolResultText(content: unknown): string {
 // SdkProviderSession — wraps SDK Query for ProviderSession interface
 // ============================================================================
 
-class SdkProviderSession implements ProviderSession {
+export class SdkProviderSession implements ProviderSession {
   private queryHandle: Query | null;
   private inputQueue: AsyncQueue<SDKUserMessage>;
+  private cardBuilder: StreamCardBuilder;
   /** StreamIds queued by hot resume — consumeStream pops after each result. */
   public pendingStreamIds: string[] = [];
 
-  constructor(queryHandle: Query, inputQueue: AsyncQueue<SDKUserMessage>) {
+  constructor(
+    queryHandle: Query,
+    inputQueue: AsyncQueue<SDKUserMessage>,
+    cardBuilder: StreamCardBuilder,
+  ) {
     this.queryHandle = queryHandle;
     this.inputQueue = inputQueue;
+    this.cardBuilder = cardBuilder;
   }
 
   sendUserMessage(prompt: string): void {
     if (!this.queryHandle) return;
+    // Record the prompt in the cardBuilder so getCards on reconnect/refresh
+    // returns it before the SDK has flushed it to the session JSONL. The PWA
+    // already shows an optimistic user card, so we don't emit a card-event.
+    this.cardBuilder.userMessage(prompt);
     const userMsg: SDKUserMessage = {
       type: 'user',
       message: { role: 'user', content: prompt },
@@ -119,7 +129,7 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     const sessionId = await this.waitForInit(queryHandle, callbacks);
     sessionIdRef.current = sessionId;
 
-    const sdkSession = new SdkProviderSession(queryHandle, inputQueue);
+    const sdkSession = new SdkProviderSession(queryHandle, inputQueue, cardBuilder);
 
     // Update cardBuilder with real sessionId
     cardBuilder.updateSessionId(sessionId);
@@ -154,7 +164,7 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     const sessionId = await this.waitForInit(queryHandle, callbacks);
     sessionIdRef.current = sessionId;
 
-    const sdkSession = new SdkProviderSession(queryHandle, inputQueue);
+    const sdkSession = new SdkProviderSession(queryHandle, inputQueue, cardBuilder);
 
     // Update cardBuilder with confirmed sessionId
     cardBuilder.updateSessionId(sessionId);
