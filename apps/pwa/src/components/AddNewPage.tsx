@@ -62,6 +62,10 @@ export function AddNewPage({
   }, []);
   const initialProjectId = useMemo(() => searchParams.get('projectId'), []); // eslint-disable-line react-hooks/exhaustive-deps
   const [tab, setTab] = useState<TabKey>(initialTab);
+  // Lets the Project tab seed the Session tab's project selection after a
+  // successful add — SessionTab mounts fresh on tab switch and reads this
+  // as its initialProjectId.
+  const [sessionSeedProjectId, setSessionSeedProjectId] = useState<string | null>(initialProjectId);
   const agentConnections = useConnectionStore((s) => s.agentConnections);
   const machines = useMachineStore((s) => s.machines);
 
@@ -176,7 +180,8 @@ export function AddNewPage({
             onCloneRepo={boundCloneRepo}
             onDone={(agentId, path) => {
               if (agentId && path) {
-                navigate(`/p/${toProjectId(agentId, path)}`);
+                setSessionSeedProjectId(toProjectId(agentId, path));
+                setTab('session');
               } else {
                 goBack();
               }
@@ -185,7 +190,7 @@ export function AddNewPage({
         )}
         {tab === 'session' && (
           <SessionTab
-            initialProjectId={initialProjectId}
+            initialProjectId={sessionSeedProjectId}
             onSetActiveAgent={onSetActiveAgent}
             onStartSession={onStartSession}
           />

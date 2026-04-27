@@ -358,6 +358,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         activeSessionId: null,
         activeStreamIds: [],
         streamError: null,
+        isStreaming: false,
         selectedAgent: prefs.selectedAgent,
         agentPrefs: prefs.agentPrefs,
         ...flatViewOf(prefs.agentPrefs[prefs.selectedAgent]),
@@ -381,6 +382,13 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       activeSessionId: sessionId,
       activeStreamIds: streamId ? [streamId] : [],
       streamError: null,
+      // Sync the local streaming flag to the target session's state. Without
+      // this, navigating from a streaming session to an idle one leaves
+      // isStreaming=true, so the chat keeps rendering the blue cursor and
+      // bouncing dots even though the status badge correctly shows green.
+      // startSession / resumeSession call upsertSession({isStreaming: true})
+      // immediately before this, so prompt-sending paths still see true.
+      isStreaming: session?.isStreaming ?? false,
       selectedAgent: sessionAgent,
       ...flatViewOf(agentPrefs[sessionAgent]),
       // Surface the session's permissionMode in the flat view so the chip

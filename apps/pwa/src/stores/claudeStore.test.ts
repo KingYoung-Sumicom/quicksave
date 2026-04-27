@@ -272,6 +272,41 @@ describe('claudeStore', () => {
       localStorageMock.removeItem('quicksave:session-prefs');
     });
 
+    it('syncs isStreaming to the target session\'s state when navigating', () => {
+      // Regression: navigating from a streaming session to an idle one used to
+      // leave local isStreaming=true, so the chat kept rendering the blue
+      // cursor and bouncing dots even though the green status badge correctly
+      // showed the new session as idle.
+      useClaudeStore.setState({
+        sessions: {
+          streamingSess: { sessionId: 'streamingSess', isStreaming: true } as any,
+          idleSess: { sessionId: 'idleSess', isStreaming: false } as any,
+        },
+        isStreaming: true,
+      });
+      useClaudeStore.getState().setActiveSession('idleSess');
+      expect(useClaudeStore.getState().isStreaming).toBe(false);
+
+      useClaudeStore.getState().setActiveSession('streamingSess');
+      expect(useClaudeStore.getState().isStreaming).toBe(true);
+    });
+
+    it('clears isStreaming when switching to New Session', () => {
+      // Without this, navigating from a streaming session to the new-session
+      // page would keep isStreaming=true, which makes ClaudePanel render the
+      // "Starting task..." banner spuriously (isStartingNewSession =
+      // isStreaming && !activeSessionId).
+      useClaudeStore.setState({ isStreaming: true });
+      useClaudeStore.getState().setActiveSession(null);
+      expect(useClaudeStore.getState().isStreaming).toBe(false);
+    });
+
+    it('defaults isStreaming to false when target session is unknown', () => {
+      useClaudeStore.setState({ isStreaming: true, sessions: {} });
+      useClaudeStore.getState().setActiveSession('unknownSess');
+      expect(useClaudeStore.getState().isStreaming).toBe(false);
+    });
+
     it('refreshes flat view to the new session\'s agent prefs (no model leak across agents)', () => {
       // Regression: switching from a Codex session with gpt-5 selected to a
       // Claude session must not leave selectedModel='gpt-5' lingering — the
