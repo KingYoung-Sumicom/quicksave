@@ -28,6 +28,9 @@ pnpm-debug.log*
 # Test coverage
 coverage/
 
+# Local temp files
+/.tmp/
+
 # Playwright
 playwright-report/
 test-results/
