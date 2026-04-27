@@ -95,6 +95,13 @@ export function TerminalView({ terminalId, getBus, onExit }: TerminalViewProps) 
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const seqRef = useRef(0);
+  // True while we're feeding a reconnect snapshot back through xterm.write().
+  // The snapshot is the historical PTY byte stream and contains queries the
+  // running TUI sent earlier (DSR `CSI 6n`, DA1 `CSI c`, OSC 11 `?`, ...).
+  // xterm auto-replies to those queries via onData; without this gate, every
+  // resume from background would re-inject those replies as fresh input,
+  // and the user sees `^[[24;80R^[[?1;2c…` typed into their shell.
+  const replayingSnapshotRef = useRef(false);
   const { sendInput, resizeTerminal, subscribeOutput } = useTerminalOps(getBus);
   const [exitCode, setExitCode] = useState<number | null | undefined>(undefined);
   // Optimistic: assume the terminal we just navigated to exists. Without
@@ -182,6 +189,7 @@ export function TerminalView({ terminalId, getBus, onExit }: TerminalViewProps) 
     });
 
     const onData = term.onData((chunk) => {
+      if (replayingSnapshotRef.current) return;
       sendInput(terminalId, chunk).catch((err) =>
         console.warn('[terminal] input failed:', err),
       );
@@ -217,15 +225,27 @@ export function TerminalView({ terminalId, getBus, onExit }: TerminalViewProps) 
     const applySnapshot = (snapshot: TerminalOutputSnapshot | null) => {
       const t = termRef.current;
       if (!t) return;
+      // Gate onData → terminal:input forwarding for the duration of the
+      // replay. xterm.write() is async (parser runs on a microtask), so we
+      // only clear the flag from the write callback. See the ref's docstring
+      // for why this matters.
+      replayingSnapshotRef.current = true;
       // Reset so resubscribes (after reconnect) redraw cleanly.
       t.reset();
       if (!snapshot) {
+        replayingSnapshotRef.current = false;
         setConnected(false);
         t.writeln('\x1b[31m[terminal not found]\x1b[0m');
         return;
       }
       setConnected(true);
-      if (snapshot.buffer.length > 0) t.write(snapshot.buffer);
+      if (snapshot.buffer.length > 0) {
+        t.write(snapshot.buffer, () => {
+          replayingSnapshotRef.current = false;
+        });
+      } else {
+        replayingSnapshotRef.current = false;
+      }
       seqRef.current = snapshot.seq;
       if (snapshot.exited) setExitCode(snapshot.exitCode ?? null);
       // The initial fit in `useEffect` runs before xterm has measured its
