@@ -1,11 +1,12 @@
-import type { PermissionLevel } from '../provider.js';
+import type { CodexPermissionPreset, PermissionLevel } from '../provider.js';
+import { normalizePermissionLevelForAgent } from '../provider.js';
 
 import type { ApprovalsReviewer } from './schema/generated/v2/ApprovalsReviewer.js';
 import type { AskForApproval } from './schema/generated/v2/AskForApproval.js';
 import type { SandboxPolicy } from './schema/generated/v2/SandboxPolicy.js';
 
 /**
- * Quicksave's user-facing permission presets, mapped onto the v2
+ * Codex's user-facing permission presets, mapped onto the v2
  * fields we send via `turn/start` overrides.
  *
  * v2 has two orthogonal axes:
@@ -16,10 +17,6 @@ import type { SandboxPolicy } from './schema/generated/v2/SandboxPolicy.js';
  *   sandbox grant? `readOnly | workspaceWrite | dangerFullAccess`
  *   (or `externalSandbox` for OS-level sandboxes — not used here).
  *
- * Quicksave conflates these into one `PermissionLevel` enum because
- * the SDK provider didn't expose them separately. The mapping below
- * preserves SDK behavior while taking advantage of v2's finer grain.
- *
  * Adjust this matrix when product wants new presets — keep all
  * Codex-specific permission semantics in this one file.
  */
@@ -29,8 +26,8 @@ export interface CodexPermissionMapping {
   approvalsReviewer: ApprovalsReviewer;
 }
 
-export function mapPermissionLevelToCodex(
-  level: PermissionLevel,
+export function mapCodexPermissionPreset(
+  preset: CodexPermissionPreset,
   opts: { sandboxed: boolean; cwd?: string },
 ): CodexPermissionMapping {
   const writableRoots = opts.cwd ? [opts.cwd] : [];
@@ -49,31 +46,20 @@ export function mapPermissionLevelToCodex(
     excludeSlashTmp: false,
   };
 
-  switch (level) {
-    case 'bypassPermissions':
-      // SDK equivalent: approvals never, sandbox danger-full-access.
+  switch (preset) {
+    case 'full-access':
       return {
         approvalPolicy: 'never',
         sandboxPolicy: fullAccess,
         approvalsReviewer: 'user',
       };
-    case 'plan':
-      // SDK equivalent: dry-run / planning mode — read-only filesystem.
+    case 'read-only':
       return {
         approvalPolicy: 'on-request',
         sandboxPolicy: readOnly,
         approvalsReviewer: 'user',
       };
-    case 'acceptEdits':
-      // Workspace writes allowed without per-edit prompt; sensitive
-      // operations still go through approvals.
-      return {
-        approvalPolicy: 'on-failure',
-        sandboxPolicy: opts.sandboxed ? workspaceWrite : fullAccess,
-        approvalsReviewer: 'user',
-      };
-    case 'auto':
-      // Auto-review subagent makes risk-based decisions.
+    case 'auto-review':
       return {
         approvalPolicy: 'on-request',
         sandboxPolicy: opts.sandboxed ? workspaceWrite : fullAccess,
@@ -88,6 +74,16 @@ export function mapPermissionLevelToCodex(
         approvalsReviewer: 'user',
       };
   }
+}
+
+export function mapPermissionLevelToCodex(
+  level: PermissionLevel,
+  opts: { sandboxed: boolean; cwd?: string },
+): CodexPermissionMapping {
+  return mapCodexPermissionPreset(
+    normalizePermissionLevelForAgent('codex', level) as CodexPermissionPreset,
+    opts,
+  );
 }
 
 /**

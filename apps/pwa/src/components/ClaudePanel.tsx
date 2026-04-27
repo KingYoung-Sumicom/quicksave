@@ -1,8 +1,13 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useMemo, useRef, useCallback, useState } from 'react';
 import { clsx } from 'clsx';
 import { useClaudeStore } from '../stores/claudeStore';
 import { useConnectionStore } from '../stores/connectionStore';
-import type { ClaudeSessionSummary, ClaudeUserInputResponsePayload, ConfigValue } from '@sumicom/quicksave-shared';
+import type {
+  ClaudeSessionSummary,
+  ClaudeUserInputResponsePayload,
+  ConfigValue,
+  SessionControlRequestResponsePayload,
+} from '@sumicom/quicksave-shared';
 import { CardRenderer } from './chat/CardRenderer';
 import { SessionList } from './chat/SessionList';
 import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
@@ -12,6 +17,12 @@ import { getAgentType } from '../lib/claudePresets';
 
 type StartSessionOpts = { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean };
 
+interface SlashCommand {
+  name: string;
+  description: string;
+  argumentHint?: string;
+}
+
 interface ClaudePanelProps {
   onSelectSession?: (sessionId: string) => void;
   sessionId?: string;
@@ -19,6 +30,11 @@ interface ClaudePanelProps {
   cwd?: string;
   onGetSessionCards: (sessionId: string, offset?: number, limit?: number) => Promise<void>;
   onSetSessionConfig?: (sessionId: string, key: string, value: ConfigValue) => void;
+  onSendControlRequest?: (
+    sessionId: string,
+    subtype: string,
+    params?: Record<string, unknown>,
+  ) => Promise<SessionControlRequestResponsePayload>;
   onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string) => Promise<void>;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
@@ -33,6 +49,7 @@ export function ClaudePanel({
   cwd,
   onGetSessionCards,
   onSetSessionConfig,
+  onSendControlRequest,
   onStartSession,
   onResumeSession,
 
@@ -298,13 +315,116 @@ export function ClaudePanel({
     return () => observer.disconnect();
   }, [historyHasMore, handleLoadMore]);
 
+  // ── Slash-command autocomplete ──
+  // Source: `reload_plugins` control_request → `commands: [{name, description, argumentHint}]`.
+  // Cached per active session (the list is per-CLI-process and rarely changes). New-session
+  // view has no CLI to ask, so the popover stays dormant until the session starts.
+  const [slashCommands, setSlashCommands] = useState<SlashCommand[] | null>(null);
+  const slashCommandsSessionIdRef = useRef<string | null>(null);
+  const slashCommandsFetchingRef = useRef(false);
+  const [slashIndex, setSlashIndex] = useState(0);
+
+  const slashQuery = useMemo(() => {
+    const m = /^\s*\/(\w*)$/.exec(promptInput);
+    return m ? m[1] : null;
+  }, [promptInput]);
+  const slashOpen = slashQuery !== null;
+
+  const filteredSlashCommands = useMemo(() => {
+    if (slashQuery === null || !slashCommands) return [];
+    const q = slashQuery.toLowerCase();
+    if (!q) return slashCommands;
+    return slashCommands.filter((c) => c.name.toLowerCase().includes(q));
+  }, [slashQuery, slashCommands]);
+
+  // Reset selection whenever the filtered list changes shape.
+  useEffect(() => { setSlashIndex(0); }, [slashQuery, filteredSlashCommands.length]);
+
+  // Keep the highlighted row visible when navigating with arrow keys.
+  const slashListRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!slashOpen) return;
+    const el = slashListRef.current?.children[slashIndex] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [slashIndex, slashOpen]);
+
+  // Lazy-fetch the command list the first time the popover opens for a session.
+  useEffect(() => {
+    if (!slashOpen) return;
+    if (!activeSessionId || !onSendControlRequest) return;
+    if (slashCommandsSessionIdRef.current === activeSessionId && slashCommands) return;
+    if (slashCommandsFetchingRef.current) return;
+    slashCommandsFetchingRef.current = true;
+    onSendControlRequest(activeSessionId, 'reload_plugins')
+      .then((resp) => {
+        if (!resp.success) return;
+        const commands = (resp.response as { commands?: SlashCommand[] } | undefined)?.commands;
+        if (Array.isArray(commands)) {
+          slashCommandsSessionIdRef.current = activeSessionId;
+          setSlashCommands(commands);
+        }
+      })
+      .catch((err) => {
+        console.warn('[slash] reload_plugins failed:', err);
+      })
+      .finally(() => {
+        slashCommandsFetchingRef.current = false;
+      });
+  }, [slashOpen, activeSessionId, onSendControlRequest, slashCommands]);
+
+  // Drop the cache when switching sessions; the new session has its own command set.
+  useEffect(() => {
+    if (slashCommandsSessionIdRef.current && slashCommandsSessionIdRef.current !== activeSessionId) {
+      slashCommandsSessionIdRef.current = null;
+      setSlashCommands(null);
+    }
+  }, [activeSessionId]);
+
+  const insertSlashCommand = useCallback((cmd: SlashCommand) => {
+    setPromptInput(`/${cmd.name} `);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      const pos = el.value.length;
+      el.setSelectionRange(pos, pos);
+      el.style.height = 'auto';
+      const lineHeight = parseInt(getComputedStyle(el).lineHeight) || 20;
+      el.style.height = `${Math.min(el.scrollHeight, lineHeight * 5)}px`;
+    });
+  }, [setPromptInput]);
+
   const isMobile = 'ontouchstart' in window;
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    // Slash-command popover swallows nav keys before send/newline handling.
+    if (slashOpen && filteredSlashCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSlashIndex((i) => (i + 1) % filteredSlashCommands.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSlashIndex((i) => (i - 1 + filteredSlashCommands.length) % filteredSlashCommands.length);
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing)) {
+        e.preventDefault();
+        const cmd = filteredSlashCommands[slashIndex];
+        if (cmd) insertSlashCommand(cmd);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setPromptInput('');
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isMobile) {
       e.preventDefault();
       handleSend();
     }
-  }, [handleSend, isMobile]);
+  }, [handleSend, isMobile, slashOpen, filteredSlashCommands, slashIndex, insertSlashCommand, setPromptInput]);
 
   // Debounced draft save (3s)
   const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -436,7 +556,31 @@ export function ClaudePanel({
                 />
               </SessionStatusBar>
             )}
-            <div className="flex items-end gap-2">
+            <div className="relative flex items-end gap-2">
+              {slashOpen && filteredSlashCommands.length > 0 && (
+                <div ref={slashListRef} className="absolute left-0 right-0 bottom-full mb-2 max-h-56 overflow-y-auto rounded-lg border border-slate-700 bg-slate-800 shadow-lg z-10">
+                  {filteredSlashCommands.map((cmd, i) => (
+                    <button
+                      key={cmd.name}
+                      type="button"
+                      onPointerDown={(e) => { e.preventDefault(); insertSlashCommand(cmd); }}
+                      onMouseEnter={() => setSlashIndex(i)}
+                      className={clsx(
+                        'w-full text-left px-3 py-1.5 flex items-baseline gap-2 text-sm',
+                        i === slashIndex ? 'bg-slate-700' : 'hover:bg-slate-700/60',
+                      )}
+                    >
+                      <span className="font-mono text-blue-300 shrink-0">/{cmd.name}</span>
+                      {cmd.argumentHint && (
+                        <span className="font-mono text-slate-500 shrink-0 text-xs">{cmd.argumentHint}</span>
+                      )}
+                      {cmd.description && (
+                        <span className="text-slate-400 truncate text-xs">— {cmd.description}</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
               <textarea
                 ref={inputRef}
                 value={promptInput}

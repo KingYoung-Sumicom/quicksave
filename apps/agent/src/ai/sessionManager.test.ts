@@ -461,10 +461,7 @@ describe('SessionManager', () => {
 
     it('should still work for non-active sessions (stores in separate map)', () => {
       manager.setPermissionLevel('not-active', 'bypassPermissions');
-      // The internal sessionPermissions map is updated even if no active session exists
-      expect(manager.getPermissionLevel('not-active')).toBe('acceptEdits');
-      // Default because getPermissionLevel checks sessions map first, falls back to sessionPermissions
-      // But since sessions map is empty, the fallback logic in the method returns from sessionPermissions
+      expect(manager.getPermissionLevel('not-active')).toBe('bypassPermissions');
     });
 
     it('should NOT emit session-updated for inactive sessions', async () => {

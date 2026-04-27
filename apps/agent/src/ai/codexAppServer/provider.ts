@@ -5,17 +5,23 @@ import { fileURLToPath } from 'node:url';
 import type { StreamCardBuilder } from '../cardBuilder.js';
 import { buildSandboxMcpServerConfig, SANDBOX_MCP_NAME } from '../sandboxMcp.js';
 import type {
+  CodexPermissionPreset,
   CodingAgentProvider,
-  PermissionLevel,
   ProviderCallbacks,
   ProviderHistoryMode,
   ProviderSession,
   ResumeSessionOpts,
   StartSessionOpts,
 } from '../provider.js';
+import { normalizePermissionLevelForAgent } from '../provider.js';
 import { getEventStore } from '../../storage/eventStore.js';
 
 import { consumeAppServerStream } from './cardAdapter.js';
+import {
+  codexApprovalResponse,
+  codexApprovalToPermissionPrompt,
+  type CodexApprovalMethod,
+} from './approvalMapping.js';
 import { spawnAppServer, type AppServerHandle } from './processManager.js';
 import { RuntimeOverrideStore, type RuntimeOverrides } from './overrideStore.js';
 import { TokenAccounting, type CumulativeUsageSeed } from './tokenAccounting.js';
@@ -318,37 +324,15 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
   }): Promise<unknown> {
     const requestIdStr = String(req.id);
     switch (req.method) {
-      case 'item/commandExecution/requestApproval': {
-        const params = req.params as {
-          itemId: string;
-          command?: string | null;
-          cwd?: string | null;
-          reason?: string | null;
-        };
-        const decision = await this.callbacks.handlePermissionRequest(this.threadId, {
-          toolName: 'Bash',
-          toolInput: { command: params.command ?? '', cwd: params.cwd ?? '' },
-          toolUseId: requestIdStr,
-        });
-        return { decision: decision.action === 'allow' ? 'approved' : 'denied' };
-      }
-      case 'item/fileChange/requestApproval': {
-        const params = req.params as { itemId: string; reason?: string | null };
-        const decision = await this.callbacks.handlePermissionRequest(this.threadId, {
-          toolName: 'Edit',
-          toolInput: { reason: params.reason ?? '' },
-          toolUseId: requestIdStr,
-        });
-        return { decision: decision.action === 'allow' ? 'approved' : 'denied' };
-      }
-      case 'item/permissions/requestApproval': {
-        const params = req.params as { itemId: string; reason?: string | null };
-        const decision = await this.callbacks.handlePermissionRequest(this.threadId, {
-          toolName: 'Permissions',
-          toolInput: { reason: params.reason ?? '' },
-          toolUseId: requestIdStr,
-        });
-        return { decision: decision.action === 'allow' ? 'approved' : 'denied' };
+      case 'item/commandExecution/requestApproval':
+      case 'item/fileChange/requestApproval':
+      case 'item/permissions/requestApproval':
+      case 'execCommandApproval':
+      case 'applyPatchApproval': {
+        const method = req.method as CodexApprovalMethod;
+        const prompt = codexApprovalToPermissionPrompt(method, requestIdStr, req.params);
+        const decision = await this.callbacks.handlePermissionRequest(this.threadId, prompt);
+        return codexApprovalResponse(method, req.params, decision);
       }
       default:
         // Unknown server request — refuse.
@@ -436,7 +420,8 @@ function seedOverrideStoreFromResponse(
 }
 
 function buildThreadStartParams(opts: StartSessionOpts): ThreadStartParams {
-  const perm = mapPermissionLevelToInitialThreadOpts(opts.permissionLevel, opts.sandboxed);
+  const preset = normalizePermissionLevelForAgent('codex', opts.permissionLevel) as CodexPermissionPreset;
+  const perm = mapCodexPresetToInitialThreadOpts(preset, opts.sandboxed);
   return {
     model: opts.model ?? null,
     modelProvider: null,
@@ -459,7 +444,8 @@ function buildThreadStartParams(opts: StartSessionOpts): ThreadStartParams {
 }
 
 function buildThreadResumeParams(opts: ResumeSessionOpts): ThreadResumeParams {
-  const perm = mapPermissionLevelToInitialThreadOpts(opts.permissionLevel, opts.sandboxed);
+  const preset = normalizePermissionLevelForAgent('codex', opts.permissionLevel) as CodexPermissionPreset;
+  const perm = mapCodexPresetToInitialThreadOpts(preset, opts.sandboxed);
   return {
     threadId: opts.sessionId,
     history: null,
@@ -509,41 +495,33 @@ function normalizeEffort(value: string): ReasoningEffort {
   }
 }
 
-/** Map Quicksave's PermissionLevel to the v2 fields we send on
+/** Map Codex's permission preset to the v2 fields we send on
  * `thread/start` / `thread/resume`. Keeps the mapping in one place
  * so Phase 3's per-turn override pipeline can reuse it. */
-function mapPermissionLevelToInitialThreadOpts(
-  level: PermissionLevel,
+function mapCodexPresetToInitialThreadOpts(
+  preset: CodexPermissionPreset,
   sandboxed: boolean,
 ): {
   approvalPolicy: AskForApproval;
   sandbox: SandboxMode;
   approvalsReviewer: ApprovalsReviewer;
 } {
-  // Conservative bridge: Quicksave's existing presets map roughly to
-  // these v2 values. Phase 3 introduces `permissionMapping.ts` with
-  // the full matrix; here we use the closest single-axis approximation
-  // so legacy Quicksave config keeps working unchanged.
   let approvalPolicy: AskForApproval = 'on-request';
   let sandbox: SandboxMode = 'workspace-write';
   const approvalsReviewer: ApprovalsReviewer = 'user';
-  switch (level) {
-    case 'bypassPermissions':
+  switch (preset) {
+    case 'full-access':
       approvalPolicy = 'never';
       sandbox = 'danger-full-access';
       break;
-    case 'acceptEdits':
-      approvalPolicy = 'on-request';
-      sandbox = 'workspace-write';
-      break;
-    case 'plan':
+    case 'read-only':
       approvalPolicy = 'on-request';
       sandbox = 'read-only';
       break;
-    case 'auto':
+    case 'auto-review':
       approvalPolicy = 'on-request';
       sandbox = 'workspace-write';
-      break;
+      return { approvalPolicy, sandbox: !sandboxed ? 'danger-full-access' : sandbox, approvalsReviewer: 'auto_review' };
     case 'default':
     default:
       approvalPolicy = 'on-request';

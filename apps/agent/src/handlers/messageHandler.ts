@@ -2155,14 +2155,11 @@ export class MessageHandler {
 
   private async handleSetSessionPermission(message: Message<ClaudeSetSessionPermissionRequestPayload>): Promise<Message<ClaudeSetSessionPermissionResponsePayload>> {
     const { sessionId, permissionMode } = message.payload;
-    const validModes = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto'];
     let success = false;
-    if (validModes.includes(permissionMode)) {
-      try {
-        success = await this.claudeService.setPermissionLevel(sessionId, permissionMode as any);
-      } catch {
-        success = false;
-      }
+    try {
+      success = await this.claudeService.setPermissionLevel(sessionId, permissionMode);
+    } catch {
+      success = false;
     }
     const response = createMessage<ClaudeSetSessionPermissionResponsePayload>(
       'claude:set-session-permission:response',

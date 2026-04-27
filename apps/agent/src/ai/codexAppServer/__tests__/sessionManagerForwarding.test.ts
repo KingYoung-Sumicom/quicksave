@@ -144,6 +144,20 @@ describe('SessionManager → CodexAppServer override forwarding', () => {
     expect(patch.approvalsReviewer).toBe('user');
   });
 
+  it('setPermissionLevel forwards Codex full-access preset', async () => {
+    const { sm, sessionId, session } = await setupActiveCodexSession();
+    await sm.setPermissionLevel(sessionId, 'full-access');
+    expect(session.enqueued).toHaveLength(1);
+    const patch = session.enqueued[0] as {
+      approvalPolicy?: unknown;
+      sandboxPolicy?: { type?: string };
+      approvalsReviewer?: string;
+    };
+    expect(patch.approvalPolicy).toBe('never');
+    expect(patch.sandboxPolicy?.type).toBe('dangerFullAccess');
+    expect(patch.approvalsReviewer).toBe('user');
+  });
+
   it('multiple changes accumulate as separate enqueue calls', async () => {
     const { sm, sessionId, session } = await setupActiveCodexSession();
     await sm.setSessionConfig(sessionId, 'model', 'gpt-5.5');

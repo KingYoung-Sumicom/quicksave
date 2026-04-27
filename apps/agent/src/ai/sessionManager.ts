@@ -31,10 +31,18 @@ import { getSessionRegistry } from './sessionRegistry.js';
 import { getEventStore } from '../storage/eventStore.js';
 import { buildSystemPrompt } from './systemPrompt.js';
 import type {
+  ClaudePermissionMode,
+  CodexPermissionPreset,
   PermissionLevel,
   ProviderSession,
   ProviderCallbacks,
   CodingAgentProvider,
+} from './provider.js';
+import {
+  defaultPermissionLevelForAgent,
+  isFullAccessPermission,
+  isPermissionLevelAcceptedForAgent,
+  normalizePermissionLevelForAgent,
 } from './provider.js';
 
 /**
@@ -49,7 +57,7 @@ import type {
  */
 
 /** Tools auto-approved at each permission level (no user prompt). */
-const AUTO_APPROVE: Record<PermissionLevel, Set<string>> = {
+const CLAUDE_AUTO_APPROVE: Record<ClaudePermissionMode, Set<string>> = {
   bypassPermissions: new Set([
     'Edit', 'Write', 'NotebookEdit', 'TodoWrite', 'Agent', 'EnterWorktree', 'ExitWorktree',
     'WebFetch', 'WebSearch', 'Bash',
@@ -64,6 +72,20 @@ const AUTO_APPROVE: Record<PermissionLevel, Set<string>> = {
   auto:        new Set(['TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent', 'EnterPlanMode']),
 };
 
+const CODEX_AUTO_APPROVE: Record<CodexPermissionPreset, Set<string>> = {
+  'read-only': new Set(['EnterPlanMode']),
+  default: new Set(['TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent', 'EnterPlanMode']),
+  'auto-review': new Set(['TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent', 'EnterPlanMode']),
+  'full-access': new Set([
+    'Edit', 'Write', 'NotebookEdit', 'TodoWrite', 'Agent', 'EnterWorktree', 'ExitWorktree',
+    'WebFetch', 'WebSearch', 'Bash',
+    'Skill', 'ToolSearch', 'Config',
+    'CronCreate', 'CronDelete', 'CronList', 'RemoteTrigger',
+    'EnterPlanMode', 'ExitPlanMode',
+    'TaskOutput', 'TaskStop',
+  ]),
+};
+
 const SESSION_STAGES: readonly SessionStage[] = [
   'investigating',
   'working',
@@ -73,6 +95,14 @@ const SESSION_STAGES: readonly SessionStage[] = [
 
 function isSessionStage(value: string): value is SessionStage {
   return (SESSION_STAGES as readonly string[]).includes(value);
+}
+
+function autoApproveToolsFor(agentId: AgentId, level: PermissionLevel): Set<string> {
+  const normalized = normalizePermissionLevelForAgent(agentId, level);
+  if (agentId === 'codex') {
+    return CODEX_AUTO_APPROVE[normalized as CodexPermissionPreset];
+  }
+  return CLAUDE_AUTO_APPROVE[normalized as ClaudePermissionMode];
 }
 
 /**
@@ -256,6 +286,23 @@ export class SessionManager extends EventEmitter {
     return this.defaultAgentId;
   }
 
+  private resolveKnownSessionAgentId(sessionId: string): AgentId {
+    const activeAgent = this.sessions.get(sessionId)?.agentId;
+    if (activeAgent) return activeAgent;
+
+    const rememberedAgent = this.sessionAgents.get(sessionId);
+    if (rememberedAgent) return rememberedAgent;
+
+    const rawConfig = this.sessionConfigs.get(sessionId);
+    const configAgent = normalizeAgentId(rawConfig?.agent ?? rawConfig?.provider);
+    if (configAgent && this.providers.has(configAgent)) return configAgent;
+
+    const registryAgent = normalizeAgentId(getSessionRegistry().findBySessionId(sessionId)?.agent);
+    if (registryAgent && this.providers.has(registryAgent)) return registryAgent;
+
+    return this.defaultAgentId;
+  }
+
   // ── Preferences ──
 
   async initPreferences(): Promise<void> {
@@ -331,7 +378,8 @@ export class SessionManager extends EventEmitter {
       this.persistRegistryField(sessionId, 'reasoningEffort', value ?? undefined);
     } else if (key === 'permissionMode' && typeof value === 'string') {
       try {
-        await this.setPermissionLevel(sessionId, value as PermissionLevel);
+        await this.setPermissionLevel(sessionId, value);
+        next.permissionMode = this.getPermissionLevel(sessionId);
       } catch (err) {
         // CLI rejected the mode (e.g. auto mode not supported for this model/plan).
         // Roll back the optimistic config change and rethrow.
@@ -339,7 +387,7 @@ export class SessionManager extends EventEmitter {
         this.emit('session-config-updated', { sessionId, config: prev });
         throw err;
       }
-      this.persistRegistryField(sessionId, 'permissionMode', value);
+      this.persistRegistryField(sessionId, 'permissionMode', next.permissionMode);
     } else if (key === 'sandboxed' && typeof value === 'boolean') {
       this.sessionSandboxed.set(sessionId, value);
       const ps = this.sessions.get(sessionId);
@@ -380,19 +428,8 @@ export class SessionManager extends EventEmitter {
     /** Auto-compact ceiling for Claude Code (200k / 500k / 1M). Codex ignores. */
     contextWindow?: number;
   }): Promise<string> {
-    // Accept both Claude-style modes and Codex preset ids; either can arrive
-    // depending on which agent's picker the PWA showed. Codex preset ids
-    // bundle approval+sandbox; the codex provider expands them via
-    // resolveCodexPermissionPreset.
-    const validModes = new Set([
-      'default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto',
-      'read-only', 'auto-review', 'full-access',
-    ]);
-    const level = (validModes.has(opts.permissionMode ?? '')
-      ? opts.permissionMode
-      : 'acceptEdits') as PermissionLevel;
-
     const provider = this.getProvider(opts.agent);
+    const level = normalizePermissionLevelForAgent(provider.id, opts.permissionMode);
     const sandboxed = !!opts.sandboxed;
     const systemPrompt = buildSystemPrompt(provider.id, opts.systemPrompt);
 
@@ -400,7 +437,7 @@ export class SessionManager extends EventEmitter {
     // the PermissionRequest hook at spawn time; later toggles just touch/rm
     // the sentinel file without a respawn.
     const bypassToken = randomUUID();
-    applyBypassFlag(bypassToken, level === 'bypassPermissions');
+    applyBypassFlag(bypassToken, isFullAccessPermission(provider.id, level));
 
     // Create cardBuilder with 'pending' sessionId — will be updated after provider returns real one
     const cardBuilder = new StreamCardBuilder('pending', opts.streamId, opts.cwd);
@@ -572,15 +609,12 @@ export class SessionManager extends EventEmitter {
       // Restore session settings from in-memory maps, falling back to persisted
       // registry (survives daemon restarts).
       const registryEntry = getSessionRegistry().getEntry(opts.cwd, opts.sessionId);
-      const validModes = new Set([
-        'default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto',
-        'read-only', 'auto-review', 'full-access',
-      ]);
-      const restoredLevel = this.sessionPermissions.get(opts.sessionId)
-        ?? (validModes.has(registryEntry?.permissionMode ?? '') ? registryEntry!.permissionMode as PermissionLevel : undefined);
-      const level: PermissionLevel = restoredLevel ?? 'acceptEdits';
       const sandboxed = this.sessionSandboxed.get(opts.sessionId) ?? registryEntry?.sandboxed ?? false;
       const provider = this.getProvider(agentId);
+      const level = normalizePermissionLevelForAgent(
+        provider.id,
+        this.sessionPermissions.get(opts.sessionId) ?? registryEntry?.permissionMode,
+      );
 
       const cardBuilder = existing?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.streamId, opts.cwd);
       await cardBuilder.snapshotCutoff();
@@ -604,7 +638,7 @@ export class SessionManager extends EventEmitter {
       // fresh one (happens when cold-resuming a session we don't have in memory,
       // e.g. after a daemon restart).
       const bypassToken = existing?.bypassToken ?? randomUUID();
-      applyBypassFlag(bypassToken, level === 'bypassPermissions');
+      applyBypassFlag(bypassToken, isFullAccessPermission(provider.id, level));
 
       const { sessionId, session: providerSession } = await provider.resumeSession(
         {
@@ -753,9 +787,17 @@ export class SessionManager extends EventEmitter {
 
   // ── Permission ──
 
-  async setPermissionLevel(sessionId: string, level: PermissionLevel): Promise<boolean> {
+  async setPermissionLevel(sessionId: string, requestedLevel: string): Promise<boolean> {
     const ps = this.sessions.get(sessionId);
-    const prevLevel = ps?.permissionLevel ?? this.sessionPermissions.get(sessionId) ?? 'acceptEdits';
+    const agentId = this.resolveKnownSessionAgentId(sessionId);
+    if (!isPermissionLevelAcceptedForAgent(agentId, requestedLevel)) {
+      throw new Error(`Permission mode "${requestedLevel}" is not valid for ${agentId}`);
+    }
+    const level = normalizePermissionLevelForAgent(agentId, requestedLevel);
+    const prevLevel = normalizePermissionLevelForAgent(
+      agentId,
+      ps?.permissionLevel ?? this.sessionPermissions.get(sessionId),
+    );
 
     if (ps) ps.permissionLevel = level;
     this.sessionPermissions.set(sessionId, level);
@@ -763,14 +805,14 @@ export class SessionManager extends EventEmitter {
     // bypass is driven by the daemon-owned sentinel file the CLI's hook
     // checks. Toggle it first so the next tool call sees the right state.
     if (ps?.bypassToken) {
-      applyBypassFlag(ps.bypassToken, level === 'bypassPermissions');
+      applyBypassFlag(ps.bypassToken, isFullAccessPermission(agentId, level));
     }
 
     const session = ps?.providerSession as any;
     if (session?.alive && typeof session.sendControlRequest === 'function') {
       // bypassPermissions is handled entirely on the daemon side (hook + AUTO_APPROVE).
       // Send `default` to the CLI so it never enters its own bypass mode.
-      const cliMode = level === 'bypassPermissions' ? 'default' : level;
+      const cliMode = isFullAccessPermission(agentId, level) ? 'default' : level;
       try {
         await session.sendControlRequest('set_permission_mode', { mode: cliMode });
       } catch (err) {
@@ -778,7 +820,7 @@ export class SessionManager extends EventEmitter {
         if (ps) ps.permissionLevel = prevLevel;
         this.sessionPermissions.set(sessionId, prevLevel);
         if (ps?.bypassToken) {
-          applyBypassFlag(ps.bypassToken, prevLevel === 'bypassPermissions');
+          applyBypassFlag(ps.bypassToken, isFullAccessPermission(agentId, prevLevel));
         }
         this.emitSessionUpdate(sessionId);
         throw err;
@@ -817,7 +859,10 @@ export class SessionManager extends EventEmitter {
   }
 
   getPermissionLevel(sessionId: string): PermissionLevel {
-    return this.sessions.get(sessionId)?.permissionLevel ?? 'acceptEdits';
+    const agentId = this.resolveKnownSessionAgentId(sessionId);
+    return this.sessions.get(sessionId)?.permissionLevel
+      ?? this.sessionPermissions.get(sessionId)
+      ?? defaultPermissionLevelForAgent(agentId);
   }
 
   /**
@@ -1259,10 +1304,12 @@ export class SessionManager extends EventEmitter {
     }
 
     // Check permission level auto-approve set
+    const agentId = this.resolveKnownSessionAgentId(sessionId);
     const level = this.sessions.get(sessionId)?.permissionLevel
-      ?? this.sessionPermissions.get(sessionId) ?? 'acceptEdits';
+      ?? this.sessionPermissions.get(sessionId)
+      ?? defaultPermissionLevelForAgent(agentId);
 
-    if (!AUTO_APPROVE[level].has(toolName)) return false;
+    if (!autoApproveToolsFor(agentId, level).has(toolName)) return false;
 
     // For file-writing tools, restrict to project cwd
     const FILE_WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);

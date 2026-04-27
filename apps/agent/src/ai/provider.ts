@@ -1,7 +1,72 @@
 import type { AgentId, CardEvent, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
 import type { StreamCardBuilder } from './cardBuilder.js';
 
-export type PermissionLevel = 'bypassPermissions' | 'acceptEdits' | 'default' | 'plan' | 'auto';
+export const CLAUDE_PERMISSION_MODES = [
+  'default',
+  'acceptEdits',
+  'bypassPermissions',
+  'plan',
+  'auto',
+] as const;
+
+export const CODEX_PERMISSION_PRESETS = [
+  'read-only',
+  'default',
+  'auto-review',
+  'full-access',
+] as const;
+
+export type ClaudePermissionMode = typeof CLAUDE_PERMISSION_MODES[number];
+export type CodexPermissionPreset = typeof CODEX_PERMISSION_PRESETS[number];
+export type PermissionLevel = ClaudePermissionMode | CodexPermissionPreset;
+
+export function isClaudePermissionMode(value: unknown): value is ClaudePermissionMode {
+  return typeof value === 'string' && (CLAUDE_PERMISSION_MODES as readonly string[]).includes(value);
+}
+
+export function isCodexPermissionPreset(value: unknown): value is CodexPermissionPreset {
+  return typeof value === 'string' && (CODEX_PERMISSION_PRESETS as readonly string[]).includes(value);
+}
+
+export function defaultPermissionLevelForAgent(agentId: AgentId): PermissionLevel {
+  return agentId === 'codex' ? 'default' : 'acceptEdits';
+}
+
+export function isPermissionLevelAcceptedForAgent(agentId: AgentId, value: unknown): boolean {
+  if (agentId === 'codex') {
+    return isCodexPermissionPreset(value)
+      || value === 'bypassPermissions'
+      || value === 'plan'
+      || value === 'auto'
+      || value === 'acceptEdits';
+  }
+  return isClaudePermissionMode(value);
+}
+
+export function normalizePermissionLevelForAgent(
+  agentId: AgentId,
+  value: unknown,
+): PermissionLevel {
+  if (agentId === 'codex') {
+    if (isCodexPermissionPreset(value)) return value;
+    // Compatibility for sessions created before Codex had first-class presets.
+    if (value === 'bypassPermissions') return 'full-access';
+    if (value === 'plan') return 'read-only';
+    if (value === 'auto') return 'auto-review';
+    if (value === 'acceptEdits') return 'default';
+    return defaultPermissionLevelForAgent(agentId);
+  }
+
+  if (isClaudePermissionMode(value)) return value;
+  return defaultPermissionLevelForAgent(agentId);
+}
+
+export function isFullAccessPermission(agentId: AgentId, level: PermissionLevel): boolean {
+  return agentId === 'codex'
+    ? level === 'full-access'
+    : level === 'bypassPermissions';
+}
+
 export type ProviderHistoryMode = 'claude-jsonl' | 'memory';
 
 /** Represents a running provider session. */

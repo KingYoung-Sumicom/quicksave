@@ -1418,6 +1418,7 @@ function ProjectRouteSession({
         onNewSession={() => navigate(`/add?tab=session&projectId=${encodeURIComponent(projectId ?? '')}`)}
         onGetSessionCards={boundGetCards}
         onSetSessionConfig={(sid, key, value) => onSetSessionConfig(sid, key, value)}
+        onSendControlRequest={onSendControlRequest}
         onUnsubscribeSession={onUnsubscribeSession}
         onStartSession={boundStartSession}
         onResumeSession={boundResumeSession}
