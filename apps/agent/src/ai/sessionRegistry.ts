@@ -255,6 +255,7 @@ export class SessionRegistry {
       this.unlinkActiveFile(entry.cwd, entry.sessionId);
       this.writeArchivedFile(entry);
     } else {
+      entry = this.mergeExternalActiveStatus(entry);
       this.unlinkArchivedFile(entry.cwd, entry.sessionId);
       this.setInMemory(entry);
       this.writeActiveFile(entry);
@@ -325,6 +326,25 @@ export class SessionRegistry {
       writeFileSync(this.activeFilePath(entry.cwd, entry.sessionId), JSON.stringify(entry, null, 2) + '\n', 'utf-8');
     } catch (err) {
       console.error(`[sessionRegistry] Failed to write active entry session=${entry.sessionId}:`, err);
+    }
+  }
+
+  private mergeExternalActiveStatus(entry: SessionRegistryEntry): SessionRegistryEntry {
+    const path = this.activeFilePath(entry.cwd, entry.sessionId);
+    if (!existsSync(path)) return entry;
+    try {
+      const existing = JSON.parse(readFileSync(path, 'utf-8')) as SessionRegistryEntry;
+      const preserved: Partial<SessionRegistryEntry> = {};
+      if (entry.title === undefined && existing.title !== undefined) preserved.title = existing.title;
+      if (entry.stage === undefined && existing.stage !== undefined) preserved.stage = existing.stage;
+      if (entry.blocked === undefined && existing.blocked !== undefined) preserved.blocked = existing.blocked;
+      if (entry.note === undefined && existing.note !== undefined) preserved.note = existing.note;
+      if (entry.noteHistory === undefined && existing.noteHistory !== undefined) {
+        preserved.noteHistory = existing.noteHistory;
+      }
+      return Object.keys(preserved).length > 0 ? { ...entry, ...preserved } : entry;
+    } catch {
+      return entry;
     }
   }
 

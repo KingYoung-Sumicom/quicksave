@@ -1,17 +1,49 @@
 import type { AgentId, CodexModelInfo } from '@sumicom/quicksave-shared';
+import { DEFAULT_CONTEXT_WINDOW } from '@sumicom/quicksave-shared';
 
-// Agent presets for quicksave session configuration
-// Append [1m] to enable the 1M context window (Claude Code strips the suffix before API calls).
-// Without [1m], models default to 200k context.
+// Agent presets for quicksave session configuration. Context window is a
+// separate axis (see CLAUDE_CONTEXT_WINDOWS / getContextWindowOptionsForModel)
+// — the agent appends `[1m]` to the model on the wire when the user picks
+// >200k, and exports CLAUDE_CODE_AUTO_COMPACT_WINDOW so the CLI compacts at
+// the chosen ceiling regardless of which tier the API would otherwise use.
 export const CLAUDE_MODELS = [
   { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
   { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-  { value: 'claude-sonnet-4-6[1m]', label: 'Sonnet 4.6 (1M)' },
   { value: 'claude-opus-4-6', label: 'Opus 4.6' },
-  { value: 'claude-opus-4-6[1m]', label: 'Opus 4.6 (1M)' },
   { value: 'claude-opus-4-7', label: 'Opus 4.7' },
-  { value: 'claude-opus-4-7[1m]', label: 'Opus 4.7 (1M)' },
 ];
+
+/** Identifies the Claude models that don't support the `context-1m-2025-08-07`
+ *  beta. Today only Haiku is locked to 200k; everything else opts into 1M. */
+export function modelSupports1m(model: string): boolean {
+  return !/^claude-haiku/i.test(model);
+}
+
+export const CLAUDE_CONTEXT_WINDOWS: { value: number; label: string }[] = [
+  { value: 200_000, label: '200k' },
+  { value: 500_000, label: '500k' },
+  { value: 1_000_000, label: '1M' },
+];
+
+/** Context-window options available for the given Claude model. Haiku is
+ *  pinned to 200k; everything else can opt up to 500k or 1M. */
+export function getContextWindowOptionsForModel(model: string | undefined) {
+  if (!model || !modelSupports1m(model)) {
+    return CLAUDE_CONTEXT_WINDOWS.filter((w) => w.value <= 200_000);
+  }
+  return CLAUDE_CONTEXT_WINDOWS;
+}
+
+/** Coerce any persisted contextWindow to a value the model supports. Older
+ *  prefs may carry 1M for a model that's since been rolled back to 200k. */
+export function clampContextWindowForModel(
+  model: string | undefined,
+  contextWindow: number | undefined,
+): number {
+  const cw = contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+  if (!model || !modelSupports1m(model)) return 200_000;
+  return cw;
+}
 
 /** Fallback when dynamic model list isn't available */
 export const CODEX_MODELS_FALLBACK = [
@@ -135,16 +167,21 @@ export function getAgentType(agentId: AgentId): AgentType {
 }
 
 /**
- * Max context window (tokens) for a given model string.
- * Claude default = 200k; `[1m]` suffix enables 1M context window.
- * For Codex models, prefer the per-model `contextWindow` advertised by the
- * daemon (sourced from `codex debug models`); falls back to 200k for unknown
- * Codex models so the badge still shows something meaningful.
+ * Max context window (tokens) for the badge / progress bar.
+ * Resolution order:
+ *   1. Session-scoped `contextWindow` config (200k / 500k / 1M) — set by the
+ *      ClaudeSettingsSection picker. Authoritative when present.
+ *   2. Legacy `[1m]` suffix on the model string (kept for backwards-compat
+ *      until older session configs are migrated).
+ *   3. Codex per-model context advertised by the daemon.
+ *   4. 200k fallback so the bar still renders for unknown ids.
  */
 export function getModelContextLimit(
   model?: string,
   dynamicCodexModels?: CodexModelInfo[],
+  sessionContextWindow?: number,
 ): number {
+  if (sessionContextWindow && sessionContextWindow > 0) return sessionContextWindow;
   if (!model) return 200_000;
   if (/\[1m\]$/i.test(model)) return 1_000_000;
   const codexMatch = dynamicCodexModels?.find((m) => m.id === model);

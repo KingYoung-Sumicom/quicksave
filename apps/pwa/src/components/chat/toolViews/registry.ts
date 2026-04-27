@@ -15,7 +15,15 @@ import { AskUserQuestionToolView } from './AskUserQuestionToolView';
 import { EnterPlanModeToolView, ExitPlanModeToolView } from './PlanModeToolView';
 import { ToolSearchToolView } from './ToolSearchToolView';
 
-export type ToolViewProps = { input: Record<string, unknown>; headerSuffix?: ReactNode };
+export type ToolViewProps = {
+  input: Record<string, unknown>;
+  headerSuffix?: ReactNode;
+  /** Tool's result content when available. Optional fallback for views like
+   *  WebSearch whose toolInput can be empty on historical/legacy cards but
+   *  whose result text still carries the meaningful payload (e.g.
+   *  `Search: <query>`). Most views ignore this. */
+  resultContent?: string;
+};
 
 export const TOOL_VIEWS: Record<string, ComponentType<ToolViewProps>> = {
   Read: ReadToolView,

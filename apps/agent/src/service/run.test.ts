@@ -42,12 +42,21 @@ describe('enrichEntry', () => {
     expect(out.cwd).toBe('/p');
     expect(out.lastPromptAt).toBeUndefined();
     expect(out.lastTurnEndedAt).toBeUndefined();
+    expect(out.lastCacheTouchAt).toBeUndefined();
     expect(out.turnCount).toBeUndefined();
     expect(out.totalInputTokens).toBeUndefined();
     expect(out.lastTurnInputTokens).toBeUndefined();
     expect(out.lastTurnCacheCreationTokens).toBeUndefined();
     expect(out.lastTurnCacheReadTokens).toBeUndefined();
     expect(out.lastTurnContextUsage).toBeUndefined();
+  });
+
+  it('surfaces lastCacheTouchAt from cache_touched events', () => {
+    const store = getEventStore();
+    store.record({ type: 'cache_touched', sessionId: 's1', time: 1234 });
+    store.record({ type: 'cache_touched', sessionId: 's1', time: 5678 });
+    const out = enrichEntry(baseEntry());
+    expect(out.lastCacheTouchAt).toBe(5678);
   });
 
   it('joins in stats + last-turn cache fields when events exist', () => {

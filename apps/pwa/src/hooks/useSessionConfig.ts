@@ -2,6 +2,7 @@ import { useClaudeStore } from '../stores/claudeStore';
 import type { ConfigValue } from '@sumicom/quicksave-shared';
 import {
   DEFAULT_AGENT,
+  DEFAULT_CONTEXT_WINDOW,
   DEFAULT_MODEL,
   DEFAULT_PERMISSION_MODE,
   DEFAULT_REASONING_EFFORT,
@@ -18,6 +19,7 @@ export function useSessionConfig(sessionId: string | null): Record<string, Confi
   const selectedPermissionMode = useClaudeStore((s) => s.selectedPermissionMode);
   const selectedReasoningEffort = useClaudeStore((s) => s.selectedReasoningEffort);
   const sandboxEnabled = useClaudeStore((s) => s.sandboxEnabled);
+  const selectedContextWindow = useClaudeStore((s) => s.selectedContextWindow);
 
   if (!sessionId) {
     // New session — return store defaults (falling back to shared defaults)
@@ -27,6 +29,7 @@ export function useSessionConfig(sessionId: string | null): Record<string, Confi
       permissionMode: selectedPermissionMode ?? DEFAULT_PERMISSION_MODE,
       reasoningEffort: selectedReasoningEffort ?? DEFAULT_REASONING_EFFORT,
       sandboxed: sandboxEnabled,
+      contextWindow: selectedContextWindow ?? DEFAULT_CONTEXT_WINDOW,
     };
   }
 
@@ -44,6 +47,7 @@ export function useSessionConfig(sessionId: string | null): Record<string, Confi
     permissionMode: selectedPermissionMode,
     reasoningEffort: selectedReasoningEffort,
     sandboxed: sandboxEnabled,
+    contextWindow: selectedContextWindow,
     ...sessionConfig,
     ...(sessionAgent ? { agent: sessionAgent } : {}),
   };

@@ -12,6 +12,12 @@ export const DEFAULT_PERMISSION_MODE = 'auto';
 export const DEFAULT_REASONING_EFFORT = 'high' as const;
 export const DEFAULT_AGENT: AgentId = 'claude-code';
 export const DEFAULT_SANDBOXED = true;
+/** Auto-compact window for Claude Code sessions. Claude Code's CLI
+ *  auto-promotes Sonnet/Opus to 1M context unless told otherwise; we cap at
+ *  200k by default so usage and pricing stay predictable. Users can opt up
+ *  to 500k or 1M per-session from the settings drawer. */
+export const DEFAULT_CONTEXT_WINDOW = 200_000;
+export const CONTEXT_WINDOW_OPTIONS = [200_000, 500_000, 1_000_000] as const;
 
 // Codex defaults — separate from Claude because the SDKs use different
 // enums (codex preset ids vs Claude's permissionMode strings; codex's

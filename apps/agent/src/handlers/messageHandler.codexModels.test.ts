@@ -1,22 +1,22 @@
 /**
- * Tests for the Codex models cache + fs.watch behavior on MessageHandler.
+ * Tests for the Codex models cache + validation behavior on MessageHandler.
  *
- * These exercise the public API surface only:
+ * Public surface exercised:
  *   - constructor(options.codexCacheDir)
- *   - startCodexModelsWatcher / stopCodexModelsWatcher
+ *   - primeCodexModelsCache
  *   - getCachedCodexModels
  *   - setCodexModelsUpdateHandler
+ *   - validateCodexModel
  *   - handleMessage('codex:list-models')
- *   - cleanup
  *
- * Real fs.watch + real temp dirs are used; we just sleep ~700-800ms to let
- * the internal debounce + refresh resolve. The CLI-spawning providers are
- * stubbed so no real `claude` / `codex` processes are forked.
+ * `spawnAppServer` is mocked so no real codex process is forked. Tests
+ * drive the model list through that mock to cover: cache prime, hidden
+ * filter, broadcast on change, validation/coercion of unsupported models.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { MessageHandler } from './messageHandler.js';
 import { createMessage } from '@sumicom/quicksave-shared';
-import { mkdir, writeFile, rm } from 'fs/promises';
+import { mkdir, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { simpleGit } from 'simple-git';
@@ -44,20 +44,94 @@ vi.mock('../ai/claudeCodeProvider.js', () => ({
     })),
   })),
 }));
-vi.mock('../ai/codexSdkProvider.js', () => ({
-  CodexSdkProvider: vi.fn().mockImplementation(() => ({
-    id: 'codex' as const,
-    historyMode: 'memory' as const,
-    startSession: vi.fn().mockImplementation(async () => ({
-      sessionId: `mock-codex-${Math.random().toString(36).slice(2, 10)}`,
-      session: makeMockSession(),
+vi.mock('../ai/codexAppServer/index.js', async () => {
+  // Keep the spawnAppServer named export but stub it. The test then sets
+  // `nextModelListResponse` per-test; the stub returns that on
+  // `model/list`. Provider is also stubbed so SessionManager wiring is
+  // a no-op.
+  return {
+    CodexAppServerProvider: vi.fn().mockImplementation(() => ({
+      id: 'codex' as const,
+      historyMode: 'memory' as const,
+      startSession: vi.fn().mockImplementation(async () => ({
+        sessionId: `mock-codex-${Math.random().toString(36).slice(2, 10)}`,
+        session: makeMockSession(),
+      })),
+      resumeSession: vi.fn().mockImplementation(async (opts: { sessionId?: string }) => ({
+        sessionId: opts.sessionId ?? `mock-codex-${Math.random().toString(36).slice(2, 10)}`,
+        session: makeMockSession(),
+      })),
     })),
-    resumeSession: vi.fn().mockImplementation(async (opts: { sessionId?: string }) => ({
-      sessionId: opts.sessionId ?? `mock-codex-${Math.random().toString(36).slice(2, 10)}`,
-      session: makeMockSession(),
+    spawnAppServer: vi.fn(async () => {
+      const response = nextModelListResponse;
+      const failureSpec = nextModelListFailure;
+      return {
+        rpc: {
+          request: vi.fn(async (method: string) => {
+            if (method !== 'model/list') {
+              throw new Error(`unexpected rpc method ${method}`);
+            }
+            if (failureSpec) throw new Error(failureSpec);
+            return response;
+          }),
+        },
+        shutdown: vi.fn(async () => { /* noop */ }),
+      };
+    }),
+  };
+});
+
+// Per-test fixtures consumed by the spawnAppServer mock above.
+type ModelListResponse = {
+  data: Array<{
+    id: string;
+    model: string;
+    displayName: string;
+    description: string;
+    hidden: boolean;
+    supportedReasoningEfforts: Array<{ reasoningEffort: string; description: string }>;
+    defaultReasoningEffort: string;
+    inputModalities: string[];
+    supportsPersonality: boolean;
+    additionalSpeedTiers: string[];
+    isDefault: boolean;
+    upgrade: string | null;
+    upgradeInfo: null;
+    availabilityNux: null;
+  }>;
+  nextCursor: string | null;
+};
+let nextModelListResponse: ModelListResponse = { data: [], nextCursor: null };
+let nextModelListFailure: string | null = null;
+
+function modelEntry(opts: {
+  id: string;
+  displayName?: string;
+  hidden?: boolean;
+  isDefault?: boolean;
+  defaultReasoningEffort?: string;
+  supportedReasoningEfforts?: string[];
+}) {
+  return {
+    id: opts.id,
+    model: opts.id,
+    displayName: opts.displayName ?? opts.id,
+    description: '',
+    hidden: opts.hidden ?? false,
+    supportedReasoningEfforts: (opts.supportedReasoningEfforts ?? []).map((e) => ({
+      reasoningEffort: e,
+      description: '',
     })),
-  })),
-}));
+    defaultReasoningEffort: opts.defaultReasoningEffort ?? 'medium',
+    inputModalities: [],
+    supportsPersonality: false,
+    additionalSpeedTiers: [],
+    isDefault: opts.isDefault ?? false,
+    upgrade: null,
+    upgradeInfo: null,
+    availabilityNux: null,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -66,62 +140,18 @@ vi.mock('../ai/codexSdkProvider.js', () => ({
 async function createTestRepo(suffix = ''): Promise<string> {
   const repoPath = join(
     tmpdir(),
-    `qs-codex-watcher-repo-${suffix}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    `qs-codex-models-repo-${suffix}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   );
   await mkdir(repoPath, { recursive: true });
   const git = simpleGit(repoPath);
   await git.init();
   await git.addConfig('user.email', 'test@test.com');
   await git.addConfig('user.name', 'Test User');
-  await writeFile(join(repoPath, 'README.md'), '# Test Repo\n');
-  await git.add('README.md');
-  await git.commit('Initial commit');
   return repoPath;
 }
 
 function uniqueDir(prefix: string): string {
   return join(tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-}
-
-type CacheEntry = {
-  slug: string;
-  display_name: string;
-  visibility: 'list' | 'hide';
-  supported_in_api: boolean;
-  default_reasoning_level?: string;
-  supported_reasoning_levels?: Array<{ effort: string; description?: string }>;
-  context_window?: number;
-};
-
-async function writeModelsCache(dir: string, models: CacheEntry[]): Promise<void> {
-  await writeFile(
-    join(dir, 'models_cache.json'),
-    JSON.stringify({ models }),
-    'utf-8',
-  );
-}
-
-/**
- * Create an executable shell script that, when invoked with `debug models`,
- * prints the given JSON to stdout and exits 0. Mimics the real `codex`
- * binary's `debug models` subcommand for deterministic testing.
- */
-async function writeFakeCodexCli(
-  path: string,
-  models: CacheEntry[] | null,
-  exitCode = 0,
-): Promise<void> {
-  const json = models === null ? 'not-json' : JSON.stringify({ models });
-  const script = `#!/usr/bin/env bash
-if [ "$1" = "debug" ] && [ "$2" = "models" ]; then
-  cat <<'EOF'
-${json}
-EOF
-  exit ${exitCode}
-fi
-exit 1
-`;
-  await writeFile(path, script, { encoding: 'utf-8', mode: 0o755 });
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -130,7 +160,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('MessageHandler — Codex models watcher', () => {
+describe('MessageHandler — Codex models (model/list source)', () => {
   let repoPath: string;
   let testQuicksaveDir: string;
   let codexCacheDir: string;
@@ -138,21 +168,20 @@ describe('MessageHandler — Codex models watcher', () => {
   const peerA = 'pwa:peerA';
 
   beforeEach(async () => {
-    testQuicksaveDir = uniqueDir('qs-codex-watcher-home');
+    testQuicksaveDir = uniqueDir('qs-codex-models-home');
     await mkdir(testQuicksaveDir, { recursive: true });
     setQuicksaveDir(testQuicksaveDir);
     resetSessionRegistry();
     repoPath = await createTestRepo('main');
-    codexCacheDir = uniqueDir('qs-codex-watcher');
-    // NOTE: do NOT mkdir codexCacheDir here — individual tests decide whether
-    // it exists, so we can cover the missing-directory tolerance scenario.
+    codexCacheDir = uniqueDir('qs-codex-models');
     handler = null;
+    nextModelListResponse = { data: [], nextCursor: null };
+    nextModelListFailure = null;
   });
 
   afterEach(async () => {
     resetSessionRegistry();
     if (handler) {
-      try { handler.stopCodexModelsWatcher(); } catch { /* ignore */ }
       try { handler.cleanup(); } catch { /* ignore */ }
       handler = null;
     }
@@ -162,440 +191,229 @@ describe('MessageHandler — Codex models watcher', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 1. startCodexModelsWatcher primes the cache from an existing file
+  // 1. primeCodexModelsCache populates from model/list
   // -------------------------------------------------------------------------
-  it('startCodexModelsWatcher primes the cache from an existing models_cache.json', async () => {
-    await mkdir(codexCacheDir, { recursive: true });
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5', display_name: 'GPT-5', visibility: 'list', supported_in_api: true },
-      { slug: 'o4-mini', display_name: 'o4 mini', visibility: 'list', supported_in_api: true },
-    ]);
-
+  it('primeCodexModelsCache populates from model/list', async () => {
+    nextModelListResponse = {
+      data: [
+        modelEntry({ id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }),
+        modelEntry({ id: 'gpt-5.4', displayName: 'GPT-5.4' }),
+      ],
+      nextCursor: null,
+    };
     handler = new MessageHandler(
       [{ path: repoPath, name: 'test-repo' }],
       undefined,
       undefined,
       false,
-      { codexCacheDir, codexBin: null },
+      { codexCacheDir },
     );
-
-    handler.startCodexModelsWatcher();
-    // Allow the priming fetchCodexModels() promise to resolve. It does a real
-    // fs read so we just yield a few microtasks + a short tick.
-    await sleep(100);
-
-    const cached = handler.getCachedCodexModels();
-    expect(cached).toEqual([
-      { id: 'gpt-5', name: 'GPT-5' },
-      { id: 'o4-mini', name: 'o4 mini' },
+    handler.primeCodexModelsCache();
+    await sleep(20);
+    expect(handler.getCachedCodexModels()).toEqual([
+      { id: 'gpt-5.5', name: 'GPT-5.5', isDefault: true, defaultReasoningEffort: 'medium' },
+      { id: 'gpt-5.4', name: 'GPT-5.4', defaultReasoningEffort: 'medium' },
     ]);
   });
 
   // -------------------------------------------------------------------------
-  // 2. Watcher fires update handler when content changes
+  // 2. Hidden models filtered out (matches the old visibility filter intent)
   // -------------------------------------------------------------------------
-  it('fires the update handler when models_cache.json content changes', async () => {
-    await mkdir(codexCacheDir, { recursive: true });
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5', display_name: 'GPT-5', visibility: 'list', supported_in_api: true },
-      { slug: 'o4-mini', display_name: 'o4 mini', visibility: 'list', supported_in_api: true },
-    ]);
-
+  it('filters out hidden models', async () => {
+    nextModelListResponse = {
+      data: [
+        modelEntry({ id: 'gpt-5.5', isDefault: true }),
+        modelEntry({ id: 'codex-auto-review', hidden: true }),
+      ],
+      nextCursor: null,
+    };
     handler = new MessageHandler(
       [{ path: repoPath, name: 'test-repo' }],
       undefined,
       undefined,
       false,
-      { codexCacheDir, codexBin: null },
+      { codexCacheDir },
     );
-    handler.startCodexModelsWatcher();
-    await sleep(100); // let prime resolve
+    handler.primeCodexModelsCache();
+    await sleep(20);
+    const ids = handler.getCachedCodexModels().map((m) => m.id);
+    expect(ids).toEqual(['gpt-5.5']);
+  });
 
+  // -------------------------------------------------------------------------
+  // 3. update handler fires when refresh changes the list
+  // -------------------------------------------------------------------------
+  it('fires update handler when a refresh returns a new list', async () => {
+    nextModelListResponse = {
+      data: [modelEntry({ id: 'gpt-5.4', isDefault: true })],
+      nextCursor: null,
+    };
+    handler = new MessageHandler(
+      [{ path: repoPath, name: 'test-repo' }],
+      undefined,
+      undefined,
+      false,
+      { codexCacheDir },
+    );
+    handler.primeCodexModelsCache();
+    await sleep(20);
     const updateHandler = vi.fn();
     handler.setCodexModelsUpdateHandler(updateHandler);
-
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5', display_name: 'GPT-5', visibility: 'list', supported_in_api: true },
-      { slug: 'o4-mini', display_name: 'o4 mini', visibility: 'list', supported_in_api: true },
-      { slug: 'gpt-6', display_name: 'GPT-6', visibility: 'list', supported_in_api: true },
-    ]);
-
-    await sleep(800); // 500ms debounce + refresh + handler invoke
-
+    // Simulate a refresh: change the mocked list, force-fetch via the
+    // private method through the public list-models handler with force=true
+    // semantics (the handler's TTL is 30 min, so we trigger by direct call).
+    nextModelListResponse = {
+      data: [
+        modelEntry({ id: 'gpt-5.4', isDefault: false }),
+        modelEntry({ id: 'gpt-5.5', isDefault: true }),
+      ],
+      nextCursor: null,
+    };
+    // The only public force-refresh path is via the codex:list-models verb
+    // when the cache is fresh. Force the TTL to bypass by manipulating
+    // checkedAt to long ago.
+    (handler as unknown as { codexModelsCache: { checkedAt: number } }).codexModelsCache.checkedAt = 0;
+    const msg = createMessage('codex:list-models', {} as never);
+    await handler.handleMessage(msg, peerA);
     expect(updateHandler).toHaveBeenCalledTimes(1);
-    expect(updateHandler).toHaveBeenCalledWith([
-      { id: 'gpt-5', name: 'GPT-5' },
-      { id: 'o4-mini', name: 'o4 mini' },
-      { id: 'gpt-6', name: 'GPT-6' },
-    ]);
+    expect((updateHandler.mock.calls[0][0] as Array<{ id: string }>).map((m) => m.id))
+      .toEqual(['gpt-5.4', 'gpt-5.5']);
   });
 
   // -------------------------------------------------------------------------
-  // 3. Watcher dedups identical content
+  // 4. update handler does NOT fire when refresh returns identical list
   // -------------------------------------------------------------------------
-  it('does not fire the update handler when content is unchanged', async () => {
-    await mkdir(codexCacheDir, { recursive: true });
-    const initial: CacheEntry[] = [
-      { slug: 'gpt-5', display_name: 'GPT-5', visibility: 'list', supported_in_api: true },
-      { slug: 'o4-mini', display_name: 'o4 mini', visibility: 'list', supported_in_api: true },
-    ];
-    await writeModelsCache(codexCacheDir, initial);
-
+  it('does not fire update handler when content is unchanged', async () => {
+    nextModelListResponse = {
+      data: [modelEntry({ id: 'gpt-5.5', isDefault: true })],
+      nextCursor: null,
+    };
     handler = new MessageHandler(
       [{ path: repoPath, name: 'test-repo' }],
       undefined,
       undefined,
       false,
-      { codexCacheDir, codexBin: null },
+      { codexCacheDir },
     );
-    handler.startCodexModelsWatcher();
-    await sleep(100);
-
+    handler.primeCodexModelsCache();
+    await sleep(20);
     const updateHandler = vi.fn();
     handler.setCodexModelsUpdateHandler(updateHandler);
-
-    // Rewrite identical content — should still fire fs.watch but the
-    // refresh's equality check should suppress the handler call.
-    await writeModelsCache(codexCacheDir, initial);
-
-    await sleep(800);
-
+    // Force a refresh; same content comes back.
+    (handler as unknown as { codexModelsCache: { checkedAt: number } }).codexModelsCache.checkedAt = 0;
+    const msg = createMessage('codex:list-models', {} as never);
+    await handler.handleMessage(msg, peerA);
     expect(updateHandler).not.toHaveBeenCalled();
   });
 
   // -------------------------------------------------------------------------
-  // 4. Debounce coalesces rapid writes
+  // 5. spawn failure leaves the cache empty without throwing
   // -------------------------------------------------------------------------
-  it('coalesces rapid successive writes into a single update', async () => {
-    await mkdir(codexCacheDir, { recursive: true });
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5', display_name: 'GPT-5', visibility: 'list', supported_in_api: true },
-      { slug: 'o4-mini', display_name: 'o4 mini', visibility: 'list', supported_in_api: true },
-    ]);
-
+  it('does not throw when spawnAppServer or model/list fails; cache stays empty', async () => {
+    nextModelListFailure = 'simulated spawn failure';
     handler = new MessageHandler(
       [{ path: repoPath, name: 'test-repo' }],
       undefined,
       undefined,
       false,
-      { codexCacheDir, codexBin: null },
+      { codexCacheDir },
     );
-    handler.startCodexModelsWatcher();
-    await sleep(100);
-
-    const updateHandler = vi.fn();
-    handler.setCodexModelsUpdateHandler(updateHandler);
-
-    // Three rapid writes; only the FINAL content should drive the update.
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5', display_name: 'GPT-5', visibility: 'list', supported_in_api: true },
-    ]);
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5', display_name: 'GPT-5', visibility: 'list', supported_in_api: true },
-      { slug: 'o4-mini', display_name: 'o4 mini', visibility: 'list', supported_in_api: true },
-    ]);
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5', display_name: 'GPT-5', visibility: 'list', supported_in_api: true },
-      { slug: 'o4-mini', display_name: 'o4 mini', visibility: 'list', supported_in_api: true },
-      { slug: 'gpt-6', display_name: 'GPT-6', visibility: 'list', supported_in_api: true },
-    ]);
-
-    await sleep(900);
-
-    expect(updateHandler).toHaveBeenCalledTimes(1);
-    expect(updateHandler).toHaveBeenCalledWith([
-      { id: 'gpt-5', name: 'GPT-5' },
-      { id: 'o4-mini', name: 'o4 mini' },
-      { id: 'gpt-6', name: 'GPT-6' },
-    ]);
-  });
-
-  // -------------------------------------------------------------------------
-  // 5. Filters hidden / non-API models
-  // -------------------------------------------------------------------------
-  it('filters out hidden and non-API-supported models', async () => {
-    await mkdir(codexCacheDir, { recursive: true });
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5', display_name: 'GPT-5', visibility: 'list', supported_in_api: true },
-      { slug: 'codex-internal', display_name: 'Codex Internal', visibility: 'hide', supported_in_api: true },
-      { slug: 'o4-no-api', display_name: 'o4 No API', visibility: 'list', supported_in_api: false },
-    ]);
-
-    handler = new MessageHandler(
-      [{ path: repoPath, name: 'test-repo' }],
-      undefined,
-      undefined,
-      false,
-      { codexCacheDir, codexBin: null },
-    );
-    handler.startCodexModelsWatcher();
-    await sleep(100);
-
-    const cached = handler.getCachedCodexModels();
-    expect(cached).toEqual([{ id: 'gpt-5', name: 'GPT-5' }]);
-  });
-
-  // -------------------------------------------------------------------------
-  // 6. Tolerant of missing ~/.codex directory
-  // -------------------------------------------------------------------------
-  it('does not throw when codexCacheDir does not exist; cache stays empty', async () => {
-    // codexCacheDir was set in beforeEach but intentionally NOT created.
-    handler = new MessageHandler(
-      [{ path: repoPath, name: 'test-repo' }],
-      undefined,
-      undefined,
-      false,
-      { codexCacheDir, codexBin: null },
-    );
-
-    expect(() => handler!.startCodexModelsWatcher()).not.toThrow();
-
-    // Give the priming fetch a chance to resolve (it'll fail to read).
-    await sleep(100);
-
+    expect(() => handler!.primeCodexModelsCache()).not.toThrow();
+    await sleep(20);
     expect(handler.getCachedCodexModels()).toEqual([]);
   });
 
   // -------------------------------------------------------------------------
-  // 7. stopCodexModelsWatcher is idempotent + suppresses post-stop updates
+  // 6. codex:list-models response surfaces the cache
   // -------------------------------------------------------------------------
-  it('stopCodexModelsWatcher is idempotent and prevents subsequent handler invocations', async () => {
-    await mkdir(codexCacheDir, { recursive: true });
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5', display_name: 'GPT-5', visibility: 'list', supported_in_api: true },
-    ]);
-
+  it('codex:list-models surfaces the cache', async () => {
+    nextModelListResponse = {
+      data: [modelEntry({ id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true })],
+      nextCursor: null,
+    };
     handler = new MessageHandler(
       [{ path: repoPath, name: 'test-repo' }],
       undefined,
       undefined,
       false,
-      { codexCacheDir, codexBin: null },
+      { codexCacheDir },
     );
-    handler.startCodexModelsWatcher();
-    await sleep(100);
-
-    const updateHandler = vi.fn();
-    handler.setCodexModelsUpdateHandler(updateHandler);
-
-    // Idempotent stop
-    expect(() => {
-      handler!.stopCodexModelsWatcher();
-      handler!.stopCodexModelsWatcher();
-    }).not.toThrow();
-
-    // Now write new content; nothing should fire because the watcher is gone.
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5', display_name: 'GPT-5', visibility: 'list', supported_in_api: true },
-      { slug: 'gpt-6', display_name: 'GPT-6', visibility: 'list', supported_in_api: true },
-    ]);
-
-    await sleep(800);
-
-    expect(updateHandler).not.toHaveBeenCalled();
-  });
-
-  // -------------------------------------------------------------------------
-  // 8. codex:list-models response uses the cached models
-  // -------------------------------------------------------------------------
-  it('codex:list-models response surfaces the primed cache', async () => {
-    await mkdir(codexCacheDir, { recursive: true });
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5', display_name: 'GPT-5', visibility: 'list', supported_in_api: true },
-      { slug: 'o4-mini', display_name: 'o4 mini', visibility: 'list', supported_in_api: true },
-    ]);
-
-    handler = new MessageHandler(
-      [{ path: repoPath, name: 'test-repo' }],
-      undefined,
-      undefined,
-      false,
-      { codexCacheDir, codexBin: null },
-    );
-    handler.startCodexModelsWatcher();
-    await sleep(100);
-
-    const msg = createMessage('codex:list-models', {} as any);
+    handler.primeCodexModelsCache();
+    await sleep(20);
+    const msg = createMessage('codex:list-models', {} as never);
     const resp = await handler.handleMessage(msg, peerA);
     expect(resp.type).toBe('codex:list-models:response');
-    const payload = resp.payload as { models: Array<{ id: string; name: string }> };
-    expect(payload.models).toEqual([
-      { id: 'gpt-5', name: 'GPT-5' },
-      { id: 'o4-mini', name: 'o4 mini' },
-    ]);
+    const payload = resp.payload as { models: Array<{ id: string; name: string; isDefault?: boolean }> };
+    expect(payload.models).toHaveLength(1);
+    expect(payload.models[0]).toMatchObject({ id: 'gpt-5.5', name: 'GPT-5.5', isDefault: true });
   });
+});
 
-  // -------------------------------------------------------------------------
-  // 9. `codex debug models` is preferred over the cache file
-  // -------------------------------------------------------------------------
-  it('uses `codex debug models` output when the CLI is available', async () => {
-    await mkdir(codexCacheDir, { recursive: true });
-    // Cache file deliberately missing the new model — this is the bug we fix.
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5.4', display_name: 'GPT-5.4', visibility: 'list', supported_in_api: true },
-    ]);
-    const fakeBin = join(codexCacheDir, 'fake-codex.sh');
-    await writeFakeCodexCli(fakeBin, [
-      { slug: 'gpt-5.5', display_name: 'GPT-5.5', visibility: 'list', supported_in_api: true },
-      { slug: 'gpt-5.4', display_name: 'GPT-5.4', visibility: 'list', supported_in_api: true },
-    ]);
+describe('MessageHandler.validateCodexModel — coercion', () => {
+  let repoPath: string;
+  let handler: MessageHandler;
+  const codexCacheDir = uniqueDir('qs-codex-validate');
 
+  beforeEach(async () => {
+    setQuicksaveDir(uniqueDir('qs-codex-validate-home'));
+    resetSessionRegistry();
+    repoPath = await createTestRepo('validate');
+    nextModelListResponse = {
+      data: [
+        modelEntry({ id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }),
+        modelEntry({ id: 'gpt-5.4', displayName: 'GPT-5.4' }),
+      ],
+      nextCursor: null,
+    };
+    nextModelListFailure = null;
     handler = new MessageHandler(
       [{ path: repoPath, name: 'test-repo' }],
       undefined,
       undefined,
       false,
-      { codexCacheDir, codexBin: fakeBin },
+      { codexCacheDir },
     );
-    handler.startCodexModelsWatcher();
-    await sleep(300); // CLI spawn + JSON parse
-
-    expect(handler.getCachedCodexModels()).toEqual([
-      { id: 'gpt-5.5', name: 'GPT-5.5' },
-      { id: 'gpt-5.4', name: 'GPT-5.4' },
-    ]);
+    handler.primeCodexModelsCache();
+    await sleep(20);
   });
 
-  // -------------------------------------------------------------------------
-  // 10. Falls back to cache file when the CLI exits non-zero
-  // -------------------------------------------------------------------------
-  it('falls back to the cache file when `codex debug models` fails', async () => {
-    await mkdir(codexCacheDir, { recursive: true });
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5.4', display_name: 'GPT-5.4', visibility: 'list', supported_in_api: true },
-    ]);
-    const fakeBin = join(codexCacheDir, 'fake-codex.sh');
-    await writeFakeCodexCli(fakeBin, [], 1); // exit non-zero
+  afterEach(async () => {
+    try { handler.cleanup(); } catch { /* ignore */ }
+    try { await rm(repoPath, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
 
+  it('passes through a model that exists in the cache', () => {
+    expect(handler.validateCodexModel('gpt-5.4', 'codex')).toBe('gpt-5.4');
+  });
+
+  it('coerces an unsupported model to the cache default', () => {
+    expect(handler.validateCodexModel('claude-opus-4-7', 'codex')).toBe('gpt-5.5');
+  });
+
+  it('coerces undefined to the cache default', () => {
+    expect(handler.validateCodexModel(undefined, 'codex')).toBe('gpt-5.5');
+  });
+
+  it('passes through any model when agent is not codex', () => {
+    expect(handler.validateCodexModel('claude-opus-4-7', 'claude-code')).toBe('claude-opus-4-7');
+    expect(handler.validateCodexModel(undefined, 'claude-code')).toBeUndefined();
+  });
+
+  it('passes through when cache is empty (cannot validate)', async () => {
+    // Replace the handler with one whose model/list call failed.
+    try { handler.cleanup(); } catch { /* ignore */ }
+    nextModelListFailure = 'no models available';
     handler = new MessageHandler(
       [{ path: repoPath, name: 'test-repo' }],
       undefined,
       undefined,
       false,
-      { codexCacheDir, codexBin: fakeBin },
+      { codexCacheDir },
     );
-    handler.startCodexModelsWatcher();
-    await sleep(300);
-
-    expect(handler.getCachedCodexModels()).toEqual([
-      { id: 'gpt-5.4', name: 'GPT-5.4' },
-    ]);
-  });
-
-  // -------------------------------------------------------------------------
-  // 11. Falls back when CLI binary doesn't exist (ENOENT)
-  // -------------------------------------------------------------------------
-  it('falls back to the cache file when the codex binary is missing', async () => {
-    await mkdir(codexCacheDir, { recursive: true });
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5.4', display_name: 'GPT-5.4', visibility: 'list', supported_in_api: true },
-    ]);
-
-    handler = new MessageHandler(
-      [{ path: repoPath, name: 'test-repo' }],
-      undefined,
-      undefined,
-      false,
-      { codexCacheDir, codexBin: '/nonexistent/codex-binary' },
-    );
-    handler.startCodexModelsWatcher();
-    await sleep(300);
-
-    expect(handler.getCachedCodexModels()).toEqual([
-      { id: 'gpt-5.4', name: 'GPT-5.4' },
-    ]);
-  });
-
-  // -------------------------------------------------------------------------
-  // 12. CLI source filters hidden / non-API models the same as the cache file
-  // -------------------------------------------------------------------------
-  it('CLI source applies the same visibility/api filter as the cache file', async () => {
-    await mkdir(codexCacheDir, { recursive: true });
-    const fakeBin = join(codexCacheDir, 'fake-codex.sh');
-    await writeFakeCodexCli(fakeBin, [
-      { slug: 'gpt-5.5', display_name: 'GPT-5.5', visibility: 'list', supported_in_api: true },
-      { slug: 'codex-internal', display_name: 'Codex Internal', visibility: 'hide', supported_in_api: true },
-      { slug: 'gpt-5.4-no-api', display_name: 'No API', visibility: 'list', supported_in_api: false },
-    ]);
-
-    handler = new MessageHandler(
-      [{ path: repoPath, name: 'test-repo' }],
-      undefined,
-      undefined,
-      false,
-      { codexCacheDir, codexBin: fakeBin },
-    );
-    handler.startCodexModelsWatcher();
-    await sleep(300);
-
-    expect(handler.getCachedCodexModels()).toEqual([
-      { id: 'gpt-5.5', name: 'GPT-5.5' },
-    ]);
-  });
-
-  // -------------------------------------------------------------------------
-  // 13. Surfaces per-model context_window + reasoning levels
-  // -------------------------------------------------------------------------
-  it('surfaces context_window, default_reasoning_level, supported_reasoning_levels', async () => {
-    await mkdir(codexCacheDir, { recursive: true });
-    await writeModelsCache(codexCacheDir, [
-      {
-        slug: 'gpt-5.5',
-        display_name: 'GPT-5.5',
-        visibility: 'list',
-        supported_in_api: true,
-        default_reasoning_level: 'medium',
-        supported_reasoning_levels: [
-          { effort: 'low' }, { effort: 'medium' }, { effort: 'high' }, { effort: 'xhigh' },
-        ],
-        context_window: 272000,
-      },
-    ]);
-
-    handler = new MessageHandler(
-      [{ path: repoPath, name: 'test-repo' }],
-      undefined,
-      undefined,
-      false,
-      { codexCacheDir, codexBin: null },
-    );
-    handler.startCodexModelsWatcher();
-    await sleep(100);
-
-    expect(handler.getCachedCodexModels()).toEqual([
-      {
-        id: 'gpt-5.5',
-        name: 'GPT-5.5',
-        reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
-        defaultReasoningEffort: 'medium',
-        contextWindow: 272000,
-      },
-    ]);
-  });
-
-  // -------------------------------------------------------------------------
-  // 14. Bad JSON from CLI degrades to cache file
-  // -------------------------------------------------------------------------
-  it('falls back when CLI prints non-JSON output', async () => {
-    await mkdir(codexCacheDir, { recursive: true });
-    await writeModelsCache(codexCacheDir, [
-      { slug: 'gpt-5.4', display_name: 'GPT-5.4', visibility: 'list', supported_in_api: true },
-    ]);
-    const fakeBin = join(codexCacheDir, 'fake-codex.sh');
-    await writeFakeCodexCli(fakeBin, null); // null → script prints "not-json"
-
-    handler = new MessageHandler(
-      [{ path: repoPath, name: 'test-repo' }],
-      undefined,
-      undefined,
-      false,
-      { codexCacheDir, codexBin: fakeBin },
-    );
-    handler.startCodexModelsWatcher();
-    await sleep(300);
-
-    expect(handler.getCachedCodexModels()).toEqual([
-      { id: 'gpt-5.4', name: 'GPT-5.4' },
-    ]);
+    handler.primeCodexModelsCache();
+    await sleep(20);
+    expect(handler.getCachedCodexModels()).toEqual([]);
+    // Without a cache we'd rather try the user's choice than swallow it.
+    expect(handler.validateCodexModel('claude-opus-4-7', 'codex')).toBe('claude-opus-4-7');
   });
 });

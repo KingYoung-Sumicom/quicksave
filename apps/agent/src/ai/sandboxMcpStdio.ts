@@ -16,7 +16,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { execFileSync } from 'child_process';
-import { realpathSync, existsSync, readFileSync } from 'fs';
+import { realpathSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir, platform } from 'os';
 import { fileURLToPath } from 'url';
@@ -40,6 +40,7 @@ const quicksaveHome = process.env.QUICKSAVE_HOME || join(homedir(), '.quicksave'
 const sessionRegistryDir = join(quicksaveHome, 'state', 'session-registry');
 /** Same encoding as `apps/agent/src/ai/sessionRegistry.ts:encodeProjectPath`. */
 const encodedCwd = cwd.replace(/\//g, '-');
+const SESSION_NOTE_HISTORY_CAP = 50;
 
 const PROFILE_PATH = join(__ownDir, 'profiles', 'project-sandbox.sb');
 
@@ -121,6 +122,11 @@ server.tool(
     command: z.string().describe('The shell command to execute'),
     timeout: z.number().optional().describe('Timeout in milliseconds (default: 120000)'),
   },
+  {
+    readOnlyHint: false,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
   async (args) => {
     if (!backend) {
       const os = platform();
@@ -192,6 +198,64 @@ function readStoredStatus(): StatusSnapshot {
   }
 }
 
+function sessionRegistryPath(): string | null {
+  if (!sessionIdHint) return null;
+  return join(sessionRegistryDir, encodedCwd, `${sessionIdHint}.json`);
+}
+
+function isSessionStage(value: string): value is NonNullable<StatusSnapshot['stage']> {
+  return value === 'investigating' ||
+    value === 'working' ||
+    value === 'verifying' ||
+    value === 'done';
+}
+
+function writeStoredStatus(args: {
+  subject?: string;
+  stage?: 'investigating' | 'working' | 'verifying' | 'done';
+  blocked?: boolean;
+  note?: string;
+}): void {
+  const path = sessionRegistryPath();
+  if (!path || !existsSync(path)) return;
+
+  let entry: Record<string, unknown>;
+  try {
+    entry = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+
+  let changed = false;
+  if (typeof args.subject === 'string' && args.subject.length > 0) {
+    entry.title = args.subject;
+    changed = true;
+  }
+  if (typeof args.stage === 'string' && isSessionStage(args.stage)) {
+    entry.stage = args.stage;
+    changed = true;
+  }
+  if (typeof args.blocked === 'boolean') {
+    entry.blocked = args.blocked;
+    changed = true;
+  }
+  if (typeof args.note === 'string' && args.note.length > 0) {
+    entry.note = args.note;
+    const prior = Array.isArray(entry.noteHistory)
+      ? entry.noteHistory as Array<{ ts: number; text: string }>
+      : [];
+    const next = [...prior, { ts: Date.now(), text: args.note }];
+    entry.noteHistory = next.length > SESSION_NOTE_HISTORY_CAP
+      ? next.slice(next.length - SESSION_NOTE_HISTORY_CAP)
+      : next;
+    changed = true;
+  }
+  if (!changed) return;
+
+  entry.lastAccessedAt = Date.now();
+  writeFileSync(path, JSON.stringify(entry, null, 2));
+}
+
 server.tool(
   'UpdateSessionStatus',
   'Update the ticket-style status for the current session, shown to the user on the home screen.\n' +
@@ -244,6 +308,11 @@ server.tool(
     note: z.string().optional()
       .describe('One progress/finding entry (~12 words). Appended to the session event log; emit on each meaningful state change.'),
   },
+  {
+    readOnlyHint: false,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
   async (args) => {
     const isDryRun =
       args.subject === undefined &&
@@ -251,9 +320,10 @@ server.tool(
       args.blocked === undefined &&
       args.note === undefined;
 
-    // Daemon-side `shouldAutoApprove` has already persisted any updates by the
-    // time this handler runs, so re-reading the registry file yields the final
-    // merged state for both dry-run and write paths.
+    // Codex MCP approval mode "approve" bypasses the daemon permission callback,
+    // so this stdio server owns persistence when it has a session-id hint.
+    if (!isDryRun) writeStoredStatus(args);
+
     const snapshot = readStoredStatus();
 
     const header = isDryRun

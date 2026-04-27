@@ -38,7 +38,7 @@ const CONTROL_REQUESTS: ControlRequestDef[] = [
     subtype: 'set_model',
     label: 'Set Model',
     description: 'Switch the model for the current task (no restart)',
-    params: [{ name: 'model', placeholder: 'claude-opus-4-7[1m]', required: true }],
+    params: [{ name: 'model', placeholder: 'claude-opus-4-7', required: true }],
   },
   {
     subtype: 'set_permission_mode',

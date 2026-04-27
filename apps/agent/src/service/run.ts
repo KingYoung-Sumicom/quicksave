@@ -430,10 +430,11 @@ export async function runDaemon(): Promise<void> {
   );
 
   // Local Codex model list. Snapshot delivers whatever the daemon currently
-  // has cached; updates fire when the codex CLI rewrites
-  // `~/.codex/models_cache.json` (typically right after a binary upgrade or a
-  // fresh login). The fs.watch keeps the PWA picker fresh without anyone
-  // having to re-issue `codex:list-models`.
+  // has cached; refresh comes via the 30-min TTL inside
+  // `MessageHandler.fetchCodexModels` (no fs watcher — `model/list` is the
+  // canonical source now and there's no on-disk file we can watch). The
+  // eager `primeCodexModelsCache` call below populates the snapshot before
+  // the first PWA subscriber arrives.
   messageHandler.setCodexModelsUpdateHandler((models) => {
     bus.publish<CodexModelInfo[]>('/codex/models', models);
   });
@@ -441,7 +442,7 @@ export async function runDaemon(): Promise<void> {
     '/codex/models',
     { snapshot: () => messageHandler.getCachedCodexModels() },
   );
-  messageHandler.startCodexModelsWatcher();
+  messageHandler.primeCodexModelsCache();
 
   // ── MessageBus command adapter ────────────────────────────────────────────
   // Every request-response verb from the legacy MessageHandler is exposed as a

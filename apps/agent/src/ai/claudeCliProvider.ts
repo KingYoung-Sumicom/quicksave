@@ -19,6 +19,33 @@ import type {
 const __ownDir = dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Models that don't support the `context-1m-2025-08-07` beta. Today only
+ * Haiku is locked to 200k; Sonnet and Opus all opt into 1M when asked.
+ * Mirrors `modelSupports1m` in apps/pwa — kept as a separate copy so the
+ * agent doesn't have to import from the PWA workspace.
+ */
+function modelSupports1m(model: string | undefined): boolean {
+  return !!model && !/^claude-haiku/i.test(model);
+}
+
+/**
+ * Append `[1m]` to the model so the Claude CLI enables the 1M context beta on
+ * its API calls. We only do this for models that support it; for Haiku (or an
+ * undefined model where we can't decide) we return the input unchanged. The
+ * CLI strips the suffix before sending the actual model id to the API.
+ */
+export function decorateModelWithContextWindow(
+  model: string | undefined,
+  contextWindow: number | undefined,
+): string | undefined {
+  if (!model) return model;
+  if (/\[1m\]$/i.test(model)) return model; // caller already opted in
+  if (!contextWindow || contextWindow <= 200_000) return model;
+  if (!modelSupports1m(model)) return model;
+  return `${model}[1m]`;
+}
+
+/**
  * Build the argv passed to `claude` when spawning a new or resumed session.
  *
  * Exported for unit testing; production callers go through `ClaudeCliProvider`.
@@ -41,6 +68,10 @@ export function buildClaudeCliArgs(opts: {
   resumeSessionId?: string;
   sandboxed?: boolean;
   bypassFlagPath?: string;
+  /** Auto-compact ceiling. >200k triggers the `[1m]` model suffix so the API
+   *  accepts the larger window; `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set on
+   *  the spawn env (see `spawnAndConsume`) so the CLI compacts at this value. */
+  contextWindow?: number;
 }): string[] {
   const args: string[] = [
     '--output-format', 'stream-json',
@@ -56,7 +87,7 @@ export function buildClaudeCliArgs(opts: {
   }
 
   if (opts.model) {
-    args.push('--model', opts.model);
+    args.push('--model', decorateModelWithContextWindow(opts.model, opts.contextWindow) ?? opts.model);
   }
 
   if (opts.permissionMode) {
@@ -322,9 +353,10 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       systemPrompt: opts.systemPrompt,
       sandboxed: opts.sandboxed,
       bypassFlagPath: opts.bypassFlagPath,
+      contextWindow: opts.contextWindow,
     });
 
-    return this.spawnAndConsume(args, opts.cwd, opts.streamId, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model);
+    return this.spawnAndConsume(args, opts.cwd, opts.streamId, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model, opts.contextWindow);
   }
 
   async resumeSession(
@@ -341,9 +373,10 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       resumeSessionId: opts.sessionId,
       sandboxed: opts.sandboxed,
       bypassFlagPath: opts.bypassFlagPath,
+      contextWindow: opts.contextWindow,
     });
 
-    return this.spawnAndConsume(args, opts.cwd, opts.streamId, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model);
+    return this.spawnAndConsume(args, opts.cwd, opts.streamId, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model, opts.contextWindow);
   }
 
   // ── Private: CLI Args ──
@@ -357,6 +390,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     resumeSessionId?: string;
     sandboxed?: boolean;
     bypassFlagPath?: string;
+    contextWindow?: number;
   }): string[] {
     return buildClaudeCliArgs({ ...opts, ownDir: __ownDir });
   }
@@ -373,12 +407,21 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     cardBuilder: StreamCardBuilder,
     callbacks: ProviderCallbacks,
     _model?: string,
+    contextWindow?: number,
   ): Promise<{ sessionId: string; session: ProviderSession }> {
     const claudeBin = getClaudeBin();
+    // The CLI auto-promotes Sonnet/Opus to 1M context unless told otherwise.
+    // Pin the auto-compact window to the user's chosen tier so usage stays
+    // predictable across model switches and 200k/500k/1M presets all behave
+    // the way the picker says they will.
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    if (contextWindow && contextWindow > 0) {
+      env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(contextWindow);
+    }
     const proc = spawn(claudeBin, args, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env,
     });
 
     // Send user message immediately — CLI needs stdin before emitting init
@@ -624,6 +667,19 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       } else if (msg.subtype === 'task_notification') {
         const cardEvt = cb.subagentEnd(msg.task_id, msg.tool_use_id, msg.status, msg.summary);
         if (cardEvt) emitCard(cardEvt);
+      } else if (msg.subtype === 'compact_boundary') {
+        // Compaction happened mid-turn: emit a visible "Context compacted" card
+        // and refresh the cache anchor — the summarization API call wrote a new
+        // cache entry, so the 5-min TTL restarts now.
+        flushText();
+        const meta = msg.compact_metadata;
+        const trigger = meta?.trigger as 'manual' | 'auto' | undefined;
+        const preTokens = typeof meta?.pre_tokens === 'number' ? meta.pre_tokens : undefined;
+        const text = preTokens !== undefined
+          ? `Context compacted (${trigger ?? 'manual'}, was ${preTokens.toLocaleString()} tokens)`
+          : 'Context compacted';
+        emitCard(cb.systemMessage(text, 'compacted'));
+        callbacks.onCacheTouch?.(sessionId);
       }
       return false;
     }
@@ -646,6 +702,14 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     // ── Complete assistant messages ──
     if (msg.type === 'assistant') {
       if (msg.agentId) return false;  // sidechain
+      // Per Anthropic docs, the prompt cache TTL refreshes on every cache hit
+      // (read) or write, so each inner API call inside an autonomous turn
+      // resets the countdown. Notify the manager so the PWA's SessionStatsBar
+      // countdown stays accurate mid-turn.
+      const usage = msg.message?.usage;
+      if (usage && ((usage.cache_creation_input_tokens ?? 0) > 0 || (usage.cache_read_input_tokens ?? 0) > 0)) {
+        callbacks.onCacheTouch?.(sessionId);
+      }
       flushText();
       const blocks = msg.message?.content ?? [];
       for (const block of blocks) {
@@ -745,6 +809,12 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       const finalizeEvent = cb.finalizeAssistantText();
       if (finalizeEvent) emitCard(finalizeEvent);
 
+      const usage = msg.usage as
+        | { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
+        | undefined;
+      if (usage && ((usage.cache_creation_input_tokens ?? 0) > 0 || (usage.cache_read_input_tokens ?? 0) > 0)) {
+        callbacks.onCacheTouch?.(sessionId);
+      }
       const streamEnd: CardStreamEnd = {
         streamId,
         sessionId,
@@ -754,12 +824,12 @@ export class ClaudeCliProvider implements CodingAgentProvider {
           : undefined,
         interrupted,
         totalCostUsd: msg.total_cost_usd,
-        tokenUsage: msg.usage
+        tokenUsage: usage
           ? {
-              input: msg.usage.input_tokens,
-              output: msg.usage.output_tokens,
-              cacheCreation: (msg.usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens,
-              cacheRead: (msg.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens,
+              input: usage.input_tokens,
+              output: usage.output_tokens,
+              cacheCreation: usage.cache_creation_input_tokens,
+              cacheRead: usage.cache_read_input_tokens,
             }
           : undefined,
       };

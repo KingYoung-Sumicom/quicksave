@@ -79,6 +79,6 @@ Periodically review coverage reports to identify blind spots. Prioritize testing
 Current baseline (2026-04-14): 45% statements, 61% functions, 333 tests.
 
 Priority modules for coverage improvement:
-- Providers (claudeCliProvider, claudeSdkProvider, codexSdkProvider) — lowest coverage, hardest to test
+- Providers (claudeCliProvider, claudeSdkProvider, codexAppServer/*) — lowest coverage, hardest to test
 - messageHandler — 38% coverage, room for improvement
 - Entry points (run.ts, index.ts) — integration-level, lower priority

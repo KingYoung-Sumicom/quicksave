@@ -52,6 +52,16 @@ apps/agent/src/
 │   ├── provider.ts           # CodingAgentProvider 介面 + 型別定義
 │   ├── sessionManager.ts     # SessionManager：通用 session 協調層（extends EventEmitter）
 │   ├── claudeCliProvider.ts  # ClaudeCliProvider：Claude CLI 實作（互動式 session）
+│   ├── codexAppServer/       # Codex provider — JSON-RPC v2 client speaking `codex app-server`
+│   │   ├── provider.ts       #   CodexAppServerProvider + CodexAppServerSession（lifecycle / runTurn / interrupt）
+│   │   ├── processManager.ts #   Spawn `codex app-server`, run initialize handshake, version pin check
+│   │   ├── rpcClient.ts      #   JSON-RPC 2.0 dispatcher (request/response/notification/server-request)
+│   │   ├── stdioTransport.ts #   JSONL framing on the spawned child's stdio
+│   │   ├── cardAdapter.ts    #   v2 notifications → StreamCardBuilder method calls
+│   │   ├── tokenAccounting.ts#   Per-turn delta + cumulative usage tracking
+│   │   ├── overrideStore.ts  #   Pending/effective per-turn overrides (model/effort/permission)
+│   │   ├── permissionMapping.ts # PermissionLevel → AskForApproval / SandboxPolicy / ApprovalsReviewer matrix
+│   │   └── schema/generated/ #   Vendored TS bindings from `codex app-server generate-ts`
 │   ├── cardBuilder.ts        # StreamCardBuilder：stream-json 事件 → CardEvent
 │   ├── sessionStore.ts       # Session 持久化（JSONL）
 │   ├── commitSummary.ts      # CommitSummaryService：commit message via Anthropic SDK（需 API key）

@@ -36,10 +36,15 @@ export function SessionStatsBar({
   const hasContextData = lastTurnTotal > 0;
   const contextTokens = session?.lastTurnContextUsage?.totalTokens ?? lastTurnTotal;
 
-  // Cache TTL is refreshed on each assistant response, so anchor on the latest
-  // of turn-end / prompt-sent rather than prompt-sent alone. Autonomous turns
-  // can run for many minutes; otherwise the countdown would expire mid-turn.
+  // Anthropic refreshes the cache TTL on every cache hit/write (per the
+  // prompt-caching docs), so the most reliable anchor is the timestamp of the
+  // last SDK message whose `usage` reported cache activity — surfaced as
+  // `lastCacheTouchAt`. That timer ticks for inner API calls inside long
+  // autonomous turns too. Fall back to turn-end / prompt-sent for sessions
+  // that haven't hit the cache yet (or whose daemon was restarted, since the
+  // touch timestamp is in-memory only).
   const cacheAnchor = Math.max(
+    session?.lastCacheTouchAt ?? 0,
     session?.lastTurnEndedAt ?? 0,
     session?.lastPromptAt ?? 0,
   ) || undefined;

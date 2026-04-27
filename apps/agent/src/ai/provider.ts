@@ -34,6 +34,13 @@ export interface ProviderCallbacks {
    * so daemon-side side effects (e.g. UpdateSessionStatus persistence) must be
    * driven from this hook, not handlePermissionRequest. */
   onToolUse?(sessionId: string, toolName: string, toolInput: Record<string, unknown>): void;
+  /** Fired whenever the provider observes an SDK message whose `usage` indicates
+   * a cache hit or write (`cache_creation_input_tokens > 0` or
+   * `cache_read_input_tokens > 0`). Each fire effectively means "Anthropic just
+   * touched the cache for this session", which is the precise event that
+   * resets the 5-minute (or 1h) cache TTL on the server. SessionManager uses
+   * this to anchor the PWA's countdown without waiting for the turn to end. */
+  onCacheTouch?(sessionId: string): void;
   onModelDetected(model: string): void;
   /** Fired when the underlying provider process has fully exited. SessionManager
    * uses this to remove the session from its in-memory map and emit
@@ -56,6 +63,11 @@ export interface StartSessionOpts {
    *  high/xhigh). Claude providers ignore it (their depth is decided by the
    *  model variant, not a per-turn knob). */
   reasoningEffort?: string;
+  /** Auto-compact ceiling for Claude Code (200k / 500k / 1M). Only the
+   *  Claude CLI provider honors this — it sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
+   *  on the spawn env and appends the `[1m]` model suffix when the value
+   *  exceeds 200k (which enables the API's 1M context beta). Codex ignores. */
+  contextWindow?: number;
   /** Absolute path to the daemon-owned sentinel file the CLI's PermissionRequest
    *  hook consults to auto-approve every tool. Presence of the file means bypass
    *  is active. Only ClaudeCliProvider uses it; other providers ignore it. */
@@ -72,6 +84,7 @@ export interface ResumeSessionOpts {
   sandboxed: boolean;
   systemPrompt?: string;
   reasoningEffort?: string;
+  contextWindow?: number;
   bypassFlagPath?: string;
 }
 

@@ -32,6 +32,7 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     current.permissionMode === payload.permissionMode &&
     current.lastPromptAt === payload.lastPromptAt &&
     current.lastTurnEndedAt === payload.lastTurnEndedAt &&
+    current.lastCacheTouchAt === payload.lastCacheTouchAt &&
     current.turnCount === payload.turnCount &&
     current.totalInputTokens === payload.totalInputTokens &&
     current.totalOutputTokens === payload.totalOutputTokens &&
@@ -55,6 +56,7 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     permissionMode: payload.permissionMode,
     lastPromptAt: payload.lastPromptAt,
     lastTurnEndedAt: payload.lastTurnEndedAt,
+    lastCacheTouchAt: payload.lastCacheTouchAt,
     turnCount: payload.turnCount,
     totalInputTokens: payload.totalInputTokens,
     totalOutputTokens: payload.totalOutputTokens,

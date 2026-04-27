@@ -1226,6 +1226,50 @@ describe('SessionManager — adversarial edge cases', () => {
       expect(aliveSession.kill).toHaveBeenCalled();
       expect(provider.resumeSession).toHaveBeenCalled();
     });
+
+    it('idle hot resume falls to cold resume when contextWindow changed', async () => {
+      // CLAUDE_CODE_AUTO_COMPACT_WINDOW is read at process start, so swapping
+      // tier requires a respawn — same machinery as model change.
+      const sessionId = 'idle-cw-changed';
+      const aliveSession = createMockProviderSession({ alive: true }) as any;
+      aliveSession.pendingStreamIds = [];
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: aliveSession,
+      });
+
+      await manager.startSession({
+        prompt: 'Start',
+        cwd: '/tmp/test',
+        streamId: 's1',
+        model: 'claude-opus-4-7',
+        contextWindow: 200_000,
+      });
+
+      const callbacks = manager.makeCallbacks('claude-code' as any);
+      callbacks.emitStreamEnd({ sessionId, streamId: 's1', costUsd: 0.01 } as any);
+
+      // User opts up to 1M — should force cold resume even though model is the same.
+      manager.setSessionConfig(sessionId, 'contextWindow', 1_000_000);
+
+      const coldSession = createMockProviderSession({ alive: true });
+      (provider.resumeSession as Mock).mockResolvedValue({
+        sessionId,
+        session: coldSession,
+      });
+
+      await manager.resumeSession({
+        sessionId,
+        prompt: 'Follow-up',
+        cwd: '/tmp/test',
+        streamId: 's2',
+      });
+
+      expect(aliveSession.kill).toHaveBeenCalled();
+      expect(provider.resumeSession).toHaveBeenCalled();
+      const lastResumeArgs = (provider.resumeSession as Mock).mock.calls.at(-1)?.[0];
+      expect(lastResumeArgs?.contextWindow).toBe(1_000_000);
+    });
   });
 
   // ── onSessionExited callback ──

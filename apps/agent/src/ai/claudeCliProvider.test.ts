@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { buildClaudeCliArgs } from './claudeCliProvider.js';
+import { buildClaudeCliArgs, decorateModelWithContextWindow } from './claudeCliProvider.js';
 import { SANDBOX_BASH_TOOL } from './sandboxMcp.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
@@ -123,5 +123,77 @@ describe('buildClaudeCliArgs', () => {
       const args = buildClaudeCliArgs({ cwd: '/p', ownDir: __ownDir, resumeSessionId: 'abc-123' });
       expect(argValue(args, '--resume')).toBe('abc-123');
     });
+  });
+
+  describe('contextWindow → model suffix', () => {
+    it('passes the bare model when contextWindow is 200k', () => {
+      const args = buildClaudeCliArgs({
+        cwd: '/p', ownDir: __ownDir,
+        model: 'claude-sonnet-4-6',
+        contextWindow: 200_000,
+      });
+      expect(argValue(args, '--model')).toBe('claude-sonnet-4-6');
+    });
+
+    it('appends [1m] for 500k on a 1M-capable model', () => {
+      const args = buildClaudeCliArgs({
+        cwd: '/p', ownDir: __ownDir,
+        model: 'claude-sonnet-4-6',
+        contextWindow: 500_000,
+      });
+      expect(argValue(args, '--model')).toBe('claude-sonnet-4-6[1m]');
+    });
+
+    it('appends [1m] for 1M on a 1M-capable model', () => {
+      const args = buildClaudeCliArgs({
+        cwd: '/p', ownDir: __ownDir,
+        model: 'claude-opus-4-7',
+        contextWindow: 1_000_000,
+      });
+      expect(argValue(args, '--model')).toBe('claude-opus-4-7[1m]');
+    });
+
+    it('does not append [1m] for haiku regardless of contextWindow', () => {
+      const args = buildClaudeCliArgs({
+        cwd: '/p', ownDir: __ownDir,
+        model: 'claude-haiku-4-5-20251001',
+        contextWindow: 1_000_000,
+      });
+      expect(argValue(args, '--model')).toBe('claude-haiku-4-5-20251001');
+    });
+
+    it('leaves an already-suffixed model alone', () => {
+      const args = buildClaudeCliArgs({
+        cwd: '/p', ownDir: __ownDir,
+        model: 'claude-opus-4-7[1m]',
+        contextWindow: 200_000,
+      });
+      // Caller already opted in — we don't strip it; the explicit choice wins.
+      expect(argValue(args, '--model')).toBe('claude-opus-4-7[1m]');
+    });
+  });
+});
+
+describe('decorateModelWithContextWindow', () => {
+  it('returns undefined when no model is given', () => {
+    expect(decorateModelWithContextWindow(undefined, 1_000_000)).toBeUndefined();
+  });
+  it('appends [1m] for >200k on sonnet/opus', () => {
+    expect(decorateModelWithContextWindow('claude-sonnet-4-6', 500_000))
+      .toBe('claude-sonnet-4-6[1m]');
+    expect(decorateModelWithContextWindow('claude-opus-4-7', 1_000_000))
+      .toBe('claude-opus-4-7[1m]');
+  });
+  it('returns the input unchanged at 200k', () => {
+    expect(decorateModelWithContextWindow('claude-sonnet-4-6', 200_000))
+      .toBe('claude-sonnet-4-6');
+  });
+  it('returns the input unchanged for haiku', () => {
+    expect(decorateModelWithContextWindow('claude-haiku-4-5-20251001', 1_000_000))
+      .toBe('claude-haiku-4-5-20251001');
+  });
+  it('does not double-append when the suffix is already present', () => {
+    expect(decorateModelWithContextWindow('claude-opus-4-7[1m]', 1_000_000))
+      .toBe('claude-opus-4-7[1m]');
   });
 });

@@ -154,7 +154,11 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
             : toolName === 'ExitPlanMode'
               ? <ExitPlanModeToolView input={parsedInput} plan={parsedInput.plan as string} isRejected={toolResultIsError} />
               : ToolView
-                ? <ToolView input={parsedInput} headerSuffix={isInlineResultTool ? chevronButton : undefined} />
+                ? <ToolView
+                    input={parsedInput}
+                    headerSuffix={isInlineResultTool ? chevronButton : undefined}
+                    resultContent={resultContent}
+                  />
                 : <FallbackToolView toolName={toolName} content={toolInput || content} />}
         </div>
         {isInlineResultTool && (

@@ -35,6 +35,7 @@ export function applyHistoryEntry(entry: BroadcastSessionEntry, machineAgentId: 
     // renders nothing until the session is hot-resumed.
     lastPromptAt: entry.lastPromptAt,
     lastTurnEndedAt: entry.lastTurnEndedAt,
+    lastCacheTouchAt: entry.lastCacheTouchAt,
     turnCount: entry.turnCount,
     totalInputTokens: entry.totalInputTokens,
     totalOutputTokens: entry.totalOutputTokens,

@@ -271,6 +271,37 @@ describe('claudeStore', () => {
 
       localStorageMock.removeItem('quicksave:session-prefs');
     });
+
+    it('refreshes flat view to the new session\'s agent prefs (no model leak across agents)', () => {
+      // Regression: switching from a Codex session with gpt-5 selected to a
+      // Claude session must not leave selectedModel='gpt-5' lingering — the
+      // chat panel's model selector reads from useSessionConfig which falls
+      // back to the flat view when sessionConfigs is empty (e.g. session not
+      // yet resumed this daemon lifetime).
+      const { setSelectedAgent, setSelectedModel } = useClaudeStore.getState();
+      setSelectedAgent('claude-code');
+      setSelectedModel('claude-opus-4-7');
+      setSelectedAgent('codex');
+      setSelectedModel('gpt-5');
+
+      useClaudeStore.setState({
+        sessions: {
+          claudeSess: { sessionId: 'claudeSess', agent: 'claude-code', permissionMode: 'plan' } as any,
+          codexSess: { sessionId: 'codexSess', agent: 'codex', permissionMode: 'full-access' } as any,
+        },
+      });
+
+      // Open codex session — flat view tracks codex prefs.
+      useClaudeStore.getState().setActiveSession('codexSess');
+      expect(useClaudeStore.getState().selectedAgent).toBe('codex');
+      expect(useClaudeStore.getState().selectedModel).toBe('gpt-5');
+
+      // Open claude session — flat view must reset to claude prefs, not retain gpt-5.
+      useClaudeStore.getState().setActiveSession('claudeSess');
+      expect(useClaudeStore.getState().selectedAgent).toBe('claude-code');
+      expect(useClaudeStore.getState().selectedModel).toBe('claude-opus-4-7');
+      expect(useClaudeStore.getState().selectedPermissionMode).toBe('plan');
+    });
   });
 
   // ── per-agent pref isolation ───────────────────────────────────────────

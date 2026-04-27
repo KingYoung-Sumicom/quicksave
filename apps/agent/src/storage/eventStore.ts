@@ -21,7 +21,13 @@ export type EventType =
   | 'turn_ended'
   | 'permission_requested'
   | 'permission_resolved'
-  | 'session_cancelled';
+  | 'session_cancelled'
+  /** Anthropic prompt cache hit/write — recorded (throttled) so the PWA's
+   *  cache-TTL countdown survives a daemon restart. With the 1h extended-TTL
+   *  setting the cache window is long enough that a restart inside it is
+   *  realistic; without persistence we'd lose the anchor and over-count
+   *  remaining time off `lastTurnEndedAt`. */
+  | 'cache_touched';
 
 export interface EventRecord {
   id: number;
@@ -39,6 +45,9 @@ export interface SessionStats {
   totalCostUsd: number;
   lastPromptAt: number | null;
   lastTurnEndedAt: number | null;
+  /** MAX(time) of `cache_touched` events for this session. Most reliable anchor
+   *  for the prompt-cache countdown — see EventType comment. */
+  lastCacheTouchAt: number | null;
 }
 
 export interface LastTurnInfo {
@@ -74,6 +83,7 @@ export class EventStore {
   private insertStmt: Database.Statement;
   private statsStmt: Database.Statement;
   private lastPromptStmt: Database.Statement;
+  private lastCacheTouchStmt: Database.Statement;
   private sessionEventsStmt: Database.Statement;
   private lastTurnStmt: Database.Statement;
 
@@ -118,6 +128,13 @@ export class EventStore {
       `SELECT MAX(time) AS lastPromptAt FROM events WHERE session_id = ? AND type = 'prompt_sent'`
     );
 
+    // The countdown anchor falls back through `cache_touched → turn_ended →
+    // prompt_sent`, so a session with no `cache_touched` events (older
+    // sessions, non-Claude providers) silently drops to `lastTurnEndedAt`.
+    this.lastCacheTouchStmt = this.db.prepare(
+      `SELECT MAX(time) AS lastCacheTouchAt FROM events WHERE session_id = ? AND type = 'cache_touched'`
+    );
+
     this.sessionEventsStmt = this.db.prepare(
       `SELECT id, time, session_id, cwd, type, data FROM events WHERE session_id = ? ORDER BY time ASC, id ASC LIMIT ? OFFSET ?`
     );
@@ -148,6 +165,7 @@ export class EventStore {
       lastTurnEndedAt: number | null;
     };
     const promptRow = this.lastPromptStmt.get(sessionId) as { lastPromptAt: number | null };
+    const cacheRow = this.lastCacheTouchStmt.get(sessionId) as { lastCacheTouchAt: number | null };
     return {
       turnCount: turnRow.turnCount,
       totalInputTokens: turnRow.totalInputTokens,
@@ -155,6 +173,7 @@ export class EventStore {
       totalCostUsd: turnRow.totalCostUsd,
       lastPromptAt: promptRow.lastPromptAt,
       lastTurnEndedAt: turnRow.lastTurnEndedAt,
+      lastCacheTouchAt: cacheRow.lastCacheTouchAt,
     };
   }
 

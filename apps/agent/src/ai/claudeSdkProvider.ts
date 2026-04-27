@@ -13,6 +13,7 @@ import type { CardEvent, CardStreamEnd } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
 import { SANDBOX_MCP_NAME, SANDBOX_BASH_TOOL, buildSandboxMcpServerConfig } from './sandboxMcp.js';
 import { AsyncQueue } from './asyncQueue.js';
+import { decorateModelWithContextWindow } from './claudeCliProvider.js';
 import type {
   CodingAgentProvider,
   ProviderSession,
@@ -223,7 +224,15 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     };
 
     if ('model' in opts && opts.model) {
-      options.model = opts.model;
+      // Append `[1m]` when the user picked >200k so the SDK enables the
+      // `context-1m-2025-08-07` beta — same protocol the CLI uses, kept in
+      // sync via the shared helper. Haiku is left untouched.
+      const cw = (opts as StartSessionOpts | ResumeSessionOpts).contextWindow;
+      const model = decorateModelWithContextWindow(opts.model, cw) ?? opts.model;
+      options.model = model;
+      if (cw && cw > 200_000 && /\[1m\]$/i.test(model)) {
+        options.betas = [...(options.betas ?? []), 'context-1m-2025-08-07'];
+      }
     }
 
     if (permissionMode === 'bypassPermissions') {
@@ -396,7 +405,24 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
         return false;
       }
 
-      // Other system subtypes (status, session_state_changed, compact_boundary, etc.) — skip
+      if (subtype === 'compact_boundary') {
+        // Compaction happened mid-turn: emit a visible "Context compacted" card
+        // (matches Codex provider behavior) and refresh the cache anchor — the
+        // summarization API call wrote a new cache entry, so the 5-min TTL
+        // restarts now.
+        flushText();
+        const meta = (msg as any).compact_metadata;
+        const trigger = meta?.trigger as 'manual' | 'auto' | undefined;
+        const preTokens = typeof meta?.pre_tokens === 'number' ? meta.pre_tokens : undefined;
+        const text = preTokens !== undefined
+          ? `Context compacted (${trigger ?? 'manual'}, was ${preTokens.toLocaleString()} tokens)`
+          : 'Context compacted';
+        emitCard(cb.systemMessage(text, 'compacted'));
+        callbacks.onCacheTouch?.(sessionId);
+        return false;
+      }
+
+      // Other system subtypes (status, session_state_changed, etc.) — skip
       return false;
     }
 
@@ -422,6 +448,16 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     if (msg.type === 'assistant') {
       // Filter subagent messages by parent_tool_use_id
       if (msg.parent_tool_use_id) return false;
+
+      // Each assistant message corresponds to one Anthropic API response.
+      // Per Anthropic docs, the prompt cache TTL refreshes on every cache hit
+      // (read) or write, so each inner API call inside an autonomous turn
+      // resets the 5-min countdown. Notify the manager so the PWA's
+      // SessionStatsBar countdown stays accurate mid-turn.
+      const usage = (msg as any).message?.usage;
+      if (usage && ((usage.cache_creation_input_tokens ?? 0) > 0 || (usage.cache_read_input_tokens ?? 0) > 0)) {
+        callbacks.onCacheTouch?.(sessionId);
+      }
 
       flushText();
       const blocks = (msg as any).message?.content ?? [];
@@ -503,6 +539,9 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
       if (finalizeEvent) emitCard(finalizeEvent);
 
       const usage = (msg as any).usage;
+      if (usage && ((usage.cache_creation_input_tokens ?? 0) > 0 || (usage.cache_read_input_tokens ?? 0) > 0)) {
+        callbacks.onCacheTouch?.(sessionId);
+      }
       const errors = (msg as any).errors;
       const streamEnd: CardStreamEnd = {
         streamId,

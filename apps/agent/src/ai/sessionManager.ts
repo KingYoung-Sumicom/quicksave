@@ -29,6 +29,7 @@ import { StreamCardBuilder, buildCardsFromHistory, loadPersistedCards } from './
 import { SANDBOX_BASH_TOOL, UPDATE_SESSION_STATUS_TOOL } from './sandboxMcp.js';
 import { getSessionRegistry } from './sessionRegistry.js';
 import { getEventStore } from '../storage/eventStore.js';
+import { buildSystemPrompt } from './systemPrompt.js';
 import type {
   PermissionLevel,
   ProviderSession,
@@ -62,17 +63,6 @@ const AUTO_APPROVE: Record<PermissionLevel, Set<string>> = {
   plan:        new Set(['EnterPlanMode']),
   auto:        new Set(['TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent', 'EnterPlanMode']),
 };
-
-const DEFAULT_SYSTEM_PROMPT = [
-  'For non-destructive shell commands (ls, cat, find, git log, git status, git diff, etc.), prefer `mcp__quicksave-sandbox__SandboxBash` over Bash. SandboxBash runs in a sandboxed environment. Use Bash only for commands that modify state.',
-  // Ticket-model status updates. Sessions surface on the user\'s home screen as tickets; keep this metadata fresh.
-  'Treat each session as a ticket. The `mcp__quicksave-sandbox__UpdateSessionStatus` MCP tool is already loaded and available — call it directly, do NOT use ToolSearch. On your FIRST response in a new session, call it with at minimum `subject` and `stage` before doing other work. `subject` is what the user is trying to solve (e.g. "Fix auth token expiring early"), not what you are doing (not "Debugging jwt.ts"). On RESUME, if you do not see a prior `mcp__quicksave-sandbox__UpdateSessionStatus` tool_use in the conversation history, call it ONCE with no arguments as a dry-run to read the current stored status; if the returned subject is empty OR does not match what the user is now asking for, follow up with a real call to set/correct it.',
-  'Re-call `mcp__quicksave-sandbox__UpdateSessionStatus` whenever the stage changes (investigating → working → verifying → done), whenever work becomes blocked or unblocked (set `blocked` true/false without changing `stage`), or when a one-line `note` would give the user useful progress signal. `note` is an append-only event log — each call adds one entry — so for long-running tasks (research, large refactors) emit a fresh `note` every time you rule out an approach, cross a sub-goal, or hit a blocker. Do not skip `verifying` when you have tests/build/repro running. Do not declare `done` until the user\'s problem is fully resolved.',
-].join('\n\n');
-
-function buildSystemPrompt(extra?: string): string {
-  return extra ? `${DEFAULT_SYSTEM_PROMPT}\n\n${extra}` : DEFAULT_SYSTEM_PROMPT;
-}
 
 const SESSION_STAGES: readonly SessionStage[] = [
   'investigating',
@@ -134,9 +124,38 @@ export interface ManagedSession {
   cardBuilder: StreamCardBuilder | null;
   /** Model the current provider process was spawned with. Used to force cold resume when model changes. */
   spawnedModel?: string;
+  /** Auto-compact window the provider was spawned with (Claude only). Same
+   *  cold-resume trigger as `spawnedModel` — switching tier needs a respawn
+   *  because `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is read at process start. */
+  spawnedContextWindow?: number;
   /** Per-session UUID baked into the PermissionRequest hook command. The daemon
    *  toggles bypass by creating/removing the sentinel file at `bypassFlagPath(bypassToken)`. */
   bypassToken: string;
+  /** Epoch ms of the most recent SDK message whose `usage` reported a cache
+   *  hit or write. Provider fires `onCacheTouch` per inner API call; this is
+   *  the most reliable anchor for the PWA's prompt-cache countdown because
+   *  Anthropic refreshes the TTL on every cache use. Mirrored to the event
+   *  store as `cache_touched` (throttled — see CACHE_TOUCH_PERSIST_INTERVAL_MS)
+   *  so a daemon restart inside the cache window doesn't lose the anchor. */
+  lastCacheTouchAt?: number;
+  /** Last epoch ms persisted to the `cache_touched` event log. Used purely as
+   *  a throttle gate so the SDK's per-message cache notifications don't churn
+   *  SQLite during tool-heavy turns. */
+  lastPersistedCacheTouchAt?: number;
+}
+
+/** How often we record a `cache_touched` event to the event store. Anthropic's
+ *  cache TTL is 5min (default) or 1h (extended), so 30s persistence resolution
+ *  is more than enough; the live PWA countdown still ticks per second off the
+ *  in-memory `lastCacheTouchAt`. Lower values mean tighter post-restart accuracy
+ *  at the cost of more DB writes during long agentic loops. */
+const CACHE_TOUCH_PERSIST_INTERVAL_MS = 30_000;
+
+/** Max of optional numbers, dropping `undefined`. Returns `undefined` when both
+ *  inputs are undefined (or 0) so we don't render a stale "1970" anchor. */
+function maxDefined(a: number | undefined, b: number | undefined): number | undefined {
+  const v = Math.max(a ?? 0, b ?? 0);
+  return v > 0 ? v : undefined;
 }
 
 /** Absolute path to the per-session bypass sentinel file. Hook command checks
@@ -261,6 +280,11 @@ export class SessionManager extends EventEmitter {
       changed = true;
     }
 
+    if (prefs.contextWindow !== undefined && prefs.contextWindow !== this.preferences.contextWindow) {
+      next.contextWindow = prefs.contextWindow;
+      changed = true;
+    }
+
     if (changed) {
       this.preferences = next;
       this.emit('preferences-updated', this.preferences);
@@ -291,9 +315,20 @@ export class SessionManager extends EventEmitter {
     this.sessionConfigs.set(sessionId, next);
 
     if (key === 'model' && typeof value === 'string') {
-      this.setPreferences({ model: value });
+      // model/effort are session-scoped — do NOT mirror into the
+      // SessionManager's global `preferences` bag. Doing so used to broadcast
+      // them on `/preferences`, which the PWA writes into the *claude-code*
+      // agent prefs bucket — causing a Codex GPT pick to corrupt the user's
+      // saved Claude default and leak across sessions on resume.
+      // Codex app-server sessions pick the change up on the next turn/start
+      // via the runtime override pipeline. Claude's model is fixed per
+      // session; the value here is consumed by the next cold resume.
+      this.enqueueCodexOverrideIfApplicable(sessionId, { model: value });
+      this.persistRegistryField(sessionId, 'model', value);
     } else if (key === 'reasoningEffort' && (typeof value === 'string' || value === null)) {
-      this.setPreferences({ reasoningEffort: value as ClaudePreferences['reasoningEffort'] });
+      const effort = value === null ? null : (value as 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'none');
+      this.enqueueCodexOverrideIfApplicable(sessionId, { effort });
+      this.persistRegistryField(sessionId, 'reasoningEffort', value ?? undefined);
     } else if (key === 'permissionMode' && typeof value === 'string') {
       try {
         await this.setPermissionLevel(sessionId, value as PermissionLevel);
@@ -342,6 +377,8 @@ export class SessionManager extends EventEmitter {
     permissionMode?: string;
     sandboxed?: boolean;
     reasoningEffort?: string;
+    /** Auto-compact ceiling for Claude Code (200k / 500k / 1M). Codex ignores. */
+    contextWindow?: number;
   }): Promise<string> {
     // Accept both Claude-style modes and Codex preset ids; either can arrive
     // depending on which agent's picker the PWA showed. Codex preset ids
@@ -355,9 +392,9 @@ export class SessionManager extends EventEmitter {
       ? opts.permissionMode
       : 'acceptEdits') as PermissionLevel;
 
-    const sandboxed = !!opts.sandboxed;
-    const systemPrompt = buildSystemPrompt(opts.systemPrompt);
     const provider = this.getProvider(opts.agent);
+    const sandboxed = !!opts.sandboxed;
+    const systemPrompt = buildSystemPrompt(provider.id, opts.systemPrompt);
 
     // Mint a per-session bypass token up front. The CLI bakes its path into
     // the PermissionRequest hook at spawn time; later toggles just touch/rm
@@ -380,6 +417,7 @@ export class SessionManager extends EventEmitter {
         sandboxed,
         systemPrompt,
         reasoningEffort: opts.reasoningEffort,
+        contextWindow: opts.contextWindow,
         bypassFlagPath: bypassFlagPath(bypassToken),
       },
       cardBuilder,
@@ -400,14 +438,19 @@ export class SessionManager extends EventEmitter {
     if (sandboxed) this.sessionSandboxed.set(sessionId, true);
 
     const prevConfig = this.sessionConfigs.get(sessionId) ?? {};
+    // Resolve the model that was actually used for the spawn so the PWA can
+    // render the right model immediately (no waiting for onModelDetected).
+    // For codex we still record the user's requested model — the codex
+    // provider will overwrite via onModelDetected once it reports back.
+    const recordedModel = opts.model
+      ?? (typeof prevConfig.model === 'string' ? prevConfig.model : undefined)
+      ?? (provider.id !== 'codex' ? DEFAULT_MODEL : undefined);
     this.sessionConfigs.set(sessionId, {
       ...prevConfig,
       agent: provider.id,
-      ...((provider.id !== 'codex' && opts.model)
-        ? { model: opts.model }
-        : (provider.id !== 'codex' && !prevConfig.model)
-          ? { model: DEFAULT_MODEL }
-          : {}),
+      ...(recordedModel !== undefined ? { model: recordedModel } : {}),
+      ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
+      ...(opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {}),
       permissionMode: level,
       sandboxed,
     });
@@ -422,6 +465,7 @@ export class SessionManager extends EventEmitter {
       sandboxed,
       cardBuilder,
       spawnedModel: opts.model,
+      spawnedContextWindow: opts.contextWindow,
       bypassToken,
     };
     this.sessions.set(sessionId, managed);
@@ -440,18 +484,29 @@ export class SessionManager extends EventEmitter {
     const existing = this.sessions.get(opts.sessionId);
     const agentId = this.resolveAgentId(opts.sessionId, opts.cwd, opts.agent);
 
-    // Force cold resume if the user changed model since the session was spawned.
-    // The active provider process was started with `--model X`, so changing model
-    // requires killing it and respawning with the new flag.
-    const desiredModel = (this.sessionConfigs.get(opts.sessionId)?.model as string | undefined)
+    // Force cold resume if the user changed model OR context window since the
+    // session was spawned. The active provider process was started with
+    // `--model X` and the auto-compact env var; changing either requires
+    // killing it and respawning with the new value.
+    const sessionCfg = this.sessionConfigs.get(opts.sessionId);
+    const desiredModel = (sessionCfg?.model as string | undefined)
       ?? this.preferences.model;
+    const desiredContextWindow = (sessionCfg?.contextWindow as number | undefined)
+      ?? this.preferences.contextWindow;
     const modelChanged = existing?.providerSession?.alive
       && existing.spawnedModel !== undefined
       && desiredModel !== undefined
       && existing.spawnedModel !== desiredModel;
+    const contextWindowChanged = existing?.providerSession?.alive
+      && existing.spawnedContextWindow !== undefined
+      && desiredContextWindow !== undefined
+      && existing.spawnedContextWindow !== desiredContextWindow;
 
-    if (modelChanged) {
-      console.log(`[session-manager] model changed (${existing!.spawnedModel} → ${desiredModel}) — killing provider for cold resume session=${opts.sessionId.slice(0, 8)}`);
+    if (modelChanged || contextWindowChanged) {
+      const reason = modelChanged
+        ? `model changed (${existing!.spawnedModel} → ${desiredModel})`
+        : `context window changed (${existing!.spawnedContextWindow} → ${desiredContextWindow})`;
+      console.log(`[session-manager] ${reason} — killing provider for cold resume session=${opts.sessionId.slice(0, 8)}`);
       existing!.providerSession!.kill();
       existing!.streaming = false;
       existing!.providerSession = null;
@@ -476,7 +531,7 @@ export class SessionManager extends EventEmitter {
     // instead of cold-resuming. Saves a kill+spawn per follow-up prompt and
     // avoids the brief isActive=false window that caused the "ghost inactive"
     // badge flicker between turns.
-    if (existing?.providerSession?.alive && !modelChanged) {
+    if (existing?.providerSession?.alive && !modelChanged && !contextWindowChanged) {
       console.log(`[session-manager] hot resume (idle) session=${opts.sessionId.slice(0, 8)}`);
       const ps = existing.providerSession as any;
       if (existing.cardBuilder) {
@@ -486,6 +541,14 @@ export class SessionManager extends EventEmitter {
       }
       ps.currentStreamId = opts.streamId;
       ps.resultEmitted = false;
+      // Codex app-server session: queue the streamId so its sendUserMessage
+      // emits cards under the streamId the PWA is watching. Without this,
+      // the session mints a synthetic streamId and applySessionCards drops
+      // every event. Other providers ignore the field (CLI uses
+      // currentStreamId above, which it reads directly).
+      if (Array.isArray(ps.pendingStreamIds)) {
+        ps.pendingStreamIds.push(opts.streamId);
+      }
       existing.streaming = true;
       existing.providerSession.sendUserMessage(opts.prompt);
       this.emitSessionUpdate(opts.sessionId);
@@ -524,9 +587,18 @@ export class SessionManager extends EventEmitter {
       const callbacks = this.makeCallbacks(provider.id);
 
       const sessionConfig = this.sessionConfigs.get(opts.sessionId);
-      const resumeModel = (sessionConfig?.model as string | undefined) ?? this.preferences.model;
+      // Resolution order: in-memory session config > persisted registry entry
+      // > daemon's global preference fallback. Registry persistence is what
+      // makes per-session settings survive a daemon restart.
+      const resumeModel = (sessionConfig?.model as string | undefined)
+        ?? registryEntry?.model
+        ?? this.preferences.model;
       const resumeReasoningEffort = (sessionConfig?.reasoningEffort as string | undefined)
+        ?? registryEntry?.reasoningEffort
         ?? this.preferences.reasoningEffort;
+      const resumeContextWindow = (sessionConfig?.contextWindow as number | undefined)
+        ?? registryEntry?.contextWindow
+        ?? this.preferences.contextWindow;
 
       // Reuse the existing session's bypass token if present; otherwise mint a
       // fresh one (happens when cold-resuming a session we don't have in memory,
@@ -543,13 +615,36 @@ export class SessionManager extends EventEmitter {
           model: resumeModel,
           permissionLevel: level,
           sandboxed,
-          systemPrompt: buildSystemPrompt(),
+          systemPrompt: buildSystemPrompt(provider.id),
           reasoningEffort: resumeReasoningEffort,
+          contextWindow: resumeContextWindow,
           bypassFlagPath: bypassFlagPath(bypassToken),
         },
         cardBuilder,
         callbacks,
       );
+
+      // Seed sessionConfigs so /sessions/config snapshot reflects the
+      // settings the session was actually resumed with — important when the
+      // session was loaded purely from the registry (no prior in-memory
+      // config) and the PWA has nothing to show otherwise.
+      const resumedConfig: Record<string, ConfigValue> = {
+        ...(this.sessionConfigs.get(sessionId) ?? {}),
+        agent: provider.id,
+        permissionMode: level,
+        sandboxed,
+        ...(resumeModel !== undefined ? { model: resumeModel } : {}),
+        ...(resumeReasoningEffort !== undefined ? { reasoningEffort: resumeReasoningEffort } : {}),
+        ...(resumeContextWindow !== undefined ? { contextWindow: resumeContextWindow } : {}),
+      };
+      this.sessionConfigs.set(sessionId, resumedConfig);
+      // If the CLI forked to a new session id, also key the config under the
+      // requested id so older subscribers that haven't seen the rekey still
+      // resolve to the right config.
+      if (sessionId !== opts.sessionId) {
+        this.sessionConfigs.set(opts.sessionId, resumedConfig);
+      }
+      this.emit('session-config-updated', { sessionId, config: resumedConfig });
 
       // Update or create session entry
       this.sessionAgents.set(sessionId, provider.id);
@@ -559,6 +654,7 @@ export class SessionManager extends EventEmitter {
         existing.providerSession = providerSession;
         existing.streaming = true;
         existing.spawnedModel = resumeModel;
+        existing.spawnedContextWindow = resumeContextWindow;
         // Cold resume can fork a new CLI session_id. Rekey the map + side
         // maps to the new ID so emitSessionUpdate finds the entry and the
         // PWA sees isActive=true (the ghost-inactive bug otherwise).
@@ -581,6 +677,7 @@ export class SessionManager extends EventEmitter {
           sandboxed,
           cardBuilder,
           spawnedModel: resumeModel,
+          spawnedContextWindow: resumeContextWindow,
           bypassToken,
         };
         this.sessions.set(sessionId, managed);
@@ -686,6 +783,24 @@ export class SessionManager extends EventEmitter {
         this.emitSessionUpdate(sessionId);
         throw err;
       }
+    } else if (session?.alive && typeof session.enqueueRuntimeOverride === 'function') {
+      // Codex app-server: queue approvalPolicy/sandboxPolicy/approvalsReviewer
+      // changes that take effect on the next turn/start. We import the
+      // mapping lazily to avoid pulling the full app-server module into
+      // the SDK-only build path.
+      try {
+        const { permissionLevelToOverrides } = await import('./codexAppServer/permissionMapping.js');
+        const sandboxed = ps?.sandboxed ?? this.sessionSandboxed.get(sessionId) ?? true;
+        const cwd = ps?.cwd;
+        session.enqueueRuntimeOverride(
+          permissionLevelToOverrides(level, { sandboxed, cwd }),
+        );
+      } catch (err) {
+        if (ps) ps.permissionLevel = prevLevel;
+        this.sessionPermissions.set(sessionId, prevLevel);
+        this.emitSessionUpdate(sessionId);
+        throw err;
+      }
     }
 
     if (ps) {
@@ -703,6 +818,30 @@ export class SessionManager extends EventEmitter {
 
   getPermissionLevel(sessionId: string): PermissionLevel {
     return this.sessions.get(sessionId)?.permissionLevel ?? 'acceptEdits';
+  }
+
+  /**
+   * Forward a runtime override to a Codex `app-server` session if the
+   * active session has one. Detected by duck-typing the
+   * `enqueueRuntimeOverride` method (defined on
+   * `CodexAppServerProviderSession`). Other provider sessions silently
+   * ignore — Claude's mid-session model swap is impossible, and the
+   * SDK Codex provider doesn't have a runtime path.
+   */
+  private enqueueCodexOverrideIfApplicable(
+    sessionId: string,
+    patch: Record<string, unknown>,
+  ): void {
+    const ps = this.sessions.get(sessionId);
+    const session = ps?.providerSession as
+      | { enqueueRuntimeOverride?: (patch: Record<string, unknown>) => void }
+      | undefined;
+    if (!session || typeof session.enqueueRuntimeOverride !== 'function') return;
+    try {
+      session.enqueueRuntimeOverride(patch);
+    } catch {
+      // best-effort; the next turn/start surfaces any real failure
+    }
   }
 
   resolveUserInput(response: ClaudeUserInputResponsePayload): boolean {
@@ -816,6 +955,13 @@ export class SessionManager extends EventEmitter {
           ?? this.sessionPermissions.get(entry.sessionId),
         lastPromptAt: stats.lastPromptAt ?? undefined,
         lastTurnEndedAt: stats.lastTurnEndedAt ?? undefined,
+        // Prefer the in-memory anchor when available (it ticks per-message;
+        // the event-store value is throttled to once per 30s) and fall back
+        // to the persisted value for sessions that are registry-only.
+        lastCacheTouchAt: maxDefined(
+          this.sessions.get(entry.sessionId)?.lastCacheTouchAt,
+          stats.lastCacheTouchAt ?? undefined,
+        ),
         turnCount: stats.turnCount,
         totalInputTokens: stats.totalInputTokens,
         totalOutputTokens: stats.totalOutputTokens,
@@ -969,6 +1115,23 @@ export class SessionManager extends EventEmitter {
         if (toolName === UPDATE_SESSION_STATUS_TOOL) {
           this.updateSessionStatus(sessionId, toolInput);
         }
+      },
+      onCacheTouch: (sessionId: string) => {
+        const ps = this.sessions.get(sessionId);
+        if (!ps) return;
+        const now = Date.now();
+        ps.lastCacheTouchAt = now;
+        const lastPersisted = ps.lastPersistedCacheTouchAt ?? 0;
+        if (now - lastPersisted >= CACHE_TOUCH_PERSIST_INTERVAL_MS) {
+          getEventStore().record({
+            type: 'cache_touched',
+            sessionId,
+            cwd: ps.cwd,
+            time: now,
+          });
+          ps.lastPersistedCacheTouchAt = now;
+        }
+        this.emitSessionUpdate(sessionId);
       },
       onModelDetected: (model: string) => {
         console.log(`[session-manager] model detected: ${model} (agent=${agentId})`);
@@ -1263,6 +1426,7 @@ export class SessionManager extends EventEmitter {
       sandboxed: ps?.sandboxed ?? this.sessionSandboxed.get(sessionId) ?? false,
       lastPromptAt: stats.lastPromptAt ?? undefined,
       lastTurnEndedAt: stats.lastTurnEndedAt ?? undefined,
+      lastCacheTouchAt: maxDefined(ps?.lastCacheTouchAt, stats.lastCacheTouchAt ?? undefined),
       turnCount: stats.turnCount,
       totalInputTokens: stats.totalInputTokens,
       totalOutputTokens: stats.totalOutputTokens,

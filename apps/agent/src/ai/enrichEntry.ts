@@ -21,6 +21,7 @@ export function enrichEntry(entry: SessionRegistryEntry): BroadcastSessionEntry 
     ...entry,
     lastPromptAt: stats.lastPromptAt ?? undefined,
     lastTurnEndedAt: stats.lastTurnEndedAt ?? undefined,
+    lastCacheTouchAt: stats.lastCacheTouchAt ?? undefined,
     turnCount: stats.turnCount || undefined,
     totalInputTokens: stats.totalInputTokens || undefined,
     totalOutputTokens: stats.totalOutputTokens || undefined,

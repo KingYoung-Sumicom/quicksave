@@ -38,8 +38,8 @@ vi.mock('../ai/claudeCodeProvider.js', () => ({
     })),
   })),
 }));
-vi.mock('../ai/codexSdkProvider.js', () => ({
-  CodexSdkProvider: vi.fn().mockImplementation(() => ({
+vi.mock('../ai/codexAppServer/index.js', () => ({
+  CodexAppServerProvider: vi.fn().mockImplementation(() => ({
     id: 'codex' as const,
     historyMode: 'memory' as const,
     startSession: vi.fn().mockImplementation(async () => ({
@@ -50,6 +50,16 @@ vi.mock('../ai/codexSdkProvider.js', () => ({
       sessionId: opts.sessionId ?? `mock-codex-${Math.random().toString(36).slice(2, 10)}`,
       session: makeMockSession(),
     })),
+  })),
+  // Stub spawnAppServer too — MessageHandler.fetchCodexModels now calls it
+  // at boot via primeCodexModelsCache. The edge tests don't care about the
+  // codex model list; just return a minimal handle that fails model/list
+  // so the cache stays empty.
+  spawnAppServer: vi.fn(async () => ({
+    rpc: {
+      request: vi.fn(async () => { throw new Error('mocked: no model/list in edge tests'); }),
+    },
+    shutdown: vi.fn(async () => { /* noop */ }),
   })),
 }));
 

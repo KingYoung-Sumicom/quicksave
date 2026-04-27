@@ -73,7 +73,20 @@ describe('EventStore', () => {
         totalCostUsd: 0,
         lastPromptAt: null,
         lastTurnEndedAt: null,
+        lastCacheTouchAt: null,
       });
+    });
+
+    it('returns lastCacheTouchAt as the max time of cache_touched events', () => {
+      store.record({ type: 'cache_touched', sessionId: 's1', time: 1000 });
+      store.record({ type: 'cache_touched', sessionId: 's1', time: 5000 });
+      store.record({ type: 'cache_touched', sessionId: 's1', time: 3000 });
+      // Other event types must not affect the cache anchor.
+      store.record({ type: 'prompt_sent', sessionId: 's1', time: 9000 });
+      store.record({ type: 'cache_touched', sessionId: 's2', time: 9999 });
+
+      const stats = store.getSessionStats('s1');
+      expect(stats.lastCacheTouchAt).toBe(5000);
     });
 
     it('aggregates turn_ended events into cumulative totals', () => {

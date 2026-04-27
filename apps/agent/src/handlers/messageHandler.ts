@@ -95,6 +95,7 @@ import {
   SessionDeleteHistoryResponsePayload,
   SessionListArchivedRequestPayload,
   SessionListArchivedResponsePayload,
+  AgentId,
   CodexModelInfo,
   CodexListModelsResponsePayload,
   CodexLoginStartResponsePayload,
@@ -132,7 +133,7 @@ import { CommitSummaryCliService, CommitSummaryCliError } from '../ai/commitSumm
 import { CommitSummaryStateStore } from '../ai/commitSummaryStore.js';
 import { SessionManager } from '../ai/sessionManager.js';
 import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
-import { CodexSdkProvider } from '../ai/codexSdkProvider.js';
+import { CodexAppServerProvider } from '../ai/codexAppServer/index.js';
 import { CodexLoginManager } from '../ai/codexLogin.js';
 import { getTerminalManager } from '../terminal/terminalManager.js';
 import { getFileBrowser } from '../files/fileBrowser.js';
@@ -140,29 +141,22 @@ import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { enrichEntry } from '../ai/enrichEntry.js';
 import { getEventStore } from '../storage/eventStore.js';
 import { readdir, stat, readFile } from 'fs/promises';
-import { existsSync, watch as fsWatch, type FSWatcher } from 'fs';
-import { spawn } from 'child_process';
+import { existsSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { homedir } from 'os';
+import { spawnAppServer } from '../ai/codexAppServer/index.js';
+import type { Model as CodexAppServerModel } from '../ai/codexAppServer/schema/generated/v2/Model.js';
 
 const VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
-// Local file read is essentially free + fs.watch invalidates on cache writes.
-// 5 min is just a safety net for missed-event cases (NFS, container fs, etc.).
-const CODEX_MODELS_FILE_TTL_MS = 5 * 60 * 1000;
-// `codex debug models` spawns the CLI (~1s) but is the only source that
-// includes models the user is newly enrolled in (e.g. gpt-5.5) before the
-// cache file catches up. Same TTL as file because the watcher invalidates it.
-const CODEX_MODELS_CLI_TTL_MS = 5 * 60 * 1000;
-// API path hits OpenAI; keep its own longer TTL to avoid hammering the
-// endpoint when the user has no local Codex CLI cache file at all.
-const CODEX_MODELS_API_TTL_MS = 60 * 60 * 1000;
-// Subprocess timeout for `codex debug models` — the CLI normally finishes
-// well under a second; 8s is a generous bound for slow CI / cold starts.
-const CODEX_DEBUG_MODELS_TIMEOUT_MS = 8 * 1000;
-// fs.watch on ~/.codex fires multiple events per write (rename + change on
-// many filesystems). Coalesce into one refresh per burst.
-const CODEX_MODELS_WATCH_DEBOUNCE_MS = 500;
+// model/list reflects the current authenticated account's available models.
+// 30 min strikes a balance: long enough to avoid spawning a fresh app-server
+// every PWA reload; short enough that plan upgrades / model rollouts surface
+// within the same session day. Force-refreshes still bypass the TTL.
+const CODEX_MODELS_TTL_MS = 30 * 60 * 1000;
 
+/** Shallow equality on a model list. Used to suppress no-op
+ *  `/codex/models` broadcasts after a TTL refresh that returned the
+ *  same list. */
 function codexModelListsEqual(
   a: CodexModelInfo[] | undefined,
   b: CodexModelInfo[] | undefined,
@@ -174,9 +168,8 @@ function codexModelListsEqual(
     const ai = a[i], bi = b[i];
     if (ai.id !== bi.id || ai.name !== bi.name) return false;
     if (ai.defaultReasoningEffort !== bi.defaultReasoningEffort) return false;
-    if (ai.contextWindow !== bi.contextWindow) return false;
-    const aE = ai.reasoningEfforts;
-    const bE = bi.reasoningEfforts;
+    if (ai.isDefault !== bi.isDefault) return false;
+    const aE = ai.reasoningEfforts, bE = bi.reasoningEfforts;
     if (aE !== bE) {
       if (!aE || !bE) return false;
       if (aE.length !== bE.length) return false;
@@ -184,6 +177,23 @@ function codexModelListsEqual(
     }
   }
   return true;
+}
+
+/** Map a single `model/list` entry to the lean `CodexModelInfo` the PWA
+ *  picker consumes. Hidden models (e.g. `codex-auto-review`) are caller-
+ *  filtered before this runs. */
+function projectAppServerModel(m: CodexAppServerModel): CodexModelInfo {
+  const reasoningEfforts: string[] = [];
+  for (const opt of m.supportedReasoningEfforts) {
+    if (typeof opt.reasoningEffort === 'string') reasoningEfforts.push(opt.reasoningEffort);
+  }
+  return {
+    id: m.id,
+    name: m.displayName || m.id,
+    reasoningEfforts: reasoningEfforts.length > 0 ? reasoningEfforts : undefined,
+    defaultReasoningEffort: m.defaultReasoningEffort,
+    isDefault: m.isDefault || undefined,
+  };
 }
 
 export class MessageHandler {
@@ -203,19 +213,14 @@ export class MessageHandler {
   private pushClient: PushClient | null = null;
   private latestVersionCache: { version: string; checkedAt: number } | null = null;
   private versionCheckInFlight: Promise<string | null> | null = null;
-  private codexModelsCache: { models: CodexModelInfo[]; checkedAt: number; source: 'cli' | 'file' | 'api' } | null = null;
+  private codexModelsCache: { models: CodexModelInfo[]; checkedAt: number } | null = null;
   private codexModelsCheckInFlight: Promise<CodexModelInfo[] | null> | null = null;
   private codexModelsUpdateHandler: ((models: CodexModelInfo[]) => void) | null = null;
-  private codexModelsWatcher: FSWatcher | null = null;
-  private codexModelsWatchDebounce: ReturnType<typeof setTimeout> | null = null;
-  /** Override for tests; defaults to `~/.codex`. */
+  /** Override for tests; defaults to `~/.codex`. Still consulted by
+   *  `getCodexLoginStatus` to read `auth.json`; no longer used for model
+   *  discovery (that flows through `model/list` against a short-lived
+   *  app-server instance). */
   private readonly codexCacheDir: string;
-  /**
-   * Path to the `codex` binary, or `null` to disable the `codex debug models`
-   * source (used by tests so they don't pick up the dev machine's real CLI).
-   * Defaults to `'codex'` (resolved via PATH).
-   */
-  private readonly codexBin: string | null;
   private codexLoginManager = new CodexLoginManager();
   onHistoryUpdated?: (cwd: string, entry: SessionRegistryEntry, action: 'upsert' | 'delete') => void;
 
@@ -228,9 +233,8 @@ export class MessageHandler {
     productionBuild = false,
     options?: {
       codexCacheDir?: string;
-      codexBin?: string | null;
       /**
-       * Override the default `[ClaudeCodeProvider, CodexSdkProvider]` lineup.
+       * Override the default `[ClaudeCodeProvider, CodexAppServerProvider]` lineup.
        * Used by the e2e harness to inject a `StubProvider` that doesn't
        * spawn real CLIs. When provided, the lineup is wrapped in a fresh
        * `SessionManager` exactly the same way the daemon does in `run.ts`.
@@ -246,15 +250,8 @@ export class MessageHandler {
     this.defaultRepoPath = repos.length > 0 ? repos[0].path : '';
     this.productionBuild = productionBuild;
     this.claudeService = options?.sessionManager
-      ?? new SessionManager([new ClaudeCodeProvider(), new CodexSdkProvider()]);
+      ?? new SessionManager([new ClaudeCodeProvider(), new CodexAppServerProvider()]);
     this.codexCacheDir = options?.codexCacheDir ?? join(homedir(), '.codex');
-    // Default to spawning the CLI in production. Under vitest, default to
-    // disabled so tests don't pick up the dev machine's real `codex` binary
-    // (which would race with the explicitly-mocked cache file). Tests can
-    // still exercise the CLI path by passing `codexBin: '<path>'` explicitly.
-    this.codexBin = options?.codexBin === undefined
-      ? (process.env.VITEST ? null : 'codex')
-      : options.codexBin;
 
     // Load explicit coding paths only (repos and coding paths are independent)
     if (codingPaths) {
@@ -301,30 +298,24 @@ export class MessageHandler {
   }
 
   /**
-   * Resolve the Codex model list for the current user.
+   * Resolve the Codex model list for the current authenticated account.
    *
-   * Priority:
-   *   1. `codex debug models` — the only source that includes models the
-   *      user is newly enrolled in but the cache file hasn't picked up yet
-   *      (e.g. gpt-5.5 right after rollout). Spawns the CLI; ~1s, so we
-   *      cache for 5 min and invalidate via the cache-file watcher.
-   *   2. `~/.codex/models_cache.json` — fallback when the CLI binary isn't
-   *      on PATH or the spawn fails. Same shape as (1), just stale-prone.
-   *   3. `OPENAI_API_KEY` env var + OpenAI `/v1/models` — last resort for
-   *      API-key users without a local Codex CLI. Held to a 1h sub-TTL so
-   *      we don't hammer OpenAI when the local sources are absent.
+   * Source: `model/list` against a short-lived `codex app-server` instance.
+   * The app-server already enforces account-scoped filtering — what we get
+   * back is exactly the list this user can actually invoke (e.g. ChatGPT
+   * users won't see `claude-*` models, API-key users see the API-tier list).
+   * That's what makes this source authoritative: previously we fell through
+   * three sources (`codex debug models` / on-disk cache file / OpenAI
+   * `/v1/models`) none of which knew the caller's plan, so the picker
+   * surfaced models that would later 400 with `BadRequest`.
    *
-   * Returns `null` when no source is available. Concurrent calls are
-   * deduped via `codexModelsCheckInFlight`.
+   * Returns `null` if the spawn fails or no models come back. Concurrent
+   * calls dedup via `codexModelsCheckInFlight`. Cache TTL is single-tier
+   * (30 min) — force-refresh bypasses it.
    */
   private async fetchCodexModels(force = false): Promise<CodexModelInfo[] | null> {
     if (!force && this.codexModelsCache) {
-      const ttl = this.codexModelsCache.source === 'cli'
-        ? CODEX_MODELS_CLI_TTL_MS
-        : this.codexModelsCache.source === 'file'
-          ? CODEX_MODELS_FILE_TTL_MS
-          : CODEX_MODELS_API_TTL_MS;
-      if (Date.now() - this.codexModelsCache.checkedAt < ttl) {
+      if (Date.now() - this.codexModelsCache.checkedAt < CODEX_MODELS_TTL_MS) {
         return this.codexModelsCache.models;
       }
     }
@@ -332,25 +323,19 @@ export class MessageHandler {
     if (this.codexModelsCheckInFlight) return this.codexModelsCheckInFlight;
 
     this.codexModelsCheckInFlight = (async () => {
+      const before = this.codexModelsCache?.models;
       try {
-        const fromCli = await this.fetchCodexModelsFromDebugCli();
-        if (fromCli && fromCli.length > 0) {
-          this.codexModelsCache = { models: fromCli, checkedAt: Date.now(), source: 'cli' };
-          return fromCli;
+        const fromAppServer = await this.fetchCodexModelsFromAppServer();
+        if (fromAppServer && fromAppServer.length > 0) {
+          this.codexModelsCache = { models: fromAppServer, checkedAt: Date.now() };
+          // Broadcast to bus subscribers when the list actually changes.
+          // Same dedup behavior as the previous file-watcher path so a TTL
+          // refresh that comes back with the same models is silent.
+          if (!codexModelListsEqual(before, fromAppServer)) {
+            this.codexModelsUpdateHandler?.(fromAppServer);
+          }
+          return fromAppServer;
         }
-
-        const fromCache = await this.readCodexModelsCacheFile();
-        if (fromCache && fromCache.length > 0) {
-          this.codexModelsCache = { models: fromCache, checkedAt: Date.now(), source: 'file' };
-          return fromCache;
-        }
-
-        const fromApi = await this.fetchCodexModelsFromOpenAI();
-        if (fromApi && fromApi.length > 0) {
-          this.codexModelsCache = { models: fromApi, checkedAt: Date.now(), source: 'api' };
-          return fromApi;
-        }
-
         return null;
       } catch {
         return null;
@@ -360,6 +345,58 @@ export class MessageHandler {
     })();
 
     return this.codexModelsCheckInFlight;
+  }
+
+  /**
+   * Spawn a short-lived `codex app-server`, run `initialize` + `model/list`,
+   * shut down. Filters out `hidden: true` models (e.g. `codex-auto-review`)
+   * so they don't leak into the picker. Returns `null` on any failure —
+   * caller treats null as "no source available, picker falls back to
+   * hard-coded defaults".
+   */
+  private async fetchCodexModelsFromAppServer(): Promise<CodexModelInfo[] | null> {
+    let handle: Awaited<ReturnType<typeof spawnAppServer>> | null = null;
+    try {
+      handle = await spawnAppServer({
+        clientInfo: { name: 'quicksave-agent', title: 'Quicksave Agent', version: '0.0.0' },
+        capabilities: { experimentalApi: false, optOutNotificationMethods: null },
+      });
+      const res = await handle.rpc.request<{ data: CodexAppServerModel[]; nextCursor: string | null }>(
+        'model/list',
+        { cursor: null, limit: null, includeHidden: false },
+      );
+      return res.data
+        .filter((m) => !m.hidden)
+        .map((m) => projectAppServerModel(m));
+    } catch (err) {
+      console.warn('[codex-models] model/list failed:', err instanceof Error ? err.message : err);
+      return null;
+    } finally {
+      if (handle) {
+        try { await handle.shutdown(); } catch { /* best-effort */ }
+      }
+    }
+  }
+
+  /**
+   * Resolve a user-provided model into one the current account actually
+   * supports. If the cache is empty (model/list never succeeded) the
+   * requested value passes through — we'd rather try and let codex 400 than
+   * silently swallow a model the user explicitly chose. If the cache exists
+   * but the requested model isn't in it, we fall back to whichever model
+   * `model/list` flagged as `isDefault` (e.g. ChatGPT account picks `gpt-5.5`).
+   * Non-codex agents are pass-through; their model space is independent.
+   */
+  validateCodexModel(requested: string | undefined, agentId: AgentId): string | undefined {
+    if (agentId !== 'codex') return requested;
+    const cached = this.codexModelsCache?.models;
+    if (!cached || cached.length === 0) return requested;
+    if (requested && cached.some((m) => m.id === requested)) return requested;
+    const fallback = cached.find((m) => m.isDefault) ?? cached[0];
+    if (requested && fallback?.id !== requested) {
+      console.warn(`[codex-models] requested model "${requested}" not in account list; coercing to "${fallback?.id}"`);
+    }
+    return fallback?.id ?? requested;
   }
 
   /** Snapshot accessor for the bus `/codex/models` subscription. */
@@ -376,196 +413,20 @@ export class MessageHandler {
   }
 
   /**
-   * Watch the Codex CLI cache directory and refresh the in-memory model list
-   * the moment the CLI rewrites it (typically after a `codex` startup or
-   * upgrade). Tolerant of a missing `~/.codex` directory — falls back to TTL
-   * alone if the watch can't be set up. Idempotent.
+   * Prime the in-memory cache at daemon boot. No-op if already cached.
+   * Replaces the previous file-watcher path: there's no on-disk file we
+   * watch any more, so the only refresh trigger is TTL expiry (30 min)
+   * or an explicit `force=true` call. The eager prime keeps the first
+   * `/codex/models` subscriber from getting an empty snapshot.
    */
-  startCodexModelsWatcher(): void {
-    if (this.codexModelsWatcher) return;
-    // Prime the in-memory cache so the first /codex/models subscriber gets a
-    // populated snapshot instead of an empty one (the handshake also fires
-    // this; dedup via codexModelsCheckInFlight makes it cheap).
+  primeCodexModelsCache(): void {
     void this.fetchCodexModels().catch(() => {});
-    try {
-      // Watch the directory rather than the file directly so we react to
-      // first-time creation too. Many editors / cli tools rewrite atomically
-      // (write tmp + rename), which fires events for the directory, not the
-      // old file inode.
-      this.codexModelsWatcher = fsWatch(this.codexCacheDir, (_event, filename) => {
-        if (filename && filename !== 'models_cache.json') return;
-        this.scheduleCodexModelsRefresh();
-      });
-    } catch {
-      // Directory missing or unwatchable — quietly skip; the 5min TTL still
-      // catches the next refresh once a request comes in.
-    }
-  }
-
-  /** Tear down the fs.watch handle (test cleanup). */
-  stopCodexModelsWatcher(): void {
-    if (this.codexModelsWatchDebounce) {
-      clearTimeout(this.codexModelsWatchDebounce);
-      this.codexModelsWatchDebounce = null;
-    }
-    if (this.codexModelsWatcher) {
-      this.codexModelsWatcher.close();
-      this.codexModelsWatcher = null;
-    }
-  }
-
-  private scheduleCodexModelsRefresh(): void {
-    if (this.codexModelsWatchDebounce) clearTimeout(this.codexModelsWatchDebounce);
-    this.codexModelsWatchDebounce = setTimeout(() => {
-      this.codexModelsWatchDebounce = null;
-      void this.refreshCodexModelsAndPublish();
-    }, CODEX_MODELS_WATCH_DEBOUNCE_MS);
-  }
-
-  private async refreshCodexModelsAndPublish(): Promise<void> {
-    const before = this.codexModelsCache?.models;
-    const after = await this.fetchCodexModels(/* force */ true);
-    if (!after) return;
-    if (codexModelListsEqual(before, after)) return;
-    this.codexModelsUpdateHandler?.(after);
-  }
-
-  /**
-   * Convert a raw Codex model entry to the lean `CodexModelInfo` shape the
-   * PWA consumes. Shared between the CLI and cache-file sources because they
-   * use the same JSON schema.
-   */
-  private projectCodexModel(raw: {
-    slug?: string;
-    display_name?: string;
-    visibility?: string;
-    supported_in_api?: boolean;
-    default_reasoning_level?: string;
-    supported_reasoning_levels?: Array<{ effort?: string }>;
-    context_window?: number;
-  }): CodexModelInfo | null {
-    if (!raw.slug || raw.visibility !== 'list' || raw.supported_in_api === false) return null;
-    const reasoningEfforts = Array.isArray(raw.supported_reasoning_levels)
-      ? raw.supported_reasoning_levels
-          .map((l) => l?.effort)
-          .filter((e): e is string => typeof e === 'string')
-      : undefined;
-    return {
-      id: raw.slug,
-      name: raw.display_name || raw.slug,
-      reasoningEfforts: reasoningEfforts && reasoningEfforts.length > 0 ? reasoningEfforts : undefined,
-      defaultReasoningEffort: typeof raw.default_reasoning_level === 'string'
-        ? raw.default_reasoning_level
-        : undefined,
-      contextWindow: typeof raw.context_window === 'number' ? raw.context_window : undefined,
-    };
-  }
-
-  /**
-   * Spawn `codex debug models` and parse its JSON output. Same shape as the
-   * cache file (`{ models: [{ slug, display_name, visibility, supported_in_api,
-   * default_reasoning_level, supported_reasoning_levels, context_window, ... }] }`)
-   * but reflects whatever the CLI itself sees right now — including newly
-   * enrolled models that haven't reached the on-disk cache yet.
-   *
-   * Returns `null` on spawn error, non-zero exit, parse failure, or when
-   * `codexBin` was set to `null` (test mode).
-   */
-  private async fetchCodexModelsFromDebugCli(): Promise<CodexModelInfo[] | null> {
-    if (this.codexBin === null) return null;
-    const bin = this.codexBin;
-    return new Promise((resolve) => {
-      let stdout = '';
-      let settled = false;
-      const finish = (value: CodexModelInfo[] | null) => {
-        if (settled) return;
-        settled = true;
-        resolve(value);
-      };
-
-      let cp;
-      try {
-        cp = spawn(bin, ['debug', 'models'], { stdio: ['ignore', 'pipe', 'pipe'] });
-      } catch {
-        finish(null);
-        return;
-      }
-
-      const timer = setTimeout(() => {
-        try { cp.kill('SIGTERM'); } catch { /* already exited */ }
-        finish(null);
-      }, CODEX_DEBUG_MODELS_TIMEOUT_MS);
-
-      cp.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-      cp.stderr.on('data', () => { /* swallow — diagnostics only */ });
-      cp.on('error', () => { clearTimeout(timer); finish(null); });
-      cp.on('close', (code) => {
-        clearTimeout(timer);
-        if (code !== 0) return finish(null);
-        try {
-          const parsed = JSON.parse(stdout) as {
-            models?: Array<Parameters<MessageHandler['projectCodexModel']>[0]>;
-          };
-          if (!Array.isArray(parsed.models)) return finish(null);
-          const models = parsed.models
-            .map((m) => this.projectCodexModel(m))
-            .filter((m): m is CodexModelInfo => m !== null);
-          finish(models);
-        } catch {
-          finish(null);
-        }
-      });
-    });
-  }
-
-  /**
-   * Read models from the Codex CLI's local cache. File shape (as of codex
-   * CLI v0.125): `{ models: [{ slug, display_name, visibility, supported_in_api, ... }] }`.
-   * We surface only entries that are listable and API-supported, so hidden
-   * internal models (e.g. `codex-auto-review`) don't leak into the picker.
-   */
-  private async readCodexModelsCacheFile(): Promise<CodexModelInfo[] | null> {
-    try {
-      const cachePath = join(this.codexCacheDir, 'models_cache.json');
-      const raw = await readFile(cachePath, 'utf-8');
-      const parsed = JSON.parse(raw) as {
-        models?: Array<Parameters<MessageHandler['projectCodexModel']>[0]>;
-      };
-      if (!Array.isArray(parsed.models)) return null;
-      return parsed.models
-        .map((m) => this.projectCodexModel(m))
-        .filter((m): m is CodexModelInfo => m !== null);
-    } catch {
-      return null;
-    }
-  }
-
-  /** Fallback for API-key users (no ChatGPT OAuth). */
-  private async fetchCodexModelsFromOpenAI(): Promise<CodexModelInfo[] | null> {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return null;
-    try {
-      const res = await fetch('https://api.openai.com/v1/models', {
-        headers: { Authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!res.ok) return null;
-      const data = await res.json() as { data?: Array<{ id: string }> };
-      if (!Array.isArray(data.data)) return null;
-      return data.data
-        .filter((m) => /^(gpt-|o\d)/.test(m.id))
-        .map((m) => ({ id: m.id, name: m.id }))
-        .sort((a, b) => b.id.localeCompare(a.id));
-    } catch {
-      return null;
-    }
   }
 
   /**
    * Best-effort check for whether the local Codex CLI has valid auth.
-   * Matches how `fetchCodexModels` resolves credentials, so the PWA can
-   * prompt for login when this returns false. Does not validate the
-   * token — just checks that a credential source exists.
+   * The PWA uses this to prompt for login when it returns false. Does not
+   * validate the token — just checks that a credential source exists.
    */
   private async getCodexLoginStatus(): Promise<{ loggedIn: boolean; method?: 'chatgpt' | 'api-key' }> {
     if (process.env.OPENAI_API_KEY) return { loggedIn: true, method: 'api-key' };
@@ -651,7 +512,6 @@ export class MessageHandler {
   }
 
   cleanup(): void {
-    this.stopCodexModelsWatcher();
     this.claudeService.cleanup();
   }
 
@@ -2038,12 +1898,18 @@ export class MessageHandler {
     message: Message<ClaudeStartRequestPayload>,
     peerAddress: string,
   ): Promise<Message<ClaudeStartResponsePayload>> {
-    const { prompt, cwd: payloadCwd, agent, allowedTools, systemPrompt, model, permissionMode, sandboxed, reasoningEffort } = message.payload;
+    const { prompt, cwd: payloadCwd, agent, allowedTools, systemPrompt, model, permissionMode, sandboxed, reasoningEffort, contextWindow } = message.payload;
     const legacyProvider = (message.payload as { provider?: 'claude-cli' | 'claude-sdk' | 'codex-mcp' }).provider;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const streamId = generateMessageId();
     const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
-    console.log(`[agent:start] agent=${resolvedAgent ?? 'default'} model=${model ?? 'default'} cwd=${cwd} prompt=${prompt.slice(0, 80)}${sandboxed ? ' [sandboxed]' : ''}`);
+    // Coerce a Codex model the user's account doesn't actually support
+    // (e.g. they kept `claude-opus-4-7` selected before switching to a
+    // ChatGPT-account Codex session). Without this, codex would 400 on
+    // turn/start with `BadRequest`. Pass-through for non-codex agents and
+    // when the cache hasn't loaded yet.
+    const validatedModel = this.validateCodexModel(model, resolvedAgent ?? 'claude-code');
+    console.log(`[agent:start] agent=${resolvedAgent ?? 'default'} model=${validatedModel ?? 'default'}${validatedModel !== model ? ` (coerced from ${model})` : ''} cwd=${cwd} prompt=${prompt.slice(0, 80)}${sandboxed ? ' [sandboxed]' : ''}`);
 
     try {
       const sessionId = await this.claudeService.startSession({
@@ -2053,10 +1919,11 @@ export class MessageHandler {
         agent: resolvedAgent,
         allowedTools,
         systemPrompt,
-        model,
+        model: validatedModel,
         permissionMode,
         sandboxed,
         reasoningEffort,
+        contextWindow,
       });
 
       console.log(`[agent:start] session created: ${sessionId} agent=${resolvedAgent ?? 'default'}`);
@@ -2083,6 +1950,9 @@ export class MessageHandler {
         lastAccessedAt: now,
         permissionMode,
         sandboxed: sandboxed || undefined,
+        model,
+        reasoningEffort,
+        contextWindow,
       });
       this.onHistoryUpdated?.(cwd, registry.getEntry(cwd, sessionId)!, 'upsert');
 
@@ -2303,7 +2173,21 @@ export class MessageHandler {
   }
 
   private async handleSetSessionConfig(message: Message<SessionSetConfigRequestPayload>): Promise<Message<SessionSetConfigResponsePayload>> {
-    const { sessionId, key, value } = message.payload;
+    const { sessionId, key } = message.payload;
+    let { value } = message.payload;
+    // Same coercion as handleClaudeStart: if the PWA pushed a model the
+    // current Codex account can't run, swap it for the account default
+    // before the override hits the next turn/start. The `agent` lookup
+    // tolerates inactive sessions (returns the registry-stored agent or
+    // falls back to the default provider).
+    if (key === 'model' && typeof value === 'string') {
+      const agentId = this.claudeService.getSessionAgent(sessionId);
+      const coerced = this.validateCodexModel(value, agentId);
+      if (coerced !== value) {
+        console.log(`[agent:set-config] coerced model "${value}" → "${coerced}" for session=${sessionId.slice(0, 8)}`);
+        value = coerced ?? value;
+      }
+    }
     console.log(`[agent:set-config] session=${sessionId.slice(0, 8)} ${key}=${String(value)}`);
     try {
       const config = await this.claudeService.setSessionConfig(sessionId, key, value);

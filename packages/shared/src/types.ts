@@ -257,6 +257,10 @@ export interface CodingPath {
 export interface ClaudePreferences {
   model: string;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
+  /** Auto-compact ceiling for Claude Code sessions (200k / 500k / 1M).
+   *  Maps to the CLI's `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var; values
+   *  above 200k also enable the `context-1m-2025-08-07` beta header. */
+  contextWindow?: number;
 }
 
 export interface ClaudeSetPreferencesRequestPayload {
@@ -413,6 +417,14 @@ export interface SessionRegistryEntry {
   // Session settings — persisted so they survive daemon restarts
   permissionMode?: string;
   sandboxed?: boolean;
+  /** Model the session was last started/resumed with. For codex this is the
+   *  user-requested model id; the actual running model is reported back via
+   *  the provider's session-started event. */
+  model?: string;
+  /** Reasoning effort the session was last started/resumed with (Claude or codex). */
+  reasoningEffort?: string;
+  /** Auto-compact ceiling the session was last started/resumed with (Claude only). */
+  contextWindow?: number;
 }
 
 export interface SessionUpdateHistoryRequestPayload {
@@ -466,6 +478,9 @@ export interface BroadcastSessionEntry extends SessionRegistryEntry {
   lastTurnCacheCreationTokens?: number;
   lastTurnCacheReadTokens?: number;
   lastTurnContextUsage?: ContextUsageBreakdown;
+  /** Most reliable cache-TTL countdown anchor. See `ClaudeSessionSummary.lastCacheTouchAt`.
+   * Populated only for sessions live in-memory; inactive sessions fall back to `lastTurnEndedAt`. */
+  lastCacheTouchAt?: number;
 }
 
 export interface SessionHistoryUpdatedPayload {
@@ -552,15 +567,20 @@ export interface CodexModelInfo {
   id: string;
   name: string;
   /** Reasoning levels this model accepts, e.g. ['low', 'medium', 'high', 'xhigh'].
-   *  Sourced from the Codex `supported_reasoning_levels` per-model list — current
-   *  models drop `minimal` even though the SDK enum permits it. */
+   *  Sourced from `model/list` `supportedReasoningEfforts` — the canonical
+   *  per-account list. */
   reasoningEfforts?: string[];
   /** Per-model default reasoning level (e.g. 'medium'). The PWA seeds the
    *  reasoning chip from this when no per-session override is set. */
   defaultReasoningEffort?: string;
-  /** Token capacity reported by Codex (`context_window`). The PWA uses this
-   *  for the context-usage badge instead of the hardcoded 200k Claude default. */
+  /** Token capacity reported by Codex. Currently NOT exposed by app-server's
+   *  `model/list` response — left undefined so the PWA falls back to its
+   *  hardcoded default for the context-usage badge. */
   contextWindow?: number;
+  /** True for the model `model/list` flagged as the account default. The
+   *  agent uses this to coerce unsupported user-selected models back to a
+   *  valid choice instead of letting the request fail with `BadRequest`. */
+  isDefault?: boolean;
 }
 
 export interface CodexListModelsResponsePayload {
@@ -1181,6 +1201,14 @@ export interface ClaudeSessionSummary {
    * Autonomous turns can run for minutes; anchoring on `lastPromptAt` would
    * expire the countdown prematurely. */
   lastTurnEndedAt?: number;
+  /** Epoch ms of the most recent SDK assistant/result message whose `usage`
+   * reported `cache_creation_input_tokens > 0` or `cache_read_input_tokens > 0`.
+   * This is the most reliable anchor for the prompt-cache TTL countdown:
+   * Anthropic refreshes the cache on every cache-hitting request, so each
+   * inner API call inside an autonomous turn (tool loop, compaction, etc.)
+   * resets the timer. Falls back to `lastTurnEndedAt` if absent. Populated
+   * in-memory by SessionManager; not persisted to the event store. */
+  lastCacheTouchAt?: number;
   /** Cumulative stats derived from the event store. */
   turnCount?: number;
   totalInputTokens?: number;
@@ -1264,6 +1292,8 @@ export interface SessionUpdatePayload {
   lastPromptAt?: number;
   /** See `ClaudeSessionSummary.lastTurnEndedAt`. */
   lastTurnEndedAt?: number;
+  /** See `ClaudeSessionSummary.lastCacheTouchAt`. */
+  lastCacheTouchAt?: number;
   turnCount?: number;
   totalInputTokens?: number;
   totalOutputTokens?: number;
@@ -1290,6 +1320,8 @@ export interface ClaudeStartRequestPayload {
   /** Per-session reasoning depth — currently honored by the Codex provider
    *  only. SDK-valid values: `minimal` / `low` / `medium` / `high` / `xhigh`. */
   reasoningEffort?: string;
+  /** Auto-compact ceiling for Claude Code (200k / 500k / 1M). Codex ignores. */
+  contextWindow?: number;
 }
 
 export interface ClaudeStartResponsePayload {

@@ -1404,9 +1404,22 @@ describe('SessionManager', () => {
       expect(events[0].config.key).toBe('value');
     });
 
-    it('should update model preference when config key is "model"', () => {
+    it('should NOT mutate global preferences when a session\'s model config is set', () => {
+      // Session-scoped model/effort changes must stay session-scoped — mirroring
+      // them onto the global preference bag used to broadcast on /preferences,
+      // which the PWA wrote into its claude-code agent prefs bucket. That made
+      // a Codex session's GPT pick corrupt the user's saved Claude default.
+      const before = manager.getPreferences().model;
       manager.setSessionConfig('s1', 'model', 'claude-sonnet-4-20250514');
-      expect(manager.getPreferences().model).toBe('claude-sonnet-4-20250514');
+      expect(manager.getPreferences().model).toBe(before);
+      expect(manager.getSessionConfig('s1').model).toBe('claude-sonnet-4-20250514');
+    });
+
+    it('should NOT mutate global preferences when a session\'s reasoningEffort config is set', () => {
+      const before = manager.getPreferences().reasoningEffort;
+      manager.setSessionConfig('s1', 'reasoningEffort', 'high');
+      expect(manager.getPreferences().reasoningEffort).toBe(before);
+      expect(manager.getSessionConfig('s1').reasoningEffort).toBe('high');
     });
 
     it('should update permission level when config key is "permissionMode"', async () => {

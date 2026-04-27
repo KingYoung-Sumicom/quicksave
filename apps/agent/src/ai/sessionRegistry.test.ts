@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync, utimesSync } from 'fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, readdirSync, utimesSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { SessionRegistryEntry } from '@sumicom/quicksave-shared';
@@ -94,6 +94,33 @@ describe('SessionRegistry', () => {
       const registry = new SessionRegistry();
       registry.upsertEntry(makeEntry());
       expect(registry.getEntry('/home/user/project-a', 'no-such-session')).toBeUndefined();
+    });
+
+    it('preserves externally written status fields when rewriting an active entry', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry({ title: undefined, stage: undefined, note: undefined });
+      registry.upsertEntry(entry);
+
+      const encodedCwd = entry.cwd.replace(/\//g, '-');
+      const filePath = join(tempDir, encodedCwd, `${entry.sessionId}.json`);
+      writeFileSync(filePath, JSON.stringify({
+        ...entry,
+        title: 'External title',
+        stage: 'working',
+        blocked: false,
+        note: 'external note',
+        noteHistory: [{ ts: 123, text: 'external note' }],
+      }, null, 2));
+
+      registry.upsertEntry({ ...entry, messageCount: 3, lastAccessedAt: 3000 });
+
+      const onDisk = JSON.parse(readFileSync(filePath, 'utf-8'));
+      expect(onDisk.title).toBe('External title');
+      expect(onDisk.stage).toBe('working');
+      expect(onDisk.blocked).toBe(false);
+      expect(onDisk.note).toBe('external note');
+      expect(onDisk.noteHistory).toEqual([{ ts: 123, text: 'external note' }]);
+      expect(onDisk.messageCount).toBe(3);
     });
 
     it('returns the correct entry', () => {

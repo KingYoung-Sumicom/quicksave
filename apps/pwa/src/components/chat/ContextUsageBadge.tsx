@@ -51,7 +51,10 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
   const modelFromConfig = config.model as string | undefined;
   const model = modelFromBreakdown ?? modelFromConfig;
   const codexModels = useConnectionStore((s) => s.codexModels);
-  const fallbackLimit = getModelContextLimit(modelFromConfig, codexModels);
+  // Prefer the session's own contextWindow over the model-derived default —
+  // a Sonnet session set to 200k should show /200k, not /1M.
+  const sessionContextWindow = config.contextWindow as number | undefined;
+  const fallbackLimit = getModelContextLimit(modelFromConfig, codexModels, sessionContextWindow);
 
   // Fallback (raw turn tokens) — used when breakdown not yet available.
   const input = session?.lastTurnInputTokens ?? 0;
@@ -60,7 +63,12 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
   const rawUsed = input + cacheCreation + cacheRead;
 
   const used = breakdown?.totalTokens ?? rawUsed;
-  const limit = breakdown?.maxTokens ?? fallbackLimit;
+  // Prefer the user's selected contextWindow over breakdown.maxTokens.
+  // Why: changing the chip only triggers a cold-resume on the NEXT prompt
+  // (sessionManager.resumeSession), so until then breakdown.maxTokens still
+  // reports the previous window the running CLI was spawned with. Showing
+  // the user's pick keeps the chip and badge in sync with their intent.
+  const limit = sessionContextWindow ?? breakdown?.maxTokens ?? fallbackLimit;
 
   const turnCount = session?.turnCount ?? 0;
   const totalInput = session?.totalInputTokens ?? 0;
