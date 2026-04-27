@@ -5,6 +5,7 @@ import { useClaudeStore } from '../../stores/claudeStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 import {
   AGENT_TYPES,
+  getContextWindowOptionsForModel,
   getModelsForAgent,
   getPermissionModesForAgent,
   getReasoningEffortsForModel,
@@ -33,11 +34,13 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
     selectedModel,
     selectedPermissionMode,
     selectedReasoningEffort,
+    selectedContextWindow,
     sandboxEnabled,
     setSelectedAgent,
     setSelectedModel,
     setSelectedPermissionMode,
     setSelectedReasoningEffort,
+    setSelectedContextWindow,
     setSandboxEnabled,
   } = useClaudeStore();
   const codexModels = useConnectionStore((s) => s.codexModels);
@@ -59,6 +62,12 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
   // the SessionStatusBar will show once the session starts.
   const permissionModes = getPermissionModesForAgent(selectedAgent);
   const reasoningEfforts = getReasoningEffortsForModel(selectedAgent, selectedModel, codexModels);
+  // Claude-only: Haiku is locked to 200k so its option list collapses to one
+  // entry — hide the picker in that case (matches SessionStatusBar).
+  const contextWindowOptions = !isCodexAgent
+    ? getContextWindowOptionsForModel(selectedModel)
+    : [];
+  const showContextWindow = contextWindowOptions.length > 1;
   // Localize labels for the Claude reasoning enum (low/medium/high/max);
   // codex labels stay as-is since they're already short and keyed off the
   // SDK's own value names.
@@ -106,6 +115,15 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
         <ButtonGroup label={intl.formatMessage({ id: 'newSession.agent' })} options={AGENT_TYPES} value={selectedAgent} onSelect={(agent) => setSelectedAgent(agent.value)} size="sm" />
         {showCodexLoginGate && <CodexLoginBanner />}
         <ButtonGroup label={intl.formatMessage({ id: 'newSession.model' })} options={models} value={selectedModel} onSelect={(m) => setSelectedModel(m.value)} size="sm" />
+        {showContextWindow && (
+          <ButtonGroup
+            label={intl.formatMessage({ id: 'newSession.contextWindow' })}
+            options={contextWindowOptions.map((o) => ({ value: String(o.value), label: o.label }))}
+            value={String(selectedContextWindow)}
+            onSelect={(o) => setSelectedContextWindow(Number(o.value))}
+            size="sm"
+          />
+        )}
         {supportsReasoning && (
           <ButtonGroup label={intl.formatMessage({ id: 'newSession.reasoningEffort' })} options={reasoningEffortOptions} value={selectedReasoningEffort} onSelect={(e) => setSelectedReasoningEffort(e.value)} size="sm" />
         )}

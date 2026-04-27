@@ -104,6 +104,7 @@
   "newSession.reasoningEffort.high": "高",
   "newSession.reasoningEffort.max": "極高",
   "newSession.permission": "權限模式",
+  "newSession.contextWindow": "Context window",
   "newSession.sandbox": "沙盒",
   "newSession.sandbox.help.toggle": "這是什麼?",
   "newSession.sandbox.help.title": "關於沙盒模式",

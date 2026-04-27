@@ -104,6 +104,7 @@
   "newSession.reasoningEffort.high": "High",
   "newSession.reasoningEffort.max": "Max",
   "newSession.permission": "Permission",
+  "newSession.contextWindow": "Context window",
   "newSession.sandbox": "Sandbox",
   "newSession.sandbox.help.toggle": "What does this do?",
   "newSession.sandbox.help.title": "About sandbox mode",
