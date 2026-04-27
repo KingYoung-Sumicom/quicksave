@@ -553,9 +553,6 @@ export class SessionManager extends EventEmitter {
     // consumeStream picks it up after the current turn's result event.
     if (existing?.streaming && existing.providerSession?.alive) {
       console.log(`[session-manager] hot resume (active) session=${opts.sessionId.slice(0, 8)}`);
-      if (existing.cardBuilder) {
-        existing.cardBuilder.userMessage(opts.prompt);
-      }
       const ps = existing.providerSession as any;
       if (ps.pendingStreamIds) {
         ps.pendingStreamIds.push(opts.streamId);
@@ -573,8 +570,6 @@ export class SessionManager extends EventEmitter {
       const ps = existing.providerSession as any;
       if (existing.cardBuilder) {
         existing.cardBuilder.cancelDeferredClear?.();
-        existing.cardBuilder.userMessage(opts.prompt);
-        existing.cardBuilder.startNewTurn(opts.streamId);
       }
       ps.currentStreamId = opts.streamId;
       ps.resultEmitted = false;

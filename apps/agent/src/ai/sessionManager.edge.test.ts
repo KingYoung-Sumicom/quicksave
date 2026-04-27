@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionManager, type ManagedSession } from './sessionManager.js';
+import { StreamCardBuilder } from './cardBuilder.js';
 import { setQuicksaveDir } from '../service/singleton.js';
 import type {
   CodingAgentProvider,
@@ -179,7 +180,7 @@ describe('SessionManager — adversarial edge cases', () => {
   // ── 2. Resume during streaming (hot resume) ──
 
   describe('resumeSession during active streaming (hot resume)', () => {
-    it('hot resume should call sendUserMessage and userMessage on cardBuilder', async () => {
+    it('hot resume delegates user prompt persistence to the provider session', async () => {
       const sessionId = 'hot-resume';
       const mockProvSession = createMockProviderSession({ alive: true });
       (provider.startSession as Mock).mockResolvedValue({
@@ -188,6 +189,9 @@ describe('SessionManager — adversarial edge cases', () => {
       });
 
       await manager.startSession({ prompt: 'Start', cwd: '/tmp/test', streamId: 's1' });
+      const cardBuilder = (StreamCardBuilder as unknown as Mock).mock.results[0].value;
+      cardBuilder.userMessage.mockClear();
+      cardBuilder.startNewTurn.mockClear();
 
       const result = await manager.resumeSession({
         sessionId,
@@ -198,6 +202,8 @@ describe('SessionManager — adversarial edge cases', () => {
 
       expect(result).toBe(sessionId);
       expect(mockProvSession.sendUserMessage).toHaveBeenCalledWith('Follow-up');
+      expect(cardBuilder.userMessage).not.toHaveBeenCalled();
+      expect(cardBuilder.startNewTurn).not.toHaveBeenCalled();
     });
 
     it('hot resume should queue the new streamId on the provider session', async () => {
@@ -1136,6 +1142,9 @@ describe('SessionManager — adversarial edge cases', () => {
       });
 
       await manager.startSession({ prompt: 'Start', cwd: '/tmp/test', streamId: 's1' });
+      const cardBuilder = (StreamCardBuilder as unknown as Mock).mock.results[0].value;
+      cardBuilder.userMessage.mockClear();
+      cardBuilder.startNewTurn.mockClear();
 
       // End the first turn: streaming=false but providerSession still alive
       const callbacks = manager.makeCallbacks('claude-code' as any);
@@ -1155,6 +1164,8 @@ describe('SessionManager — adversarial edge cases', () => {
       expect(aliveSession.currentStreamId).toBe('s2');
       expect(aliveSession.resultEmitted).toBe(false);
       expect(aliveSession.kill).not.toHaveBeenCalled();
+      expect(cardBuilder.userMessage).not.toHaveBeenCalled();
+      expect(cardBuilder.startNewTurn).not.toHaveBeenCalled();
     });
 
     it('idle hot resume emits session-updated with isStreaming=true', async () => {
