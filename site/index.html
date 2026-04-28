@@ -3,20 +3,49 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Quicksave — Remote-control your dev machine from a phone</title>
+    <title>Quicksave — Remote control your coding-agent CLI from your phone, end-to-end encrypted</title>
     <meta
       name="description"
-      content="Review diffs, stage commits, and drive Claude Code CLI sessions from anywhere. End-to-end encrypted, with a relay that can't read your code."
+      content="Drive Claude Code and Codex CLI sessions from your phone. End-to-end encrypted, self-hostable, with mobile git diff, commit, and PTY terminal. Open source, by Sumicom."
     />
+    <meta name="author" content="Sumicom — KingYoung Technology" />
+    <meta name="keywords" content="Claude Code, Codex, remote control, mobile coding agent, end-to-end encrypted, self-hostable, git on phone, PTY terminal, Sumicom" />
     <meta name="theme-color" content="#0f172a" />
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
 
-    <meta property="og:title" content="Quicksave" />
+    <meta property="og:site_name" content="Sumicom · Quicksave" />
+    <meta property="og:title" content="Quicksave — Remote control your coding-agent CLI from your phone" />
     <meta
       property="og:description"
-      content="Remote-control your dev machine from a phone. End-to-end encrypted."
+      content="Drive Claude Code and Codex CLI sessions from your phone. End-to-end encrypted, self-hostable, open source."
     />
     <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Quicksave — Remote control your coding-agent CLI from your phone" />
+    <meta name="twitter:description" content="Drive Claude Code and Codex CLI sessions from your phone. End-to-end encrypted, self-hostable, open source." />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Quicksave",
+        "alternateName": "Sumicom Quicksave",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "iOS, Android, Web, macOS, Linux, Windows",
+        "description": "Drive Claude Code and Codex CLI sessions from your phone. End-to-end encrypted, self-hostable, with mobile git diff/commit and PTY terminal.",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "publisher": {
+          "@type": "Organization",
+          "name": "Sumicom",
+          "url": "https://www.kingyoung.com.tw",
+          "parentOrganization": {
+            "@type": "Organization",
+            "name": "KingYoung Technology",
+            "url": "https://www.kingyoung.com.tw"
+          }
+        }
+      }
+    </script>
 
     <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
     <script>
@@ -91,7 +120,7 @@
     ></div>
 
     <!-- Nav -->
-    <header class="border-b border-slate-800/60">
+    <header class="border-b border-slate-700/60">
       <nav
         class="mx-auto flex max-w-6xl items-center justify-between px-6 py-4"
       >
@@ -103,17 +132,22 @@
         <div class="flex items-center gap-6 text-sm">
           <a
             href="#how"
-            class="hidden text-slate-300 hover:text-white sm:block"
+            class="hidden text-slate-200 hover:text-white sm:block"
             >How it works</a
           >
           <a
+            href="#agents"
+            class="hidden text-slate-200 hover:text-white sm:block"
+            >Agents</a
+          >
+          <a
             href="#install"
-            class="hidden text-slate-300 hover:text-white sm:block"
+            class="hidden text-slate-200 hover:text-white sm:block"
             >Install</a
           >
           <a
             href="https://github.com/KingYoung-Sumicom/quicksave"
-            class="text-slate-300 hover:text-white"
+            class="text-slate-200 hover:text-white"
             target="_blank"
             rel="noopener"
             >GitHub</a
@@ -124,23 +158,18 @@
 
     <!-- Hero -->
     <section class="mx-auto max-w-6xl px-6 pt-20 pb-24 text-center sm:pt-28">
-      <div
-        class="mx-auto inline-flex items-center gap-2 rounded-full border border-slate-700/60 bg-slate-900/60 px-3 py-1 text-xs text-slate-300 backdrop-blur"
-      >
-        <span class="h-1.5 w-1.5 rounded-full bg-accent"></span>
-        End-to-end encrypted · MIT licensed
-      </div>
-
       <h1
-        class="mx-auto mt-6 max-w-3xl text-4xl font-bold tracking-tight text-white sm:text-6xl"
+        class="mx-auto max-w-3xl text-4xl font-bold tracking-tight text-white sm:text-6xl"
       >
-        Remote-control your dev machine
-        <span class="text-accent">from a phone</span>.
+        Developer essentials,
+        <br />
+        <span class="text-accent">on your phone</span>.
       </h1>
 
-      <p class="mx-auto mt-6 max-w-2xl text-lg text-slate-300">
-        Review diffs, stage and commit, drive Claude Code CLI sessions —
-        wherever you are. The relay in the middle never sees your code.
+      <p class="mx-auto mt-6 max-w-2xl text-lg text-slate-200">
+        Drive your coding-agent CLI sessions, review git diffs, and run
+        terminals from your phone — end-to-end encrypted, self-hostable, open
+        source.
       </p>
 
       <div class="mt-10 flex flex-wrap items-center justify-center gap-3">
@@ -176,7 +205,7 @@
       <!-- Quick install snippet -->
       <div class="mx-auto mt-10 max-w-md">
         <div
-          class="group flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-950/70 px-4 py-3 font-mono text-sm text-slate-200"
+          class="group flex items-center gap-3 rounded-lg border border-slate-700 bg-slate-950/70 px-4 py-3 font-mono text-sm text-slate-200"
         >
           <span class="text-accent">$</span>
           <code class="flex-1 truncate text-left"
@@ -185,7 +214,7 @@
           <button
             type="button"
             data-copy="npm install -g @sumicom/quicksave"
-            class="rounded border border-slate-700 px-2 py-0.5 text-xs text-slate-400 hover:border-slate-500 hover:text-slate-200"
+            class="rounded border border-slate-700 px-2 py-0.5 text-xs text-slate-200 hover:border-slate-500 hover:text-slate-200"
           >
             copy
           </button>
@@ -199,7 +228,7 @@
         <h2 class="text-3xl font-bold tracking-tight text-white">
           How it works
         </h2>
-        <p class="mt-4 text-slate-300">
+        <p class="mt-4 text-slate-200">
           Three pieces, one encrypted channel. The relay routes frames; only the
           PWA and your laptop hold keys.
         </p>
@@ -209,13 +238,13 @@
         class="mx-auto mt-12 grid max-w-4xl items-stretch gap-4 text-center sm:grid-cols-[1fr_auto_1fr_auto_1fr]"
       >
         <div
-          class="rounded-xl border border-slate-800 bg-slate-900/60 p-6 backdrop-blur"
+          class="rounded-xl border border-slate-700 bg-slate-900/60 p-6 backdrop-blur"
         >
-          <div class="text-xs uppercase tracking-wider text-slate-400">
+          <div class="text-xs uppercase tracking-wider text-slate-200">
             Browser
           </div>
           <div class="mt-2 text-lg font-semibold text-white">PWA</div>
-          <p class="mt-2 text-sm text-slate-400">
+          <p class="mt-2 text-sm text-slate-200">
             React app on your phone. Holds half the key.
           </p>
         </div>
@@ -232,14 +261,15 @@
           </svg>
         </div>
         <div
-          class="rounded-xl border border-slate-800 bg-slate-900/60 p-6 backdrop-blur"
+          class="rounded-xl border border-slate-700 bg-slate-900/60 p-6 backdrop-blur"
         >
-          <div class="text-xs uppercase tracking-wider text-slate-400">
-            Stateless
+          <div class="text-xs uppercase tracking-wider text-slate-200">
+            Blind
           </div>
           <div class="mt-2 text-lg font-semibold text-white">Relay</div>
-          <p class="mt-2 text-sm text-slate-400">
-            Routes encrypted frames. Cannot decrypt. Self-hostable.
+          <p class="mt-2 text-sm text-slate-200">
+            Routes encrypted frames and stores an encrypted mailbox. No keys,
+            no plaintext, no user identifiers. Self-hostable.
           </p>
         </div>
         <div class="hidden items-center justify-center text-slate-600 sm:flex">
@@ -255,23 +285,159 @@
           </svg>
         </div>
         <div
-          class="rounded-xl border border-slate-800 bg-slate-900/60 p-6 backdrop-blur"
+          class="rounded-xl border border-slate-700 bg-slate-900/60 p-6 backdrop-blur"
         >
-          <div class="text-xs uppercase tracking-wider text-slate-400">
+          <div class="text-xs uppercase tracking-wider text-slate-200">
             Daemon
           </div>
           <div class="mt-2 text-lg font-semibold text-white">Agent</div>
-          <p class="mt-2 text-sm text-slate-400">
-            Runs on your laptop. Owns NaCl keys, runs git + Claude.
+          <p class="mt-2 text-sm text-slate-200">
+            Runs on your laptop. Owns NaCl keys, runs coding agent + git.
           </p>
         </div>
       </div>
     </section>
 
+    <!-- Supported coding agents -->
+    <section id="agents" class="mx-auto max-w-6xl px-6 py-20">
+      <div class="mx-auto max-w-2xl text-center">
+        <h2 class="text-3xl font-bold tracking-tight text-white">
+          Currently supported coding agents
+        </h2>
+        <p class="mt-4 text-slate-200">
+          Quicksave is agent-neutral. Today it drives the two most popular
+          coding-agent CLIs end-to-end — more on the way.
+        </p>
+      </div>
+
+      <div class="mx-auto mt-12 grid max-w-3xl gap-6 md:grid-cols-2">
+        <div
+          class="rounded-xl border border-slate-700 bg-slate-900/40 p-6"
+        >
+          <div
+            class="text-xs font-semibold uppercase tracking-wider text-accent"
+          >
+            Anthropic
+          </div>
+          <h3 class="mt-2 text-xl font-semibold text-white">Claude Code</h3>
+          <p class="mt-3 text-sm text-slate-200">
+            Anthropic's official agentic coding CLI. Quicksave spawns sessions,
+            parses tool calls into reviewable cards, and routes permission
+            prompts to your phone.
+          </p>
+          <a
+            href="https://github.com/anthropics/claude-code"
+            target="_blank"
+            rel="noopener"
+            class="mt-4 inline-flex items-center gap-1 text-sm font-medium text-accent hover:underline"
+          >
+            Learn about Claude Code →
+          </a>
+        </div>
+
+        <div
+          class="rounded-xl border border-slate-700 bg-slate-900/40 p-6"
+        >
+          <div
+            class="text-xs font-semibold uppercase tracking-wider text-accent"
+          >
+            OpenAI
+          </div>
+          <h3 class="mt-2 text-xl font-semibold text-white">Codex</h3>
+          <p class="mt-3 text-sm text-slate-200">
+            OpenAI's coding-agent CLI. Same Quicksave UX — spawn sessions,
+            review tool calls inline, approve permissions, and resume from
+            anywhere.
+          </p>
+          <a
+            href="https://github.com/openai/codex"
+            target="_blank"
+            rel="noopener"
+            class="mt-4 inline-flex items-center gap-1 text-sm font-medium text-accent hover:underline"
+          >
+            Learn about Codex →
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Privacy / Encryption -->
+    <section id="privacy" class="mx-auto max-w-6xl px-6 py-20">
+      <div class="mx-auto max-w-2xl text-center">
+        <h2 class="text-3xl font-bold tracking-tight text-white">
+          The relay never sees your code
+        </h2>
+        <p class="mt-4 text-slate-200">
+          The relay routes WebSocket frames and holds an encrypted mailbox for
+          syncing between your devices — but it has no keys. The PWA on your
+          phone and the agent on your laptop are the only parties that can
+          read what's exchanged; everything in transit and at rest is sealed
+          with NaCl box encryption. What little metadata the relay does keep
+          contains no information that ties back to a real person or
+          organization — not for us, not for anyone running the server.
+        </p>
+      </div>
+
+      <div class="mx-auto mt-12 grid max-w-4xl gap-4 md:grid-cols-2">
+        <div
+          class="rounded-xl border border-slate-700 bg-slate-900/40 p-6"
+        >
+          <div class="flex items-center gap-2 text-sm font-semibold text-slate-200">
+            <span class="flex h-6 w-6 items-center justify-center rounded-full bg-slate-800 text-slate-200">
+              <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path d="M10 12a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" />
+                <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10ZM14 10a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z" clip-rule="evenodd" />
+              </svg>
+            </span>
+            What the relay sees
+          </div>
+          <ul class="mt-4 space-y-2 text-sm text-slate-200">
+            <li class="flex gap-2"><span class="text-slate-600">·</span>Encrypted byte frames in transit</li>
+            <li class="flex gap-2"><span class="text-slate-600">·</span>Encrypted blobs at rest (device-to-device mailbox)</li>
+            <li class="flex gap-2"><span class="text-slate-600">·</span>Random session IDs — no usernames, no org names, no emails</li>
+            <li class="flex gap-2"><span class="text-slate-600">·</span>Web Push fan-out targets (opaque tokens)</li>
+            <li class="flex gap-2"><span class="text-slate-600">·</span>Connection lifecycle events</li>
+          </ul>
+        </div>
+
+        <div
+          class="rounded-xl border border-accent/30 bg-accent/5 p-6"
+        >
+          <div class="flex items-center gap-2 text-sm font-semibold text-white">
+            <span class="flex h-6 w-6 items-center justify-center rounded-full bg-accent/20 text-accent">
+              <svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd" d="M10 1a4.5 4.5 0 0 0-4.5 4.5V9H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-.5V5.5A4.5 4.5 0 0 0 10 1Zm3 8V5.5a3 3 0 1 0-6 0V9h6Z" clip-rule="evenodd" />
+              </svg>
+            </span>
+            What stays on your devices
+          </div>
+          <ul class="mt-4 space-y-2 text-sm text-slate-200">
+            <li class="flex gap-2"><span class="text-accent/60">·</span>Source code, diffs, file contents</li>
+            <li class="flex gap-2"><span class="text-accent/60">·</span>Coding-agent prompts and output</li>
+            <li class="flex gap-2"><span class="text-accent/60">·</span>Commit messages and git history</li>
+            <li class="flex gap-2"><span class="text-accent/60">·</span>Repo paths and machine names</li>
+          </ul>
+        </div>
+      </div>
+
+      <p class="mx-auto mt-8 max-w-2xl text-center text-sm text-slate-200">
+        Don't want to trust the public relay either? It's a small Node server
+        with a Dockerfile in the repo —
+        <a
+          href="https://github.com/KingYoung-Sumicom/quicksave/blob/main/docs/relay/deployment.md"
+          class="text-accent hover:underline"
+          target="_blank"
+          rel="noopener"
+          >run your own</a
+        >
+        and point your PWA at it.
+      </p>
+    </section>
+
     <!-- Features -->
     <section class="mx-auto max-w-6xl px-6 py-20">
-      <div class="grid gap-6 md:grid-cols-3">
-        <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
+      <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+        <div class="rounded-xl border border-slate-700 bg-slate-900/40 p-6">
           <div
             class="flex h-10 w-10 items-center justify-center rounded-lg bg-accent/10 text-accent"
           >
@@ -291,13 +457,39 @@
           <h3 class="mt-4 text-lg font-semibold text-white">
             End-to-end encrypted
           </h3>
-          <p class="mt-2 text-sm text-slate-400">
-            NaCl keypair handshake between PWA and agent. The relay is a
-            stateless WebSocket router — it never sees plaintext.
+          <p class="mt-2 text-sm text-slate-200">
+            NaCl keypair handshake between PWA and agent. The relay routes
+            frames and stores encrypted blobs — it has no keys, so it never
+            sees plaintext.
           </p>
         </div>
 
-        <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
+        <div class="rounded-xl border border-slate-700 bg-slate-900/40 p-6">
+          <div
+            class="flex h-10 w-10 items-center justify-center rounded-lg bg-accent/10 text-accent"
+          >
+            <svg
+              class="h-5 w-5"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                d="M10 2a1 1 0 0 1 .894.553l2.382 4.764 5.26.764a1 1 0 0 1 .555 1.706l-3.806 3.71.898 5.236a1 1 0 0 1-1.451 1.054L10 17.347l-4.732 2.49a1 1 0 0 1-1.451-1.054l.898-5.236L.91 9.787A1 1 0 0 1 1.464 8.08l5.26-.764L9.106 2.553A1 1 0 0 1 10 2Z"
+              />
+            </svg>
+          </div>
+          <h3 class="mt-4 text-lg font-semibold text-white">
+            Remote control your coding agent
+          </h3>
+          <p class="mt-2 text-sm text-slate-200">
+            Spawn coding-agent CLI sessions, review tool calls inline, approve
+            permission prompts, and steer in-progress work — all from your
+            phone.
+          </p>
+        </div>
+
+        <div class="rounded-xl border border-slate-700 bg-slate-900/40 p-6">
           <div
             class="flex h-10 w-10 items-center justify-center rounded-lg bg-accent/10 text-accent"
           >
@@ -315,13 +507,13 @@
           <h3 class="mt-4 text-lg font-semibold text-white">
             Git workflows on mobile
           </h3>
-          <p class="mt-2 text-sm text-slate-400">
+          <p class="mt-2 text-sm text-slate-200">
             Browse status, hunk-by-hunk diffs, stage, commit, push — with the
             same keystrokes you'd use at your desk.
           </p>
         </div>
 
-        <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-6">
+        <div class="rounded-xl border border-slate-700 bg-slate-900/40 p-6">
           <div
             class="flex h-10 w-10 items-center justify-center rounded-lg bg-accent/10 text-accent"
           >
@@ -332,16 +524,19 @@
               aria-hidden="true"
             >
               <path
-                d="M10 2a1 1 0 0 1 .894.553l2.382 4.764 5.26.764a1 1 0 0 1 .555 1.706l-3.806 3.71.898 5.236a1 1 0 0 1-1.451 1.054L10 17.347l-4.732 2.49a1 1 0 0 1-1.451-1.054l.898-5.236L.91 9.787A1 1 0 0 1 1.464 8.08l5.26-.764L9.106 2.553A1 1 0 0 1 10 2Z"
+                fill-rule="evenodd"
+                d="M2 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5Zm3.22 1.22a.75.75 0 0 1 1.06 0l2.5 2.5a.75.75 0 0 1 0 1.06l-2.5 2.5a.75.75 0 1 1-1.06-1.06L7.19 9.5 5.22 7.53a.75.75 0 0 1 0-1.06ZM10 12.5a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 0 1.5h-3.5a.75.75 0 0 1-.75-.75Z"
+                clip-rule="evenodd"
               />
             </svg>
           </div>
           <h3 class="mt-4 text-lg font-semibold text-white">
-            Drive Claude Code remotely
+            A PTY terminal in your pocket
           </h3>
-          <p class="mt-2 text-sm text-slate-400">
-            Spawn Claude Code CLI sessions, review tool calls inline, approve
-            permissions, and resume from anywhere.
+          <p class="mt-2 text-sm text-slate-200">
+            Real PTY-backed shells with persistent scrollback. Tail logs, kick
+            off builds, attach to a tmux session, jump back in mid-stream —
+            the screen redraws without disturbing the running process.
           </p>
         </div>
       </div>
@@ -351,15 +546,15 @@
     <section id="install" class="mx-auto max-w-4xl px-6 py-20">
       <div class="text-center">
         <h2 class="text-3xl font-bold tracking-tight text-white">Quick start</h2>
-        <p class="mx-auto mt-4 max-w-xl text-slate-300">
-          Two steps: install the agent on the machine you want to control, then
+        <p class="mx-auto mt-4 max-w-xl text-slate-200">
+          Three steps: install a coding-agent CLI, install Quicksave, then
           pair from your phone.
         </p>
       </div>
 
       <ol class="mt-12 space-y-6">
         <li
-          class="rounded-xl border border-slate-800 bg-slate-900/40 p-6"
+          class="rounded-xl border border-slate-700 bg-slate-900/40 p-6"
         >
           <div class="flex items-center gap-3">
             <span
@@ -367,22 +562,57 @@
               >1</span
             >
             <h3 class="text-lg font-semibold text-white">
-              Install the agent on your dev machine
+              Install a coding-agent CLI and sign in
             </h3>
           </div>
-          <pre
-            class="mt-4 overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/70 p-4 font-mono text-sm text-slate-200"
-          ><code><span class="text-slate-500"># requires Node.js 20+</span>
-npm install -g @sumicom/quicksave
-cd /path/to/your/repo
-quicksave</code></pre>
-          <p class="mt-3 text-sm text-slate-400">
-            Prints a pairing URL and QR code. Keeps a background daemon running.
+          <p class="mt-3 text-sm text-slate-200">
+            Pick whichever you prefer — Quicksave will drive whichever one is
+            on your <code class="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[0.8em] text-slate-200">$PATH</code>.
           </p>
+
+          <div class="mt-4 grid gap-4 md:grid-cols-2">
+            <div>
+              <div class="flex items-center justify-between">
+                <div class="text-xs font-semibold uppercase tracking-wider text-accent">
+                  Claude Code
+                </div>
+                <a
+                  href="https://code.claude.com/docs/en/overview"
+                  target="_blank"
+                  rel="noopener"
+                  class="text-xs text-slate-200 hover:text-accent"
+                  >Official setup ↗</a
+                >
+              </div>
+              <pre
+                class="mt-2 overflow-x-auto rounded-lg border border-slate-700 bg-slate-950/70 p-4 font-mono text-sm text-slate-200"
+              ><code>npm install -g @anthropic-ai/claude-code
+claude  <span class="text-slate-200/60"># follow login prompts</span></code></pre>
+            </div>
+
+            <div>
+              <div class="flex items-center justify-between">
+                <div class="text-xs font-semibold uppercase tracking-wider text-accent">
+                  Codex
+                </div>
+                <a
+                  href="https://github.com/openai/codex#readme"
+                  target="_blank"
+                  rel="noopener"
+                  class="text-xs text-slate-200 hover:text-accent"
+                  >Official setup ↗</a
+                >
+              </div>
+              <pre
+                class="mt-2 overflow-x-auto rounded-lg border border-slate-700 bg-slate-950/70 p-4 font-mono text-sm text-slate-200"
+              ><code>npm install -g @openai/codex
+codex  <span class="text-slate-200/60"># follow login prompts</span></code></pre>
+            </div>
+          </div>
         </li>
 
         <li
-          class="rounded-xl border border-slate-800 bg-slate-900/40 p-6"
+          class="rounded-xl border border-slate-700 bg-slate-900/40 p-6"
         >
           <div class="flex items-center gap-3">
             <span
@@ -390,10 +620,43 @@ quicksave</code></pre>
               >2</span
             >
             <h3 class="text-lg font-semibold text-white">
+              Install the Quicksave agent on your dev machine
+            </h3>
+          </div>
+          <p class="mt-3 text-sm text-slate-200">
+            Needs Node.js 20+ and
+            <code class="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[0.8em] text-slate-200">git</code>. Full notes in the
+            <a
+              href="https://github.com/KingYoung-Sumicom/quicksave/blob/main/apps/agent/README.md"
+              class="text-accent hover:underline"
+              target="_blank"
+              rel="noopener"
+              >agent README</a
+            >.
+          </p>
+          <pre
+            class="mt-4 overflow-x-auto rounded-lg border border-slate-700 bg-slate-950/70 p-4 font-mono text-sm text-slate-200"
+          ><code>npm install -g @sumicom/quicksave
+cd /path/to/your/repo
+quicksave</code></pre>
+          <p class="mt-3 text-sm text-slate-200">
+            Prints a pairing URL and QR code. Keeps a background daemon running.
+          </p>
+        </li>
+
+        <li
+          class="rounded-xl border border-slate-700 bg-slate-900/40 p-6"
+        >
+          <div class="flex items-center gap-3">
+            <span
+              class="flex h-7 w-7 items-center justify-center rounded-full bg-accent text-sm font-semibold text-slate-900"
+              >3</span
+            >
+            <h3 class="text-lg font-semibold text-white">
               Pair from your phone
             </h3>
           </div>
-          <p class="mt-3 text-sm text-slate-300">
+          <p class="mt-3 text-sm text-slate-200">
             Open
             <a
               href="https://quicksave.dev"
@@ -409,18 +672,18 @@ quicksave</code></pre>
       </ol>
 
       <div
-        class="mt-10 rounded-xl border border-slate-800 bg-slate-900/40 p-6 text-sm text-slate-300"
+        class="mt-10 rounded-xl border border-slate-700 bg-slate-900/40 p-6 text-sm text-slate-200"
       >
         <h3 class="font-semibold text-white">Self-host the relay</h3>
-        <p class="mt-2 text-slate-400">
+        <p class="mt-2 text-slate-200">
           Don't want to depend on the public relay? Build the Docker image and
           point your PWA at it.
         </p>
         <pre
-          class="mt-4 overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/70 p-4 font-mono text-xs text-slate-200"
+          class="mt-4 overflow-x-auto rounded-lg border border-slate-700 bg-slate-950/70 p-4 font-mono text-xs text-slate-200"
         ><code>docker build -f apps/relay/Dockerfile -t quicksave-relay .
 docker run -p 8080:8080 quicksave-relay</code></pre>
-        <p class="mt-3 text-xs text-slate-500">
+        <p class="mt-3 text-xs text-slate-200">
           Full deployment checklist in
           <a
             href="https://github.com/KingYoung-Sumicom/quicksave/blob/main/docs/relay/deployment.md"
@@ -433,14 +696,100 @@ docker run -p 8080:8080 quicksave-relay</code></pre>
       </div>
     </section>
 
-    <!-- Footer -->
-    <footer class="border-t border-slate-800/60">
+    <!-- About / Who we are -->
+    <section id="about" class="mx-auto max-w-3xl px-6 py-20">
+      <div class="text-center">
+        <h2 class="text-3xl font-bold tracking-tight text-white">
+          From our engineering team
+        </h2>
+        <div class="mt-6 space-y-4 text-lg leading-relaxed text-slate-200">
+          <p>
+            <a
+              href="https://www.kingyoung.com.tw"
+              target="_blank"
+              rel="noopener"
+              class="font-medium text-white underline decoration-slate-600 underline-offset-4 hover:decoration-accent"
+              >KingYoung Technology</a
+            >
+            designs and manufactures industrial PCs under the
+            Sumicom brand.
+            Quicksave came out of our own engineering team's daily workflow —
+            we built it for ourselves, and we dogfood every release.
+          </p>
+          <p>
+            It's not part of our product line, though. There are no SLAs and
+            no commercial support, simply because Quicksave isn't our main
+            business. If you need that kind of certainty, self-host the relay
+            and pin a version you're happy with.
+          </p>
+        </div>
+      </div>
+
+      <!-- KingYoung CTA -->
       <div
-        class="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 py-8 text-sm text-slate-400 sm:flex-row"
+        class="mt-14 rounded-2xl border border-slate-700/60 bg-gradient-to-b from-slate-800/80 to-slate-900/60 p-6 shadow-2xl shadow-black/40 ring-1 ring-white/5 sm:p-8"
+      >
+        <div
+          class="flex flex-col items-start gap-6 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div class="text-left">
+            <div
+              class="text-xs font-semibold uppercase tracking-wider text-accent"
+            >
+              Our day job
+            </div>
+            <h3 class="mt-2 text-xl font-semibold text-white">
+              Fanless, rugged, customizable industrial PCs
+            </h3>
+            <p class="mt-2 text-sm text-slate-200">
+              Edge AI boxes, ultra-compact barebones, wide-temperature
+              deployments — built in Taiwan, customized to your spec. If you
+              like how we sweat the details on Quicksave, talk to us about
+              hardware.
+            </p>
+          </div>
+          <a
+            href="https://www.kingyoung.com.tw"
+            target="_blank"
+            rel="noopener"
+            class="inline-flex shrink-0 items-center gap-2 rounded-md border border-slate-700 bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white transition hover:border-accent hover:text-accent"
+          >
+            Browse our IPC lineup
+            <svg
+              class="h-4 w-4"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                d="M10.75 4.75a.75.75 0 0 1 .75-.75h4a.75.75 0 0 1 .75.75v4a.75.75 0 0 1-1.5 0V6.56l-4.97 4.97a.75.75 0 1 1-1.06-1.06l4.97-4.97H10.75a.75.75 0 0 1-.75-.75Z"
+              />
+              <path
+                d="M4 6.75A2.75 2.75 0 0 1 6.75 4h2.5a.75.75 0 0 1 0 1.5h-2.5c-.69 0-1.25.56-1.25 1.25v6.5c0 .69.56 1.25 1.25 1.25h6.5c.69 0 1.25-.56 1.25-1.25v-2.5a.75.75 0 0 1 1.5 0v2.5A2.75 2.75 0 0 1 13.25 16h-6.5A2.75 2.75 0 0 1 4 13.25v-6.5Z"
+              />
+            </svg>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="border-t border-slate-700/60">
+      <div
+        class="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-6 py-8 text-sm text-slate-200 sm:flex-row"
       >
         <div class="flex items-center gap-2">
           <img src="./favicon.svg" alt="" class="h-5 w-5" />
-          <span>Quicksave · MIT</span>
+          <span
+            >Quicksave · by
+            <a
+              href="https://www.kingyoung.com.tw"
+              target="_blank"
+              rel="noopener"
+              class="font-bold text-accent underline decoration-accent decoration-2 underline-offset-4 hover:text-white hover:decoration-white"
+              >Sumicom</a
+            ></span
+          >
         </div>
         <div class="flex items-center gap-6">
           <a
