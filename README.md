@@ -30,8 +30,8 @@ Pick whichever you prefer — Quicksave drives whichever one is on
 `$PATH`.
 
 ```bash
-# Claude Code (Anthropic) — full setup at https://code.claude.com/docs/en/overview
-npm install -g @anthropic-ai/claude-code
+# Claude Code (Anthropic) — full setup at https://code.claude.com/docs/en/setup
+curl -fsSL https://claude.ai/install.sh | bash
 claude   # follow login prompts
 
 # Codex (OpenAI) — full setup at https://github.com/openai/codex#readme

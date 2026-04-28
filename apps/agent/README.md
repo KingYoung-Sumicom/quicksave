@@ -11,8 +11,8 @@ Quicksave drives a coding-agent CLI on your `$PATH`. Install one (or
 both) and sign in first:
 
 ```bash
-# Claude Code (Anthropic) — https://code.claude.com/docs/en/overview
-npm install -g @anthropic-ai/claude-code
+# Claude Code (Anthropic) — https://code.claude.com/docs/en/setup
+curl -fsSL https://claude.ai/install.sh | bash
 claude   # follow login prompts
 
 # Codex (OpenAI) — https://github.com/openai/codex#readme
