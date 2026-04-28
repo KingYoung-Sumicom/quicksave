@@ -506,6 +506,81 @@ describe('cardAdapter — file_change', () => {
     expect(writeCard).toBeTruthy();
   });
 
+  it('parses unified diff into old_string/new_string for Edit cards', async () => {
+    const h = harness();
+    const diff = [
+      '@@ -1,3 +1,3 @@',
+      ' context line',
+      '-old line one',
+      '-old line two',
+      '+new line one',
+      '+new line two',
+      ' trailing context',
+    ].join('\n');
+    await h.send('item/completed', {
+      threadId: 'thr_test',
+      turnId: 'turn_1',
+      item: {
+        type: 'fileChange',
+        id: 'fc_edit',
+        changes: [{ kind: { type: 'update', move_path: null }, path: '/tmp/file.ts', diff }],
+        status: 'completed',
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: 'thr_test',
+      turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const editCard = h.events.find(
+      (e) =>
+        e.type === 'add' &&
+        (e.card as { type?: string }).type === 'tool_call' &&
+        (e.card as { toolName?: string }).toolName === 'Edit',
+    );
+    expect(editCard).toBeTruthy();
+    const input = (editCard as { card: { toolInput: Record<string, unknown> } }).card.toolInput;
+    expect(input.file_path).toBe('/tmp/file.ts');
+    expect(input.old_string).toBe('old line one\nold line two');
+    expect(input.new_string).toBe('new line one\nnew line two');
+  });
+
+  it('parses unified diff into content for Write cards', async () => {
+    const h = harness();
+    const diff = [
+      '@@ -0,0 +1,2 @@',
+      '+first',
+      '+second',
+    ].join('\n');
+    await h.send('item/completed', {
+      threadId: 'thr_test',
+      turnId: 'turn_1',
+      item: {
+        type: 'fileChange',
+        id: 'fc_write',
+        changes: [{ kind: { type: 'add' }, path: '/tmp/new.txt', diff }],
+        status: 'completed',
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: 'thr_test',
+      turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const writeCard = h.events.find(
+      (e) =>
+        e.type === 'add' &&
+        (e.card as { type?: string }).type === 'tool_call' &&
+        (e.card as { toolName?: string }).toolName === 'Write',
+    );
+    expect(writeCard).toBeTruthy();
+    const input = (writeCard as { card: { toolInput: Record<string, unknown> } }).card.toolInput;
+    expect(input.file_path).toBe('/tmp/new.txt');
+    expect(input.content).toBe('first\nsecond');
+  });
+
   it('handles object-shaped file change discriminators', async () => {
     const h = harness();
     await h.send('item/started', {

@@ -641,19 +641,16 @@ export class WebSocketClient {
       return;
     }
 
-    // Only attempt reconnect if we were previously connected
+    // Only attempt reconnect if we were previously connected.
+    // We deliberately do NOT broadcast onDisconnected to per-agent listeners
+    // here: during the uncertain window between "socket dropped" and "retry
+    // exhausted" we don't yet know whether the link is dead, and a premature
+    // disconnect notice causes the bus to fail in-flight commands and the
+    // chat UI to tear down the streaming card. The StreamingReconnectIndicator
+    // covers the user-visible "we're working on it" state via onReconnecting.
+    // If retries DO exhaust, attemptReconnect()'s catch branch fires
+    // onDisconnected at that point — that's when we've truly given up.
     if (this.wasConnected && this.autoReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
-      // Notify per-agent listeners that the underlying socket is gone so
-      // bus transports can flip to disconnected state and reject in-flight
-      // commands. Without this, a brief reconnect leaves pending commands
-      // waiting on the dead socket until they hit their own timeout (15s
-      // for bus.command), even though we're about to reopen — the bus
-      // doesn't know to retry because as far as it knows the link is up.
-      // The new connect path (`onConnected` per agent) will re-flip them
-      // to connected once key exchange completes.
-      for (const agentId of this.sessions.keys()) {
-        this.eventHandlers.onDisconnected(agentId);
-      }
       this.scheduleReconnect();
     } else {
       this.cleanupAllSessions();
@@ -755,6 +752,19 @@ export class WebSocketClient {
     }
 
     this.eventHandlers.onDisconnected();
+  }
+
+  // Kick off a fresh round of auto-reconnect after the previous round ran
+  // out of attempts. Does NOT touch a still-open socket or interrupt an
+  // in-flight reconnect timer — the streaming reconnect button only appears
+  // once auto-retry has given up, at which point there's no live socket to
+  // disturb. Resets the attempt counter so backoff starts from the top.
+  retryReconnect(): void {
+    if (this.isManualDisconnect) return;
+    if (this.reconnectTimeout) return; // already trying — let it run
+    this.reconnectAttempts = 0;
+    this.eventHandlers.onReconnecting(1, this.maxReconnectAttempts);
+    void this.attemptReconnect();
   }
 }
 

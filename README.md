@@ -51,6 +51,7 @@ apps/
 packages/
 ├── shared/       # (npm: @sumicom/quicksave-shared)
 └── message-bus/  # (npm: @sumicom/quicksave-message-bus)
+site/             # Marketing landing page (GitHub Pages)
 docs/
 ├── guidelines.md            # Engineering + design guidelines index
 ├── guidelines/              # Individual guideline docs

@@ -13,6 +13,7 @@ import { SessionList } from './chat/SessionList';
 import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
 import { SessionStatusBar } from './chat/SessionStatusBar';
 import { SessionStatsBar } from './chat/SessionStatsBar';
+import { StreamingReconnectIndicator } from './chat/StreamingReconnectIndicator';
 import { getAgentType } from '../lib/claudePresets';
 
 type StartSessionOpts = { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean };
@@ -504,16 +505,26 @@ export function ClaudePanel({
             )}
             {(() => {
               // Show bounce dots when in "thinking" state (blue indicator):
-              // streaming (from either local state or agent push), not pending permission, not resuming
+              // streaming (from either local state or agent push), not pending permission, not resuming.
+              // While the link's status is uncertain (reconnecting / agent
+              // offline / fully dropped), swap to StreamingReconnectIndicator
+              // so the user sees we're waiting on connectivity rather than on
+              // the model — without prematurely tearing down the in-flight
+              // stream, which would happen if we treated WS blips as
+              // "session ended."
               const sessionStreaming = isStreaming || !!activeSession?.isStreaming;
               const showDots = sessionStreaming && !isResuming && !activeSession?.hasPendingInput;
-              return showDots ? (
+              if (!showDots) return null;
+              const linkUncertain = connectionState !== 'connected' || agentOnline === false;
+              return linkUncertain ? (
+                <StreamingReconnectIndicator />
+              ) : (
                 <div className="flex items-center gap-1.5 py-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:0ms]" />
                   <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:150ms]" />
                   <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:300ms]" />
                 </div>
-              ) : null;
+              );
             })()}
             {/* New session empty state — inside scrollable container */}
             {newSession && cards.length === 0 && (

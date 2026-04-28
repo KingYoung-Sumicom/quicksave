@@ -41,6 +41,7 @@ import {
 import { useCodexLoginStore } from './stores/codexLoginStore';
 import { useTerminalStore } from './stores/terminalStore';
 import { registerActiveBusGetter, registerAgentBusGetter } from './lib/busRegistry';
+import { registerWsRetry } from './lib/wsRetryRegistry';
 import { applySessionUpdate } from './lib/applySessionUpdate';
 import { applyHistoryEntry, applyHistoryAction } from './lib/applyHistoryEntry';
 import { NotificationPrompt } from './components/NotificationPrompt';
@@ -559,6 +560,7 @@ function AppContent() {
         const { transport } = ensureBusForAgent(connectedAgentId);
         transport.notifyConnected();
       }
+      registerWsRetry(() => hmrClient.retryReconnect());
       if (typeof window !== 'undefined') {
         (window as unknown as { __wsClient?: WebSocketClient }).__wsClient = hmrClient;
       }
@@ -690,6 +692,7 @@ function AppContent() {
     clientRef.current = client;
     // Per-agent buses are created lazily in `onConnected`; nothing to wire
     // up at client-creation time beyond the client itself.
+    registerWsRetry(() => client.retryReconnect());
     if (typeof window !== 'undefined') {
       (window as unknown as { __wsClient?: WebSocketClient }).__wsClient = client;
       (window as unknown as { __buses?: Map<string, AgentBus> }).__buses = busesRef.current;

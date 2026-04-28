@@ -1666,10 +1666,15 @@ export interface FilesReadRequestPayload {
   /** Override the default 100 KiB preview cap. The agent clamps this to an
    *  internal hard cap so payloads stay bounded. */
   maxBytes?: number;
+  /** When true, image files (png/jpg/gif/webp/avif/ico/bmp) are returned as
+   *  base64 with `kind: 'image'` and `mimeType` set, instead of the default
+   *  binary placeholder. Used by the markdown viewer to inline `<img>` tags.
+   *  Image reads use a separate, larger hard cap (see fileBrowser). */
+  allowImage?: boolean;
 }
 
 /** Discriminator explaining whether `content` is present on a successful read. */
-export type FileReadKind = 'text' | 'binary' | 'oversized';
+export type FileReadKind = 'text' | 'binary' | 'oversized' | 'image';
 
 export interface FilesReadResponsePayload {
   success: boolean;
@@ -1679,9 +1684,12 @@ export interface FilesReadResponsePayload {
   /** Present on success — tags whether the UI should render text or a
    *  placeholder. Absent only on failures (see `error`). */
   kind?: FileReadKind;
-  /** UTF-8 decoded file body. Only populated when `kind === 'text'`. */
+  /** File body. UTF-8 string for `kind === 'text'`; base64 string for
+   *  `kind === 'image'`. Absent for `binary` / `oversized`. */
   content?: string;
-  encoding?: 'utf-8';
+  encoding?: 'utf-8' | 'base64';
+  /** MIME type — populated alongside base64 content for `kind === 'image'`. */
+  mimeType?: string;
   /** File size in bytes — present for every successful read (including
    *  binary/oversized) so the UI can show "3.2 MB binary file". */
   size?: number;

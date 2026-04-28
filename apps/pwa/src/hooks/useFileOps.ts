@@ -6,6 +6,7 @@ import type {
   FilesReadResponsePayload,
 } from '@sumicom/quicksave-shared';
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
+import { readWithCache } from '../lib/fileCache';
 
 /**
  * One-shot file browser commands. Pure request/response — no
@@ -31,7 +32,9 @@ export function useFileOps(getBus: () => MessageBusClient | null) {
 
   const readFile = useCallback(
     (payload: FilesReadRequestPayload) =>
-      sendCommand<FilesReadResponsePayload>('files:read', payload),
+      readWithCache(payload, (p) =>
+        sendCommand<FilesReadResponsePayload>('files:read', p),
+      ),
     [sendCommand],
   );
 

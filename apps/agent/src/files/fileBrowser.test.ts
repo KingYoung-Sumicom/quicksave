@@ -351,6 +351,72 @@ describe('FileBrowser', () => {
   });
 
   // -------------------------------------------------------------------------
+  // read() — image branch (allowImage)
+  // -------------------------------------------------------------------------
+  describe('read() image branch', () => {
+    // 1×1 transparent PNG.
+    const PNG_BYTES = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII=',
+      'base64',
+    );
+
+    it('returns kind "image" with base64 content + mimeType when allowImage is true', async () => {
+      writeFileSync(join(root, 'pixel.png'), PNG_BYTES);
+      const res = await fb.read({ cwd: root, path: 'pixel.png', allowImage: true });
+      expect(res.success).toBe(true);
+      expect(res.kind).toBe('image');
+      expect(res.encoding).toBe('base64');
+      expect(res.mimeType).toBe('image/png');
+      expect(res.content).toBe(PNG_BYTES.toString('base64'));
+    });
+
+    it('detects mime type by extension (case-insensitive)', async () => {
+      writeFileSync(join(root, 'pic.JPG'), PNG_BYTES); // bytes don't matter — mime is by extension
+      const res = await fb.read({ cwd: root, path: 'pic.JPG', allowImage: true });
+      expect(res.success).toBe(true);
+      expect(res.kind).toBe('image');
+      expect(res.mimeType).toBe('image/jpeg');
+    });
+
+    it('falls through to binary path for non-image extensions even when allowImage is true', async () => {
+      const buf = Buffer.from([0x00, 0x01, 0x02]);
+      writeFileSync(join(root, 'blob.dat'), buf);
+      const res = await fb.read({ cwd: root, path: 'blob.dat', allowImage: true });
+      expect(res.success).toBe(true);
+      expect(res.kind).toBe('binary');
+      expect(res.content).toBeUndefined();
+    });
+
+    it('without allowImage, image files still go through the binary path (unchanged default)', async () => {
+      writeFileSync(join(root, 'pixel.png'), PNG_BYTES);
+      const res = await fb.read({ cwd: root, path: 'pixel.png' });
+      expect(res.success).toBe(true);
+      expect(res.kind).toBe('binary');
+      expect(res.content).toBeUndefined();
+    });
+
+    it('image branch uses its own larger cap — files above the 512 KiB text cap still load', async () => {
+      // 600 KiB of "PNG" — bytes don't matter, the image branch trusts the
+      // extension and skips NUL sniffing.
+      const big = Buffer.alloc(600 * 1024, 0x42);
+      writeFileSync(join(root, 'big.png'), big);
+      const res = await fb.read({ cwd: root, path: 'big.png', allowImage: true });
+      expect(res.success).toBe(true);
+      expect(res.kind).toBe('image');
+      expect(res.content!.length).toBeGreaterThan(0);
+    });
+
+    it('image branch enforces its own ceiling — files above 4 MiB return oversized', async () => {
+      const huge = Buffer.alloc(5 * 1024 * 1024, 0x43); // 5 MiB
+      writeFileSync(join(root, 'huge.png'), huge);
+      const res = await fb.read({ cwd: root, path: 'huge.png', allowImage: true });
+      expect(res.success).toBe(true);
+      expect(res.kind).toBe('oversized');
+      expect(res.content).toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Singleton
   // -------------------------------------------------------------------------
   describe('singleton', () => {

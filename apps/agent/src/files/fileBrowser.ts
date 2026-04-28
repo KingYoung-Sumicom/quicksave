@@ -32,8 +32,30 @@ import type {
 const DEFAULT_PREVIEW_BYTES = 100 * 1024;
 /** Absolute ceiling on `maxBytes` regardless of what the PWA asks for. */
 const HARD_PREVIEW_BYTES = 512 * 1024;
+/** Larger ceiling when the caller opts in to image inlining (`allowImage`).
+ *  base64 inflates by ~33%, so 4 MiB on the wire ≈ 3 MiB of source pixels. */
+const HARD_IMAGE_BYTES = 4 * 1024 * 1024;
 /** Bytes to sniff when classifying a file as text vs binary (NUL byte = binary). */
 const SNIFF_BYTES = 8 * 1024;
+
+/** Extensions we recognise for inline image rendering. SVG is text and is
+ *  handled by the normal text path — it doesn't need base64. */
+const IMAGE_EXT_TO_MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+};
+
+function imageMimeFor(absPath: string): string | undefined {
+  const dot = absPath.lastIndexOf('.');
+  if (dot < 0) return undefined;
+  return IMAGE_EXT_TO_MIME[absPath.slice(dot + 1).toLowerCase()];
+}
 
 export class FileBrowser {
   async list(payload: FilesListRequestPayload): Promise<FilesListResponsePayload> {
@@ -85,9 +107,6 @@ export class FileBrowser {
         };
       }
 
-      const requested = payload.maxBytes ?? DEFAULT_PREVIEW_BYTES;
-      const cap = Math.max(1, Math.min(requested, HARD_PREVIEW_BYTES));
-
       const meta = {
         cwd: payload.cwd,
         path: payload.path,
@@ -95,6 +114,29 @@ export class FileBrowser {
         size: stats.size,
         mtime: Math.floor(stats.mtimeMs),
       };
+
+      // Image branch — opt-in via `allowImage`. We use a separate, larger
+      // cap because images legitimately exceed the 100 KiB text preview
+      // budget, but we still bound it so a stray multi-MB asset can't
+      // saturate the channel.
+      const imageMime = payload.allowImage ? imageMimeFor(targetAbs) : undefined;
+      if (imageMime) {
+        if (stats.size > HARD_IMAGE_BYTES) {
+          return { success: true, ...meta, kind: 'oversized' };
+        }
+        const buf = await readFile(targetAbs);
+        return {
+          success: true,
+          ...meta,
+          kind: 'image',
+          content: buf.toString('base64'),
+          encoding: 'base64',
+          mimeType: imageMime,
+        };
+      }
+
+      const requested = payload.maxBytes ?? DEFAULT_PREVIEW_BYTES;
+      const cap = Math.max(1, Math.min(requested, HARD_PREVIEW_BYTES));
 
       if (stats.size > cap) {
         return { success: true, ...meta, kind: 'oversized' };

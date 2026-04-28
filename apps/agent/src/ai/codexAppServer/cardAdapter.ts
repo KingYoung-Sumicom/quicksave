@@ -690,10 +690,17 @@ export async function consumeAppServerStream(
       const cardId = changes.length > 1 ? `${item.id}#${i}` : item.id;
       const filePath = extractFileChangePath(change) ?? '(unknown)';
       const kind = extractFileChangeKind(change);
-      if (!state.fileChangeCardsAdded.has(cardId) && !cb.hasToolCard(cardId)) {
-        emit(cb.toolUse(kind, { file_path: filePath }, cardId));
-        state.fileChangeCardsAdded.add(cardId);
-      }
+      const { oldText, newText } = parseUnifiedDiff(extractFileChangeDiff(change));
+      const toolInput: Record<string, unknown> =
+        kind === 'Write'
+          ? { file_path: filePath, content: newText }
+          : { file_path: filePath, old_string: oldText, new_string: newText };
+      // Always emit toolUse — first call adds the card, subsequent calls
+      // patch toolInput via cardBuilder's dedup. item/started typically
+      // carries an empty diff; item/completed carries the final patch,
+      // so re-emitting refreshes the (-N/+M) counts and the rendered diff.
+      emit(cb.toolUse(kind, toolInput, cardId));
+      state.fileChangeCardsAdded.add(cardId);
       if (emitResults) {
         const failed = item.status === 'failed';
         emit(
@@ -785,6 +792,31 @@ function extractFileChangePath(change: unknown): string | null {
   if (typeof change !== 'object' || change === null) return null;
   const c = change as { path?: string; filePath?: string; file_path?: string };
   return c.path ?? c.filePath ?? c.file_path ?? null;
+}
+
+function extractFileChangeDiff(change: unknown): string {
+  if (typeof change !== 'object' || change === null) return '';
+  const c = change as { diff?: unknown };
+  return typeof c.diff === 'string' ? c.diff : '';
+}
+
+/** Parse a Codex `FileUpdateChange.diff` (unified-diff format) into the
+ *  removed/added text the EditToolView expects in `old_string`/`new_string`.
+ *  Context lines and hunk/file headers are skipped — EditToolView prepends
+ *  its own `-`/`+` markers, so we only feed it the actual changed lines. */
+function parseUnifiedDiff(diff: string): { oldText: string; newText: string } {
+  if (!diff) return { oldText: '', newText: '' };
+  const oldLines: string[] = [];
+  const newLines: string[] = [];
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('@@')) continue;
+    if (line.startsWith('---') || line.startsWith('+++')) continue;
+    if (line.startsWith('\\')) continue; // "\ No newline at end of file"
+    if (line.startsWith('-')) oldLines.push(line.slice(1));
+    else if (line.startsWith('+')) newLines.push(line.slice(1));
+    // Context lines (' ' prefix) and blanks are intentionally dropped.
+  }
+  return { oldText: oldLines.join('\n'), newText: newLines.join('\n') };
 }
 
 function extractFileChangeKind(change: unknown): 'Edit' | 'Write' {

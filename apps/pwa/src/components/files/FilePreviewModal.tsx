@@ -7,6 +7,7 @@ import { useFilePreviewStore, type FilePreviewRequest } from '../../stores/fileP
 import { useFileOps } from '../../hooks/useFileOps';
 import { getActiveBus } from '../../lib/busRegistry';
 import { Spinner } from '../ui/Spinner';
+import { MarkdownPreview } from './MarkdownPreview';
 
 /**
  * Single mount point — App.tsx renders this once. It subscribes to the
@@ -79,6 +80,8 @@ function PreviewBody({
 
   const displayPath = data?.absolutePath ?? request.path;
   const fileName = displayPath.split('/').pop() || displayPath;
+  const isMarkdown = useMemo(() => isMarkdownPath(displayPath), [displayPath]);
+  const [renderMarkdown, setRenderMarkdown] = useState(true);
 
   return (
     <div className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center sm:p-4">
@@ -96,6 +99,15 @@ function PreviewBody({
             <p className="text-sm font-medium text-slate-100 truncate">{fileName}</p>
             <p className="text-[11px] text-slate-500 truncate">{displayPath}</p>
           </div>
+          {isMarkdown && data?.kind === 'text' && (
+            <button
+              onClick={() => setRenderMarkdown((v) => !v)}
+              className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
+              title={renderMarkdown ? 'Show raw source' : 'Render markdown'}
+            >
+              {renderMarkdown ? 'Raw' : 'Rendered'}
+            </button>
+          )}
           <button
             onClick={onClose}
             className="p-1 hover:bg-slate-700 rounded-md transition-colors shrink-0"
@@ -122,7 +134,12 @@ function PreviewBody({
           )}
 
           {!loading && data?.success && (
-            <PreviewContent data={data} displayPath={displayPath} />
+            <PreviewContent
+              data={data}
+              displayPath={displayPath}
+              cwd={request.cwd}
+              renderMarkdown={isMarkdown && renderMarkdown}
+            />
           )}
         </div>
 
@@ -146,9 +163,13 @@ function PreviewBody({
 function PreviewContent({
   data,
   displayPath,
+  cwd,
+  renderMarkdown,
 }: {
   data: FilesReadResponsePayload;
   displayPath: string;
+  cwd: string;
+  renderMarkdown: boolean;
 }) {
   const lang = useMemo(() => detectLanguage(displayPath), [displayPath]);
   const highlighted = useMemo(() => {
@@ -176,6 +197,15 @@ function PreviewContent({
       </div>
     );
   }
+  if (renderMarkdown && data.kind === 'text' && typeof data.content === 'string') {
+    return (
+      <MarkdownPreview
+        source={data.content}
+        fileAbsolutePath={data.absolutePath ?? displayPath}
+        cwd={cwd}
+      />
+    );
+  }
   if (highlighted) {
     return (
       <pre className="px-4 py-3 text-[12px] leading-snug whitespace-pre overflow-x-auto font-mono">
@@ -191,6 +221,11 @@ function PreviewContent({
       {data.content ?? ''}
     </pre>
   );
+}
+
+function isMarkdownPath(filePath: string): boolean {
+  const name = (filePath.split('/').pop() ?? '').toLowerCase();
+  return name.endsWith('.md') || name.endsWith('.markdown') || name.endsWith('.mdx');
 }
 
 /**
