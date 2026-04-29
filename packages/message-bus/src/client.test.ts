@@ -8,6 +8,7 @@ class StubClientTransport implements ClientTransport {
   private frameHandler?: (frame: ServerFrame) => void;
   private connectHandler?: () => void;
   private disconnectHandler?: () => void;
+  private reestablishedHandler?: () => void;
   private connected = true;
 
   send(frame: ClientFrame): void {
@@ -22,13 +23,26 @@ class StubClientTransport implements ClientTransport {
   onDisconnected(handler: () => void): void {
     this.disconnectHandler = handler;
   }
+  onReestablished(handler: () => void): void {
+    this.reestablishedHandler = handler;
+  }
   isConnected(): boolean {
     return this.connected;
   }
   setConnected(value: boolean): void {
     this.connected = value;
-    if (value) this.connectHandler?.();
-    else this.disconnectHandler?.();
+    if (value) {
+      this.connectHandler?.();
+      // Mirror real transports: every fresh upstream session fires
+      // reestablished alongside the connected transition.
+      this.reestablishedHandler?.();
+    } else {
+      this.disconnectHandler?.();
+    }
+  }
+  /** Fire onReestablished without changing connected state (blip recovery). */
+  fireReestablished(): void {
+    this.reestablishedHandler?.();
   }
   emit(frame: ServerFrame): void {
     this.frameHandler?.(frame);
@@ -192,6 +206,19 @@ describe('MessageBusClient - subscriptions', () => {
     transport.clear();
     transport.setConnected(false);
     transport.setConnected(true);
+    expect(transport.sent).toEqual([{ kind: 'sub', path: '/x/1' }]);
+  });
+
+  it('re-subscribes on reestablish even when the transport never transitioned to disconnected', () => {
+    // Mirrors the prod PWA scenario: the WebSocket layer suppresses the
+    // per-agent disconnect during a brief blip (to keep streaming UI alive),
+    // but the agent still wipes the peer's subs on its end. The bus must
+    // re-send sub frames when notifyReestablished fires, even though
+    // transport.isConnected stayed true the whole time.
+    client.subscribe('/x/1', { onSnapshot: vi.fn(), onUpdate: vi.fn() });
+    transport.clear();
+    expect(transport.isConnected()).toBe(true);
+    transport.fireReestablished();
     expect(transport.sent).toEqual([{ kind: 'sub', path: '/x/1' }]);
   });
 

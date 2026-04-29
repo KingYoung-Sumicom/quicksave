@@ -95,6 +95,7 @@ export class FakeClientTransport implements ClientTransport {
   private frameHandlers: Array<(frame: ServerFrame) => void> = [];
   private connectHandlers: Array<() => void> = [];
   private disconnectHandlers: Array<() => void> = [];
+  private reestablishedHandlers: Array<() => void> = [];
   private connected = false;
 
   constructor(
@@ -108,8 +109,11 @@ export class FakeClientTransport implements ClientTransport {
     this.pipe.server._registerPeer(this.peerId, this.pipe);
     this.pipe._notifyServerOfConnect(this.peerId);
     // Fire local handlers on next microtask so subscribers can wire up first.
+    // Each `connect()` represents a fresh upstream session, so fire
+    // onReestablished alongside onConnected to drive sub re-send.
     queueMicrotask(() => {
       for (const handler of this.connectHandlers) handler();
+      for (const handler of this.reestablishedHandlers) handler();
     });
   }
 
@@ -137,6 +141,10 @@ export class FakeClientTransport implements ClientTransport {
 
   onDisconnected(handler: () => void): void {
     this.disconnectHandlers.push(handler);
+  }
+
+  onReestablished(handler: () => void): void {
+    this.reestablishedHandlers.push(handler);
   }
 
   isConnected(): boolean {

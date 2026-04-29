@@ -119,9 +119,20 @@ interface ClientTransport {
   onFrame(handler: (frame: ServerFrame) => void): void;
   onConnected(handler: () => void): void;
   onDisconnected(handler: () => void): void;
+  onReestablished(handler: () => void): void;
   isConnected(): boolean;
 }
 ```
+
+`onConnected` / `onDisconnected` track whether the transport is currently
+up; they should be idempotent on already-in-state. `onReestablished` is
+distinct and fires every time a fresh upstream session has just been
+established (e.g. a successful handshake-ack), even when the transport's
+`connected` flag never transitioned to disconnected. The bus uses it to
+re-send `sub` frames, because the server drops a peer's subscriptions per
+disconnect — if the wire layer masks brief blips from `onDisconnected` to
+keep in-flight commands alive, only `onReestablished` will tell the bus
+that its server-side subscription state needs rebuilding.
 
 For an example over an existing WebSocket layer, see Quicksave's
 `apps/agent/src/messageBus/busServerTransport.ts` and

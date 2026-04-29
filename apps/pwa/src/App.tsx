@@ -573,6 +573,13 @@ function AppContent() {
       onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences, agentVersion, latestVersion, devBuild, codexModels) => {
         const { transport } = ensureBusForAgent(agentId);
         transport.notifyConnected();
+        // Each handshake-ack establishes a fresh agent session and the agent
+        // wipes the peer's bus subscriptions on disconnect, so every link
+        // refresh — including reconnects where notifyDisconnected was
+        // intentionally suppressed to keep streaming UI alive — must re-send
+        // sub frames. notifyConnected is a no-op when already-connected;
+        // notifyReestablished is what drives sub re-send on those blips.
+        transport.notifyReestablished();
         agentIdRef.current = agentId;
         if (preferences) {
           // Server prefs are claude-scoped — write to claude-code's bucket

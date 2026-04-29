@@ -271,6 +271,7 @@ export class FakePwa {
     // wait for an `agent-status: online=true` push.
     await ackPromise;
     this.busTransport._fireConnected();
+    this.busTransport._fireReestablished();
   }
 
   /**
@@ -361,10 +362,14 @@ export class FakePwa {
         const obj = JSON.parse(payload) as { type?: string; version?: number };
         if (obj.type === 'key-exchange-ack' && obj.version === 2) {
           this.keyExchangeComplete = true;
-          // Idempotent: returns early if the bus transport is already
-          // connected (e.g. on the very first ack `doStart` already awaits
-          // the same event and calls this itself; no harm in firing twice).
+          // _fireConnected is idempotent on already-connected (e.g. the very
+          // first ack — `doStart` awaits this same event and fires it itself,
+          // no harm). _fireReestablished always fires: each ack means the
+          // agent freshly re-keyed and dropped its server-side bus subs, so
+          // the bus client must re-send sub frames even when the transport's
+          // connected flag never transitioned.
           this.busTransport._fireConnected();
+          this.busTransport._fireReestablished();
           this.events.emit('key-exchange-ack');
           return;
         }
@@ -476,6 +481,7 @@ class FakePwaBusTransport implements ClientTransport {
   private frameHandlers: Array<(frame: ServerFrame) => void> = [];
   private connectHandlers: Array<() => void> = [];
   private disconnectHandlers: Array<() => void> = [];
+  private reestablishedHandlers: Array<() => void> = [];
   private outboundQueue: Promise<void> = Promise.resolve();
 
   /** `dispatch` runs the encrypt+send pipeline; rejection means crypto/IO error. */
@@ -507,6 +513,10 @@ class FakePwaBusTransport implements ClientTransport {
     this.disconnectHandlers.push(handler);
   }
 
+  onReestablished(handler: () => void): void {
+    this.reestablishedHandlers.push(handler);
+  }
+
   _receive(frame: ServerFrame): void {
     for (const h of this.frameHandlers) h(frame);
   }
@@ -521,6 +531,15 @@ class FakePwaBusTransport implements ClientTransport {
     if (!this.connected) return;
     this.connected = false;
     for (const h of this.disconnectHandlers) h();
+  }
+
+  /**
+   * Fire `onReestablished` regardless of `connected` state. Mirrors the prod
+   * PWA path where every key-exchange-ack triggers a sub re-send, even on
+   * reconnects where `_fireDisconnected` was intentionally suppressed.
+   */
+  _fireReestablished(): void {
+    for (const h of this.reestablishedHandlers) h();
   }
 }
 

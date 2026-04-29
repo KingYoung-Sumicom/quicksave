@@ -21,11 +21,18 @@ import type { WebSocketClient } from './websocket.js';
  *  - Receives connect/disconnect signals from the host (via
  *    {@link notifyConnected} / {@link notifyDisconnected}), mirroring the
  *    events the host already observes on the shared client.
+ *  - Receives a separate {@link notifyReestablished} signal each time a
+ *    fresh handshake-ack arrives. The host calls this on every successful
+ *    key-exchange completion — including reconnects where it deliberately
+ *    suppresses {@link notifyDisconnected} to keep streaming UI alive — so
+ *    the bus client can re-send `sub` frames against the agent's freshly
+ *    initialized subscription map.
  */
 export class BusClientTransport implements ClientTransport {
   private frameHandlers: Array<(frame: ServerFrame) => void> = [];
   private connectHandlers: Array<() => void> = [];
   private disconnectHandlers: Array<() => void> = [];
+  private reestablishedHandlers: Array<() => void> = [];
   private connected = false;
 
   constructor(private client: WebSocketClient, private agentId: string) {}
@@ -61,6 +68,22 @@ export class BusClientTransport implements ClientTransport {
     for (const h of this.disconnectHandlers) h();
   }
 
+  /**
+   * Signal that a fresh upstream session has just been established
+   * (handshake-ack). Always fires `onReestablished` handlers, regardless of
+   * the current `connected` flag — the agent wipes the peer's subscription
+   * map every disconnect, so each new key-exchange means previously-sent
+   * `sub` frames are gone server-side and the bus must re-send them.
+   *
+   * Distinct from {@link notifyConnected} because the host suppresses the
+   * connected/disconnected transitions during brief WebSocket blips (to keep
+   * in-flight commands and the streaming card UI alive); reestablishment is
+   * the signal that survives that suppression.
+   */
+  notifyReestablished(): void {
+    for (const h of this.reestablishedHandlers) h();
+  }
+
   send(frame: ClientFrame): void {
     const envelope = createMessage('bus:frame', frame);
     this.client.sendToAgent(this.agentId, envelope);
@@ -76,6 +99,10 @@ export class BusClientTransport implements ClientTransport {
 
   onDisconnected(handler: () => void): void {
     this.disconnectHandlers.push(handler);
+  }
+
+  onReestablished(handler: () => void): void {
+    this.reestablishedHandlers.push(handler);
   }
 
   isConnected(): boolean {

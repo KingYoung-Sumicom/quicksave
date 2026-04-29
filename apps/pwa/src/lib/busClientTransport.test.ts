@@ -144,6 +144,59 @@ describe('BusClientTransport — connection state', () => {
   });
 });
 
+describe('BusClientTransport — reestablished signal', () => {
+  it('fires onReestablished handlers and does not flip the connected flag', () => {
+    const { transport } = makeTransport();
+    const h = vi.fn();
+    transport.onReestablished(h);
+
+    expect(transport.isConnected()).toBe(false);
+    transport.notifyReestablished();
+    expect(h).toHaveBeenCalledTimes(1);
+    expect(transport.isConnected()).toBe(false); // unchanged
+  });
+
+  it('fires onReestablished every time, regardless of connected state', () => {
+    // The whole point of the split: this signal must keep firing even when
+    // notifyConnected has already early-returned. Each fresh handshake-ack
+    // means the agent wiped the peer's bus subs server-side and the client
+    // must re-send them.
+    const { transport } = makeTransport();
+    const reestablished = vi.fn();
+    transport.onReestablished(reestablished);
+
+    transport.notifyConnected();
+    transport.notifyReestablished();
+    transport.notifyReestablished();
+    transport.notifyReestablished();
+
+    expect(reestablished).toHaveBeenCalledTimes(3);
+    expect(transport.isConnected()).toBe(true);
+  });
+
+  it('does not fire onConnected handlers when notifyReestablished is called', () => {
+    const { transport } = makeTransport();
+    const connected = vi.fn();
+    transport.onConnected(connected);
+
+    transport.notifyReestablished();
+
+    expect(connected).not.toHaveBeenCalled();
+  });
+
+  it('fires multiple onReestablished handlers in registration order', () => {
+    const { transport } = makeTransport();
+    const order: string[] = [];
+    transport.onReestablished(() => order.push('r1'));
+    transport.onReestablished(() => order.push('r2'));
+    transport.onReestablished(() => order.push('r3'));
+
+    transport.notifyReestablished();
+
+    expect(order).toEqual(['r1', 'r2', 'r3']);
+  });
+});
+
 describe('BusClientTransport — notifyMessage inbound', () => {
   it('returns true and forwards payload to every onFrame handler for bus:frame messages', () => {
     const { transport } = makeTransport();

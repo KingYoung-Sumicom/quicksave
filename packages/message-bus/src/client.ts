@@ -63,6 +63,7 @@ export class MessageBusClient {
   constructor(private transport: ClientTransport) {
     transport.onFrame((frame) => this.handleFrame(frame));
     transport.onConnected(() => this.handleConnected());
+    transport.onReestablished(() => this.handleReestablished());
     transport.onDisconnected(() => this.handleDisconnected());
   }
 
@@ -250,10 +251,18 @@ export class MessageBusClient {
     const pending = this.queue;
     this.queue = [];
     for (const fn of pending) fn();
-    // Re-establish wire subscriptions. Clear lastSeq so the fresh snapshot
-    // is always accepted — the server may have restarted and reset its
-    // counter, in which case our stale lastSeq would erroneously drop
-    // everything the new server sends.
+  }
+
+  private handleReestablished(): void {
+    // Re-establish wire subscriptions. The server drops a peer's `active`
+    // entries on disconnect, so every fresh upstream session starts with a
+    // blank server-side subscription map — even if our local transport flag
+    // never transitioned to disconnected (e.g. the PWA WebSocket masks brief
+    // blips to keep in-flight commands alive). Re-sending sub frames here is
+    // idempotent on the server: it overwrites any stale entry it might still
+    // have. Clear lastSeq so the fresh snapshot is always accepted — the
+    // server may have restarted with a fresh counter, in which case our
+    // stale lastSeq would erroneously drop everything the new server sends.
     for (const state of this.subs.values()) {
       state.lastSeq = undefined;
       this.transport.send({ kind: 'sub', path: state.path });
