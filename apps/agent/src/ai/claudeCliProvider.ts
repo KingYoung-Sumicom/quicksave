@@ -223,6 +223,10 @@ export class CliProviderSession implements ProviderSession {
    * follow-up prompt in streamingCards so getCards on refresh returns it
    * before the CLI has flushed it to the session JSONL. */
   public cardBuilder: StreamCardBuilder | null = null;
+  /** Callbacks for this session — used by sendUserMessage to emit a
+   * user-message card-event so other PWA tabs subscribed to this session
+   * see follow-up prompts in real time. */
+  public callbacks: ProviderCallbacks | null = null;
 
   constructor(proc: ChildProcess) {
     this.process = proc;
@@ -272,12 +276,16 @@ export class CliProviderSession implements ProviderSession {
   sendUserMessage(prompt: string): void {
     if (!this.process || this.process.killed) return;
     // Record the prompt in the cardBuilder so getCards on reconnect/refresh
-    // returns it before the CLI has flushed it to the session JSONL. The PWA
-    // already shows an optimistic user card, so we don't emit a card-event.
+    // returns it before the CLI has flushed it to the session JSONL.
     // (--replay-user-messages will echo this prompt back to us; the
     // `isReplay` filter in routeMessage relies on this entry already
     // existing to dedupe.)
-    this.cardBuilder?.userMessage(prompt);
+    const userEvent = this.cardBuilder?.userMessage(prompt);
+    // Emit the card-event so other PWA tabs subscribed to this session see
+    // the follow-up prompt in real time. The sending tab already rendered an
+    // optimistic user card; claudeStore.handleCardEvent dedupes by text +
+    // recent timestamp so the duplicate does not stack.
+    if (userEvent) this.callbacks?.emitCardEvent(userEvent);
     // Pause the idle clock immediately — CLI will start a new turn once it
     // reads this stdin, even before it emits the first stream event.
     this.activeTurn = true;
@@ -480,6 +488,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
 
     const cliSession = new CliProviderSession(proc);
     cliSession.cardBuilder = cardBuilder;
+    cliSession.callbacks = callbacks;
     const debugLog = new DebugLogger(sessionId);
     cliSession.debugLog = debugLog;
 
@@ -519,11 +528,12 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     cb.startNewTurn();
     cliSession.activeTurn = true;
 
-    // Add user prompt to cardBuilder (for getCards on reconnect) but don't emit
-    // as a card-event — the PWA already shows an optimistic user card.
+    // Record + emit the initial user prompt so other PWA tabs subscribed to
+    // this session see it in real time. The sending tab dedupes the
+    // optimistic card it already rendered (by text + recent timestamp).
     if (prompt) {
       const userCardEvent = cb.userMessage(prompt);
-      debugLog?.logCardEvent(userCardEvent); // log to debug cards JSONL even though not emitted to PWA
+      emitCard(userCardEvent);
     }
 
     const flushText = () => {

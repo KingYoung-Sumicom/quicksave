@@ -45,6 +45,10 @@ export class SdkProviderSession implements ProviderSession {
   private queryHandle: Query | null;
   private inputQueue: AsyncQueue<SDKUserMessage>;
   private cardBuilder: StreamCardBuilder;
+  /** Callbacks for this session — used by sendUserMessage to emit the
+   * follow-up prompt as a card-event so other PWA tabs subscribed to this
+   * session see it in real time. Populated by start/resumeSession. */
+  public callbacks: ProviderCallbacks | null = null;
 
   constructor(
     queryHandle: Query,
@@ -59,9 +63,12 @@ export class SdkProviderSession implements ProviderSession {
   sendUserMessage(prompt: string): void {
     if (!this.queryHandle) return;
     // Record the prompt in the cardBuilder so getCards on reconnect/refresh
-    // returns it before the SDK has flushed it to the session JSONL. The PWA
-    // already shows an optimistic user card, so we don't emit a card-event.
-    this.cardBuilder.userMessage(prompt);
+    // returns it before the SDK has flushed it to the session JSONL.
+    const userEvent = this.cardBuilder.userMessage(prompt);
+    // Emit the card-event so other PWA tabs subscribed to this session see
+    // the follow-up prompt in real time. The sending tab dedupes its
+    // optimistic card by text + recent timestamp in claudeStore.
+    this.callbacks?.emitCardEvent(userEvent);
     const userMsg: SDKUserMessage = {
       type: 'user',
       message: { role: 'user', content: prompt },
@@ -128,6 +135,7 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     sessionIdRef.current = sessionId;
 
     const sdkSession = new SdkProviderSession(queryHandle, inputQueue, cardBuilder);
+    sdkSession.callbacks = callbacks;
 
     // Update cardBuilder with real sessionId
     cardBuilder.updateSessionId(sessionId);
@@ -163,6 +171,7 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     sessionIdRef.current = sessionId;
 
     const sdkSession = new SdkProviderSession(queryHandle, inputQueue, cardBuilder);
+    sdkSession.callbacks = callbacks;
 
     // Update cardBuilder with confirmed sessionId
     cardBuilder.updateSessionId(sessionId);
@@ -314,9 +323,11 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
 
     cb.startNewTurn();
 
-    // Add user prompt to cardBuilder (for getCards on reconnect) but don't emit
+    // Record + emit the initial user prompt so other PWA tabs subscribed to
+    // this session see it in real time. The sending tab dedupes its
+    // optimistic card by text + recent timestamp in claudeStore.
     if (prompt) {
-      cb.userMessage(prompt);
+      emitCard(cb.userMessage(prompt));
     }
 
     const flushText = () => {

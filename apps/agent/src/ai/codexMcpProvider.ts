@@ -195,7 +195,10 @@ class CodexMcpSession implements ProviderSession {
         const turn: ActiveTurn = { ...queued, ended: false, sawAssistantOutput: false };
         this.activeTurn = turn;
         this.cardBuilder.startNewTurn();
-        this.cardBuilder.userMessage(turn.prompt);
+        // Record + emit the user prompt so other PWA tabs subscribed to this
+        // session see it in real time. The sending tab dedupes its
+        // optimistic card by text + recent timestamp in claudeStore.
+        this.callbacks.emitCardEvent(this.cardBuilder.userMessage(turn.prompt));
 
         try {
           const result = await this.client.callTool({
