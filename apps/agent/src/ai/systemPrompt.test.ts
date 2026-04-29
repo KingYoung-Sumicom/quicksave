@@ -19,4 +19,13 @@ describe('buildSystemPrompt', () => {
   it('appends caller-provided instructions', () => {
     expect(buildSystemPrompt('codex', 'extra instruction')).toContain('\n\nextra instruction');
   });
+
+  it('instructs every agent to add the Quicksave AI commit trailer alongside the platform default', () => {
+    for (const agent of ['claude-code', 'codex'] as const) {
+      const prompt = buildSystemPrompt(agent);
+      expect(prompt).toContain('Co-Authored-By: Quicksave AI <save@quicksave.dev>');
+      expect(prompt).toContain('alongside');
+      expect(prompt).toContain('in addition to');
+    }
+  });
 });

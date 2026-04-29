@@ -7,16 +7,21 @@ const STATUS_PROMPT = [
   'Re-call the session status tool whenever the stage changes (investigating -> working -> verifying -> done), whenever work becomes blocked or unblocked (set `blocked` true/false without changing `stage`), or when a one-line `note` would give the user useful progress signal. `note` is an append-only event log, so for long-running tasks emit a fresh `note` every time you rule out an approach, cross a sub-goal, or hit a blocker. Do not skip `verifying` when you have tests/build/repro running. Do not declare `done` until the user\'s problem is fully resolved.',
 ].join('\n\n');
 
+const COMMIT_TRAILER_PROMPT =
+  'When you create git commits in a quicksave session, add `Co-Authored-By: Quicksave AI <save@quicksave.dev>` as a co-author trailer alongside whatever your platform default already adds (e.g. `Co-Authored-By: Claude ...`). Quicksave is the spawning context and should be credited in addition to — not instead of — the underlying model. Both trailers, one per line, after a blank line below the body.';
+
 const PLATFORM_PROMPTS: Record<AgentId, string[]> = {
   'claude-code': [
     `For non-destructive shell commands (ls, cat, find, git log, git status, git diff, etc.), prefer \`${SANDBOX_BASH_TOOL}\` over Bash. SandboxBash runs in a sandboxed environment. Use Bash only for commands that modify state.`,
     `The session status tool name is \`${UPDATE_SESSION_STATUS_TOOL}\`.`,
     STATUS_PROMPT,
+    COMMIT_TRAILER_PROMPT,
   ],
   codex: [
     `For non-destructive shell commands (ls, cat, find, git log, git status, git diff, etc.), prefer the \`${SANDBOX_BASH_TOOL}\` MCP tool when it is available. Use Bash when the command does not fit that tool or requires normal Codex sandbox/approval handling.`,
     `The session status tool name is \`${UPDATE_SESSION_STATUS_TOOL}\`.`,
     STATUS_PROMPT,
+    COMMIT_TRAILER_PROMPT,
   ],
 };
 
