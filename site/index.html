@@ -109,6 +109,60 @@
           transparent 100%
         );
       }
+
+      /* Phone mockup frame */
+      .phone {
+        width: 280px;
+        aspect-ratio: 9 / 19;
+        border-radius: 2.5rem;
+        padding: 0.5rem;
+        background: linear-gradient(160deg, #1e293b, #020617);
+        box-shadow:
+          0 0 0 1px rgba(148, 163, 184, 0.15),
+          0 20px 40px -12px rgba(0, 0, 0, 0.6),
+          0 0 60px -20px rgba(34, 197, 94, 0.25);
+      }
+      .phone-screen {
+        position: relative;
+        height: 100%;
+        width: 100%;
+        overflow: hidden;
+        border-radius: 2rem;
+        background: #0f172a;
+        display: flex;
+        flex-direction: column;
+      }
+      .phone-notch {
+        position: absolute;
+        top: 0.5rem;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 70px;
+        height: 18px;
+        background: #020617;
+        border-radius: 999px;
+        z-index: 10;
+      }
+      /* Pulse animation for streaming/working status dots inside mockups */
+      @keyframes phone-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
+      .phone-pulse {
+        animation: phone-pulse 1.6s ease-in-out infinite;
+      }
+
+      /* Replicate the PWA's custom utility classes so the inline mockups
+         render exactly the way the live app does (these are defined in
+         apps/pwa/src/index.css and apps/pwa/tailwind.config.js, which
+         the Tailwind CDN script doesn't know about). */
+      .list-title { color: #fff; }                          /* @apply text-white */
+      .list-meta  { color: rgb(148 163 184); }              /* @apply text-slate-400 */
+      .diff-line-add    { background-color: rgba(34, 197, 94, 0.2); }
+      .diff-line-remove { background-color: rgba(239, 68, 68, 0.2); }
+      .diff-line-context { background-color: transparent; }
+      .text-added   { color: #22c55e; }                     /* tailwind.config.js color: added */
+      .text-deleted { color: #ef4444; }                     /* tailwind.config.js color: deleted */
     </style>
   </head>
 
@@ -218,6 +272,308 @@
           >
             copy
           </button>
+        </div>
+      </div>
+
+      <!--
+        Mockup DOM: phone frames showing the PWA's UI. Each panel is a 1:1
+        replica of the live React component in `apps/pwa/src/components/`
+        — same Tailwind classes, same hierarchy — populated with obviously
+        placeholder data (Sample / Demo labels, generic file paths,
+        lorem-y branch names) so we never claim a specific scenario.
+
+        Components mirrored:
+          • Phone 1  → SessionTicketCard.tsx
+          • Phone 2  → ToolCallMessage.tsx + Read/Edit/Bash tool views
+                       + InlinePermissionActions.tsx
+          • Phone 3  → DiffViewer.tsx (unified narrow mode)
+      -->
+      <div
+        class="mt-20 flex snap-x snap-mandatory items-end justify-start gap-6 overflow-x-auto px-2 pb-4 lg:justify-center lg:overflow-visible"
+        aria-label="Quicksave on a phone — mockup"
+      >
+        <!-- ─── Phone 1: Sessions list ─────────────────────────────────── -->
+        <!-- Each row is a 1:1 SessionTicketCard.tsx replica:
+             button.w-full.text-left.flex.items-start.gap-3.px-4.py-2.5
+                ▸ span.w-2.h-2.rounded-full.shrink-0.mt-1.5  (status dot)
+                ▸ div.flex-1.min-w-0
+                    ▸ p.list-title.text-sm.line-clamp-2     (subject)
+                    ▸ div.list-meta.flex.items-center.gap-2.mt-0.5.text-[11px].flex-wrap
+                        ▸ stage chip   ▸ agent chip
+                        ▸ branch row   ▸ clock row
+                    ▸ p.text-[11px].text-slate-200.mt-0.5  (note, optional)
+                ▸ Chevron -->
+        <div class="phone shrink-0 snap-center lg:-mr-8 lg:translate-y-4 lg:rotate-[-4deg]">
+          <div class="phone-screen text-left">
+            <div class="phone-notch"></div>
+            <!-- App-bar: matches PWA top header (logo dot + label) -->
+            <div class="flex items-center justify-between border-b border-slate-700/60 px-4 pt-7 pb-3">
+              <div class="flex items-center gap-1.5">
+                <div class="h-1.5 w-1.5 rounded-full bg-accent"></div>
+                <span class="text-sm font-semibold tracking-tight text-white">Quicksave</span>
+              </div>
+              <span class="text-[10px] uppercase tracking-wide text-slate-500">demo</span>
+            </div>
+            <!-- Tabs row (sessions / terminals / files) -->
+            <div class="flex border-b border-slate-700/60 px-2 text-[11px] font-medium">
+              <div class="border-b-2 border-blue-400 px-2 py-2 text-blue-400">Sessions</div>
+              <div class="px-2 py-2 text-slate-500">Terminals</div>
+              <div class="px-2 py-2 text-slate-500">Files</div>
+            </div>
+            <!-- SessionTicketCard list.
+                 IMPORTANT: the leading dot tracks RUNTIME STATUS (from
+                 SessionStatusBadge.tsx → SESSION_STATUS), not the stage
+                 chip. SessionTicketCard's own comment explains why: the
+                 dot must keep surfacing live signals (pending permission,
+                 thinking) and never get masked by stage. Real palette:
+                   thinking → bg-blue-400  + animate-pulse
+                   pending  → bg-orange-400 + animate-pulse
+                   waiting  → bg-blue-400  + animate-pulse
+                   standby  → bg-green-400
+                   closed   → bg-slate-500
+                 The chip labels below the title carry the stage color. -->
+            <div class="flex-1 overflow-hidden">
+              <!-- verifying stage, idle → standby (green) -->
+              <div class="w-full text-left flex items-start gap-3 px-4 py-2.5">
+                <span class="w-2 h-2 rounded-full shrink-0 mt-1.5 bg-green-400"></span>
+                <div class="flex-1 min-w-0">
+                  <p class="list-title text-sm line-clamp-2">Sample task — payload refactor</p>
+                  <div class="list-meta flex items-center gap-2 mt-0.5 text-[11px] flex-wrap">
+                    <span class="px-1.5 py-px rounded font-medium bg-violet-500/10 text-violet-300">Verifying</span>
+                    <span class="px-1.5 py-px rounded font-medium bg-slate-500/15 text-slate-300">Claude</span>
+                    <span class="inline-flex items-center gap-1"><svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="9" r="2"/><path stroke-linecap="round" d="M6 7v10M18 11c0 3-4 4-6 4H6"/></svg>demo/branch-a</span>
+                  </div>
+                </div>
+                <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+              </div>
+              <!-- working stage, currently streaming → thinking (blue, pulse).
+                   Row also has bg-slate-700/40 (isActive highlight). -->
+              <div class="w-full text-left flex items-start gap-3 px-4 py-2.5 bg-slate-700/40">
+                <span class="w-2 h-2 rounded-full shrink-0 mt-1.5 bg-blue-400 animate-pulse"></span>
+                <div class="flex-1 min-w-0">
+                  <p class="list-title text-sm line-clamp-2">Demo session — feature toggle</p>
+                  <div class="list-meta flex items-center gap-2 mt-0.5 text-[11px] flex-wrap">
+                    <span class="px-1.5 py-px rounded font-medium bg-amber-500/10 text-amber-300">Working</span>
+                    <span class="px-1.5 py-px rounded font-medium bg-slate-500/15 text-slate-300">Claude</span>
+                    <span class="inline-flex items-center gap-1"><svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="9" r="2"/><path stroke-linecap="round" d="M6 7v10M18 11c0 3-4 4-6 4H6"/></svg>demo/branch-b</span>
+                  </div>
+                  <p class="text-[11px] text-slate-200 mt-0.5 line-clamp-3 whitespace-pre-wrap break-words">─ editing FeatureFlagProvider…</p>
+                </div>
+                <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+              </div>
+              <!-- investigating stage, idle → standby (green) -->
+              <div class="w-full text-left flex items-start gap-3 px-4 py-2.5">
+                <span class="w-2 h-2 rounded-full shrink-0 mt-1.5 bg-green-400"></span>
+                <div class="flex-1 min-w-0">
+                  <p class="list-title text-sm line-clamp-2">Lorem ipsum CI investigation</p>
+                  <div class="list-meta flex items-center gap-2 mt-0.5 text-[11px] flex-wrap">
+                    <span class="px-1.5 py-px rounded font-medium bg-sky-500/10 text-sky-300">Investigating</span>
+                    <span class="px-1.5 py-px rounded font-medium bg-slate-500/15 text-slate-300">Codex</span>
+                    <span class="inline-flex items-center gap-1"><svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="9" r="2"/><path stroke-linecap="round" d="M6 7v10M18 11c0 3-4 4-6 4H6"/></svg>demo/main</span>
+                  </div>
+                </div>
+                <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+              </div>
+              <!-- done stage, session closed → closed (slate). Title also dims to text-slate-300 in real cards. -->
+              <div class="w-full text-left flex items-start gap-3 px-4 py-2.5">
+                <span class="w-2 h-2 rounded-full shrink-0 mt-1.5 bg-slate-500"></span>
+                <div class="flex-1 min-w-0">
+                  <p class="list-title text-sm line-clamp-2">Sample refactor — state machine</p>
+                  <div class="list-meta flex items-center gap-2 mt-0.5 text-[11px] flex-wrap">
+                    <span class="px-1.5 py-px rounded font-medium bg-emerald-500/10 text-emerald-300">Done</span>
+                    <span class="px-1.5 py-px rounded font-medium bg-slate-500/15 text-slate-300">Claude</span>
+                    <span class="inline-flex items-center gap-1"><svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="9" r="2"/><path stroke-linecap="round" d="M6 7v10M18 11c0 3-4 4-6 4H6"/></svg>demo/sm</span>
+                  </div>
+                </div>
+                <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+              </div>
+              <!-- blocked + has pending permission/input → pending (orange, pulse) -->
+              <div class="w-full text-left flex items-start gap-3 px-4 py-2.5">
+                <span class="w-2 h-2 rounded-full shrink-0 mt-1.5 bg-orange-400 animate-pulse"></span>
+                <div class="flex-1 min-w-0">
+                  <p class="list-title text-sm line-clamp-2">Demo migration — schema move</p>
+                  <div class="list-meta flex items-center gap-2 mt-0.5 text-[11px] flex-wrap">
+                    <span class="px-1.5 py-px rounded font-medium bg-red-500/10 text-red-300">Blocked</span>
+                    <span class="px-1.5 py-px rounded font-medium bg-slate-500/15 text-slate-300">Claude</span>
+                    <span class="inline-flex items-center gap-1"><svg class="w-3 h-3 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="9" r="2"/><path stroke-linecap="round" d="M6 7v10M18 11c0 3-4 4-6 4H6"/></svg>demo/uuid</span>
+                  </div>
+                </div>
+                <svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ─── Phone 2: Session view (CENTER, primary) ────────────────── -->
+        <!-- Each tool card is the real ToolCallMessage.tsx wrapper:
+             div.flex.justify-start
+                ▸ div.bg-slate-800/60.border-l-2.{accent}.rounded-r-lg
+                       .pl-2.5.pr-3.py-1.5.w-full.text-slate-300.text-xs
+                  TOOL_COLORS:
+                    Read=border-blue-500/60   Edit=border-yellow-500/60
+                    Bash=border-orange-500/60 pending=border-amber-500/80 -->
+        <div class="phone shrink-0 snap-center lg:z-10 lg:scale-110">
+          <div class="phone-screen text-left">
+            <div class="phone-notch"></div>
+            <!-- Session app bar -->
+            <div class="flex items-center gap-2 border-b border-slate-700/60 px-3 pt-7 pb-2.5">
+              <svg class="h-3.5 w-3.5 shrink-0 text-slate-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fill-rule="evenodd" d="M12.707 5.293a1 1 0 0 1 0 1.414L9.414 10l3.293 3.293a1 1 0 1 1-1.414 1.414l-4-4a1 1 0 0 1 0-1.414l4-4a1 1 0 0 1 1.414 0Z" clip-rule="evenodd" />
+              </svg>
+              <span class="truncate text-[12px] font-medium text-white">Demo session — feature toggle</span>
+              <span class="phone-pulse ml-auto h-1.5 w-1.5 rounded-full bg-amber-400"></span>
+            </div>
+            <!-- Chat feed -->
+            <div class="flex-1 space-y-1.5 overflow-hidden bg-slate-900/40 px-2 py-3">
+              <div class="text-xs leading-relaxed text-slate-300 px-1">
+                I&apos;ll inspect the sample provider and tweak the expiry value.
+              </div>
+
+              <!-- Read tool (border-blue-500/60) — ReadToolView: text-slate-400 "Read" + path -->
+              <div class="flex justify-start">
+                <div class="bg-slate-800/60 border-l-2 border-blue-500/60 rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-slate-300 text-xs overflow-hidden">
+                  <div class="flex items-center gap-1.5 min-w-0">
+                    <span class="text-slate-400 shrink-0">Read</span>
+                    <span class="font-mono text-blue-300 truncate">src/lorem/sample.ts</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Edit tool (border-yellow-500/60) — EditToolView: yellow "Edit" + path + (-N/+N), unified diff blocks -->
+              <div class="flex justify-start">
+                <div class="bg-slate-800/60 border-l-2 border-yellow-500/60 rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-slate-300 text-xs overflow-hidden">
+                  <div>
+                    <div class="flex items-center gap-1.5">
+                      <span class="text-yellow-400">Edit</span>
+                      <span class="font-mono text-blue-300 truncate">src/lorem/sample.ts</span>
+                      <span class="text-slate-500">(</span>
+                      <span class="text-red-400">-14</span>
+                      <span class="text-slate-500">/</span>
+                      <span class="text-green-400">+15</span>
+                      <span class="text-slate-500">)</span>
+                    </div>
+                    <div class="mt-1.5 font-mono overflow-x-auto">
+                      <div class="bg-red-500/10 rounded-t px-2 py-1">
+                        <div class="text-red-400 whitespace-pre-wrap break-all">- expiresIn: '1h'</div>
+                      </div>
+                      <div class="bg-green-500/10 rounded-b px-2 py-1">
+                        <div class="text-green-400 whitespace-pre-wrap break-all">+ expiresIn: '24h'</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Pending Bash tool (border-amber-500/80) — BashToolView: orange "$" prompt
+                   + InlinePermissionActions: Deny LEFT (red-600/60), Allow RIGHT (green-600/80) -->
+              <div class="flex justify-start">
+                <div class="bg-slate-800/60 border-l-2 border-amber-500/80 rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-slate-300 text-xs overflow-hidden">
+                  <div>
+                    <div class="flex items-center gap-1.5 min-w-0">
+                      <span class="text-orange-400 shrink-0">$</span>
+                      <span class="font-mono break-all text-slate-400 flex-1 min-w-0">npm test</span>
+                    </div>
+                  </div>
+                  <!-- InlinePermissionActions.tsx — Deny is neutral slate
+                       (declining a permission is reversible, not destructive);
+                       Allow stays green and on the right. -->
+                  <div class="mt-2 pt-2 border-t border-amber-500/20">
+                    <p class="text-xs text-amber-400/80 mb-2">Allow Bash to run <span class="font-mono">npm test</span>?</p>
+                    <div class="flex gap-2">
+                      <button class="flex-1 text-xs px-3 py-1.5 bg-slate-600 rounded-lg font-medium">Deny</button>
+                      <button class="flex-1 text-xs px-3 py-1.5 bg-green-600/80 rounded-lg font-medium">Allow</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <!-- Status bar -->
+            <div class="flex items-center gap-1 border-t border-slate-700/60 bg-slate-900/80 px-2.5 py-1.5 text-[10px] text-slate-400">
+              <span class="rounded bg-slate-800 px-1 py-px font-medium text-slate-300">opus-4.7</span>
+              <span class="rounded bg-slate-800 px-1 py-px">accept-edits</span>
+              <span class="ml-auto truncate">demo/branch-b</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ─── Phone 3: Diff view ─────────────────────────────────────── -->
+        <!-- 1:1 DiffViewer.tsx unified-mode replica:
+             div.bg-slate-800.rounded-lg.overflow-hidden
+                ▸ Header  — flex.justify-between.px-4.py-3.border-b.border-slate-700.bg-slate-800/50
+                ▸ Hunk   — px-4.py-1.bg-slate-700/50.text-xs.text-slate-400.font-mono
+                ▸ Lines  — px-4.py-0.5.flex.items-center  + diff-line-{add|remove|context}
+                            marker span: text-added / text-deleted / text-slate-500 -->
+        <div class="phone shrink-0 snap-center lg:-ml-8 lg:translate-y-4 lg:rotate-[4deg]">
+          <div class="phone-screen text-left">
+            <div class="phone-notch"></div>
+            <!-- File header -->
+            <div class="flex items-center justify-between border-b border-slate-700 bg-slate-800/50 px-3 pt-7 pb-2.5">
+              <span class="truncate font-mono text-xs text-slate-300">src/lorem/sample.ts</span>
+              <span class="text-[10px] font-medium text-emerald-400">+15 −14</span>
+            </div>
+            <!-- DiffViewer body — bg-slate-800.
+                 NOTE: position:relative so the FloatingActionButton overlay
+                 (mirrors FloatingActionButton.tsx, normally fixed bottom-20
+                 in the live PWA) can be absolutely positioned inside the
+                 phone screen instead of escaping the frame. -->
+            <div class="relative flex-1 overflow-hidden bg-slate-800">
+              <!-- Hunk header -->
+              <div class="px-3 py-1 bg-slate-700/50 text-[10px] text-slate-400 font-mono">@@ -42,7 +42,7 @@ signSample</div>
+              <!-- Diff lines (font-mono, w-4 marker, real diff-line-* + text-added/deleted).
+                   The "+" line is shown as the user-selected line — diff-line-selected
+                   from index.css is rgba(59,130,246,0.3) bg + 3px blue left border. -->
+              <div class="font-mono text-xs">
+                <div class="px-3 py-0.5 whitespace-pre flex items-center diff-line-context">
+                  <span class="inline-block w-4 select-none text-slate-500"> </span>
+                  <span class="flex-1 text-slate-300">  return jwt.sign(</span>
+                </div>
+                <div class="px-3 py-0.5 whitespace-pre flex items-center diff-line-context">
+                  <span class="inline-block w-4 select-none text-slate-500"> </span>
+                  <span class="flex-1 text-slate-300">    payload,</span>
+                </div>
+                <div class="px-3 py-0.5 whitespace-pre flex items-center diff-line-context">
+                  <span class="inline-block w-4 select-none text-slate-500"> </span>
+                  <span class="flex-1 text-slate-300">    secret,</span>
+                </div>
+                <div class="px-3 py-0.5 whitespace-pre flex items-center diff-line-remove">
+                  <span class="inline-block w-4 select-none text-deleted">-</span>
+                  <span class="flex-1 text-slate-200">    expiresIn: '1h',</span>
+                </div>
+                <div class="px-3 py-0.5 whitespace-pre flex items-center diff-line-add diff-line-selected">
+                  <span class="inline-block w-4 select-none text-added">+</span>
+                  <span class="flex-1 text-slate-200">    expiresIn: '24h',</span>
+                </div>
+                <div class="px-3 py-0.5 whitespace-pre flex items-center diff-line-context">
+                  <span class="inline-block w-4 select-none text-slate-500"> </span>
+                  <span class="flex-1 text-slate-300">    algorithm: 'HS256',</span>
+                </div>
+                <div class="px-3 py-0.5 whitespace-pre flex items-center diff-line-context">
+                  <span class="inline-block w-4 select-none text-slate-500"> </span>
+                  <span class="flex-1 text-slate-300">  });</span>
+                </div>
+                <div class="px-3 py-0.5 whitespace-pre flex items-center diff-line-context">
+                  <span class="inline-block w-4 select-none text-slate-500"> </span>
+                  <span class="flex-1 text-slate-300">}</span>
+                </div>
+              </div>
+
+              <!-- FloatingActionButton.tsx (when hasSelection):
+                   container: bg-slate-600/70 backdrop-blur-md rounded-2xl p-2 shadow-xl
+                              flex flex-col gap-2
+                     ▸ Clear pill — bg-rose-600/70 px-3 py-2 rounded-full
+                     ▸ Stage pill — bg-blue-600/70 px-4 py-3 rounded-full ("Stage N lines") -->
+              <div class="absolute bottom-3 right-3 z-50 flex flex-col gap-1.5 rounded-2xl bg-slate-600/70 p-1.5 shadow-xl backdrop-blur-md">
+                <button class="flex items-center justify-center gap-1 rounded-full bg-rose-600/70 px-2.5 py-1 text-[10px] font-medium text-white shadow-lg">
+                  <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                  Clear
+                </button>
+                <button class="flex items-center justify-center gap-1 rounded-full bg-blue-600/70 px-3 py-1.5 text-[11px] font-medium text-white shadow-lg">
+                  <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                  Stage 1 line
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -832,6 +1188,7 @@ docker run -p 8080:8080 quicksave-relay</code></pre>
           }, 1400);
         });
       });
+
     </script>
   </body>
 </html>

@@ -43,7 +43,7 @@ export function InlinePermissionActions({ request, onRespond }: {
           <div className="flex gap-2">
             <button
               onClick={() => onRespond('deny', denyReason.trim() || undefined)}
-              className="flex-1 text-sm px-3 py-1.5 bg-red-600/80 hover:bg-red-500 rounded-lg transition-colors font-medium"
+              className="flex-1 text-sm px-3 py-1.5 bg-slate-600 hover:bg-slate-500 rounded-lg transition-colors font-medium"
             >
               Deny
             </button>
@@ -59,7 +59,7 @@ export function InlinePermissionActions({ request, onRespond }: {
         <div className="flex gap-2">
           <button
             onClick={() => setShowDenyReason(true)}
-            className="flex-1 text-sm px-3 py-1.5 bg-red-600/60 hover:bg-red-500 rounded-lg transition-colors font-medium"
+            className="flex-1 text-sm px-3 py-1.5 bg-slate-600 hover:bg-slate-500 rounded-lg transition-colors font-medium"
           >
             Deny
           </button>

@@ -90,16 +90,19 @@ export function PermissionPrompt({ request, onRespond }: PermissionPromptProps) 
         </div>
       )}
 
-      {/* Allow/Deny buttons for permission type */}
+      {/* Deny/Allow — Deny is neutral (slate) because declining a single
+          permission is reversible: the agent simply asks again next time.
+          Reserve red for actually destructive confirms (see ConfirmModal).
+          Positive action on the right by convention. */}
       {isPermission && (
         <ActionButtons buttons={[
+          { label: 'Deny', variant: 'neutral', onClick: () => onRespond('deny') },
           {
             label: 'Allow',
             variant: 'confirm',
             onClick: handleAllowClick,
             ...longPressHandlers,
           },
-          { label: 'Deny', variant: 'danger', onClick: () => onRespond('deny') },
         ]} />
       )}
 

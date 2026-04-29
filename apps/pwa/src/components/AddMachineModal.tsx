@@ -149,8 +149,16 @@ export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
                 <ErrorBox className="p-3">{error}</ErrorBox>
               )}
 
-              {/* Actions */}
+              {/* Actions — primary (Add & Connect) on the right by convention. */}
               <div className="flex gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={isDisabled}
+                  onClick={() => setSaveOnly(true)}
+                  className="py-3 px-4 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors"
+                >
+                  Save
+                </button>
                 <button
                   type="submit"
                   disabled={isDisabled}
@@ -166,14 +174,6 @@ export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
                   ) : (
                     'Add & Connect'
                   )}
-                </button>
-                <button
-                  type="submit"
-                  disabled={isDisabled}
-                  onClick={() => setSaveOnly(true)}
-                  className="py-3 px-4 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors"
-                >
-                  Save
                 </button>
               </div>
             </form>
