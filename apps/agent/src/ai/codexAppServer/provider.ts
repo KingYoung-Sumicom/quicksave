@@ -86,7 +86,7 @@ export class CodexAppServerProvider implements CodingAgentProvider {
     // attaches them to the next turn/start.
     overrideStore.enqueue(perTurnOverridesFromOpts(opts, response));
 
-    void session.runTurn(opts.prompt, opts.streamId);
+    void session.runTurn(opts.prompt);
 
     return { sessionId: response.thread.id, session };
   }
@@ -124,7 +124,7 @@ export class CodexAppServerProvider implements CodingAgentProvider {
     callbacks.onModelDetected(response.model);
 
     overrideStore.enqueue(perTurnOverridesFromOpts(opts, response));
-    void session.runTurn(opts.prompt, opts.streamId);
+    void session.runTurn(opts.prompt);
 
     return { sessionId: response.thread.id, session };
   }
@@ -167,16 +167,9 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
   private readonly cardBuilder: StreamCardBuilder;
   private readonly callbacks: ProviderCallbacks;
   private currentTurnId: string | null = null;
-  private pendingPrompt: { text: string; streamId: string } | null = null;
+  private pendingPrompt: string | null = null;
   private running = false;
   private exited = false;
-  /** Queue of streamIds SessionManager pushes ahead of `sendUserMessage` so
-   *  hot-resume turns emit cards under the streamId the PWA is watching.
-   *  Without this, the next turn would mint a synthetic `s_${Date.now()}`
-   *  and `applySessionCards` would silently drop every card-event whose
-   *  streamId isn't in the PWA's activeStreamIds. Field name + array shape
-   *  match the contract SessionManager duck-types via `(ps as any).pendingStreamIds`. */
-  public pendingStreamIds: string[] = [];
 
   constructor(args: SessionArgs) {
     this.handle = args.handle;
@@ -205,13 +198,7 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
   }
 
   sendUserMessage(prompt: string): void {
-    // Hot-resume path: SessionManager pushes the resume's streamId into
-    // pendingStreamIds before calling us, so the next turn's cards carry
-    // the streamId the PWA's activeStreamIds list expects. The Date.now()
-    // fallback is only for callers that bypass SessionManager (smoke
-    // scripts, tests).
-    const streamId = this.pendingStreamIds.shift() ?? `s_${Date.now()}`;
-    void this.runTurn(prompt, streamId);
+    void this.runTurn(prompt);
   }
 
   enqueueRuntimeOverride(patch: RuntimeOverrides): void {
@@ -240,30 +227,30 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
 
   /** Run a single turn end-to-end: cb.startNewTurn → cb.userMessage →
    * turn/start → consume notifications → emit stream-end. */
-  async runTurn(prompt: string, streamId: string): Promise<void> {
+  async runTurn(prompt: string): Promise<void> {
     if (this.exited) return;
     if (this.running) {
       // Queue — only one turn at a time. Replace any pending prompt
       // with the latest (matches SDK provider behavior).
-      this.pendingPrompt = { text: prompt, streamId };
+      this.pendingPrompt = prompt;
       return;
     }
     this.running = true;
     try {
-      await this.runTurnImpl(prompt, streamId);
+      await this.runTurnImpl(prompt);
       while (this.pendingPrompt && !this.exited) {
         const next = this.pendingPrompt;
         this.pendingPrompt = null;
-        await this.runTurnImpl(next.text, next.streamId);
+        await this.runTurnImpl(next);
       }
     } finally {
       this.running = false;
     }
   }
 
-  private async runTurnImpl(prompt: string, streamId: string): Promise<void> {
+  private async runTurnImpl(prompt: string): Promise<void> {
     const cb = this.cardBuilder;
-    cb.startNewTurn(streamId);
+    cb.startNewTurn();
     const userEvent = cb.userMessage(prompt);
     this.callbacks.emitCardEvent(userEvent);
 
@@ -288,7 +275,6 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
         cb,
         {
           sessionId: this.threadId,
-          streamId,
           threadId: this.threadId,
           turnId,
           tokens: this.tokens,
@@ -301,7 +287,6 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
       // Emit a synthetic failure stream-end matching the SDK behavior.
       const message = err instanceof Error ? err.message : String(err);
       this.callbacks.emitStreamEnd({
-        streamId,
         sessionId: this.threadId,
         success: false,
         error: message,

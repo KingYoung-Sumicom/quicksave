@@ -17,6 +17,13 @@ export function applySessionCardsSnapshot(sessionId: string, snap: CardHistoryRe
  * Apply a `/sessions/:sessionId/cards` update: either a CardEvent (add,
  * update, append_text, remove) or a CardStreamEnd marking a turn complete.
  * Silently drops updates for sessions the PWA is not currently viewing.
+ *
+ * Cards are gated by sessionId match alone — the bus subscription is keyed
+ * by sessionId so cross-session events can't reach this handler in the
+ * first place, and the active-session guard covers the brief race where a
+ * late event arrives after navigation. The local `isStreaming` flag is
+ * driven by `/sessions/active` session-updated broadcasts via
+ * {@link applySessionUpdate}, which carry the agent's authoritative view.
  */
 export function applySessionCardsUpdate(sessionId: string, update: SessionCardsUpdate): void {
   const state = useClaudeStore.getState();
@@ -24,21 +31,11 @@ export function applySessionCardsUpdate(sessionId: string, update: SessionCardsU
     return;
   }
   if (update.kind === 'card') {
-    const { activeStreamIds } = state;
-    if (activeStreamIds.length > 0 && update.event.streamId && !activeStreamIds.includes(update.event.streamId)) {
-      return;
-    }
     state.handleCardEvent(update.event);
     return;
   }
   // update.kind === 'stream-end'
   const payload = update.result;
-  const remaining = state.activeStreamIds.filter((id) => id !== payload.streamId);
-  if (remaining.length > 0) {
-    useClaudeStore.setState({ activeStreamIds: remaining });
-  } else {
-    state.setStreaming(false);
-  }
   if (!payload.success && !payload.interrupted) {
     state.setStreamError(payload.error || 'Session ended with error');
   }

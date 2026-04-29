@@ -32,11 +32,10 @@ function makePermissionToolCard(sessionId: string, requestId: string, cardId: st
   } as any;
 }
 
-function clearPendingEvent(sessionId: string, cardId: string, streamId = 'stream-x'): SessionCardsUpdate {
+function clearPendingEvent(sessionId: string, cardId: string): SessionCardsUpdate {
   const event: CardEvent = {
     type: 'update',
     sessionId,
-    streamId,
     cardId,
     patch: { pendingInput: null } as any,
   };
@@ -49,7 +48,6 @@ describe('applySessionCards (multi-session permission resolve)', () => {
     useClaudeStore.setState({
       cards: [],
       activeSessionId: null,
-      activeStreamIds: [],
       isStreaming: false,
       historyTotal: 0,
       historyHasMore: false,
@@ -60,7 +58,7 @@ describe('applySessionCards (multi-session permission resolve)', () => {
   it('clears pending input when the update sessionId matches activeSessionId', () => {
     // Baseline: viewing session A, A's update arrives — pendingInput must clear.
     const card = makePermissionToolCard('sess-A', 'req-A1', 'cA');
-    useClaudeStore.setState({ cards: [card], activeSessionId: 'sess-A', activeStreamIds: [] });
+    useClaudeStore.setState({ cards: [card], activeSessionId: 'sess-A' });
 
     applySessionCardsUpdate('sess-A', clearPendingEvent('sess-A', 'cA'));
 
@@ -74,7 +72,7 @@ describe('applySessionCards (multi-session permission resolve)', () => {
     // routing on the agent should prevent this from being delivered in the
     // first place, but the receiver also defends.)
     const aCard = makePermissionToolCard('sess-A', 'req-A1', 'cA');
-    useClaudeStore.setState({ cards: [aCard], activeSessionId: 'sess-A', activeStreamIds: [] });
+    useClaudeStore.setState({ cards: [aCard], activeSessionId: 'sess-A' });
 
     // A stale update for session B (e.g. from a still-mounted leaked subscription).
     applySessionCardsUpdate('sess-B', clearPendingEvent('sess-B', 'cA'));
@@ -100,7 +98,6 @@ describe('applySessionCards (multi-session permission resolve)', () => {
     useClaudeStore.setState({
       cards: [cardA],
       activeSessionId: 'sess-A',
-      activeStreamIds: [],
       isStreaming: false,
     });
 
@@ -134,7 +131,6 @@ describe('applySessionCards (multi-session permission resolve)', () => {
     useClaudeStore.setState({
       cards: [cardB],
       activeSessionId: 'sess-B',
-      activeStreamIds: [],
       isStreaming: false,
     });
 

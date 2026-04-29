@@ -155,7 +155,6 @@ describe('claude:start end-to-end with StubProvider', () => {
     const result = await pwa.bus().command<unknown, {
       success: boolean;
       sessionId?: string;
-      streamId?: string;
       error?: string;
     }>('claude:start', {
       prompt: 'hello world',
@@ -165,7 +164,6 @@ describe('claude:start end-to-end with StubProvider', () => {
 
     expect(result.success).toBe(true);
     expect(result.sessionId).toMatch(/^stub-/);
-    expect(result.streamId).toBeTruthy();
     // The stub recorded the prompt the SessionManager passed in.
     expect(stub.promptsFor(result.sessionId!)).toContain('hello world');
   });
@@ -174,7 +172,6 @@ describe('claude:start end-to-end with StubProvider', () => {
     const startResult = await pwa.bus().command<unknown, {
       success: boolean;
       sessionId?: string;
-      streamId?: string;
     }>('claude:start', {
       prompt: 'test prompt',
       cwd: repoPath,
@@ -182,7 +179,6 @@ describe('claude:start end-to-end with StubProvider', () => {
     });
     expect(startResult.success).toBe(true);
     const sessionId = startResult.sessionId!;
-    const streamId = startResult.streamId!;
 
     const snapshots: CardHistoryResponse[] = [];
     const updates: SessionCardsUpdate[] = [];
@@ -204,16 +200,13 @@ describe('claude:start end-to-end with StubProvider', () => {
     // Push an `add` card event from the stub provider.
     const addEvent: CardEvent = {
       type: 'add',
-      streamId,
       sessionId,
       card: {
         id: 'card-1',
         type: 'assistant_text',
-        sessionId,
-        streamId,
         text: 'hello back',
         timestamp: Date.now(),
-      },
+      } as any,
     };
     stub.emitCard(sessionId, addEvent);
     await flush(20);
@@ -224,7 +217,6 @@ describe('claude:start end-to-end with StubProvider', () => {
     // Append text on top of the existing card.
     const appendEvent: CardEvent = {
       type: 'append_text',
-      streamId,
       sessionId,
       cardId: 'card-1',
       text: ', world',
@@ -291,7 +283,6 @@ describe('claude:start end-to-end with StubProvider', () => {
 
     await pwa.bus().command('claude:cancel', {
       sessionId,
-      streamId: '',
     });
 
     expect(stub.wasInterrupted(sessionId)).toBe(true);
@@ -301,7 +292,6 @@ describe('claude:start end-to-end with StubProvider', () => {
     const start = await pwa.bus().command<unknown, {
       success: boolean;
       sessionId?: string;
-      streamId?: string;
     }>('claude:start', {
       prompt: 'first',
       cwd: repoPath,

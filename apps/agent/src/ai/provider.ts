@@ -118,7 +118,6 @@ export interface ProviderCallbacks {
 export interface StartSessionOpts {
   prompt: string;
   cwd: string;
-  streamId: string;
   model?: string;
   permissionLevel: PermissionLevel;
   sandboxed: boolean;
@@ -143,7 +142,6 @@ export interface ResumeSessionOpts {
   sessionId: string;
   prompt: string;
   cwd: string;
-  streamId: string;
   model?: string;
   permissionLevel: PermissionLevel;
   sandboxed: boolean;

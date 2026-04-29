@@ -209,7 +209,6 @@ function extractToolResultText(content: unknown): string {
 
 export class StreamCardBuilder {
   private sessionId: string;
-  private streamId: string;
   private cwd: string;
   private seq = 0;
   private cards = new Map<CardId, Card>();
@@ -227,9 +226,8 @@ export class StreamCardBuilder {
    * replaces this token, causing the pending polling task to bail out. */
   private _pendingClearToken: symbol | null = null;
 
-  constructor(sessionId: string, streamId: string, cwd: string) {
+  constructor(sessionId: string, cwd: string) {
     this.sessionId = sessionId;
-    this.streamId = streamId;
     this.cwd = cwd;
   }
 
@@ -237,9 +235,8 @@ export class StreamCardBuilder {
     this.sessionId = sessionId;
   }
 
-  /** Start a new turn: update streamId and reset per-turn state, keep accumulated cards. */
-  startNewTurn(streamId: string): void {
-    this.streamId = streamId;
+  /** Start a new turn: reset per-turn state, keep accumulated cards. */
+  startNewTurn(): void {
     this.currentTextCardId = null;
   }
 
@@ -370,12 +367,12 @@ export class StreamCardBuilder {
   }
 
   private nextId(): CardId {
-    return `${this.sessionId}:${this.streamId}:${++this.seq}`;
+    return `${this.sessionId}:${++this.seq}`;
   }
 
   private addEvent(card: Card, afterCardId?: CardId): CardAddEvent {
     this.cards.set(card.id, card);
-    return { type: 'add', streamId: this.streamId, sessionId: this.sessionId, card, afterCardId };
+    return { type: 'add', sessionId: this.sessionId, card, afterCardId };
   }
 
   private updateEvent(cardId: CardId, patch: Record<string, unknown>): CardUpdateEvent {
@@ -391,7 +388,7 @@ export class StreamCardBuilder {
         else bag[key] = value;
       }
     }
-    return { type: 'update', streamId: this.streamId, sessionId: this.sessionId, cardId, patch };
+    return { type: 'update', sessionId: this.sessionId, cardId, patch };
   }
 
   private appendTextEvent(cardId: CardId, text: string): CardAppendTextEvent {
@@ -399,12 +396,12 @@ export class StreamCardBuilder {
     if (existing && 'text' in existing) {
       (existing as any).text += text;
     }
-    return { type: 'append_text', streamId: this.streamId, sessionId: this.sessionId, cardId, text };
+    return { type: 'append_text', sessionId: this.sessionId, cardId, text };
   }
 
   private removeEvent(cardId: CardId): CardRemoveEvent {
     this.cards.delete(cardId);
-    return { type: 'remove', streamId: this.streamId, sessionId: this.sessionId, cardId };
+    return { type: 'remove', sessionId: this.sessionId, cardId };
   }
 
   // ── Public: produce CardEvents from SDK data ────────────────────────────

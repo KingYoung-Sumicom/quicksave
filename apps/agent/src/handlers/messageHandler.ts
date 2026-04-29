@@ -83,7 +83,6 @@ import {
   ClaudeSetSessionPermissionRequestPayload,
   ClaudeSetSessionPermissionResponsePayload,
   CardHistoryResponse,
-  generateMessageId,
   SessionSetConfigRequestPayload,
   SessionSetConfigResponsePayload,
   SessionControlRequestPayload,
@@ -1901,7 +1900,6 @@ export class MessageHandler {
     const { prompt, cwd: payloadCwd, agent, allowedTools, systemPrompt, model, permissionMode, sandboxed, reasoningEffort, contextWindow } = message.payload;
     const legacyProvider = (message.payload as { provider?: 'claude-cli' | 'claude-sdk' | 'codex-mcp' }).provider;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
-    const streamId = generateMessageId();
     const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
     // Coerce a Codex model the user's account doesn't actually support
     // (e.g. they kept `claude-opus-4-7` selected before switching to a
@@ -1915,7 +1913,6 @@ export class MessageHandler {
       const sessionId = await this.claudeService.startSession({
         prompt,
         cwd,
-        streamId,
         agent: resolvedAgent,
         allowedTools,
         systemPrompt,
@@ -1958,7 +1955,7 @@ export class MessageHandler {
 
       const response = createMessage<ClaudeStartResponsePayload>(
         'claude:start:response',
-        { success: true, sessionId, streamId }
+        { success: true, sessionId }
       );
       response.id = message.id;
       return response;
@@ -1980,7 +1977,6 @@ export class MessageHandler {
     const { sessionId: requestedId, prompt, cwd: payloadCwd, agent } = message.payload;
     const legacyProvider = (message.payload as { provider?: 'claude-cli' | 'claude-sdk' | 'codex-mcp' }).provider;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
-    const streamId = generateMessageId();
     const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
     const activeCfg = this.claudeService.getSessionConfig(requestedId);
     console.log(`[agent:resume] session=${requestedId} agent=${resolvedAgent ?? 'stored'} model=${(activeCfg.model as string | undefined) ?? 'default'} cwd=${cwd} prompt=${prompt.slice(0, 80)}`);
@@ -1990,7 +1986,6 @@ export class MessageHandler {
         sessionId: requestedId,
         prompt,
         cwd,
-        streamId,
         agent: resolvedAgent,
       });
 
@@ -2019,7 +2014,7 @@ export class MessageHandler {
 
       const response = createMessage<ClaudeResumeResponsePayload>(
         'claude:resume:response',
-        { success: true, sessionId: actualSessionId, streamId }
+        { success: true, sessionId: actualSessionId }
       );
       response.id = message.id;
       return response;

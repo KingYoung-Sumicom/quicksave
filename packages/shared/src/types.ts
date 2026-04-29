@@ -1327,7 +1327,6 @@ export interface ClaudeStartRequestPayload {
 export interface ClaudeStartResponsePayload {
   success: boolean;
   sessionId?: string;
-  streamId?: string;
   error?: string;
 }
 
@@ -1342,7 +1341,6 @@ export interface ClaudeResumeRequestPayload {
 export interface ClaudeResumeResponsePayload {
   success: boolean;
   sessionId?: string;
-  streamId?: string;
   error?: string;
 }
 
@@ -1417,46 +1415,6 @@ export interface ClaudeGetMessagesResponsePayload {
   error?: string;
   subagentBlocks?: ClaudeSubagentBlock[];  // Keyed by toolUseId for the parent Task call
   toolNameMap?: Record<string, string>;    // toolUseId → toolName for ALL messages (not just current page)
-}
-
-// Stream event types (agent-push)
-export type ClaudeStreamEventType =
-  | 'assistant_text'
-  | 'thinking'
-  | 'tool_use'
-  | 'tool_result'
-  | 'user_message'
-  | 'system'
-  | 'error'
-  | 'subagent_start'     // subagent task started (task_started SDK event)
-  | 'subagent_progress'  // subagent progress update (task_progress SDK event)
-  | 'subagent_end';      // subagent task completed (task_notification SDK event)
-
-export interface ClaudeStreamPayload {
-  streamId: string;
-  sessionId: string;
-  eventType: ClaudeStreamEventType;
-  content: string;
-  toolName?: string;
-  toolInput?: string;
-  toolUseId?: string;        // Present on tool_use events (block.id)
-  toolResultForId?: string;  // Present on tool_result events (block.tool_use_id)
-  isPartial?: boolean;
-  // Subagent fields
-  agentId?: string;          // subagent_start/end: SDK agentId (matches subagent JSONL filename)
-  toolUseCount?: number;     // subagent_progress: total tool uses so far
-  lastToolName?: string;     // subagent_progress: last tool used by subagent
-  subagentStatus?: 'completed' | 'failed' | 'stopped'; // subagent_end
-  subagentSummary?: string;  // subagent_end: summary from task_notification
-}
-
-export interface ClaudeStreamEndPayload {
-  streamId: string;
-  sessionId: string;
-  success: boolean;
-  error?: string;
-  totalCostUsd?: number;
-  tokenUsage?: { input: number; output: number };
 }
 
 // User input request types (agent → PWA)

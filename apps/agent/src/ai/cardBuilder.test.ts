@@ -47,12 +47,11 @@ const { StreamCardBuilder, loadPersistedCards, buildCardsFromHistory } =
 
 describe('StreamCardBuilder', () => {
   const SESSION_ID = 'sess-1';
-  const STREAM_ID = 'stream-1';
   const CWD = '/test/project';
   let builder: InstanceType<typeof StreamCardBuilder>;
 
   beforeEach(() => {
-    builder = new StreamCardBuilder(SESSION_ID, STREAM_ID, CWD);
+    builder = new StreamCardBuilder(SESSION_ID, CWD);
   });
 
   // ── userMessage ──────────────────────────────────────────────────────────
@@ -63,10 +62,9 @@ describe('StreamCardBuilder', () => {
 
       expect(event.type).toBe('add');
       expect(event.sessionId).toBe(SESSION_ID);
-      expect(event.streamId).toBe(STREAM_ID);
       expect(event.card.type).toBe('user');
       expect((event.card as any).text).toBe('hello');
-      expect(event.card.id).toMatch(new RegExp(`^${SESSION_ID}:${STREAM_ID}:\\d+$`));
+      expect(event.card.id).toMatch(new RegExp(`^${SESSION_ID}:\\d+$`));
     });
 
     it('resets the current text card', () => {
@@ -509,7 +507,7 @@ describe('StreamCardBuilder', () => {
       builder.userMessage('hi');
       builder.assistantText('hello');
 
-      builder.startNewTurn('stream-2');
+      builder.startNewTurn();
 
       // Cards are preserved
       expect(builder.getCards()).toHaveLength(2);
@@ -517,7 +515,6 @@ describe('StreamCardBuilder', () => {
       // Current text card is reset — next assistantText creates new card
       const event = builder.assistantText('new turn') as CardAddEvent;
       expect(event.type).toBe('add');
-      expect(event.streamId).toBe('stream-2');
     });
   });
 

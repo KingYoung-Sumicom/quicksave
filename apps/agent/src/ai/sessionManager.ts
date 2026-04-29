@@ -417,7 +417,6 @@ export class SessionManager extends EventEmitter {
   async startSession(opts: {
     prompt: string;
     cwd: string;
-    streamId: string;
     agent?: AgentId;
     allowedTools?: string[];
     systemPrompt?: string;
@@ -440,7 +439,7 @@ export class SessionManager extends EventEmitter {
     applyBypassFlag(bypassToken, isFullAccessPermission(provider.id, level));
 
     // Create cardBuilder with 'pending' sessionId — will be updated after provider returns real one
-    const cardBuilder = new StreamCardBuilder('pending', opts.streamId, opts.cwd);
+    const cardBuilder = new StreamCardBuilder('pending', opts.cwd);
 
     const callbacks = this.makeCallbacks(provider.id);
 
@@ -448,7 +447,6 @@ export class SessionManager extends EventEmitter {
       {
         prompt: opts.prompt,
         cwd: opts.cwd,
-        streamId: opts.streamId,
         model: opts.model,
         permissionLevel: level,
         sandboxed,
@@ -515,7 +513,6 @@ export class SessionManager extends EventEmitter {
     sessionId: string;
     prompt: string;
     cwd: string;
-    streamId: string;
     agent?: AgentId;
   }): Promise<string> {
     const existing = this.sessions.get(opts.sessionId);
@@ -549,14 +546,9 @@ export class SessionManager extends EventEmitter {
       existing!.providerSession = null;
     }
 
-    // Hot resume (active turn): provider is mid-turn. Queue the streamId so
-    // consumeStream picks it up after the current turn's result event.
+    // Hot resume (active turn): provider is mid-turn — just hand it the new prompt.
     if (existing?.streaming && existing.providerSession?.alive) {
       console.log(`[session-manager] hot resume (active) session=${opts.sessionId.slice(0, 8)}`);
-      const ps = existing.providerSession as any;
-      if (ps.pendingStreamIds) {
-        ps.pendingStreamIds.push(opts.streamId);
-      }
       existing.providerSession.sendUserMessage(opts.prompt);
       return opts.sessionId;
     }
@@ -571,16 +563,7 @@ export class SessionManager extends EventEmitter {
       if (existing.cardBuilder) {
         existing.cardBuilder.cancelDeferredClear?.();
       }
-      ps.currentStreamId = opts.streamId;
       ps.resultEmitted = false;
-      // Codex app-server session: queue the streamId so its sendUserMessage
-      // emits cards under the streamId the PWA is watching. Without this,
-      // the session mints a synthetic streamId and applySessionCards drops
-      // every event. Other providers ignore the field (CLI uses
-      // currentStreamId above, which it reads directly).
-      if (Array.isArray(ps.pendingStreamIds)) {
-        ps.pendingStreamIds.push(opts.streamId);
-      }
       existing.streaming = true;
       existing.providerSession.sendUserMessage(opts.prompt);
       this.emitSessionUpdate(opts.sessionId);
@@ -611,7 +594,7 @@ export class SessionManager extends EventEmitter {
         this.sessionPermissions.get(opts.sessionId) ?? registryEntry?.permissionMode,
       );
 
-      const cardBuilder = existing?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.streamId, opts.cwd);
+      const cardBuilder = existing?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.cwd);
       await cardBuilder.snapshotCutoff();
       const callbacks = this.makeCallbacks(provider.id);
 
@@ -640,7 +623,6 @@ export class SessionManager extends EventEmitter {
           sessionId: opts.sessionId,
           prompt: opts.prompt,
           cwd: opts.cwd,
-          streamId: opts.streamId,
           model: resumeModel,
           permissionLevel: level,
           sandboxed,

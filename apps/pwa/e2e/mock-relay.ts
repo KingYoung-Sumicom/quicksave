@@ -267,12 +267,11 @@ export class MockRelay {
 
       case 'claude:start': {
         const sessionId = `mock-session-${Date.now()}`;
-        const streamId = `mock-stream-${Date.now()}`;
 
         await this.sendEncrypted(peer, {
           id: message.id,
           type: 'claude:start:response',
-          payload: { success: true, sessionId, streamId },
+          payload: { success: true, sessionId },
           timestamp: Date.now(),
         });
 
@@ -281,14 +280,13 @@ export class MockRelay {
           await this.sendEncrypted(peer, {
             id: `card-event-${Date.now()}-${Math.random().toString(36).slice(2)}`,
             type: 'claude:card-event',
-            payload: { ...event, sessionId, streamId },
+            payload: { ...event, sessionId },
             timestamp: Date.now(),
           });
         }
 
         // Send stream end
         const streamEnd: CardStreamEnd = {
-          streamId,
           sessionId,
           success: true,
           totalCostUsd: 0.01,
@@ -305,12 +303,11 @@ export class MockRelay {
 
       case 'claude:resume': {
         const resumePayload = message.payload as { sessionId: string; prompt: string };
-        const streamId = `mock-stream-${Date.now()}`;
 
         await this.sendEncrypted(peer, {
           id: message.id,
           type: 'claude:resume:response',
-          payload: { success: true, sessionId: resumePayload.sessionId, streamId },
+          payload: { success: true, sessionId: resumePayload.sessionId },
           timestamp: Date.now(),
         });
 
@@ -319,7 +316,6 @@ export class MockRelay {
           id: `stream-end-${Date.now()}`,
           type: 'claude:card-stream-end',
           payload: {
-            streamId,
             sessionId: resumePayload.sessionId,
             success: true,
           } satisfies CardStreamEnd,

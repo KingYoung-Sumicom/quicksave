@@ -14,13 +14,12 @@ import { TokenAccounting, makeBreakdown, makeUsage } from '../tokenAccounting.js
  * notifications from the "server" side while observing CardEvents
  * captured from a mock ProviderCallbacks.
  */
-function harness(opts: { sessionId?: string; streamId?: string; turnId?: string } = {}) {
+function harness(opts: { sessionId?: string; turnId?: string } = {}) {
   const sessionId = opts.sessionId ?? 'thr_test';
-  const streamId = opts.streamId ?? 's_1';
   const turnId = opts.turnId ?? 'turn_1';
   const cwd = '/tmp/quicksave-test';
 
-  const cb = new StreamCardBuilder(sessionId, streamId, cwd);
+  const cb = new StreamCardBuilder(sessionId, cwd);
   const events: CardEvent[] = [];
   let streamEnd: CardStreamEnd | null = null;
 
@@ -37,7 +36,7 @@ function harness(opts: { sessionId?: string; streamId?: string; turnId?: string 
   const rpc = new CodexRpcClient(clientSide);
   const tokens = new TokenAccounting();
 
-  const consume = consumeAppServerStream(rpc, cb, { sessionId, streamId, threadId: sessionId, turnId, tokens }, callbacks);
+  const consume = consumeAppServerStream(rpc, cb, { sessionId, threadId: sessionId, turnId, tokens }, callbacks);
 
   // The provider would normally emit the user message before turn/start.
   // We simulate that here so cards have a "starting point".
@@ -50,7 +49,6 @@ function harness(opts: { sessionId?: string; streamId?: string; turnId?: string 
 
   return {
     sessionId,
-    streamId,
     turnId,
     cb,
     rpc,

@@ -17,24 +17,16 @@ import { StreamCardBuilder } from '../../cardBuilder.js';
  * Stub Codex `app-server` session that records calls SessionManager
  * forwards to it. Mirrors the `CodexAppServerProviderSession`
  * interface duck-typed by SessionManager.
- *
- * `pendingStreamIds` + `sendUserMessage` mirror the real session's
- * shape: the manager pushes the resume's streamId into the queue
- * before calling sendUserMessage; the session shifts it back out when
- * starting the next turn so the emitted cards carry the streamId the
- * PWA's `applySessionCards` filter is watching for.
  */
 class StubCodexAppServerSession implements ProviderSession {
   alive = true;
   enqueued: Record<string, unknown>[] = [];
-  pendingStreamIds: string[] = [];
-  sendUserMessages: Array<{ prompt: string; streamId: string }> = [];
+  sendUserMessages: string[] = [];
   enqueueRuntimeOverride(patch: Record<string, unknown>): void {
     this.enqueued.push(patch);
   }
   sendUserMessage(prompt: string): void {
-    const streamId = this.pendingStreamIds.shift() ?? `s_fallback_${Math.random()}`;
-    this.sendUserMessages.push({ prompt, streamId });
+    this.sendUserMessages.push(prompt);
   }
   interrupt(): void {
     /* noop */
@@ -101,7 +93,6 @@ async function setupActiveCodexSession(): Promise<{
   const sessionId = await sm.startSession({
     prompt: 'hello',
     cwd: '/tmp/test',
-    streamId: 's_1',
     permissionMode: 'default',
     sandboxed: true,
     agent: 'codex',
@@ -170,14 +161,8 @@ describe('SessionManager → CodexAppServer override forwarding', () => {
   });
 });
 
-describe('SessionManager → CodexAppServer hot-resume streamId propagation', () => {
-  // Regression: prior to this, the codex app-server session ignored the
-  // resume's streamId and minted a fresh `s_${Date.now()}` for every
-  // sendUserMessage. The PWA's applySessionCards filter then dropped
-  // every card-event whose streamId wasn't in activeStreamIds — making
-  // mid-turn assistant text and tool calls invisible until a manual
-  // refresh re-pulled them via the cardBuilder snapshot.
-  it('active hot-resume pushes the resume streamId into pendingStreamIds', async () => {
+describe('SessionManager → CodexAppServer hot-resume forwarding', () => {
+  it('active hot-resume forwards the prompt to sendUserMessage', async () => {
     const { sm, sessionId, session } = await setupActiveCodexSession();
     // `streaming=true` is set by setupActiveCodexSession's startSession;
     // resumeSession's active-hot-resume branch fires.
@@ -185,16 +170,11 @@ describe('SessionManager → CodexAppServer hot-resume streamId propagation', ()
       sessionId,
       prompt: 'follow-up',
       cwd: '/tmp/test',
-      streamId: 's_resume_1',
     });
-    expect(session.sendUserMessages).toHaveLength(1);
-    expect(session.sendUserMessages[0]).toEqual({
-      prompt: 'follow-up',
-      streamId: 's_resume_1',
-    });
+    expect(session.sendUserMessages).toEqual(['follow-up']);
   });
 
-  it('idle hot-resume pushes the resume streamId into pendingStreamIds', async () => {
+  it('idle hot-resume forwards the prompt to sendUserMessage', async () => {
     const { sm, sessionId, session, codex } = await setupActiveCodexSession();
     // Drive the session out of streaming so resumeSession picks the
     // idle-hot-resume branch. Going through emitStreamEnd is the only
@@ -203,7 +183,6 @@ describe('SessionManager → CodexAppServer hot-resume streamId propagation', ()
     const callbacks = codex.callbacksBySession.get(sessionId);
     if (!callbacks) throw new Error('callbacks missing for stub session');
     callbacks.emitStreamEnd({
-      streamId: 's_1',
       sessionId,
       success: true,
     });
@@ -211,13 +190,8 @@ describe('SessionManager → CodexAppServer hot-resume streamId propagation', ()
       sessionId,
       prompt: 'follow-up-idle',
       cwd: '/tmp/test',
-      streamId: 's_resume_2',
     });
-    expect(session.sendUserMessages).toHaveLength(1);
-    expect(session.sendUserMessages[0]).toEqual({
-      prompt: 'follow-up-idle',
-      streamId: 's_resume_2',
-    });
+    expect(session.sendUserMessages).toEqual(['follow-up-idle']);
   });
 });
 
@@ -249,7 +223,6 @@ describe('SessionManager — non-codex sessions are unaffected', () => {
     const sessionId = await sm.startSession({
       prompt: 'p',
       cwd: '/tmp',
-      streamId: 's',
       permissionMode: 'default',
       sandboxed: true,
       agent: 'codex',

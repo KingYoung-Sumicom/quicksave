@@ -14,9 +14,8 @@ import type {
 // ── Mocks ──
 
 vi.mock('./cardBuilder.js', () => {
-  const StreamCardBuilder = vi.fn().mockImplementation((sessionId: string, streamId: string, cwd: string) => ({
+  const StreamCardBuilder = vi.fn().mockImplementation((sessionId: string, cwd: string) => ({
     sessionId,
-    streamId,
     cwd,
     jsonlCutoff: null,
     updateSessionId: vi.fn(),
@@ -147,8 +146,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       const sessions = manager.getActiveSessions();
       expect(sessions).toHaveLength(1);
@@ -168,8 +166,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       // Trigger a permission request via makeCallbacks (which will wait for user input)
       const callbacks = manager.makeCallbacks('claude-code' as any);
@@ -207,8 +204,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       const updates: any[] = [];
       manager.on('session-updated', (e: any) => {
@@ -256,8 +252,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       expect(manager.getActiveSessions()).toHaveLength(1);
 
@@ -277,8 +272,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       const events: any[] = [];
       manager.on('session-updated', (e) => events.push(e));
@@ -310,8 +304,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       const result = await manager.cancelSession(sessionId);
       expect(result).toBe(true);
@@ -329,7 +322,7 @@ describe('SessionManager', () => {
         sessionId,
         session: createMockProviderSession(),
       });
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 'stream-1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
       const permPromise = callbacks.handlePermissionRequest(sessionId, {
@@ -356,7 +349,7 @@ describe('SessionManager', () => {
         sessionId,
         session: createMockProviderSession(),
       });
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 'stream-1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
       void callbacks.handlePermissionRequest(sessionId, {
@@ -385,8 +378,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       manager.setPermissionLevel(sessionId, 'bypassPermissions');
       expect(manager.getPermissionLevel(sessionId)).toBe('bypassPermissions');
@@ -403,8 +395,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       await manager.setPermissionLevel(sessionId, 'bypassPermissions');
 
@@ -429,8 +420,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       await manager.setPermissionLevel(sessionId, 'plan');
 
@@ -447,8 +437,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       const events: any[] = [];
       manager.on('session-updated', (e) => events.push(e));
@@ -504,8 +493,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-        ...(opts.permissionMode ? { permissionMode: opts.permissionMode } : {}),
+                ...(opts.permissionMode ? { permissionMode: opts.permissionMode } : {}),
       });
       // Pull the managed entry out via the internal map (exposed through getActiveSessions).
       // We need the bypassToken, which is only on the ManagedSession itself.
@@ -619,8 +607,7 @@ describe('SessionManager', () => {
         sessionId,
         prompt: 'continue',
         cwd: '/tmp/test',
-        streamId: 'stream-2',
-      });
+              });
 
       // The hook command baked into the CLI at resume time must reference the
       // same sentinel path the daemon manages — otherwise a later toggle would
@@ -650,8 +637,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       callbacks = manager.makeCallbacks('claude-code' as any);
     });
@@ -734,8 +720,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-2',
-        sandboxed: true,
+                sandboxed: true,
       });
 
       const result = await callbacks.handlePermissionRequest(sandboxSessionId, {
@@ -824,8 +809,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       expect(manager.isStreaming(sessionId)).toBe(true);
 
@@ -833,7 +817,7 @@ describe('SessionManager', () => {
       const streamEndEvents: any[] = [];
       manager.on('card-stream-end', (e) => streamEndEvents.push(e));
 
-      callbacks.emitStreamEnd({ sessionId, streamId: 'stream-1', costUsd: 0.01 } as any);
+      callbacks.emitStreamEnd({ sessionId, costUsd: 0.01 } as any);
 
       expect(streamEndEvents).toHaveLength(1);
       expect(manager.isStreaming(sessionId)).toBe(false);
@@ -873,8 +857,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       callbacks = manager.makeCallbacks('claude-code' as any);
     });
@@ -1038,7 +1021,7 @@ describe('SessionManager', () => {
         sessionId,
         session: createMockProviderSession(),
       });
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 'stream-1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
       const permPromise = callbacks.handlePermissionRequest(sessionId, {
@@ -1082,8 +1065,8 @@ describe('SessionManager', () => {
         .mockResolvedValueOnce({ sessionId: sessionA, session: createMockProviderSession() })
         .mockResolvedValueOnce({ sessionId: sessionB, session: createMockProviderSession() });
 
-      await manager.startSession({ prompt: 'Hi A', cwd: '/tmp/a', streamId: 'stream-A' });
-      await manager.startSession({ prompt: 'Hi B', cwd: '/tmp/b', streamId: 'stream-B' });
+      await manager.startSession({ prompt: 'Hi A', cwd: '/tmp/a' });
+      await manager.startSession({ prompt: 'Hi B', cwd: '/tmp/b' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
 
@@ -1158,15 +1141,15 @@ describe('SessionManager', () => {
       // Build a real-ish cardBuilder per session so we can observe which
       // builder receives the clearPendingInput call. The constructor is
       // called with sessionId='pending' and then updated via updateSessionId
-      // once the provider returns the real id, so we key the builders map by
-      // streamId (which is stable from creation) and snapshot the real
+      // once the provider returns the real id; we snapshot the real
       // sessionId when updateSessionId fires.
       const builders = new Map<string, any>();
       const { StreamCardBuilder } = await import('./cardBuilder.js');
-      (StreamCardBuilder as Mock).mockImplementation((initialSessionId: string, streamId: string, cwd: string) => {
+      let builderCounter = 0;
+      (StreamCardBuilder as Mock).mockImplementation((initialSessionId: string, cwd: string) => {
+        const tempKey = `pending-${++builderCounter}`;
         const builder: any = {
           sessionId: initialSessionId,
-          streamId,
           cwd,
           jsonlCutoff: null,
           updateSessionId: vi.fn().mockImplementation((newId: string) => {
@@ -1180,7 +1163,6 @@ describe('SessionManager', () => {
             type: 'update',
             cardId: `c-${builder.sessionId}`,
             sessionId: builder.sessionId,
-            streamId,
             patch: { pendingInput: null },
           })),
           toolCallFromPermission: vi.fn().mockImplementation(() => ({
@@ -1190,7 +1172,7 @@ describe('SessionManager', () => {
           setToolAnswers: vi.fn().mockReturnValue(null),
           startNewTurn: vi.fn(),
         };
-        builders.set(streamId, builder);
+        builders.set(tempKey, builder);
         return builder;
       });
 
@@ -1198,8 +1180,8 @@ describe('SessionManager', () => {
         .mockResolvedValueOnce({ sessionId: sessionA, session: createMockProviderSession() })
         .mockResolvedValueOnce({ sessionId: sessionB, session: createMockProviderSession() });
 
-      await manager.startSession({ prompt: 'Hi A', cwd: '/tmp/a', streamId: 'stream-A' });
-      await manager.startSession({ prompt: 'Hi B', cwd: '/tmp/b', streamId: 'stream-B' });
+      await manager.startSession({ prompt: 'Hi A', cwd: '/tmp/a' });
+      await manager.startSession({ prompt: 'Hi B', cwd: '/tmp/b' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
 
@@ -1262,7 +1244,7 @@ describe('SessionManager', () => {
         sessionId,
         session: createMockProviderSession(),
       });
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 'stream-1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
       const permPromise = callbacks.handlePermissionRequest(sessionId, {
@@ -1300,7 +1282,7 @@ describe('SessionManager', () => {
         sessionId,
         session: createMockProviderSession(),
       });
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 'stream-1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
       const callbacks = manager.makeCallbacks('claude-code' as any);
 
       // Remove the session BEFORE the permission request arrives — simulating
@@ -1331,7 +1313,7 @@ describe('SessionManager', () => {
         sessionId,
         session: createMockProviderSession(),
       });
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 'stream-1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
       const callbacks = manager.makeCallbacks('claude-code' as any);
 
       const updateEvents: any[] = [];
@@ -1429,8 +1411,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       manager.setSessionConfig(sessionId, 'permissionMode', 'bypassPermissions');
       expect(manager.getPermissionLevel(sessionId)).toBe('bypassPermissions');
@@ -1446,8 +1427,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       manager.setSessionConfig(sessionId, 'sandboxed', true);
 
@@ -1476,8 +1456,7 @@ describe('SessionManager', () => {
       const sessionId = 'cards-stream';
       const mockCardBuilder = {
         sessionId,
-        streamId: 'stream-1',
-        cwd: '/tmp/test',
+                cwd: '/tmp/test',
         jsonlCutoff: null,
         updateSessionId: vi.fn(),
         snapshotCutoff: vi.fn().mockResolvedValue(undefined),
@@ -1505,8 +1484,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       const result = await manager.getCards(sessionId, '/tmp/test');
       // Should have history card + streaming card
@@ -1555,8 +1533,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       expect(manager.getActiveSessionCount()).toBe(1);
     });
@@ -1579,8 +1556,7 @@ describe('SessionManager', () => {
       const result = await manager.startSession({
         prompt: 'Build a thing',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-        model: 'claude-sonnet-4-20250514',
+                model: 'claude-sonnet-4-20250514',
         permissionMode: 'bypassPermissions',
       });
 
@@ -1603,8 +1579,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-        permissionMode: 'invalidMode',
+                permissionMode: 'invalidMode',
       });
 
       const startOpts = (provider.startSession as Mock).mock.calls[0][0];
@@ -1624,8 +1599,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       const startEvent = events.find(e => e.sessionId === sessionId && e.isActive);
       expect(startEvent).toBeDefined();
@@ -1647,8 +1621,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       manager.cleanup();
 
@@ -1667,8 +1640,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       // Create a pending permission request
       const callbacks = manager.makeCallbacks('claude-code' as any);
@@ -1701,8 +1673,7 @@ describe('SessionManager', () => {
       await manager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-      });
+              });
 
       const state = manager.getDebugState();
       expect(state.activeSessions).toHaveLength(1);
@@ -1731,8 +1702,7 @@ describe('SessionManager', () => {
       await multiManager.startSession({
         prompt: 'Fix the bug',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-        agent: 'codex' as any,
+                agent: 'codex' as any,
       });
 
       expect(codexProvider.startSession).toHaveBeenCalled();
@@ -1749,8 +1719,7 @@ describe('SessionManager', () => {
       await multiManager.startSession({
         prompt: 'Fix the bug',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-        agent: 'claude-code' as any,
+                agent: 'claude-code' as any,
       });
 
       expect(provider.startSession).toHaveBeenCalled();
@@ -1773,8 +1742,7 @@ describe('SessionManager', () => {
       await multiManager.startSession({
         prompt: 'Start',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-        agent: 'codex' as any,
+                agent: 'codex' as any,
       });
 
       // Close to simulate disconnect
@@ -1785,8 +1753,7 @@ describe('SessionManager', () => {
         sessionId,
         prompt: 'Continue',
         cwd: '/tmp/test',
-        streamId: 'stream-2',
-      });
+              });
 
       expect(codexProvider.resumeSession).toHaveBeenCalled();
       expect(provider.resumeSession).not.toHaveBeenCalled();
@@ -1805,8 +1772,7 @@ describe('SessionManager', () => {
       await multiManager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-        agent: 'codex' as any,
+                agent: 'codex' as any,
       });
 
       const startEvent = events.find(e => e.sessionId === sessionId);
@@ -1824,8 +1790,7 @@ describe('SessionManager', () => {
       await multiManager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-        agent: 'codex' as any,
+                agent: 'codex' as any,
       });
 
       const sessions = multiManager.getActiveSessions();
@@ -1850,8 +1815,7 @@ describe('SessionManager', () => {
       await multiManager.startSession({
         prompt: 'Hello',
         cwd: '/tmp/test',
-        streamId: 'stream-1',
-        agent: 'codex' as any,
+                agent: 'codex' as any,
       });
 
       const result = await multiManager.getCards(sessionId, '/tmp/test');
@@ -1871,7 +1835,7 @@ describe('SessionManager', () => {
         sessionId,
         session: createMockProviderSession(),
       });
-      await manager.startSession({ prompt: 'hi', cwd: '/tmp/t', streamId: 's1' });
+      await manager.startSession({ prompt: 'hi', cwd: '/tmp/t' });
       expect(await manager.getSessionContextUsage(sessionId)).toBeNull();
     });
 
@@ -1883,7 +1847,7 @@ describe('SessionManager', () => {
         sessionId,
         session: createMockProviderSession({ getContextUsage }),
       });
-      await manager.startSession({ prompt: 'hi', cwd: '/tmp/t', streamId: 's1' });
+      await manager.startSession({ prompt: 'hi', cwd: '/tmp/t' });
 
       const result = await manager.getSessionContextUsage(sessionId);
       expect(result).toBe(usage);
@@ -1897,7 +1861,7 @@ describe('SessionManager', () => {
         sessionId,
         session: createMockProviderSession({ alive: false, getContextUsage }),
       });
-      await manager.startSession({ prompt: 'hi', cwd: '/tmp/t', streamId: 's1' });
+      await manager.startSession({ prompt: 'hi', cwd: '/tmp/t' });
 
       const result = await manager.getSessionContextUsage(sessionId);
       expect(result).toBeNull();
@@ -1913,8 +1877,8 @@ describe('SessionManager', () => {
         session: createMockProviderSession({ alive: true }),
       }));
 
-      await manager.startSession({ prompt: 'A', cwd: '/tmp/a', streamId: 's1' });
-      await manager.startSession({ prompt: 'B', cwd: '/tmp/b', streamId: 's2' });
+      await manager.startSession({ prompt: 'A', cwd: '/tmp/a' });
+      await manager.startSession({ prompt: 'B', cwd: '/tmp/b' });
 
       const snaps = manager.snapshotActiveSessions();
       expect(snaps).toHaveLength(2);
@@ -1931,7 +1895,7 @@ describe('SessionManager', () => {
         sessionId: 'no-emit',
         session: createMockProviderSession({ alive: true }),
       });
-      await manager.startSession({ prompt: 'hi', cwd: '/tmp/t', streamId: 's1' });
+      await manager.startSession({ prompt: 'hi', cwd: '/tmp/t' });
 
       const events: unknown[] = [];
       manager.on('session-updated', (e) => events.push(e));

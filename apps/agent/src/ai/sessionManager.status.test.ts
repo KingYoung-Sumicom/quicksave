@@ -9,9 +9,8 @@ import type {
 // ── Mocks ──
 
 vi.mock('./cardBuilder.js', () => {
-  const StreamCardBuilder = vi.fn().mockImplementation((sessionId: string, streamId: string, cwd: string) => ({
+  const StreamCardBuilder = vi.fn().mockImplementation((sessionId: string, cwd: string) => ({
     sessionId,
-    streamId,
     cwd,
     jsonlCutoff: null,
     updateSessionId: vi.fn(),
@@ -117,8 +116,7 @@ describe('UpdateSessionStatus auto-approve and metadata write', () => {
     await manager.startSession({
       prompt: 'Hello',
       cwd,
-      streamId: 'stream-1',
-    });
+          });
 
     // Default stub: a pre-existing registry entry for this session.
     // updateSessionStatus only upserts when getEntry returns an entry, matching

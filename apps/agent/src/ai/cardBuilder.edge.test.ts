@@ -51,8 +51,8 @@ function makePendingInput(requestId: string): PendingInputAttachment {
   };
 }
 
-function makeBuilder(sessionId = 'sess-1', streamId = 'stream-1', cwd = '/test') {
-  return new StreamCardBuilder(sessionId, streamId, cwd);
+function makeBuilder(sessionId = 'sess-1', cwd = '/test') {
+  return new StreamCardBuilder(sessionId, cwd);
 }
 
 /** Set up mocks for buildCardsFromHistory with a raw JSONL string. */
@@ -829,7 +829,7 @@ describe('Card ID uniqueness across turns', () => {
     builder.assistantText('reply1');
     const turn1Cards = builder.getCards().map(c => c.id);
 
-    builder.startNewTurn('stream-2');
+    builder.startNewTurn();
 
     builder.userMessage('turn2');
     builder.assistantText('reply2');
@@ -844,20 +844,6 @@ describe('Card ID uniqueness across turns', () => {
     for (const id of turn2Cards) {
       expect(turn1Cards).not.toContain(id);
     }
-  });
-
-  it('card IDs use the new streamId after startNewTurn', () => {
-    const builder = makeBuilder('sess-1', 'stream-1');
-
-    builder.userMessage('t1');
-    const e1 = builder.assistantText('r1') as CardAddEvent;
-    expect(e1.card.id).toContain('stream-1');
-
-    builder.startNewTurn('stream-2');
-
-    const e2 = builder.userMessage('t2') as CardAddEvent;
-    expect(e2.card.id).toContain('stream-2');
-    expect(e2.streamId).toBe('stream-2');
   });
 
   it('seq counter does not reset after clearCards', () => {
@@ -879,7 +865,7 @@ describe('Card ID uniqueness across turns', () => {
     const allIds = new Set<string>();
 
     for (let turn = 0; turn < 20; turn++) {
-      builder.startNewTurn(`stream-${turn}`);
+      builder.startNewTurn();
       const e1 = builder.userMessage(`q${turn}`) as CardAddEvent;
       const e2 = builder.assistantText(`a${turn}`) as CardAddEvent;
       const e3 = builder.toolUse(`Tool${turn}`, {}, `tu-${turn}`) as CardAddEvent;

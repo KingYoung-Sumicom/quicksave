@@ -36,7 +36,7 @@ describe('claudeStore', () => {
       useClaudeStore.setState({ cards: [existing] });
 
       const newCard = makeCard({ type: 'assistant_text', id: 'c2', text: 'second' });
-      const event: CardEvent = { type: 'add', streamId: 's1', sessionId: 'sess1', card: newCard };
+      const event: CardEvent = { type: 'add', sessionId: 'sess1', card: newCard };
       useClaudeStore.getState().handleCardEvent(event);
 
       const cards = useClaudeStore.getState().cards;
@@ -50,7 +50,7 @@ describe('claudeStore', () => {
       useClaudeStore.setState({ cards: [c1, c3] });
 
       const c2 = makeCard({ type: 'assistant_text', id: 'c2', text: 'second' });
-      const event: CardEvent = { type: 'add', streamId: 's1', sessionId: 'sess1', card: c2, afterCardId: 'c1' };
+      const event: CardEvent = { type: 'add', sessionId: 'sess1', card: c2, afterCardId: 'c1' };
       useClaudeStore.getState().handleCardEvent(event);
 
       const ids = useClaudeStore.getState().cards.map((c) => c.id);
@@ -62,7 +62,7 @@ describe('claudeStore', () => {
       useClaudeStore.setState({ cards: [c1] });
 
       const c2 = makeCard({ type: 'assistant_text', id: 'c2', text: 'second' });
-      const event: CardEvent = { type: 'add', streamId: 's1', sessionId: 'sess1', card: c2, afterCardId: 'nonexistent' };
+      const event: CardEvent = { type: 'add', sessionId: 'sess1', card: c2, afterCardId: 'nonexistent' };
       useClaudeStore.getState().handleCardEvent(event);
 
       const ids = useClaudeStore.getState().cards.map((c) => c.id);
@@ -74,7 +74,7 @@ describe('claudeStore', () => {
       useClaudeStore.setState({ cards: [existing] });
 
       const duplicate = makeCard({ type: 'user', id: 'u2', text: 'hello', timestamp: Date.now() });
-      const event: CardEvent = { type: 'add', streamId: 's1', sessionId: 'sess1', card: duplicate };
+      const event: CardEvent = { type: 'add', sessionId: 'sess1', card: duplicate };
       useClaudeStore.getState().handleCardEvent(event);
 
       expect(useClaudeStore.getState().cards).toHaveLength(1);
@@ -85,7 +85,7 @@ describe('claudeStore', () => {
       useClaudeStore.setState({ cards: [existing] });
 
       const duplicate = makeCard({ type: 'user', id: 'u2', text: 'hello', timestamp: Date.now() });
-      const event: CardEvent = { type: 'add', streamId: 's1', sessionId: 'sess1', card: duplicate };
+      const event: CardEvent = { type: 'add', sessionId: 'sess1', card: duplicate };
       useClaudeStore.getState().handleCardEvent(event);
 
       expect(useClaudeStore.getState().cards).toHaveLength(2);
@@ -96,7 +96,7 @@ describe('claudeStore', () => {
       useClaudeStore.setState({ cards: [existing] });
 
       const different = makeCard({ type: 'user', id: 'u2', text: 'goodbye', timestamp: Date.now() });
-      const event: CardEvent = { type: 'add', streamId: 's1', sessionId: 'sess1', card: different };
+      const event: CardEvent = { type: 'add', sessionId: 'sess1', card: different };
       useClaudeStore.getState().handleCardEvent(event);
 
       expect(useClaudeStore.getState().cards).toHaveLength(2);
@@ -107,7 +107,7 @@ describe('claudeStore', () => {
       useClaudeStore.setState({ cards: [existing] });
 
       const newCard = makeCard({ type: 'assistant_text', id: 'a2', text: 'hello', timestamp: Date.now() });
-      const event: CardEvent = { type: 'add', streamId: 's1', sessionId: 'sess1', card: newCard };
+      const event: CardEvent = { type: 'add', sessionId: 'sess1', card: newCard };
       useClaudeStore.getState().handleCardEvent(event);
 
       expect(useClaudeStore.getState().cards).toHaveLength(2);
@@ -118,7 +118,7 @@ describe('claudeStore', () => {
       useClaudeStore.setState({ cards: [card] });
 
       const event: CardEvent = {
-        type: 'update', streamId: 's1', sessionId: 'sess1',
+        type: 'update', sessionId: 'sess1',
         cardId: 'c1', patch: { text: 'updated', streaming: false },
       };
       useClaudeStore.getState().handleCardEvent(event);
@@ -133,7 +133,7 @@ describe('claudeStore', () => {
       useClaudeStore.setState({ cards: [card] });
 
       const event: CardEvent = {
-        type: 'update', streamId: 's1', sessionId: 'sess1',
+        type: 'update', sessionId: 'sess1',
         cardId: 'nonexistent', patch: { text: 'updated' },
       };
       useClaudeStore.getState().handleCardEvent(event);
@@ -146,7 +146,7 @@ describe('claudeStore', () => {
       useClaudeStore.setState({ cards: [card] });
 
       const event: CardEvent = {
-        type: 'append_text', streamId: 's1', sessionId: 'sess1',
+        type: 'append_text', sessionId: 'sess1',
         cardId: 'c1', text: ' World',
       };
       useClaudeStore.getState().handleCardEvent(event);
@@ -159,7 +159,7 @@ describe('claudeStore', () => {
       useClaudeStore.setState({ cards: [card] });
 
       const event: CardEvent = {
-        type: 'append_text', streamId: 's1', sessionId: 'sess1',
+        type: 'append_text', sessionId: 'sess1',
         cardId: 'tc1', text: 'appended',
       };
       useClaudeStore.getState().handleCardEvent(event);
@@ -173,7 +173,7 @@ describe('claudeStore', () => {
       const c2 = makeCard({ type: 'assistant_text', id: 'c2', text: 'second' });
       useClaudeStore.setState({ cards: [c1, c2] });
 
-      const event: CardEvent = { type: 'remove', streamId: 's1', sessionId: 'sess1', cardId: 'c1' };
+      const event: CardEvent = { type: 'remove', sessionId: 'sess1', cardId: 'c1' };
       useClaudeStore.getState().handleCardEvent(event);
 
       const cards = useClaudeStore.getState().cards;
@@ -185,7 +185,7 @@ describe('claudeStore', () => {
       const c1 = makeCard({ type: 'assistant_text', id: 'c1', text: 'first' });
       useClaudeStore.setState({ cards: [c1] });
 
-      const event: CardEvent = { type: 'remove', streamId: 's1', sessionId: 'sess1', cardId: 'nonexistent' };
+      const event: CardEvent = { type: 'remove', sessionId: 'sess1', cardId: 'nonexistent' };
       useClaudeStore.getState().handleCardEvent(event);
 
       expect(useClaudeStore.getState().cards).toHaveLength(1);
@@ -211,7 +211,7 @@ describe('claudeStore', () => {
       useClaudeStore.setState({ cards: [card] });
 
       const event: CardEvent = {
-        type: 'update', streamId: 's1', sessionId: 'sess1',
+        type: 'update', sessionId: 'sess1',
         cardId: 'c1', patch: { pendingInput: null } as any,
       };
       useClaudeStore.getState().handleCardEvent(event);
@@ -225,23 +225,15 @@ describe('claudeStore', () => {
   // ── setActiveSession ───────────────────────────────────────────────────
 
   describe('setActiveSession', () => {
-    it('sets activeSessionId and streamId', () => {
-      useClaudeStore.getState().setActiveSession('sess1', 'stream1');
-      const state = useClaudeStore.getState();
-      expect(state.activeSessionId).toBe('sess1');
-      expect(state.activeStreamIds).toEqual(['stream1']);
-    });
-
-    it('clears streamId when streamId is null', () => {
+    it('sets activeSessionId', () => {
       useClaudeStore.getState().setActiveSession('sess1');
-      expect(useClaudeStore.getState().activeStreamIds).toEqual([]);
+      expect(useClaudeStore.getState().activeSessionId).toBe('sess1');
     });
 
     it('sets null activeSessionId', () => {
-      useClaudeStore.getState().setActiveSession('sess1', 'stream1');
+      useClaudeStore.getState().setActiveSession('sess1');
       useClaudeStore.getState().setActiveSession(null);
       expect(useClaudeStore.getState().activeSessionId).toBeNull();
-      expect(useClaudeStore.getState().activeStreamIds).toEqual([]);
     });
 
     it('clears streamError', () => {
@@ -407,18 +399,15 @@ describe('claudeStore', () => {
   // ── setStreaming ───────────────────────────────────────────────────────
 
   describe('setStreaming', () => {
-    it('sets isStreaming true without clearing activeStreamIds', () => {
-      useClaudeStore.setState({ activeStreamIds: ['s1'] });
+    it('sets isStreaming true', () => {
       useClaudeStore.getState().setStreaming(true);
       expect(useClaudeStore.getState().isStreaming).toBe(true);
-      expect(useClaudeStore.getState().activeStreamIds).toEqual(['s1']);
     });
 
-    it('sets isStreaming false and clears activeStreamIds', () => {
-      useClaudeStore.setState({ activeStreamIds: ['s1', 's2'], isStreaming: true });
+    it('sets isStreaming false', () => {
+      useClaudeStore.setState({ isStreaming: true });
       useClaudeStore.getState().setStreaming(false);
       expect(useClaudeStore.getState().isStreaming).toBe(false);
-      expect(useClaudeStore.getState().activeStreamIds).toEqual([]);
     });
   });
 
@@ -438,22 +427,6 @@ describe('claudeStore', () => {
       expect(state.historyTotal).toBe(0);
       expect(state.historyHasMore).toBe(false);
       expect(state.historyError).toBeNull();
-    });
-  });
-
-  // ── addStreamId ────────────────────────────────────────────────────────
-
-  describe('addStreamId', () => {
-    it('adds a stream id', () => {
-      useClaudeStore.setState({ activeStreamIds: [] });
-      useClaudeStore.getState().addStreamId('s1');
-      expect(useClaudeStore.getState().activeStreamIds).toEqual(['s1']);
-    });
-
-    it('does not add duplicate stream id', () => {
-      useClaudeStore.setState({ activeStreamIds: ['s1'] });
-      useClaudeStore.getState().addStreamId('s1');
-      expect(useClaudeStore.getState().activeStreamIds).toEqual(['s1']);
     });
   });
 
@@ -477,7 +450,9 @@ describe('claudeStore', () => {
 
   describe('session isolation — new session page', () => {
     /**
-     * These tests replicate the guard in useClaudeOperations.handlePushMessage:
+     * Cards are gated by sessionId match alone (the bus subscription is
+     * already keyed per-session, so the active-session guard is just a
+     * navigation-race safety net):
      *
      *   if (activeSessionId && event.sessionId !== activeSessionId) return; // drop
      *   if (!activeSessionId && !isStreaming) return;                       // drop
@@ -486,21 +461,20 @@ describe('claudeStore', () => {
      * so any card event — regardless of sessionId — must be discarded.
      */
     function shouldAcceptCardEvent(
-      state: { activeSessionId: string | null; activeStreamIds: string[]; isStreaming: boolean },
+      state: { activeSessionId: string | null; isStreaming: boolean },
       event: CardEvent,
     ): boolean {
       if (state.activeSessionId && event.sessionId !== state.activeSessionId) return false;
       if (!state.activeSessionId && !state.isStreaming) return false;
-      if (state.activeStreamIds.length > 0 && event.streamId && !state.activeStreamIds.includes(event.streamId)) return false;
       return true;
     }
 
     it('rejects card events from other sessions when on new session page (activeSessionId=null, isStreaming=false)', () => {
-      useClaudeStore.setState({ activeSessionId: null, isStreaming: false, activeStreamIds: [] });
+      useClaudeStore.setState({ activeSessionId: null, isStreaming: false });
       const state = useClaudeStore.getState();
 
       const event: CardEvent = {
-        type: 'add', streamId: 'stream-other', sessionId: 'session-other',
+        type: 'add', sessionId: 'session-other',
         card: makeCard({ type: 'assistant_text', id: 'leaked', text: 'should not appear' }),
       };
 
@@ -519,11 +493,11 @@ describe('claudeStore', () => {
     });
 
     it('rejects card events from a mismatched session when viewing a specific session', () => {
-      useClaudeStore.setState({ activeSessionId: 'session-A', isStreaming: true, activeStreamIds: ['stream-A'] });
+      useClaudeStore.setState({ activeSessionId: 'session-A', isStreaming: true });
       const state = useClaudeStore.getState();
 
       const event: CardEvent = {
-        type: 'add', streamId: 'stream-B', sessionId: 'session-B',
+        type: 'add', sessionId: 'session-B',
         card: makeCard({ type: 'user', id: 'leaked', text: 'wrong session' }),
       };
 
@@ -531,11 +505,11 @@ describe('claudeStore', () => {
     });
 
     it('accepts card events for the active session', () => {
-      useClaudeStore.setState({ activeSessionId: 'session-A', isStreaming: true, activeStreamIds: ['stream-A'] });
+      useClaudeStore.setState({ activeSessionId: 'session-A', isStreaming: true });
       const state = useClaudeStore.getState();
 
       const event: CardEvent = {
-        type: 'add', streamId: 'stream-A', sessionId: 'session-A',
+        type: 'add', sessionId: 'session-A',
         card: makeCard({ type: 'assistant_text', id: 'ok', text: 'correct session' }),
       };
 
@@ -543,28 +517,17 @@ describe('claudeStore', () => {
     });
 
     it('accepts card events when a new session is starting (activeSessionId=null, isStreaming=true)', () => {
-      useClaudeStore.setState({ activeSessionId: null, isStreaming: true, activeStreamIds: [] });
+      useClaudeStore.setState({ activeSessionId: null, isStreaming: true });
       const state = useClaudeStore.getState();
 
       const event: CardEvent = {
-        type: 'add', streamId: 'new-stream', sessionId: 'new-session',
+        type: 'add', sessionId: 'new-session',
         card: makeCard({ type: 'assistant_text', id: 'first', text: 'starting up' }),
       };
 
       expect(shouldAcceptCardEvent(state, event)).toBe(true);
     });
 
-    it('rejects stale stream events when activeStreamIds is set', () => {
-      useClaudeStore.setState({ activeSessionId: 'session-A', isStreaming: true, activeStreamIds: ['stream-2'] });
-      const state = useClaudeStore.getState();
-
-      const staleEvent: CardEvent = {
-        type: 'add', streamId: 'stream-1', sessionId: 'session-A',
-        card: makeCard({ type: 'assistant_text', id: 'stale', text: 'old stream' }),
-      };
-
-      expect(shouldAcceptCardEvent(state, staleEvent)).toBe(false);
-    });
   });
 
   // ── setSessions / upsertSession ────────────────────────

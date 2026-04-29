@@ -22,7 +22,6 @@ const mockCards: Card[] = [
 const cardEventsOnStart: CardEvent[] = [
   {
     type: 'add',
-    streamId: '', // overridden by mock relay
     sessionId: '', // overridden by mock relay
     card: {
       id: 'new:0',
@@ -118,7 +117,6 @@ test.describe('Session Flow', () => {
     mockRelay.setCardEventsOnStart([
       {
         type: 'add',
-        streamId: '',
         sessionId: '',
         card: {
           id: 'new:0',

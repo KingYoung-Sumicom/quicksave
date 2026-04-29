@@ -36,9 +36,6 @@ export interface CardAdapterContext {
    * holds this; we keep a copy because most paths construct events
    * from the cardBuilder's helpers. */
   sessionId: string;
-  /** Per-turn streamId carried on every emitted `CardEvent` /
-   * `CardStreamEnd`. */
-  streamId: string;
   /** The codex thread id. */
   threadId: string;
   /** The codex turn id, returned by `turn/start` and used for routing
@@ -748,7 +745,6 @@ export async function consumeAppServerStream(
     }
 
     const streamEnd: CardStreamEnd = {
-      streamId: ctx.streamId,
       sessionId: ctx.sessionId,
       success: status === 'completed',
       ...(status === 'interrupted' ? { interrupted: true } : {}),

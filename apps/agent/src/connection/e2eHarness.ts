@@ -594,7 +594,6 @@ export interface StubProviderOpts {
 interface StubSession {
   sessionId: string;
   cwd: string;
-  streamId: string;
   cardBuilder: StreamCardBuilder;
   callbacks: ProviderCallbacks;
   alive: boolean;
@@ -624,7 +623,7 @@ export class StubProvider implements CodingAgentProvider {
     callbacks: ProviderCallbacks,
   ): Promise<{ sessionId: string; session: ProviderSession }> {
     const sessionId = this.generateSessionId();
-    const session = this.makeSession(sessionId, opts.cwd, opts.streamId, cardBuilder, callbacks);
+    const session = this.makeSession(sessionId, opts.cwd, cardBuilder, callbacks);
     session.receivedPrompts.push(opts.prompt);
     return { sessionId, session: this.toProviderSession(session) };
   }
@@ -634,7 +633,7 @@ export class StubProvider implements CodingAgentProvider {
     cardBuilder: StreamCardBuilder,
     callbacks: ProviderCallbacks,
   ): Promise<{ sessionId: string; session: ProviderSession }> {
-    const session = this.makeSession(opts.sessionId, opts.cwd, opts.streamId, cardBuilder, callbacks);
+    const session = this.makeSession(opts.sessionId, opts.cwd, cardBuilder, callbacks);
     session.receivedPrompts.push(opts.prompt);
     return { sessionId: opts.sessionId, session: this.toProviderSession(session) };
   }
@@ -649,11 +648,10 @@ export class StubProvider implements CodingAgentProvider {
 
   /** Fire `card-stream-end` and mark the session inactive (mirrors the
    *  provider exiting). */
-  finishStream(sessionId: string, result: Omit<CardStreamEnd, 'streamId' | 'sessionId'>): void {
+  finishStream(sessionId: string, result: Omit<CardStreamEnd, 'sessionId'>): void {
     const s = this.requireSession(sessionId);
     s.alive = false;
     const full: CardStreamEnd = {
-      streamId: s.streamId,
       sessionId,
       ...result,
     };
@@ -681,14 +679,12 @@ export class StubProvider implements CodingAgentProvider {
   private makeSession(
     sessionId: string,
     cwd: string,
-    streamId: string,
     cardBuilder: StreamCardBuilder,
     callbacks: ProviderCallbacks,
   ): StubSession {
     const session: StubSession = {
       sessionId,
       cwd,
-      streamId,
       cardBuilder,
       callbacks,
       alive: true,

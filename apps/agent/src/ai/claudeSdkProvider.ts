@@ -45,8 +45,6 @@ export class SdkProviderSession implements ProviderSession {
   private queryHandle: Query | null;
   private inputQueue: AsyncQueue<SDKUserMessage>;
   private cardBuilder: StreamCardBuilder;
-  /** StreamIds queued by hot resume — consumeStream pops after each result. */
-  public pendingStreamIds: string[] = [];
 
   constructor(
     queryHandle: Query,
@@ -135,7 +133,7 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     cardBuilder.updateSessionId(sessionId);
 
     // Fire and forget the stream consumer
-    this.consumeStream(sessionId, opts.streamId, queryHandle, sdkSession, cardBuilder, callbacks, opts.prompt);
+    this.consumeStream(sessionId, queryHandle, sdkSession, cardBuilder, callbacks, opts.prompt);
 
     return { sessionId, session: sdkSession };
   }
@@ -170,7 +168,7 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     cardBuilder.updateSessionId(sessionId);
 
     // Fire and forget
-    this.consumeStream(sessionId, opts.streamId, queryHandle, sdkSession, cardBuilder, callbacks, opts.prompt);
+    this.consumeStream(sessionId, queryHandle, sdkSession, cardBuilder, callbacks, opts.prompt);
 
     return { sessionId, session: sdkSession };
   }
@@ -302,21 +300,19 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
 
   private async consumeStream(
     sessionId: string,
-    initialStreamId: string,
     queryHandle: Query,
     sdkSession: SdkProviderSession,
     cb: StreamCardBuilder,
     callbacks: ProviderCallbacks,
     prompt?: string,
   ): Promise<void> {
-    let streamId = initialStreamId;
     let textBuffer = '';
     let bufferTimer: ReturnType<typeof setTimeout> | null = null;
     let resultEmitted = false;
 
     const emitCard = (event: CardEvent) => { callbacks.emitCardEvent(event); };
 
-    cb.startNewTurn(streamId);
+    cb.startNewTurn();
 
     // Add user prompt to cardBuilder (for getCards on reconnect) but don't emit
     if (prompt) {
@@ -340,32 +336,28 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     try {
       for await (const msg of queryHandle) {
         const emittedResult = await this.routeMessage(
-          sessionId, streamId, msg, sdkSession, cb, callbacks, emitCard, flushText, bufferText,
+          sessionId, msg, sdkSession, cb, callbacks, emitCard, flushText, bufferText,
         );
         if (emittedResult) {
           resultEmitted = true;
-
-          // Check for hot resume — start new turn with next pending streamId
-          const nextStreamId = sdkSession.pendingStreamIds.shift();
-          if (nextStreamId) {
-            streamId = nextStreamId;
-            cb.startNewTurn(streamId);
-            resultEmitted = false; // Reset for next turn
-          }
+          // Reset per-turn state. If a follow-up prompt arrived during this
+          // turn, the SDK will pick it up from inputQueue and the next
+          // assistant text should land in a fresh card.
+          cb.startNewTurn();
         }
       }
     } catch (error) {
       flushText();
       console.error(`[sdk] stream error session=${sessionId.slice(0, 8)}:`, error);
       const msg = error instanceof Error ? error.message : 'Unknown error';
-      callbacks.emitStreamEnd({ streamId, sessionId, success: false, error: msg });
+      callbacks.emitStreamEnd({ sessionId, success: false, error: msg });
       resultEmitted = true;
     } finally {
       if (bufferTimer) clearTimeout(bufferTimer);
       sdkSession.markClosed();
 
       if (!resultEmitted) {
-        callbacks.emitStreamEnd({ streamId, sessionId, success: false, error: 'SDK query ended unexpectedly' });
+        callbacks.emitStreamEnd({ sessionId, success: false, error: 'SDK query ended unexpectedly' });
       }
     }
   }
@@ -375,7 +367,6 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
 
   private async routeMessage(
     sessionId: string,
-    streamId: string,
     msg: SDKMessage,
     _sdkSession: SdkProviderSession,
     cb: StreamCardBuilder,
@@ -554,7 +545,6 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
       }
       const errors = (msg as any).errors;
       const streamEnd: CardStreamEnd = {
-        streamId,
         sessionId,
         success: msg.subtype === 'success' && !interrupted,
         error: (msg.subtype !== 'success' && !interrupted)

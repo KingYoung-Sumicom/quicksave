@@ -185,7 +185,6 @@ interface ClaudeStore {
 
   // Active session
   activeSessionId: string | null;
-  activeStreamIds: string[];
   isStreaming: boolean;
   streamError: string | null;
 
@@ -232,8 +231,7 @@ interface ClaudeStore {
   clearActiveOnDisconnect: () => void;
 
   // Actions — active session
-  setActiveSession: (sessionId: string | null, streamId?: string | null) => void;
-  addStreamId: (streamId: string) => void;
+  setActiveSession: (sessionId: string | null) => void;
   setStreaming: (streaming: boolean) => void;
   setStreamError: (error: string | null) => void;
 
@@ -285,7 +283,6 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   // Initial state
   sessions: {},
   activeSessionId: null,
-  activeStreamIds: [],
   isStreaming: false,
   streamError: null,
   cards: [],
@@ -347,7 +344,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     }),
 
   // Active session
-  setActiveSession: (sessionId, streamId = null) => {
+  setActiveSession: (sessionId) => {
     if (!sessionId) {
       // New Session: restore the active agent's saved prefs from localStorage
       // so prior selections persist across navigation. We re-read storage
@@ -356,7 +353,6 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       const prefs = loadPrefs();
       set({
         activeSessionId: null,
-        activeStreamIds: [],
         streamError: null,
         isStreaming: false,
         selectedAgent: prefs.selectedAgent,
@@ -380,7 +376,6 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     const { agentPrefs } = get();
     set({
       activeSessionId: sessionId,
-      activeStreamIds: streamId ? [streamId] : [],
       streamError: null,
       // Sync the local streaming flag to the target session's state. Without
       // this, navigating from a streaming session to an idle one leaves
@@ -397,13 +392,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       selectedPermissionMode: session?.permissionMode ?? agentPrefs[sessionAgent].permissionMode,
     });
   },
-  addStreamId: (streamId: string) => {
-    const current = get().activeStreamIds;
-    if (!current.includes(streamId)) {
-      set({ activeStreamIds: [...current, streamId] });
-    }
-  },
-  setStreaming: (streaming) => set({ isStreaming: streaming, ...(!streaming ? { activeStreamIds: [] } : {}) }),
+  setStreaming: (streaming) => set({ isStreaming: streaming }),
   setStreamError: (error) => set({ streamError: error, isStreaming: false }),
 
   // Cards — server returns cards with pendingInput already attached
@@ -622,7 +611,6 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     set({
       sessions: {},
       activeSessionId: null,
-      activeStreamIds: [],
       isStreaming: false,
       streamError: null,
       cards: [],

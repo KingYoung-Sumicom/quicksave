@@ -123,9 +123,9 @@ claude:start → MessageHandler.handle_claude_start()
                           '-p', '', ...])
       → 等待 stdout 的 system:init 事件取得 session_id
       → stdin 寫入 { type: 'user', message: { role: 'user', content: prompt } }
-      → return ProviderSession { sessionId, streamId, abort() }
+      → return ProviderSession { sessionId, abort() }
     → SessionManager.startSession() 建立 card builder、permission table
-    → consumeStream(sessionId, streamId):
+    → consumeStream(sessionId):
         for await (line of stdout):
           if control_request: handleControlRequest → 自動核准 or emit card + 等使用者回應
           if stream_event/assistant/user/system: routeMessage → CardBuilder → CardEvent
@@ -134,12 +134,10 @@ claude:start → MessageHandler.handle_claude_start()
 
 claude:resume → SessionManager.resumeSession(sessionId, prompt)
   → 1. Hot resume (active turn): existing.streaming && providerSession.alive
-       → 將 streamId push 到 providerSession.pendingStreamIds，stdin 寫入 user message
-         consumeStream 在當前 turn result 後消耗 pendingStreamIds 開新 turn
+       → providerSession.sendUserMessage(prompt)；CLI 在當前 turn 結束後消化下一個 prompt
   → 2. Hot resume (idle): !existing.streaming && providerSession.alive && !modelChanged
-       → 直接重用同一個 CLI process：cardBuilder.startNewTurn(newStreamId)，
-         providerSession.currentStreamId = newStreamId，resultEmitted = false，
-         stdin 寫入 user message。避免 kill+spawn 的延遲與「ghost inactive」閃爍。
+       → 直接重用同一個 CLI process：providerSession.resultEmitted = false，
+         providerSession.sendUserMessage(prompt)。避免 kill+spawn 的延遲與「ghost inactive」閃爍。
   → 3. Cold resume: providerSession 已死或 model 改變
        → spawn('claude', [..., '--resume', sessionId])
        → 注意：CLI 的 --resume 可能 fork 新的 session_id（由 init 事件回報）。
@@ -202,7 +200,6 @@ interface ActiveSession {
 
 interface ProviderSession {
   sessionId: string;
-  streamId: string;
   abort(): Promise<void>;
   /** Optional — claude-code CLI only. Queries `get_context_usage`
    * control_request and returns a category-level breakdown of the
@@ -520,7 +517,6 @@ PWA↔Agent 的 session / cards / preferences 事件現在都走 MessageBus 的 
 | `ClaudeHistoryMessage` | 行 682 |
 | `ClaudeSubagentBlock` | 行 694 |
 | `ClaudeGetMessagesResponsePayload` | 行 704 |
-| `ClaudeStreamPayload` / `ClaudeStreamEventType` | 行 714 |
 | `Card` / `CardEvent` | `cards.ts` |
 
 ### Card 資料模型
@@ -679,7 +675,7 @@ interface DebugResult {
       ↓ spawn('claude', ['--input-format', 'stream-json', '--output-format', 'stream-json',
       ↓                    '--permission-prompt-tool', 'stdio', '--append-system-prompt', '...', ...])
       ↓ stdin.write({ type: 'user', message: { role: 'user', content: prompt } })
-      ↓ return ProviderSession { sessionId, streamId, abort() }
+      ↓ return ProviderSession { sessionId, abort() }
     ↓ SessionManager 建立 card builder、permission table
     ↓ consumeStream() loop:
        for await (line of readline(proc.stdout))

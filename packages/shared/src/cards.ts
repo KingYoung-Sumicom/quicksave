@@ -111,7 +111,6 @@ export type Card =
 
 export interface CardAddEvent {
   type: 'add';
-  streamId: string;
   sessionId: string;
   card: Card;
   /** Insert after this card ID. Undefined = append to end. */
@@ -120,7 +119,6 @@ export interface CardAddEvent {
 
 export interface CardUpdateEvent {
   type: 'update';
-  streamId: string;
   sessionId: string;
   cardId: CardId;
   /**
@@ -136,7 +134,6 @@ export interface CardUpdateEvent {
 
 export interface CardAppendTextEvent {
   type: 'append_text';
-  streamId: string;
   sessionId: string;
   cardId: CardId;
   text: string;
@@ -144,7 +141,6 @@ export interface CardAppendTextEvent {
 
 export interface CardRemoveEvent {
   type: 'remove';
-  streamId: string;
   sessionId: string;
   cardId: CardId;
 }
@@ -188,7 +184,6 @@ export type SessionCardsUpdate =
 // ── Stream End ────────────────────────────────────────────────────────────
 
 export interface CardStreamEnd {
-  streamId: string;
   sessionId: string;
   success: boolean;
   error?: string;

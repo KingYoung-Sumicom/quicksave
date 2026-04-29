@@ -15,9 +15,8 @@ import type {
 // ── Mocks ──
 
 vi.mock('./cardBuilder.js', () => {
-  const StreamCardBuilder = vi.fn().mockImplementation((sessionId: string, streamId: string, cwd: string) => ({
+  const StreamCardBuilder = vi.fn().mockImplementation((sessionId: string, cwd: string) => ({
     sessionId,
-    streamId,
     cwd,
     jsonlCutoff: null,
     updateSessionId: vi.fn(),
@@ -123,8 +122,8 @@ describe('SessionManager — adversarial edge cases', () => {
       });
 
       const [id1, id2] = await Promise.all([
-        manager.startSession({ prompt: 'A', cwd: '/tmp/a', streamId: 's1' }),
-        manager.startSession({ prompt: 'B', cwd: '/tmp/b', streamId: 's2' }),
+        manager.startSession({ prompt: 'A', cwd: '/tmp/a' }),
+        manager.startSession({ prompt: 'B', cwd: '/tmp/b' }),
       ]);
 
       expect(id1).not.toBe(id2);
@@ -147,8 +146,8 @@ describe('SessionManager — adversarial edge cases', () => {
       });
 
       const [id1, id2] = await Promise.all([
-        manager.startSession({ prompt: 'A', cwd: '/tmp/a', streamId: 's1' }),
-        manager.startSession({ prompt: 'B', cwd: '/tmp/b', streamId: 's2' }),
+        manager.startSession({ prompt: 'A', cwd: '/tmp/a' }),
+        manager.startSession({ prompt: 'B', cwd: '/tmp/b' }),
       ]);
 
       expect(id1).toBe(id2);
@@ -167,8 +166,8 @@ describe('SessionManager — adversarial edge cases', () => {
       }));
 
       const [id1, id2] = await Promise.all([
-        manager.startSession({ prompt: 'A', cwd: '/tmp/same', streamId: 's1' }),
-        manager.startSession({ prompt: 'B', cwd: '/tmp/same', streamId: 's2' }),
+        manager.startSession({ prompt: 'A', cwd: '/tmp/same' }),
+        manager.startSession({ prompt: 'B', cwd: '/tmp/same' }),
       ]);
 
       expect(id1).not.toBe(id2);
@@ -188,7 +187,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: mockProvSession,
       });
 
-      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test' });
       const cardBuilder = (StreamCardBuilder as unknown as Mock).mock.results[0].value;
       cardBuilder.userMessage.mockClear();
       cardBuilder.startNewTurn.mockClear();
@@ -197,35 +196,12 @@ describe('SessionManager — adversarial edge cases', () => {
         sessionId,
         prompt: 'Follow-up',
         cwd: '/tmp/test',
-        streamId: 's2',
-      });
+              });
 
       expect(result).toBe(sessionId);
       expect(mockProvSession.sendUserMessage).toHaveBeenCalledWith('Follow-up');
       expect(cardBuilder.userMessage).not.toHaveBeenCalled();
       expect(cardBuilder.startNewTurn).not.toHaveBeenCalled();
-    });
-
-    it('hot resume should queue the new streamId on the provider session', async () => {
-      const sessionId = 'hot-streamid';
-      const mockProvSession = createMockProviderSession({ alive: true }) as any;
-      mockProvSession.pendingStreamIds = [];
-
-      (provider.startSession as Mock).mockResolvedValue({
-        sessionId,
-        session: mockProvSession,
-      });
-
-      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test', streamId: 's1' });
-
-      await manager.resumeSession({
-        sessionId,
-        prompt: 'Follow-up',
-        cwd: '/tmp/test',
-        streamId: 's2',
-      });
-
-      expect(mockProvSession.pendingStreamIds).toContain('s2');
     });
 
     it('hot resume on a session where streaming=true but alive=false should fall to cold resume', async () => {
@@ -236,7 +212,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: deadSession,
       });
 
-      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test' });
 
       // Provider is dead but streaming flag is still true — should NOT hot resume
       const coldSession = createMockProviderSession();
@@ -249,34 +225,31 @@ describe('SessionManager — adversarial edge cases', () => {
         sessionId,
         prompt: 'Follow-up',
         cwd: '/tmp/test',
-        streamId: 's2',
-      });
+              });
 
       // Should have gone through cold resume path
       expect(provider.resumeSession).toHaveBeenCalled();
       expect(deadSession.sendUserMessage).not.toHaveBeenCalled();
     });
 
-    it('multiple rapid hot resumes should all queue their streamIds', async () => {
+    it('multiple rapid hot resumes deliver every prompt to the provider', async () => {
       const sessionId = 'rapid-hot';
-      const mockProvSession = createMockProviderSession({ alive: true }) as any;
-      mockProvSession.pendingStreamIds = [];
+      const mockProvSession = createMockProviderSession({ alive: true });
 
       (provider.startSession as Mock).mockResolvedValue({
         sessionId,
         session: mockProvSession,
       });
 
-      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test' });
 
       // Fire three rapid hot resumes
       await Promise.all([
-        manager.resumeSession({ sessionId, prompt: 'A', cwd: '/tmp/test', streamId: 'r1' }),
-        manager.resumeSession({ sessionId, prompt: 'B', cwd: '/tmp/test', streamId: 'r2' }),
-        manager.resumeSession({ sessionId, prompt: 'C', cwd: '/tmp/test', streamId: 'r3' }),
+        manager.resumeSession({ sessionId, prompt: 'A', cwd: '/tmp/test' }),
+        manager.resumeSession({ sessionId, prompt: 'B', cwd: '/tmp/test' }),
+        manager.resumeSession({ sessionId, prompt: 'C', cwd: '/tmp/test' }),
       ]);
 
-      expect(mockProvSession.pendingStreamIds).toEqual(['r1', 'r2', 'r3']);
       expect(mockProvSession.sendUserMessage).toHaveBeenCalledTimes(3);
     });
   });
@@ -291,7 +264,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
 
@@ -321,7 +294,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
 
@@ -358,7 +331,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
       manager.closeSession(sessionId);
 
       const { buildCardsFromHistory } = await import('./cardBuilder.js');
@@ -394,8 +367,7 @@ describe('SessionManager — adversarial edge cases', () => {
       const sessionId = 'cards-paginated';
       const mockCardBuilder = {
         sessionId,
-        streamId: 'stream-1',
-        cwd: '/tmp/test',
+                cwd: '/tmp/test',
         jsonlCutoff: null,
         updateSessionId: vi.fn(),
         snapshotCutoff: vi.fn().mockResolvedValue(undefined),
@@ -419,7 +391,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       // With offset > 0, streaming cards should NOT be appended
       const result = await manager.getCards(sessionId, '/tmp/test', 1, 50);
@@ -438,7 +410,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
 
@@ -450,7 +422,7 @@ describe('SessionManager — adversarial edge cases', () => {
         }
       });
 
-      callbacks.emitStreamEnd({ sessionId, streamId: 's1', costUsd: 0.01 } as any);
+      callbacks.emitStreamEnd({ sessionId, costUsd: 0.01 } as any);
 
       expect(streamingDuringUpdate).toBe(false);
     });
@@ -462,7 +434,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
       const eventOrder: string[] = [];
@@ -470,7 +442,7 @@ describe('SessionManager — adversarial edge cases', () => {
       manager.on('card-stream-end', () => eventOrder.push('card-stream-end'));
       manager.on('session-updated', () => eventOrder.push('session-updated'));
 
-      callbacks.emitStreamEnd({ sessionId, streamId: 's1', costUsd: 0.01 } as any);
+      callbacks.emitStreamEnd({ sessionId, costUsd: 0.01 } as any);
 
       // emitStreamEnd emits card-stream-end first, then sets streaming=false, then emitSessionUpdate
       // The initial session-updated from startSession is already fired, so we ignore that
@@ -486,7 +458,7 @@ describe('SessionManager — adversarial edge cases', () => {
 
       // Should emit card-stream-end but not crash when trying to update non-existent session
       expect(() => {
-        callbacks.emitStreamEnd({ sessionId: 'ghost', streamId: 's1', costUsd: 0 } as any);
+        callbacks.emitStreamEnd({ sessionId: 'ghost', costUsd: 0 } as any);
       }).not.toThrow();
 
       expect(events).toHaveLength(1);
@@ -503,7 +475,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
       manager.closeSession(sessionId);
 
       // Should not throw
@@ -519,7 +491,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
       manager.closeSession(sessionId);
 
       // sandboxed config sets this.sessions.get(sessionId) — which returns undefined after close
@@ -535,7 +507,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
       manager.closeSession(sessionId);
 
       // Should not throw and should store the permission for potential future cold resume
@@ -554,7 +526,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const events: any[] = [];
       manager.on('session-config-updated', (e) => events.push(e));
@@ -588,7 +560,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: mockSession,
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       expect(manager.closeSession(sessionId)).toBe(true);
       expect(manager.closeSession(sessionId)).toBe(false);
@@ -604,7 +576,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
       manager.closeSession(sessionId);
 
       expect(await manager.cancelSession(sessionId)).toBe(false);
@@ -617,7 +589,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: null, // provider returned null session
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       expect(await manager.cancelSession(sessionId)).toBe(false);
     });
@@ -629,7 +601,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
       manager.closeSession(sessionId);
 
       // Should be safe, returns false
@@ -644,7 +616,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: mockSession,
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       expect(await manager.cancelSession(sessionId)).toBe(true);
       expect(mockSession.interrupt).toHaveBeenCalled();
@@ -661,7 +633,7 @@ describe('SessionManager — adversarial edge cases', () => {
       (provider.startSession as Mock).mockRejectedValue(new Error('Provider crashed'));
 
       await expect(
-        manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' }),
+        manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' }),
       ).rejects.toThrow('Provider crashed');
 
       // No session should be registered since the error happened before sessions.set()
@@ -672,7 +644,7 @@ describe('SessionManager — adversarial edge cases', () => {
       (provider.startSession as Mock).mockRejectedValue(new Error('Spawn failed'));
 
       await expect(
-        manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' }),
+        manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' }),
       ).rejects.toThrow('Spawn failed');
 
       // sessionAgents is set AFTER provider.startSession resolves, so on error it should be clean
@@ -689,8 +661,7 @@ describe('SessionManager — adversarial edge cases', () => {
           sessionId,
           prompt: 'Hello',
           cwd: '/tmp/test',
-          streamId: 's1',
-        }),
+                  }),
       ).rejects.toThrow('Resume exploded');
 
       // coldResumeInFlight should be cleaned up via finally block
@@ -704,8 +675,7 @@ describe('SessionManager — adversarial edge cases', () => {
         sessionId,
         prompt: 'Retry',
         cwd: '/tmp/test',
-        streamId: 's2',
-      });
+              });
 
       expect(result).toBe(sessionId);
       expect(provider.resumeSession).toHaveBeenCalledTimes(2);
@@ -723,16 +693,14 @@ describe('SessionManager — adversarial edge cases', () => {
         sessionId,
         prompt: 'First',
         cwd: '/tmp/test',
-        streamId: 's1',
-      });
+              });
 
       // Queue a second prompt while cold resume is in flight
       const secondResume = manager.resumeSession({
         sessionId,
         prompt: 'Queued',
         cwd: '/tmp/test',
-        streamId: 's2',
-      });
+              });
 
       // Now fail the cold resume
       resumeResolve!(Promise.reject(new Error('Resume failed')));
@@ -758,7 +726,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
 
@@ -801,7 +769,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: mockSession,
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
       const permPromise = callbacks.handlePermissionRequest(sessionId, {
@@ -827,7 +795,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
 
@@ -872,23 +840,20 @@ describe('SessionManager — adversarial edge cases', () => {
         sessionId,
         prompt: 'First',
         cwd: '/tmp/test',
-        streamId: 's1',
-      });
+              });
 
       // Queue additional prompts
       const secondResume = manager.resumeSession({
         sessionId,
         prompt: 'Second',
         cwd: '/tmp/test',
-        streamId: 's2',
-      });
+              });
 
       const thirdResume = manager.resumeSession({
         sessionId,
         prompt: 'Third',
         cwd: '/tmp/test',
-        streamId: 's3',
-      });
+              });
 
       // Release the gate
       resumeResolve!();
@@ -915,7 +880,7 @@ describe('SessionManager — adversarial edge cases', () => {
         sessionId: oldId,
         session: createMockProviderSession(),
       });
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
       const permPromise = callbacks.handlePermissionRequest(oldId, {
@@ -943,8 +908,7 @@ describe('SessionManager — adversarial edge cases', () => {
         sessionId: oldId,
         prompt: 'next',
         cwd: '/tmp/test',
-        streamId: 's2',
-      });
+              });
 
       // 4) The pending entry must now be tagged with the NEW sessionId so the
       //    cardBuilder lookup in resolveUserInput hits the live session entry.
@@ -974,7 +938,7 @@ describe('SessionManager — adversarial edge cases', () => {
         sessionId: oldId,
         session: createMockProviderSession(),
       });
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
       void callbacks.handlePermissionRequest(oldId, {
@@ -997,8 +961,7 @@ describe('SessionManager — adversarial edge cases', () => {
         sessionId: oldId,
         prompt: 'next',
         cwd: '/tmp/test',
-        streamId: 's2',
-      });
+              });
 
       const newIdUpdates = updates.filter((u) => u.sessionId === newId);
       expect(newIdUpdates.length).toBeGreaterThan(0);
@@ -1023,8 +986,7 @@ describe('SessionManager — adversarial edge cases', () => {
         manager.startSession({
           prompt: 'Hello',
           cwd: '/tmp/test',
-          streamId: 's1',
-          agent: 'nonexistent-agent' as any,
+                    agent: 'nonexistent-agent' as any,
         }),
       ).resolves.toBe(sessionId);
     });
@@ -1037,8 +999,7 @@ describe('SessionManager — adversarial edge cases', () => {
         emptyManager.startSession({
           prompt: 'Hello',
           cwd: '/tmp/test',
-          streamId: 's1',
-        }),
+                  }),
       ).rejects.toThrow();
     });
 
@@ -1062,7 +1023,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const updates: any[] = [];
       manager.on('session-updated', (e) => updates.push(e));
@@ -1102,7 +1063,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession(),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
       const permPromise = callbacks.handlePermissionRequest(sessionId, {
@@ -1135,33 +1096,30 @@ describe('SessionManager — adversarial edge cases', () => {
     it('idle hot resume (streaming=false, alive=true) reuses the same provider session', async () => {
       const sessionId = 'idle-hot';
       const aliveSession = createMockProviderSession({ alive: true }) as any;
-      aliveSession.pendingStreamIds = [];
       (provider.startSession as Mock).mockResolvedValue({
         sessionId,
         session: aliveSession,
       });
 
-      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test' });
       const cardBuilder = (StreamCardBuilder as unknown as Mock).mock.results[0].value;
       cardBuilder.userMessage.mockClear();
       cardBuilder.startNewTurn.mockClear();
 
       // End the first turn: streaming=false but providerSession still alive
       const callbacks = manager.makeCallbacks('claude-code' as any);
-      callbacks.emitStreamEnd({ sessionId, streamId: 's1', costUsd: 0.01 } as any);
+      callbacks.emitStreamEnd({ sessionId, costUsd: 0.01 } as any);
 
       // Resume should use idle hot resume, NOT cold resume
       const result = await manager.resumeSession({
         sessionId,
         prompt: 'Follow-up',
         cwd: '/tmp/test',
-        streamId: 's2',
-      });
+              });
 
       expect(result).toBe(sessionId);
       expect(aliveSession.sendUserMessage).toHaveBeenCalledWith('Follow-up');
       expect(provider.resumeSession).not.toHaveBeenCalled();
-      expect(aliveSession.currentStreamId).toBe('s2');
       expect(aliveSession.resultEmitted).toBe(false);
       expect(aliveSession.kill).not.toHaveBeenCalled();
       expect(cardBuilder.userMessage).not.toHaveBeenCalled();
@@ -1171,16 +1129,15 @@ describe('SessionManager — adversarial edge cases', () => {
     it('idle hot resume emits session-updated with isStreaming=true', async () => {
       const sessionId = 'idle-update';
       const aliveSession = createMockProviderSession({ alive: true }) as any;
-      aliveSession.pendingStreamIds = [];
       (provider.startSession as Mock).mockResolvedValue({
         sessionId,
         session: aliveSession,
       });
 
-      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test' });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
-      callbacks.emitStreamEnd({ sessionId, streamId: 's1', costUsd: 0.01 } as any);
+      callbacks.emitStreamEnd({ sessionId, costUsd: 0.01 } as any);
 
       const updates: any[] = [];
       manager.on('session-updated', (e: any) => {
@@ -1191,8 +1148,7 @@ describe('SessionManager — adversarial edge cases', () => {
         sessionId,
         prompt: 'Follow-up',
         cwd: '/tmp/test',
-        streamId: 's2',
-      });
+              });
 
       const last = updates[updates.length - 1];
       expect(last.isActive).toBe(true);
@@ -1202,7 +1158,6 @@ describe('SessionManager — adversarial edge cases', () => {
     it('idle hot resume falls to cold resume when model changed', async () => {
       const sessionId = 'idle-model-changed';
       const aliveSession = createMockProviderSession({ alive: true }) as any;
-      aliveSession.pendingStreamIds = [];
       (provider.startSession as Mock).mockResolvedValue({
         sessionId,
         session: aliveSession,
@@ -1211,12 +1166,11 @@ describe('SessionManager — adversarial edge cases', () => {
       await manager.startSession({
         prompt: 'Start',
         cwd: '/tmp/test',
-        streamId: 's1',
-        model: 'claude-opus-4-5',
+                model: 'claude-opus-4-5',
       });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
-      callbacks.emitStreamEnd({ sessionId, streamId: 's1', costUsd: 0.01 } as any);
+      callbacks.emitStreamEnd({ sessionId, costUsd: 0.01 } as any);
 
       // User switches model — should force cold resume
       manager.setSessionConfig(sessionId, 'model', 'claude-sonnet-4-6');
@@ -1231,8 +1185,7 @@ describe('SessionManager — adversarial edge cases', () => {
         sessionId,
         prompt: 'Follow-up',
         cwd: '/tmp/test',
-        streamId: 's2',
-      });
+              });
 
       expect(aliveSession.kill).toHaveBeenCalled();
       expect(provider.resumeSession).toHaveBeenCalled();
@@ -1243,7 +1196,6 @@ describe('SessionManager — adversarial edge cases', () => {
       // tier requires a respawn — same machinery as model change.
       const sessionId = 'idle-cw-changed';
       const aliveSession = createMockProviderSession({ alive: true }) as any;
-      aliveSession.pendingStreamIds = [];
       (provider.startSession as Mock).mockResolvedValue({
         sessionId,
         session: aliveSession,
@@ -1252,13 +1204,12 @@ describe('SessionManager — adversarial edge cases', () => {
       await manager.startSession({
         prompt: 'Start',
         cwd: '/tmp/test',
-        streamId: 's1',
-        model: 'claude-opus-4-7',
+                model: 'claude-opus-4-7',
         contextWindow: 200_000,
       });
 
       const callbacks = manager.makeCallbacks('claude-code' as any);
-      callbacks.emitStreamEnd({ sessionId, streamId: 's1', costUsd: 0.01 } as any);
+      callbacks.emitStreamEnd({ sessionId, costUsd: 0.01 } as any);
 
       // User opts up to 1M — should force cold resume even though model is the same.
       manager.setSessionConfig(sessionId, 'contextWindow', 1_000_000);
@@ -1273,8 +1224,7 @@ describe('SessionManager — adversarial edge cases', () => {
         sessionId,
         prompt: 'Follow-up',
         cwd: '/tmp/test',
-        streamId: 's2',
-      });
+              });
 
       expect(aliveSession.kill).toHaveBeenCalled();
       expect(provider.resumeSession).toHaveBeenCalled();
@@ -1294,7 +1244,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: mockProvSession,
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       // Mirror real behavior: startSession upserts an active registry entry,
       // so subsequent emits should see findBySessionId return it.
@@ -1330,7 +1280,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: oldProvSession,
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       // Simulate replacement: a newer providerSession is now in the slot
       const ps = (manager as any).sessions.get(sessionId) as ManagedSession;
@@ -1367,7 +1317,7 @@ describe('SessionManager — adversarial edge cases', () => {
         session: createMockProviderSession({ alive: false }),
       });
 
-      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test', streamId: 's1' });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
 
       // Mirror real behavior: registry has an active entry for oldId after
       // startSession; rekey doesn't touch the registry directly.
@@ -1382,7 +1332,7 @@ describe('SessionManager — adversarial edge cases', () => {
 
       // End the stream and kill the provider to force cold resume
       const callbacks = manager.makeCallbacks('claude-code' as any);
-      callbacks.emitStreamEnd({ sessionId: oldId, streamId: 's1', costUsd: 0 } as any);
+      callbacks.emitStreamEnd({ sessionId: oldId, costUsd: 0 } as any);
       // Make providerSession dead so neither hot nor idle hot resume triggers
       (manager as any).sessions.get(oldId).providerSession = null;
 
@@ -1400,8 +1350,7 @@ describe('SessionManager — adversarial edge cases', () => {
         sessionId: oldId,
         prompt: 'Follow-up',
         cwd: '/tmp/test',
-        streamId: 's2',
-      });
+              });
 
       expect(returned).toBe(newId);
       expect((manager as any).sessions.has(oldId)).toBe(false);

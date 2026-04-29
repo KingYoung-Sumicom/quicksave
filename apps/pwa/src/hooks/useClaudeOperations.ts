@@ -178,7 +178,7 @@ export function useClaudeOperations(
             ...(opts?.cwd ? { cwd: opts.cwd } : {}),
           });
         }
-        setActiveSession(response.sessionId ?? null, response.streamId ?? null);
+        setActiveSession(response.sessionId ?? null);
         // Subscribe to card events for the new session immediately.
         // The ClaudePanel navigation effect skips subscription when
         // urlSessionId already equals activeSessionId, so we must
@@ -194,7 +194,6 @@ export function useClaudeOperations(
     [sendCommand, clearCards, setStreaming, setStreamError, setActiveSession, appendCard, upsertSession, getSessionCards]
   );
 
-  const { addStreamId } = useClaudeStore.getState();
   const resumeSession = useCallback(
     async (sessionId: string, prompt: string, cwd?: string) => {
       const wasAlreadyStreaming = useClaudeStore.getState().isStreaming;
@@ -221,13 +220,11 @@ export function useClaudeOperations(
           isStreaming: true,
           hasPendingInput: false,
         });
-        if (wasAlreadyStreaming) {
-          // Hot resume: ADD the new streamId alongside existing ones.
-          // Old streamIds stay until their card-stream-end arrives naturally.
-          if (response.streamId) addStreamId(response.streamId);
-        } else {
-          // Cold resume: set as the only active streamId
-          setActiveSession(actualSessionId, response.streamId ?? null);
+        if (!wasAlreadyStreaming) {
+          // Cold resume: bind the active session to whatever id the daemon
+          // returned. Hot resume keeps the existing binding (the active id
+          // hasn't changed; the new turn just pipes into the same session).
+          setActiveSession(actualSessionId);
           // Cold resume can fork the session_id (CLI emits a new id when
           // resuming an existing transcript). The PWA's card subscription is
           // keyed by sessionId, so bus updates for the new id would never

@@ -59,7 +59,7 @@ All defined in `packages/shared/src/cards.ts`. Every variant extends
 ```ts
 // cards.ts:34–39
 export interface CardBase {
-  id: CardId;                                // "${sessionId}:${streamId}:${seq}" or "${sessionId}:h:${seq}" for history
+  id: CardId;                                // "${sessionId}:${seq}" or "${sessionId}:h:${seq}" for history
   timestamp: number;                         // Date.now() at emission
   pendingInput?: PendingInputAttachment;     // permission/question prompt (agent-attached overlay)
 }
@@ -89,10 +89,10 @@ emitted. (cards.ts:102–108)
 ```ts
 // cards.ts:110–152
 type CardEvent =
-  | { type: 'add';         streamId; sessionId; card: Card; afterCardId?: CardId }
-  | { type: 'update';      streamId; sessionId; cardId; patch: Record<string, unknown> }
-  | { type: 'append_text'; streamId; sessionId; cardId; text: string }
-  | { type: 'remove';      streamId; sessionId; cardId };
+  | { type: 'add';         sessionId; card: Card; afterCardId?: CardId }
+  | { type: 'update';      sessionId; cardId; patch: Record<string, unknown> }
+  | { type: 'append_text'; sessionId; cardId; text: string }
+  | { type: 'remove';      sessionId; cardId };
 ```
 
 **Wire convention** (cards.ts:128–134, cardBuilder.ts:386–393): in an
@@ -105,7 +105,7 @@ hop. Receivers must `delete` null-valued keys after merging.
 ```ts
 // cards.ts:190–212
 {
-  streamId; sessionId; success;
+  sessionId; success;
   error?; interrupted?;
   totalCostUsd?;
   tokenUsage?: {
@@ -157,7 +157,7 @@ Lifecycle methods (no card effect, but mutate state used by the above):
 | Method | Effect |
 |--------|--------|
 | `updateSessionId(sid)` (236) | Rewrites the sessionId baked into freshly-minted CardIds and event envelopes. Called when Codex `thread.started` arrives mid-flight. |
-| `startNewTurn(streamId)` (241) | Updates streamId, resets `currentTextCardId`. Cards persist across turns. |
+| `startNewTurn()` (241) | Resets `currentTextCardId`. Cards persist across turns. |
 | `clearCards()` (247) | Wipes Map + all id→cardId tables + currentTextCardId. |
 | `persistCards()` (260) | Memory-mode only. Strips `pendingInput`, sets `streaming: false` on `assistant_text`, appends to `~/.quicksave/state/card-history/${sessionId}.json`. |
 | `snapshotCutoff()` (292) | Claude-jsonl mode only. Records JSONL byte size; `getCards()` history reads stop here. |
@@ -209,7 +209,7 @@ ThreadEvent =
 Boundary calls outside the per-event switch:
 
 - **Turn lifecycle wrapping** (CodexSdkSession.runTurn, codexSdkProvider.ts:594–637 and runFirstTurn 702–768):
-  - `cb.startNewTurn(streamId)` + `cb.userMessage(prompt)` are called *before* `runStreamed`.
+  - `cb.startNewTurn()` + `cb.userMessage(prompt)` are called *before* `runStreamed`.
   - On abort: `cb.systemMessage('User interrupted')` + `emitStreamEnd({interrupted: true})`.
   - On other thrown errors: `emitStreamEnd({success: false, error})`.
   - `finally`: `await cb.persistCards()` + `cb.clearCards()`.
@@ -253,7 +253,6 @@ sessionManager.ts:134, 369, 522).
 
 ```
 sessionId      string            // stamped on every emitted CardId / event
-streamId       string            // current turn's id
 cwd            string            // for resolving Claude .jsonl path
 seq            number            // monotonic, never reset across turns or clearCards
 cards          Map<CardId, Card> // insertion-ordered live snapshot
@@ -269,7 +268,7 @@ _pendingClearToken Symbol | null // scheduleDeferredClear cancellation token
 
 For both providers, a turn proceeds:
 
-1. **Start.** Provider calls `cb.startNewTurn(streamId)` then
+1. **Start.** Provider calls `cb.startNewTurn()` then
    `cb.userMessage(prompt)`. Carry-over cards from prior turns remain;
    `currentTextCardId` is reset (cardBuilder.ts:241–244).
 2. **Stream.** Provider feeds events through the public mutators §4.1.
@@ -297,8 +296,8 @@ Cards are mutated in place via `update` events (e.g. tool result fills
 `tool_call.result`). The only explicit finalization is the
 `assistant_text.streaming: false` patch emitted by
 `finalizeAssistantText()`. After `CardStreamEnd`, no further
-`CardEvent`s arrive on that streamId (enforced by SessionManager flipping
-streaming = false; new turns get a new streamId).
+`CardEvent`s arrive for that turn (enforced by SessionManager flipping
+streaming = false).
 
 ### 5.4. Tool-call ↔ tool-result correlation
 
@@ -327,7 +326,7 @@ Codex path.
 
 ### 5.6. CardId format
 
-`${sessionId}:${streamId}:${seq}` for streaming (cardBuilder.ts:373).
+`${sessionId}:${seq}` for streaming (cardBuilder.ts:373).
 `${sessionId}:h:${seq}` for history-derived cards
 (cardBuilder.ts:749). The seq counter is monotonic per
 `StreamCardBuilder` instance; never reset by `clearCards` or

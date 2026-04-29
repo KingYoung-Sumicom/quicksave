@@ -208,23 +208,14 @@ function extractToolResultText(content: unknown): string {
 
 export class CliProviderSession implements ProviderSession {
   public process: ChildProcess | null;
-  /** StreamIds queued by hot resume during an active turn — consumeStream
-   * pops after each result to start the next turn. Idle hot resume (CLI
-   * alive but between turns) bypasses this queue and writes `currentStreamId`
-   * directly before `sendUserMessage`. */
-  public pendingStreamIds: string[] = [];
-  /** The streamId used to tag card events and stream-end for the current
-   * turn. Shared with consumeStream so the SessionManager can swap it in for
-   * idle hot resume without waiting for the next `result` event. */
-  public currentStreamId: string = '';
   /** Debug logger — attached after spawn so stdin writes are captured too. */
   public debugLog?: DebugLogger;
   /** Pending control_requests awaiting a control_response from the CLI. */
   public pendingControlResponses: Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }> = new Map();
   /** True while a turn (prompt/compaction/tool loop) is in flight — control_requests may be queued by CLI. */
   public activeTurn: boolean = false;
-  /** True once a `result` event has been processed for the current turn's
-   * streamId. Consumed by consumeStream's finally block to decide whether the
+  /** True once a `result` event has been processed for the current turn.
+   * Consumed by consumeStream's finally block to decide whether the
    * process death counts as an unexpected exit. Reset externally on idle hot
    * resume (the new turn hasn't seen its result yet). */
   public resultEmitted: boolean = false;
@@ -367,7 +358,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       contextWindow: opts.contextWindow,
     });
 
-    return this.spawnAndConsume(args, opts.cwd, opts.streamId, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model, opts.contextWindow);
+    return this.spawnAndConsume(args, opts.cwd, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model, opts.contextWindow);
   }
 
   async resumeSession(
@@ -387,7 +378,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       contextWindow: opts.contextWindow,
     });
 
-    return this.spawnAndConsume(args, opts.cwd, opts.streamId, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model, opts.contextWindow);
+    return this.spawnAndConsume(args, opts.cwd, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model, opts.contextWindow);
   }
 
   // ── Private: CLI Args ──
@@ -411,7 +402,6 @@ export class ClaudeCliProvider implements CodingAgentProvider {
   private async spawnAndConsume(
     args: string[],
     cwd: string,
-    streamId: string,
     _level: PermissionLevel,
     _sandboxed: boolean,
     prompt: string,
@@ -500,7 +490,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     cardBuilder.updateSessionId(sessionId);
 
     // Fire and forget the stream consumer — pass the same readline interface
-    this.consumeStream(sessionId, streamId, rl, bufferedLines, cliSession, cardBuilder, callbacks, prompt, debugLog);
+    this.consumeStream(sessionId, rl, bufferedLines, cliSession, cardBuilder, callbacks, prompt, debugLog);
 
     return { sessionId, session: cliSession };
   }
@@ -509,7 +499,6 @@ export class ClaudeCliProvider implements CodingAgentProvider {
 
   private async consumeStream(
     sessionId: string,
-    initialStreamId: string,
     rl: ReturnType<typeof createInterface>,
     bufferedLines: string[],
     cliSession: CliProviderSession,
@@ -518,7 +507,6 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     prompt?: string,
     debugLog?: DebugLogger,
   ): Promise<void> {
-    cliSession.currentStreamId = initialStreamId;
     cliSession.resultEmitted = false;
     let textBuffer = '';
     let bufferTimer: ReturnType<typeof setTimeout> | null = null;
@@ -528,7 +516,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       callbacks.emitCardEvent(event);
     };
 
-    cb.startNewTurn(cliSession.currentStreamId);
+    cb.startNewTurn();
     cliSession.activeTurn = true;
 
     // Add user prompt to cardBuilder (for getCards on reconnect) but don't emit
@@ -558,30 +546,11 @@ export class ClaudeCliProvider implements CodingAgentProvider {
 
       debugLog?.logRawEvent(msg);
 
-      const emittedResult = await this.routeMessage(sessionId, cliSession.currentStreamId, msg, cliSession, cb, callbacks, emitCard, flushText, bufferText, debugLog);
+      const emittedResult = await this.routeMessage(sessionId, msg, cliSession, cb, callbacks, emitCard, flushText, bufferText, debugLog);
       if (emittedResult) {
         cliSession.resultEmitted = true;
-
-        // Hot resume: if there's a pending streamId, start a new turn for it.
-        // This must live here (not in routeMessage) so the outer
-        // `cliSession.currentStreamId` is updated — routeMessage receives it
-        // by value.
-        const nextStreamId = cliSession.pendingStreamIds.shift();
-        if (nextStreamId) {
-          // Hot resume: cancel the prior turn's deferred clear so the pending
-          // poll doesn't wipe the next turn. Do NOT snapshotCutoff or clearCards
-          // here — the prior turn's messages may not be flushed to JSONL yet,
-          // and advancing cutoff past them while they're already in JSONL
-          // produces duplicates. Keep streamingCards as-is; the final turn's
-          // scheduleDeferredClear sweeps everything once the chain commits.
-          cb.cancelDeferredClear();
-          cliSession.currentStreamId = nextStreamId;
-          cb.startNewTurn(nextStreamId);
-          cliSession.activeTurn = true;
-          cliSession.resultEmitted = false; // Reset for next turn
-        } else {
-          cliSession.activeTurn = false;
-        }
+        cb.startNewTurn();
+        cliSession.activeTurn = false;
       }
     };
 
@@ -598,7 +567,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       flushText();
       console.error(`[cli] stream error session=${sessionId.slice(0, 8)}:`, error);
       const msg = error instanceof Error ? error.message : 'Unknown error';
-      callbacks.emitStreamEnd({ streamId: cliSession.currentStreamId, sessionId, success: false, error: msg });
+      callbacks.emitStreamEnd({ sessionId, success: false, error: msg });
       cliSession.resultEmitted = true;
     } finally {
       if (bufferTimer) clearTimeout(bufferTimer);
@@ -613,7 +582,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       }
 
       if (!cliSession.resultEmitted) {
-        callbacks.emitStreamEnd({ streamId: cliSession.currentStreamId, sessionId, success: false, error: 'Process exited unexpectedly' });
+        callbacks.emitStreamEnd({ sessionId, success: false, error: 'Process exited unexpectedly' });
       }
 
       // Notify SessionManager so it can remove the entry and emit
@@ -628,7 +597,6 @@ export class ClaudeCliProvider implements CodingAgentProvider {
 
   private async routeMessage(
     sessionId: string,
-    streamId: string,
     msg: any,
     cliSession: CliProviderSession,
     cb: StreamCardBuilder,
@@ -828,7 +796,6 @@ export class ClaudeCliProvider implements CodingAgentProvider {
         callbacks.onCacheTouch?.(sessionId);
       }
       const streamEnd: CardStreamEnd = {
-        streamId,
         sessionId,
         success: msg.subtype === 'success' && !interrupted,
         error: (msg.subtype !== 'success' && !interrupted)

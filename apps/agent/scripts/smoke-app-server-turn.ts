@@ -73,7 +73,6 @@ async function runSession(
       {
         prompt: 'Reply with the single word: pong',
         cwd: process.cwd(),
-        streamId: 's_smoke',
         permissionLevel: 'plan',
         sandboxed: true,
         model: undefined,

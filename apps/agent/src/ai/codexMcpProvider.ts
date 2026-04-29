@@ -15,7 +15,6 @@ type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
 
 interface QueuedTurn {
   prompt: string;
-  streamId: string;
   initial: boolean;
   model?: string;
   cwd?: string;
@@ -105,8 +104,6 @@ function buildCodexDeveloperInstructions(opts: StartSessionOpts | ResumeSessionO
 }
 
 class CodexMcpSession implements ProviderSession {
-  public pendingStreamIds: string[] = [];
-
   private readonly client: Client;
   private readonly transport: StdioClientTransport;
   private readonly cardBuilder: StreamCardBuilder;
@@ -162,10 +159,8 @@ class CodexMcpSession implements ProviderSession {
 
   sendUserMessage(prompt: string): void {
     if (this.closed) return;
-    const streamId = this.pendingStreamIds.shift() ?? `codex-stream-${Date.now()}`;
     this.queue.push({
       prompt,
-      streamId,
       initial: false,
     });
     this.ensureRunLoop();
@@ -199,7 +194,7 @@ class CodexMcpSession implements ProviderSession {
         const queued = this.queue.shift()!;
         const turn: ActiveTurn = { ...queued, ended: false, sawAssistantOutput: false };
         this.activeTurn = turn;
-        this.cardBuilder.startNewTurn(turn.streamId);
+        this.cardBuilder.startNewTurn();
         this.cardBuilder.userMessage(turn.prompt);
 
         try {
@@ -237,7 +232,6 @@ class CodexMcpSession implements ProviderSession {
           }
 
           this.endTurn(turn, {
-            streamId: turn.streamId,
             sessionId: this.threadId ?? returnedThreadId ?? '',
             success: true,
           });
@@ -252,7 +246,6 @@ class CodexMcpSession implements ProviderSession {
           }
           if (!turn.ended && this.closeReason !== 'kill') {
             this.endTurn(turn, {
-              streamId: turn.streamId,
               sessionId,
               success: false,
               interrupted,
@@ -326,7 +319,6 @@ class CodexMcpSession implements ProviderSession {
 
     if (msg.type === 'turn_aborted') {
       this.endTurn(turn, {
-        streamId: turn.streamId,
         sessionId: this.threadId ?? '',
         success: false,
         interrupted: msg.reason === 'interrupted',
@@ -465,7 +457,6 @@ export class CodexMcpProvider implements CodingAgentProvider {
     await client.connect(transport);
     session.enqueueInitialTurn({
       prompt: opts.prompt,
-      streamId: opts.streamId,
       initial: true,
       cwd: opts.cwd,
       model: opts.model && !opts.model.startsWith('claude-') ? opts.model : undefined,
@@ -502,7 +493,6 @@ export class CodexMcpProvider implements CodingAgentProvider {
     await client.connect(transport);
     session.enqueueInitialTurn({
       prompt: opts.prompt,
-      streamId: opts.streamId,
       initial: false,
       developerInstructions: buildCodexDeveloperInstructions(opts),
     });
