@@ -42,3 +42,10 @@ blob-report/
 # Claude Code (keep shared settings, ignore local)
 .claude/settings.local.json
 **/CLAUDE.md
+
+# Scratch dumps (apps/agent/tmp.json was accidentally committed once)
+tmp.json
+*.tmp.json
+
+# Wrong lockfile — this repo uses pnpm-lock.yaml
+package-lock.json
