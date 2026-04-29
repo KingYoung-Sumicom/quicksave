@@ -79,6 +79,13 @@ export interface ProviderSession {
    * usage. Only supported by the Claude Code CLI (via `get_context_usage`
    * control_request). Returns null on providers that don't support it. */
   getContextUsage?(): Promise<ContextUsageBreakdown | null>;
+  /** Optional — live-switch the auto-compact ceiling without respawning.
+   * Only the Claude CLI provider implements it (sends a top-level
+   * `update_environment_variables` stdin message; if `decoratedModel` is
+   * provided, also fires `set_model` so the API's `[1m]` beta header flips
+   * in sync). SDK / Codex providers omit this method, and SessionManager
+   * falls back to cold-respawn-on-next-prompt for them. */
+  updateContextWindow?(window: number, decoratedModel?: string): Promise<void>;
 }
 
 /** Callbacks the provider uses to communicate back to SessionManager. */

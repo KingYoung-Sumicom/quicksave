@@ -136,7 +136,7 @@
 
   "sessionStatus.sandbox.titleOn": "沙盒開啟 — 寫入被限制在此專案內",
   "sessionStatus.sandbox.titleOff": "沙盒關閉 — 可存取整個檔案系統",
-  "sessionStatus.contextWindow.title": "Context window — 變更會重啟 session",
+  "sessionStatus.contextWindow.title": "Context window — 變更即時生效,下個 turn 改用新的 auto-compact 門檻",
 
   "projectList.empty.noProjects": "還沒有專案",
   "projectList.empty.addMachine": "+ 新增機器",

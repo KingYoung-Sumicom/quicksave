@@ -1191,9 +1191,11 @@ describe('SessionManager — adversarial edge cases', () => {
       expect(provider.resumeSession).toHaveBeenCalled();
     });
 
-    it('idle hot resume falls to cold resume when contextWindow changed', async () => {
-      // CLAUDE_CODE_AUTO_COMPACT_WINDOW is read at process start, so swapping
-      // tier requires a respawn — same machinery as model change.
+    it('idle hot resume falls to cold resume when contextWindow changed (provider lacks updateContextWindow)', async () => {
+      // The CLI provider live-switches via an `update_environment_variables`
+      // stdin frame, but providers without `updateContextWindow` (SDK / Codex,
+      // and this default mock) fall through and keep `spawnedContextWindow`
+      // stale, which trips the resume mismatch check and forces cold respawn.
       const sessionId = 'idle-cw-changed';
       const aliveSession = createMockProviderSession({ alive: true }) as any;
       (provider.startSession as Mock).mockResolvedValue({

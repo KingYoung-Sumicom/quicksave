@@ -136,7 +136,7 @@
 
   "sessionStatus.sandbox.titleOn": "Sandbox on — writes restricted to this project",
   "sessionStatus.sandbox.titleOff": "Sandbox off — full filesystem access",
-  "sessionStatus.contextWindow.title": "Context window — changing this restarts the session",
+  "sessionStatus.contextWindow.title": "Context window — change applies live (auto-compact retargets next turn)",
 
   "projectList.empty.noProjects": "No projects yet",
   "projectList.empty.addMachine": "+ Add Machine",

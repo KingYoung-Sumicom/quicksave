@@ -482,6 +482,141 @@ describe('SessionManager', () => {
     });
   });
 
+  // ── setSessionConfig: contextWindow live-switch ──
+
+  describe('setSessionConfig contextWindow', () => {
+    it('calls providerSession.updateContextWindow on the active session', async () => {
+      const sessionId = 'cw-live';
+      const updateContextWindow = vi.fn().mockResolvedValue(undefined);
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession({ updateContextWindow } as any),
+      });
+
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        model: 'claude-sonnet-4-6',
+        contextWindow: 200_000,
+      });
+
+      await manager.setSessionConfig(sessionId, 'contextWindow', 1_000_000);
+
+      expect(updateContextWindow).toHaveBeenCalledTimes(1);
+      // Upgrading from 200k to 1M crosses the boundary, so the decorated
+      // model is passed so set_model can flip the [1m] beta header.
+      const [windowArg, decoratedArg] = updateContextWindow.mock.calls[0];
+      expect(windowArg).toBe(1_000_000);
+      expect(decoratedArg).toBe('claude-sonnet-4-6[1m]');
+    });
+
+    it('updates spawnedContextWindow so the next prompt does not trigger a cold-respawn', async () => {
+      const sessionId = 'cw-no-respawn';
+      const updateContextWindow = vi.fn().mockResolvedValue(undefined);
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession({ updateContextWindow } as any),
+      });
+
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        model: 'claude-sonnet-4-6',
+        contextWindow: 200_000,
+      });
+
+      await manager.setSessionConfig(sessionId, 'contextWindow', 1_000_000);
+
+      // @ts-expect-error — reaching into private sessions map for assertion.
+      const managed = manager.sessions.get(sessionId)!;
+      expect(managed.spawnedContextWindow).toBe(1_000_000);
+    });
+
+    it('does NOT pass a decoratedModel when downgrading from 1M to 200k (one-way ratchet)', async () => {
+      // Stripping [1m] mid-session would cap the API at 200k, deadlocking the
+      // very compaction needed to shrink an oversized buffer. Keep the live
+      // model decoration; only the env-side threshold should change. The
+      // decoration realigns naturally on the next cold-respawn.
+      const sessionId = 'cw-downgrade';
+      const updateContextWindow = vi.fn().mockResolvedValue(undefined);
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession({ updateContextWindow } as any),
+      });
+
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        model: 'claude-sonnet-4-6',
+        contextWindow: 1_000_000,
+      });
+
+      await manager.setSessionConfig(sessionId, 'contextWindow', 200_000);
+
+      expect(updateContextWindow).toHaveBeenCalledTimes(1);
+      const [windowArg, decoratedArg] = updateContextWindow.mock.calls[0];
+      expect(windowArg).toBe(200_000);
+      expect(decoratedArg).toBeUndefined();
+    });
+
+    it('falls back silently when the provider session does not implement updateContextWindow (SDK / Codex)', async () => {
+      const sessionId = 'cw-fallback';
+      // No updateContextWindow on the mock — simulates SDK / Codex provider.
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        model: 'claude-sonnet-4-6',
+        contextWindow: 200_000,
+      });
+
+      // Should not throw — just stores the new value in sessionConfigs and
+      // leaves the legacy cold-respawn-on-next-prompt path to handle it.
+      await expect(
+        manager.setSessionConfig(sessionId, 'contextWindow', 1_000_000),
+      ).resolves.toBeDefined();
+
+      // @ts-expect-error — reaching into private sessions map for assertion.
+      const managed = manager.sessions.get(sessionId)!;
+      // spawnedContextWindow stays stale so the resume path's mismatch check
+      // can fire its kill+respawn.
+      expect(managed.spawnedContextWindow).toBe(200_000);
+    });
+
+    it('leaves spawnedContextWindow stale when updateContextWindow rejects (so cold-respawn fallback fires)', async () => {
+      const sessionId = 'cw-error';
+      const updateContextWindow = vi.fn().mockRejectedValue(new Error('CLI write failed'));
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession({ updateContextWindow } as any),
+      });
+
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        model: 'claude-sonnet-4-6',
+        contextWindow: 200_000,
+      });
+
+      await manager.setSessionConfig(sessionId, 'contextWindow', 1_000_000);
+
+      // @ts-expect-error — reaching into private sessions map for assertion.
+      const managed = manager.sessions.get(sessionId)!;
+      expect(managed.spawnedContextWindow).toBe(200_000); // unchanged
+    });
+
+    it('skips the live-update path entirely when there is no active provider session (cold session)', async () => {
+      // Pure no-op for the picker change on an inactive session — the value
+      // sits in sessionConfigs and applies on the next start/resume.
+      const next = await manager.setSessionConfig('inactive-id', 'contextWindow', 500_000);
+      expect(next.contextWindow).toBe(500_000);
+    });
+  });
+
   // ── Dynamic bypass sentinel file ──
 
   describe('bypass sentinel file', () => {

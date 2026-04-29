@@ -154,9 +154,13 @@ export interface ManagedSession {
   cardBuilder: StreamCardBuilder | null;
   /** Model the current provider process was spawned with. Used to force cold resume when model changes. */
   spawnedModel?: string;
-  /** Auto-compact window the provider was spawned with (Claude only). Same
-   *  cold-resume trigger as `spawnedModel` — switching tier needs a respawn
-   *  because `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is read at process start. */
+  /** Auto-compact window currently active on the provider (Claude CLI only).
+   *  For the CLI provider this tracks the latest value pushed via the stdin
+   *  `update_environment_variables` frame — set on spawn (in
+   *  `claudeCliProvider.spawnAndConsume`) and re-set on every live change in
+   *  `setSessionConfig`. Used by the resume path's mismatch check as a
+   *  safety net when a non-CLI provider (SDK / Codex without
+   *  `updateContextWindow`) needs a cold-respawn to pick up a new tier. */
   spawnedContextWindow?: number;
   /** Per-session UUID baked into the PermissionRequest hook command. The daemon
    *  toggles bypass by creating/removing the sentinel file at `bypassFlagPath(bypassToken)`. */
@@ -393,6 +397,44 @@ export class SessionManager extends EventEmitter {
       const ps = this.sessions.get(sessionId);
       if (ps) ps.sandboxed = value;
       this.persistRegistryField(sessionId, 'sandboxed', value || undefined);
+    } else if (key === 'contextWindow' && typeof value === 'number' && value > 0) {
+      // Live-switch the auto-compact ceiling on the running CLI without
+      // respawn. Falls back to the legacy "kill on next prompt" path
+      // (driven by spawnedContextWindow !== desiredContextWindow check
+      // in resumeSession) when the active provider doesn't implement
+      // `updateContextWindow` — only ClaudeCliProvider does today; SDK
+      // and Codex providers omit it.
+      const ps = this.sessions.get(sessionId);
+      const session = ps?.providerSession as ProviderSession | undefined;
+      if (ps?.providerSession?.alive && session && typeof session.updateContextWindow === 'function') {
+        // `[1m]` model decoration is a one-way ratchet: only upgrade,
+        // never strip mid-session. If the user downgrades from 1M to 200k
+        // while the buffer is already >200k, stripping `[1m]` would cap
+        // the API at 200k and the very compaction call needed to shrink
+        // the buffer would also be rejected — deadlock. Keeping `[1m]`
+        // through the downgrade is harmless: the env-side threshold
+        // still forces auto-compact at 200k, so no >200k request goes
+        // out anyway. Decoration realigns naturally on the next
+        // cold-respawn.
+        const { decorateModelWithContextWindow } = await import('./claudeCliProvider.js');
+        const bareModel = ps.spawnedModel;
+        const oldDecorated = decorateModelWithContextWindow(bareModel, ps.spawnedContextWindow);
+        const newDecorated = decorateModelWithContextWindow(bareModel, value);
+        const upgradingTo1m = !!bareModel
+          && /\[1m\]$/i.test(newDecorated ?? '')
+          && !/\[1m\]$/i.test(oldDecorated ?? '');
+        try {
+          await session.updateContextWindow(value, upgradingTo1m ? newDecorated : undefined);
+          ps.spawnedContextWindow = value;
+        } catch (err) {
+          // Provider write failed — leave spawnedContextWindow stale so the
+          // next prompt triggers a cold-respawn fallback. Don't roll back
+          // sessionConfigs since the user-intended value is what should
+          // apply on respawn.
+          console.warn(`[session-manager] updateContextWindow failed, will cold-respawn on next prompt:`, err);
+        }
+      }
+      this.persistRegistryField(sessionId, 'contextWindow', value);
     } else if (key === 'agent' || key === 'provider') {
       // Reject agent changes on active sessions — agent type is immutable once spawned
       const ps = this.sessions.get(sessionId);

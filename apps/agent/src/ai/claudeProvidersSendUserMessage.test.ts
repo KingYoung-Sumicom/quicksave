@@ -146,6 +146,88 @@ describe('SdkProviderSession.sendUserMessage', () => {
   });
 });
 
+describe('CliProviderSession.updateContextWindow', () => {
+  it('writes a top-level update_environment_variables stdin frame with CLAUDE_CODE_AUTO_COMPACT_WINDOW', async () => {
+    const { proc, stdinWrites } = makeFakeProcess();
+    const session = new CliProviderSession(proc);
+
+    await session.updateContextWindow(200_000);
+
+    expect(stdinWrites).toHaveLength(1);
+    const sent = JSON.parse(stdinWrites[0].trim());
+    expect(sent).toEqual({
+      type: 'update_environment_variables',
+      variables: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000' },
+    });
+  });
+
+  it('does NOT send a set_model control_request when no decoratedModel is given', async () => {
+    const { proc, stdinWrites } = makeFakeProcess();
+    const session = new CliProviderSession(proc);
+
+    await session.updateContextWindow(500_000);
+
+    expect(stdinWrites).toHaveLength(1);
+    const frames = stdinWrites.map((c) => JSON.parse(c.trim()));
+    expect(frames.find((f: any) => f.type === 'control_request')).toBeUndefined();
+  });
+
+  it('also sends a set_model control_request when decoratedModel is provided (e.g. crossing 200k boundary)', async () => {
+    const { proc, stdinWrites } = makeFakeProcess();
+    const session = new CliProviderSession(proc);
+
+    // Resolve the set_model control_request synchronously so the await returns.
+    queueMicrotask(() => {
+      for (const [reqId, pending] of session.pendingControlResponses.entries()) {
+        pending.resolve({ ok: true });
+        session.pendingControlResponses.delete(reqId);
+      }
+    });
+
+    await session.updateContextWindow(1_000_000, 'claude-sonnet-4-6[1m]');
+
+    expect(stdinWrites).toHaveLength(2);
+    const frames = stdinWrites.map((c) => JSON.parse(c.trim()));
+    const envFrame = frames.find((f: any) => f.type === 'update_environment_variables');
+    const ctrlFrame = frames.find((f: any) => f.type === 'control_request');
+    expect(envFrame).toMatchObject({
+      type: 'update_environment_variables',
+      variables: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' },
+    });
+    expect(ctrlFrame).toMatchObject({
+      type: 'control_request',
+      request: { subtype: 'set_model', model: 'claude-sonnet-4-6[1m]' },
+    });
+  });
+
+  it('is a no-op when the process is dead (no stdin writes)', async () => {
+    const { proc, stdinWrites } = makeFakeProcess();
+    (proc as any).killed = true;
+    const session = new CliProviderSession(proc);
+
+    await session.updateContextWindow(200_000, 'claude-sonnet-4-6[1m]');
+
+    expect(stdinWrites).toHaveLength(0);
+  });
+
+  it('still resolves env update even if set_model rejects (env half is fire-and-forget)', async () => {
+    const { proc, stdinWrites } = makeFakeProcess();
+    const session = new CliProviderSession(proc);
+
+    // Reject the set_model control_request — the env-update half already
+    // wrote to stdin synchronously, so we want the call to still resolve.
+    queueMicrotask(() => {
+      for (const [reqId, pending] of session.pendingControlResponses.entries()) {
+        pending.reject(new Error('CLI rejected set_model'));
+        session.pendingControlResponses.delete(reqId);
+      }
+    });
+
+    await expect(session.updateContextWindow(1_000_000, 'claude-sonnet-4-6[1m]')).resolves.toBeUndefined();
+    expect(stdinWrites).toHaveLength(2);
+  });
+});
+
 describe('multi-tab regression: providers emit user-message card-event on follow-up', () => {
   it('CliProviderSession.sendUserMessage emits an add card-event with the user prompt', () => {
     const { proc } = makeFakeProcess();

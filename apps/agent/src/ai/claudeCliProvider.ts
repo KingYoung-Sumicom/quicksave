@@ -69,8 +69,10 @@ export function buildClaudeCliArgs(opts: {
   sandboxed?: boolean;
   bypassFlagPath?: string;
   /** Auto-compact ceiling. >200k triggers the `[1m]` model suffix so the API
-   *  accepts the larger window; `CLAUDE_CODE_AUTO_COMPACT_WINDOW` is set on
-   *  the spawn env (see `spawnAndConsume`) so the CLI compacts at this value. */
+   *  accepts the larger window; the actual CLAUDE_CODE_AUTO_COMPACT_WINDOW
+   *  value is pushed into the CLI's env via a stdin
+   *  `update_environment_variables` frame in `spawnAndConsume` (and again on
+   *  every live change via `CliProviderSession.updateContextWindow`). */
   contextWindow?: number;
 }): string[] {
   const args: string[] = [
@@ -330,6 +332,42 @@ export class CliProviderSession implements ProviderSession {
     }
   }
 
+  /**
+   * Live-switch the auto-compact threshold without respawning the CLI.
+   *
+   * The CLI accepts a top-level `{type:"update_environment_variables"}` stdin
+   * message and patches its own `process.env`. The auto-compact computation
+   * reads `process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` on every turn (no
+   * caching), so the next turn picks up the new threshold.
+   *
+   * If `decoratedModel` is provided AND differs from what's running, we also
+   * fire `set_model` so the CLI flips the API's `[1m]` beta header on/off in
+   * sync — required when crossing the 200k boundary, otherwise the API would
+   * keep rejecting tokens above 200k regardless of the env-side change.
+   *
+   * Note: `update_environment_variables` is NOT a `control_request` and there
+   * is no ack from the CLI — we just write and return.
+   */
+  async updateContextWindow(window: number, decoratedModel?: string): Promise<void> {
+    if (!this.process || this.process.killed) return;
+    const envMsg = {
+      type: 'update_environment_variables',
+      variables: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(window) },
+    };
+    this.debugLog?.logRawEvent({ ...envMsg, _direction: 'stdin' });
+    this.process.stdin!.write(JSON.stringify(envMsg) + '\n');
+
+    if (decoratedModel) {
+      // 5s wall-clock — set_model normally returns in <100ms; if the CLI is
+      // mid-turn the idle clock pauses, so the wall cap is the real ceiling.
+      const wallTimeout = new Promise<void>((resolve) => setTimeout(() => resolve(), 5_000));
+      await Promise.race([
+        this.sendControlRequest('set_model', { model: decoratedModel }, 5_000).then(() => undefined).catch(() => undefined),
+        wallTimeout,
+      ]);
+    }
+  }
+
   kill(): void {
     if (this.process) {
       this.process.kill('SIGTERM');
@@ -419,19 +457,30 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     contextWindow?: number,
   ): Promise<{ sessionId: string; session: ProviderSession }> {
     const claudeBin = getClaudeBin();
-    // The CLI auto-promotes Sonnet/Opus to 1M context unless told otherwise.
-    // Pin the auto-compact window to the user's chosen tier so usage stays
-    // predictable across model switches and 200k/500k/1M presets all behave
-    // the way the picker says they will.
-    const env: NodeJS.ProcessEnv = { ...process.env };
-    if (contextWindow && contextWindow > 0) {
-      env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(contextWindow);
-    }
     const proc = spawn(claudeBin, args, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env,
     });
+
+    // Pin the auto-compact threshold via a top-level
+    // `update_environment_variables` stdin frame BEFORE the first user
+    // prompt. The CLI's structured-IO handler patches `process.env` as soon
+    // as a frame arrives (binary v2.1.119 confirmed:
+    // `for(...) process.env[K]=_;`), and the auto-compact computation reads
+    // `process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` per-turn — so the very
+    // first turn picks up the value.
+    //
+    // Using stdin instead of the spawn-time env var unifies the startup and
+    // mid-session paths: every change goes through `updateContextWindow`
+    // (here for the initial set, and via `setSessionConfig` for live
+    // changes). One source of truth, no respawn-on-tier-change drift.
+    if (contextWindow && contextWindow > 0) {
+      const envFrame = {
+        type: 'update_environment_variables',
+        variables: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(contextWindow) },
+      };
+      proc.stdin!.write(JSON.stringify(envFrame) + '\n');
+    }
 
     // Send user message immediately — CLI needs stdin before emitting init
     const userMsg = {

@@ -49,6 +49,8 @@ Enabling this flag changes what the CLI emits on stdout:
 
 4. **`inputClosed` semantics** — the streaming input processor (`BY8` in v2.1.111) marks `inputClosed=true` only when stdin EOFs. Rejected pending tool-permission requests get `"Tool permission stream closed before response received"` at that point.
 
+5. **`update_environment_variables` message type** — `{type:"update_environment_variables", variables: Record<string,string>}` patches the CLI's `process.env` live. The handler in v2.1.119 is literally `for(let[K,_] of Object.entries($.variables)) process.env[K]=_;`. Useful for env vars the CLI reads *each turn* rather than caching at startup. Verified for `CLAUDE_CODE_AUTO_COMPACT_WINDOW` — the auto-compact threshold function reads `process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW` on every call, so flipping the context window mid-session takes effect on the next turn without respawning. **Not** a `control_request` — it's a top-level stdin message like `user` or `keep_alive`, and there's no ack response.
+
 ## The wire format
 
 Every frame on the CLI's stdio is a single JSON line. The client→CLI control frame looks like:
