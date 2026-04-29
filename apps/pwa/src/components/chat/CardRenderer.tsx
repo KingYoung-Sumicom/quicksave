@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { Card, ToolCallCard, SubagentCard, PendingInputAttachment } from '@sumicom/quicksave-shared';
 import type { ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';
 import { AssistantMessage } from './AssistantMessage';
@@ -26,7 +27,7 @@ function toLegacyPending(
   };
 }
 
-export function CardRenderer({ card, isLast, onRespondToInput }: {
+export const CardRenderer = memo(function CardRenderer({ card, isLast, onRespondToInput }: {
   card: Card;
   isLast: boolean;
   onRespondToInput?: (requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string) => void;
@@ -82,4 +83,4 @@ export function CardRenderer({ card, isLast, onRespondToInput }: {
     default:
       return null;
   }
-}
+});

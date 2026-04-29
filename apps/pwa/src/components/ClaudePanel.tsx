@@ -279,7 +279,10 @@ export function ClaudePanel({
 
   const handleRespondToInput = useCallback((requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string) => {
     if (!onRespondToUserInput) return;
-    const card = cards.find((c) => c.pendingInput?.requestId === requestId);
+    // Read cards from the live store rather than the closure so this
+    // callback reference stays stable across re-renders — required for
+    // CardRenderer's memoization to actually skip re-renders on keystrokes.
+    const card = useClaudeStore.getState().cards.find((c) => c.pendingInput?.requestId === requestId);
     if (!card?.pendingInput) return;
     onRespondToUserInput({
       sessionId: card.pendingInput.sessionId,
@@ -288,7 +291,7 @@ export function ClaudePanel({
       response,
       allowPattern,
     });
-  }, [cards, onRespondToUserInput]);
+  }, [onRespondToUserInput]);
 
   const handleLoadMore = useCallback(async () => {
     // Read isLoadingHistory from live store state (not stale closure) to prevent
