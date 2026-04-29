@@ -16,7 +16,7 @@ import { SessionStatsBar } from './chat/SessionStatsBar';
 import { StreamingReconnectIndicator } from './chat/StreamingReconnectIndicator';
 import { getAgentType } from '../lib/claudePresets';
 
-type StartSessionOpts = { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean };
+type StartSessionOpts = { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number };
 
 interface SlashCommand {
   name: string;
@@ -72,6 +72,7 @@ export function ClaudePanel({
     selectedModel,
     selectedPermissionMode,
     selectedReasoningEffort,
+    selectedContextWindow,
     sandboxEnabled,
     setPromptInput,
     setActiveSession,
@@ -268,6 +269,9 @@ export function ClaudePanel({
         model: selectedModel,
         permissionMode: selectedPermissionMode,
         sandboxed: sandboxEnabled || undefined,
+        // Claude CLI honors contextWindow via CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+        // Codex ignores it. Send for both — agent layer narrows.
+        ...(selectedContextWindow ? { contextWindow: selectedContextWindow } : {}),
         // Codex honors reasoningEffort; Claude providers ignore it. Send for both
         // — the agent layer narrows by provider.
         ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}),
@@ -275,7 +279,7 @@ export function ClaudePanel({
         ...(selectedAgentType.systemPrompt ? { systemPrompt: selectedAgentType.systemPrompt } : {}),
       });
     }
-  }, [promptInput, isStreaming, activeSessionId, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedReasoningEffort, selectedAgentType, setPromptInput, onResumeSession, onStartSession]);
+  }, [promptInput, isStreaming, activeSessionId, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedReasoningEffort, selectedContextWindow, selectedAgentType, setPromptInput, onResumeSession, onStartSession]);
 
   const handleRespondToInput = useCallback((requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string) => {
     if (!onRespondToUserInput) return;

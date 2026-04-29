@@ -137,7 +137,7 @@ export function useClaudeOperations(
   );
 
   const startSession = useCallback(
-    async (prompt: string, opts?: { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string; sandboxed?: boolean; reasoningEffort?: string }) => {
+    async (prompt: string, opts?: { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number }) => {
       clearCards();
       setStreaming(true);
       setStreamError(null);
@@ -156,6 +156,10 @@ export function useClaudeOperations(
             permissionMode: opts?.permissionMode,
             sandboxed: opts?.sandboxed,
             reasoningEffort: opts?.reasoningEffort,
+            // contextWindow drives CLAUDE_CODE_AUTO_COMPACT_WINDOW on the
+            // spawned CLI; without it the model defaults to its full window
+            // (1M for opus-4-7) and auto-compact never fires at the user's pick.
+            ...(opts?.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {}),
             ...(opts?.cwd ? { cwd: opts.cwd } : {}),
           },
           120000,

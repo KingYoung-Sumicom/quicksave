@@ -31,6 +31,8 @@ type StartSessionOpts = {
   permissionMode?: string;
   cwd?: string;
   sandboxed?: boolean;
+  reasoningEffort?: string;
+  contextWindow?: number;
 };
 
 type TabKey = 'project' | 'session' | 'machine';
@@ -638,6 +640,8 @@ function SessionTab({
   const selectedAgent = useClaudeStore((s) => s.selectedAgent);
   const selectedModel = useClaudeStore((s) => s.selectedModel);
   const selectedPermissionMode = useClaudeStore((s) => s.selectedPermissionMode);
+  const selectedContextWindow = useClaudeStore((s) => s.selectedContextWindow);
+  const selectedReasoningEffort = useClaudeStore((s) => s.selectedReasoningEffort);
   const sandboxEnabled = useClaudeStore((s) => s.sandboxEnabled);
 
   const [prompt, setPrompt] = useState('');
@@ -660,6 +664,11 @@ function SessionTab({
         permissionMode: selectedPermissionMode,
         sandboxed: sandboxEnabled || undefined,
         cwd: project.cwd,
+        // Claude CLI honors contextWindow via CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+        // Codex ignores it. Send for both — agent layer narrows.
+        ...(selectedContextWindow ? { contextWindow: selectedContextWindow } : {}),
+        // Codex honors reasoningEffort; Claude providers ignore it.
+        ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}),
         ...(agentType.allowedTools !== undefined ? { allowedTools: agentType.allowedTools } : {}),
         ...(agentType.systemPrompt ? { systemPrompt: agentType.systemPrompt } : {}),
       });
