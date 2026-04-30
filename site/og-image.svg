@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <!-- Brand backdrop: dark navy + green radial glow from top -->
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="-10%" r="65%">
+      <stop offset="0%" stop-color="#22c55e" stop-opacity="0.22" />
+      <stop offset="60%" stop-color="#22c55e" stop-opacity="0.04" />
+      <stop offset="100%" stop-color="#0f172a" stop-opacity="0" />
+    </radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#94a3b8" stroke-opacity="0.08" stroke-width="1" />
+    </pattern>
+    <radialGradient id="grid-mask" cx="50%" cy="35%" r="55%">
+      <stop offset="0%" stop-color="#fff" stop-opacity="1" />
+      <stop offset="100%" stop-color="#fff" stop-opacity="0" />
+    </radialGradient>
+    <mask id="grid-fade">
+      <rect x="0" y="0" width="1200" height="630" fill="url(#grid-mask)" />
+    </mask>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="630" fill="#0f172a" />
+  <rect x="0" y="0" width="1200" height="630" fill="url(#grid)" mask="url(#grid-fade)" />
+  <rect x="0" y="0" width="1200" height="630" fill="url(#glow)" />
+
+  <!-- Logo + wordmark, top-left -->
+  <g transform="translate(64, 60)">
+    <!-- Mirrors site/favicon.svg, scaled to 56px -->
+    <g transform="scale(0.56)">
+      <rect width="100" height="100" rx="20" fill="#0f172a" stroke="#22c55e" stroke-opacity="0.35" stroke-width="2" />
+      <path d="M50 20 L50 55 M35 40 L50 55 L65 40" stroke="#22c55e" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+      <path d="M25 70 L75 70" stroke="#64748b" stroke-width="6" stroke-linecap="round" />
+      <path d="M30 80 L70 80" stroke="#475569" stroke-width="4" stroke-linecap="round" />
+    </g>
+    <text x="76" y="40" font-family="Ubuntu, Inter, sans-serif" font-size="32" font-weight="700" fill="#ffffff" letter-spacing="-0.5">Quicksave</text>
+  </g>
+
+  <!-- Headline -->
+  <g font-family="Ubuntu, Inter, sans-serif" font-weight="700" letter-spacing="-2">
+    <text x="64" y="280" font-size="84" fill="#ffffff">Developer essentials,</text>
+    <text x="64" y="372" font-size="84" fill="#22c55e">on your phone.</text>
+  </g>
+
+  <!-- Subline -->
+  <text x="64" y="430" font-family="Ubuntu, Inter, sans-serif" font-size="26" font-weight="400" fill="#cbd5e1">
+    Drive Claude Code &amp; Codex CLI sessions from your phone.
+  </text>
+
+  <!-- Feature bullets -->
+  <g font-family="Ubuntu, Inter, sans-serif" font-size="22" font-weight="500" fill="#94a3b8">
+    <text x="64" y="475">
+      <tspan fill="#22c55e">●</tspan>
+      <tspan dx="10">End-to-end encrypted</tspan>
+      <tspan dx="20" fill="#22c55e">●</tspan>
+      <tspan dx="10">Self-hostable</tspan>
+      <tspan dx="20" fill="#22c55e">●</tspan>
+      <tspan dx="10">Open source</tspan>
+    </text>
+  </g>
+
+  <!-- Install snippet pill, bottom -->
+  <g transform="translate(64, 520)">
+    <rect x="0" y="0" width="700" height="62" rx="12" fill="#020617" stroke="#334155" stroke-width="1" />
+    <text x="22" y="40" font-family="Ubuntu Mono, JetBrains Mono, monospace" font-size="22" fill="#22c55e" font-weight="700">$</text>
+    <text x="48" y="40" font-family="Ubuntu Mono, JetBrains Mono, monospace" font-size="22" fill="#e2e8f0">npm install -g @sumicom/quicksave</text>
+  </g>
+
+  <!-- Footer attribution, bottom-right -->
+  <g transform="translate(1136, 590)" text-anchor="end">
+    <text x="0" y="0" font-family="Ubuntu, Inter, sans-serif" font-size="20" fill="#94a3b8">
+      <tspan fill="#e2e8f0" font-weight="600">quicksave.dev</tspan>
+      <tspan dx="8">· by</tspan>
+      <tspan dx="6" fill="#22c55e" font-weight="600">Sumicom</tspan>
+    </text>
+  </g>
+</svg>
