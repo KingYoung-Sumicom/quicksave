@@ -710,5 +710,5 @@ interface DebugResult {
 | 文件 | 說明 |
 |---|---|
 | `docs/references/claude-agent-sdk-message-types.zh-TW.md` | Claude CLI stream-json 事件型別參考 |
-| `docs/plans/codex-integration-plan.md` | Codex 整合計劃書 |
-| `docs/plans/ui-design-rules.md` | PWA UI 設計規則 |
+| `docs/plans/2026-04-10-codex-integration-plan.md` | Codex 整合計劃書 |
+| `docs/guidelines/ui-design-rules.md` | PWA UI 設計規則 |

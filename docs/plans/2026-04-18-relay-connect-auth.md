@@ -1,6 +1,6 @@
 # Relay WebSocket Connect-Time Authentication
 
-**Status:** Design note. Implementation deferred until PWA push notifications (`docs/superpowers/plans/2026-04-13-push-notifications.md`) ships.
+**Status:** Design note. Implementation deferred until PWA push notifications (`docs/plans/2026-04-13-push-notifications.md`) ships.
 
 **Problem owner:** `apps/relay/` + `apps/agent/` + `apps/pwa/` (all three get touched).
 
@@ -159,6 +159,6 @@ This is a **breaking change** to the relay URL schema and all pairing artefacts.
 
 ## Follow-ups / related
 
-- **Push notifications plan** (`docs/superpowers/plans/2026-04-13-push-notifications.md`) — ships first. Provisions the agent signing keypair this work reuses.
+- **Push notifications plan** (`docs/plans/2026-04-13-push-notifications.md`) — ships first. Provisions the agent signing keypair this work reuses.
 - **`@sumicom/ws-relay` library changes** (`docs/plans/2026-04-18-ws-relay-library-changes.md`) — adds the `verifyPeer` hook this plan depends on. Can run in parallel with the push plan; another agent can own the library PR.
 - **Relay version bump & PWA re-pair UX** — needed as a coordinated release when this lands.

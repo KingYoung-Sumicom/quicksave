@@ -37,9 +37,10 @@ pnpm --filter @sumicom/quicksave test             # vitest
 pnpm --filter @sumicom/quicksave build            # tsc
 
 # Everything
-pnpm -r test              # run all test suites
-pnpm -r typecheck         # typecheck everything
-pnpm -r build             # build everything
+pnpm test                 # run all test suites (alias for `pnpm -r test`)
+pnpm test:e2e             # run cross-package e2e suite (vitest.e2e.config.ts)
+pnpm typecheck            # typecheck everything (alias for `pnpm -r typecheck`)
+pnpm build                # build everything (alias for `pnpm -r build`)
 ```
 
 ## Restarting the agent from source
@@ -75,3 +76,11 @@ cloudflared tunnel run --url http://localhost:5173 quicksave-dev-tunnel
 ```
 
 Routes `dev.quicksave.dev` to local `localhost:5173`.
+
+For an ad-hoc tunnel without a pre-configured Cloudflare hostname, the
+PWA package exposes an ngrok-based shortcut that boots Vite and an ngrok
+tunnel together:
+
+```bash
+pnpm --filter quicksave-pwa dev:tunnel
+```

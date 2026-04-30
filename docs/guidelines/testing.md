@@ -18,10 +18,20 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
 
 ### Structure
 
-- Test files live alongside source: `foo.ts` → `foo.test.ts`
+- Test files live alongside source: `foo.ts` → `foo.test.ts` (the
+  `codexAppServer/` module groups its tests in a `__tests__/` subdir
+  next to the sources for readability — both layouts are matched by
+  the `src/**/*.test.ts` include glob in `vitest.config.ts`).
 - Vitest with globals enabled — no need to import `describe`/`it`/`expect`
+  (they are still imported explicitly in most files; either style works).
 - Node.js environment
-- Coverage via `@vitest/coverage-v8`
+- Global setup file: `apps/agent/vitest.setup.ts` flips
+  `__QUICKSAVE_DEV__` so tests run on the dev branch.
+- `fileParallelism: false` — test files run serially because several
+  suites spawn real `claude` child processes and CPU contention causes
+  init-handshake timeouts.
+- Coverage via `@vitest/coverage-v8` (reporters: text, json, html in
+  `apps/agent/coverage/`).
 
 ### What to Test
 
@@ -56,11 +66,15 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
 
 ## PWA Tests (`apps/pwa`)
 
-Currently type-checked only:
-
 ```bash
-cd apps/pwa && npx tsc --noEmit
+cd apps/pwa && npx tsc --noEmit          # Type-check
+cd apps/pwa && npm test                   # Vitest unit tests (jsdom)
+cd apps/pwa && npm run test:coverage      # Coverage (v8)
+cd apps/pwa && npm run test:e2e           # Playwright end-to-end
 ```
+
+Vitest runs in a `jsdom` environment with globals enabled. Test files
+follow `src/**/*.test.ts` and `src/**/*.test.tsx`.
 
 ## Continuous Process Refinement
 
@@ -76,9 +90,15 @@ Periodically review coverage reports to identify blind spots. Prioritize testing
 
 ## Coverage Targets
 
-Current baseline (2026-04-14): 45% statements, 61% functions, 333 tests.
+The agent currently ships with 51 test files (~1100+ test cases) under
+`apps/agent/src/`. Run `npx vitest run --coverage` from `apps/agent` for
+the latest numbers — figures change frequently, so this doc no longer
+pins a hard baseline.
 
 Priority modules for coverage improvement:
-- Providers (claudeCliProvider, claudeSdkProvider, codexAppServer/*) — lowest coverage, hardest to test
-- messageHandler — 38% coverage, room for improvement
-- Entry points (run.ts, index.ts) — integration-level, lower priority
+- Providers (`claudeCliProvider`, `claudeSdkProvider`,
+  `codexAppServer/*`) — hardest to test because they spawn real CLI
+  subprocesses
+- `handlers/messageHandler.ts` — large switch, room for improvement
+- Entry points (`service/run.ts`, `index.ts`) — integration-level, lower
+  priority

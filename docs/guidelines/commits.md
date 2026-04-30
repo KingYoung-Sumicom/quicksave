@@ -34,7 +34,7 @@ Quicksave's commit summary generator (`apps/agent/src/ai/commitSummary*.ts`) shi
 - `BREAKING CHANGE: <what broke and how to migrate>` for breaking API/behavior changes.
 - `Refs: #123` / `Closes: #123` only when the diff or user context provides evidence — the generator must not invent issue numbers.
 
-The generator also auto-appends an attribution trailer (`Commit-message-by: Quicksave AI <save@quicksave.dev>`) unless the caller passes `attribution: false`.
+The generator auto-appends an attribution trailer (`Commit-message-by: Quicksave AI <save@quicksave.dev>`) to the description unless the caller passes `attribution: false`. Separately, `GitOperations.commit()` (`apps/agent/src/git/operations.ts`) appends a second trailer (`Generated-by: Quicksave <save@quicksave.dev>`) at commit time, also gated on its own `attribution` flag (default `true`). A typical Quicksave-authored commit therefore carries both trailers.
 
 ## Per-project overrides
 
@@ -64,4 +64,4 @@ Don't rewrite the format from scratch in the override — only state the deltas.
 Update this file when:
 - Changing the default prompt rules in `commitSummary.ts` / `commitSummaryCli.ts`.
 - Adding/removing convention file paths in `readCommitConventions()`.
-- Changing the auto-attribution trailer behavior.
+- Changing the auto-attribution trailer behavior in either `commitSummary*.ts` (`Commit-message-by:`) or `GitOperations.commit()` (`Generated-by:`).

@@ -33,10 +33,10 @@ Split priority is not measured by "how many lines were saved" but by **change bl
 
 ### File organization
 
-- Generic UI components go under `components/ui/` (already includes `ActionButtons.tsx`, `ButtonGroup.tsx`, `ToggleSwitch.tsx`)
-- Custom hooks go under `hooks/` (already includes `useEdgeSwipe`, `useMediaQuery`, etc.)
+- Generic UI components go under `components/ui/` (already includes `ActionButtons.tsx`, `ButtonGroup.tsx`, `ChevronIcon.tsx`, `ConfirmModal.tsx`, `ErrorBox.tsx`, `Modal.tsx`, `Spinner.tsx`, `ToggleSwitch.tsx`)
+- Custom hooks go under `hooks/` (already includes `useEdgeSwipe`, `useMediaQuery`, `useLongPress`, etc.)
 - Chat-specific reusable components stay under `components/chat/` or `components/chat/toolViews/`
-- Settings sections go under `components/settings/` (already includes `ClaudeSettingsSection.tsx`)
+- Settings sections go under `components/settings/` (already includes `ApiKeySection`, `ClaudeSettingsSection`, `ControlRequestPalette`, `DangerZoneSection`, `LanguageSection`, `MachinesSection`, `NotificationSection`, `PrimaryKeySection`)
 
 **Why:** Following the existing directory conventions reduces cognitive load. Separating generic UI components from business components makes cross-feature reuse easier.
 
@@ -54,7 +54,7 @@ Split priority is not measured by "how many lines were saved" but by **change bl
 
 > **Actual split:** Each component's expand/collapse UI varied too much (preview text / line count / "Show more") to fit a single full Collapsible component. Instead, we extracted `ChevronIcon` to unify just the SVG portion.
 > **File:** `components/ui/ChevronIcon.tsx`
-> **Replaced in 9 files** for chevron SVGs (ThinkingMessage, SubagentBlockMessage, ToolResultMessage, ToolCallMessage, EditToolView, MachineCard×2, AgentDashboard, PathBrowser)
+> **Replaced in 8 consumer files** for chevron SVGs (ThinkingMessage, SubagentBlockMessage, ToolResultMessage, ToolCallMessage, EditToolView, MachineCard, AddNewPage, PathBrowser)
 
 **Pattern:** 8+ components repeat the same expand/collapse logic: `useState(false)` to control expansion, click toggles state, chevron SVG rotates 90 degrees.
 
@@ -62,11 +62,11 @@ Split priority is not measured by "how many lines were saved" but by **change bl
 - `chat/ThinkingMessage.tsx` — expand thinking preview
 - `chat/SubagentBlockMessage.tsx` — expand subagent description
 - `chat/ToolResultMessage.tsx` — `CollapsibleResult` subcomponent
-- `chat/UserMessage.tsx` — `PlainUserMessage` collapse
 - `chat/toolViews/EditToolView.tsx` — expand/collapse diff
 - `chat/ToolCallMessage.tsx` — chevron button expands result
-- `DiffViewer.tsx` — diff expansion
-- `FileList.tsx` — file tree expansion
+- `MachineCard.tsx` — machine row expansion
+- `AddNewPage.tsx` — section expansion
+- `PathBrowser.tsx` — directory expansion
 
 **Duplicated chevron SVG (identical across all files):**
 ```tsx
@@ -88,8 +88,8 @@ Split priority is not measured by "how many lines were saved" but by **change bl
 ### 2. Modal dialog shell [done]
 
 > **File:** `components/ui/Modal.tsx`
-> **Replaced:** AddMachineModal, EditMachineModal, WildcardEditorModal (3 files)
-> **Pending:** GitignoreEditor, SettingsPanel confirm dialog, DevicePairingSection confirm dialog, MachineCard delete confirm (structures differ slightly and need individual adjustments)
+> **Replaced (9 consumers):** AddMachineModal, EditMachineModal, AddNewPage, AgentSettingsDrawer, GitIdentityModal, PairDeviceModal, ScanToJoinModal, chat/CodexLogin, chat/WildcardEditorModal
+> **Companion:** A separate `components/ui/ConfirmModal.tsx` was added for confirm/destructive dialogs and is used by MachineInfoPage, ProjectDetail, CommitForm, DevicePairingSection, settings/MachinesSection, settings/PrimaryKeySection, and chat/PermissionPrompt. SettingsPanel and the standalone GitignoreEditor confirm dialog no longer exist (settings migrated to route-based pages — see commit `144fdb9`).
 
 **Pattern:** 5+ components repeat the same modal structure: `fixed inset-0 z-50` positioning, `bg-black/60` backdrop, `bg-slate-800 rounded-lg` content area, title + close (X) button.
 
@@ -97,10 +97,9 @@ Split priority is not measured by "how many lines were saved" but by **change bl
 - `AddMachineModal.tsx` — add machine
 - `EditMachineModal.tsx` — edit machine
 - `chat/WildcardEditorModal.tsx` — wildcard editor
-- `GitignoreEditor.tsx` — gitignore editor
-- `SettingsPanel.tsx` — confirm dialog
-- `DevicePairingSection.tsx` — confirm dialog
-- `MachineCard.tsx` — delete confirm
+- `GitignoreEditor.tsx` — gitignore editor (still uses an inline modal shell; not yet migrated to `Modal`)
+- `DevicePairingSection.tsx` — uses `ConfirmModal`
+- `MachineCard.tsx` — delete confirm now goes through `ConfirmModal` consumers
 
 **Duplicated close-button SVG (identical across all modals):**
 ```tsx
@@ -132,8 +131,8 @@ Split priority is not measured by "how many lines were saved" but by **change bl
 ### 4. Loading / Error / Empty state components [partially done]
 
 > **Done:**
-> - `components/ui/Spinner.tsx` — replaced the border spinner across 13 files (FileList, MachineCard, GitignoreEditor, FloatingActionButton, CommitForm, Settings, AgentSettingsDrawer×2, DevicePairingSection, SettingsPanel×3, PathBrowser×2, QRScanner, ClaudePanel)
-> - `components/ui/ErrorBox.tsx` — replaced the error box in 8 files (CommitForm, RepoView, AddMachineModal, ConnectionSetup×2, DevicePairingSection×2, SettingsPanel×2, Settings)
+> - `components/ui/Spinner.tsx` — currently imported by 24 consumer files across the app (App, routes/JoinGroupPage, MachineInfoPage, ProjectDetail, GitIdentityModal, CommitForm, GitignoreEditor, QRScanner, FloatingActionButton, ScanToJoinModal, MachineCard, ArchivedSessionsList, chat/CodexLogin, Settings, PairDeviceModal, PathBrowser, FileList, AddNewPage, files/FileBrowserPage, files/FilePreviewModal, files/MarkdownPreview, terminal/TerminalListSection, settings/ApiKeySection, settings/NotificationSection). Original `SettingsPanel` consumers migrated into the new `components/settings/*` files when settings became route-based pages.
+> - `components/ui/ErrorBox.tsx` — currently imported by 14 consumers (CommitForm, RepoView, AddMachineModal, ConnectionSetup, DevicePairingSection, Settings, settings/NotificationSection, settings/ApiKeySection, settings/PrimaryKeySection, ScanToJoinModal, PairDeviceModal, GitIdentityModal, AddNewPage, routes/JoinGroupPage).
 > **Not replaced:** SVG spinner (CommitForm, ClaudePanel) and bouncing dots are different patterns and were left as-is.
 
 **Pattern:** 10+ components repeat loading spinners, error boxes, and empty states in different ways. There are currently 4+ different spinner styles.
@@ -199,9 +198,9 @@ Split priority is not measured by "how many lines were saved" but by **change bl
 
 ### 7. Generalize StatusBadge
 
-**Pattern:** `SessionStatusBadge.tsx` already exists but its scope is limited. 6+ components use a similar dot + text badge pattern.
+**Pattern:** `SessionStatusBadge.tsx` already exists but its scope is limited. Several components use a similar dot + text badge pattern.
 
-**Affected files:** `SessionStatusBadge.tsx`, `chat/SubagentBlockMessage.tsx`, `ConnectingOverlay.tsx`, `AgentStatusBar.tsx`, `BaseStatusBar.tsx`.
+**Affected files:** `SessionStatusBadge.tsx`, `chat/SubagentBlockMessage.tsx`, `ConnectingOverlay.tsx`, `BaseStatusBar.tsx`, `chat/SessionStatusBar.tsx`. (Note: the previously listed `AgentStatusBar.tsx` no longer exists.)
 
 **Goal:** Generalize `SessionStatusBadge` or build a generic `StatusBadge` component supporting custom dot color, pulse animation, and label.
 
@@ -219,13 +218,13 @@ Split priority is not measured by "how many lines were saved" but by **change bl
 
 The following components exceed 400 lines and should be broken into smaller subcomponents:
 
-| Component | Lines | Splitting suggestion |
-|------|------|----------|
-| `chat/ToolCallMessage.tsx` | 606 | Extract `InlinePermissionActions` into its own file |
-| `SettingsPanel.tsx` | 593 | Split each section into `components/settings/` |
-| `ClaudePanel.tsx` | 527 | Extract a `ChatInputBar` component |
-| `NavigationDrawer.tsx` | 456 | Extract `MachineSwitcher` and `SessionList` |
-| `FileList.tsx` | 444 | Extract `FileTreeNode` and `FileDiffRow` |
+| Component | Lines | Splitting suggestion | Status |
+|------|------|----------|--------|
+| `chat/ToolCallMessage.tsx` | 178 | Extract `InlinePermissionActions` into its own file | [done] — extracted to `chat/InlinePermissionActions.tsx`; ToolCallMessage trimmed from 606 → 178 lines |
+| `SettingsPanel.tsx` | — | Split each section into `components/settings/` | [done] — file removed; settings now live as route-based pages (`SettingsPage.tsx` at 136 lines) plus `components/settings/*` sections |
+| `ClaudePanel.tsx` | 638 | Extract a `ChatInputBar` component | Pending — file has grown rather than shrunk |
+| `NavigationDrawer.tsx` | — | Extract `MachineSwitcher` and `SessionList` | [done] — file removed (route-based migration); `chat/SessionList.tsx` now exists at 66 lines |
+| `FileList.tsx` | 370 | Extract `FileTreeNode` and `FileDiffRow` | Partial — under the 400-line threshold but still a split candidate |
 
 ---
 

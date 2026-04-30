@@ -243,7 +243,7 @@ B = joiner  (fresh)
   1. A UI "add new device" → generate ephemeral (eA_pub, eA_sec)
   2. A composes pair_url = https://pwa.quicksave.dev/pair#k=<base64url(eA_pub)>
      A simultaneously displays QR(pair_url) and the copyable pair_url text
-     A subscribes to pubsub topic hash(eA_pub)
+     A opens an SSE stream on /pair-requests/hash(eA_pub)/subscribe
   3. Relay defaults mailbox TTL = 5 minutes; auto-destructs at expiry
 
 [Phase 2. B receives eA_pub via QR or URL]
@@ -254,18 +254,20 @@ B = joiner  (fresh)
   6. B composes slot = sealed_box(JSON.stringify({ eB_pub, ts }), eA_pub)
   7. B POST /pair-requests/hash(eA_pub) { slot }
      ＊ Relay appends to that mailbox's slot array and returns slot_id
-  8. B's screen shows SAS = sasEncode(HMAC(eB_pub ‖ bucket(now, 60s)), 6)
-     Bucket 60s; refreshed every 30s to tolerate input delay
+  8. B's screen shows SAS = sasCompute(eB_pub, bucket(now, 60s), 6)
+     SAS is fixed for the bucket it was computed in; A accepts ±1 bucket
+     of skew (≈3-minute total verify window) to tolerate input delay
 
 [Phase 3. A receives candidates → enters SAS → filters]
-  9. A receives a new-slot pubsub event → reads /pair-requests/hash(eA_pub)
+  9. A receives a `slot` SSE event from /pair-requests/hash(eA_pub)/subscribe
+     (and on first connect SSE replays any already-stored slots)
   10. A uses eA_sec to decryptSealedBox each slot, producing a candidate list
       candidates = [{ eB_pub_i, ts_i }, ...]
       An attacker's injected slot decrypts to garbage (sealed_box was encrypted to eA_pub; they don't have eA_sec)
       → only successful decryptions remain (already filters out unknown sources)
-  11. A UI "please enter the 8-character code on the new device's screen"
+  11. A UI "please enter the 6-character code on the new device's screen"
   12. The user types the SAS
-  13. For each candidate A computes expected_i = sasEncode(HMAC(eB_pub_i ‖ bucket(now ±1, 60s)), 6)
+  13. For each candidate A computes expected_i = sasCompute(eB_pub_i, bucket(now ±1, 60s), 6)
       matched = candidates.filter(c => expected_i == typed_SAS)
   14. matched.length:
         0 → UI "no device matched, please verify the code" (allow retry)
@@ -276,7 +278,8 @@ B = joiner  (fresh)
   15. A composes blob = sealed_box(JSON.stringify({ masterSecret }), matched.eB_pub)
   16. A POST /pair-requests/hash(eA_pub) { blob, kind: 'secret' }
       (a new slot; B filters by slot.kind)
-  17. B polls → grabs the slot with kind='secret'
+  17. B receives the kind='secret' slot via its own SSE subscription on
+      /pair-requests/hash(eA_pub)/subscribe (also replayed on reconnect)
   18. B decryptSealedBox(blob, eB_sec) → masterSecret
   19. B derives the shared X25519 + Ed25519 keypair, writes to secureStorage
   20. B fetchMyMailbox → mergeSyncPayloads → done
@@ -463,7 +466,7 @@ There are two core differences:
 | Derive shared X25519 + Ed25519 keypair from `masterSecret` (helper) | `packages/shared/src/crypto.ts` |
 | `SignedSyncEnvelope` schema + canonical body / sign helper | `packages/shared/src/syncEnvelope.ts` |
 | Client-side envelope signing + 409 backoff retry (exponential, max 4 retries, max 5s, respects `Retry-After`) | `apps/pwa/src/lib/syncClient.ts` |
-| Read-modify-write flow | `apps/pwa/src/lib/syncClient.ts`, `apps/pwa/src/stores/syncStore.ts` |
+| Read-modify-write flow | `apps/pwa/src/lib/syncClient.ts` (orchestrated from `apps/pwa/src/App.tsx`) |
 | Per-mailbox in-flight mutex (10s TTL, `tryAcquireLock/releaseLock/peekLock`) | `apps/relay/src/syncStore.ts` |
 | Ed25519 verify + nonce cache + extra binding + routing | `apps/relay/src/sigVerify.ts`, `apps/relay/src/syncRoutes.ts` (`createSyncRouter`) |
 | `POST /sync/{hash}/*` HTTP entrypoint | `apps/relay/src/index.ts` (wires up `parseSyncUrl` + `syncRouter.handle`) |
@@ -476,12 +479,13 @@ There are two core differences:
 
 | Change | File |
 |---|---|
-| `/pair-requests/{hash(eA_pub)}` routes (POST append / GET all / DELETE) | `apps/relay/src/index.ts`, new file `apps/relay/src/pairStore.ts` |
+| `/pair-requests/{addr}` routes (POST append / GET all / DELETE / `/subscribe` SSE) | `apps/relay/src/index.ts` (`handlePairRequest`), `apps/relay/src/pairStore.ts` |
 | Multi-slot mailbox structure (append-only, cap 64, TTL 5min) | `apps/relay/src/pairStore.ts` |
-| SAS helper (`sasEncode(HMAC(pubkey‖bucket), 6)`, 32-symbol alphabet, ±1 bucket verify) | `packages/shared/src/crypto.ts` |
-| Ephemeral keypair generation + pair URL composition + QR encoding + pubsub subscribe + slot decryption / SAS filtering | `apps/pwa/src/lib/pairClient.ts` (new file) |
-| `/pair#k=<eA_pub>` route, recover `eA_pub` from `location.hash`, deep-link handler | `apps/pwa/src/routes/pair.tsx` (new route), PWA manifest `url_handlers` |
-| Pairing UI (A side: QR + copyable URL + SAS input; B side: QR scan or paste URL + display SAS) | `apps/pwa/src/components/` (new files `PairDeviceModal.tsx`, `JoinGroupModal.tsx`) |
+| SAS helper (`sasCompute(pubkey, bucket, 6)`, 32-symbol alphabet, ±1 bucket verify) | `packages/shared/src/crypto.ts` |
+| Ephemeral keypair generation + pair URL composition + QR encoding + slot decryption / SAS filtering | `apps/pwa/src/lib/pairClient.ts` |
+| HTTP/SSE transport for `/pair-requests/*` (POST/GET/DELETE + EventSource on `/subscribe`) | `apps/pwa/src/lib/httpPairTransport.ts` |
+| `#/pair?k=<eA_pub>` HashRouter route, recover `eA_pub` from `location.hash`, deep-link handler | `apps/pwa/src/routes/JoinGroupPage.tsx` |
+| Pairing UI (A side: QR + copyable URL + SAS input; B side: QR scan or paste URL + display SAS) | `apps/pwa/src/components/PairDeviceModal.tsx`, `apps/pwa/src/components/ScanToJoinModal.tsx`, `apps/pwa/src/components/DevicePairingSection.tsx` |
 
 **Agent trust (TOFU + self-destruct)**
 
@@ -515,7 +519,7 @@ When you change any of the following, **update this document in the same change*
 - `createSyncRouter` / `parseSyncUrl` / `/sync/*` dispatch in `apps/relay/src/syncRoutes.ts`
 - The `/pair-requests/*` lifecycle in `apps/relay/src/pairStore.ts`
 - The envelope schema, read-modify-write, or 409 backoff flow in `apps/pwa/src/lib/syncClient.ts` or `syncMerge.ts`
-- The pairing flow in `apps/pwa/src/lib/pairClient.ts` (T generation, SAS computation, pubsub subscription)
+- The pairing flow in `apps/pwa/src/lib/pairClient.ts` + `apps/pwa/src/lib/httpPairTransport.ts` (ephemeral keypair generation, SAS computation, SSE subscription)
 - The `peerPWA*` / `closed` fields and `clearPeerPWA` / `unlockPairingAndRotate` identity rotation in `apps/agent/src/config.ts`
 - Handshake pubkey verification flow, `getState()` / `unlockPairing()` state machine, `handlePushedTombstone` / `resubscribeIfPaired` / `startTombstonePolling` in `apps/agent/src/connection/connection.ts`
 - `subscribeTombstone` / `unsubscribeTombstone` / `sendRaw` / reconnect replay and `'tombstone-event'` handling in `apps/agent/src/connection/relay.ts`

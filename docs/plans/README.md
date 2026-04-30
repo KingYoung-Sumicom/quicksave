@@ -1,24 +1,26 @@
-# Design & Implementation Documents
+# Plans
 
-This folder contains design documents and implementation plans generated with [Claude Code](https://claude.ai/claude-code).
+Design documents and implementation plans, mostly generated with
+[Claude Code](https://claude.ai/claude-code). Each file is a snapshot
+of the thinking at a point in time — not a commitment.
 
-## Disclaimer
+## Naming convention
 
-These documents represent our current thinking and may evolve as we learn more during implementation. They are not commitments or guarantees of future functionality. Plans may change based on technical constraints, user feedback, or shifting priorities.
-
-## Document Types
-
-- **`*-design.md`** — High-level architecture and design decisions
-- **`*-plan.md`** — Step-by-step implementation plans with code snippets
+- `YYYY-MM-DD-<slug>.md` — implementation plan or design note. The
+  date is the day the plan was written, not when it shipped.
+- `YYYY-MM-DD-<slug>-design.md` — high-level design decision; the
+  matching `<slug>.md` (without `-design`) is the step-by-step plan
+  that implements it.
 
 ## Status
 
-| Document | Status |
-|----------|--------|
-| PWA Identity & Sync | Proposed |
-| Settings Panel | Implemented |
-| npm Publish Workflow | Proposed |
+These files are historical. To know whether a plan shipped, check the
+code, `git log`, and the maintained reference docs in
+[`../references/`](../references/) and [`../guidelines/`](../guidelines/) —
+not this folder. Plans are not amended after the work lands.
 
 ## Contributing
 
-Found an issue with a design? Have suggestions? Feel free to open an issue or PR to discuss.
+Found something a plan implies but the code doesn't reflect (or vice
+versa)? Update the relevant living doc under `docs/references/` or
+`docs/guidelines/`, not the plan.

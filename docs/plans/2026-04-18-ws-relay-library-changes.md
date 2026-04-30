@@ -1,6 +1,6 @@
 # `@sumicom/ws-relay` — Library Changes Required for Connect-Time Auth
 
-**Status:** Spec. To be implemented in the `@sumicom/ws-relay` repository (separate from quicksave). Blocks `docs/plans/2026-04-18-relay-connect-auth.md`; scheduled to start after PWA push notifications (`docs/superpowers/plans/2026-04-13-push-notifications.md`) ships.
+**Status:** Spec. To be implemented in the `@sumicom/ws-relay` repository (separate from quicksave). Blocks `docs/plans/2026-04-18-relay-connect-auth.md`; scheduled to start after PWA push notifications (`docs/plans/2026-04-13-push-notifications.md`) ships.
 
 **Intended reader:** a contributor working directly in the ws-relay repo. This document is self-contained and does not require access to the quicksave codebase.
 

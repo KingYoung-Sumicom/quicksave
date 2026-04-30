@@ -27,7 +27,7 @@ Before designing or implementing any feature, check the relevant guidelines belo
 
 ## UI / UX Design
 
-**`docs/plans/ui-design-rules.md`** — Rules derived from past fixes. Covers:
+**`docs/guidelines/ui-design-rules.md`** — Rules derived from past fixes. Covers:
 - Root container must use `overflow-hidden` (virtual keyboard layout)
 - `interactive-widget=resizes-content` in viewport meta
 - No vertical scrolling inside chat view elements (nested scroll breaks touch)
@@ -39,7 +39,7 @@ Before designing or implementing any feature, check the relevant guidelines belo
 
 ## Component Design & Refactoring
 
-**`docs/plans/component-refactoring-guidelines.en.md`** — Targets and rules for splitting reusable components. Covers:
+**`docs/guidelines/component-refactoring-guidelines.en.md`** — Targets and rules for splitting reusable components. Covers:
 - When to split (Rule of Three, 300+ line threshold)
 - File organization (`ui/`, `hooks/`, `chat/`)
 - High priority: Collapsible, Modal, useLongPress, loading-state components
