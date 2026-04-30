@@ -1,8 +1,18 @@
 # Sandbox Mode
 
-Quicksave runs coding-agent sessions inside a kernel-level sandbox by
-default. This document captures what the sandbox does, when to turn it
-off, and how the pieces fit together.
+Sandbox mode is **not** a process-level confinement. The coding-agent
+process itself runs unsandboxed and can use `Bash`, `Edit`, `Write`,
+etc. with no kernel restrictions. What "sandbox mode" really means is
+that an extra **MCP tool** — `SandboxBash` — is registered with the
+agent. Calls to that one tool run inside a kernel-level sandbox, which
+is the only reason it can be safely auto-approved.
+
+The agent is steered (via the system prompt) to prefer `SandboxBash`
+for project-scoped commands so the user isn't bothered by a permission
+prompt for every shell call. Anything that genuinely needs to escape
+the sandbox (writes outside `cwd`, network-mutating ops, etc.) goes
+through the regular `Bash` tool and triggers the normal permission
+flow.
 
 ## Default behavior
 
@@ -12,73 +22,89 @@ off, and how the pieces fit together.
   restarts.
 - Mid-task, the user can flip the toggle from the status bar
   (`SessionStatusBar.tsx`).
+- Toggling sandbox ON/OFF only changes whether the `SandboxBash` MCP
+  server is registered for that session and whether its tool calls are
+  auto-approved. It does not change how the agent process or any other
+  tool runs.
 
-## What the sandbox enforces
+## What `SandboxBash` actually does
 
-When sandbox mode is ON, the agent process is confined along two axes:
+When the agent calls `SandboxBash`:
 
-1. **Filesystem writes** are restricted to the session's project
-   directory (`cwd`). Writes outside it fail at the kernel level — the
-   agent cannot silently mutate your home directory or an unrelated
-   repo.
-2. **Shell commands** run through the `SandboxBash` MCP tool instead of
-   the default Bash tool. `SandboxBash` is auto-approved (no
-   per-command permission prompt), because every invocation is wrapped
-   by the sandbox runtime.
+1. The MCP server (`sandboxMcpStdio.ts`) detects the runtime
+   (`sandbox-exec` on macOS, `bwrap` on Linux) and wraps the command
+   in a sandboxed shell.
+2. Filesystem writes inside that wrapped shell are restricted to the
+   project `cwd` (excluding `.git/`). Writes outside it fail at the
+   kernel level.
+3. Reads anywhere on the system are allowed.
+4. Because writes can't escape `cwd`, the Quicksave permission layer
+   auto-approves `SandboxBash` invocations (no per-command prompt).
 
-The agent is explicitly instructed to prefer `SandboxBash` for
-non-state-changing reads anywhere on the system and for all writes
-inside the project; it only falls back to the standard Bash tool when
-a command genuinely needs to escape the sandbox (rare, and it still
-triggers the normal permission prompt).
+Calls to plain `Bash` are **not** wrapped. They still go through the
+session's normal permission flow (driven by `permissionMode`), which
+prompts the user when needed.
 
 ## Runtimes
 
-| Platform | Backend      | Notes                                                  |
-|----------|--------------|--------------------------------------------------------|
-| macOS    | `sandbox-exec` (SBPL profile) | Pre-installed on every supported macOS version. |
-| Linux    | `bwrap` (`bubblewrap`) | Install via the distro package manager (`bubblewrap`). |
-| Other    | none         | `SandboxBash` returns an error. Sandbox-off is the only option on these hosts. |
+| Platform | Backend                       | Notes                                                  |
+|----------|-------------------------------|--------------------------------------------------------|
+| macOS    | `sandbox-exec` (SBPL profile) | Pre-installed on every supported macOS version.        |
+| Linux    | `bwrap` (`bubblewrap`)        | Install via the distro package manager (`bubblewrap`). |
+| Other    | none                          | `SandboxBash` returns an error. The agent falls back to plain `Bash` (with permission prompts). |
 
-The profile lives in `apps/agent/src/ai/profiles/project-sandbox.sb`
-(macOS). The stdio MCP server that exposes `SandboxBash` lives in
+The macOS profile lives in `apps/agent/src/ai/profiles/project-sandbox.sb`.
+The stdio MCP server that exposes `SandboxBash` lives in
 `apps/agent/src/ai/sandboxMcpStdio.ts`.
 
 ## When to turn sandbox mode OFF
 
-Turn it off only when a task genuinely has to touch files outside the
-project directory, e.g.:
+Turning it OFF removes `SandboxBash` from the toolset entirely; the
+agent then has to use plain `Bash` (with prompts) for everything. Do
+this only when a task needs many shell calls that would fail inside
+the sandbox, e.g.:
 
-- Editing sibling monorepo siblings not listed as `availableRepos` for
-  the project.
+- Editing sibling repos not listed as `availableRepos`.
 - Touching dotfiles in `$HOME` (shell config, git global config).
 - Running tools that shell out to paths outside the project.
 
 With sandbox OFF:
 
-- The agent uses the standard Bash tool, which prompts the user for
-  permission on each invocation (subject to the session's
-  `permissionMode`).
-- File writes can land anywhere the agent process has filesystem
-  access.
+- Every shell command goes through the regular `Bash` tool, which
+  prompts the user for permission (subject to `permissionMode`).
+- The agent loses its auto-approved fast path; throughput drops.
+- The agent process's other tools (`Edit`, `Write`, …) behave the same
+  as before — sandbox mode never gated those.
 
 ## Trade-offs at a glance
 
-| Aspect                          | Sandbox ON              | Sandbox OFF                     |
-|---------------------------------|-------------------------|---------------------------------|
-| Blast radius of a bad write     | Project dir only        | Full FS access                  |
-| Per-command permission prompts  | Skipped for `SandboxBash` | Prompted for every Bash call    |
-| Throughput                      | High (no prompt churn)  | Lower (human-in-the-loop churn) |
-| Cross-repo edits                | Not possible            | Possible                        |
+| Aspect                             | Sandbox ON                        | Sandbox OFF                          |
+|------------------------------------|-----------------------------------|--------------------------------------|
+| `SandboxBash` available?           | Yes, auto-approved                | No                                   |
+| Per-command prompt for shell calls | Skipped (when using `SandboxBash`)| Prompted for every `Bash` call       |
+| Throughput                         | High (no prompt churn)            | Lower (human-in-the-loop churn)      |
+| Cross-repo edits                   | Need to escape via plain `Bash`   | Just use `Bash` directly             |
+| Agent-process confinement          | None — sandbox mode does not confine the agent process | None |
+
+## What sandbox mode is **not**
+
+- It is **not** a kernel-level confinement of the agent process.
+- It does **not** prevent `Edit`, `Write`, or plain `Bash` from
+  touching paths outside the project. Those tools never go through
+  the sandbox.
+- It does **not** replace the permission system. The permission system
+  is still what gates non-`SandboxBash` tool calls; the sandbox just
+  lets us auto-approve `SandboxBash` because the kernel already keeps
+  it inside the project.
 
 ## Implementation pointers
 
 - Default: `packages/shared/src/defaults.ts` (`DEFAULT_SANDBOXED`).
 - Persistence: `apps/agent/src/ai/sessionManager.ts` stores `sandboxed`
   on `SessionRegistryEntry` and reads it back on resume.
-- Wiring into the Claude SDK run: `apps/agent/src/ai/claudeSdkProvider.ts`
-  adds the sandbox MCP server and the auto-approval hook when
-  `sandboxed === true`.
+- MCP registration: `apps/agent/src/ai/claudeSdkProvider.ts` registers
+  the sandbox MCP server (`buildSandboxMcpServerConfig`) and short-
+  circuits `canUseTool` to allow `SandboxBash` when `sandboxed` is on.
 - Stdio MCP server: `apps/agent/src/ai/sandboxMcpStdio.ts` (exposes
   the `SandboxBash` tool; errors if no sandbox backend is available).
 - PWA UI: New-task toggle in
