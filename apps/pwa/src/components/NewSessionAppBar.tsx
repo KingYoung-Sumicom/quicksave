@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { useNavigate } from 'react-router-dom';
 import { BaseStatusBar, MenuButton, BackButton } from './BaseStatusBar';
 

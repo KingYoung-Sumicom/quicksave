@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import type { IncomingMessage, ServerResponse } from 'http';
 import { PushStore, type PushSubscriptionRecord } from './pushStore.js';
 import { PushService, type NotifyPayload } from './pushService.js';

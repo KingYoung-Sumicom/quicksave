@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import nacl from 'tweetnacl';
 import { encodeBase64, decodeBase64, encodeKeyPair } from '@sumicom/quicksave-shared';

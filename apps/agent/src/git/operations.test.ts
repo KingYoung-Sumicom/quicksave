@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { GitOperations } from './operations.js';
 import { mkdir, writeFile, rm, readFile } from 'fs/promises';

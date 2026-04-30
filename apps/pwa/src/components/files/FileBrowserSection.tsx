@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { useNavigate } from 'react-router-dom';
 import { useProjects, type ProjectEntry } from '../../hooks/useProjects';
 import { useMachineStore } from '../../stores/machineStore';

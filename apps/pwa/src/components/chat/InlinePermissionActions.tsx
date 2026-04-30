@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { useState, useCallback } from 'react';
 import type { ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';
 import { generateAllowPattern } from '@sumicom/quicksave-shared';

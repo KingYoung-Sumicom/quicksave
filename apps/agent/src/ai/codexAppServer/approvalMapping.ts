@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import type { ClaudeUserInputResponsePayload } from '@sumicom/quicksave-shared';
 
 import type { CommandExecutionRequestApprovalParams } from './schema/generated/v2/CommandExecutionRequestApprovalParams.js';

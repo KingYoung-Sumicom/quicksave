@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import Anthropic from '@anthropic-ai/sdk';
 import { createHash } from 'crypto';
 import type { FileDiff, ClaudeModel, TokenUsage } from '@sumicom/quicksave-shared';

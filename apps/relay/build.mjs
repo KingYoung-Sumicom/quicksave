@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { execSync } from 'child_process';
 import { readFileSync } from 'fs';
 

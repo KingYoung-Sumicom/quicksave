@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { describe, expect, it, vi } from 'vitest';
 
 import { checkSchemaVersionCompatibility } from '../processManager.js';

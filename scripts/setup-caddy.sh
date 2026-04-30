@@ -23,9 +23,30 @@ cat > /etc/caddy/Caddyfile << EOF
 # Production PWA
 ${DOMAIN} {
     root * /opt/quicksave/production/apps/pwa/dist
-    file_server
-    try_files {path} /index.html
     encode gzip
+
+    @assets path /assets/*
+    handle @assets {
+        header Cache-Control "public, immutable"
+        file_server
+    }
+
+    @appShell path /index.html
+    handle @appShell {
+        header Cache-Control "no-store"
+        file_server
+    }
+
+    @sw path /sw.js /manifest.webmanifest
+    handle @sw {
+        header Cache-Control "no-cache"
+        file_server
+    }
+
+    handle {
+        try_files {path} /index.html
+        file_server
+    }
 
     header {
         X-Frame-Options "DENY"
@@ -37,9 +58,30 @@ ${DOMAIN} {
 # Staging PWA
 ${STAGING_DOMAIN} {
     root * /opt/quicksave/staging/apps/pwa/dist
-    file_server
-    try_files {path} /index.html
     encode gzip
+
+    @assets path /assets/*
+    handle @assets {
+        header Cache-Control "public, immutable"
+        file_server
+    }
+
+    @appShell path /index.html
+    handle @appShell {
+        header Cache-Control "no-store"
+        file_server
+    }
+
+    @sw path /sw.js /manifest.webmanifest
+    handle @sw {
+        header Cache-Control "no-cache"
+        file_server
+    }
+
+    handle {
+        try_files {path} /index.html
+        file_server
+    }
 }
 
 # Production Signaling + Webhook

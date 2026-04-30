@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 /**
  * Agent-side client for the relay's signed HTTP push side-channel.
  *

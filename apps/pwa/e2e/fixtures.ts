@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 /**
  * Playwright test fixtures that start the mock relay and inject
  * the agent connection parameters into the page context.

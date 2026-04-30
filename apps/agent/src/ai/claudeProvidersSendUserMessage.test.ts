@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 /**
  * Regression: Claude provider sessions must record follow-up prompts in the
  * cardBuilder during sendUserMessage so that getCards on PWA refresh returns

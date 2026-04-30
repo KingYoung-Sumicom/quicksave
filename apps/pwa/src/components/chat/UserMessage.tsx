@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { useState } from 'react';
 
 const COLLAPSE_LINE_THRESHOLD = 4;

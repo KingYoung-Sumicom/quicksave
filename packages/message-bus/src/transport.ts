@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import type { ClientFrame, ServerFrame } from './types.js';
 
 /** Identifier for a connected client from the server's perspective. */

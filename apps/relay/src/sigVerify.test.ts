@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { describe, it, expect, beforeEach } from 'vitest';
 import nacl from 'tweetnacl';
 import { verifySignedRequest, TtlNonceCache, NONCE_TTL_MS, TS_WINDOW_MS } from './sigVerify.js';

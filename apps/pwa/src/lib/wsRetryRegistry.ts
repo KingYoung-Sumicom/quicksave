@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 // Module-level shim so chat components can ask the WebSocket client to start
 // a fresh round of reconnect attempts after the previous round exhausted its
 // budget. `App` registers `client.retryReconnect` on mount; the streaming

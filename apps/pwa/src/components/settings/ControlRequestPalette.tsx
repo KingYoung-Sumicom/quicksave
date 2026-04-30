@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import type { SessionControlRequestResponsePayload } from '@sumicom/quicksave-shared';

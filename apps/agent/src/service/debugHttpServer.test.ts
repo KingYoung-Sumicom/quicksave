@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { DebugHttpServer } from './debugHttpServer.js';
 import type { SessionManager } from '../ai/sessionManager.js';
 

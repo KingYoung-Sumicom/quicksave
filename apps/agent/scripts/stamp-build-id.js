@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 /**
  * Post-build step: replace the __BUILD_ID__ placeholder in the compiled output
  * with a content hash of the dist directory. This ensures production builds

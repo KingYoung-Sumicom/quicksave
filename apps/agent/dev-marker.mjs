@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 // Loaded via `node --import` from scripts/dev-daemon.sh before any app code.
 // Sets a runtime-only global that src/service/types.ts reads to gate
 // dev-only behavior (debug CLI/HTTP, source-mtime BUILD_ID, self-restart on

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 export { MessageBusServer } from './server.js';
 export type { CommandHandler, SubscribeHandler } from './server.js';
 export { MessageBusClient } from './client.js';

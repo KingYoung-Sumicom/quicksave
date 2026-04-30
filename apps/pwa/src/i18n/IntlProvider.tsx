@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import type { ReactNode } from 'react';
 import { IntlProvider as ReactIntlProvider } from 'react-intl';
 import { useLocaleStore, type ActiveLocale } from '../stores/localeStore';

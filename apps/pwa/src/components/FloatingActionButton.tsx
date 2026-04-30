@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { clsx } from 'clsx';
 import { Spinner } from './ui/Spinner';
 import type { SelectionSource } from '../stores/gitStore';

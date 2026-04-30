@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 /**
  * Local-only HTTP debug server for inspecting card builder and pipeline state.
  * Gated by QUICKSAVE_DEBUG=1 (or dev mode).

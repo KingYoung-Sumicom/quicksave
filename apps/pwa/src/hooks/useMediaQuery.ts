@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { useState, useEffect } from 'react';
 
 export function useMediaQuery(query: string): boolean {

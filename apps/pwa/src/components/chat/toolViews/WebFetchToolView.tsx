@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 export function WebFetchToolView({ input }: { input: Record<string, unknown> }) {
   const url = (input.url as string) || '?';
   let displayUrl = url;

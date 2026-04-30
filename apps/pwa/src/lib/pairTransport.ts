@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import type { PairTransport } from './pairClient';
 import { HttpPairTransport } from './httpPairTransport';
 import { useConnectionStore } from '../stores/connectionStore';

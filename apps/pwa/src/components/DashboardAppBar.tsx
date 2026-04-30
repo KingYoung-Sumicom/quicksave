@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { BaseStatusBar, MenuButton } from './BaseStatusBar';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useMachineStore } from '../stores/machineStore';

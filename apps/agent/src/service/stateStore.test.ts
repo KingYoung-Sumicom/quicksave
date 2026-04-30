@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs';
 import type { ServiceState } from './types.js';
 

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { useEffect, useCallback, useState, useMemo } from 'react';
 import { FormattedMessage, useIntl } from 'react-intl';
 import { ErrorBox } from './ui/ErrorBox';

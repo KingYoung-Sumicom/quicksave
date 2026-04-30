@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { generateAgentKeyPair } from './connection/connection.js';
 import { generateAgentId, generateSigningKeyPair, encodeKeyPair, type License } from '@sumicom/quicksave-shared';

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { memo } from 'react';
 import type { Card, ToolCallCard, SubagentCard, PendingInputAttachment } from '@sumicom/quicksave-shared';
 import type { ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';

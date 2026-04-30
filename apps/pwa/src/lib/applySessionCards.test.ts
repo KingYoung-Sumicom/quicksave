@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { Card, CardEvent, CardHistoryResponse, SessionCardsUpdate } from '@sumicom/quicksave-shared';
 import { applySessionCardsSnapshot, applySessionCardsUpdate } from './applySessionCards';

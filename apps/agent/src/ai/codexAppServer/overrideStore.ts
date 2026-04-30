@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import type { ApprovalsReviewer } from './schema/generated/v2/ApprovalsReviewer.js';
 import type { AskForApproval } from './schema/generated/v2/AskForApproval.js';
 import type { PermissionProfile } from './schema/generated/v2/PermissionProfile.js';

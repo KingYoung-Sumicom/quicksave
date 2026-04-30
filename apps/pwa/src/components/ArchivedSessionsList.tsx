@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type { BroadcastSessionEntry, SessionListArchivedResponsePayload } from '@sumicom/quicksave-shared';
 import { formatRelativeTime } from '../lib/formatRelativeTime';

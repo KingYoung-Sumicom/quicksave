@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { appendFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { isDebugEnabled } from '../service/types.js';

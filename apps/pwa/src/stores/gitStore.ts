@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { create } from 'zustand';
 import type { GitStatus, FileDiff, Commit, Branch, FileChange, ClaudeModel, TokenUsage, CommitSummarySource, CommitSummaryState, CommitSummaryProgress } from '@sumicom/quicksave-shared';
 

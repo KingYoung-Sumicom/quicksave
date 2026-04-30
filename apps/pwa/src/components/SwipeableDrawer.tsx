@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { useRef, useEffect } from 'react';
 import { useEdgeSwipe } from '../hooks/useEdgeSwipe';
 import { useMediaQuery } from '../hooks/useMediaQuery';

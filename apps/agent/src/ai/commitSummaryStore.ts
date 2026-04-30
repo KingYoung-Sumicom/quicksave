@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 /**
  * CommitSummaryStateStore — agent-owned per-repo state for AI commit summary
  * generation.

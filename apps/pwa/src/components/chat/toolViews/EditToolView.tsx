@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { useRef, useState, useEffect } from 'react';
 import { ChevronIcon } from '../../ui/ChevronIcon';
 import { FilePathLink } from '../FilePathLink';

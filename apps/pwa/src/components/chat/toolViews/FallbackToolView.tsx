@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 export function FallbackToolView({ toolName, content }: { toolName?: string; content?: string }) {
   return (
     <div>

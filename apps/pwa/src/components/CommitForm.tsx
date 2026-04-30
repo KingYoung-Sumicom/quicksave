@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { FormattedMessage, useIntl, type IntlShape } from 'react-intl';
 import { Spinner } from './ui/Spinner';

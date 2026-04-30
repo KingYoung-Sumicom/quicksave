@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 /**
  * Smoke: does `model/list` work after `initialize` only, without
  * `thread/start`? If yes, we can build the PWA's codex picker from

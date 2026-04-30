@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { ClaudeCliProvider } from './claudeCliProvider.js';
 import { ClaudeSdkProvider } from './claudeSdkProvider.js';
 import type {

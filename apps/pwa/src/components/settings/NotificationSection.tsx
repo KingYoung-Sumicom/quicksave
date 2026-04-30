@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { FormattedMessage } from 'react-intl';
 import { useNotificationEnable } from '../../hooks/useNotificationEnable';
 import type { PushSupportStatus } from '../../lib/pushSubscription';

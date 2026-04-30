@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import type { AgentId, CardEvent, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
 import type { StreamCardBuilder } from './cardBuilder.js';
 

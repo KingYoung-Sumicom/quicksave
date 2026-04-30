@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useClaudeStore } from './claudeStore';
 import type { Card, CardEvent } from '@sumicom/quicksave-shared';

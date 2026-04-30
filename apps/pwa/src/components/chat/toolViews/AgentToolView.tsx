@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 export function AgentToolView({ input }: { input: Record<string, unknown> }) {
   const description = (input.description as string) || '';
   const subagentType = (input.subagent_type as string) || 'general-purpose';

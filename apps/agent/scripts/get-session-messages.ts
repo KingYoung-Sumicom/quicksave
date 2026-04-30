@@ -1,4 +1,6 @@
 #!/usr/bin/env npx tsx
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 /**
  * CLI tool to read Claude Code session messages via the Agent SDK.
  *

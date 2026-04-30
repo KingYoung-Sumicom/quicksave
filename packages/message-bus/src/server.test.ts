@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MessageBusServer } from './server.js';
 import type { ServerTransport, PeerId } from './transport.js';

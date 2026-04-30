@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import type { AgentId, CodexModelInfo } from '@sumicom/quicksave-shared';
 import { DEFAULT_CONTEXT_WINDOW } from '@sumicom/quicksave-shared';
 

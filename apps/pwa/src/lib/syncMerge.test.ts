@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { describe, it, expect } from 'vitest';
 import { mergeSyncPayloads, syncPayloadsEqual, type SyncPayloadV3 } from './syncMerge';
 import type { Machine } from '../stores/machineStore';

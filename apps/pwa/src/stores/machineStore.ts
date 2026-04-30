@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { isValidBase64Key } from '@sumicom/quicksave-shared';

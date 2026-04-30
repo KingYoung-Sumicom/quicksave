@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 export { runDaemon } from './run.js';
 export { ensureDaemon } from './ensureDaemon.js';
 export { IpcClient, IpcDisconnectedError, RpcError } from './ipcClient.js';

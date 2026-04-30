@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import type { FileStatus } from '@sumicom/quicksave-shared';
 
 /** Tree node for file/directory hierarchy */

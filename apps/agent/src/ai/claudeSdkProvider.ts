@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';

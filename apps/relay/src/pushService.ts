@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import webpush, { type PushSubscription, type SendResult } from 'web-push';
 
 export interface PushServiceConfig {

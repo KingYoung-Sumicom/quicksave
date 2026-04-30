@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { MessageHandler } from './messageHandler.js';
 import { createMessage } from '@sumicom/quicksave-shared';

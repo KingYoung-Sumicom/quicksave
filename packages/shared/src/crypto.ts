@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import nacl from 'tweetnacl';
 import naclUtil from 'tweetnacl-util';
 import type { License, Tombstone } from './types.js';

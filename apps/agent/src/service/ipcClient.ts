@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 /**
  * IPC client — connects to the daemon's Unix domain socket
  * and speaks JSON-RPC 2.0 over newline-delimited transport.

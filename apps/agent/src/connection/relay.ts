@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 import { gzip, gunzip } from 'zlib';

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { resolve, join } from 'path';

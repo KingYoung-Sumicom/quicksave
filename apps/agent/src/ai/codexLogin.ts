@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { spawn, type ChildProcess } from 'child_process';
 import { readFile } from 'fs/promises';
 import { homedir } from 'os';

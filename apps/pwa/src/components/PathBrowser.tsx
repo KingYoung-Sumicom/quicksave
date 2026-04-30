@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { useState, useEffect, useCallback } from 'react';
 import { clsx } from 'clsx';
 import { FormattedMessage } from 'react-intl';

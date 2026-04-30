@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { attachSessionAttention, type AttentionDeps } from './useSessionAttention';

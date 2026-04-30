@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import type { ClientTransport } from './transport.js';
 import {
   GET_SNAPSHOT_VERB,

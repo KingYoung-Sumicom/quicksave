@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import webpush from 'web-push';
 import { PushService } from './pushService.js';

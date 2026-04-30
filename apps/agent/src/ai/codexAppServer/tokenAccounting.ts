@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import type { CardStreamEnd } from '@sumicom/quicksave-shared';
 
 import type { ThreadTokenUsage } from './schema/generated/v2/ThreadTokenUsage.js';

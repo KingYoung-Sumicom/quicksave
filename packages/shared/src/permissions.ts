@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 /**
  * Check whether a tool call matches a Claude Code allow-list pattern,
  * and generate suggested patterns from a tool call.

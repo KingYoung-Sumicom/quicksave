@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 
 import { Command } from 'commander';
 // @ts-ignore - no types for qrcode-terminal

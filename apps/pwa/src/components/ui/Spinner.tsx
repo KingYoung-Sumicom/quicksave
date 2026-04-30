@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 interface SpinnerProps {
   /** Tailwind size class (default "w-4 h-4") */
   size?: string;

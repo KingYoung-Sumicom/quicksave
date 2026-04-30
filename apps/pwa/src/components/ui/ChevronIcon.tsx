@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 interface ChevronIconProps {
   /** Whether the chevron is in expanded/rotated state */
   expanded?: boolean;

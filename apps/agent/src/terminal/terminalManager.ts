@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 /**
  * TerminalManager — owns a pool of PTY-backed shells the PWA can drive remotely.
  *

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { createMessage, type Message } from '@sumicom/quicksave-shared';

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 /**
  * IPC server — JSON-RPC 2.0 over newline-delimited Unix domain socket.
  *

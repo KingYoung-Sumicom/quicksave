@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 /** Codex's webSearch ThreadItem ships `query` empty at item/started — fixed
  *  in the agent now, but historical cards persisted before the fix still
  *  carry `{ query: "" }` and a result content like `Search: <real query>`.

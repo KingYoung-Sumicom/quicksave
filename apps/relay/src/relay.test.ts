@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createRelay, sendMessage } from '@sumicom/ws-relay';
 import type { RelayInstance, Peer, PeerRegistryInterface } from '@sumicom/ws-relay';

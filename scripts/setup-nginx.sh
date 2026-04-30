@@ -40,15 +40,36 @@ server {
     gzip on;
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml;
 
-    # SPA routing
-    location / {
-        try_files \$uri \$uri/ /index.html;
-    }
-
-    # Cache static assets
+    # Fingerprinted build assets can be cached aggressively, but must never
+    # fall back to index.html or browsers will reject them as text/html.
     location /assets/ {
+        try_files \$uri =404;
         expires 1y;
         add_header Cache-Control "public, immutable";
+    }
+
+    # Entry HTML must be revalidated on every navigation so clients discover
+    # the latest asset manifest immediately after a deploy.
+    location = /index.html {
+        try_files \$uri =404;
+        add_header Cache-Control "no-store";
+    }
+
+    # Service worker and manifest should update promptly after deploys.
+    location = /sw.js {
+        try_files \$uri =404;
+        add_header Cache-Control "no-cache";
+    }
+
+    location = /manifest.webmanifest {
+        try_files \$uri =404;
+        add_header Cache-Control "no-cache";
+    }
+
+    # SPA routes only. Real files are served directly; unknown paths fall back
+    # to the app shell.
+    location / {
+        try_files \$uri \$uri/ /index.html;
     }
 }
 EOF
@@ -65,13 +86,29 @@ server {
     gzip on;
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml;
 
-    location / {
-        try_files \$uri \$uri/ /index.html;
-    }
-
     location /assets/ {
+        try_files \$uri =404;
         expires 1y;
         add_header Cache-Control "public, immutable";
+    }
+
+    location = /index.html {
+        try_files \$uri =404;
+        add_header Cache-Control "no-store";
+    }
+
+    location = /sw.js {
+        try_files \$uri =404;
+        add_header Cache-Control "no-cache";
+    }
+
+    location = /manifest.webmanifest {
+        try_files \$uri =404;
+        add_header Cache-Control "no-cache";
+    }
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
     }
 }
 EOF

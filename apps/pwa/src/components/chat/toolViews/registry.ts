@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import type { ComponentType, ReactNode } from 'react';
 import { ReadToolView } from './ReadToolView';
 import { EditToolView } from './EditToolView';

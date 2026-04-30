@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 King Young Technology
+// SPDX-License-Identifier: MIT
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
