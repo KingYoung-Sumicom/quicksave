@@ -81,7 +81,9 @@ function PreviewBody({
   const displayPath = data?.absolutePath ?? request.path;
   const fileName = displayPath.split('/').pop() || displayPath;
   const isMarkdown = useMemo(() => isMarkdownPath(displayPath), [displayPath]);
+  const isSvg = useMemo(() => isSvgPath(displayPath), [displayPath]);
   const [renderMarkdown, setRenderMarkdown] = useState(true);
+  const [renderSvg, setRenderSvg] = useState(true);
 
   return (
     <div className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center sm:p-4">
@@ -106,6 +108,15 @@ function PreviewBody({
               title={renderMarkdown ? 'Show raw source' : 'Render markdown'}
             >
               {renderMarkdown ? 'Raw' : 'Rendered'}
+            </button>
+          )}
+          {isSvg && data?.kind === 'text' && (
+            <button
+              onClick={() => setRenderSvg((v) => !v)}
+              className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
+              title={renderSvg ? 'Show raw source' : 'Render SVG'}
+            >
+              {renderSvg ? 'Raw' : 'Rendered'}
             </button>
           )}
           <button
@@ -139,6 +150,7 @@ function PreviewBody({
               displayPath={displayPath}
               cwd={request.cwd}
               renderMarkdown={isMarkdown && renderMarkdown}
+              renderSvg={isSvg && renderSvg}
             />
           )}
         </div>
@@ -165,11 +177,13 @@ function PreviewContent({
   displayPath,
   cwd,
   renderMarkdown,
+  renderSvg,
 }: {
   data: FilesReadResponsePayload;
   displayPath: string;
   cwd: string;
   renderMarkdown: boolean;
+  renderSvg: boolean;
 }) {
   const lang = useMemo(() => detectLanguage(displayPath), [displayPath]);
   const highlighted = useMemo(() => {
@@ -206,6 +220,21 @@ function PreviewContent({
       />
     );
   }
+  if (renderSvg && data.kind === 'text' && typeof data.content === 'string') {
+    // Render via <img> with a data URL — this gives us a passive image
+    // context where any <script> inside the SVG won't execute, so we
+    // don't need a separate sanitiser pass.
+    const src = `data:image/svg+xml;utf8,${encodeURIComponent(data.content)}`;
+    return (
+      <div className="flex items-center justify-center p-4 bg-[length:16px_16px] bg-[linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%),linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%)] bg-[position:0_0,8px_8px]">
+        <img
+          src={src}
+          alt={displayPath.split('/').pop() ?? 'SVG preview'}
+          className="max-w-full max-h-[70vh] object-contain"
+        />
+      </div>
+    );
+  }
   if (highlighted) {
     return (
       <pre className="px-4 py-3 text-[12px] leading-snug whitespace-pre overflow-x-auto font-mono">
@@ -226,6 +255,10 @@ function PreviewContent({
 function isMarkdownPath(filePath: string): boolean {
   const name = (filePath.split('/').pop() ?? '').toLowerCase();
   return name.endsWith('.md') || name.endsWith('.markdown') || name.endsWith('.mdx');
+}
+
+function isSvgPath(filePath: string): boolean {
+  return (filePath.split('/').pop() ?? '').toLowerCase().endsWith('.svg');
 }
 
 /**

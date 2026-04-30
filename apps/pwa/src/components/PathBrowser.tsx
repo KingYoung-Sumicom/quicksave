@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { clsx } from 'clsx';
+import { FormattedMessage } from 'react-intl';
 import type { Repository, CodingPath, BrowseDirectoryResponsePayload, DirectoryEntry } from '@sumicom/quicksave-shared';
 import { useConnectionStore } from '../stores/connectionStore';
 import { ChevronIcon } from './ui/ChevronIcon';
@@ -293,7 +294,7 @@ export function PathBrowser({
               {/* Directory Entries */}
               {entries.length === 0 && !browseLoading ? (
                 <div className="px-4 py-6 text-center text-slate-500">
-                  <p>Empty directory</p>
+                  <p><FormattedMessage id="pathBrowser.empty" /></p>
                 </div>
               ) : (
                 entries.map((entry) => {

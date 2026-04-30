@@ -50,6 +50,9 @@
   "settings.machines.edit.nickname.placeholder": "e.g., Work laptop, Home desktop",
   "settings.machines.edit.save": "Save changes",
 
+  "machineInfo.fallback.title": "Machine",
+  "machineInfo.cliAgent.version": "Version",
+  "machineInfo.cliAgent.latest": "Latest",
   "machineInfo.projects.title": "Projects",
   "machineInfo.projects.empty": "No projects on this machine yet.",
   "machineInfo.projects.sessionCount": "{count, plural, one {# task} other {# tasks}}",
@@ -242,10 +245,15 @@
   "addNew.session.startTitle": "Start task",
   "addNew.session.failed": "Failed to start task",
 
+  "repoView.title.fallback": "Repo",
   "repoView.workingTreeClean": "Working tree clean",
   "repoView.noChangesToCommit": "No changes to commit",
   "repoView.refresh": "Refresh",
   "repoView.refreshSymbol": "↻ Refresh",
+
+  "pathBrowser.empty": "Empty directory",
+
+  "connectionSetup.title": "Connect to Agent",
 
   "fileList.staged": "Staged",
   "fileList.changes": "Changes",

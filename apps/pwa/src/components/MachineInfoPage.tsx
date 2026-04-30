@@ -74,7 +74,7 @@ export function MachineInfoPage({
       <div className="flex flex-col h-full overflow-hidden">
         <BaseStatusBar
           left={<BackButton onClick={() => navigate(-1)} />}
-          center={<span className="text-sm font-medium text-slate-300">Machine</span>}
+          center={<span className="text-sm font-medium text-slate-300"><FormattedMessage id="machineInfo.fallback.title" /></span>}
         />
         <div className="flex-1 flex items-center justify-center text-sm text-slate-400">
           Machine not found.
@@ -131,7 +131,7 @@ export function MachineInfoPage({
             </h3>
 
             <div className="flex items-center justify-between">
-              <p className="text-sm text-slate-300">Version</p>
+              <p className="text-sm text-slate-300"><FormattedMessage id="machineInfo.cliAgent.version" /></p>
               <span className="text-sm font-mono text-slate-400">
                 {agentVersion || (isOnline ? 'unknown' : 'offline')}{devBuild && isOnline ? ' (dev)' : ''}
               </span>
@@ -190,7 +190,7 @@ export function MachineInfoPage({
             {isOnline && !devBuild && (
               <>
                 <div className="flex items-center justify-between">
-                  <p className="text-sm text-slate-300">Latest</p>
+                  <p className="text-sm text-slate-300"><FormattedMessage id="machineInfo.cliAgent.latest" /></p>
                   <span className="text-sm font-mono text-slate-400 flex items-center gap-2">
                     {isCheckingUpdate ? (
                       <Spinner size="w-3 h-3" />

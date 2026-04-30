@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { FormattedMessage } from 'react-intl';
 import { Spinner } from './ui/Spinner';
 import { ErrorBox } from './ui/ErrorBox';
 import { useGitStore } from '../stores/gitStore';
@@ -51,7 +52,7 @@ export function Settings({ isOpen, onClose, onSaveApiKey }: SettingsProps) {
       <div className="bg-slate-800 rounded-lg w-full max-w-md shadow-xl">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-slate-700">
-          <h2 className="text-lg font-semibold text-white">Settings</h2>
+          <h2 className="text-lg font-semibold text-white"><FormattedMessage id="settings.title" /></h2>
           <button
             onClick={onClose}
             className="text-slate-400 hover:text-white transition-colors"

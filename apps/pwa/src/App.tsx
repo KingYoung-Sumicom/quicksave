@@ -1,5 +1,6 @@
 import { useCallback, useRef, useEffect, useMemo, useState } from 'react';
 import { HashRouter, Routes, Route, useNavigate, useLocation, useParams, useSearchParams } from 'react-router-dom';
+import { FormattedMessage } from 'react-intl';
 import { useConnectionStore } from './stores/connectionStore';
 import { useClaudeStore } from './stores/claudeStore';
 import { useGitStore } from './stores/gitStore';
@@ -1160,7 +1161,7 @@ function ProjectRouteRepo({
       <div className="flex flex-col h-full overflow-hidden">
         <BaseStatusBar
           left={<BackButton onClick={() => navigate(-1)} />}
-          center={<span className="text-sm font-medium text-slate-300">Repo</span>}
+          center={<span className="text-sm font-medium text-slate-300"><FormattedMessage id="repoView.title.fallback" /></span>}
         />
         <div className="flex-1 flex items-center justify-center">
           {(isConnecting || (isReady && !targetRepoPath)) && <Spinner size="w-8 h-8" color="border-blue-500" />}

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { FormattedMessage } from 'react-intl';
 import { ErrorBox } from './ui/ErrorBox';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useMachineStore } from '../stores/machineStore';
@@ -54,7 +55,7 @@ export function ConnectionSetup({ onConnect }: Props) {
 
         {/* Connection Form */}
         <div className="bg-slate-800 rounded-lg p-6">
-          <h2 className="text-lg font-semibold mb-4">Connect to Agent</h2>
+          <h2 className="text-lg font-semibold mb-4"><FormattedMessage id="connectionSetup.title" /></h2>
 
           {/* Mode Toggle */}
           <div className="flex mb-6 bg-slate-700 rounded-lg p-1">
