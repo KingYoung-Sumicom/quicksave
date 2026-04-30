@@ -14,7 +14,8 @@ Quicksave-specific behaviour is added through its hook API.
 - Serve `/sync/{keyHash}` HTTP endpoints for encrypted blob sync (agent config replication between PWA instances). Tombstones are permanent.
 - Serve `/push/{signPubKey}/{register|unregister|notify}` HTTP endpoints so agents can fan out Web Push notifications to subscribed PWA endpoints. Enabled only if `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` are set.
 - Emit `agent-status` messages to PWAs watching a specific agent when it connects or disconnects.
-- Expose `/health` and `/stats`.
+- Expose `/health` and `/stats` on the public port.
+- Expose Prometheus `/metrics` on a separate **admin** port (loopback by default — scrape via Tailscale, VPC, or SSH tunnel).
 
 ## Run locally
 
@@ -46,10 +47,18 @@ reverse proxy (nginx, Caddy, Cloudflare) for production.
 | Variable              | Default        | Purpose                                       |
 | --------------------- | -------------- | --------------------------------------------- |
 | `PORT`                | `8080`         | HTTP + WebSocket port                         |
+| `METRICS_PORT`        | `9090`         | Prometheus admin port (set `0` to disable)    |
+| `METRICS_HOST`        | `127.0.0.1`    | Bind address for the metrics admin server     |
 | `VAPID_PUBLIC_KEY`    | unset          | Enables push routes (must be set with private key) |
 | `VAPID_PRIVATE_KEY`   | unset          | VAPID private key for Web Push                |
 | `VAPID_SUBJECT`       | `mailto:admin@quicksave.dev` | VAPID subject (email or URL)    |
 | `PUSH_STORE_PATH`     | in-memory only | Optional JSON snapshot path for push subscriptions |
+
+`METRICS_HOST` defaults to `127.0.0.1` so `/metrics` is **not** reachable from
+the public internet. Scrape it from inside your trust boundary (Tailscale tail
+network, VPC peer, SSH tunnel). If you need it on a real interface, set
+`METRICS_HOST=0.0.0.0` and lock it down at the firewall — never share a port
+with the public WebSocket / sync routes.
 
 ## Full documentation
 

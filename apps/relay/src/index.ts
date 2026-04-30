@@ -13,11 +13,26 @@ import {
 } from './pairStore.js';
 import { createSyncRouter, parseSyncUrl } from './syncRoutes.js';
 import { TombstoneSubs } from './tombstoneSubs.js';
+import {
+  instrumentHttpRequest,
+  pairPostErrorsTotal,
+  pushNotificationsTotal,
+  pushVerifyFailuresTotal,
+  rateLimitHitsTotal,
+  startMetricsServer,
+  wireGauges,
+  wsConnectionDurationSeconds,
+  wsConnectionsTotal,
+  wsDisconnectionsTotal,
+  type RouteLabel,
+} from './metrics.js';
 
 // Injected by esbuild at build time from package.json
 declare const VERSION: string;
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
+const METRICS_PORT = parseInt(process.env.METRICS_PORT || '9090', 10);
+const METRICS_HOST = process.env.METRICS_HOST || '127.0.0.1';
 
 const syncStore = new SyncStore();
 const pairStore = new PairStore();
@@ -68,6 +83,7 @@ function handlePairRequest(
   subscribe: boolean,
 ): void {
   if (!rateLimitOk(clientIp(req))) {
+    rateLimitHitsTotal.inc({ route: subscribe ? 'pair_subscribe' : 'pair' });
     res.writeHead(429, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'rate limit exceeded' }));
     return;
@@ -147,11 +163,13 @@ function handlePairRequest(
         res.end(JSON.stringify({ id, mailboxExpiresAt }));
       } catch (err) {
         if (err instanceof PairStoreFullError) {
+          pairPostErrorsTotal.inc({ reason: 'full' });
           res.writeHead(409, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'mailbox full' }));
           return;
         }
         if (err instanceof PairStoreTooLargeError) {
+          pairPostErrorsTotal.inc({ reason: 'too_large' });
           res.writeHead(413, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: err.message }));
           return;
@@ -179,14 +197,27 @@ function handlePairRequest(
 let pushRoutes: PushRoutes | null = null;
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY;
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY;
+let pushStoreRef: PushStore | null = null;
 if (vapidPublicKey && vapidPrivateKey) {
   const pushStore = new PushStore({ path: process.env.PUSH_STORE_PATH });
+  pushStoreRef = pushStore;
   const pushService = new PushService({
     vapidPublicKey,
     vapidPrivateKey,
     vapidSubject: process.env.VAPID_SUBJECT ?? 'mailto:admin@quicksave.dev',
   });
-  pushRoutes = createPushRoutes({ store: pushStore, service: pushService });
+  pushRoutes = createPushRoutes({
+    store: pushStore,
+    service: pushService,
+    metrics: {
+      onVerifyFailure(reason) {
+        pushVerifyFailuresTotal.inc({ reason });
+      },
+      onNotifyOutcome(outcome, count) {
+        pushNotificationsTotal.inc({ outcome }, count);
+      },
+    },
+  });
   console.log('[push] web-push enabled');
 } else {
   console.log('[push] web-push disabled (VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY not set)');
@@ -237,6 +268,7 @@ relay = createRelay({
 
   hooks: {
     onPeerConnect(peer: Peer, registry: PeerRegistryInterface) {
+      wsConnectionsTotal.inc({ channel: peer.channel });
       console.log(`[CONNECT] ${peer.address} from ${peer.ip}`);
       if (peer.channel === 'agent') {
         // Notify key-based PWAs watching this agent that it came online
@@ -251,6 +283,9 @@ relay = createRelay({
     },
 
     onPeerDisconnect(peer: Peer, registry: PeerRegistryInterface) {
+      wsDisconnectionsTotal.inc({ channel: peer.channel });
+      const durationSec = Math.max(0, (Date.now() - peer.connectedAt) / 1000);
+      wsConnectionDurationSeconds.observe({ channel: peer.channel }, durationSec);
       console.log(`[DISCONNECT] ${peer.address}`);
       tombstoneSubs.unsubscribeAll(peer.ws);
       if (peer.channel === 'agent') {
@@ -324,6 +359,7 @@ relay = createRelay({
     },
 
     onHttpRequest(req: IncomingMessage, res: ServerResponse, next: () => void) {
+      instrumentHttpRequest(req, res);
       // Override /health to report app version instead of ws-relay package version
       if (req.url === '/health') {
         const appVersion = typeof VERSION !== 'undefined' ? VERSION : 'dev';
@@ -350,6 +386,13 @@ relay = createRelay({
       const sync = parseSyncUrl(req.url);
       if (sync) {
         if (!rateLimitOk(clientIp(req))) {
+          const route: RouteLabel =
+            sync.subpath === 'tombstone'
+              ? 'sync_tombstone'
+              : sync.subpath === 'lock'
+                ? 'sync_lock'
+                : 'sync_blob';
+          rateLimitHitsTotal.inc({ route });
           res.writeHead(429, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'rate limit exceeded' }));
           return;
@@ -387,13 +430,47 @@ console.log(`  Sync:  http://localhost:${PORT}/sync/{keyHash}`);
 console.log(`  Pair:  http://localhost:${PORT}/pair-requests/{addr}`);
 if (pushRoutes) console.log(`  Push:  http://localhost:${PORT}/push/{signPubKey}/{register|unregister|notify}`);
 
-process.on('SIGINT', () => {
-  console.log('\nShutting down...');
+wireGauges({
+  registryStats: () => relay.registry.getStats(),
+  syncStoreStats: () => syncStore.stats,
+  pairStoreStats: () => pairStore.stats,
+  tombstoneSubsStats: () => tombstoneSubs.stats,
+  pushStoreStats: pushStoreRef ? () => pushStoreRef!.stats : undefined,
+});
+
+let metricsServerHandle: { close(): Promise<void> } | null = null;
+if (METRICS_PORT > 0) {
+  startMetricsServer({ port: METRICS_PORT, host: METRICS_HOST })
+    .then((server) => {
+      metricsServerHandle = server;
+      console.log(
+        `  Metrics: http://${server.host}:${server.port}/metrics (admin — bind keeps it off the public port)`,
+      );
+    })
+    .catch((err) => {
+      console.error('[metrics] failed to start admin server:', err);
+    });
+} else {
+  console.log('  Metrics: disabled (METRICS_PORT=0)');
+}
+
+async function shutdown(signal: string): Promise<void> {
+  console.log(`\n${signal} received, shutting down...`);
+  if (metricsServerHandle) {
+    try {
+      await metricsServerHandle.close();
+    } catch {
+      // ignore
+    }
+  }
   relay.close();
   process.exit(0);
+}
+
+process.on('SIGINT', () => {
+  void shutdown('SIGINT');
 });
 
 process.on('SIGTERM', () => {
-  relay.close();
-  process.exit(0);
+  void shutdown('SIGTERM');
 });

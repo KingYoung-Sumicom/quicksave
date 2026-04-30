@@ -4,7 +4,9 @@
 
 | Variable | Default | Source | Description |
 |----------|---------|--------|-------------|
-| `PORT` | `8080` | `process.env.PORT` | HTTP/WebSocket listen port |
+| `PORT` | `8080` | `process.env.PORT` | HTTP/WebSocket listen port (public) |
+| `METRICS_PORT` | `9090` | `process.env.METRICS_PORT` | Prometheus admin port (set `0` to disable) |
+| `METRICS_HOST` | `127.0.0.1` | `process.env.METRICS_HOST` | Bind address for the metrics admin server |
 | `HEARTBEAT_INTERVAL` | 30,000 ms | Hardcoded | WebSocket ping interval |
 | `RATE_LIMIT_WINDOW` | 60,000 ms | Hardcoded | Sliding window for rate limiting |
 | `RATE_LIMIT_MAX_CONNECTIONS` | 10 | Hardcoded | Max new connections per IP per window |
@@ -12,7 +14,7 @@
 | `SyncStore.maxBlobSize` | 8,192 bytes | Hardcoded | Max size for a single sync blob |
 | `VERSION` | from `package.json` | Build-time inject | Server version string |
 
-Only `PORT` is runtime-configurable via environment variable. All other values are hardcoded constants.
+`PORT`, `METRICS_PORT`, and `METRICS_HOST` are runtime-configurable via environment variables. All other values are hardcoded constants.
 
 ## Rate Limiting
 
@@ -52,13 +54,74 @@ npm start        # node dist/bundle.cjs
 
 The build script (`build.mjs`) uses esbuild to produce a single CommonJS bundle with the version string injected as a compile-time constant.
 
+## Prometheus metrics
+
+The relay exposes a Prometheus exposition endpoint at `/metrics` on a separate
+**admin** HTTP server. By default it binds to `127.0.0.1:9090` so the public
+WebSocket / sync port (`8080`) is never used to serve internal counters.
+
+### Scraping
+
+Run Prometheus inside the same trust boundary as the relay (Tailscale tail
+network, VPC, SSH tunnel) and point it at `http://<relay-host>:9090/metrics`.
+Example scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: quicksave-relay
+    static_configs:
+      - targets: ['<relay-host-on-tailnet>:9090']
+```
+
+If you need to expose the metrics port on a real interface, set
+`METRICS_HOST=0.0.0.0` **and** lock it down at the firewall. Never reverse-proxy
+`/metrics` through the same vhost as the public routes.
+
+### Metric inventory
+
+Process-level metrics (heap, GC, event loop lag, file descriptors, …) are
+exposed under the `relay_` prefix via `prom-client`'s default collector.
+
+Application metrics:
+
+| Name | Type | Labels | Description |
+|------|------|--------|-------------|
+| `relay_uptime_seconds` | gauge | — | Seconds since the relay started |
+| `relay_ws_connections_total` | counter | `channel` | WebSocket peers that connected |
+| `relay_ws_disconnections_total` | counter | `channel` | WebSocket peers that disconnected |
+| `relay_ws_connections_active` | gauge | `channel` | Currently connected peers |
+| `relay_ws_connection_duration_seconds` | histogram | `channel` | Peer session duration, observed at disconnect |
+| `relay_messages_relayed_total` | counter | — | Frames forwarded between peers (cumulative) |
+| `relay_http_requests_total` | counter | `route`, `method`, `status_class` | Public HTTP requests handled |
+| `relay_http_request_duration_seconds` | histogram | `route`, `status_class` | Public HTTP request latency |
+| `relay_rate_limit_hits_total` | counter | `route` | HTTP requests rejected by the per-IP rate limiter |
+| `relay_sync_blobs` | gauge | — | Live (non-tombstone) entries in the sync store |
+| `relay_sync_tombstones` | gauge | — | Tombstone entries in the sync store |
+| `relay_sync_locks_active` | gauge | — | Active per-mailbox write locks |
+| `relay_pair_mailboxes` | gauge | — | Active pairing mailboxes |
+| `relay_pair_slots` | gauge | — | Total slots across pairing mailboxes |
+| `relay_pair_subscribers` | gauge | — | Active SSE subscribers across pairing mailboxes |
+| `relay_pair_post_errors_total` | counter | `reason` | Pair POSTs rejected (`full`, `too_large`) |
+| `relay_tombstone_subscribed_keys` | gauge | — | keyHashes with at least one tombstone subscriber |
+| `relay_tombstone_subscribers` | gauge | — | Total tombstone subscribers across all keys |
+| `relay_push_agents` | gauge | — | Distinct agent keys with at least one Web Push subscription (only if VAPID is configured) |
+| `relay_push_subscriptions` | gauge | — | Total Web Push subscriptions (only if VAPID is configured) |
+| `relay_push_verify_failures_total` | counter | `reason` | Signature verification failures on `/push/*` |
+| `relay_push_notifications_total` | counter | `outcome` | Web Push send results (`sent`, `pruned`, `failed`) |
+
+The `route` label is normalised to a fixed enum (`health`, `stats`, `metrics`,
+`sync_blob`, `sync_tombstone`, `sync_lock`, `pair`, `pair_subscribe`,
+`push_register`, `push_unregister`, `push_notify`, `other`) so per-user
+identifiers in URLs never become labels.
+
 ## Graceful Shutdown
 
 The server handles both `SIGINT` and `SIGTERM`:
 
-1. Close the WebSocket server (stops accepting new connections)
-2. Close the HTTP server
-3. Exit the process
+1. Close the metrics admin server (if started)
+2. Close the WebSocket server (stops accepting new connections)
+3. Close the HTTP server
+4. Exit the process
 
 In-memory state (connections, sync store) is lost on shutdown — this is by design. Clients are expected to reconnect and re-establish state.
 

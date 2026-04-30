@@ -8,9 +8,15 @@ interface FailureCounters {
   byReason: Record<string, number>;
 }
 
+export interface PushRoutesMetrics {
+  onVerifyFailure?(reason: string): void;
+  onNotifyOutcome?(outcome: 'sent' | 'pruned' | 'failed', count: number): void;
+}
+
 export interface PushRoutesDeps {
   store: PushStore;
   service: PushService;
+  metrics?: PushRoutesMetrics;
 }
 
 export interface PushRoutes {
@@ -61,6 +67,7 @@ export function createPushRoutes(deps: PushRoutesDeps): PushRoutes {
   function bumpFailure(reason: string): void {
     failures.total++;
     failures.byReason[reason] = (failures.byReason[reason] ?? 0) + 1;
+    deps.metrics?.onVerifyFailure?.(reason);
   }
 
   async function handleRegister(req: IncomingMessage, res: ServerResponse, signPubKey: string): Promise<void> {
@@ -201,6 +208,7 @@ export function createPushRoutes(deps: PushRoutesDeps): PushRoutes {
 
     let sent = 0;
     let pruned = 0;
+    let failed = 0;
     const now = verify.now;
     await Promise.all(subs.map(async (sub) => {
       const outcome = await deps.service.send(
@@ -214,9 +222,14 @@ export function createPushRoutes(deps: PushRoutesDeps): PushRoutes {
         pruned++;
         deps.store.removeByEndpoint(sub.endpoint, signPubKey);
       } else {
+        failed++;
         console.warn('[push] send failed', { endpoint: sub.endpoint, status: outcome.statusCode, err: outcome.error });
       }
     }));
+
+    if (sent > 0) deps.metrics?.onNotifyOutcome?.('sent', sent);
+    if (pruned > 0) deps.metrics?.onNotifyOutcome?.('pruned', pruned);
+    if (failed > 0) deps.metrics?.onNotifyOutcome?.('failed', failed);
 
     respond(res, 200, { ok: true, sent, pruned });
   }

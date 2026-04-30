@@ -44,6 +44,10 @@ Detailed server statistics including ConnectionManager stats and SyncStore stats
 }
 ```
 
+### `GET /metrics` (admin port only)
+
+Prometheus exposition served by a separate HTTP server on `METRICS_HOST:METRICS_PORT` (default `127.0.0.1:9090`). **Not** exposed on the public port. See [`deployment.md`](./deployment.md#prometheus-metrics) for the metric inventory and scraping notes.
+
 ## Sync Store
 
 The sync store provides HTTP endpoints for persisting encrypted pairing data. Clients use it to back up and restore their pairing state across browser sessions.
