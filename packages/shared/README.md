@@ -36,7 +36,7 @@ via the normal npm resolution, not because it has a stable standalone API.
 Anything added to or changed in `MessageType` in `types.ts` is a protocol
 change — both the agent's `MessageHandler` and the PWA hooks
 (`useClaudeOperations`, `useGitOperations`) must be updated at the same
-time. See `docs/references/quicksave-architecture.md` §四 for the full
+time. See `docs/references/quicksave-architecture.en.md` §四 for the full
 message-type catalog and bus-path mappings.
 
 ## License

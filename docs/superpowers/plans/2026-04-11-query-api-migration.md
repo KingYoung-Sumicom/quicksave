@@ -17,7 +17,7 @@
 | `apps/agent/src/ai/asyncQueue.ts` | **Create** | Push-based `AsyncIterable<T>` utility for feeding prompts to `query()` |
 | `apps/agent/src/ai/asyncQueue.test.ts` | **Create** | Unit tests for AsyncQueue |
 | `apps/agent/src/ai/claudeCodeService.ts` | **Modify** | Replace `SDKSession` with `Query` + `AsyncQueue`, rewrite start/resume/cancel/close, simplify consumer loop |
-| `docs/references/quicksave-architecture.md` | **Modify** | Update session lifecycle docs |
+| `docs/references/quicksave-architecture.en.md` | **Modify** | Update session lifecycle docs |
 
 Tests that should NOT need changes (verify at end):
 - `apps/agent/src/handlers/messageHandler.test.ts` — tests MessageHandler, not ClaudeCodeService internals
@@ -792,7 +792,7 @@ test: verify all tests pass after query() migration
 ### Task 5: Update architecture docs
 
 **Files:**
-- Modify: `docs/references/quicksave-architecture.md`
+- Modify: `docs/references/quicksave-architecture.en.md`
 
 - [ ] **Step 1: Update session lifecycle section**
 

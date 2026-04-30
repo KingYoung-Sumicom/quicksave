@@ -17,7 +17,7 @@ import type { MessageHandler } from './messageHandler.js';
  * touching:
  *   1. `messageHandler.ts` switch (the handler itself)
  *   2. This array (the bus exposure)
- *   3. The relevant docs (`docs/references/quicksave-architecture.md`)
+ *   3. The relevant docs (`docs/references/quicksave-architecture.en.md`)
  */
 export const LEGACY_BUS_VERBS: MessageType[] = [
   'ping',

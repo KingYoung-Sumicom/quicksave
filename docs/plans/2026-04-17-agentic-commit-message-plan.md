@@ -162,7 +162,7 @@ Minimal UI churn: add a small source toggle next to the existing model dropdown.
 
 ### Phase 4 — Docs
 
-9. Update `docs/references/quicksave-architecture.md`:
+9. Update `docs/references/quicksave-architecture.en.md`:
    - Mention the two sources in the commit-summary section.
    - Note CLI path does not require an API key.
 10. This plan doc itself (Status: Implemented) once shipped.

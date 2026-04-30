@@ -74,7 +74,7 @@ details.
 
 ## Architecture & deeper docs
 
-- **Source-of-truth architecture** — [`docs/references/quicksave-architecture.md`](./docs/references/quicksave-architecture.md):
+- **Source-of-truth architecture** — [`docs/references/quicksave-architecture.en.md`](./docs/references/quicksave-architecture.en.md):
   session lifecycle, MessageBus paths, encryption handshake, Web Push
   side channel, IPC / debug CLI.
 - **Agent CLI reference** — [`docs/references/agent-cli.md`](./docs/references/agent-cli.md)

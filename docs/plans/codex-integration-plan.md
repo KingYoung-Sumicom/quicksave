@@ -82,8 +82,8 @@ Key points confirmed from the official docs:
 Local repo references to keep aligned:
 
 - `docs/superpowers/plans/2026-04-13-provider-abstraction.md`
-- `docs/references/openai-codex-sdk-types.md`
-- `docs/references/quicksave-architecture.md`
+- `docs/references/openai-codex-sdk-types.en.md`
+- `docs/references/quicksave-architecture.en.md`
 
 ## Scope
 
@@ -134,7 +134,7 @@ Reasons:
 - Thread stays alive between turns — no transport teardown
 - Architecture mirrors `ClaudeCliProvider` closely (long-lived process, event stream, session persistence)
 
-Type reference: `docs/references/openai-codex-sdk-types.md`
+Type reference: `docs/references/openai-codex-sdk-types.en.md`
 
 ## Architecture
 

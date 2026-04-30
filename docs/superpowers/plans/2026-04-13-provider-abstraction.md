@@ -1278,7 +1278,7 @@ Expected: All 98 tests PASS
 ### Task 6: Update architecture documentation
 
 **Files:**
-- Modify: `docs/references/quicksave-architecture.md`
+- Modify: `docs/references/quicksave-architecture.en.md`
 
 - [ ] **Step 1: Update the AI provider section**
 

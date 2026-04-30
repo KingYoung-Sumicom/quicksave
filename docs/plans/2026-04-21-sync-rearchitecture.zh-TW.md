@@ -4,7 +4,7 @@
 
 切到「single shared `masterSecret` + multi-slot pairing mailbox + QR/URL + SAS」模型，並在 agent 端加上 TOFU + tombstone 自毀。
 
-**Design doc**：`docs/guidelines/sync-security.md`
+**Design doc**：`docs/guidelines/sync-security.zh-TW.md`
 
 **Migration**：唯一使用者是開發者本人、會自行重 pair。**不做 in-place migration**，新版直接覆蓋舊 protocol。
 
@@ -183,10 +183,10 @@
 
 ### D2. 文件同步 ✅
 
-- [x] `docs/references/quicksave-architecture.md` §三 新增「PWA 群組同步 (shared-mailbox)」+「Agent TOFU + Tombstone catch-up」兩個子節
-- [x] `docs/references/quicksave-architecture.md` §六 更新 identityStore 形狀與 API
-- [x] `CLAUDE.md` 文件同步表格新增一行：PWA↔PWA sync mailbox / TOFU / tombstone → `sync-security.md` + `architecture.md` §三
-- [x] `docs/guidelines/sync-security.md` 修正 drift：
+- [x] `docs/references/quicksave-architecture.zh-TW.md` §三 新增「PWA 群組同步 (shared-mailbox)」+「Agent TOFU + Tombstone catch-up」兩個子節
+- [x] `docs/references/quicksave-architecture.zh-TW.md` §六 更新 identityStore 形狀與 API
+- [x] `CLAUDE.md` 文件同步表格新增一行：PWA↔PWA sync mailbox / TOFU / tombstone → `sync-security.zh-TW.md` + `architecture.md` §三
+- [x] `docs/guidelines/sync-security.zh-TW.md` 修正 drift：
   - TOFU 從「現行實作不持久化 peer pubkey」更新為「已實作於 connection.ts + config.ts」
   - 把 Tombstone Pubsub Subscription 整節替換為 Tombstone Catch-up GET + AgentPairState 狀態機 + CLI status/pair
   - Files Map「Relay pubsub 推送」那一行移除；IPC 解鎖路徑改用 `get-agent-state` / `unlock-pairing`
@@ -194,7 +194,7 @@
 
 ### D3. 驗證路徑（manual）
 
-**遷移性質說明**：Stage B–D 的改動**不需要 DB wipe**。現有 PWA 的 `masterSecret` 繼續有效（`deriveSharedKeys` 會派生出相同的共用 pubkey），IndexedDB 裡 orphan 的 `IDENTITY_KEY` / `SIGNING_KEY` rows 無害；兩台同 `masterSecret` 的 PWA 會在第一次 push 時自動聚到新的共用 mailbox 並 LWW 合併。**唯一需要使用者動作**的是每台 agent 跑一次 `quicksave pair` 重新 TOFU-pin（C2 把 handshake 改成強制簽章，舊 unsigned 不通過；這正好符合 `sync-security.md` 的 Group Reset 代價）。
+**遷移性質說明**：Stage B–D 的改動**不需要 DB wipe**。現有 PWA 的 `masterSecret` 繼續有效（`deriveSharedKeys` 會派生出相同的共用 pubkey），IndexedDB 裡 orphan 的 `IDENTITY_KEY` / `SIGNING_KEY` rows 無害；兩台同 `masterSecret` 的 PWA 會在第一次 push 時自動聚到新的共用 mailbox 並 LWW 合併。**唯一需要使用者動作**的是每台 agent 跑一次 `quicksave pair` 重新 TOFU-pin（C2 把 handshake 改成強制簽章，舊 unsigned 不通過；這正好符合 `sync-security.zh-TW.md` 的 Group Reset 代價）。
 
 **就地升級路徑（推薦）**：
 - [ ] 既有 PWA 直接 load 新版 code；自檢 IndexedDB 裡 `masterSecret` 還在、`machines` 列表仍顯示、下一次 sync push 能成功 PUT 到新的共用 mailbox

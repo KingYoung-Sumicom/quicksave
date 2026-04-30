@@ -436,7 +436,7 @@ CLI：
 - `quicksave status` → 印出 state / agentId / peers / peerPWA pubkey
 - `quicksave pair` → 解鎖 closed + 顯示 QR/URL
 
-詳細設計見 `docs/guidelines/sync-security.md`。
+詳細設計見 `docs/guidelines/sync-security.zh-TW.md`。
 
 ### Request-response 模式（MessageBus command）
 
@@ -565,7 +565,7 @@ identityStore.ts
   clearAll()        // 清除 masterSecret
 ```
 
-詳細 threat model 與 key derivation 見 `docs/guidelines/sync-security.md`。
+詳細 threat model 與 key derivation 見 `docs/guidelines/sync-security.zh-TW.md`。
 
 ### Hook API（`useClaudeOperations.ts`）
 
@@ -709,6 +709,6 @@ interface DebugResult {
 
 | 文件 | 說明 |
 |---|---|
-| `docs/references/claude-agent-sdk-message-types.md` | Claude CLI stream-json 事件型別參考 |
+| `docs/references/claude-agent-sdk-message-types.zh-TW.md` | Claude CLI stream-json 事件型別參考 |
 | `docs/plans/codex-integration-plan.md` | Codex 整合計劃書 |
 | `docs/plans/ui-design-rules.md` | PWA UI 設計規則 |

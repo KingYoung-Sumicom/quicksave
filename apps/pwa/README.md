@@ -69,7 +69,7 @@ src/
 
 ## Architecture
 
-See [`docs/references/quicksave-architecture.md`](../../docs/references/quicksave-architecture.md)
+See [`docs/references/quicksave-architecture.en.md`](../../docs/references/quicksave-architecture.en.md)
 for the end-to-end picture: MessageBus paths the PWA subscribes to,
 session / card reconciliation, push subscription flow.
 

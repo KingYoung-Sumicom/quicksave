@@ -47,6 +47,6 @@ just attach to it to add repos or re-read pairing info.
 - **CLI subcommands, debug commands, data layout** —
   [`docs/references/agent-cli.md`](../../docs/references/agent-cli.md)
 - **Architecture (sessions, MessageBus, permissions, IPC)** —
-  [`docs/references/quicksave-architecture.md`](../../docs/references/quicksave-architecture.md)
+  [`docs/references/quicksave-architecture.en.md`](../../docs/references/quicksave-architecture.en.md)
 - **Local development** —
   [`docs/development.md`](../../docs/development.md)

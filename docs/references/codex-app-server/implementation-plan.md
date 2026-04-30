@@ -4,7 +4,7 @@
 > path is the default and only Codex backend. `CodexSdkProvider` and
 > the `@openai/codex-sdk` dependency have been removed. This document
 > is preserved as a record of the decisions; non-historical readers
-> should look at `docs/references/quicksave-architecture.md` §二 for
+> should look at `docs/references/quicksave-architecture.en.md` §二 for
 > current structure.
 >
 > **Premise:** the user can't change Codex `model` / `effort` /
@@ -596,7 +596,7 @@ user pref. Default remains `'sdk'`. Both providers exercised in CI.
 - One release later: delete `CodexSdkProvider`, `codexSdkProvider.ts`,
   `codexSdkProvider.test.ts`, drop `@openai/codex-sdk` from
   `apps/agent/package.json`.
-- Update `docs/references/quicksave-architecture.md` §二 (Codex
+- Update `docs/references/quicksave-architecture.en.md` §二 (Codex
   provider section).
 
 **Exit criteria**
@@ -705,7 +705,7 @@ apps/pwa/src/components/AgentSettingsDrawer.tsx  # "pending" badge + copy when c
 apps/pwa/src/components/settings/ClaudeSettingsSection.tsx  # if a Codex backend toggle lands here
 packages/shared/src/types.ts               # CodexBackend type, SessionConfig key
 packages/shared/src/defaults.ts            # codexBackend default
-docs/references/quicksave-architecture.md  # §二 Codex provider description (Phase 5)
+docs/references/quicksave-architecture.en.md  # §二 Codex provider description (Phase 5)
 apps/agent/README.md                       # regen-codex-schema doc
 ```
 

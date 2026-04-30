@@ -708,7 +708,7 @@ Expected: PASS
 ### Task 6: Update architecture documentation
 
 **Files:**
-- Modify: `docs/references/quicksave-architecture.md`
+- Modify: `docs/references/quicksave-architecture.en.md`
 
 - [ ] **Step 1: Add SDK provider to the provider section**
 
