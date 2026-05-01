@@ -25,6 +25,10 @@ export type ToolViewProps = {
    *  whose result text still carries the meaningful payload (e.g.
    *  `Search: <query>`). Most views ignore this. */
   resultContent?: string;
+  /** True while the tool call is awaiting user input (permission or question).
+   *  Views that auto-collapse (e.g. Bash) keep the full content visible while
+   *  pending so the user can read it before approving. */
+  isPending?: boolean;
 };
 
 export const TOOL_VIEWS: Record<string, ComponentType<ToolViewProps>> = {

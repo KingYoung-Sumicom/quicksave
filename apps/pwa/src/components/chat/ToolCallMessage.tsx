@@ -160,6 +160,7 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
                     input={parsedInput}
                     headerSuffix={isInlineResultTool ? chevronButton : undefined}
                     resultContent={resultContent}
+                    isPending={hasPending}
                   />
                 : <FallbackToolView toolName={toolName} content={toolInput || content} />}
         </div>
