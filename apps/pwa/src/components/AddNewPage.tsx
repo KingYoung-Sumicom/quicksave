@@ -650,6 +650,8 @@ function SessionTab({
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const isMobile = 'ontouchstart' in window;
+
   const canStart = !!project?.isConnected && !!prompt.trim() && !starting;
 
   const handleStart = async () => {
@@ -719,7 +721,7 @@ function SessionTab({
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isMobile) {
               e.preventDefault();
               handleStart();
             }
