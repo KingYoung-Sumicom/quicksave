@@ -258,7 +258,7 @@ export interface CodingPath {
 // permissionMode is session-scoped; use claude:set-session-permission to change it.
 export interface ClaudePreferences {
   model: string;
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /** Auto-compact ceiling for Claude Code sessions (200k / 500k / 1M).
    *  Maps to the CLI's `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var; values
    *  above 200k also enable the `context-1m-2025-08-07` beta header. */

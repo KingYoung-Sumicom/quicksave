@@ -274,8 +274,10 @@ export function ClaudePanel({
         // Claude CLI honors contextWindow via CLAUDE_CODE_AUTO_COMPACT_WINDOW;
         // Codex ignores it. Send for both — agent layer narrows.
         ...(selectedContextWindow ? { contextWindow: selectedContextWindow } : {}),
-        // Codex honors reasoningEffort; Claude providers ignore it. Send for both
-        // — the agent layer narrows by provider.
+        // Both providers honor reasoningEffort: Codex via SDK
+        // `modelReasoningEffort`, Claude via CLI `--effort` / SDK
+        // `Options.effort`. Enums differ (Codex: minimal/low/medium/high/xhigh;
+        // Claude: low/medium/high/xhigh/max) — agent validates per provider.
         ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}),
         ...(selectedAgentType.allowedTools !== undefined ? { allowedTools: selectedAgentType.allowedTools } : {}),
         ...(selectedAgentType.systemPrompt ? { systemPrompt: selectedAgentType.systemPrompt } : {}),

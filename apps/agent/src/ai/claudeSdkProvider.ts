@@ -242,6 +242,12 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
         : { type: 'preset', preset: 'claude_code' },
     };
 
+    if (opts.reasoningEffort) {
+      // SDK's TS enum is `low|medium|high|max` but the runtime / CLI also
+      // accept `xhigh`. Cast through unknown so we can pass it through.
+      (options as { effort?: string }).effort = opts.reasoningEffort;
+    }
+
     if ('model' in opts && opts.model) {
       // Append `[1m]` when the user picked >200k so the SDK enables the
       // `context-1m-2025-08-07` beta — same protocol the CLI uses, kept in

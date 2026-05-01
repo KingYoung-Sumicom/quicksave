@@ -102,12 +102,15 @@ export function getPermissionModesForAgent(agentId: AgentId) {
   return agentId === 'codex' ? CODEX_PERMISSION_MODES : PERMISSION_MODES;
 }
 
-/** Claude Code's reasoning levels — these are the values the Claude CLI's
- *  `thinking_budget` (or equivalent) accepts. Distinct enum from Codex's. */
+/** Claude Code's reasoning levels — values accepted by the Claude CLI's
+ *  `--effort` flag and the SDK's `Options.effort` field. The CLI accepts
+ *  five (`low`/`medium`/`high`/`xhigh`/`max`); the SDK's TS enum currently
+ *  only declares four (no `xhigh`), but the runtime accepts it. */
 export const REASONING_EFFORTS_CLAUDE = [
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
   { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'X-High' },
   { value: 'max', label: 'Max' },
 ];
 

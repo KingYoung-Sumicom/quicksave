@@ -174,6 +174,24 @@ describe('buildClaudeCliArgs', () => {
       expect(argValue(args, '--model')).toBe('claude-opus-4-7[1m]');
     });
   });
+
+  describe('reasoningEffort → --effort', () => {
+    it('omits --effort when not provided', () => {
+      const args = buildClaudeCliArgs({ cwd: '/p', ownDir: __ownDir });
+      expect(args).not.toContain('--effort');
+    });
+
+    it.each(['low', 'medium', 'high', 'xhigh', 'max'])(
+      'passes --effort %s through verbatim',
+      (level) => {
+        const args = buildClaudeCliArgs({
+          cwd: '/p', ownDir: __ownDir,
+          reasoningEffort: level,
+        });
+        expect(argValue(args, '--effort')).toBe(level);
+      },
+    );
+  });
 });
 
 describe('decorateModelWithContextWindow', () => {

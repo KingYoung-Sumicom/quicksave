@@ -105,6 +105,7 @@
   "newSession.reasoningEffort.low": "Low",
   "newSession.reasoningEffort.medium": "Medium",
   "newSession.reasoningEffort.high": "High",
+  "newSession.reasoningEffort.xhigh": "X-High",
   "newSession.reasoningEffort.max": "Max",
   "newSession.permission": "Permission",
   "newSession.contextWindow": "Context window",

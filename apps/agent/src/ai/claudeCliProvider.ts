@@ -76,6 +76,11 @@ export function buildClaudeCliArgs(opts: {
    *  `update_environment_variables` frame in `spawnAndConsume` (and again on
    *  every live change via `CliProviderSession.updateContextWindow`). */
   contextWindow?: number;
+  /** Per-session reasoning depth. Maps to the CLI's `--effort` flag, which
+   *  accepts `low | medium | high | xhigh | max`. `max` is Opus-only — the
+   *  CLI rejects/ignores it on other models, so let the daemon pass through
+   *  whatever the UI chose and surface CLI errors back to the user. */
+  reasoningEffort?: string;
 }): string[] {
   const args: string[] = [
     '--output-format', 'stream-json',
@@ -92,6 +97,10 @@ export function buildClaudeCliArgs(opts: {
 
   if (opts.model) {
     args.push('--model', decorateModelWithContextWindow(opts.model, opts.contextWindow) ?? opts.model);
+  }
+
+  if (opts.reasoningEffort) {
+    args.push('--effort', opts.reasoningEffort);
   }
 
   if (opts.permissionMode) {
@@ -404,6 +413,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       sandboxed: opts.sandboxed,
       bypassFlagPath: opts.bypassFlagPath,
       contextWindow: opts.contextWindow,
+      reasoningEffort: opts.reasoningEffort,
     });
 
     return this.spawnAndConsume(args, opts.cwd, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model, opts.contextWindow);
@@ -424,6 +434,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       sandboxed: opts.sandboxed,
       bypassFlagPath: opts.bypassFlagPath,
       contextWindow: opts.contextWindow,
+      reasoningEffort: opts.reasoningEffort,
     });
 
     return this.spawnAndConsume(args, opts.cwd, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model, opts.contextWindow);
@@ -441,6 +452,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     sandboxed?: boolean;
     bypassFlagPath?: string;
     contextWindow?: number;
+    reasoningEffort?: string;
   }): string[] {
     return buildClaudeCliArgs({ ...opts, ownDir: __ownDir });
   }

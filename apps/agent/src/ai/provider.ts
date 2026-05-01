@@ -131,10 +131,12 @@ export interface StartSessionOpts {
   permissionLevel: PermissionLevel;
   sandboxed: boolean;
   systemPrompt?: string;
-  /** Per-session reasoning depth. Currently only the Codex provider honors
-   *  this — it maps to the SDK's `modelReasoningEffort` (minimal/low/medium/
-   *  high/xhigh). Claude providers ignore it (their depth is decided by the
-   *  model variant, not a per-turn knob). */
+  /** Per-session reasoning depth. Codex maps it to the SDK's
+   *  `modelReasoningEffort` (`minimal/low/medium/high/xhigh`). Claude maps it
+   *  to the CLI's `--effort` flag / SDK's `Options.effort`
+   *  (`low/medium/high/xhigh/max`). The two enums overlap but are NOT
+   *  identical — keep the value as a string and let each provider validate
+   *  its own range. */
   reasoningEffort?: string;
   /** Auto-compact ceiling for Claude Code (200k / 500k / 1M). Only the
    *  Claude CLI provider honors this — it sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW`

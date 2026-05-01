@@ -671,7 +671,8 @@ function SessionTab({
         // Claude CLI honors contextWindow via CLAUDE_CODE_AUTO_COMPACT_WINDOW;
         // Codex ignores it. Send for both — agent layer narrows.
         ...(selectedContextWindow ? { contextWindow: selectedContextWindow } : {}),
-        // Codex honors reasoningEffort; Claude providers ignore it.
+        // Both providers honor reasoningEffort (Codex SDK option vs Claude
+        // CLI `--effort`); the agent layer narrows by provider.
         ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}),
         ...(agentType.allowedTools !== undefined ? { allowedTools: agentType.allowedTools } : {}),
         ...(agentType.systemPrompt ? { systemPrompt: agentType.systemPrompt } : {}),
