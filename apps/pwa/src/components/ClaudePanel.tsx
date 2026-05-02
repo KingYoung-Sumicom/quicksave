@@ -16,6 +16,9 @@ import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
 import { SessionStatusBar } from './chat/SessionStatusBar';
 import { SessionStatsBar } from './chat/SessionStatsBar';
 import { StreamingReconnectIndicator } from './chat/StreamingReconnectIndicator';
+import { ToolCallGroupPlaceholder } from './chat/ToolCallGroupPlaceholder';
+import { ToolCallVisibilityChip } from './chat/ToolCallVisibilityChip';
+import { useUiPrefsStore } from '../stores/uiPrefsStore';
 import { getAgentType } from '../lib/claudePresets';
 
 type StartSessionOpts = { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number };
@@ -80,6 +83,75 @@ export function ClaudePanel({
     setActiveSession,
     clearCards,
   } = useClaudeStore();
+
+  const hideToolCalls = useUiPrefsStore((s) => s.hideToolCalls);
+
+  // Per-group override: when global hide is on, individual groups can be
+  // expanded by clicking their placeholder; the entry is keyed by the group's
+  // first card id. Cleared whenever the global flag flips so the new default
+  // applies cleanly.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const handleToggleVisibility = useCallback(() => {
+    setExpandedGroups(new Set());
+  }, []);
+  const toggleGroup = useCallback((id: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // Build the display sequence: when tool calls are hidden, fold each run of
+  // consecutive tool_call cards into a single placeholder so other message
+  // types stay in their original order. Per-group expansion replaces the
+  // placeholder with a "hide" chip followed by the individual cards.
+  const displayItems = useMemo(() => {
+    type Item =
+      | { kind: 'card'; card: typeof cards[number] }
+      | { kind: 'tool_group_collapsed'; key: string; groupId: string; count: number }
+      | { kind: 'tool_group_expanded_header'; key: string; groupId: string; count: number };
+    if (!hideToolCalls) {
+      return cards.map<Item>((card) => ({ kind: 'card', card }));
+    }
+    const out: Item[] = [];
+    let runCards: typeof cards = [];
+    let runStartId: string | null = null;
+    const flushRun = () => {
+      if (!runStartId || runCards.length === 0) return;
+      const groupId = runStartId;
+      if (expandedGroups.has(groupId)) {
+        out.push({
+          kind: 'tool_group_expanded_header',
+          key: `tgh:${groupId}`,
+          groupId,
+          count: runCards.length,
+        });
+        for (const c of runCards) out.push({ kind: 'card', card: c });
+      } else {
+        out.push({
+          kind: 'tool_group_collapsed',
+          key: `tgc:${groupId}`,
+          groupId,
+          count: runCards.length,
+        });
+      }
+      runCards = [];
+      runStartId = null;
+    };
+    for (const card of cards) {
+      if (card.type === 'tool_call') {
+        if (runStartId === null) runStartId = card.id;
+        runCards.push(card);
+      } else {
+        flushRun();
+        out.push({ kind: 'card', card });
+      }
+    }
+    flushRun();
+    return out;
+  }, [cards, hideToolCalls, expandedGroups]);
 
   const activeSession = activeSessionId ? sessions[activeSessionId] : undefined;
   const isInactiveRaw = !!activeSessionId && !!activeSession && activeSession.isActive === false;
@@ -500,15 +572,31 @@ export function ClaudePanel({
                 </button>
               </div>
             )}
-            {cards.map((card, i) => (
-              <div key={card.id} data-card-id={card.id}>
-                <CardRenderer
-                  card={card}
-                  isLast={i === cards.length - 1}
-                  onRespondToInput={handleRespondToInput}
-                />
-              </div>
-            ))}
+            {(() => {
+              const lastCardId = cards[cards.length - 1]?.id;
+              return displayItems.map((item) => {
+                if (item.kind === 'tool_group_collapsed' || item.kind === 'tool_group_expanded_header') {
+                  return (
+                    <ToolCallGroupPlaceholder
+                      key={item.key}
+                      count={item.count}
+                      expanded={item.kind === 'tool_group_expanded_header'}
+                      onToggle={() => toggleGroup(item.groupId)}
+                    />
+                  );
+                }
+                const card = item.card;
+                return (
+                  <div key={card.id} data-card-id={card.id}>
+                    <CardRenderer
+                      card={card}
+                      isLast={card.id === lastCardId}
+                      onRespondToInput={handleRespondToInput}
+                    />
+                  </div>
+                );
+              });
+            })()}
             {streamError && (
               <div className="text-sm text-red-400 bg-red-500/10 rounded-lg px-3 py-2">
                 {streamError}
@@ -571,6 +659,7 @@ export function ClaudePanel({
                 sessionId={activeSessionId}
                 onSetSessionConfig={onSetSessionConfig}
               >
+                <ToolCallVisibilityChip onChange={handleToggleVisibility} />
                 <SessionStatsBar
                   sessionId={activeSessionId}
                   onCompact={() => onResumeSession(activeSessionId, '/compact')}
