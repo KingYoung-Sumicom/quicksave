@@ -1280,8 +1280,8 @@ function ProjectRouteSession({
   onEndSession: (sessionId: string) => void;
   onCancelSession: (sessionId: string) => void;
   onGetSessionCards: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
-  onStartSession: (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string }) => Promise<void>;
-  onResumeSession: (sessionId: string, prompt: string, cwd?: string) => Promise<void>;
+  onStartSession: ReturnType<typeof useClaudeOperations>['startSession'];
+  onResumeSession: ReturnType<typeof useClaudeOperations>['resumeSession'];
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
   onUnsubscribeSession?: (sessionId: string) => void;
   onSetActiveAgent?: (agentId: string) => void;
@@ -1367,13 +1367,15 @@ function ProjectRouteSession({
     [onGetSessionCards, cwd, ensureActiveAgent]
   );
   const boundStartSession = useCallback(
-    (prompt: string, opts?: { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string }) => {
+    (prompt: string, opts?: Parameters<typeof onStartSession>[1]) => {
       ensureActiveAgent(); return onStartSession(prompt, { ...opts, cwd });
     },
     [onStartSession, cwd, ensureActiveAgent]
   );
   const boundResumeSession = useCallback(
-    (sid: string, prompt: string) => { ensureActiveAgent(); return onResumeSession(sid, prompt, cwd); },
+    (sid: string, prompt: string, opts?: Parameters<typeof onResumeSession>[3]) => {
+      ensureActiveAgent(); return onResumeSession(sid, prompt, cwd, opts);
+    },
     [onResumeSession, cwd, ensureActiveAgent]
   );
 

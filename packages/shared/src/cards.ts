@@ -45,6 +45,10 @@ export interface CardBase {
 export interface UserCard extends CardBase {
   type: 'user';
   text: string;
+  /** Files / long-pasted text the user attached. Carries metadata only (id +
+   *  kind + mime + name + size). Bytes are fetched on demand via
+   *  `attachment:fetch` and cached PWA-side, so card snapshots stay small. */
+  attachments?: import('./attachments.js').AttachmentMetadata[];
 }
 
 export interface AssistantTextCard extends CardBase {
@@ -101,13 +105,42 @@ export interface SystemCard extends CardBase {
   subtype?: SystemCardSubtype;
 }
 
+/**
+ * Inline action card emitted by the agent when it detects the session is
+ * stuck on a "poison" turn the API will keep rejecting (e.g. an oversized
+ * PDF replayed every resume). The PWA renders an explanation + a one-tap
+ * button that sends a recovery prompt through the normal send path.
+ *
+ * `action` is the recovery primitive to invoke. Currently only `compact`
+ * exists — the SDK already exposes `/compact` as a non-interactive slash
+ * command, so the PWA just sends the literal string and the SDK does the
+ * rest. Future: could add `clear`, `rewind`, etc. without changing the
+ * card shape.
+ *
+ * `invoked` is purely a local UI hint for the PWA to disable its own
+ * button after click; the agent never patches it. Persistence: these
+ * cards live only in the in-memory cardBuilder, not the JSONL — once a
+ * turn is over they vanish from history (which is the desired behavior:
+ * after recovery, the offer no longer needs to surface on reload).
+ */
+export interface RecoverySuggestedCard extends CardBase {
+  type: 'recovery_suggested';
+  /** Human-readable explanation, e.g. "An oversized PDF is jamming this conversation." */
+  reason: string;
+  /** Recovery primitive. `compact` sends `/compact` through the regular send path. */
+  action: 'compact';
+  /** Button label, e.g. "Compact to recover". */
+  label: string;
+}
+
 export type Card =
   | UserCard
   | AssistantTextCard
   | ThinkingCard
   | ToolCallCard
   | SubagentCard
-  | SystemCard;
+  | SystemCard
+  | RecoverySuggestedCard;
 
 // ── Card Events (wire protocol: agent → PWA) ─────────────────────────────
 

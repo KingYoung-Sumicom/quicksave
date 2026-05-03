@@ -5,10 +5,12 @@ import { createInterface } from 'readline';
 import { join, dirname } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
-import type { CardEvent, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
+import type { Attachment, CardEvent, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
 import { SANDBOX_MCP_NAME, SANDBOX_BASH_TOOL, buildSandboxMcpServerConfig } from './sandboxMcp.js';
 import { DebugLogger } from './debugLogger.js';
+import { attachmentsToContentBlocks } from './contentBlocks.js';
+import { persistAttachments } from './attachmentStore.js';
 import type {
   CodingAgentProvider,
   ProviderSession,
@@ -286,14 +288,14 @@ export class CliProviderSession implements ProviderSession {
     });
   }
 
-  sendUserMessage(prompt: string): void {
+  sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
     if (!this.process || this.process.killed) return;
     // Record the prompt in the cardBuilder so getCards on reconnect/refresh
     // returns it before the CLI has flushed it to the session JSONL.
     // (--replay-user-messages will echo this prompt back to us; the
     // `isReplay` filter in routeMessage relies on this entry already
     // existing to dedupe.)
-    const userEvent = this.cardBuilder?.userMessage(prompt);
+    const userEvent = this.cardBuilder?.userMessage(prompt, attachments);
     // Emit the card-event so other PWA tabs subscribed to this session see
     // the follow-up prompt in real time. The sending tab already rendered an
     // optimistic user card; claudeStore.handleCardEvent dedupes by text +
@@ -304,7 +306,7 @@ export class CliProviderSession implements ProviderSession {
     this.activeTurn = true;
     const userMsg = {
       type: 'user',
-      message: { role: 'user', content: prompt },
+      message: { role: 'user', content: attachmentsToContentBlocks(prompt, attachments) },
     };
     this.debugLog?.logRawEvent({ ...userMsg, _direction: 'stdin' });
     this.process.stdin!.write(JSON.stringify(userMsg) + '\n');
@@ -416,7 +418,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       reasoningEffort: opts.reasoningEffort,
     });
 
-    return this.spawnAndConsume(args, opts.cwd, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model, opts.contextWindow);
+    return this.spawnAndConsume(args, opts.cwd, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model, opts.contextWindow, opts.attachments);
   }
 
   async resumeSession(
@@ -437,7 +439,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       reasoningEffort: opts.reasoningEffort,
     });
 
-    return this.spawnAndConsume(args, opts.cwd, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model, opts.contextWindow);
+    return this.spawnAndConsume(args, opts.cwd, opts.permissionLevel, opts.sandboxed, opts.prompt, cardBuilder, callbacks, opts.model, opts.contextWindow, opts.attachments);
   }
 
   // ── Private: CLI Args ──
@@ -469,6 +471,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     callbacks: ProviderCallbacks,
     _model?: string,
     contextWindow?: number,
+    attachments?: readonly Attachment[],
   ): Promise<{ sessionId: string; session: ProviderSession }> {
     const claudeBin = getClaudeBin();
     const proc = spawn(claudeBin, args, {
@@ -499,7 +502,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     // Send user message immediately — CLI needs stdin before emitting init
     const userMsg = {
       type: 'user',
-      message: { role: 'user', content: prompt },
+      message: { role: 'user', content: attachmentsToContentBlocks(prompt, attachments) },
     };
     proc.stdin!.write(JSON.stringify(userMsg) + '\n');
 
@@ -561,8 +564,18 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     // Update the cardBuilder sessionId (it may have been created with a placeholder)
     cardBuilder.updateSessionId(sessionId);
 
+    // Persist attachments to disk BEFORE the stream consumer fires the
+    // userMessage card with real attachment UUIDs. See claudeSdkProvider
+    // for the full reasoning — short version: chips on other tabs (and our
+    // own that miss the local cache prime) issue `attachment:fetch` as
+    // soon as they see the card; if persistence is in-flight, the agent
+    // returns `attachment_not_found` and the chip renders as "Unavailable".
+    if (attachments && attachments.length > 0) {
+      await persistAttachments(sessionId, attachments);
+    }
+
     // Fire and forget the stream consumer — pass the same readline interface
-    this.consumeStream(sessionId, rl, bufferedLines, cliSession, cardBuilder, callbacks, prompt, debugLog);
+    this.consumeStream(sessionId, rl, bufferedLines, cliSession, cardBuilder, callbacks, prompt, debugLog, attachments);
 
     return { sessionId, session: cliSession };
   }
@@ -578,6 +591,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     callbacks: ProviderCallbacks,
     prompt?: string,
     debugLog?: DebugLogger,
+    attachments?: readonly Attachment[],
   ): Promise<void> {
     cliSession.resultEmitted = false;
     let textBuffer = '';
@@ -594,8 +608,8 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     // Record + emit the initial user prompt so other PWA tabs subscribed to
     // this session see it in real time. The sending tab dedupes the
     // optimistic card it already rendered (by text + recent timestamp).
-    if (prompt) {
-      const userCardEvent = cb.userMessage(prompt);
+    if (prompt || (attachments && attachments.length > 0)) {
+      const userCardEvent = cb.userMessage(prompt ?? '', attachments);
       emitCard(userCardEvent);
     }
 

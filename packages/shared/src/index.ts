@@ -9,6 +9,9 @@ export * from './defaults.js';
 // Card-based message architecture
 export * from './cards.js';
 
+// Attachments (image/pdf/text uploads attached to user messages)
+export * from './attachments.js';
+
 // Crypto utilities
 export * from './crypto.js';
 

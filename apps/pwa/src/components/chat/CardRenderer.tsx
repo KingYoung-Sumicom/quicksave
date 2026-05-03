@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { memo } from 'react';
-import type { Card, ToolCallCard, SubagentCard, PendingInputAttachment } from '@sumicom/quicksave-shared';
+import type { Card, ToolCallCard, SubagentCard, RecoverySuggestedCard, PendingInputAttachment } from '@sumicom/quicksave-shared';
 import type { ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';
 import { AssistantMessage } from './AssistantMessage';
 import { ToolCallMessage } from './ToolCallMessage';
@@ -9,6 +9,7 @@ import { UserMessage } from './UserMessage';
 import { ThinkingMessage } from './ThinkingMessage';
 import { SystemMessage } from './SystemMessage';
 import { SubagentBlockMessage } from './SubagentBlockMessage';
+import { RecoverySuggestedMessage } from './RecoverySuggestedMessage';
 
 /** Convert PendingInputAttachment to the legacy ClaudeUserInputRequestPayload shape
  *  expected by existing PermissionPrompt / ToolCallMessage components. */
@@ -29,14 +30,18 @@ function toLegacyPending(
   };
 }
 
-export const CardRenderer = memo(function CardRenderer({ card, isLast, onRespondToInput }: {
+export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId, onRespondToInput, onSendQuickPrompt }: {
   card: Card;
   isLast: boolean;
+  sessionId?: string | null;
   onRespondToInput?: (requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string) => void;
+  /** Send a fixed prompt without using the composer input — wired for
+   *  recovery_suggested cards' one-tap actions (e.g. `/compact`). */
+  onSendQuickPrompt?: (prompt: string) => void;
 }) {
   switch (card.type) {
     case 'user':
-      return <UserMessage content={card.text} />;
+      return <UserMessage content={card.text} attachments={card.attachments} sessionId={sessionId ?? null} />;
 
     case 'assistant_text':
       return <AssistantMessage content={card.text} isLast={isLast} />;
@@ -81,6 +86,20 @@ export const CardRenderer = memo(function CardRenderer({ card, isLast, onRespond
 
     case 'system':
       return <SystemMessage content={card.text} />;
+
+    case 'recovery_suggested': {
+      const rs = card as RecoverySuggestedCard;
+      return (
+        <RecoverySuggestedMessage
+          reason={rs.reason}
+          action={rs.action}
+          label={rs.label}
+          onInvoke={onSendQuickPrompt
+            ? (action) => onSendQuickPrompt(action === 'compact' ? '/compact' : '')
+            : undefined}
+        />
+      );
+    }
 
     default:
       return null;

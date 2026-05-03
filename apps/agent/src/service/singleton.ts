@@ -74,6 +74,10 @@ export function getCardHistoryDir(): string {
   return join(getStateDir(), 'card-history');
 }
 
+export function getAttachmentsDir(): string {
+  return join(getStateDir(), 'attachments');
+}
+
 /**
  * Ensure all required directories exist.
  */

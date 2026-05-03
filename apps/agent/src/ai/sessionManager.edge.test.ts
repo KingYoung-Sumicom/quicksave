@@ -201,7 +201,7 @@ describe('SessionManager — adversarial edge cases', () => {
               });
 
       expect(result).toBe(sessionId);
-      expect(mockProvSession.sendUserMessage).toHaveBeenCalledWith('Follow-up');
+      expect(mockProvSession.sendUserMessage).toHaveBeenCalledWith('Follow-up', undefined);
       expect(cardBuilder.userMessage).not.toHaveBeenCalled();
       expect(cardBuilder.startNewTurn).not.toHaveBeenCalled();
     });
@@ -863,8 +863,8 @@ describe('SessionManager — adversarial edge cases', () => {
       await Promise.all([firstResume, secondResume, thirdResume]);
 
       // The queued prompts should have been drained via sendUserMessage
-      expect(coldSession.sendUserMessage).toHaveBeenCalledWith('Second');
-      expect(coldSession.sendUserMessage).toHaveBeenCalledWith('Third');
+      expect(coldSession.sendUserMessage).toHaveBeenCalledWith('Second', undefined);
+      expect(coldSession.sendUserMessage).toHaveBeenCalledWith('Third', undefined);
       // Provider itself handles the first prompt, so sendUserMessage is only for queued ones
       expect(coldSession.sendUserMessage).toHaveBeenCalledTimes(2);
     });
@@ -1120,7 +1120,7 @@ describe('SessionManager — adversarial edge cases', () => {
               });
 
       expect(result).toBe(sessionId);
-      expect(aliveSession.sendUserMessage).toHaveBeenCalledWith('Follow-up');
+      expect(aliveSession.sendUserMessage).toHaveBeenCalledWith('Follow-up', undefined);
       expect(provider.resumeSession).not.toHaveBeenCalled();
       expect(aliveSession.resultEmitted).toBe(false);
       expect(aliveSession.kill).not.toHaveBeenCalled();

@@ -373,6 +373,34 @@ describe('StreamCardBuilder', () => {
     });
   });
 
+  describe('recoverySuggested()', () => {
+    it('creates a recovery_suggested card with reason, action, and label', () => {
+      const event = builder.recoverySuggested(
+        'Stuck on a rejected attachment.',
+        'compact',
+        'Compact to recover',
+      ) as CardAddEvent;
+
+      expect(event.type).toBe('add');
+      const card = event.card as any;
+      expect(card.type).toBe('recovery_suggested');
+      expect(card.reason).toBe('Stuck on a rejected attachment.');
+      expect(card.action).toBe('compact');
+      expect(card.label).toBe('Compact to recover');
+      expect(card.id).toBeTruthy();
+      expect(typeof card.timestamp).toBe('number');
+    });
+
+    it('does not interfere with the streaming assistant text card', () => {
+      const textEvent = builder.assistantText('thinking out loud') as CardAddEvent;
+      builder.recoverySuggested('reason', 'compact', 'go');
+      // Subsequent assistant text appends to the same card (streaming continuity).
+      const append = builder.assistantText('…more') as any;
+      expect(append.type).toBe('append_text');
+      expect(append.cardId).toBe(textEvent.card.id);
+    });
+  });
+
   // ── subagentStart / subagentProgress / subagentEnd ───────────────────────
 
   describe('subagentStart()', () => {

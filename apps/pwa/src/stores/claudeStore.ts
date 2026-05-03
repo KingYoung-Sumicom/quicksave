@@ -418,12 +418,19 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
             cards.splice(idx >= 0 ? idx + 1 : cards.length, 0, event.card);
             return { cards };
           }
-          // Dedup user cards (multi-tab broadcast)
+          // Dedup user cards (multi-tab broadcast). Match by text + a sorted
+          // attachment-id signature so that two attachment-only follow-ups
+          // with empty text don't collide.
           if (event.card.type === 'user') {
-            const alreadyHas = state.cards.some(
-              (c) => c.type === 'user' && c.text === (event.card as any).text
-                && Date.now() - c.timestamp < 5000
-            );
+            const incoming = event.card as { text: string; attachments?: { id: string }[] };
+            const incomingSig = (incoming.attachments ?? []).map((a) => a.id).sort().join(',');
+            const alreadyHas = state.cards.some((c) => {
+              if (c.type !== 'user') return false;
+              if (c.text !== incoming.text) return false;
+              if (Date.now() - c.timestamp >= 5000) return false;
+              const existingSig = (c.attachments ?? []).map((a) => a.id).sort().join(',');
+              return existingSig === incomingSig;
+            });
             if (alreadyHas) return state;
           }
           return { cards: [...state.cards, event.card] };

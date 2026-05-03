@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import type {
+  Attachment,
+  AttachmentMetadata,
   Card,
   CardId,
   CardEvent,
@@ -19,6 +21,41 @@ import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
 import { homedir } from 'os';
 import { getCardHistoryDir } from '../service/singleton.js';
+import { listSessionAttachments, type PersistedMeta } from './attachmentStore.js';
+
+/** Decoded byte length of a base64 string, accounting for `=` padding. */
+function decodedBase64Bytes(base64: unknown): number {
+  if (typeof base64 !== 'string') return 0;
+  const len = base64.length;
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+  return Math.floor((len * 3) / 4) - padding;
+}
+
+/** Pool that lets us look up a persisted attachment by `(kind, size)` —
+ *  optionally name-tiebroken — and remove it so duplicates match correctly.
+ *  Used to recover the original upload UUIDs for attachments rebuilt from
+ *  JSONL (which doesn't carry our ids). */
+function makeAttachmentResolver(metas: readonly PersistedMeta[]) {
+  const pool = new Map<string, PersistedMeta[]>();
+  for (const m of metas) {
+    const key = `${m.kind}:${m.size}`;
+    const list = pool.get(key) ?? [];
+    list.push(m);
+    pool.set(key, list);
+  }
+  return function consume(kind: AttachmentMetadata['kind'], size: number, name?: string): PersistedMeta | null {
+    const list = pool.get(`${kind}:${size}`);
+    if (!list || list.length === 0) return null;
+    let idx = 0;
+    if (name !== undefined) {
+      const named = list.findIndex((m) => m.name === name);
+      if (named >= 0) idx = named;
+    }
+    const [matched] = list.splice(idx, 1);
+    if (list.length === 0) pool.delete(`${kind}:${size}`);
+    return matched;
+  };
+}
 
 const TOOL_RESULT_TRUNCATE_LENGTH = 500;
 
@@ -408,9 +445,26 @@ export class StreamCardBuilder {
 
   // ── Public: produce CardEvents from SDK data ────────────────────────────
 
-  userMessage(text: string): CardEvent {
+  userMessage(text: string, attachments?: readonly Attachment[]): CardEvent {
     this.currentTextCardId = null;
-    const card: Card = { type: 'user', id: this.nextId(), timestamp: Date.now(), text };
+    // UserCard.attachments only carries metadata — bytes are fetched on
+    // demand via `attachment:fetch`, not piped through every snapshot.
+    const metadata: AttachmentMetadata[] | undefined = attachments && attachments.length > 0
+      ? attachments.map((a) => ({
+          id: a.id,
+          kind: a.kind,
+          mimeType: a.mimeType,
+          name: a.name,
+          size: a.size,
+        }))
+      : undefined;
+    const card: Card = {
+      type: 'user',
+      id: this.nextId(),
+      timestamp: Date.now(),
+      text,
+      ...(metadata ? { attachments: metadata } : {}),
+    };
     return this.addEvent(card);
   }
 
@@ -602,6 +656,18 @@ export class StreamCardBuilder {
     return this.addEvent(card);
   }
 
+  recoverySuggested(reason: string, action: 'compact', label: string): CardEvent {
+    const card: Card = {
+      type: 'recovery_suggested',
+      id: this.nextId(),
+      timestamp: Date.now(),
+      reason,
+      action,
+      label,
+    };
+    return this.addEvent(card);
+  }
+
   errorMessage(text: string): CardEvent {
     return this.systemMessage(`Error: ${text}`, 'error');
   }
@@ -742,6 +808,12 @@ export async function buildCardsFromHistory(
     }
   }
 
+  // ── Load persisted attachment metas so we can rebind synthetic
+  //    `replay:N` ids in user blocks back to the real upload UUIDs the
+  //    PWA needs for `attachment:fetch`.
+  const persistedMetas = await listSessionAttachments(sessionId).catch(() => [] as PersistedMeta[]);
+  const resolveAttachment = makeAttachmentResolver(persistedMetas);
+
   // ── Pass 2: Build Cards from sliced messages ───────────────────────────
 
   let seq = Math.max(0, total - offset - limit);
@@ -779,12 +851,66 @@ export async function buildCardsFromHistory(
         continue;
       }
       if (Array.isArray(rawMessage.content)) {
+        // A user turn that came in with attachments is one logical card with
+        // image/document/text blocks in some order. We collapse all text
+        // blocks into a single `text` field and reconstruct AttachmentMetadata
+        // records from image/document blocks (no bytes — those live in the
+        // attachmentStore on disk and are fetched on demand). Pure text-only
+        // turns still produce one card per text block (back-compat).
+        //
+        // Replayed attachment ids do NOT round-trip through JSONL. We
+        // recover the original upload UUIDs by matching each block against
+        // the persisted-meta pool by `(kind, decoded byte size [, name])`;
+        // an unmatched block falls back to a synthetic `replay:<n>` id and
+        // its chip will render as "Unavailable" (bytes lost or not yet
+        // persistent).
+        const attachments: AttachmentMetadata[] = [];
+        const textParts: string[] = [];
+        let hasNonTextBlock = false;
+
         for (const block of rawMessage.content) {
-          if (block.type === 'text') {
-            cards.push({ type: 'user', id: nextId(), timestamp: Date.now(), text: block.text });
+          if (block?.type === 'image' && block.source?.type === 'base64') {
+            hasNonTextBlock = true;
+            const size = decodedBase64Bytes(block.source.data);
+            const mimeType = typeof block.source.media_type === 'string' ? block.source.media_type : 'image/png';
+            const matched = resolveAttachment('image', size);
+            attachments.push(matched
+              ? { id: matched.id, kind: matched.kind, mimeType: matched.mimeType, name: matched.name, size: matched.size }
+              : { id: `replay:${nextId()}`, kind: 'image', mimeType, name: 'attachment', size });
+          } else if (block?.type === 'document' && block.source?.type === 'base64' && block.source.media_type === 'application/pdf') {
+            hasNonTextBlock = true;
+            const size = decodedBase64Bytes(block.source.data);
+            const name = typeof block.title === 'string' && block.title.length > 0 ? block.title : 'document.pdf';
+            const matched = resolveAttachment('pdf', size, name);
+            attachments.push(matched
+              ? { id: matched.id, kind: matched.kind, mimeType: matched.mimeType, name: matched.name, size: matched.size }
+              : { id: `replay:${nextId()}`, kind: 'pdf', mimeType: 'application/pdf', name, size });
+          } else if (block?.type === 'text' && typeof block.text === 'string') {
+            textParts.push(block.text);
           }
           // tool_result blocks are paired into ToolCallCard.result (handled below)
-          // Skip them here — they don't need separate cards
+          // Skip them here — they don't need separate cards.
+        }
+
+        if (hasNonTextBlock) {
+          const card: Card = {
+            type: 'user',
+            id: nextId(),
+            timestamp: Date.now(),
+            text: textParts.join('\n'),
+            ...(attachments.length > 0 ? { attachments } : {}),
+          };
+          cards.push(card);
+        } else {
+          // No image/pdf — fall back to one card per text block, preserving
+          // the older multi-card behavior for plain user turns (e.g. when a
+          // tool_result block is present alongside a text block, and only
+          // the text block makes a user card).
+          for (const block of rawMessage.content) {
+            if (block?.type === 'text' && typeof block.text === 'string') {
+              cards.push({ type: 'user', id: nextId(), timestamp: Date.now(), text: block.text });
+            }
+          }
         }
         continue;
       }

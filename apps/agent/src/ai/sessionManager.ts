@@ -8,6 +8,7 @@ import { mkdirSync, writeFileSync, rmSync } from 'fs';
 import { getRunDir } from '../service/singleton.js';
 import type {
   AgentId,
+  Attachment,
   ClaudeSessionSummary,
   ClaudeUserInputRequestPayload,
   ClaudeUserInputResponsePayload,
@@ -28,6 +29,7 @@ import {
   matchAllowPattern,
 } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder, buildCardsFromHistory, loadPersistedCards } from './cardBuilder.js';
+import { persistAttachments } from './attachmentStore.js';
 import { SANDBOX_BASH_TOOL, UPDATE_SESSION_STATUS_TOOL } from './sandboxMcp.js';
 import { getSessionRegistry } from './sessionRegistry.js';
 import { getEventStore } from '../storage/eventStore.js';
@@ -235,7 +237,7 @@ export class SessionManager extends EventEmitter {
   private defaultAgentId: AgentId;
 
   /** Guards against concurrent cold resumes. Queues prompts arriving while a spawn is in flight. */
-  private coldResumeInFlight: Map<string, { queuedPrompts: string[] }> = new Map();
+  private coldResumeInFlight: Map<string, { queuedPrompts: Array<{ prompt: string; attachments?: readonly Attachment[] }> }> = new Map();
 
   constructor(providers: CodingAgentProvider[], defaultAgentId: AgentId = DEFAULT_AGENT) {
     super();
@@ -470,6 +472,8 @@ export class SessionManager extends EventEmitter {
     reasoningEffort?: string;
     /** Auto-compact ceiling for Claude Code (200k / 500k / 1M). Codex ignores. */
     contextWindow?: number;
+    /** Attachments resolved from staging by the messageHandler. */
+    attachments?: readonly Attachment[];
   }): Promise<string> {
     const provider = this.getProvider(opts.agent);
     const level = normalizePermissionLevelForAgent(provider.id, opts.permissionMode);
@@ -498,6 +502,7 @@ export class SessionManager extends EventEmitter {
         reasoningEffort: opts.reasoningEffort,
         contextWindow: opts.contextWindow,
         bypassFlagPath: bypassFlagPath(bypassToken),
+        attachments: opts.attachments,
       },
       cardBuilder,
       callbacks,
@@ -558,6 +563,8 @@ export class SessionManager extends EventEmitter {
     prompt: string;
     cwd: string;
     agent?: AgentId;
+    /** Attachments resolved from staging by the messageHandler. */
+    attachments?: readonly Attachment[];
   }): Promise<string> {
     const existing = this.sessions.get(opts.sessionId);
     const agentId = this.resolveAgentId(opts.sessionId, opts.cwd, opts.agent);
@@ -593,7 +600,16 @@ export class SessionManager extends EventEmitter {
     // Hot resume (active turn): provider is mid-turn — just hand it the new prompt.
     if (existing?.streaming && existing.providerSession?.alive) {
       console.log(`[session-manager] hot resume (active) session=${opts.sessionId.slice(0, 8)}`);
-      existing.providerSession.sendUserMessage(opts.prompt);
+      // Persist attachments BEFORE sendUserMessage emits the userMessage
+      // card with real attachment UUIDs. Otherwise chips on other tabs (or
+      // our own that didn't catch the local cache prime) issue
+      // `attachment:fetch` against bytes that aren't on disk yet and render
+      // "Unavailable". Cold resume goes through provider.resumeSession,
+      // which has its own pre-emit persist.
+      if (opts.attachments && opts.attachments.length > 0) {
+        await persistAttachments(opts.sessionId, opts.attachments);
+      }
+      existing.providerSession.sendUserMessage(opts.prompt, opts.attachments);
       return opts.sessionId;
     }
 
@@ -609,7 +625,10 @@ export class SessionManager extends EventEmitter {
       }
       ps.resultEmitted = false;
       existing.streaming = true;
-      existing.providerSession.sendUserMessage(opts.prompt);
+      if (opts.attachments && opts.attachments.length > 0) {
+        await persistAttachments(opts.sessionId, opts.attachments);
+      }
+      existing.providerSession.sendUserMessage(opts.prompt, opts.attachments);
       this.emitSessionUpdate(opts.sessionId);
       return opts.sessionId;
     }
@@ -618,13 +637,13 @@ export class SessionManager extends EventEmitter {
     const inFlight = this.coldResumeInFlight.get(opts.sessionId);
     if (inFlight) {
       console.log(`[session-manager] cold resume in flight, queuing prompt for session=${opts.sessionId.slice(0, 8)}`);
-      inFlight.queuedPrompts.push(opts.prompt);
+      inFlight.queuedPrompts.push({ prompt: opts.prompt, attachments: opts.attachments });
       return opts.sessionId;
     }
 
     // Cold resume: mark as in-flight, then delegate to provider
     console.log(`[session-manager] cold resume session=${opts.sessionId.slice(0, 8)}`);
-    const flight = { queuedPrompts: [] as string[] };
+    const flight = { queuedPrompts: [] as Array<{ prompt: string; attachments?: readonly Attachment[] }> };
     this.coldResumeInFlight.set(opts.sessionId, flight);
 
     try {
@@ -674,6 +693,7 @@ export class SessionManager extends EventEmitter {
           reasoningEffort: resumeReasoningEffort,
           contextWindow: resumeContextWindow,
           bypassFlagPath: bypassFlagPath(bypassToken),
+          attachments: opts.attachments,
         },
         cardBuilder,
         callbacks,
@@ -740,10 +760,15 @@ export class SessionManager extends EventEmitter {
 
       this.emitSessionUpdate(sessionId);
 
-      // Drain queued prompts that arrived while spawning
+      // Drain queued prompts that arrived while spawning. Persist each
+      // turn's attachments before emitting so chips fetching on other tabs
+      // see bytes on disk by the time the userMessage card lands.
       for (const queued of flight.queuedPrompts) {
         console.log(`[session-manager] draining queued prompt for session=${sessionId.slice(0, 8)}`);
-        providerSession.sendUserMessage(queued);
+        if (queued.attachments && queued.attachments.length > 0) {
+          await persistAttachments(sessionId, queued.attachments);
+        }
+        providerSession.sendUserMessage(queued.prompt, queued.attachments);
       }
 
       return sessionId;

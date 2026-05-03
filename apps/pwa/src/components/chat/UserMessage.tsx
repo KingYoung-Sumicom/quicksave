@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { useState } from 'react';
+import type { AttachmentMetadata } from '@sumicom/quicksave-shared';
+import { HistoryChip } from '../AttachmentChip';
 
 const COLLAPSE_LINE_THRESHOLD = 4;
 
@@ -86,13 +88,37 @@ function PlainUserMessage({ content }: { content: string }) {
   );
 }
 
-export function UserMessage({ content }: { content: string }) {
+function AttachmentRow({ attachments, sessionId }: { attachments: AttachmentMetadata[]; sessionId: string | null }) {
+  if (attachments.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5 mt-1.5">
+      {attachments.map((a) => (
+        <HistoryChip key={a.id} metadata={a} sessionId={sessionId} />
+      ))}
+    </div>
+  );
+}
+
+export function UserMessage({
+  content,
+  attachments,
+  sessionId,
+}: {
+  content: string;
+  attachments?: AttachmentMetadata[];
+  sessionId?: string | null;
+}) {
   if (content.includes('<task-notification>')) {
     return <TaskNotificationMessage content={content} />;
   }
   return (
     <div className="flex justify-start">
-      <PlainUserMessage content={content} />
+      <div className="flex flex-col items-start max-w-full">
+        {content && <PlainUserMessage content={content} />}
+        {attachments && attachments.length > 0 && (
+          <AttachmentRow attachments={attachments} sessionId={sessionId ?? null} />
+        )}
+      </div>
     </div>
   );
 }

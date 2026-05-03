@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, CardEvent, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, CardEvent, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
 import type { StreamCardBuilder } from './cardBuilder.js';
 
 export const CLAUDE_PERMISSION_MODES = [
@@ -73,7 +73,7 @@ export type ProviderHistoryMode = 'claude-jsonl' | 'memory';
 
 /** Represents a running provider session. */
 export interface ProviderSession {
-  sendUserMessage(prompt: string): void;
+  sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void;
   interrupt(): void;
   kill(): void;
   readonly alive: boolean;
@@ -126,6 +126,10 @@ export interface ProviderCallbacks {
 
 export interface StartSessionOpts {
   prompt: string;
+  /** Files / long-pasted text the user attached. Provider-side helpers
+   *  (`attachmentsToContentBlocks`) convert these to Anthropic content blocks
+   *  before pushing to Claude. */
+  attachments?: readonly Attachment[];
   cwd: string;
   model?: string;
   permissionLevel: PermissionLevel;
@@ -152,6 +156,8 @@ export interface StartSessionOpts {
 export interface ResumeSessionOpts {
   sessionId: string;
   prompt: string;
+  /** Files / long-pasted text attached to the resume turn's prompt. */
+  attachments?: readonly Attachment[];
   cwd: string;
   model?: string;
   permissionLevel: PermissionLevel;

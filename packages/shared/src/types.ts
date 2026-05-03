@@ -170,6 +170,15 @@ export type MessageType =
   | 'files:list:response'
   | 'files:read'             // pwa-request: read a text file (binary / oversized return a placeholder)
   | 'files:read:response'
+  // Attachments — chunked upload of files / long-pasted text the user attaches
+  // to a chat message. Bytes are staged on the agent until consumed by a
+  // `claude:start` / `claude:resume` whose payload references their ids.
+  | 'attachment:upload'
+  | 'attachment:upload:response'
+  | 'attachment:cancel'
+  | 'attachment:cancel:response'
+  | 'attachment:fetch'
+  | 'attachment:fetch:response'
   // Message bus envelope (transports opaque bus frames; see packages/message-bus)
   | 'bus:frame'
   | 'error';
@@ -1324,6 +1333,9 @@ export interface ClaudeStartRequestPayload {
   reasoningEffort?: string;
   /** Auto-compact ceiling for Claude Code (200k / 500k / 1M). Codex ignores. */
   contextWindow?: number;
+  /** Ids of attachments previously staged via `attachment:upload`. The agent
+   *  resolves them from staging and forwards as content blocks to Claude. */
+  attachmentIds?: string[];
 }
 
 export interface ClaudeStartResponsePayload {
@@ -1338,6 +1350,8 @@ export interface ClaudeResumeRequestPayload {
   prompt: string;
   cwd?: string;
   agent?: AgentId;
+  /** Ids of attachments previously staged via `attachment:upload`. */
+  attachmentIds?: string[];
 }
 
 export interface ClaudeResumeResponsePayload {

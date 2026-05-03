@@ -531,6 +531,45 @@ const result = await busRef.current.command<ResponseType, RequestPayload>(
 
 On the agent side, each verb is registered as `bus.onCommand(verb, handler)` by `wireLegacyBusVerbs` (`handlers/legacyBusAdapter.ts`), invoked from `service/run.ts`; the adapter wraps the payload back into a Message envelope → `messageHandler.handleMessage` → returns a result frame. See "MessageBus Command adapter" above.
 
+### Attachment Staging — chunked upload + resolve-on-send
+
+Files and long-pasted text the user attaches to a chat message do not ride the `claude:start` / `claude:resume` payload directly. Instead the PWA pre-uploads bytes the moment a chip is created, and the send command only references attachment ids.
+
+**Flow:**
+
+```
+PWA composer                                Agent (messageHandler)
+─────────────                                ──────────────────────
+attach (paste/drop/pick or long-paste)
+  → assigns attachmentId locally
+  → starts chunked upload immediately
+
+  attachment:upload  ──────────────────────▶ acceptChunk(peer, payload)
+   { attachmentId, meta?, chunkIndex, chunk }   appends to in-memory buffer
+                       ◀────────────────────  { receivedBytes, ready }
+   ... repeat for each chunk ...
+
+(later, when user hits Send)
+  claude:start { ..., attachmentIds }  ───▶ staging.consume(peer, ids)
+                                            → Attachment[] → SessionManager
+                                            → CodingAgentProvider
+                                              → MessageParam content blocks
+```
+
+**Staging map** (`apps/agent/src/ai/attachmentStaging.ts`): in-memory `Map<peerAddress, Map<attachmentId, StagedAttachment>>`, sized by `PER_PEER_STAGING_MAX_BYTES`, GC'd after `ATTACHMENT_STAGING_TTL_MS` of inactivity (sweep timer in `MessageHandler` constructor). On peer disconnect, `removeClient(peer)` drops every staged record so a long-disconnect window cannot leak memory.
+
+**Three shapes**: the wire payload `claude:start.attachmentIds: string[]` is just refs; `UserCard.attachments[]` carries `AttachmentMetadata` (id+kind+mime+name+size, **no bytes**); the full `Attachment` (with base64 `data`) lives only in PWA composer state, in agent staging, and in `attachment:fetch` responses.
+
+**On-demand bytes path**: at `staging.consume()` the messageHandler also writes each attachment to `<state>/attachments/<sessionId>/<attachmentId>.bin` + `.meta.json` (see `apps/agent/src/ai/attachmentStore.ts`). The PWA fetches via `attachment:fetch { sessionId, attachmentId }` and caches in a two-tier `attachmentCache` (L1 in-memory + L2 IndexedDB; same `blobCache` machinery as `fileCache`). The uploader's `primeUploadedAttachment(sessionId, id)` pushes local bytes straight into the cache so the sending tab never re-fetches what it just uploaded. End-task wipes the on-disk directory.
+
+**Replay id rebinding**: the SDK's JSONL only stores image/document blocks with their base64 bytes — our upload UUIDs are *not* round-tripped. When `cardBuilder.buildCardsFromHistory` rebuilds a `UserCard.attachments[]` from JSONL it calls `listSessionAttachments(sessionId)` and matches each block to a persisted meta by `(kind, exact decoded byte size [, name for PDFs])`, recovering the real id so `attachment:fetch` resolves. Unmatched blocks fall back to a synthetic `replay:<n>` id and the chip renders as "Unavailable".
+
+**Long pastes**: the composer detects `clipboardData.getData('text/plain').length > LONG_PASTE_THRESHOLD_CHARS` and synthesizes a `kind: 'text'` attachment with `name: 'pasted-N.txt'` instead of inserting into the textarea. The wire shape is identical to a pasted text file.
+
+**Limits** (in `packages/shared/src/attachments.ts`): images ≤5 MB, PDFs ≤20 MB **and** ≤100 pages (size capped at the PWA, page count enforced on the agent at upload completion via `apps/agent/src/ai/pdfMeta.ts`), text files ≤256 KB; per-message count cap is 5; per-peer staging budget 128 MB; chunk size 512 KB raw.
+
+**Error handling on consume**: if the user hits send before all chunks acked, or the agent has GC'd a staged record, `staging.consume` throws an error with `code: 'attachment_not_ready' | 'attachment_not_found'`; the messageHandler surfaces it as a bus error and the PWA can prompt the user to re-pick.
+
 ---
 
 ## 四、WebSocket Message Protocol
@@ -560,6 +599,7 @@ interface Message {
 | `push:` | Web Push subscription handoff (`push:subscription-offer`) |
 | `terminal:` | PTY terminal (create/input/resize/rename/close) |
 | `files:` | Read-only file browser (list / read; pure request-response, no bus subscription) |
+| `attachment:` | Chunked upload + cancel for files and long-pasted text (see "Attachment Staging" in §三) |
 | `bus:frame` | MessageBus envelope (transports opaque bus frames; see `packages/message-bus`) |
 | `ping`/`pong` | Heartbeat |
 | `handshake`/`handshake:ack` | Connection establishment |
@@ -571,8 +611,11 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 | Type | Direction | Bus Equivalent | Description |
 |---|---|---|---|
 | — | Agent→PWA push | `bus.subscribe('/sessions/history')` | Full snapshot of historical sessions + incremental updates (replaces the now-removed `claude:list-sessions` command, avoiding races with `/sessions/active`) |
-| `claude:start` | PWA→Agent | `bus.command('claude:start', …)` | Start a new session |
-| `claude:resume` | PWA→Agent | `bus.command('claude:resume', …)` | Resume a session |
+| `claude:start` | PWA→Agent | `bus.command('claude:start', …)` | Start a new session. `attachmentIds?` resolved from staging |
+| `claude:resume` | PWA→Agent | `bus.command('claude:resume', …)` | Resume a session. `attachmentIds?` resolved from staging |
+| `attachment:upload` | PWA→Agent | `bus.command('attachment:upload', …)` | One chunk of a staged attachment (meta on chunk 0) |
+| `attachment:cancel` | PWA→Agent | `bus.command('attachment:cancel', …)` | Drop a staged attachment before send |
+| `attachment:fetch` | PWA→Agent | `bus.command('attachment:fetch', …)` | On-demand bytes for a metadata-only chip on `UserCard.attachments[]` |
 | `claude:cancel` | PWA→Agent | `bus.command('claude:cancel', …)` | Cancel streaming |
 | `claude:close` | PWA→Agent | `bus.command('claude:close', …)` | Kill the underlying CLI process only; registry untouched (used by Advanced > Terminate) |
 | `claude:end-task` | PWA→Agent | `bus.command('claude:end-task', …)` | Kill process **and** archive registry entry (the End Task button) |
@@ -621,12 +664,18 @@ type Card = {
 };
 
 type CardType =
-  | 'user'           // User input
-  | 'assistant_text' // Claude text reply
-  | 'thinking'       // Extended thinking
-  | 'tool_call'      // Tool call (with result)
-  | 'subagent'       // Subagent execution block
-  | 'system';        // System message
+  | 'user'                // User input
+  | 'assistant_text'      // Claude text reply
+  | 'thinking'            // Extended thinking
+  | 'tool_call'           // Tool call (with result)
+  | 'subagent'            // Subagent execution block
+  | 'system'              // System message
+  | 'recovery_suggested'; // One-tap recovery action (e.g. /compact) emitted
+                          // when the SDK provider detects a poison pattern
+                          // ("PDF too large", "Prompt is too long", …) in
+                          // assistant text — not persisted to JSONL, lives
+                          // only in in-memory cards so it disappears after
+                          // the session unsticks
 ```
 
 ---
@@ -695,7 +744,8 @@ App.tsx
     │   ├── ThinkingMessage  #   chat/ThinkingMessage.tsx    ('thinking')
     │   ├── ToolCallMessage  #   chat/ToolCallMessage.tsx    ('tool_call', with result + pending input)
     │   ├── SubagentBlockMessage # chat/SubagentBlockMessage.tsx ('subagent')
-    │   └── SystemMessage    #   chat/SystemMessage.tsx      ('system')
+    │   ├── SystemMessage    #   chat/SystemMessage.tsx      ('system')
+    │   └── RecoverySuggestedMessage # chat/RecoverySuggestedMessage.tsx ('recovery_suggested')
     └── (textarea + send)    # Inline composer inside ClaudePanel; not a separate component
 ```
 

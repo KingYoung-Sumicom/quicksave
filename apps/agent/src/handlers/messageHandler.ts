@@ -85,6 +85,12 @@ import {
   ClaudeSetSessionPermissionRequestPayload,
   ClaudeSetSessionPermissionResponsePayload,
   CardHistoryResponse,
+  AttachmentUploadRequestPayload,
+  AttachmentUploadResponsePayload,
+  AttachmentCancelRequestPayload,
+  AttachmentCancelResponsePayload,
+  AttachmentFetchRequestPayload,
+  AttachmentFetchResponsePayload,
   SessionSetConfigRequestPayload,
   SessionSetConfigResponsePayload,
   SessionControlRequestPayload,
@@ -134,6 +140,8 @@ import { CommitSummaryCliService, CommitSummaryCliError } from '../ai/commitSumm
 import { CommitSummaryStateStore } from '../ai/commitSummaryStore.js';
 import { SessionManager } from '../ai/sessionManager.js';
 import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
+import { AttachmentStaging } from '../ai/attachmentStaging.js';
+import { loadAttachment, removeSessionAttachments } from '../ai/attachmentStore.js';
 import { CodexAppServerProvider } from '../ai/codexAppServer/index.js';
 import { CodexLoginManager } from '../ai/codexLogin.js';
 import { getTerminalManager } from '../terminal/terminalManager.js';
@@ -211,6 +219,8 @@ export class MessageHandler {
    *  `state-updated` event to `connection.broadcast` (see service/run.ts). */
   private commitSummaryStore: CommitSummaryStateStore = new CommitSummaryStateStore();
   private claudeService: SessionManager;
+  private attachmentStaging: AttachmentStaging = new AttachmentStaging();
+  private attachmentGcTimer: NodeJS.Timeout | null = null;
   private pushClient: PushClient | null = null;
   private latestVersionCache: { version: string; checkedAt: number } | null = null;
   private versionCheckInFlight: Promise<string | null> | null = null;
@@ -259,6 +269,11 @@ export class MessageHandler {
       for (const p of codingPaths) {
         this.codingPaths.set(p, { path: p, name: basename(p) });
       }
+    }
+
+    this.attachmentGcTimer = setInterval(() => this.attachmentStaging.gc(), 60_000);
+    if (typeof (this.attachmentGcTimer as { unref?: () => void }).unref === 'function') {
+      (this.attachmentGcTimer as { unref?: () => void }).unref!();
     }
   }
 
@@ -508,11 +523,18 @@ export class MessageHandler {
         this.repoLocks.delete(repoPath);
       }
     }
+    // Drop any in-flight uploads from this peer; on reconnect the PWA will
+    // re-stage them via the upload manager's resume path.
+    this.attachmentStaging.removePeer(peerAddress);
     // Pending user input requests are NOT auto-approved on disconnect.
     // They persist until the user reconnects and explicitly responds.
   }
 
   cleanup(): void {
+    if (this.attachmentGcTimer) {
+      clearInterval(this.attachmentGcTimer);
+      this.attachmentGcTimer = null;
+    }
     this.claudeService.cleanup();
   }
 
@@ -558,7 +580,8 @@ export class MessageHandler {
     const isVerbose =
       message.type.startsWith('claude:') ||
       message.type.startsWith('agent:add') ||
-      message.type.startsWith('project:');
+      message.type.startsWith('project:') ||
+      message.type.startsWith('attachment:');
     if (isVerbose) {
       console.log(`[msg] ${message.type} from ${peerAddress.slice(0, 12)}`);
     }
@@ -728,6 +751,12 @@ export class MessageHandler {
           return this.handleFilesList(message as Message<FilesListRequestPayload>);
         case 'files:read':
           return this.handleFilesRead(message as Message<FilesReadRequestPayload>);
+        case 'attachment:upload':
+          return this.handleAttachmentUpload(message as Message<AttachmentUploadRequestPayload>, peerAddress);
+        case 'attachment:cancel':
+          return this.handleAttachmentCancel(message as Message<AttachmentCancelRequestPayload>, peerAddress);
+        case 'attachment:fetch':
+          return this.handleAttachmentFetch(message as Message<AttachmentFetchRequestPayload>);
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
     }
@@ -1899,7 +1928,7 @@ export class MessageHandler {
     message: Message<ClaudeStartRequestPayload>,
     peerAddress: string,
   ): Promise<Message<ClaudeStartResponsePayload>> {
-    const { prompt, cwd: payloadCwd, agent, allowedTools, systemPrompt, model, permissionMode, sandboxed, reasoningEffort, contextWindow } = message.payload;
+    const { prompt, cwd: payloadCwd, agent, allowedTools, systemPrompt, model, permissionMode, sandboxed, reasoningEffort, contextWindow, attachmentIds } = message.payload;
     const legacyProvider = (message.payload as { provider?: 'claude-cli' | 'claude-sdk' | 'codex-mcp' }).provider;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
@@ -1909,7 +1938,23 @@ export class MessageHandler {
     // turn/start with `BadRequest`. Pass-through for non-codex agents and
     // when the cache hasn't loaded yet.
     const validatedModel = this.validateCodexModel(model, resolvedAgent ?? 'claude-code');
-    console.log(`[agent:start] agent=${resolvedAgent ?? 'default'} model=${validatedModel ?? 'default'}${validatedModel !== model ? ` (coerced from ${model})` : ''} cwd=${cwd} prompt=${prompt.slice(0, 80)}${sandboxed ? ' [sandboxed]' : ''}`);
+    console.log(`[agent:start] agent=${resolvedAgent ?? 'default'} model=${validatedModel ?? 'default'}${validatedModel !== model ? ` (coerced from ${model})` : ''} cwd=${cwd} prompt=${prompt.slice(0, 80)}${sandboxed ? ' [sandboxed]' : ''}${attachmentIds && attachmentIds.length > 0 ? ` [+${attachmentIds.length} attachments]` : ''}`);
+
+    let attachments: ReturnType<AttachmentStaging['consume']> | undefined;
+    if (attachmentIds && attachmentIds.length > 0) {
+      try {
+        attachments = this.attachmentStaging.consume(peerAddress, attachmentIds);
+      } catch (error) {
+        const code = (error as { code?: string }).code ?? 'attachment_error';
+        const text = error instanceof Error ? error.message : 'attachment resolve failed';
+        const response = createMessage<ClaudeStartResponsePayload>(
+          'claude:start:response',
+          { success: false, error: `${code}: ${text}` },
+        );
+        response.id = message.id;
+        return response;
+      }
+    }
 
     try {
       const sessionId = await this.claudeService.startSession({
@@ -1923,6 +1968,7 @@ export class MessageHandler {
         sandboxed,
         reasoningEffort,
         contextWindow,
+        attachments,
       });
 
       console.log(`[agent:start] session created: ${sessionId} agent=${resolvedAgent ?? 'default'}`);
@@ -1976,12 +2022,28 @@ export class MessageHandler {
     message: Message<ClaudeResumeRequestPayload>,
     peerAddress: string,
   ): Promise<Message<ClaudeResumeResponsePayload>> {
-    const { sessionId: requestedId, prompt, cwd: payloadCwd, agent } = message.payload;
+    const { sessionId: requestedId, prompt, cwd: payloadCwd, agent, attachmentIds } = message.payload;
     const legacyProvider = (message.payload as { provider?: 'claude-cli' | 'claude-sdk' | 'codex-mcp' }).provider;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
     const activeCfg = this.claudeService.getSessionConfig(requestedId);
-    console.log(`[agent:resume] session=${requestedId} agent=${resolvedAgent ?? 'stored'} model=${(activeCfg.model as string | undefined) ?? 'default'} cwd=${cwd} prompt=${prompt.slice(0, 80)}`);
+    console.log(`[agent:resume] session=${requestedId} agent=${resolvedAgent ?? 'stored'} model=${(activeCfg.model as string | undefined) ?? 'default'} cwd=${cwd} prompt=${prompt.slice(0, 80)}${attachmentIds && attachmentIds.length > 0 ? ` [+${attachmentIds.length} attachments]` : ''}`);
+
+    let attachments: ReturnType<AttachmentStaging['consume']> | undefined;
+    if (attachmentIds && attachmentIds.length > 0) {
+      try {
+        attachments = this.attachmentStaging.consume(peerAddress, attachmentIds);
+      } catch (error) {
+        const code = (error as { code?: string }).code ?? 'attachment_error';
+        const text = error instanceof Error ? error.message : 'attachment resolve failed';
+        const response = createMessage<ClaudeResumeResponsePayload>(
+          'claude:resume:response',
+          { success: false, error: `${code}: ${text}` },
+        );
+        response.id = message.id;
+        return response;
+      }
+    }
 
     try {
       const actualSessionId = await this.claudeService.resumeSession({
@@ -1989,6 +2051,7 @@ export class MessageHandler {
         prompt,
         cwd,
         agent: resolvedAgent,
+        attachments,
       });
 
       console.log(`[agent:resume] session resumed: ${actualSessionId}`);
@@ -2089,6 +2152,12 @@ export class MessageHandler {
     }
 
     const closed = this.claudeService.closeSession(sessionId);
+
+    // Drop persisted attachment bytes for this session — fire-and-forget;
+    // a stuck rm shouldn't block the response.
+    removeSessionAttachments(sessionId).catch((err) => {
+      console.error(`[agent:end-task] removeSessionAttachments failed session=${sessionId}:`, err);
+    });
 
     const success = closed || archived;
     console.log(
@@ -2648,6 +2717,51 @@ export class MessageHandler {
   ): Promise<Message<FilesReadResponsePayload>> {
     const payload = await getFileBrowser().read(message.payload);
     const response = createMessage<FilesReadResponsePayload>('files:read:response', payload);
+    response.id = message.id;
+    return response;
+  }
+
+  // ── Attachment staging handlers ──────────────────────────────────────────
+  /** Exposed so other agent paths (sessionManager) can resolve staged ids. */
+  getAttachmentStaging(): AttachmentStaging {
+    return this.attachmentStaging;
+  }
+
+  private handleAttachmentUpload(
+    message: Message<AttachmentUploadRequestPayload>,
+    peerAddress: string,
+  ): Message {
+    try {
+      const result = this.attachmentStaging.acceptChunk(peerAddress, message.payload);
+      const response = createMessage<AttachmentUploadResponsePayload>('attachment:upload:response', result);
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const code = (error as { code?: string }).code ?? 'attachment_error';
+      const text = error instanceof Error ? error.message : 'attachment upload failed';
+      return this.createErrorResponse(message.id, code, text);
+    }
+  }
+
+  private handleAttachmentCancel(
+    message: Message<AttachmentCancelRequestPayload>,
+    peerAddress: string,
+  ): Message<AttachmentCancelResponsePayload> {
+    const removed = this.attachmentStaging.cancel(peerAddress, message.payload.attachmentId);
+    const response = createMessage<AttachmentCancelResponsePayload>('attachment:cancel:response', { removed });
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleAttachmentFetch(
+    message: Message<AttachmentFetchRequestPayload>,
+  ): Promise<Message> {
+    const { sessionId, attachmentId } = message.payload;
+    const attachment = await loadAttachment(sessionId, attachmentId);
+    if (!attachment) {
+      return this.createErrorResponse(message.id, 'attachment_not_found', `attachment ${attachmentId} not on disk for session ${sessionId}`);
+    }
+    const response = createMessage<AttachmentFetchResponsePayload>('attachment:fetch:response', { attachment });
     response.id = message.id;
     return response;
   }

@@ -11,11 +11,13 @@ import type {
   PermissionResult,
   PermissionMode,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { CardEvent, CardStreamEnd } from '@sumicom/quicksave-shared';
+import type { Attachment, CardEvent, CardStreamEnd } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
 import { SANDBOX_MCP_NAME, SANDBOX_BASH_TOOL, buildSandboxMcpServerConfig } from './sandboxMcp.js';
 import { AsyncQueue } from './asyncQueue.js';
 import { decorateModelWithContextWindow } from './claudeCliProvider.js';
+import { attachmentsToContentBlocks } from './contentBlocks.js';
+import { persistAttachments } from './attachmentStore.js';
 import type {
   CodingAgentProvider,
   ProviderSession,
@@ -26,6 +28,18 @@ import type {
 } from './provider.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Poison patterns that mean the API will keep rejecting future turns until
+ * the offending content is removed from history (or summarized away by
+ * compaction). Sourced from Claude Agent SDK's `n9({content:B_7(),...})`
+ * canned strings (cli.js v0.2.104) — re-derive from the bundle if it drifts.
+ *
+ * Triggering: `/compact` is the safe recovery — it summarizes earlier
+ * messages and drops raw blobs, so the next turn no longer carries the
+ * rejected document.
+ */
+const POISON_PATTERNS = /PDF too large|PDF is password protected|PDF file was not valid|Image was too large|image dimensions exceed|Request too large|Prompt is too long/i;
 
 /** Extract readable text from tool_result content (string or array of blocks). */
 function extractToolResultText(content: unknown): string {
@@ -62,18 +76,18 @@ export class SdkProviderSession implements ProviderSession {
     this.cardBuilder = cardBuilder;
   }
 
-  sendUserMessage(prompt: string): void {
+  sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
     if (!this.queryHandle) return;
     // Record the prompt in the cardBuilder so getCards on reconnect/refresh
     // returns it before the SDK has flushed it to the session JSONL.
-    const userEvent = this.cardBuilder.userMessage(prompt);
+    const userEvent = this.cardBuilder.userMessage(prompt, attachments);
     // Emit the card-event so other PWA tabs subscribed to this session see
     // the follow-up prompt in real time. The sending tab dedupes its
     // optimistic card by text + recent timestamp in claudeStore.
     this.callbacks?.emitCardEvent(userEvent);
     const userMsg: SDKUserMessage = {
       type: 'user',
-      message: { role: 'user', content: prompt },
+      message: { role: 'user', content: attachmentsToContentBlocks(prompt, attachments) },
       parent_tool_use_id: null,
     };
     this.inputQueue.push(userMsg);
@@ -122,7 +136,10 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     // Push first user message
     const firstMsg: SDKUserMessage = {
       type: 'user',
-      message: { role: 'user', content: opts.prompt },
+      message: {
+        role: 'user',
+        content: attachmentsToContentBlocks(opts.prompt, opts.attachments),
+      },
       parent_tool_use_id: null,
     };
     inputQueue.push(firstMsg);
@@ -142,8 +159,19 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     // Update cardBuilder with real sessionId
     cardBuilder.updateSessionId(sessionId);
 
+    // Persist attachments to disk BEFORE we let the stream consumer fire its
+    // userMessage card with real attachment UUIDs. Other tabs (and our own
+    // chips that miss the local cache prime) will issue `attachment:fetch`
+    // for those UUIDs the moment they see the card; if persistence is still
+    // in-flight, `loadAttachment` returns null and the chip renders as
+    // "Unavailable". Awaiting here costs one disk write before we hand back
+    // control, but guarantees the file is on disk when the card arrives.
+    if (opts.attachments && opts.attachments.length > 0) {
+      await persistAttachments(sessionId, opts.attachments);
+    }
+
     // Fire and forget the stream consumer
-    this.consumeStream(sessionId, queryHandle, sdkSession, cardBuilder, callbacks, opts.prompt);
+    this.consumeStream(sessionId, queryHandle, sdkSession, cardBuilder, callbacks, opts.prompt, opts.attachments);
 
     return { sessionId, session: sdkSession };
   }
@@ -158,7 +186,10 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     // Push resume prompt
     const resumeMsg: SDKUserMessage = {
       type: 'user',
-      message: { role: 'user', content: opts.prompt },
+      message: {
+        role: 'user',
+        content: attachmentsToContentBlocks(opts.prompt, opts.attachments),
+      },
       parent_tool_use_id: null,
     };
     inputQueue.push(resumeMsg);
@@ -178,8 +209,15 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     // Update cardBuilder with confirmed sessionId
     cardBuilder.updateSessionId(sessionId);
 
+    // See startSession: persist before the consumer emits the userMessage
+    // card so chips can fetch successfully even from tabs that didn't run
+    // the local cache prime.
+    if (opts.attachments && opts.attachments.length > 0) {
+      await persistAttachments(sessionId, opts.attachments);
+    }
+
     // Fire and forget
-    this.consumeStream(sessionId, queryHandle, sdkSession, cardBuilder, callbacks, opts.prompt);
+    this.consumeStream(sessionId, queryHandle, sdkSession, cardBuilder, callbacks, opts.prompt, opts.attachments);
 
     return { sessionId, session: sdkSession };
   }
@@ -322,10 +360,22 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     cb: StreamCardBuilder,
     callbacks: ProviderCallbacks,
     prompt?: string,
+    attachments?: readonly Attachment[],
   ): Promise<void> {
     let textBuffer = '';
     let bufferTimer: ReturnType<typeof setTimeout> | null = null;
     let resultEmitted = false;
+    // Per-turn flag: set when an assistant text block matches a poison
+    // pattern (SDK rewrites API errors like "PDF too large" into faux
+    // assistant text). Consumed in the result branch to emit a recovery
+    // suggestion card. Cleared on each new turn.
+    let turnPoisoned = false;
+    const markPoisoned = () => { turnPoisoned = true; };
+    const consumePoisoned = (): boolean => {
+      const v = turnPoisoned;
+      turnPoisoned = false;
+      return v;
+    };
 
     const emitCard = (event: CardEvent) => { callbacks.emitCardEvent(event); };
 
@@ -334,12 +384,13 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     // Record + emit the initial user prompt so other PWA tabs subscribed to
     // this session see it in real time. The sending tab dedupes its
     // optimistic card by text + recent timestamp in claudeStore.
-    if (prompt) {
-      emitCard(cb.userMessage(prompt));
+    if (prompt || (attachments && attachments.length > 0)) {
+      emitCard(cb.userMessage(prompt ?? '', attachments));
     }
 
     const flushText = () => {
       if (textBuffer) {
+        if (POISON_PATTERNS.test(textBuffer)) markPoisoned();
         emitCard(cb.assistantText(textBuffer));
         textBuffer = '';
       }
@@ -355,7 +406,7 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     try {
       for await (const msg of queryHandle) {
         const emittedResult = await this.routeMessage(
-          sessionId, msg, sdkSession, cb, callbacks, emitCard, flushText, bufferText,
+          sessionId, msg, sdkSession, cb, callbacks, emitCard, flushText, bufferText, markPoisoned, consumePoisoned,
         );
         if (emittedResult) {
           resultEmitted = true;
@@ -393,6 +444,8 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
     emitCard: (event: CardEvent) => void,
     flushText: () => void,
     bufferText: (text: string) => void,
+    markPoisoned: () => void,
+    consumePoisoned: () => boolean,
   ): Promise<boolean> {
 
     // ── System events ──
@@ -487,6 +540,7 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
         } else if (block.type === 'redacted_thinking') {
           emitCard(cb.thinkingBlock('[Redacted thinking]'));
         } else if (block.type === 'text' && block.text) {
+          if (POISON_PATTERNS.test(block.text)) markPoisoned();
           const finalizeEvt = cb.finalizeAssistantText();
           if (finalizeEvt) {
             emitCard(finalizeEvt);
@@ -581,6 +635,20 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
           : undefined,
       };
       callbacks.emitStreamEnd(streamEnd);
+
+      // If the turn produced an assistant text matching a poison pattern
+      // (e.g. SDK-rewritten "PDF too large" canned reply), surface a one-tap
+      // recovery card. /compact is the safe primitive — it summarizes earlier
+      // messages so the rejected blob stops being replayed on every resume.
+      if (consumePoisoned()) {
+        emitCard(
+          cb.recoverySuggested(
+            'This message appears stuck because a prior turn was rejected by the API. Compact the conversation to summarize earlier messages and unstick it.',
+            'compact',
+            'Compact to recover',
+          ),
+        );
+      }
 
       // Defer clearing in-memory cards until JSONL has stabilized: the SDK may
       // not have flushed the turn's assistant messages to the session JSONL by

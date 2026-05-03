@@ -14,6 +14,7 @@ import {
   type ClaudeSetPreferencesResponsePayload,
   type ClaudeSetSessionPermissionResponsePayload,
   type AgentId,
+  type AttachmentMetadata,
   type ConfigValue,
   type SessionCardsUpdate,
   type SessionSetConfigResponsePayload,
@@ -30,6 +31,7 @@ import {
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { useClaudeStore } from '../stores/claudeStore';
 import { applySessionCardsSnapshot, applySessionCardsUpdate } from '../lib/applySessionCards';
+import { primeUploadedAttachment } from '../lib/attachmentUploader';
 
 export function useClaudeOperations(
   getBus: () => MessageBusClient | null,
@@ -139,12 +141,22 @@ export function useClaudeOperations(
   );
 
   const startSession = useCallback(
-    async (prompt: string, opts?: { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number }) => {
+    async (prompt: string, opts?: { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] }) => {
       clearCards();
       setStreaming(true);
       setStreamError(null);
-      // Add user card immediately (optimistic)
-      appendCard({ type: 'user', id: `local-user-${Date.now()}`, timestamp: Date.now(), text: prompt });
+      // Add user card immediately (optimistic). Attachments carry metadata
+      // only — the local upload manager still has the bytes; we'll prime the
+      // attachment cache with them once the agent assigns a sessionId.
+      appendCard({
+        type: 'user',
+        id: `local-user-${Date.now()}`,
+        timestamp: Date.now(),
+        text: prompt,
+        ...(opts?.attachmentMetadata && opts.attachmentMetadata.length > 0
+          ? { attachments: opts.attachmentMetadata }
+          : {}),
+      });
       try {
         console.log(`[sub] start → implicit subscribe (new session)`);
         const response = await sendCommand<ClaudeStartResponsePayload>(
@@ -163,6 +175,9 @@ export function useClaudeOperations(
             // (1M for opus-4-7) and auto-compact never fires at the user's pick.
             ...(opts?.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {}),
             ...(opts?.cwd ? { cwd: opts.cwd } : {}),
+            ...(opts?.attachmentIds && opts.attachmentIds.length > 0
+              ? { attachmentIds: opts.attachmentIds }
+              : {}),
           },
           120000,
         );
@@ -183,6 +198,13 @@ export function useClaudeOperations(
             ...(opts?.permissionMode ? { permissionMode: opts.permissionMode } : {}),
             ...(opts?.cwd ? { cwd: opts.cwd } : {}),
           });
+          // Push the local upload bytes into the attachment cache so this
+          // tab never re-fetches what it just uploaded.
+          if (opts?.attachmentIds) {
+            for (const id of opts.attachmentIds) {
+              primeUploadedAttachment(response.sessionId, id);
+            }
+          }
         }
         setActiveSession(response.sessionId ?? null);
         // Subscribe to card events for the new session immediately.
@@ -201,16 +223,43 @@ export function useClaudeOperations(
   );
 
   const resumeSession = useCallback(
-    async (sessionId: string, prompt: string, cwd?: string) => {
+    async (sessionId: string, prompt: string, cwd?: string, opts?: { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] }) => {
       const wasAlreadyStreaming = useClaudeStore.getState().isStreaming;
       setStreaming(true);
       setStreamError(null);
-      appendCard({ type: 'user', id: `local-user-${Date.now()}`, timestamp: Date.now(), text: prompt });
+      // Prime the attachment cache BEFORE appending the optimistic card so
+      // the chip's first render reads bytes from L1 instead of firing
+      // `attachment:fetch` against the agent's disk store, which may not
+      // have persisted the bytes yet (the agent only writes after `claude:
+      // resume` returns the sessionId). Primed under the requested
+      // sessionId; we re-prime under the actual id below in case of a cold
+      // resume that forks the id.
+      if (opts?.attachmentIds) {
+        for (const id of opts.attachmentIds) {
+          primeUploadedAttachment(sessionId, id);
+        }
+      }
+      appendCard({
+        type: 'user',
+        id: `local-user-${Date.now()}`,
+        timestamp: Date.now(),
+        text: prompt,
+        ...(opts?.attachmentMetadata && opts.attachmentMetadata.length > 0
+          ? { attachments: opts.attachmentMetadata }
+          : {}),
+      });
       try {
         console.log(`[sub] resume → implicit subscribe session=${sessionId.slice(0, 8)}`);
         const response = await sendCommand<ClaudeResumeResponsePayload>(
           'claude:resume',
-          { sessionId, prompt, ...(cwd ? { cwd } : {}) },
+          {
+            sessionId,
+            prompt,
+            ...(cwd ? { cwd } : {}),
+            ...(opts?.attachmentIds && opts.attachmentIds.length > 0
+              ? { attachmentIds: opts.attachmentIds }
+              : {}),
+          },
           120000,
         );
         if (!response.success) {
@@ -226,6 +275,13 @@ export function useClaudeOperations(
           isStreaming: true,
           hasPendingInput: false,
         });
+        // Push local upload bytes into the cache for this session so the
+        // sender never has to re-fetch what it just uploaded.
+        if (opts?.attachmentIds) {
+          for (const id of opts.attachmentIds) {
+            primeUploadedAttachment(actualSessionId, id);
+          }
+        }
         if (!wasAlreadyStreaming) {
           // Cold resume: bind the active session to whatever id the daemon
           // returned. Hot resume keeps the existing binding (the active id

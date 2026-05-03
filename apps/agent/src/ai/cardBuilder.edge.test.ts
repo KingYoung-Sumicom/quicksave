@@ -37,7 +37,7 @@ vi.mock('os', () => ({
 }));
 
 import { existsSync } from 'fs';
-import { readFile, writeFile, mkdir, stat } from 'fs/promises';
+import { readFile, readdir, writeFile, mkdir, stat } from 'fs/promises';
 
 const { StreamCardBuilder, buildCardsFromHistory } =
   await import('./cardBuilder.js');
@@ -983,5 +983,190 @@ describe('Additional adversarial edge cases', () => {
 
     expect(result.truncated).toBe(false);
     expect(result.content).toBe(content);
+  });
+});
+
+// ============================================================================
+// 11. JSONL replay rebinds attachment ids to persisted upload UUIDs
+// ============================================================================
+
+describe('buildCardsFromHistory rebinds attachment ids to persisted metas', () => {
+  /** Encode `n` arbitrary bytes as base64. */
+  function fakeBase64(n: number): string {
+    return Buffer.alloc(n, 0xab).toString('base64');
+  }
+
+  /** Mock JSONL plus a `<sessionId>/` directory listing of meta files,
+   *  and dispatch readFile by path: meta files vs the JSONL itself. */
+  function mockJSONLWithMetas(jsonl: string, metas: Array<Record<string, unknown>>) {
+    vi.mocked(existsSync).mockImplementation((p: any) =>
+      typeof p === 'string' && !p.includes('subagents'),
+    );
+    vi.mocked(stat).mockResolvedValue({ size: jsonl.length } as any);
+    vi.mocked(readdir).mockImplementation(async () =>
+      metas.map((m) => `${m.id}.meta.json`) as any,
+    );
+    vi.mocked(readFile).mockImplementation(async (p: any) => {
+      const path = typeof p === 'string' ? p : String(p);
+      if (path.endsWith('.meta.json')) {
+        const id = path.split('/').pop()!.replace('.meta.json', '');
+        const meta = metas.find((m) => m.id === id);
+        return meta ? JSON.stringify(meta) : '';
+      }
+      return jsonl;
+    });
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('rebinds a single PDF block to its persisted upload UUID by (kind, size, name)', async () => {
+    const realId = '8dfe904c-1482-4850-bba3-aeee6ba5eb86';
+    const size = 8192;
+    const jsonl = JSON.stringify({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'document', title: 'UEFI_Spec_2_8_final.pdf',
+            source: { type: 'base64', media_type: 'application/pdf', data: fakeBase64(size) } },
+          { type: 'text', text: 'check this' },
+        ],
+      },
+    });
+    mockJSONLWithMetas(jsonl, [
+      { id: realId, kind: 'pdf', mimeType: 'application/pdf', name: 'UEFI_Spec_2_8_final.pdf', size, storedAt: 1 },
+    ]);
+
+    const result = await buildCardsFromHistory('sess-pdf', '/test/cwd');
+    const userCard = result.cards.find((c) => c.type === 'user') as any;
+    expect(userCard.attachments).toHaveLength(1);
+    expect(userCard.attachments[0].id).toBe(realId);
+    expect(userCard.attachments[0].name).toBe('UEFI_Spec_2_8_final.pdf');
+    expect(userCard.attachments[0].size).toBe(size);
+    expect(userCard.text).toBe('check this');
+  });
+
+  it('rebinds an image block by (kind, size) — no name/title required', async () => {
+    const realId = 'dfad2900-c471-415f-affb-52f9eec269d7';
+    const size = 4096;
+    const jsonl = JSON.stringify({
+      type: 'user',
+      message: {
+        content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: fakeBase64(size) } }],
+      },
+    });
+    mockJSONLWithMetas(jsonl, [
+      { id: realId, kind: 'image', mimeType: 'image/jpeg', name: 'IMG_0141.jpeg', size, storedAt: 1 },
+    ]);
+
+    const result = await buildCardsFromHistory('sess-img', '/test/cwd');
+    const userCard = result.cards.find((c) => c.type === 'user') as any;
+    expect(userCard.attachments).toHaveLength(1);
+    expect(userCard.attachments[0].id).toBe(realId);
+    expect(userCard.attachments[0].name).toBe('IMG_0141.jpeg');
+    expect(userCard.attachments[0].mimeType).toBe('image/jpeg');
+  });
+
+  it('falls back to replay:N when no persisted meta matches', async () => {
+    const jsonl = JSON.stringify({
+      type: 'user',
+      message: {
+        content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: fakeBase64(100) } }],
+      },
+    });
+    mockJSONLWithMetas(jsonl, []);
+
+    const result = await buildCardsFromHistory('sess-miss', '/test/cwd');
+    const userCard = result.cards.find((c) => c.type === 'user') as any;
+    expect(userCard.attachments).toHaveLength(1);
+    expect(userCard.attachments[0].id).toMatch(/^replay:/);
+  });
+
+  it('matches each duplicate block to a different meta when sizes collide', async () => {
+    const size = 1024;
+    const jsonl = JSON.stringify({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: fakeBase64(size) } },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: fakeBase64(size) } },
+        ],
+      },
+    });
+    mockJSONLWithMetas(jsonl, [
+      { id: 'first',  kind: 'image', mimeType: 'image/png', name: 'a.png', size, storedAt: 1 },
+      { id: 'second', kind: 'image', mimeType: 'image/png', name: 'b.png', size, storedAt: 2 },
+    ]);
+
+    const result = await buildCardsFromHistory('sess-dup', '/test/cwd');
+    const userCard = result.cards.find((c) => c.type === 'user') as any;
+    expect(userCard.attachments).toHaveLength(2);
+    const ids = userCard.attachments.map((a: any) => a.id).sort();
+    expect(ids).toEqual(['first', 'second']);
+  });
+
+  it('prefers a name-tiebroken match for PDFs when sizes collide', async () => {
+    const size = 2048;
+    const jsonl = JSON.stringify({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'document', title: 'b.pdf',
+            source: { type: 'base64', media_type: 'application/pdf', data: fakeBase64(size) } },
+        ],
+      },
+    });
+    mockJSONLWithMetas(jsonl, [
+      { id: 'wrong-id', kind: 'pdf', mimeType: 'application/pdf', name: 'a.pdf', size, storedAt: 1 },
+      { id: 'right-id', kind: 'pdf', mimeType: 'application/pdf', name: 'b.pdf', size, storedAt: 2 },
+    ]);
+
+    const result = await buildCardsFromHistory('sess-name', '/test/cwd');
+    const userCard = result.cards.find((c) => c.type === 'user') as any;
+    expect(userCard.attachments[0].id).toBe('right-id');
+    expect(userCard.attachments[0].name).toBe('b.pdf');
+  });
+
+  it('handles base64 with `=` padding (decoded byte size matches meta exactly)', async () => {
+    // 10 bytes → base64 with `==` padding (16 chars total).
+    // Old (buggy) estimate would give 12 → no match. Our resolver decodes
+    // to 10 and matches the meta.
+    const realId = 'pad-id';
+    const size = 10;
+    const jsonl = JSON.stringify({
+      type: 'user',
+      message: {
+        content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: fakeBase64(size) } }],
+      },
+    });
+    mockJSONLWithMetas(jsonl, [
+      { id: realId, kind: 'image', mimeType: 'image/png', name: 'tiny.png', size, storedAt: 1 },
+    ]);
+
+    const result = await buildCardsFromHistory('sess-pad', '/test/cwd');
+    const userCard = result.cards.find((c) => c.type === 'user') as any;
+    expect(userCard.attachments[0].id).toBe(realId);
+  });
+
+  it('does not rebind across kinds (image meta for a pdf block stays unmatched)', async () => {
+    const size = 4096;
+    const jsonl = JSON.stringify({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'document', title: 'doc.pdf',
+            source: { type: 'base64', media_type: 'application/pdf', data: fakeBase64(size) } },
+        ],
+      },
+    });
+    mockJSONLWithMetas(jsonl, [
+      { id: 'image-id', kind: 'image', mimeType: 'image/png', name: 'doc.pdf', size, storedAt: 1 },
+    ]);
+
+    const result = await buildCardsFromHistory('sess-kind', '/test/cwd');
+    const userCard = result.cards.find((c) => c.type === 'user') as any;
+    expect(userCard.attachments[0].id).toMatch(/^replay:/);
+    expect(userCard.attachments[0].kind).toBe('pdf');
   });
 });

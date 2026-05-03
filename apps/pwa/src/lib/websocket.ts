@@ -136,7 +136,11 @@ export class WebSocketClient {
       .stream()
       .pipeThrough(new CompressionStream('gzip'));
     const compressed = await new Response(stream).arrayBuffer();
-    return btoa(String.fromCharCode(...new Uint8Array(compressed)));
+    // Note: do NOT use `String.fromCharCode(...new Uint8Array(...))` here —
+    // the spread blows the JS argument-stack limit at ~120k elements,
+    // which is well within the size of one attachment chunk's gzipped
+    // bytes. `encodeBase64` (tweetnacl-util) loops char-by-char.
+    return encodeBase64(new Uint8Array(compressed));
   }
 
   private async decompress(base64: string): Promise<string> {

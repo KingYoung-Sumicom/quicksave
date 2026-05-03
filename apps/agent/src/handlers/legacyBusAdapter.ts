@@ -96,6 +96,10 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   // files
   'files:list',
   'files:read',
+  // attachments
+  'attachment:upload',
+  'attachment:cancel',
+  'attachment:fetch',
 ];
 
 /**
@@ -118,6 +122,7 @@ export function wireLegacyBusVerbs(
   handler: MessageHandler,
   verbs: readonly MessageType[] = LEGACY_BUS_VERBS,
 ): void {
+  console.log(`[legacy-bus] wiring ${verbs.length} verbs; attachment* present: ${verbs.filter(v => v.startsWith('attachment:')).join(',') || 'NONE'}`);
   for (const verb of verbs) {
     bus.onCommand(verb, async (rawPayload: unknown, { peer }) => {
       let repoPath: string | undefined;
