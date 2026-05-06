@@ -93,7 +93,21 @@ export function useClaudeOperations(
       if (offset === 0) {
         const bus = getBus();
         if (!bus) return;
-        if (cardsUnsubsRef.current.has(sessionId)) return; // already subscribed
+        // Release any stale subscription for this session before re-subscribing.
+        // ClaudePanel only unsubs through its nav effect / handleNewSession,
+        // so the ProjectList "+" button (which navigates straight to /add)
+        // and direct URL bar navigation leave the previous session's entry
+        // in cardsUnsubsRef. After the user creates a new session and comes
+        // back, ClaudePanel.tsx clearCards() wipes the store, calls us, and
+        // a plain dedup early-return would leave the panel blank — the bus
+        // client's lastSnapshot cache only replays on a NEW subscribe call.
+        // Releasing first triggers an unsub→sub on the wire so the agent
+        // re-emits a fresh snapshot.
+        const existing = cardsUnsubsRef.current.get(sessionId);
+        if (existing) {
+          cardsUnsubsRef.current.delete(sessionId);
+          existing();
+        }
         if (!subscribeOnly) {
           setLoadingHistory(true);
           setHistoryError(null);
