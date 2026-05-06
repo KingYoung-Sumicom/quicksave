@@ -177,7 +177,14 @@ export function ClaudePanel({
     const flushRun = () => {
       if (!runStartId || runCards.length === 0) return;
       const groupId = runStartId;
-      if (expandedGroups.has(groupId)) {
+      // Force the group open when any tool call inside has a pending
+      // permission/question — the user can't make a decision they can't see.
+      // No header chip in this mode: collapsing wouldn't take effect until the
+      // request resolves, so the affordance would be misleading.
+      const hasPendingInput = runCards.some((c) => c.pendingInput);
+      if (hasPendingInput) {
+        for (const c of runCards) out.push({ kind: 'card', card: c });
+      } else if (expandedGroups.has(groupId)) {
         out.push({
           kind: 'tool_group_expanded_header',
           key: `tgh:${groupId}`,
