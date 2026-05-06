@@ -59,6 +59,7 @@ import { ProjectDetail } from './components/ProjectDetail';
 import { TerminalPage } from './components/terminal/TerminalPage';
 import { FileBrowserPage } from './components/files/FileBrowserPage';
 import { FilePreviewModal } from './components/files/FilePreviewModal';
+import { useFilePreviewStore } from './stores/filePreviewStore';
 import { useProjectConnection } from './hooks/useProjectConnection';
 import { resolveHash, getAllKnownPaths } from './lib/pathHash';
 import {
@@ -337,6 +338,8 @@ function AppContent() {
   const [showPathBrowser, setShowPathBrowser] = useState(false);
   const [showGitignoreEditor, setShowGitignoreEditor] = useState(false);
   const isDesktop = useMediaQuery('(min-width: 768px)');
+  const filePreviewOpen = useFilePreviewStore((s) => s.current != null);
+  const filePreviewPanelWidth = useFilePreviewStore((s) => s.panelWidth);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
   const [showGitIdentityModal, setShowGitIdentityModal] = useState(false);
 
@@ -984,7 +987,10 @@ function AppContent() {
   }, []);
 
   return (
-    <div className="flex flex-col bg-slate-900 text-slate-100 overflow-hidden h-full">
+    <div
+      className="flex flex-col bg-slate-900 text-slate-100 overflow-hidden h-full transition-[padding] duration-200"
+      style={isDesktop && filePreviewOpen ? { paddingRight: filePreviewPanelWidth } : undefined}
+    >
       {isConnected && <NotificationPrompt onOffer={handlePushOffer} />}
       {isDesktop ? (
         machines.length === 0 ? (

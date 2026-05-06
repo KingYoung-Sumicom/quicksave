@@ -1,13 +1,19 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark-dimmed.css';
 import type { FilesReadResponsePayload } from '@sumicom/quicksave-shared';
-import { useFilePreviewStore, type FilePreviewRequest } from '../../stores/filePreviewStore';
+import {
+  useFilePreviewStore,
+  type FilePreviewRequest,
+  FILE_PREVIEW_PANEL_MIN,
+  FILE_PREVIEW_PANEL_MAX,
+} from '../../stores/filePreviewStore';
 import { useFileOps } from '../../hooks/useFileOps';
 import { getActiveBus } from '../../lib/busRegistry';
+import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { Spinner } from '../ui/Spinner';
 import { MarkdownPreview } from './MarkdownPreview';
 
@@ -23,6 +29,7 @@ export function FilePreviewModal() {
   const current = useFilePreviewStore((s) => s.current);
   const close = useFilePreviewStore((s) => s.close);
   const location = useLocation();
+  const isDesktop = useMediaQuery('(min-width: 768px)');
 
   // ESC closes the modal — mirrors the SwipeableDrawer / Modal idioms.
   useEffect(() => {
@@ -42,15 +49,17 @@ export function FilePreviewModal() {
   useEffect(() => { close(); }, [location.key]);
 
   if (!current) return null;
-  return <PreviewBody request={current} onClose={close} />;
+  return <PreviewBody request={current} onClose={close} isDesktop={isDesktop} />;
 }
 
 function PreviewBody({
   request,
   onClose,
+  isDesktop,
 }: {
   request: FilePreviewRequest;
   onClose: () => void;
+  isDesktop: boolean;
 }) {
   const { readFile } = useFileOps(getActiveBus);
   const [data, setData] = useState<FilesReadResponsePayload | null>(null);
@@ -87,6 +96,14 @@ function PreviewBody({
   const [renderMarkdown, setRenderMarkdown] = useState(true);
   const [renderSvg, setRenderSvg] = useState(true);
 
+  if (isDesktop) {
+    return (
+      <DesktopSidePanel onClose={onClose}>
+        {renderChrome()}
+      </DesktopSidePanel>
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center sm:p-4">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
@@ -94,6 +111,14 @@ function PreviewBody({
         className="relative bg-slate-800 sm:rounded-lg w-full sm:max-w-3xl max-h-screen sm:max-h-[90vh] flex flex-col shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
+        {renderChrome()}
+      </div>
+    </div>
+  );
+
+  function renderChrome() {
+    return (
+      <>
         {/* Header */}
         <div className="flex items-start gap-3 p-3 border-b border-slate-700 shrink-0">
           <svg className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -169,7 +194,64 @@ function PreviewBody({
             )}
           </div>
         )}
-      </div>
+      </>
+    );
+  }
+}
+
+function DesktopSidePanel({
+  children,
+  onClose: _onClose,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+}) {
+  const panelWidth = useFilePreviewStore((s) => s.panelWidth);
+  const setPanelWidth = useFilePreviewStore((s) => s.setPanelWidth);
+  const draggingRef = useRef(false);
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    const target = e.currentTarget;
+    target.setPointerCapture(e.pointerId);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    const next = window.innerWidth - e.clientX;
+    setPanelWidth(next);
+  };
+
+  const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  };
+
+  return (
+    <div
+      className="fixed inset-y-0 right-0 z-40 border-l border-slate-700 bg-slate-800 shadow-2xl flex flex-col"
+      style={{ width: panelWidth }}
+    >
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-valuemin={FILE_PREVIEW_PANEL_MIN}
+        aria-valuemax={FILE_PREVIEW_PANEL_MAX}
+        aria-valuenow={panelWidth}
+        title="Drag to resize"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        className="absolute top-0 left-0 h-full w-1.5 -translate-x-1/2 cursor-col-resize hover:bg-blue-500/30 active:bg-blue-500/50 transition-colors z-10"
+      />
+      {children}
     </div>
   );
 }

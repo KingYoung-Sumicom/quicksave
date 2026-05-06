@@ -26,12 +26,39 @@ export interface FilePreviewRequest {
 interface FilePreviewStore {
   /** Currently-previewed file, or null when the modal is closed. */
   current: FilePreviewRequest | null;
+  /** Desktop side-panel width in pixels. Persisted to localStorage. */
+  panelWidth: number;
   open(req: FilePreviewRequest): void;
   close(): void;
+  setPanelWidth(w: number): void;
+}
+
+const PANEL_WIDTH_KEY = 'quicksave.filePreview.panelWidth';
+const DEFAULT_PANEL_WIDTH = 480;
+const MIN_PANEL_WIDTH = 320;
+const MAX_PANEL_WIDTH = 1200;
+
+function loadPanelWidth(): number {
+  if (typeof window === 'undefined') return DEFAULT_PANEL_WIDTH;
+  const raw = window.localStorage?.getItem(PANEL_WIDTH_KEY);
+  const n = raw ? Number(raw) : NaN;
+  if (!Number.isFinite(n)) return DEFAULT_PANEL_WIDTH;
+  return Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, n));
 }
 
 export const useFilePreviewStore = create<FilePreviewStore>((set) => ({
   current: null,
+  panelWidth: loadPanelWidth(),
   open: (req) => set({ current: req }),
   close: () => set({ current: null }),
+  setPanelWidth: (w) => {
+    const clamped = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, Math.round(w)));
+    if (typeof window !== 'undefined') {
+      try { window.localStorage?.setItem(PANEL_WIDTH_KEY, String(clamped)); } catch { /* ignore */ }
+    }
+    set({ panelWidth: clamped });
+  },
 }));
+
+export const FILE_PREVIEW_PANEL_MIN = MIN_PANEL_WIDTH;
+export const FILE_PREVIEW_PANEL_MAX = MAX_PANEL_WIDTH;
