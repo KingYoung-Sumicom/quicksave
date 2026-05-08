@@ -18,6 +18,7 @@ import type {
 } from '@sumicom/quicksave-shared';
 import { ArchivedSessionsList } from './ArchivedSessionsList';
 import { SessionTicketCard } from './SessionTicketCard';
+import { isSessionUnread } from './SessionStatusBadge';
 
 interface ProjectDetailProps {
   isReady: boolean;
@@ -106,11 +107,26 @@ export function ProjectDetail({
   // the owning machine agent, since two machines can share the same cwd
   // string (e.g. `/home/user/foo` on two Linux boxes) and the store now
   // holds sessions from every connected agent.
+  //
+  // Sort tiers (highest first):
+  //   4 — unread: lastReadAt missing / older than lastTurnEndedAt — the
+  //       loudest "needs attention" signal, since the user literally hasn't
+  //       seen the latest output. Pending-but-unread sessions hit this tier
+  //       too. Sessions never read (no `lastReadAt`) naturally land at the
+  //       very top, per the original intent.
+  //   3 — hasPendingInput (read): agent is still blocked waiting on the
+  //       user. Sits below unread — once you've viewed the request the
+  //       email-style "new" cue is gone, and the orange "respond" cue is
+  //       a softer prod.
+  //   2 — isStreaming: actively producing output.
+  //   1 — isActive: live session, idle.
+  //   0 — closed.
+  // Within a tier, fall back to most-recent-first.
   const cwdSessions = Object.values(sessions)
     .filter((s) => (!s.machineAgentId || s.machineAgentId === agentId) && (s.cwd === cwd || (!s.cwd && isReady)) && !s.archived)
     .sort((a, b) => {
-      const rankA = a.isStreaming ? 2 : a.isActive ? 1 : 0;
-      const rankB = b.isStreaming ? 2 : b.isActive ? 1 : 0;
+      const rankA = isSessionUnread(a) ? 4 : a.hasPendingInput ? 3 : a.isStreaming ? 2 : a.isActive ? 1 : 0;
+      const rankB = isSessionUnread(b) ? 4 : b.hasPendingInput ? 3 : b.isStreaming ? 2 : b.isActive ? 1 : 0;
       if (rankA !== rankB) return rankB - rankA;
       return b.lastModified - a.lastModified;
     });
@@ -217,6 +233,7 @@ export function ProjectDetail({
                   <SessionTicketCard
                     key={session.sessionId}
                     session={session}
+                    isUnread={isSessionUnread(session)}
                     onClick={() => handleSelectSession(session)}
                   />
                 ))}

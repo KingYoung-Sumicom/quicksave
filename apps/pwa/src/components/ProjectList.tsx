@@ -9,6 +9,7 @@ import { useMachineStore } from '../stores/machineStore';
 import { useTerminalStore } from '../stores/terminalStore';
 import { DesktopSideMenuAppBar } from './DesktopSideMenuAppBar';
 import { SessionTicketCard } from './SessionTicketCard';
+import { isSessionUnread } from './SessionStatusBadge';
 import { TerminalListSection } from './terminal/TerminalListSection';
 import { FileBrowserSection } from './files/FileBrowserSection';
 import { toProjectId } from '../lib/projectId';
@@ -54,12 +55,19 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
     return map;
   }, [machines]);
 
+  // Sort tiers (highest first):
+  //   4 — unread: lastReadAt missing or older than lastTurnEndedAt (active
+  //       sessions only — see `isSessionUnread`). Cross-device synchronized
+  //       via the agent so reading on phone clears it on desktop too.
+  //   3 — hasPendingInput (read): still waiting on user, but viewed.
+  //   2 — isStreaming, 1 — isActive, 0 — closed.
+  // Within a tier, most-recent-first.
   const flatSessions = useMemo(() => {
     return Object.values(sessions)
       .filter((s) => s.cwd && s.machineAgentId && !s.archived)
       .sort((a, b) => {
-        const rankA = a.isStreaming ? 2 : a.isActive ? 1 : 0;
-        const rankB = b.isStreaming ? 2 : b.isActive ? 1 : 0;
+        const rankA = isSessionUnread(a) ? 4 : a.hasPendingInput ? 3 : a.isStreaming ? 2 : a.isActive ? 1 : 0;
+        const rankB = isSessionUnread(b) ? 4 : b.hasPendingInput ? 3 : b.isStreaming ? 2 : b.isActive ? 1 : 0;
         if (rankA !== rankB) return rankB - rankA;
         const tsA = a.lastPromptAt ?? a.lastModified;
         const tsB = b.lastPromptAt ?? b.lastModified;
@@ -112,6 +120,7 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
                       key={session.sessionId}
                       session={session}
                       isActive={activeSessionId === session.sessionId}
+                      isUnread={isSessionUnread(session)}
                       compact={compact}
                       projectName={projectName}
                       machineName={machine?.nickname}

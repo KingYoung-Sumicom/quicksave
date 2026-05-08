@@ -45,6 +45,7 @@ export function applyHistoryEntry(entry: BroadcastSessionEntry, machineAgentId: 
     lastTurnCacheCreationTokens: entry.lastTurnCacheCreationTokens,
     lastTurnCacheReadTokens: entry.lastTurnCacheReadTokens,
     lastTurnContextUsage: entry.lastTurnContextUsage,
+    lastReadAt: entry.lastReadAt,
   });
 }
 

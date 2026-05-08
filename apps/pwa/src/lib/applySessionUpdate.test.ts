@@ -410,4 +410,30 @@ describe('applySessionUpdate', () => {
       expect(store.setSelectedPermissionMode).not.toHaveBeenCalled();
     });
   });
+
+  describe('lastReadAt forwarding', () => {
+    it('forwards lastReadAt from the payload onto the store on first delivery', () => {
+      const store = setupStore();
+      applySessionUpdate(makePayload({ lastReadAt: 5_555 }), MACHINE_AGENT_ID);
+      const arg = store.upsertSession.mock.calls[0][0];
+      expect(arg.lastReadAt).toBe(5_555);
+    });
+
+    it('triggers upsert when only lastReadAt differs', () => {
+      const store = setupStore({
+        sessions: { s1: makeSummary({ lastReadAt: 1_000 }) },
+      });
+      applySessionUpdate(makePayload({ lastReadAt: 2_000 }), MACHINE_AGENT_ID);
+      expect(store.upsertSession).toHaveBeenCalledTimes(1);
+      expect(store.upsertSession.mock.calls[0][0].lastReadAt).toBe(2_000);
+    });
+
+    it('skips upsert when lastReadAt matches and everything else does too', () => {
+      const store = setupStore({
+        sessions: { s1: makeSummary({ lastReadAt: 7_777 }) },
+      });
+      applySessionUpdate(makePayload({ lastReadAt: 7_777 }), MACHINE_AGENT_ID);
+      expect(store.upsertSession).not.toHaveBeenCalled();
+    });
+  });
 });

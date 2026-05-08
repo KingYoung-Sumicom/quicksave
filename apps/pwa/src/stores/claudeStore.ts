@@ -185,6 +185,13 @@ interface ClaudeStore {
   // Session list
   sessions: SessionMap;
 
+  /** sessionId currently being attended (visible+focused tab on its page).
+   *  The attention hook keeps this in sync; bus-side `session:mark-read`
+   *  resend logic uses it to know when to push a fresh viewedAt to the agent
+   *  without spamming for sessions the user isn't actually on. `null` means
+   *  no session is attended. */
+  attendedSessionId: string | null;
+
   // Active session
   activeSessionId: string | null;
   isStreaming: boolean;
@@ -231,6 +238,12 @@ interface ClaudeStore {
    *  disconnect so a stale green badge doesn't survive the blip. The next
    *  /sessions/active snap on reconnect restores the truth. */
   clearActiveOnDisconnect: () => void;
+
+  /** Track which session is currently being attended (visible+focused tab on
+   *  its page). Pass `null` when attention is released. The attention hook
+   *  uses this to drive `session:mark-read` resends when an attended
+   *  session's `lastTurnEndedAt` advances mid-view. */
+  setAttendedSession: (sessionId: string | null) => void;
 
   // Actions — active session
   setActiveSession: (sessionId: string | null) => void;
@@ -284,6 +297,7 @@ interface ClaudeStore {
 export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   // Initial state
   sessions: {},
+  attendedSessionId: null,
   activeSessionId: null,
   isStreaming: false,
   streamError: null,
@@ -344,6 +358,9 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       }
       return changed ? { sessions: updated } : state;
     }),
+
+  setAttendedSession: (sessionId) =>
+    set((state) => (state.attendedSessionId === sessionId ? state : { attendedSessionId: sessionId })),
 
   // Active session
   setActiveSession: (sessionId) => {
@@ -619,6 +636,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   reset: () =>
     set({
       sessions: {},
+      attendedSessionId: null,
       activeSessionId: null,
       isStreaming: false,
       streamError: null,

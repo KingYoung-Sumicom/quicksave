@@ -42,7 +42,8 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     current.lastTurnInputTokens === payload.lastTurnInputTokens &&
     current.lastTurnCacheCreationTokens === payload.lastTurnCacheCreationTokens &&
     current.lastTurnCacheReadTokens === payload.lastTurnCacheReadTokens &&
-    current.lastTurnContextUsage?.capturedAt === payload.lastTurnContextUsage?.capturedAt
+    current.lastTurnContextUsage?.capturedAt === payload.lastTurnContextUsage?.capturedAt &&
+    current.lastReadAt === payload.lastReadAt
   ) {
     return;
   }
@@ -67,6 +68,7 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     lastTurnCacheCreationTokens: payload.lastTurnCacheCreationTokens,
     lastTurnCacheReadTokens: payload.lastTurnCacheReadTokens,
     lastTurnContextUsage: payload.lastTurnContextUsage,
+    lastReadAt: payload.lastReadAt,
   });
 
   if (payload.sessionId === activeSessionId) {

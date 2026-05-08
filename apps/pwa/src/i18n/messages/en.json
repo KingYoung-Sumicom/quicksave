@@ -317,6 +317,7 @@
   "sessionStatus.label.thinking": "Thinking",
   "sessionStatus.label.pending": "Pending",
   "sessionStatus.label.waiting": "Waiting",
+  "sessionStatus.label.unread": "Unread",
   "sessionStatus.label.standby": "Standby",
   "sessionStatus.label.closed": "Closed",
 

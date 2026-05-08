@@ -23,6 +23,8 @@ import {
   type SessionUpdateHistoryResponsePayload,
   type SessionListArchivedRequestPayload,
   type SessionListArchivedResponsePayload,
+  type SessionMarkReadRequestPayload,
+  type SessionMarkReadResponsePayload,
   type ProjectListSummariesResponsePayload,
   type ProjectListReposResponsePayload,
   type ProjectDeleteRequestPayload,
@@ -377,6 +379,23 @@ export function useClaudeOperations(
     [sendCommand],
   );
 
+  // Stamp `lastReadAt` on a session so the email-style unread badge clears
+  // for every PWA client of the same user. Best-effort — errors are logged
+  // but not surfaced; the next attention attach will retry.
+  const markSessionRead = useCallback(
+    async (sessionId: string, cwd: string, viewedAt: number = Date.now()) => {
+      try {
+        await sendCommand<SessionMarkReadResponsePayload, SessionMarkReadRequestPayload>(
+          'session:mark-read',
+          { sessionId, cwd, viewedAt },
+        );
+      } catch (error) {
+        console.error('Failed to mark session read:', error);
+      }
+    },
+    [sendCommand],
+  );
+
   const listArchivedSessions = useCallback(
     async (cwd: string, offset = 0, limit = 20) => {
       try {
@@ -524,6 +543,7 @@ export function useClaudeOperations(
     closeSession,
     endSession,
     restoreSession,
+    markSessionRead,
     listArchivedSessions,
     respondToUserInput,
     setPreferences,

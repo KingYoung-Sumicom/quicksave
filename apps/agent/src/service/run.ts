@@ -354,6 +354,16 @@ export async function runDaemon(): Promise<void> {
           });
         }
       }
+
+      // Re-broadcast /sessions/active now that the turn_ended event has been
+      // persisted. The earlier emitSessionUpdate fired synchronously inside
+      // emitStreamEnd (sessionManager.ts), BEFORE this async IIFE recorded
+      // the event — so that broadcast carried the previous turn's
+      // lastTurnEndedAt. PWA clients depend on lastTurnEndedAt advancing to
+      // detect "the session has new output you haven't seen" (unread mark);
+      // without this follow-up, the home list never picks up the new value
+      // until the next session activity, breaking cross-tab unread sync.
+      claudeService.emitSessionUpdate(result.sessionId);
     })().catch((err) => {
       console.error(`[turn_ended] failed to record turn for session=${result.sessionId.slice(0, 8)}:`, err);
     });

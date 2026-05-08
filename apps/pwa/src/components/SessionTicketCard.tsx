@@ -14,6 +14,14 @@ interface SessionTicketCardProps {
   compact?: boolean;
   /** When true, highlight as the currently-routed session. */
   isActive?: boolean;
+  /**
+   * Email-style "unread" — set when this device hasn't viewed the session
+   * since the last turn-end / pending-input event. Renders a stronger
+   * subject (semibold + brighter text) and an accent bar on the leading
+   * edge so the user can spot which tickets they haven't read yet.
+   * Driven by `useClaudeStore.unreadSessions[sessionId]` — see store doc.
+   */
+  isUnread?: boolean;
   /** Override the wrapper button's padding/spacing — for nested layouts. */
   className?: string;
   /**
@@ -104,7 +112,7 @@ function pickDot(session: ClaudeSessionSummary): { color: string; pulse: boolean
   return { color: s.dotColor, pulse: s.pulse };
 }
 
-export function SessionTicketCard({ session, onClick, compact, isActive, className, projectName, machineName, agent }: SessionTicketCardProps) {
+export function SessionTicketCard({ session, onClick, compact, isActive, isUnread, className, projectName, machineName, agent }: SessionTicketCardProps) {
   const dot = pickDot(session);
   const stageMeta = session.stage ? STAGE_META[session.stage] : null;
 
@@ -119,11 +127,14 @@ export function SessionTicketCard({ session, onClick, compact, isActive, classNa
     <button
       onClick={onClick}
       className={clsx(
-        'w-full text-left transition-colors flex items-start gap-3',
+        'w-full text-left transition-colors flex items-start gap-3 relative',
         className ?? 'px-4 py-2.5 hover:bg-slate-700/50 active:bg-slate-700/60',
         isActive && 'bg-slate-700/40',
       )}
     >
+      {isUnread && (
+        <span aria-hidden className="absolute left-0 top-0 bottom-0 w-0.5 bg-blue-400" />
+      )}
       <span
         className={clsx(
           'w-2 h-2 rounded-full shrink-0 mt-1.5',
@@ -136,6 +147,7 @@ export function SessionTicketCard({ session, onClick, compact, isActive, classNa
           className={clsx(
             'list-title text-sm line-clamp-2',
             !hasSubject && 'italic text-slate-400',
+            isUnread && hasSubject && 'font-semibold text-slate-50',
           )}
         >
           {subject}

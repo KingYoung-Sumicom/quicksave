@@ -1061,6 +1061,7 @@ export class SessionManager extends EventEmitter {
         lastTurnCacheCreationTokens: lastTurn?.cacheCreationTokens,
         lastTurnCacheReadTokens: lastTurn?.cacheReadTokens,
         lastTurnContextUsage: lastTurn?.contextUsage as ClaudeSessionSummary['lastTurnContextUsage'],
+        lastReadAt: entry.lastReadAt,
       };
     });
   }
@@ -1476,7 +1477,13 @@ export class SessionManager extends EventEmitter {
     this.sessionAgents.delete(oldId);
   }
 
-  private emitSessionUpdate(sessionId: string): void {
+  /**
+   * Emit a fresh `session-updated` payload for `sessionId`. Public so the
+   * MessageHandler can trigger a re-broadcast after side-channel registry
+   * mutations (e.g. `session:mark-read` updating `lastReadAt`) where the
+   * normal start/resume/turn-end paths aren't involved.
+   */
+  emitSessionUpdate(sessionId: string): void {
     this.emit('session-updated', this.buildSessionUpdatePayload(sessionId));
   }
 
@@ -1492,6 +1499,7 @@ export class SessionManager extends EventEmitter {
     const eventStore = getEventStore();
     const stats = eventStore.getSessionStats(sessionId);
     const lastTurn = eventStore.getLastTurn(sessionId);
+    const registryEntry = getSessionRegistry().findBySessionId(sessionId);
     return {
       sessionId,
       // `isActive` reflects in-memory presence, NOT "currently doing work".
@@ -1528,6 +1536,10 @@ export class SessionManager extends EventEmitter {
       lastTurnCacheCreationTokens: lastTurn?.cacheCreationTokens,
       lastTurnCacheReadTokens: lastTurn?.cacheReadTokens,
       lastTurnContextUsage: lastTurn?.contextUsage as SessionUpdatePayload['lastTurnContextUsage'],
+      // `lastReadAt` lives on the registry — re-deliver it on every active-list
+      // update so each PWA client converges on the latest read state without
+      // having to wait for the slower /sessions/history snapshot to roll over.
+      lastReadAt: registryEntry?.lastReadAt,
     };
   }
 

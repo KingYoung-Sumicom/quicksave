@@ -13,7 +13,7 @@ import { mkdir, writeFile, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { simpleGit } from 'simple-git';
-import { resetSessionRegistry } from '../ai/sessionRegistry.js';
+import { resetSessionRegistry, getSessionRegistry } from '../ai/sessionRegistry.js';
 import { setQuicksaveDir } from '../service/singleton.js';
 
 // Stub the CLI-spawning providers so edge-case tests don't fork real `claude`
@@ -657,6 +657,101 @@ describe('MessageHandler — edge cases', () => {
       const resp = await handler.handleMessage(msg, peerA);
       expect(resp.type).toBe('session:delete-history:response');
       expect((resp.payload as any).success).toBe(false);
+    });
+
+    it('should return error when marking read on a non-existent entry', async () => {
+      const msg = createMessage('session:mark-read', {
+        sessionId: 'ghost',
+        cwd: '/nonexistent',
+      } as any);
+      const resp = await handler.handleMessage(msg, peerA);
+      expect(resp.type).toBe('session:mark-read:response');
+      expect((resp.payload as any).success).toBe(false);
+      expect((resp.payload as any).error).toContain('not found');
+    });
+
+    it('stamps lastReadAt and broadcasts when marking an existing entry read', async () => {
+      const registry = getSessionRegistry();
+      registry.upsertEntry({
+        sessionId: 's-read-1',
+        cwd: repoPath,
+        createdAt: 1_000,
+        lastAccessedAt: 1_000,
+      });
+
+      const broadcasts: Array<{ cwd: string; sessionId: string; action: string; lastReadAt?: number }> = [];
+      handler.onHistoryUpdated = (cwd, entry, action) => {
+        broadcasts.push({ cwd, sessionId: entry.sessionId, action, lastReadAt: entry.lastReadAt });
+      };
+
+      const msg = createMessage('session:mark-read', {
+        sessionId: 's-read-1',
+        cwd: repoPath,
+        viewedAt: 5_000,
+      } as any);
+      const resp = await handler.handleMessage(msg, peerA);
+
+      expect(resp.type).toBe('session:mark-read:response');
+      expect((resp.payload as any).success).toBe(true);
+      expect((resp.payload as any).lastReadAt).toBe(5_000);
+
+      // Persisted on the registry entry.
+      const persisted = registry.getEntry(repoPath, 's-read-1');
+      expect(persisted?.lastReadAt).toBe(5_000);
+
+      // Broadcast fired so other PWA clients of the same user converge.
+      expect(broadcasts).toHaveLength(1);
+      expect(broadcasts[0]).toMatchObject({ sessionId: 's-read-1', action: 'upsert', lastReadAt: 5_000 });
+    });
+
+    it('is max-wins: an older viewedAt does not regress a newer lastReadAt', async () => {
+      const registry = getSessionRegistry();
+      registry.upsertEntry({
+        sessionId: 's-read-2',
+        cwd: repoPath,
+        createdAt: 1_000,
+        lastAccessedAt: 1_000,
+        lastReadAt: 9_000,
+      });
+
+      const broadcasts: Array<unknown> = [];
+      handler.onHistoryUpdated = (_cwd, _entry, action) => { broadcasts.push(action); };
+
+      const msg = createMessage('session:mark-read', {
+        sessionId: 's-read-2',
+        cwd: repoPath,
+        viewedAt: 4_000, // older than the persisted 9_000
+      } as any);
+      const resp = await handler.handleMessage(msg, peerA);
+
+      expect((resp.payload as any).success).toBe(true);
+      // The response echoes the persisted value, not the stale incoming one.
+      expect((resp.payload as any).lastReadAt).toBe(9_000);
+      // No regression on disk and no spurious broadcast.
+      expect(registry.getEntry(repoPath, 's-read-2')?.lastReadAt).toBe(9_000);
+      expect(broadcasts).toHaveLength(0);
+    });
+
+    it('falls back to Date.now() when viewedAt is omitted', async () => {
+      const registry = getSessionRegistry();
+      registry.upsertEntry({
+        sessionId: 's-read-3',
+        cwd: repoPath,
+        createdAt: 1_000,
+        lastAccessedAt: 1_000,
+      });
+      const before = Date.now();
+      const msg = createMessage('session:mark-read', {
+        sessionId: 's-read-3',
+        cwd: repoPath,
+      } as any);
+      const resp = await handler.handleMessage(msg, peerA);
+      const after = Date.now();
+
+      expect((resp.payload as any).success).toBe(true);
+      const stamped = (resp.payload as any).lastReadAt as number;
+      expect(stamped).toBeGreaterThanOrEqual(before);
+      expect(stamped).toBeLessThanOrEqual(after);
     });
   });
 

@@ -693,6 +693,19 @@ claudeStore.ts
   streamError: string | null
   cards: Card[]
   historyTotal / historyHasMore / isLoadingHistory / historyError
+  // Email-style unread state lives on the wire as `lastReadAt` on
+  // ClaudeSessionSummary / SessionUpdatePayload (set server-side by the
+  // `session:mark-read` handler and broadcast on /sessions/history +
+  // /sessions/active). Derive `isSessionUnread(s)` = lastReadAt is a number
+  // AND older than lastTurnEndedAt. Missing `lastReadAt` is treated as
+  // "feature not engaged for this session" (not unread) — keeps stale
+  // builds / pre-feature registry entries from flooding the list purple.
+  // Inactive sessions can still be unread. `attendedSessionId` is the local
+  // "user is visible+focused on this session's page" signal — the attention
+  // hook uses it to fire `session:mark-read` on attach and re-fire if a
+  // turn ends mid-view. Cross-device sync falls out of the registry
+  // broadcast.
+  attendedSessionId: string | null
   // Session preference fan-out (mirrors agentPrefs[selectedAgent])
   selectedAgent: AgentId               // 'claude-code' | 'codex'
   agentPrefs: Record<AgentId, AgentPrefs>
@@ -721,6 +734,7 @@ cancelSession(sessionId)
 closeSession(sessionId)        // claude:close — kill process, keep registry entry
 endSession(sessionId)          // claude:end-task — kill + archive
 restoreSession(sessionId, cwd) // session:update-history { archived: false }
+markSessionRead(sessionId, cwd, viewedAt?) // session:mark-read — clears the email-style unread badge cross-device
 
 // History (the session list is provided by the `/sessions/history` + `/sessions/active`
 // bus subscriptions; there is no corresponding command. For one-shot reads use

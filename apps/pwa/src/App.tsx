@@ -329,6 +329,7 @@ function AppContent() {
     closeSession,
     endSession,
     restoreSession,
+    markSessionRead,
     listArchivedSessions,
     respondToUserInput,
     setSessionConfig,
@@ -921,6 +922,7 @@ function AppContent() {
             onUnsubscribeSession={unsubscribeSession}
             onSetActiveAgent={setActiveAgent}
             onListProjectRepos={listProjectRepos}
+            onMarkSessionRead={markSessionRead}
             getBus={getActiveBus}
   />
   );
@@ -1237,6 +1239,7 @@ function ProjectRouteSession({
   onUnsubscribeSession,
   onSetActiveAgent,
   onListProjectRepos,
+  onMarkSessionRead,
   getBus,
 }: {
   onConnect: (agentId: string, publicKey: string) => void;
@@ -1256,13 +1259,16 @@ function ProjectRouteSession({
   onUnsubscribeSession?: (sessionId: string) => void;
   onSetActiveAgent?: (agentId: string) => void;
   onListProjectRepos?: (cwd: string) => Promise<import('@sumicom/quicksave-shared').ProjectRepo[] | null>;
+  onMarkSessionRead?: ReturnType<typeof useClaudeOperations>['markSessionRead'];
   getBus: () => MessageBusClient | null;
 }) {
   const { projectId, sessionId: urlSessionId } = useParams<{ projectId: string; sessionId: string }>();
   // Hold the attention topic only while this tab is visible+focused so the
   // agent's push gate fires for the *other* devices the user isn't holding.
+  // Also stamps `lastReadAt` server-side via the bus so unread state is in
+  // sync across every PWA client of this user.
   const attentionSessionId = urlSessionId && urlSessionId !== 'new' ? urlSessionId : null;
-  useSessionAttention(attentionSessionId, getBus);
+  useSessionAttention(attentionSessionId, getBus, { markSessionRead: onMarkSessionRead });
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();

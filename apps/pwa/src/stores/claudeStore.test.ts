@@ -555,4 +555,31 @@ describe('claudeStore', () => {
       expect(s.summary).toBe('old');
     });
   });
+
+  // ── attended-session tracking ─────────────────────────────────────────
+
+  describe('attendedSessionId', () => {
+    beforeEach(() => {
+      useClaudeStore.setState({ attendedSessionId: null });
+    });
+
+    it('setAttendedSession swaps the slot only on actual change', () => {
+      const before = useClaudeStore.getState();
+      useClaudeStore.getState().setAttendedSession(null);
+      // Same state ref because attendedSessionId was already null.
+      expect(useClaudeStore.getState().attendedSessionId).toBe(before.attendedSessionId);
+
+      useClaudeStore.getState().setAttendedSession('s1');
+      expect(useClaudeStore.getState().attendedSessionId).toBe('s1');
+
+      useClaudeStore.getState().setAttendedSession(null);
+      expect(useClaudeStore.getState().attendedSessionId).toBeNull();
+    });
+
+    it('reset clears attendedSessionId', () => {
+      useClaudeStore.getState().setAttendedSession('s1');
+      useClaudeStore.getState().reset();
+      expect(useClaudeStore.getState().attendedSessionId).toBeNull();
+    });
+  });
 });

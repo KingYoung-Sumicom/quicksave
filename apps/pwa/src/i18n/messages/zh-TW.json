@@ -317,6 +317,7 @@
   "sessionStatus.label.thinking": "思考中",
   "sessionStatus.label.pending": "待處理",
   "sessionStatus.label.waiting": "等待中",
+  "sessionStatus.label.unread": "未讀",
   "sessionStatus.label.standby": "待命",
   "sessionStatus.label.closed": "已關閉",
 

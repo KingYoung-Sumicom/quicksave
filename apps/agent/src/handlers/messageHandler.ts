@@ -102,6 +102,8 @@ import {
   SessionDeleteHistoryResponsePayload,
   SessionListArchivedRequestPayload,
   SessionListArchivedResponsePayload,
+  SessionMarkReadRequestPayload,
+  SessionMarkReadResponsePayload,
   AgentId,
   CodexModelInfo,
   CodexListModelsResponsePayload,
@@ -752,6 +754,8 @@ export class MessageHandler {
           return this.handleDeleteHistory(message as Message<SessionDeleteHistoryRequestPayload>);
         case 'session:list-archived':
           return this.handleListArchived(message as Message<SessionListArchivedRequestPayload>);
+        case 'session:mark-read':
+          return this.handleMarkRead(message as Message<SessionMarkReadRequestPayload>);
         case 'project:list-summaries':
           return this.handleListProjectSummaries(message);
         case 'project:list-repos':
@@ -2442,6 +2446,50 @@ export class MessageHandler {
     const response = createMessage<SessionListArchivedResponsePayload>(
       'session:list-archived:response',
       { entries: entries.map(enrichEntry), total, offset, limit },
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  /**
+   * Stamp `lastReadAt` on a registry entry and broadcast the update so every
+   * connected PWA client converges on the same read state. The "unread" mark
+   * lives server-side under the user's group identity (see
+   * `docs/guidelines/sync-security.en.md`) — there's no per-device scoping,
+   * so reading on the phone clears the badge on the desktop too.
+   *
+   * Idempotent: late-arriving / out-of-order viewedAt values that are older
+   * than the persisted timestamp are dropped (max-wins) so a slow tab can't
+   * undo a fresh read from a faster one.
+   */
+  private handleMarkRead(
+    message: Message<SessionMarkReadRequestPayload>,
+  ): Message<SessionMarkReadResponsePayload> {
+    const { sessionId, cwd, viewedAt } = message.payload;
+    const stamp = typeof viewedAt === 'number' ? viewedAt : Date.now();
+    const existing = getSessionRegistry().getEntry(cwd, sessionId);
+    if (!existing) {
+      const failed = createMessage<SessionMarkReadResponsePayload>(
+        'session:mark-read:response',
+        { success: false, error: 'Entry not found' },
+      );
+      failed.id = message.id;
+      return failed;
+    }
+    const nextLastReadAt = Math.max(existing.lastReadAt ?? 0, stamp);
+    let entry = existing;
+    if (nextLastReadAt !== existing.lastReadAt) {
+      const updated = getSessionRegistry().updateEntry(cwd, sessionId, { lastReadAt: nextLastReadAt });
+      if (updated) entry = updated;
+      // Broadcast on /sessions/history so other PWA clients see the new
+      // read state immediately. /sessions/active is also re-emitted via
+      // sessionManager so the live-stats path stays consistent.
+      this.onHistoryUpdated?.(cwd, entry, 'upsert');
+      this.claudeService.emitSessionUpdate(sessionId);
+    }
+    const response = createMessage<SessionMarkReadResponsePayload>(
+      'session:mark-read:response',
+      { success: true, lastReadAt: entry.lastReadAt },
     );
     response.id = message.id;
     return response;

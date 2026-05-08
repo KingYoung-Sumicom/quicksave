@@ -140,6 +140,8 @@ export type MessageType =
   | 'session:delete-history:response' // agent-response: delete ack
   | 'session:list-archived'          // pwa-request: paginated archived history
   | 'session:list-archived:response' // agent-response: page of archived entries
+  | 'session:mark-read'              // pwa-request: clear the email-style unread mark on a session
+  | 'session:mark-read:response'     // agent-response: mark-read ack
   | 'session:history-updated'        // agent-push: session history changed
   // Push notifications (PWA → agent: hand off a web-push subscription for relay-side delivery)
   | 'push:subscription-offer'
@@ -443,6 +445,15 @@ export interface SessionRegistryEntry {
   reasoningEffort?: string;
   /** Auto-compact ceiling the session was last started/resumed with (Claude only). */
   contextWindow?: number;
+  /**
+   * Epoch ms of when this session was last viewed by ANY of the user's PWA
+   * clients. Drives the email-style "unread" indicator in the session list:
+   * a session is unread when `lastReadAt` is missing or older than the most
+   * recent interesting activity (`lastTurnEndedAt` / `hasPendingInput` flip).
+   * Optional/back-compat — older clients and pre-feature registry entries
+   * simply omit it, which the UI renders as "never read" (top of the list).
+   */
+  lastReadAt?: number;
 }
 
 export interface SessionUpdateHistoryRequestPayload {
@@ -464,6 +475,25 @@ export interface SessionDeleteHistoryRequestPayload {
 
 export interface SessionDeleteHistoryResponsePayload {
   success: boolean;
+  error?: string;
+}
+
+export interface SessionMarkReadRequestPayload {
+  sessionId: string;
+  cwd: string;
+  /**
+   * Epoch ms representing the moment the user observed the session. Optional —
+   * the agent falls back to its own `Date.now()` if absent. Forwarding the
+   * client clock is useful when network latency would otherwise mark a
+   * session "read AT THE END of the trip" instead of when it actually was.
+   */
+  viewedAt?: number;
+}
+
+export interface SessionMarkReadResponsePayload {
+  success: boolean;
+  /** Persisted timestamp the agent stamped onto the registry entry. */
+  lastReadAt?: number;
   error?: string;
 }
 
@@ -1279,6 +1309,10 @@ export interface ClaudeSessionSummary {
    * via the CLI's `get_context_usage` control_request. Only populated for
    * claude-code sessions. */
   lastTurnContextUsage?: ContextUsageBreakdown;
+  /** See `SessionRegistryEntry.lastReadAt` — the agent broadcasts it on the
+   * summary so the PWA can derive unread state directly from the wire snapshot
+   * instead of round-tripping through the registry path. */
+  lastReadAt?: number;
 }
 
 /** Category breakdown of current context window occupancy, as returned by the
@@ -1358,6 +1392,10 @@ export interface SessionUpdatePayload {
   lastTurnCacheCreationTokens?: number;
   lastTurnCacheReadTokens?: number;
   lastTurnContextUsage?: ContextUsageBreakdown;
+  /** See `SessionRegistryEntry.lastReadAt`. Pushed alongside live deltas so
+   *  multiple PWA clients of the same user converge on the same read state
+   *  the moment any one of them attends the session. */
+  lastReadAt?: number;
 }
 
 // Start Session
