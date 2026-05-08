@@ -60,6 +60,9 @@ beforeEach(() => {
   mockedPlatform.mockReturnValue('linux');
   mockedHomedir.mockReturnValue('/home/test');
   mockedExistsSync.mockReturnValue(false);
+  // GitHub Actions runners set XDG_CONFIG_HOME, which getUserUnitDir prefers
+  // over homedir(). Clear it so the homedir fallback (and thus the mock) wins.
+  delete process.env.XDG_CONFIG_HOME;
 });
 
 describe('wasLaunchedBySystemd', () => {
