@@ -59,6 +59,7 @@
   "machineInfo.projects.title": "Projects",
   "machineInfo.projects.empty": "No projects on this machine yet.",
   "machineInfo.projects.sessionCount": "{count, plural, one {# task} other {# tasks}}",
+  "machineInfo.projects.archivedCount": "{count, plural, one {# archived} other {# archived}}",
 
   "settings.notifications.title": "Notifications",
   "settings.notifications.description": "Get alerted when a task needs your attention.",

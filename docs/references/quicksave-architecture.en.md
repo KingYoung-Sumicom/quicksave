@@ -600,9 +600,10 @@ interface Message {
 | `terminal:` | PTY terminal (create/input/resize/rename/close) |
 | `files:` | Read-only file browser (list / read; pure request-response, no bus subscription) |
 | `attachment:` | Chunked upload + cancel for files and long-pasted text (see "Attachment Staging" in §三) |
+| `systemd:` | Linux-only `quicksave.service` user-unit install/uninstall/status (see `docs/references/agent-cli.md`) |
 | `bus:frame` | MessageBus envelope (transports opaque bus frames; see `packages/message-bus`) |
 | `ping`/`pong` | Heartbeat |
-| `handshake`/`handshake:ack` | Connection establishment |
+| `handshake`/`handshake:ack` | Connection establishment. Ack now carries `platform: 'linux' \| 'darwin' \| 'win32' \| 'other'` so the PWA can hide platform-specific UI (e.g. the systemd toggle) without a round-trip. Older agents omit the field; treat absence as "unknown — hide". |
 
 ### Claude-Related Message Types
 

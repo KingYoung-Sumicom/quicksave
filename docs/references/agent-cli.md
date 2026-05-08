@@ -72,6 +72,101 @@ see [`quicksave-architecture.en.md`](./quicksave-architecture.en.md) §七.
 - Triggers Web Push notifications through the relay when a permission
   prompt arrives and no PWA peer is currently subscribed.
 
+## Linux: auto-start with a systemd user unit
+
+On Linux hosts with systemd, the agent can run as a user-scoped service so it
+comes up at login and gets restarted on crash. A unit-file template ships at
+`apps/agent/templates/quicksave.service`.
+
+Install steps:
+
+```bash
+# 1. Find the absolute path to the quicksave binary
+QS_BIN=$(command -v quicksave)
+
+# 2. Drop the unit in place, substituting the binary path
+mkdir -p ~/.config/systemd/user
+sed "s|__QUICKSAVE_BIN__|$QS_BIN|" \
+    /path/to/quicksave/apps/agent/templates/quicksave.service \
+  > ~/.config/systemd/user/quicksave.service
+
+# 3. Enable + start
+systemctl --user daemon-reload
+systemctl --user enable --now quicksave.service
+
+# 4. (Optional) keep the daemon alive after logout
+loginctl enable-linger "$USER"
+```
+
+Logs go to the journal: `journalctl --user -u quicksave -f`.
+
+When the unit is enabled, the CLI's `ensureDaemon` path delegates startup to
+`systemctl --user restart quicksave` instead of self-spawning, so crash
+recovery is owned exclusively by systemd's `Restart=on-failure`. The
+hand-rolled detached-spawn path remains as a fallback for hosts where the
+unit isn't installed or where `systemctl --user` returns non-zero (e.g.
+no DBus session). A daemon launched under systemd records `managedBy:
+"systemd"` in `state/service.json` for diagnostic purposes.
+
+Note that `quicksave service stop` exits the daemon cleanly, which systemd
+treats as a successful stop — the unit will not auto-restart until the next
+login or until you run `systemctl --user start quicksave` (or just
+`quicksave` again, which now goes through `systemctl restart`).
+
+### PWA-driven install/uninstall
+
+The PWA's per-machine settings page (`/settings/m/:agentId`) exposes an
+"Auto-start at login" toggle that drives the same install path as the
+manual `sed`+`systemctl` recipe above. The toggle only renders when the
+connected agent reports `platform: 'linux'` in its handshake-ack and is
+backed by three IPC verbs handled in `messageHandler.ts`:
+
+| Verb                  | Purpose                                                                                       |
+| --------------------- | --------------------------------------------------------------------------------------------- |
+| `systemd:status`      | Returns the current `SystemdStatus` snapshot (available, installed, enabled, active, linger). |
+| `systemd:install`     | Writes `~/.config/systemd/user/quicksave.service`, runs `daemon-reload` + `enable --now`.     |
+| `systemd:uninstall`   | `disable --now`, removes the unit file, `daemon-reload` + `reset-failed`.                     |
+
+`systemd:install` computes the `ExecStart` line from the running daemon
+(`process.execPath` + the entry script resolved from `import.meta.url`), so
+the systemd-managed instance is byte-identical to whatever the user
+currently runs. `systemd:uninstall` defers the actual mutation to the next
+tick and returns an optimistic response synchronously, because `disable
+--now` will tear down the systemd-managed daemon (and therefore the IPC
+socket) before a normal response could flush.
+
+### Auto-start at boot vs. at login (lingering)
+
+A user-scoped systemd unit only runs while the user has an active session
+unless **lingering** is enabled. The mode is controlled by a single flag:
+
+| `loginctl enable-linger $USER` | When the unit runs |
+| --- | --- |
+| not set (default) | starts at login, stops at logout |
+| set | starts at boot, persists across logouts |
+
+The daemon **cannot** flip this itself — `loginctl enable-linger` writes
+to `/var/lib/systemd/linger/` which only root/polkit can touch, and the
+PWA has no TTY/display to prompt for sudo.
+
+Two ways to enable it on the machine:
+
+1. CLI helper (recommended — you only need this once per machine):
+
+   ```bash
+   quicksave service enable-boot
+   ```
+
+   This shells out to `sudo loginctl enable-linger $USER` with inherited
+   stdio so sudo can prompt you for a password in your own terminal.
+   No-ops if lingering is already on.
+
+2. Run `sudo loginctl enable-linger $USER` directly.
+
+The PWA's "Auto-start at login" toggle surfaces a hint with this command
+when the unit is enabled but lingering is off; once you run it the hint
+disappears on the next status refresh.
+
 ## Debug HTTP server
 
 When `QUICKSAVE_DEBUG=1` (or dev mode) is active, the daemon also starts

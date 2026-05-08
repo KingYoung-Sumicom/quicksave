@@ -13,7 +13,11 @@ export interface ProjectEntry {
   displayName: string;
   machineName: string;
   lastActivityAt: number;
+  /** Live, non-archived sessions for this project. */
   sessionCount: number;
+  /** Archived sessions for this project. Only populated while the
+   *  agent is connected (the Sync cache only persists `sessionCount`). */
+  archivedCount: number;
   lastSessionTitle?: string;
   hasActiveSession?: boolean;
   isConnected: boolean;
@@ -34,26 +38,31 @@ export function useProjects(): ProjectEntry[] {
     // cwd on two different machines doesn't collide.
     // Use lastPromptAt (stable during execution) in preference to lastModified
     // (updates on every streaming event — causes projects to jump in the list).
-    const liveStats = new Map<string, { lastActivityAt: number; sessionCount: number; lastSessionTitle?: string; hasActiveSession: boolean }>();
+    const liveStats = new Map<string, { lastActivityAt: number; sessionCount: number; archivedCount: number; lastSessionTitle?: string; hasActiveSession: boolean }>();
     for (const session of Object.values(sessions)) {
-      if (!session.cwd || !session.machineAgentId || session.archived) continue;
+      if (!session.cwd || !session.machineAgentId) continue;
       const key = `${session.machineAgentId}\0${session.cwd}`;
       const ts = session.lastPromptAt ?? session.lastModified;
       const existing = liveStats.get(key);
       if (!existing) {
         liveStats.set(key, {
-          lastActivityAt: ts,
-          sessionCount: 1,
-          lastSessionTitle: session.summary,
-          hasActiveSession: !!session.isActive,
+          lastActivityAt: session.archived ? 0 : ts,
+          sessionCount: session.archived ? 0 : 1,
+          archivedCount: session.archived ? 1 : 0,
+          lastSessionTitle: session.archived ? undefined : session.summary,
+          hasActiveSession: !session.archived && !!session.isActive,
         });
       } else {
-        existing.sessionCount++;
-        if (ts > existing.lastActivityAt) {
-          existing.lastActivityAt = ts;
-          existing.lastSessionTitle = session.summary;
+        if (session.archived) {
+          existing.archivedCount++;
+        } else {
+          existing.sessionCount++;
+          if (ts > existing.lastActivityAt) {
+            existing.lastActivityAt = ts;
+            existing.lastSessionTitle = session.summary;
+          }
+          if (session.isActive) existing.hasActiveSession = true;
         }
-        if (session.isActive) existing.hasActiveSession = true;
       }
     }
 
@@ -81,6 +90,7 @@ export function useProjects(): ProjectEntry[] {
           machineName: machine.nickname,
           lastActivityAt: live ? Math.max(live.lastActivityAt, cached.lastActivityAt) : cached.lastActivityAt,
           sessionCount: live ? live.sessionCount : cached.sessionCount,
+          archivedCount: live?.archivedCount ?? 0,
           lastSessionTitle: live?.lastSessionTitle ?? cached.lastSessionTitle,
           hasActiveSession: live?.hasActiveSession,
           isConnected: machineIsConnected,
@@ -100,6 +110,7 @@ export function useProjects(): ProjectEntry[] {
           machineName: machine.nickname,
           lastActivityAt: live?.lastActivityAt ?? machine.lastConnectedAt ?? machine.addedAt,
           sessionCount: live?.sessionCount ?? 0,
+          archivedCount: live?.archivedCount ?? 0,
           lastSessionTitle: live?.lastSessionTitle,
           hasActiveSession: live?.hasActiveSession,
           isConnected: machineIsConnected,

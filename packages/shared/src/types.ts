@@ -95,6 +95,13 @@ export type MessageType =
   | 'agent:update:response'
   | 'agent:restart'
   | 'agent:restart:response'
+  // systemd user-unit (auto-start at login) — Linux only
+  | 'systemd:status'
+  | 'systemd:status:response'
+  | 'systemd:install'
+  | 'systemd:install:response'
+  | 'systemd:uninstall'
+  | 'systemd:uninstall:response'
   // Claude Code SDK Remote Control
   | 'claude:start'
   | 'claude:start:response'
@@ -571,6 +578,9 @@ export interface HandshakeAckPayload {
   latestVersion?: string; // Cached npm registry check (agent-side, 12h dedup)
   devBuild?: boolean; // true when running from source (non-production build)
   codexModels?: CodexModelInfo[]; // Cached OpenAI /v1/models (agent-side, 12h dedup)
+  /** OS the agent is running on. Lets the PWA hide platform-specific UI
+   *  (e.g. the systemd auto-start toggle) on hosts where it can't apply. */
+  platform?: 'linux' | 'darwin' | 'win32' | 'other';
 }
 
 // Codex / OpenAI model discovery
@@ -920,6 +930,41 @@ export type AgentRestartRequestPayload = Record<string, never>;
 export interface AgentRestartResponsePayload {
   success: boolean;
   error?: string;
+}
+
+// systemd user-unit (Linux auto-start at login).
+// All three verbs share the same status payload as the response body so the
+// PWA can re-render the toggle from a single shape regardless of which call
+// fired. `available: false` is the signal for the PWA to hide the section.
+export interface SystemdStatusPayload {
+  available: boolean;
+  unitInstalled: boolean;
+  unitEnabled: boolean;
+  isActive: boolean;
+  lingerEnabled: boolean;
+  unitDir: string;
+  unitPath: string;
+  /** ExecStart line that the daemon would write if asked to install. */
+  suggestedExecStart: string;
+  /** ExecStart line currently in the on-disk unit file, if installed. */
+  currentExecStart?: string;
+}
+
+export type SystemdStatusRequestPayload = Record<string, never>;
+export type SystemdStatusResponsePayload = SystemdStatusPayload;
+
+export type SystemdInstallRequestPayload = Record<string, never>;
+export interface SystemdInstallResponsePayload {
+  success: boolean;
+  error?: string;
+  status: SystemdStatusPayload;
+}
+
+export type SystemdUninstallRequestPayload = Record<string, never>;
+export interface SystemdUninstallResponsePayload {
+  success: boolean;
+  error?: string;
+  status: SystemdStatusPayload;
 }
 
 // ============================================================================

@@ -31,6 +31,9 @@ import {
   type AgentCheckUpdateResponsePayload,
   type AgentUpdateResponsePayload,
   type AgentRestartResponsePayload,
+  type SystemdStatusResponsePayload,
+  type SystemdInstallResponsePayload,
+  type SystemdUninstallResponsePayload,
   type GitConfigGetResponsePayload,
   type GitConfigSetResponsePayload,
   type Repository,
@@ -743,6 +746,23 @@ export function useGitOperations(
     }
   }, [sendCommand]);
 
+  // systemd auto-start at login (Linux only — agent returns
+  // `available: false` on other platforms so the UI can hide the section).
+  const getSystemdStatus = useCallback(
+    () => sendCommand<SystemdStatusResponsePayload>('systemd:status', {}, 5000),
+    [sendCommand],
+  );
+
+  const installSystemdUnit = useCallback(
+    () => sendCommand<SystemdInstallResponsePayload>('systemd:install', {}, 30000),
+    [sendCommand],
+  );
+
+  const uninstallSystemdUnit = useCallback(
+    () => sendCommand<SystemdUninstallResponsePayload>('systemd:uninstall', {}, 30000),
+    [sendCommand],
+  );
+
   return {
     cancelPendingGit,
     fetchStatus,
@@ -779,5 +799,8 @@ export function useGitOperations(
     checkAgentUpdate,
     updateAgent,
     restartAgent,
+    getSystemdStatus,
+    installSystemdUnit,
+    uninstallSystemdUnit,
   };
 }

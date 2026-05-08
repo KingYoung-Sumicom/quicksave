@@ -337,6 +337,45 @@ serviceCmd
     console.log(`Peers:      ${state.peerCount}`);
   });
 
+// `enable-boot` is the only place the user-scoped install path needs root —
+// `loginctl enable-linger` writes to `/var/lib/systemd/linger/<user>` which
+// only root or polkit can touch. The PWA can't prompt for sudo (no TTY, no
+// display), so we provide this CLI helper as the canonical "make the unit
+// survive logout / start at boot" knob. It just shells out to sudo with
+// inherited stdio — the user types their password into their own terminal.
+serviceCmd
+  .command('enable-boot')
+  .description('Enable the systemd user instance to start at boot (runs `sudo loginctl enable-linger $USER`)')
+  .action(async () => {
+    const { platform } = await import('os');
+    if (platform() !== 'linux') {
+      console.error('enable-boot is Linux-only (uses systemd `loginctl enable-linger`).');
+      process.exit(1);
+    }
+    const { lingerIsEnabled } = await import('./service/systemdUnit.js');
+    if (lingerIsEnabled()) {
+      console.log('Lingering is already enabled — the agent will run at boot.');
+      return;
+    }
+    const user = process.env.USER || process.env.LOGNAME;
+    if (!user) {
+      console.error('Cannot determine current user (USER / LOGNAME unset).');
+      process.exit(1);
+    }
+    const { spawnSync } = await import('child_process');
+    console.log(`Running: sudo loginctl enable-linger ${user}`);
+    const result = spawnSync('sudo', ['loginctl', 'enable-linger', user], { stdio: 'inherit' });
+    if (result.error) {
+      console.error('Failed to invoke sudo:', result.error.message);
+      process.exit(1);
+    }
+    if (result.status !== 0) {
+      process.exit(result.status ?? 1);
+    }
+    console.log('Lingering enabled. The systemd user instance will now start at boot.');
+    console.log('Tip: run `quicksave service status` to confirm the daemon comes up after the next reboot.');
+  });
+
 // ---------------------------------------------------------------------------
 // Helper: connect to running daemon, run callback, close
 // ---------------------------------------------------------------------------

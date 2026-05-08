@@ -1,0 +1,34 @@
+[Unit]
+Description=Quicksave agent daemon
+Documentation=https://quicksave.dev
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace `__QUICKSAVE_BIN__` with the absolute path printed by:
+#   command -v quicksave
+# (or use `node /absolute/path/to/dist/index.js` if you run from source).
+# An absolute node path is recommended over `/usr/bin/env node` because
+# nvm / Volta shims often aren't on PATH inside a systemd user session.
+ExecStart=__QUICKSAVE_BIN__ service run
+
+# Restart policy: only on crash. Clean exits (e.g. `service stop`) won't
+# fight the user. The CLI's auto-spawn fallback handles cold starts when
+# the unit is disabled.
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+
+# Optional overrides — uncomment if you need them:
+# Environment=QUICKSAVE_HOME=%h/.quicksave
+# Environment=QUICKSAVE_DEBUG=1
+# Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+# Logs go to the journal by default (`journalctl --user -u quicksave`).
+# To also keep the rotating file the self-restart launcher uses:
+# StandardOutput=append:%h/.quicksave/run/daemon.log
+# StandardError=inherit
+
+[Install]
+WantedBy=default.target

@@ -19,6 +19,7 @@ import { fileURLToPath } from 'url';
 import { IpcClient } from './ipcClient.js';
 import { readServiceState } from './stateStore.js';
 import { isProcessAlive, cleanStaleRuntime, getRunDir } from './singleton.js';
+import { startUserUnit, userUnitIsEnabled } from './systemdUnit.js';
 import { shouldRestartDaemon, IPC_VERSION, BUILD_ID } from './types.js';
 import type { HelloResult } from './types.js';
 
@@ -92,10 +93,30 @@ export async function ensureDaemon(): Promise<EnsureDaemonResult> {
 }
 
 /**
- * Spawn a new daemon process in detached mode and wait for it to be ready.
- * Retries once if the first attempt times out (cleans stale files between attempts).
+ * Bring a daemon up and connect to it.
+ *
+ * Preferred path: ask the user's systemd unit to start. Restart=on-failure
+ * then owns crash recovery, so we don't end up with two competing supervisors
+ * for the same singleton lock. If the unit isn't installed/enabled, or the
+ * `systemctl` call fails for any reason, fall back to the detached spawn
+ * path that's been the default on every host.
  */
 async function startAndConnect(): Promise<EnsureDaemonResult> {
+  if (userUnitIsEnabled()) {
+    if (startUserUnit()) {
+      try {
+        return await waitForDaemon();
+      } catch {
+        // systemd accepted the request but the daemon never became ready in
+        // time — fall through to the self-spawn path so the user isn't
+        // stranded by a broken unit.
+        cleanStaleRuntime();
+        console.warn('systemd-managed daemon failed to become ready; falling back to direct spawn.');
+      }
+    } else {
+      console.warn('Failed to start quicksave.service via systemctl; falling back to direct spawn.');
+    }
+  }
   for (let attempt = 1; attempt <= MAX_SPAWN_ATTEMPTS; attempt++) {
     spawnDaemon();
     try {

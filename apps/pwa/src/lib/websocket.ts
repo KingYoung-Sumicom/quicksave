@@ -34,7 +34,7 @@ export type SigningKeyPairProvider = () => Promise<{
 export type ConnectionStep = 'signaling' | 'waiting-for-agent' | 'key-exchange' | 'handshake';
 
 export type ConnectionEventHandler = {
-  onConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], preferences?: ClaudePreferences, agentVersion?: string, latestVersion?: string, devBuild?: boolean, codexModels?: CodexModelInfo[]) => void;
+  onConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], preferences?: ClaudePreferences, agentVersion?: string, latestVersion?: string, devBuild?: boolean, codexModels?: CodexModelInfo[], platform?: 'linux' | 'darwin' | 'win32' | 'other') => void;
   onDisconnected: (agentId?: string) => void;
   onReconnecting: (attempt: number, maxAttempts: number) => void;
   onMessage: (message: Message, fromAgentId: string) => void;
@@ -553,7 +553,7 @@ export class WebSocketClient {
       if (message.type === 'handshake:ack') {
         const payload = message.payload as HandshakeAckPayload & { license?: License };
         const isPro = payload.license ? verifyLicense(payload.license) : false;
-        this.eventHandlers.onConnected(session.agentId, payload.repoPath, isPro, payload.availableRepos, payload.availableCodingPaths, payload.preferences, payload.agentVersion, payload.latestVersion, payload.devBuild, payload.codexModels);
+        this.eventHandlers.onConnected(session.agentId, payload.repoPath, isPro, payload.availableRepos, payload.availableCodingPaths, payload.preferences, payload.agentVersion, payload.latestVersion, payload.devBuild, payload.codexModels, payload.platform);
         return;
       }
 

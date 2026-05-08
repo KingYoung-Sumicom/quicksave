@@ -166,6 +166,12 @@ export interface ServiceState {
   signalingServer: string;
   connectionState: 'connected' | 'connecting' | 'disconnected';
   peerCount: number;
+  /**
+   * Set to `'systemd'` when the daemon detected it was spawned by a systemd
+   * user unit. Absent otherwise — older daemons and direct invocations leave
+   * this field undefined, and the CLI treats undefined as "self-managed".
+   */
+  managedBy?: 'systemd';
 }
 
 // ---------------------------------------------------------------------------

@@ -131,7 +131,16 @@ import {
   FilesListResponsePayload,
   FilesReadRequestPayload,
   FilesReadResponsePayload,
+  SystemdStatusResponsePayload,
+  SystemdInstallResponsePayload,
+  SystemdUninstallResponsePayload,
 } from '@sumicom/quicksave-shared';
+import {
+  getSystemdStatus,
+  installUserUnit,
+  uninstallUserUnit,
+  systemctlAvailable,
+} from '../service/systemdUnit.js';
 import { GitOperations } from '../git/operations.js';
 import type { PushClient } from '../service/pushClient.js';
 import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, removeManagedRepo, addManagedCodingPath, removeManagedCodingPath } from '../config.js';
@@ -152,7 +161,7 @@ import { getEventStore } from '../storage/eventStore.js';
 import { readdir, stat, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, dirname, basename } from 'path';
-import { homedir } from 'os';
+import { homedir, platform as osPlatform } from 'os';
 import { spawnAppServer } from '../ai/codexAppServer/index.js';
 import type { Model as CodexAppServerModel } from '../ai/codexAppServer/schema/generated/v2/Model.js';
 
@@ -162,6 +171,14 @@ const VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
 // every PWA reload; short enough that plan upgrades / model rollouts surface
 // within the same session day. Force-refreshes still bypass the TTL.
 const CODEX_MODELS_TTL_MS = 30 * 60 * 1000;
+
+/** Coerce `os.platform()` into the narrow union the PWA expects. Anything
+ *  outside the three first-class platforms gets `'other'` so the field is
+ *  always present and the PWA doesn't have to handle `undefined`. */
+function normalizePlatform(p: NodeJS.Platform): 'linux' | 'darwin' | 'win32' | 'other' {
+  if (p === 'linux' || p === 'darwin' || p === 'win32') return p;
+  return 'other';
+}
 
 /** Shallow equality on a model list. Used to suppress no-op
  *  `/codex/models` broadcasts after a TTL refresh that returned the
@@ -692,6 +709,12 @@ export class MessageHandler {
           return this.handleAgentUpdate(message);
         case 'agent:restart':
           return this.handleAgentRestart(message);
+        case 'systemd:status':
+          return this.handleSystemdStatus(message);
+        case 'systemd:install':
+          return this.handleSystemdInstall(message);
+        case 'systemd:uninstall':
+          return this.handleSystemdUninstall(message);
         case 'codex:list-models':
           return this.handleCodexListModels(message);
         case 'codex:login-start':
@@ -780,6 +803,7 @@ export class MessageHandler {
       latestVersion: this.latestVersionCache?.version,
       devBuild: !this.productionBuild || undefined,
       codexModels: this.codexModelsCache?.models,
+      platform: normalizePlatform(osPlatform()),
     });
     response.id = message.id;
 
@@ -1843,6 +1867,80 @@ export class MessageHandler {
       response.id = message.id;
       return response;
     }
+  }
+
+  // ==========================================================================
+  // systemd user-unit (Linux auto-start at login)
+  //
+  // The PWA toggles install/uninstall from the per-machine settings page.
+  // These handlers are no-ops on non-Linux hosts (the status payload's
+  // `available: false` field is the gate the PWA uses to hide the section,
+  // so non-Linux still gets a well-formed response instead of an error).
+  // ==========================================================================
+
+  private handleSystemdStatus(message: Message): Message<SystemdStatusResponsePayload> {
+    const status = getSystemdStatus();
+    const response = createMessage<SystemdStatusResponsePayload>('systemd:status:response', status);
+    response.id = message.id;
+    return response;
+  }
+
+  private handleSystemdInstall(message: Message): Message<SystemdInstallResponsePayload> {
+    if (!systemctlAvailable()) {
+      const response = createMessage<SystemdInstallResponsePayload>('systemd:install:response', {
+        success: false,
+        error: 'systemctl --user is not available on this host',
+        status: getSystemdStatus(),
+      });
+      response.id = message.id;
+      return response;
+    }
+    const result = installUserUnit();
+    const response = createMessage<SystemdInstallResponsePayload>('systemd:install:response', result);
+    response.id = message.id;
+    return response;
+  }
+
+  private handleSystemdUninstall(message: Message): Message<SystemdUninstallResponsePayload> {
+    // Uninstalling can stop the systemd-managed daemon as a side effect — if
+    // the running process IS that daemon, `disable --now` would kill our IPC
+    // server before the response reaches the PWA. So we compute the response
+    // up front (which captures the pre-uninstall status) but defer the
+    // actual mutation until next tick, giving the bus transport a chance to
+    // flush. The next CLI invocation will hit `ensureDaemon`, which falls
+    // back to detached spawn now that the unit is gone.
+    if (!systemctlAvailable()) {
+      const response = createMessage<SystemdUninstallResponsePayload>('systemd:uninstall:response', {
+        success: false,
+        error: 'systemctl --user is not available on this host',
+        status: getSystemdStatus(),
+      });
+      response.id = message.id;
+      return response;
+    }
+    setImmediate(() => {
+      try {
+        uninstallUserUnit();
+      } catch (err) {
+        console.error('[systemd] deferred uninstall failed:', err);
+      }
+    });
+    // Optimistic response: report the post-uninstall shape (unitInstalled,
+    // unitEnabled, isActive all expected to flip false). We can't actually
+    // observe the post state because we haven't run the disable yet.
+    const optimistic = getSystemdStatus();
+    const response = createMessage<SystemdUninstallResponsePayload>('systemd:uninstall:response', {
+      success: true,
+      status: {
+        ...optimistic,
+        unitInstalled: false,
+        unitEnabled: false,
+        isActive: false,
+        currentExecStart: undefined,
+      },
+    });
+    response.id = message.id;
+    return response;
   }
 
   private async handleCodexListModels(

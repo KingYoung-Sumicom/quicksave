@@ -60,6 +60,10 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   'agent:check-update',
   'agent:update',
   'agent:restart',
+  // systemd user-unit (Linux only — agent returns available:false elsewhere)
+  'systemd:status',
+  'systemd:install',
+  'systemd:uninstall',
   // codex
   'codex:list-models',
   'codex:login-start',

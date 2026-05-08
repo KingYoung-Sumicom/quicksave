@@ -14,6 +14,10 @@ export interface AgentConnectionState {
   isPro: boolean;
   agentVersion: string | null;
   devBuild: boolean;
+  /** OS the agent reported in the handshake-ack. `undefined` means the agent
+   *  is older than the platform-aware build; treat as "unknown — hide
+   *  platform-specific UI to be safe". */
+  platform?: 'linux' | 'darwin' | 'win32' | 'other';
   connectedAt: number | null;
   error: string | null;
   /** Relay's view of whether the agent is reachable.
@@ -69,7 +73,7 @@ interface ConnectionStore {
 
   // Multi-agent actions
   setAgentConnecting: (agentId: string) => void;
-  setAgentConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string, devBuild?: boolean) => void;
+  setAgentConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string, devBuild?: boolean, platform?: 'linux' | 'darwin' | 'win32' | 'other') => void;
   setAgentDisconnected: (agentId: string) => void;
   setAgentError: (agentId: string, error: string) => void;
   setAgentOnlineFor: (agentId: string, online: boolean) => void;
@@ -240,7 +244,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       },
     })),
 
-  setAgentConnected: (agentId, repoPath, isPro, availableRepos, availableCodingPaths, agentVersion, devBuild) =>
+  setAgentConnected: (agentId, repoPath, isPro, availableRepos, availableCodingPaths, agentVersion, devBuild, platform) =>
     set((state) => ({
       agentConnections: {
         ...state.agentConnections,
@@ -252,6 +256,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
           isPro,
           agentVersion: agentVersion || null,
           devBuild: devBuild || false,
+          platform,
           connectedAt: Date.now(),
           error: null,
         },

@@ -286,6 +286,9 @@ function AppContent() {
     checkAgentUpdate,
     updateAgent,
     restartAgent,
+    getSystemdStatus,
+    installSystemdUnit,
+    uninstallSystemdUnit,
   } = useGitOperations(clientRef, getActiveBus);
 
   /**
@@ -344,48 +347,6 @@ function AppContent() {
   const [showAgentSettings, setShowAgentSettings] = useState(false);
   const [showGitIdentityModal, setShowGitIdentityModal] = useState(false);
 
-
-  // Track visualViewport height → CSS variable so #root shrinks when keyboard opens.
-  useEffect(() => {
-    const vv = window.visualViewport;
-    const setHeight = () => {
-      const h = vv ? vv.height : window.innerHeight;
-      document.documentElement.style.setProperty('--vv-height', `${h}px`);
-      document.documentElement.scrollTop = 0;
-      document.body.scrollTop = 0;
-    };
-    setHeight();
-    vv?.addEventListener('resize', setHeight);
-    vv?.addEventListener('scroll', setHeight);
-
-    // On focus, poll each rAF until viewport height stabilises — this catches the
-    // keyboard animation on iOS before the first resize/scroll event fires.
-    const onFocus = (e: FocusEvent) => {
-      const target = e.target;
-      if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLTextAreaElement)) return;
-      let last = -1;
-      let stable = 0;
-      const poll = () => {
-        const h = vv ? vv.height : window.innerHeight;
-        document.documentElement.style.setProperty('--vv-height', `${h}px`);
-        if (h === last) {
-          if (++stable >= 3) return; // settled for 3 consecutive frames
-        } else {
-          stable = 0;
-          last = h;
-        }
-        requestAnimationFrame(poll);
-      };
-      requestAnimationFrame(poll);
-    };
-    document.addEventListener('focusin', onFocus);
-
-    return () => {
-      vv?.removeEventListener('resize', setHeight);
-      vv?.removeEventListener('scroll', setHeight);
-      document.removeEventListener('focusin', onFocus);
-    };
-  }, []);
 
   // Prevent body bounce scroll
   useEffect(() => {
@@ -577,7 +538,7 @@ function AppContent() {
     if (clientRef.current) return;
 
     const client = new WebSocketClient(signalingServer, identityPublicKey, {
-      onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences, agentVersion, latestVersion, devBuild, codexModels) => {
+      onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences, agentVersion, latestVersion, devBuild, codexModels, platform) => {
         const { transport } = ensureBusForAgent(agentId);
         transport.notifyConnected();
         // Each handshake-ack establishes a fresh agent session and the agent
@@ -608,7 +569,7 @@ function AppContent() {
           handlersRef.current.setCurrentRepoPath(path);
         }
         // Update multi-agent connection map (authoritative per-agent state)
-        useConnectionStore.getState().setAgentConnected(agentId, path, pro, availableRepos, availableCodingPaths, agentVersion, devBuild);
+        useConnectionStore.getState().setAgentConnected(agentId, path, pro, availableRepos, availableCodingPaths, agentVersion, devBuild, platform);
         const repoPaths = availableRepos?.map((r) => r.path);
         const codingPaths = availableCodingPaths?.map((p) => p.path);
         handlersRef.current.recordConnection(agentId, path, pro, repoPaths, codingPaths);
@@ -1029,7 +990,7 @@ function AppContent() {
                 <Route path="/p/:projectId/files/*" element={<FileBrowserPage />} />
                 <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} onConnect={handleConnect} onStartSession={startSession} />} />
                 <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />} />
-                <Route path="/settings/m/:agentId" element={<MachineInfoPage onSetActiveAgent={setActiveAgent} onCheckAgentUpdate={checkAgentUpdate} onUpdateAgent={updateAgent} onRestartAgent={restartAgent} onDeleteProject={handleDeleteProject} />} />
+                <Route path="/settings/m/:agentId" element={<MachineInfoPage onSetActiveAgent={setActiveAgent} onCheckAgentUpdate={checkAgentUpdate} onUpdateAgent={updateAgent} onRestartAgent={restartAgent} onDeleteProject={handleDeleteProject} onGetSystemdStatus={getSystemdStatus} onInstallSystemdUnit={installSystemdUnit} onUninstallSystemdUnit={uninstallSystemdUnit} />} />
                 <Route path="/settings/m/:agentId/p/:projectId/archived" element={<ArchivedSessionsPage onSetActiveAgent={setActiveAgent} onListArchivedSessions={listArchivedSessions} onRestoreSession={restoreSession} />} />
                 <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
                 <Route path="/pair" element={<JoinGroupPage />} />
@@ -1050,7 +1011,7 @@ function AppContent() {
           <Route path="/p/:projectId/files/*" element={<FileBrowserPage />} />
           <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} onConnect={handleConnect} onStartSession={startSession} />} />
           <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />} />
-          <Route path="/settings/m/:agentId" element={<MachineInfoPage onSetActiveAgent={setActiveAgent} onCheckAgentUpdate={checkAgentUpdate} onUpdateAgent={updateAgent} onRestartAgent={restartAgent} onDeleteProject={handleDeleteProject} />} />
+          <Route path="/settings/m/:agentId" element={<MachineInfoPage onSetActiveAgent={setActiveAgent} onCheckAgentUpdate={checkAgentUpdate} onUpdateAgent={updateAgent} onRestartAgent={restartAgent} onDeleteProject={handleDeleteProject} onGetSystemdStatus={getSystemdStatus} onInstallSystemdUnit={installSystemdUnit} onUninstallSystemdUnit={uninstallSystemdUnit} />} />
           <Route path="/settings/m/:agentId/p/:projectId/archived" element={<ArchivedSessionsPage onSetActiveAgent={setActiveAgent} onListArchivedSessions={listArchivedSessions} onRestoreSession={restoreSession} />} />
           <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
           <Route path="/pair" element={<JoinGroupPage />} />

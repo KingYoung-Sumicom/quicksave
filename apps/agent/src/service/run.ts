@@ -36,6 +36,7 @@ import {
   cleanStaleRuntime,
 } from './singleton.js';
 import { writeServiceState, removeServiceState } from './stateStore.js';
+import { wasLaunchedBySystemd } from './systemdUnit.js';
 import { IPC_VERSION, BUILD_ID, isDebugEnabled, isDev } from './types.js';
 import type {
   ServiceState,
@@ -502,6 +503,7 @@ export async function runDaemon(): Promise<void> {
     signalingServer: config.signalingServer,
     connectionState: 'disconnected',
     peerCount: 0,
+    ...(wasLaunchedBySystemd() ? { managedBy: 'systemd' as const } : {}),
   };
 
   ipcServer.setStatusProvider((): StatusResult => {
