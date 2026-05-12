@@ -31,7 +31,7 @@ import {
 } from '../lib/attachmentUploader';
 import { attachmentsFromDataTransfer, inspectPaste, processPasteInspection } from '../lib/attachments';
 
-type StartSessionOpts = { agent?: 'claude-code' | 'codex'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
+type StartSessionOpts = { agent?: 'claude-code' | 'codex' | 'opencode' | 'pi'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
 type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
 
 interface SlashCommand {

@@ -1354,6 +1354,17 @@ function ProjectRouteSession({
     },
     [onResumeSession, cwd, ensureActiveAgent]
   );
+  // Ensure the correct agent is active before sending a permission response.
+  // Without this, a reconnect that leaves a different agent as activeAgentId
+  // routes the command to the wrong agent's bus (success: false → permission
+  // never clears even though the PWA log shows "resolved OK").
+  const boundRespondToUserInput = useCallback(
+    (response: ClaudeUserInputResponsePayload) => {
+      ensureActiveAgent();
+      onRespondToUserInput?.(response);
+    },
+    [ensureActiveAgent, onRespondToUserInput]
+  );
 
   if (!isReady) {
     return (
@@ -1383,19 +1394,23 @@ function ProjectRouteSession({
           cwd={cwd}
           onListProjectRepos={onListProjectRepos}
           onSetSessionConfig={(key, value) => {
+            ensureActiveAgent();
             const sid = getSessionId();
             if (sid) onSetSessionConfig(sid, key, value);
           }}
-          onSendControlRequest={onSendControlRequest}
+          onSendControlRequest={(...args) => { ensureActiveAgent(); return onSendControlRequest(...args); }}
           onCloseSession={() => {
+            ensureActiveAgent();
             const sid = getSessionId();
             if (sid) onCloseSession(sid);
           }}
           onEndSession={() => {
+            ensureActiveAgent();
             const sid = getSessionId();
             if (sid) onEndSession(sid);
           }}
           onCancelSession={() => {
+            ensureActiveAgent();
             const sid = getSessionId();
             if (sid) onCancelSession(sid);
           }}
@@ -1408,12 +1423,12 @@ function ProjectRouteSession({
         onSelectSession={(sid) => navigate(`${projectBasePath}/s/${sid}`)}
         onNewSession={() => navigate(`/add?tab=session&projectId=${encodeURIComponent(projectId ?? '')}`)}
         onGetSessionCards={boundGetCards}
-        onSetSessionConfig={(sid, key, value) => onSetSessionConfig(sid, key, value)}
-        onSendControlRequest={onSendControlRequest}
+        onSetSessionConfig={(sid, key, value) => { ensureActiveAgent(); onSetSessionConfig(sid, key, value); }}
+        onSendControlRequest={(...args) => { ensureActiveAgent(); return onSendControlRequest(...args); }}
         onUnsubscribeSession={onUnsubscribeSession}
         onStartSession={boundStartSession}
         onResumeSession={boundResumeSession}
-        onRespondToUserInput={onRespondToUserInput}
+        onRespondToUserInput={boundRespondToUserInput}
       />
     </>
   );

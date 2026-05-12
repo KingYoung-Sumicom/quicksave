@@ -54,6 +54,8 @@ interface AgentSession {
   keyPair: KeyPair; // ephemeral per session
   keyExchangeRetries: number;
   keyExchangeTimeout: ReturnType<typeof setTimeout> | null;
+  /** Messages queued while key exchange is in progress (DEK not yet set). Flushed after handshake:ack. */
+  dekPendingMessages: Message[];
 }
 
 /**
@@ -225,6 +227,7 @@ export class WebSocketClient {
       keyPair: generateKeyPair(),
       keyExchangeRetries: 0,
       keyExchangeTimeout: null,
+      dekPendingMessages: [],
     };
 
     this.sessions.set(agentId, session);
@@ -380,6 +383,7 @@ export class WebSocketClient {
             session.keyExchangeComplete = false;
             session.sessionDEK = null;
             session.keyExchangeRetries = 0;
+            session.dekPendingMessages = [];
             if (session.keyExchangeTimeout) {
               clearTimeout(session.keyExchangeTimeout);
               session.keyExchangeTimeout = null;
@@ -554,6 +558,10 @@ export class WebSocketClient {
         const payload = message.payload as HandshakeAckPayload & { license?: License };
         const isPro = payload.license ? verifyLicense(payload.license) : false;
         this.eventHandlers.onConnected(session.agentId, payload.repoPath, isPro, payload.availableRepos, payload.availableCodingPaths, payload.preferences, payload.agentVersion, payload.latestVersion, payload.devBuild, payload.codexModels, payload.platform);
+        // Flush any messages that arrived while key exchange was in progress.
+        // Sent after onConnected so the bus transport's re-sub frames go first.
+        const queued = session.dekPendingMessages.splice(0);
+        for (const m of queued) this.encryptAndSend(session, m);
         return;
       }
 
@@ -603,17 +611,43 @@ export class WebSocketClient {
       throw new Error(`No session for agent ${agentId}`);
     }
 
+    // Queue if key exchange isn't complete (DEK not yet set). This covers the
+    // reconnect window between attemptReconnect() clearing the DEK and the new
+    // handshake:ack arriving. Messages are flushed after handshake:ack.
     if (!session.sessionDEK) {
-      throw new Error('No encryption key available — key exchange may not be complete');
+      session.dekPendingMessages.push(message);
+      return;
     }
 
+    this.encryptAndSend(session, message);
+  }
+
+  private encryptAndSend(session: AgentSession, message: Message): void {
     // Compress before encryption for better compression ratio
     const serialized = serializeMessage(message);
     this.compress(serialized).then((compressed) => {
       // Re-check DEK: may have been cleared during async compression (e.g. reconnect)
-      if (!session.sessionDEK) return;
+      if (!session.sessionDEK) {
+        session.dekPendingMessages.push(message);
+        return;
+      }
       const encrypted = encryptWithSharedSecret(compressed, session.sessionDEK);
-      this.sendRouted(agentId, encrypted);
+      // Re-check socket: may have closed during async compression (e.g. iOS
+      // backgrounding kills the TCP connection while the browser still reports
+      // readyState=OPEN). Re-queue so the message is delivered after the next
+      // handshake:ack flushes dekPendingMessages.
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        session.dekPendingMessages.push(message);
+        return;
+      }
+      this.sendRouted(session.agentId, encrypted);
+    }).catch(() => {
+      // compress() can fail when iOS revokes blob URL access during pagehide
+      // (or other background transitions). Re-queue so the message is retried
+      // after the next handshake:ack.
+      if (this.sessions.has(session.agentId)) {
+        session.dekPendingMessages.push(message);
+      }
     });
   }
 
@@ -685,7 +719,9 @@ export class WebSocketClient {
 
   private async attemptReconnect(): Promise<void> {
     try {
-      // Reset session key exchange state — we need to re-exchange after reconnect
+      // Reset session key exchange state — we need to re-exchange after reconnect.
+      // dekPendingMessages is intentionally preserved: commands queued while the
+      // socket was down are still valid and will be flushed after handshake:ack.
       for (const session of this.sessions.values()) {
         session.keyExchangeComplete = false;
         session.sessionDEK = null;
@@ -727,6 +763,7 @@ export class WebSocketClient {
       }
       session.sessionDEK = null;
       session.keyExchangeComplete = false;
+      session.dekPendingMessages = [];
       this.sessions.delete(agentId);
     }
   }
@@ -772,6 +809,7 @@ export class WebSocketClient {
     this.eventHandlers.onReconnecting(1, this.maxReconnectAttempts);
     void this.attemptReconnect();
   }
+
 }
 
 // Re-export as WebRTCClient for backwards compatibility during migration

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { useRef, useCallback } from 'react';
+import { useRef, useCallback, useEffect } from 'react';
 
 interface UseLongPressOptions {
   /** Delay in ms before long press fires (default 500) */
@@ -35,6 +35,7 @@ export function useLongPress(
   const fired = useRef(false);
 
   const start = useCallback(() => {
+    if (timer.current) clearTimeout(timer.current);
     fired.current = false;
     timer.current = setTimeout(() => {
       fired.current = true;
@@ -56,6 +57,16 @@ export function useLongPress(
     }
     return false;
   }, []);
+
+  // Cancel any pending timer when the page is hidden (e.g. iOS app switch).
+  // Without this, a spurious touchstart from the return gesture can leave a
+  // leaked timer that fires 500 ms later and sets fired.current = true,
+  // which then suppresses the next real click via wasLongPress().
+  useEffect(() => {
+    const onHide = () => cancel();
+    document.addEventListener('visibilitychange', onHide);
+    return () => document.removeEventListener('visibilitychange', onHide);
+  }, [cancel]);
 
   return {
     handlers: {

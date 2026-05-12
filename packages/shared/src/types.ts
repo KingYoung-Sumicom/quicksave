@@ -341,7 +341,7 @@ export interface PushSubscriptionOfferResponsePayload {
 /** Any JSON-primitive value that can be stored as a session config entry. */
 export type ConfigValue = string | number | boolean | null;
 
-export type AgentId = 'claude-code' | 'codex';
+export type AgentId = 'claude-code' | 'codex' | 'opencode' | 'pi';
 
 /** PWA → Agent: set a single key on a session's config */
 export interface SessionSetConfigRequestPayload {

@@ -472,7 +472,7 @@ export function useClaudeOperations(
         'claude:user-input-response',
         response,
       ).catch((err) => {
-        console.warn('respondToUserInput failed:', err);
+        console.warn('[respondToUserInput] failed:', err);
       });
     },
     [sendCommand]
