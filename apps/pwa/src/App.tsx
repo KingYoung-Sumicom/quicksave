@@ -27,7 +27,6 @@ import { GitignoreEditor } from './components/GitignoreEditor';
 import { ClaudePanel } from './components/ClaudePanel';
 import {
   type ClaudePreferences,
-  type ClaudeUserInputResponsePayload,
   type CodexLoginState,
   type CodexModelInfo,
   type CommitSummaryState,
@@ -43,7 +42,7 @@ import {
 } from '@sumicom/quicksave-shared';
 import { useCodexLoginStore } from './stores/codexLoginStore';
 import { useTerminalStore } from './stores/terminalStore';
-import { registerActiveBusGetter, registerAgentBusGetter } from './lib/busRegistry';
+import { registerActiveBusGetter, registerAgentBusGetter, getBusForAgent } from './lib/busRegistry';
 import { registerWsRetry } from './lib/wsRetryRegistry';
 import { applySessionUpdate } from './lib/applySessionUpdate';
 import { applyHistoryEntry, applyHistoryAction } from './lib/applyHistoryEntry';
@@ -322,19 +321,9 @@ function AppContent() {
   }, [cancelPendingGit]);
 
   const {
-    getSessionCards,
     startSession,
-    resumeSession,
-    cancelSession,
-    closeSession,
-    endSession,
     restoreSession,
-    markSessionRead,
     listArchivedSessions,
-    respondToUserInput,
-    setSessionConfig,
-    sendControlRequest,
-    unsubscribeSession,
     listProjectSummaries,
     listProjectRepos,
     deleteProject,
@@ -905,26 +894,12 @@ function AppContent() {
 
   const projectSessionElement = (
     <ProjectRouteSession
-            onConnect={handleConnect}
-            onSwitchMachine={handleSwitchMachine}
-            showSettings={showAgentSettings}
-            onOpenSettings={() => setShowAgentSettings(true)}
-            onCloseSettings={() => setShowAgentSettings(false)}
-            onSetSessionConfig={setSessionConfig}
-            onSendControlRequest={sendControlRequest}
-            onCloseSession={closeSession}
-            onEndSession={endSession}
-            onCancelSession={cancelSession}
-            onGetSessionCards={getSessionCards}
-            onStartSession={startSession}
-            onResumeSession={resumeSession}
-            onRespondToUserInput={respondToUserInput}
-            onUnsubscribeSession={unsubscribeSession}
-            onSetActiveAgent={setActiveAgent}
-            onListProjectRepos={listProjectRepos}
-            onMarkSessionRead={markSessionRead}
-            getBus={getActiveBus}
-  />
+      onConnect={handleConnect}
+      onSwitchMachine={handleSwitchMachine}
+      showSettings={showAgentSettings}
+      onOpenSettings={() => setShowAgentSettings(true)}
+      onCloseSettings={() => setShowAgentSettings(false)}
+    />
   );
 
   const homeElement = machines.length > 0 ? (
@@ -1227,48 +1202,14 @@ function ProjectRouteSession({
   showSettings,
   onOpenSettings,
   onCloseSettings,
-  onSetSessionConfig,
-  onSendControlRequest,
-  onCloseSession,
-  onEndSession,
-  onCancelSession,
-  onGetSessionCards,
-  onStartSession,
-  onResumeSession,
-  onRespondToUserInput,
-  onUnsubscribeSession,
-  onSetActiveAgent,
-  onListProjectRepos,
-  onMarkSessionRead,
-  getBus,
 }: {
   onConnect: (agentId: string, publicKey: string) => void;
   onSwitchMachine: (agentId: string) => void;
   showSettings: boolean;
   onOpenSettings: () => void;
   onCloseSettings: () => void;
-  onSetSessionConfig: (sessionId: string, key: string, value: import('@sumicom/quicksave-shared').ConfigValue) => void;
-  onSendControlRequest: (sessionId: string, subtype: string, params?: Record<string, unknown>) => Promise<import('@sumicom/quicksave-shared').SessionControlRequestResponsePayload>;
-  onCloseSession: (sessionId: string) => void;
-  onEndSession: (sessionId: string) => void;
-  onCancelSession: (sessionId: string) => void;
-  onGetSessionCards: (sessionId: string, offset?: number, limit?: number, cwd?: string) => Promise<void>;
-  onStartSession: ReturnType<typeof useClaudeOperations>['startSession'];
-  onResumeSession: ReturnType<typeof useClaudeOperations>['resumeSession'];
-  onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
-  onUnsubscribeSession?: (sessionId: string) => void;
-  onSetActiveAgent?: (agentId: string) => void;
-  onListProjectRepos?: (cwd: string) => Promise<import('@sumicom/quicksave-shared').ProjectRepo[] | null>;
-  onMarkSessionRead?: ReturnType<typeof useClaudeOperations>['markSessionRead'];
-  getBus: () => MessageBusClient | null;
 }) {
   const { projectId, sessionId: urlSessionId } = useParams<{ projectId: string; sessionId: string }>();
-  // Hold the attention topic only while this tab is visible+focused so the
-  // agent's push gate fires for the *other* devices the user isn't holding.
-  // Also stamps `lastReadAt` server-side via the bus so unread state is in
-  // sync across every PWA client of this user.
-  const attentionSessionId = urlSessionId && urlSessionId !== 'new' ? urlSessionId : null;
-  useSessionAttention(attentionSessionId, getBus, { markSessionRead: onMarkSessionRead });
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -1287,14 +1228,37 @@ function ProjectRouteSession({
 
   const { isReady, isConnecting, cwd, agentId: targetAgentId } = useProjectConnection(projectId, onConnect, onSwitchMachine);
 
-  const projectBasePath = `/p/${projectId}`;
+  // Route all bus operations through this agent's dedicated bus, not the
+  // global active bus. After a reconnect in multi-agent mode, getActiveBus()
+  // may point at a different agent; targeting by id avoids misrouting.
+  const agentBus = useCallback(
+    (): MessageBusClient | null => getBusForAgent(targetAgentId ?? '') ?? null,
+    [targetAgentId],
+  );
 
-  // Ensure this agent is active before any send() — critical for multi-agent
-  const ensureActiveAgent = useCallback(() => {
-    if (targetAgentId) {
-      onSetActiveAgent?.(targetAgentId);
-    }
-  }, [targetAgentId, onSetActiveAgent]);
+  const {
+    getSessionCards,
+    startSession,
+    resumeSession,
+    cancelSession,
+    closeSession,
+    endSession,
+    markSessionRead,
+    respondToUserInput,
+    setSessionConfig,
+    sendControlRequest,
+    unsubscribeSession,
+    listProjectRepos,
+  } = useClaudeOperations(agentBus);
+
+  // Hold the attention topic only while this tab is visible+focused so the
+  // agent's push gate fires for the *other* devices the user isn't holding.
+  // Also stamps `lastReadAt` server-side via the bus so unread state is in
+  // sync across every PWA client of this user.
+  const attentionSessionId = urlSessionId && urlSessionId !== 'new' ? urlSessionId : null;
+  useSessionAttention(attentionSessionId, agentBus, { markSessionRead });
+
+  const projectBasePath = `/p/${projectId}`;
 
   // Cold-resume fork rerouter: when a CLI cold resume returns a different
   // session_id than the one we asked for, the daemon migrates state under the
@@ -1337,33 +1301,18 @@ function ProjectRouteSession({
 
   const getSessionId = () => useClaudeStore.getState().activeSessionId || urlSessionId;
 
-  // Bind cwd + agent routing into callbacks
+  // Bind cwd into callbacks
   const boundGetCards = useCallback(
-    (sid: string, offset?: number, limit?: number) => { ensureActiveAgent(); return onGetSessionCards(sid, offset, limit, cwd); },
-    [onGetSessionCards, cwd, ensureActiveAgent]
+    (sid: string, offset?: number, limit?: number) => getSessionCards(sid, offset, limit, cwd),
+    [getSessionCards, cwd],
   );
   const boundStartSession = useCallback(
-    (prompt: string, opts?: Parameters<typeof onStartSession>[1]) => {
-      ensureActiveAgent(); return onStartSession(prompt, { ...opts, cwd });
-    },
-    [onStartSession, cwd, ensureActiveAgent]
+    (prompt: string, opts?: Parameters<typeof startSession>[1]) => startSession(prompt, { ...opts, cwd }),
+    [startSession, cwd],
   );
   const boundResumeSession = useCallback(
-    (sid: string, prompt: string, opts?: Parameters<typeof onResumeSession>[3]) => {
-      ensureActiveAgent(); return onResumeSession(sid, prompt, cwd, opts);
-    },
-    [onResumeSession, cwd, ensureActiveAgent]
-  );
-  // Ensure the correct agent is active before sending a permission response.
-  // Without this, a reconnect that leaves a different agent as activeAgentId
-  // routes the command to the wrong agent's bus (success: false → permission
-  // never clears even though the PWA log shows "resolved OK").
-  const boundRespondToUserInput = useCallback(
-    (response: ClaudeUserInputResponsePayload) => {
-      ensureActiveAgent();
-      onRespondToUserInput?.(response);
-    },
-    [ensureActiveAgent, onRespondToUserInput]
+    (sid: string, prompt: string, opts?: Parameters<typeof resumeSession>[3]) => resumeSession(sid, prompt, cwd, opts),
+    [resumeSession, cwd],
   );
 
   if (!isReady) {
@@ -1392,27 +1341,23 @@ function ProjectRouteSession({
           projectId={projectId}
           agentId={targetAgentId ?? undefined}
           cwd={cwd}
-          onListProjectRepos={onListProjectRepos}
+          onListProjectRepos={listProjectRepos}
           onSetSessionConfig={(key, value) => {
-            ensureActiveAgent();
             const sid = getSessionId();
-            if (sid) onSetSessionConfig(sid, key, value);
+            if (sid) setSessionConfig(sid, key, value);
           }}
-          onSendControlRequest={(...args) => { ensureActiveAgent(); return onSendControlRequest(...args); }}
+          onSendControlRequest={sendControlRequest}
           onCloseSession={() => {
-            ensureActiveAgent();
             const sid = getSessionId();
-            if (sid) onCloseSession(sid);
+            if (sid) closeSession(sid);
           }}
           onEndSession={() => {
-            ensureActiveAgent();
             const sid = getSessionId();
-            if (sid) onEndSession(sid);
+            if (sid) endSession(sid);
           }}
           onCancelSession={() => {
-            ensureActiveAgent();
             const sid = getSessionId();
-            if (sid) onCancelSession(sid);
+            if (sid) cancelSession(sid);
           }}
         />
       )}
@@ -1423,12 +1368,12 @@ function ProjectRouteSession({
         onSelectSession={(sid) => navigate(`${projectBasePath}/s/${sid}`)}
         onNewSession={() => navigate(`/add?tab=session&projectId=${encodeURIComponent(projectId ?? '')}`)}
         onGetSessionCards={boundGetCards}
-        onSetSessionConfig={(sid, key, value) => { ensureActiveAgent(); onSetSessionConfig(sid, key, value); }}
-        onSendControlRequest={(...args) => { ensureActiveAgent(); return onSendControlRequest(...args); }}
-        onUnsubscribeSession={onUnsubscribeSession}
+        onSetSessionConfig={(sid, key, value) => setSessionConfig(sid, key, value)}
+        onSendControlRequest={sendControlRequest}
+        onUnsubscribeSession={unsubscribeSession}
         onStartSession={boundStartSession}
         onResumeSession={boundResumeSession}
-        onRespondToUserInput={boundRespondToUserInput}
+        onRespondToUserInput={respondToUserInput}
       />
     </>
   );
