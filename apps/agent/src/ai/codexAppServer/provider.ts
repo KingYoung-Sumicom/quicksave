@@ -338,7 +338,7 @@ function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promis
         title: 'Quicksave Agent',
         version: '0.0.0',
       },
-      capabilities: { experimentalApi: false, optOutNotificationMethods: null },
+      capabilities: { experimentalApi: true, optOutNotificationMethods: null },
     },
     {
       extraArgs: buildCodexSandboxMcpConfigArgs({
