@@ -255,6 +255,8 @@
   "repoView.noChangesToCommit": "No changes to commit",
   "repoView.refresh": "Refresh",
   "repoView.refreshSymbol": "↻ Refresh",
+  "repoView.unavailable": "Repository is no longer available on this machine.",
+  "repoView.backToProjects": "Back to projects",
 
   "pathBrowser.empty": "Empty directory",
 

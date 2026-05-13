@@ -400,6 +400,7 @@ export class CliProviderSession implements ProviderSession {
 export class ClaudeCliProvider implements CodingAgentProvider {
   readonly id = 'claude-code' as const;
   readonly historyMode = 'claude-jsonl' as const;
+  readonly label = 'Claude Code';
 
   async startSession(
     opts: StartSessionOpts,

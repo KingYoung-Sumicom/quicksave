@@ -60,6 +60,7 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   'agent:check-update',
   'agent:update',
   'agent:restart',
+  'agent:probe',
   // systemd user-unit (Linux only — agent returns available:false elsewhere)
   'systemd:status',
   'systemd:install',

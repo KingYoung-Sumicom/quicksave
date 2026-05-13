@@ -255,6 +255,8 @@
   "repoView.noChangesToCommit": "沒有可提交的變更",
   "repoView.refresh": "重新整理",
   "repoView.refreshSymbol": "↻ 重新整理",
+  "repoView.unavailable": "這台機器上已無法使用此倉庫。",
+  "repoView.backToProjects": "返回專案",
 
   "pathBrowser.empty": "空目錄",
 

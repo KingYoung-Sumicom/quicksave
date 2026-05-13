@@ -592,6 +592,28 @@ export interface ProjectListReposResponsePayload {
   error?: string;
 }
 
+// Agent probing
+
+export type AgentCapabilities = {
+  hasApiKey: boolean;
+  hasCli: boolean;
+  hasPlugin: boolean;
+  supportsResume: boolean;
+  supportsSandbox: boolean;
+  supportsStreaming: boolean;
+};
+
+export interface AgentProviderInfo {
+  id: AgentId;
+  label: string;
+  version?: string;
+  capabilities: AgentCapabilities;
+}
+
+export interface AgentProbePayload {
+  availableProviders: AgentProviderInfo[];
+}
+
 // Handshake
 export interface HandshakePayload {
   publicKey: string; // Base64 encoded
@@ -609,8 +631,11 @@ export interface HandshakeAckPayload {
   devBuild?: boolean; // true when running from source (non-production build)
   codexModels?: CodexModelInfo[]; // Cached OpenAI /v1/models (agent-side, 12h dedup)
   /** OS the agent is running on. Lets the PWA hide platform-specific UI
-   *  (e.g. the systemd auto-start toggle) on hosts where it can't apply. */
+    *  (e.g. the systemd auto-start toggle) on hosts where it can't apply. */
   platform?: 'linux' | 'darwin' | 'win32' | 'other';
+  /** Agent registry discovered at handshake time (all registered providers).
+    *  Only present when at least one non-claude-code agent is available. */
+  availableProviders?: AgentProviderInfo[];
 }
 
 // Codex / OpenAI model discovery

@@ -177,9 +177,8 @@ export const useMachineStore = create<MachineStore>()(
           machines: state.machines.map((m) => {
             if (m.agentId !== agentId) return m;
 
-            const existingRepos = m.knownRepos || [];
             const newRepos = availableRepos || [];
-            const allRepos = [...new Set([...existingRepos, ...newRepos, repoPath])];
+            const allRepos = [...new Set(repoPath ? [...newRepos, repoPath] : newRepos)];
 
             const existingCodingPaths = m.knownCodingPaths || [];
             const newCodingPaths = availableCodingPaths || [];
@@ -218,8 +217,7 @@ export const useMachineStore = create<MachineStore>()(
         set((state) => ({
           machines: state.machines.map((m) => {
             if (m.agentId !== agentId) return m;
-            const existingRepos = m.knownRepos || [];
-            const allRepos = [...new Set([...existingRepos, ...repoPaths])];
+            const allRepos = [...new Set(repoPaths)];
             return { ...m, knownRepos: allRepos };
           }),
         })),

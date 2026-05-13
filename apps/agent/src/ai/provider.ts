@@ -168,9 +168,35 @@ export interface ResumeSessionOpts {
   bypassFlagPath?: string;
 }
 
+export const DEFAULT_AGENT_LABELS: Record<AgentId, string> = {
+  'claude-code': 'Claude Code',
+  'codex': 'Codex',
+  'opencode': 'OpenCode',
+  'pi': 'Pi',
+};
+
+export function getAgentLabel(agentId: AgentId): string {
+  return DEFAULT_AGENT_LABELS[agentId] ?? agentId;
+}
+
+export interface AgentCapabilities {
+  hasApiKey: boolean;
+  hasCli: boolean;
+  hasPlugin: boolean;
+  supportsResume: boolean;
+  supportsSandbox: boolean;
+  supportsStreaming: boolean;
+}
+
+export type ProbeResult = {
+  version?: string;
+  capabilities: AgentCapabilities;
+};
+
 export interface CodingAgentProvider {
   readonly id: AgentId;
   readonly historyMode: ProviderHistoryMode;
+  readonly label: string;
 
   startSession(
     opts: StartSessionOpts,
@@ -183,4 +209,6 @@ export interface CodingAgentProvider {
     cardBuilder: StreamCardBuilder,
     callbacks: ProviderCallbacks,
   ): Promise<{ sessionId: string; session: ProviderSession }>;
+
+  probeProvider(): Promise<ProbeResult>;
 }

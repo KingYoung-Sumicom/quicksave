@@ -711,6 +711,8 @@ export class MessageHandler {
           return this.handleAgentUpdate(message);
         case 'agent:restart':
           return this.handleAgentRestart(message);
+        case 'agent:probe':
+          return this.handleAgentProbe();
         case 'systemd:status':
           return this.handleSystemdStatus(message);
         case 'systemd:install':
@@ -789,7 +791,7 @@ export class MessageHandler {
     }
   }
 
-  private handleHandshake(
+  private async handleHandshake(
     message: Message<HandshakePayload>,
     peerAddress: string,
   ): Message<HandshakeAckPayload> {
@@ -797,6 +799,7 @@ export class MessageHandler {
     this.checkLatestVersion().catch(() => {});
     this.fetchCodexModels().catch(() => {});
 
+    const availableProviders = await this.claudeService.probeProviders();
     const response = createMessage<HandshakeAckPayload>('handshake:ack', {
       success: true,
       agentVersion: this.agentVersion,
@@ -808,6 +811,7 @@ export class MessageHandler {
       devBuild: !this.productionBuild || undefined,
       codexModels: this.codexModelsCache?.models,
       platform: normalizePlatform(osPlatform()),
+      availableProviders: availableProviders.length > 0 ? availableProviders : undefined,
     });
     response.id = message.id;
 

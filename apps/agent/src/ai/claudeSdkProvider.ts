@@ -125,6 +125,7 @@ export class SdkProviderSession implements ProviderSession {
 export class ClaudeSdkProvider implements CodingAgentProvider {
   readonly id = 'claude-code' as const;
   readonly historyMode = 'claude-jsonl' as const;
+  readonly label = 'Claude Code (SDK)';
 
   async startSession(
     opts: StartSessionOpts,

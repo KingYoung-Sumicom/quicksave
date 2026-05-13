@@ -53,6 +53,7 @@ const __aiDir = dirname(__ownDir);
 export class CodexAppServerProvider implements CodingAgentProvider {
   readonly id: AgentId = 'codex';
   readonly historyMode: ProviderHistoryMode = 'memory';
+  readonly label = 'Codex';
 
   async startSession(
     opts: StartSessionOpts,

@@ -8,6 +8,8 @@ import { mkdirSync, writeFileSync, rmSync } from 'fs';
 import { getRunDir } from '../service/singleton.js';
 import type {
   AgentId,
+  AgentProviderInfo,
+
   Attachment,
   ClaudeSessionSummary,
   ClaudeUserInputRequestPayload,
@@ -1593,6 +1595,26 @@ export class SessionManager extends EventEmitter {
       await writeFile(settingsPath, JSON.stringify(settings, null, 2) + '\n');
       console.log(`[persistAllowPattern] saved ${pattern} to ${settingsPath}`);
     }
+  }
+
+  /** Probe every registered provider and return discoverable metadata.
+
+   * Used as the response to `agent:probe` commands and to populate the
+   * `availableProviders` field of the {@link HandshakeAckPayload}. */
+  async probeProviders(): Promise<AgentProviderInfo[]> {
+    const results: AgentProviderInfo[] = [];
+    for (const [id, provider] of this.providers) {
+      try {
+        const probe = await provider.probeProvider();
+        results.push({ id, label: provider.label, ...probe });
+      }
+      catch (error) {
+        console.warn(`[SessionManager] probe failed for ${id}:`, error);
+        // Still advertise the provider (minus version) so the PWA knows it exists.
+        results.push({ id, label: provider.label, capabilities: {} });
+      }
+    }
+    return results;
   }
 
   private waitForUserInput(

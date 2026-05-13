@@ -1113,7 +1113,21 @@ function ProjectRouteRepo({
           center={<span className="text-sm font-medium text-slate-300"><FormattedMessage id="repoView.title.fallback" /></span>}
         />
         <div className="flex-1 flex items-center justify-center">
-          {(isConnecting || (isReady && !targetRepoPath)) && <Spinner size="w-8 h-8" color="border-blue-500" />}
+          {isConnecting ? (
+            <Spinner size="w-8 h-8" color="border-blue-500" />
+          ) : (
+            <div className="px-6 text-center">
+              <p className="text-sm text-slate-400">
+                <FormattedMessage id="repoView.unavailable" />
+              </p>
+              <button
+                onClick={() => navigate('/')}
+                className="mt-4 text-sm text-blue-400 hover:text-blue-300"
+              >
+                <FormattedMessage id="repoView.backToProjects" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );

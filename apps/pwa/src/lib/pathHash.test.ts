@@ -86,6 +86,8 @@ describe('pathHash', () => {
             availableRepos: [{ path: '/repo2' }, { path: '/repo3' }],
             availableCodingPaths: [{ path: '/code2' }],
             repoPath: '/repo1',
+            agentId: 'agent-1',
+            agentConnections: {},
           }),
         },
       }));
@@ -106,6 +108,61 @@ describe('pathHash', () => {
       vi.restoreAllMocks();
     });
 
+    it('uses connected per-agent paths and drops stale persisted repos', async () => {
+      vi.resetModules();
+
+      vi.doMock('../stores/machineStore', () => ({
+        useMachineStore: {
+          getState: () => ({
+            getMachine: () => ({
+              knownRepos: ['/Users/jimmy/workspace/old-repo'],
+              knownCodingPaths: ['/Users/jimmy/workspace'],
+              cachedProjects: {
+                '/Users/jimmy/workspace/old-repo': {
+                  lastActivityAt: 1,
+                  sessionCount: 1,
+                  repos: [{ path: '/Users/jimmy/workspace/old-repo', name: 'old-repo' }],
+                },
+                '/home/jimmy/workspace/new-repo': {
+                  lastActivityAt: 2,
+                  sessionCount: 1,
+                  repos: [{ path: '/home/jimmy/workspace/new-repo/sub', name: 'sub' }],
+                },
+              },
+            }),
+          }),
+        },
+      }));
+      vi.doMock('../stores/connectionStore', () => ({
+        useConnectionStore: {
+          getState: () => ({
+            availableRepos: [],
+            availableCodingPaths: [],
+            repoPath: null,
+            agentId: null,
+            agentConnections: {
+              'agent-1': {
+                state: 'connected',
+                repoPath: '/home/jimmy/workspace/new-repo',
+                availableRepos: [{ path: '/home/jimmy/workspace/new-repo' }],
+                availableCodingPaths: [],
+              },
+            },
+          }),
+        },
+      }));
+
+      const { getAllKnownPaths } = await import('./pathHash');
+      const paths = getAllKnownPaths('agent-1');
+
+      expect(paths).toContain('/home/jimmy/workspace/new-repo');
+      expect(paths).toContain('/home/jimmy/workspace/new-repo/sub');
+      expect(paths).not.toContain('/Users/jimmy/workspace/old-repo');
+      expect(paths).not.toContain('/Users/jimmy/workspace');
+
+      vi.restoreAllMocks();
+    });
+
     it('handles missing machine gracefully', async () => {
       vi.resetModules();
 
@@ -122,6 +179,8 @@ describe('pathHash', () => {
             availableRepos: [],
             availableCodingPaths: [],
             repoPath: null,
+            agentId: null,
+            agentConnections: {},
           }),
         },
       }));

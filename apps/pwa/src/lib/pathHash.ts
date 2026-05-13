@@ -30,14 +30,36 @@ export function resolveHash(hash: string, knownPaths: string[]): string | undefi
  */
 export function getAllKnownPaths(agentId: string): string[] {
   const machine = useMachineStore.getState().getMachine(agentId);
+  const connection = useConnectionStore.getState();
+  const agentConn = connection.agentConnections?.[agentId];
+
+  if (agentConn?.state === 'connected') {
+    const repoPaths = agentConn.availableRepos.map((r) => r.path);
+    const codingPaths = agentConn.availableCodingPaths.map((p) => p.path);
+    const liveRoots = new Set([...repoPaths, ...codingPaths]);
+    if (agentConn.repoPath) liveRoots.add(agentConn.repoPath);
+
+    const cachedRepoPaths = machine?.cachedProjects
+      ? Object.entries(machine.cachedProjects).flatMap(([cwd, project]) => {
+          const belongsToLiveRoot = [...liveRoots].some((root) => root === cwd || cwd.startsWith(root + '/'));
+          return belongsToLiveRoot ? project.repos?.map((r) => r.path) ?? [] : [];
+        })
+      : [];
+
+    const all = new Set([...repoPaths, ...codingPaths, ...cachedRepoPaths]);
+    if (agentConn.repoPath) all.add(agentConn.repoPath);
+    return [...all];
+  }
+
   const knownRepos = machine?.knownRepos || [];
   const knownCodingPaths = machine?.knownCodingPaths || [];
   const cachedRepoPaths = machine?.cachedProjects
     ? Object.values(machine.cachedProjects).flatMap((p) => p.repos?.map((r) => r.path) ?? [])
     : [];
-  const { availableRepos, availableCodingPaths, repoPath } = useConnectionStore.getState();
-  const repoPaths = availableRepos.map((r) => r.path);
-  const codingPaths = availableCodingPaths.map((p) => p.path);
+  const repoPaths =
+    connection.agentId === agentId ? connection.availableRepos.map((r) => r.path) : [];
+  const codingPaths =
+    connection.agentId === agentId ? connection.availableCodingPaths.map((p) => p.path) : [];
   const all = new Set([
     ...knownRepos,
     ...knownCodingPaths,
@@ -45,6 +67,6 @@ export function getAllKnownPaths(agentId: string): string[] {
     ...repoPaths,
     ...codingPaths,
   ]);
-  if (repoPath) all.add(repoPath);
+  if (connection.agentId === agentId && connection.repoPath) all.add(connection.repoPath);
   return [...all];
 }
