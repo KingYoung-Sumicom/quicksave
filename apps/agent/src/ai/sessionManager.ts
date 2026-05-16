@@ -78,12 +78,13 @@ const EMPTY_AGENT_CAPABILITIES = {
 /** Tools auto-approved at each permission level (no user prompt). */
 const CLAUDE_AUTO_APPROVE: Record<ClaudePermissionMode, Set<string>> = {
   bypassPermissions: new Set([
-    'Edit', 'Write', 'NotebookEdit', 'TodoWrite', 'Agent', 'EnterWorktree', 'ExitWorktree',
+    'Edit', 'Write', 'NotebookEdit', 'TodoWrite', 'Agent', 'EnterWorktree',
     'WebFetch', 'WebSearch', 'Bash',
     'Skill', 'ToolSearch', 'Config',
     'CronCreate', 'CronDelete', 'CronList', 'RemoteTrigger',
     'EnterPlanMode',
     'TaskOutput', 'TaskStop',
+    // ExitWorktree intentionally absent: exiting a worktree must require user confirmation.
     // ExitPlanMode intentionally absent: plan review must always reach the user.
     // AskUserQuestion intentionally absent: interactive prompts must always reach the user.
   ]),
@@ -161,6 +162,8 @@ function normalizeAgentId(value: unknown): AgentId | undefined {
   if (value === 'codex' || value === 'codex-mcp') {
     return 'codex';
   }
+  if (value === 'opencode') return 'opencode';
+  if (value === 'pi') return 'pi';
   return undefined;
 }
 

@@ -951,6 +951,25 @@ describe('SessionManager', () => {
       expect(result.action).toBe('allow');
     });
 
+    it('should NOT auto-approve ExitWorktree in bypassPermissions mode', async () => {
+      manager.setPermissionLevel(sessionId, 'bypassPermissions');
+
+      const promise = callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'ExitWorktree',
+        toolInput: {},
+        toolUseId: 'tu-exitworktree-bypass',
+      });
+
+      const pending = manager.getPendingInputRequests();
+      expect(pending.length).toBeGreaterThan(0);
+      const req = pending.find(p => p.toolUseId === 'tu-exitworktree-bypass');
+      expect(req).toBeDefined();
+
+      manager.resolveUserInput({ sessionId, requestId: req!.requestId, action: 'allow' });
+      const result = await promise;
+      expect(result.action).toBe('allow');
+    });
+
     it('should NOT auto-approve ExitPlanMode in bypassPermissions mode', async () => {
       manager.setPermissionLevel(sessionId, 'bypassPermissions');
 

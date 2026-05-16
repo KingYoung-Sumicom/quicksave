@@ -78,9 +78,10 @@ describe('buildClaudeCliArgs', () => {
       expect(cmd).toContain('"behavior":"allow"');
       // Falls through to the prompt-tool path when the sentinel is absent.
       expect(cmd).toContain('|| true');
-      // Interactive prompts must always reach the user even in bypass mode.
+      // Interactive prompts and structural exits must always reach the user even in bypass mode.
       expect(cmd).toContain('AskUserQuestion');
       expect(cmd).toContain('ExitPlanMode');
+      expect(cmd).toContain('ExitWorktree');
       expect(cmd).toContain('grep');
     });
 
