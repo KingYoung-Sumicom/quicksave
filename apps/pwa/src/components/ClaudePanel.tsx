@@ -322,7 +322,17 @@ export function ClaudePanel({
   // urlSessionId effect would then unsub through a fresh (empty) per-hook
   // ref — a no-op — and the stale snapshot guard in applySessionCards can
   // drop the new session's snapshot if it races setActiveSession.
+  //
+  // StrictMode in dev simulates mount→cleanup→mount on first render. Without
+  // the ref guard the dry-run cleanup nukes `activeSessionId` set by the
+  // App-level `startSession` flow, and every snapshot/update for the just-
+  // spawned session gets dropped by the guard in applySessionCards.
+  const mountedOnceRef = useRef(false);
   useEffect(() => {
+    if (!mountedOnceRef.current) {
+      mountedOnceRef.current = true;
+      return () => { /* StrictMode dry-run — preserve store state */ };
+    }
     return () => {
       setActiveSession(null);
       clearCards();

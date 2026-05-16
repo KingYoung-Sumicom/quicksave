@@ -238,7 +238,11 @@ export class MessageBusClient {
       return;
     }
     if (frame.seq !== undefined) state.lastSeq = frame.seq;
-    state.lastSnapshot = { data: frame.data };
+    // Do NOT touch `lastSnapshot`: it represents the latest *snapshot* shape,
+    // used to replay to late-joining subscribers. Update frames carry an
+    // incremental shape (e.g. SessionCardsUpdate is a single CardEvent, not a
+    // CardHistoryResponse) and feeding one to a new subscriber as a snapshot
+    // would crash its handler.
     for (const cb of state.subscribers) cb.onUpdate(frame.data);
   }
 
