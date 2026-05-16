@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark-dimmed.css';
@@ -12,7 +12,7 @@ import {
   FILE_PREVIEW_PANEL_MAX,
 } from '../../stores/filePreviewStore';
 import { useFileOps } from '../../hooks/useFileOps';
-import { getActiveBus } from '../../lib/busRegistry';
+import { getBusForAgent } from '../../lib/busRegistry';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { Spinner } from '../ui/Spinner';
 import { MarkdownPreview } from './MarkdownPreview';
@@ -61,7 +61,9 @@ function PreviewBody({
   onClose: () => void;
   isDesktop: boolean;
 }) {
-  const { readFile } = useFileOps(getActiveBus);
+  const agentId = request.agentId ?? '';
+  const getBus = useCallback(() => getBusForAgent(agentId), [agentId]);
+  const { readFile } = useFileOps(getBus);
   const [data, setData] = useState<FilesReadResponsePayload | null>(null);
   const [loading, setLoading] = useState(true);
   const reqIdRef = useRef(0);
@@ -176,6 +178,7 @@ function PreviewBody({
               data={data}
               displayPath={displayPath}
               cwd={request.cwd}
+              agentId={request.agentId ?? ''}
               renderMarkdown={isMarkdown && renderMarkdown}
               renderSvg={isSvg && renderSvg}
             />
@@ -260,12 +263,14 @@ function PreviewContent({
   data,
   displayPath,
   cwd,
+  agentId,
   renderMarkdown,
   renderSvg,
 }: {
   data: FilesReadResponsePayload;
   displayPath: string;
   cwd: string;
+  agentId: string;
   renderMarkdown: boolean;
   renderSvg: boolean;
 }) {
@@ -301,6 +306,7 @@ function PreviewContent({
         source={data.content}
         fileAbsolutePath={data.absolutePath ?? displayPath}
         cwd={cwd}
+        agentId={agentId}
       />
     );
   }

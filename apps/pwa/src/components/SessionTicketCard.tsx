@@ -62,6 +62,8 @@ const BLOCKED_META = { labelId: 'sessionStage.blocked', dotColor: 'bg-red-500', 
 const AGENT_LABEL: Partial<Record<AgentId, string>> = {
   'claude-code': 'Claude',
   'codex': 'Codex',
+  'opencode': 'OpenCode',
+  'pi': 'Pi',
 };
 
 function Chevron() {

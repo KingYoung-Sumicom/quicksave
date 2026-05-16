@@ -46,7 +46,15 @@ export function getAllKnownPaths(agentId: string): string[] {
         })
       : [];
 
-    const all = new Set([...repoPaths, ...codingPaths, ...cachedRepoPaths]);
+    // Include persisted knownRepos/knownCodingPaths so that hashes recorded
+    // from previous sessions remain resolvable after a new handshake.
+    // Without this, paths that are no longer in availableRepos (e.g. a coding
+    // path was removed from the agent config) would stop resolving the moment
+    // the connection is established, causing the viewer to flip to "unavailable".
+    const knownRepos = machine?.knownRepos ?? [];
+    const knownCodingPaths = machine?.knownCodingPaths ?? [];
+
+    const all = new Set([...repoPaths, ...codingPaths, ...cachedRepoPaths, ...knownRepos, ...knownCodingPaths]);
     if (agentConn.repoPath) all.add(agentConn.repoPath);
     return [...all];
   }

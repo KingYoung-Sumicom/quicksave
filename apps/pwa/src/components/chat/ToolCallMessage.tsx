@@ -76,7 +76,7 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
   toolResultIsError?: boolean;
   toolAnswers?: Record<string, string>;
   pendingInputRequest?: ClaudeUserInputRequestPayload;
-  onRespond?: (action: 'allow' | 'deny', response?: string, allowPattern?: string) => void;
+  onRespond?: (action: 'allow' | 'deny', response?: string, allowPattern?: string, permissionMode?: string) => void;
 }) {
   let parsedInput: Record<string, unknown> = {};
   try {
@@ -117,7 +117,11 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
     return (
       <div className="flex justify-start">
         <div className="bg-slate-800/60 border-l-2 border-indigo-500/80 rounded-r-lg pl-2.5 pr-3 py-1.5 w-full text-sm text-slate-300 overflow-x-auto">
-          <ExitPlanModeInteractiveView input={parsedInput} plan={parsedInput.plan as string} onRespond={onRespond} />
+          <ExitPlanModeInteractiveView
+            input={parsedInput}
+            plan={parsedInput.plan as string}
+            onRespond={(action, response, permissionMode) => onRespond(action, response, undefined, permissionMode)}
+          />
         </div>
       </div>
     );
@@ -179,7 +183,7 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
           {toolName === 'AskUserQuestion'
             ? <AskUserQuestionToolView input={parsedInput} answers={askAnswers} />
             : toolName === 'ExitPlanMode'
-              ? <ExitPlanModeToolView input={parsedInput} plan={parsedInput.plan as string} isRejected={toolResultIsError} />
+              ? <ExitPlanModeToolView input={parsedInput} plan={parsedInput.plan as string} isRejected={toolResultIsError} answers={toolAnswers} />
               : ToolView
                 ? <ToolView
                     input={parsedInput}

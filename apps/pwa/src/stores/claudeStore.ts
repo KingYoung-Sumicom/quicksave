@@ -5,56 +5,30 @@ import type { AgentId, Card, CardEvent, ClaudeSessionSummary, ConfigValue } from
 import {
   DEFAULT_AGENT,
   DEFAULT_MODEL,
-  DEFAULT_PERMISSION_MODE,
-  DEFAULT_REASONING_EFFORT,
-  DEFAULT_SANDBOXED,
   DEFAULT_CONTEXT_WINDOW,
-  DEFAULT_CODEX_MODEL,
-  DEFAULT_CODEX_PERMISSION_MODE,
-  DEFAULT_CODEX_REASONING_EFFORT,
 } from '@sumicom/quicksave-shared';
-import { clampContextWindowForModel, getModelsForAgent } from '../lib/claudePresets';
+import { clampContextWindowForModel } from '../lib/claudePresets';
+import { getAgentProvider } from '../lib/agentProvider';
 
 // --- Per-agent session prefs ---
 //
-// Each agent (claude-code / codex) keeps its own model / permissionMode /
-// reasoningEffort / sandbox so switching agent doesn't clobber the other's
-// last-used settings. The store also surfaces flat `selectedModel` etc.
-// fields that mirror the *active* agent's prefs, so existing readers
-// (ClaudePanel, useSessionConfig, SessionStatusBar, etc.) don't need to
-// know about the per-agent map — only writers do.
-interface AgentPrefs {
+// Each agent keeps its own `model` plus a KV `settings` bag keyed by
+// SettingDescriptor.key. Adding a new agent or setting only requires a new
+// AgentProvider class — no changes to this interface or the setters below.
+export interface AgentPrefs {
   model: string;
-  permissionMode: string;
-  reasoningEffort: string;
-  sandbox: boolean;
-  /** Auto-compact ceiling for Claude Code (200k / 500k / 1M). Codex ignores
-   *  this — the codex CLI manages its own window per model. */
-  contextWindow: number;
+  settings: Record<string, unknown>;
 }
 
 type AgentPrefsMap = Record<AgentId, AgentPrefs>;
 
 function defaultPrefsForAgent(agent: AgentId): AgentPrefs {
-  if (agent === 'codex') {
-    return {
-      model: DEFAULT_CODEX_MODEL,
-      permissionMode: DEFAULT_CODEX_PERMISSION_MODE,
-      reasoningEffort: DEFAULT_CODEX_REASONING_EFFORT,
-      // Codex permission presets bundle sandbox_mode, so this flag is
-      // unused for codex sessions. Kept on the prefs object for shape
-      // symmetry with claude-code.
-      sandbox: false,
-      contextWindow: DEFAULT_CONTEXT_WINDOW,
-    };
+  const provider = getAgentProvider(agent);
+  const settings: Record<string, unknown> = {};
+  for (const desc of provider.getSettings()) {
+    settings[desc.key] = desc.default;
   }
-  return {
-    model: DEFAULT_MODEL,
-    permissionMode: DEFAULT_PERMISSION_MODE,
-    reasoningEffort: DEFAULT_REASONING_EFFORT,
-    sandbox: DEFAULT_SANDBOXED,
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-  };
+  return { model: provider.defaultModel, settings };
 }
 
 function defaultAgentPrefsMap(): AgentPrefsMap {
@@ -99,36 +73,55 @@ function loadPrefs(): PersistedPrefs {
     const merged = defaultAgentPrefsMap();
 
     if (parsed.agentPrefs) {
-      // New shape — overlay saved values on top of defaults so newly added
-      // pref keys still get sensible defaults if absent in storage.
       for (const agent of Object.keys(merged) as AgentId[]) {
-        merged[agent] = { ...merged[agent], ...(parsed.agentPrefs[agent] ?? {}) };
+        const saved = parsed.agentPrefs[agent] as any;
+        if (!saved) continue;
+        if ('settings' in saved && typeof saved.settings === 'object') {
+          // Current shape — overlay saved settings on defaults.
+          merged[agent] = {
+            model: saved.model ?? merged[agent].model,
+            settings: { ...merged[agent].settings, ...saved.settings },
+          };
+        } else {
+          // Previous shape (flat fields) — migrate into settings bag.
+          merged[agent] = {
+            model: saved.model ?? merged[agent].model,
+            settings: {
+              ...merged[agent].settings,
+              ...(saved.permissionMode !== undefined ? { permissionMode: saved.permissionMode } : {}),
+              ...(saved.reasoningEffort !== undefined ? { reasoningEffort: saved.reasoningEffort } : {}),
+              ...(saved.sandbox !== undefined ? { sandbox: saved.sandbox } : {}),
+              ...(saved.contextWindow !== undefined ? { contextWindow: saved.contextWindow } : {}),
+            },
+          };
+        }
       }
     } else {
-      // Legacy flat shape — migrate values into the previously-active agent.
+      // Legacy flat store shape — migrate into the previously-active agent.
       merged[selectedAgent] = {
-        ...merged[selectedAgent],
         model: parsed.selectedModel ?? merged[selectedAgent].model,
-        permissionMode: parsed.selectedPermissionMode ?? merged[selectedAgent].permissionMode,
-        reasoningEffort: parsed.selectedReasoningEffort ?? merged[selectedAgent].reasoningEffort,
-        sandbox: parsed.sandboxEnabled ?? merged[selectedAgent].sandbox,
+        settings: {
+          ...merged[selectedAgent].settings,
+          ...(parsed.selectedPermissionMode !== undefined ? { permissionMode: parsed.selectedPermissionMode } : {}),
+          ...(parsed.selectedReasoningEffort !== undefined ? { reasoningEffort: parsed.selectedReasoningEffort } : {}),
+          ...(parsed.sandboxEnabled !== undefined ? { sandbox: parsed.sandboxEnabled } : {}),
+        },
       };
     }
 
-    // Migrate the legacy `[1m]` suffix shape: older builds bundled the
-    // 1M-context opt-in into the model id (e.g. `claude-opus-4-7[1m]`). The
-    // new schema separates that into `contextWindow`. Strip the suffix and
-    // promote it; otherwise clamp the saved value to what the model supports.
+    // Migrate the legacy `[1m]` suffix: strip from model id, promote to contextWindow.
     for (const agent of Object.keys(merged) as AgentId[]) {
       const bucket = merged[agent];
       const m = bucket.model ?? '';
       const suffixMatch = /\[1m\]$/i.test(m);
       const baseModel = suffixMatch ? m.replace(/\[1m\]$/i, '') : m;
-      const cw = suffixMatch ? 1_000_000 : bucket.contextWindow;
+      const cw = suffixMatch ? 1_000_000 : (bucket.settings['contextWindow'] as number | undefined);
       merged[agent] = {
-        ...bucket,
         model: baseModel,
-        contextWindow: clampContextWindowForModel(baseModel, cw),
+        settings: {
+          ...bucket.settings,
+          contextWindow: clampContextWindowForModel(baseModel, cw),
+        },
       };
     }
 
@@ -148,25 +141,22 @@ function savePrefs(prefs: PersistedPrefs) {
  *  the rest of the app reads. Pure — used by setters that need to recompute
  *  the view after a write. */
 function flatViewOf(prefs: AgentPrefs) {
+  const s = prefs.settings;
   return {
     selectedModel: prefs.model,
-    selectedPermissionMode: prefs.permissionMode,
-    selectedReasoningEffort: prefs.reasoningEffort,
-    sandboxEnabled: prefs.sandbox,
-    selectedContextWindow: prefs.contextWindow,
+    selectedPermissionMode: (s['permissionMode'] as string) ?? '',
+    selectedReasoningEffort: (s['reasoningEffort'] as string) ?? '',
+    sandboxEnabled: (s['sandbox'] as boolean) ?? false,
+    selectedContextWindow: (s['contextWindow'] as number) ?? DEFAULT_CONTEXT_WINDOW,
   };
 }
 
 const savedPrefs = loadPrefs();
 
-// Validate that the saved Claude model is still recognized by the hardcoded
-// model list. Codex models are not validated at module-load time (the dynamic
-// list arrives later via the daemon handshake — wrongly resetting `gpt-5.5`
-// to a fallback because the hardcoded list isn't current is worse than
-// leaving an unknown id alone).
+// Validate that the saved Claude model is still in the known model list.
 {
   const claudePrefs = savedPrefs.agentPrefs['claude-code'];
-  const claudeModels = getModelsForAgent('claude-code');
+  const claudeModels = getAgentProvider('claude-code').getModels();
   if (claudePrefs.model && !claudeModels.some((m) => m.value === claudePrefs.model)) {
     claudePrefs.model = claudeModels[0]?.value ?? DEFAULT_MODEL;
   }
@@ -274,15 +264,12 @@ interface ClaudeStore {
   setSelectedReasoningEffort: (effort: string) => void;
   setSandboxEnabled: (enabled: boolean) => void;
   setSelectedContextWindow: (contextWindow: number) => void;
-  /** Write a single pref field on a specific agent's bucket regardless of
-   *  which agent is currently active. Used by the connection handler when
-   *  the daemon pushes claude-scoped preferences — those must land on
-   *  claude-code's bucket even if the user is currently viewing Codex. */
-  setAgentPref: <K extends keyof AgentPrefs>(
-    agent: AgentId,
-    key: K,
-    value: AgentPrefs[K],
-  ) => void;
+  /** Write a setting (or 'model') on the active agent's prefs.
+   *  Used by provider renderSettings onChange callbacks. */
+  setAgentSetting: (key: string, value: unknown) => void;
+  /** Write a pref on a specific agent's bucket regardless of the active agent.
+   *  Used by the connection handler when the daemon pushes agent-scoped prefs. */
+  setAgentPref: (agent: AgentId, key: string, value: unknown) => void;
 
   // Actions — per-session runtime config
   setSessionConfigKey: (sessionId: string, key: string, value: ConfigValue) => void;
@@ -378,7 +365,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         isStreaming: false,
         selectedAgent: prefs.selectedAgent,
         agentPrefs: prefs.agentPrefs,
-        ...flatViewOf(prefs.agentPrefs[prefs.selectedAgent]),
+        ...flatViewOf(prefs.agentPrefs[prefs.selectedAgent] ?? defaultPrefsForAgent(prefs.selectedAgent)),
       });
       return;
     }
@@ -395,6 +382,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     // aren't yet in memory). useSessionConfig still overlays sessionConfigs
     // on top, so the displayed value remains session-scoped when available.
     const { agentPrefs } = get();
+    const agentPrefsForSession = agentPrefs[sessionAgent] ?? defaultPrefsForAgent(sessionAgent);
     set({
       activeSessionId: sessionId,
       streamError: null,
@@ -406,18 +394,18 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       // immediately before this, so prompt-sending paths still see true.
       isStreaming: session?.isStreaming ?? false,
       selectedAgent: sessionAgent,
-      ...flatViewOf(agentPrefs[sessionAgent]),
+      ...flatViewOf(agentPrefsForSession),
       // Surface the session's permissionMode in the flat view so the chip
       // matches the running session. agentPrefs is *not* mutated — these are
       // session-scoped values, not the user's persisted defaults.
-      selectedPermissionMode: session?.permissionMode ?? agentPrefs[sessionAgent].permissionMode,
+      selectedPermissionMode: session?.permissionMode ?? (agentPrefsForSession.settings['permissionMode'] as string | undefined) ?? '',
     });
   },
   setStreaming: (streaming) => set({ isStreaming: streaming }),
   setStreamError: (error) => set({ streamError: error, isStreaming: false }),
 
   // Cards — server returns cards with pendingInput already attached
-  setCards: (cards) => set({ cards }),
+  setCards: (cards) => set({ cards: cards ?? [] }),
   prependCards: (newCards) =>
     set((state) => {
       const existingIds = new Set(state.cards.map((c) => c.id));
@@ -507,30 +495,31 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   // Writes go to the active agent's bucket; the flat view is recomputed.
   setSelectedModel: (model) => {
     const { selectedAgent, agentPrefs } = get();
-    // Re-clamp the saved contextWindow against the new model — switching to
-    // Haiku from a 1M-pinned Sonnet has to drop us back to 200k or the agent
-    // would later reject the spawn.
-    const prevCw = agentPrefs[selectedAgent].contextWindow;
+    const prevCw = agentPrefs[selectedAgent].settings['contextWindow'] as number | undefined;
     const nextCw = selectedAgent === 'claude-code'
       ? clampContextWindowForModel(model, prevCw)
-      : prevCw;
+      : prevCw ?? DEFAULT_CONTEXT_WINDOW;
     const updated: AgentPrefsMap = {
       ...agentPrefs,
-      [selectedAgent]: { ...agentPrefs[selectedAgent], model, contextWindow: nextCw },
+      [selectedAgent]: {
+        model,
+        settings: { ...agentPrefs[selectedAgent].settings, contextWindow: nextCw },
+      },
     };
     set({ agentPrefs: updated, selectedModel: model, selectedContextWindow: nextCw });
     savePrefs({ selectedAgent, agentPrefs: updated });
   },
   setSelectedAgent: (agent) => {
     const { agentPrefs } = get();
-    set({ selectedAgent: agent, ...flatViewOf(agentPrefs[agent]) });
+    const prefs = agentPrefs[agent] ?? defaultPrefsForAgent(agent);
+    set({ selectedAgent: agent, ...flatViewOf(prefs) });
     savePrefs({ selectedAgent: agent, agentPrefs });
   },
   setSelectedPermissionMode: (mode) => {
     const { selectedAgent, agentPrefs } = get();
     const updated: AgentPrefsMap = {
       ...agentPrefs,
-      [selectedAgent]: { ...agentPrefs[selectedAgent], permissionMode: mode },
+      [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, permissionMode: mode } },
     };
     set({ agentPrefs: updated, selectedPermissionMode: mode });
     savePrefs({ selectedAgent, agentPrefs: updated });
@@ -539,7 +528,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     const { selectedAgent, agentPrefs } = get();
     const updated: AgentPrefsMap = {
       ...agentPrefs,
-      [selectedAgent]: { ...agentPrefs[selectedAgent], reasoningEffort: effort },
+      [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, reasoningEffort: effort } },
     };
     set({ agentPrefs: updated, selectedReasoningEffort: effort });
     savePrefs({ selectedAgent, agentPrefs: updated });
@@ -548,7 +537,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     const { selectedAgent, agentPrefs } = get();
     const updated: AgentPrefsMap = {
       ...agentPrefs,
-      [selectedAgent]: { ...agentPrefs[selectedAgent], sandbox: enabled },
+      [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, sandbox: enabled } },
     };
     set({ agentPrefs: updated, sandboxEnabled: enabled });
     savePrefs({ selectedAgent, agentPrefs: updated });
@@ -560,19 +549,34 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       : contextWindow;
     const updated: AgentPrefsMap = {
       ...agentPrefs,
-      [selectedAgent]: { ...agentPrefs[selectedAgent], contextWindow: clamped },
+      [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, contextWindow: clamped } },
     };
     set({ agentPrefs: updated, selectedContextWindow: clamped });
     savePrefs({ selectedAgent, agentPrefs: updated });
   },
-  setAgentPref: (agent, key, value) => {
+  setAgentSetting: (key, value) => {
+    if (key === 'model') { get().setSelectedModel(value as string); return; }
     const { selectedAgent, agentPrefs } = get();
     const updated: AgentPrefsMap = {
       ...agentPrefs,
-      [agent]: { ...agentPrefs[agent], [key]: value },
+      [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, [key]: value } },
     };
-    // If the targeted agent IS the active one, also refresh the flat view
-    // so existing readers see the change without a remount.
+    const flatPatch: Record<string, unknown> = {};
+    if (key === 'permissionMode') flatPatch.selectedPermissionMode = value;
+    else if (key === 'reasoningEffort') flatPatch.selectedReasoningEffort = value;
+    else if (key === 'sandbox') flatPatch.sandboxEnabled = value;
+    else if (key === 'contextWindow') flatPatch.selectedContextWindow = value;
+    set({ agentPrefs: updated, ...flatPatch });
+    savePrefs({ selectedAgent, agentPrefs: updated });
+  },
+  setAgentPref: (agent, key, value) => {
+    const { selectedAgent, agentPrefs } = get();
+    let updated: AgentPrefsMap;
+    if (key === 'model') {
+      updated = { ...agentPrefs, [agent]: { ...agentPrefs[agent], model: value as string } };
+    } else {
+      updated = { ...agentPrefs, [agent]: { ...agentPrefs[agent], settings: { ...agentPrefs[agent].settings, [key]: value } } };
+    }
     set(
       agent === selectedAgent
         ? { agentPrefs: updated, ...flatViewOf(updated[agent]) }
@@ -621,11 +625,11 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
           ? (config as Record<string, ConfigValue>).provider
           : undefined;
       if (configAgent && state.activeSessionId === sessionId) {
-        next.selectedAgent = (
-          configAgent === 'codex-mcp' || configAgent === 'codex'
-            ? 'codex'
-            : 'claude-code'
-        ) as AgentId;
+        next.selectedAgent =
+          configAgent === 'codex-mcp' || configAgent === 'codex' ? 'codex'
+          : configAgent === 'opencode' ? 'opencode'
+          : configAgent === 'pi' ? 'pi'
+          : 'claude-code';
       }
       return next;
     }),

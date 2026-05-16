@@ -34,7 +34,7 @@ export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId
   card: Card;
   isLast: boolean;
   sessionId?: string | null;
-  onRespondToInput?: (requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string) => void;
+  onRespondToInput?: (requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string, permissionMode?: string) => void;
   /** Send a fixed prompt without using the composer input — wired for
    *  recovery_suggested cards' one-tap actions (e.g. `/compact`). */
   onSendQuickPrompt?: (prompt: string) => void;
@@ -61,7 +61,7 @@ export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId
           toolAnswers={tc.answers}
           pendingInputRequest={tc.pendingInput ? toLegacyPending(tc.pendingInput, tc.toolName, tc.toolInput) : undefined}
           onRespond={tc.pendingInput && onRespondToInput
-            ? (action, response, allowPattern) => onRespondToInput(tc.pendingInput!.requestId, action, response, allowPattern)
+            ? (action, response, allowPattern, permissionMode) => onRespondToInput(tc.pendingInput!.requestId, action, response, allowPattern, permissionMode)
             : undefined}
         />
       );

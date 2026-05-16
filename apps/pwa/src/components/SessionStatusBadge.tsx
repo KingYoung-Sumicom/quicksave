@@ -45,21 +45,21 @@ export function isSessionUnread(session: Pick<ClaudeSessionSummary, 'lastReadAt'
 
 /**
  * Derive status from a session summary. Priority order:
- *   1. `thinking` — actively producing output (blue cursor cue). The live
- *      signal trumps everything else; unread state is implicit while the
- *      turn is still in flight (lastTurnEndedAt hasn't advanced yet).
- *   2. `unread`   — there's new output the user hasn't viewed (purple).
- *      Wins over `pending` and `closed`: until the user actually opens it,
- *      "you haven't seen this" is the loudest signal. The orange `pending`
- *      cue takes over once the unread mark clears, signalling "now respond".
- *   3. `pending`  — agent paused for user input (orange).
+ *   1. `pending`  — agent paused for user input (orange). Wins over
+ *      everything: permission requests arrive mid-stream while `isStreaming`
+ *      is still true, so this check must come first or the blue cursor cue
+ *      would permanently mask the orange action cue.
+ *   2. `thinking` — actively producing output (blue cursor cue).
+ *   3. `unread`   — there's new output the user hasn't viewed (purple).
+ *      Wins over `closed`: until the user actually opens it,
+ *      "you haven't seen this" is the loudest remaining signal.
  *   4. `closed`   — process is gone, follow-up needs cold-resume.
  *   5. `standby`  — idle, alive, all read.
  */
 export function sessionStatusKey(session: ClaudeSessionSummary): SessionStatusKey {
+  if (session.hasPendingInput) return 'pending';
   if (session.isStreaming) return 'thinking';
   if (isSessionUnread(session)) return 'unread';
-  if (session.hasPendingInput) return 'pending';
   if (!session.isActive) return 'closed';
   return 'standby';
 }

@@ -610,6 +610,8 @@ export interface AgentProviderInfo {
   label: string;
   version?: string;
   capabilities: AgentCapabilities;
+  /** Provider-specific model list (e.g. opencode's configured vLLM models). */
+  models?: Array<{ id: string; name: string }>;
 }
 
 export interface AgentProbePayload {
@@ -1575,6 +1577,8 @@ export interface ClaudeUserInputResponsePayload {
   selectedKey?: string;
   /** Wildcard pattern to persist in project .claude/settings.local.json allow list */
   allowPattern?: string;
+  /** Permission mode to switch to atomically on plan approval (ExitPlanMode allow) */
+  permissionMode?: string;
 }
 
 // ============================================================================

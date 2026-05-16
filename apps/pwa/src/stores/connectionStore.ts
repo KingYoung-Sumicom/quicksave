@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { create } from 'zustand';
-import type { ConnectionState, Repository, CodingPath, CodexModelInfo } from '@sumicom/quicksave-shared';
+import type { ConnectionState, Repository, CodingPath, CodexModelInfo, AgentProviderInfo } from '@sumicom/quicksave-shared';
 
 export type ConnectionStep = 'signaling' | 'waiting-for-agent' | 'key-exchange' | 'handshake';
 
@@ -43,6 +43,7 @@ interface ConnectionStore {
   agentVersion: string | null;
   latestVersion: string | null;
   codexModels: CodexModelInfo[];
+  opencodeModels: Array<{ id: string; name: string }>;
   reconnectAttempt: number | null;
   maxReconnectAttempts: number | null;
   connectionStep: ConnectionStep | null;
@@ -59,6 +60,7 @@ interface ConnectionStore {
   setAgentVersion: (version: string) => void;
   setLatestVersion: (version: string) => void;
   setCodexModels: (models: CodexModelInfo[]) => void;
+  setAvailableProviders: (providers: AgentProviderInfo[]) => void;
   setRepoPath: (repoPath: string) => void;
   setPendingRepoPath: (repoPath: string | null) => void;
   setAvailableRepos: (repos: Repository[]) => void;
@@ -112,6 +114,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
   agentVersion: null,
   latestVersion: null,
   codexModels: [],
+  opencodeModels: [],
   reconnectAttempt: null,
   maxReconnectAttempts: null,
   connectionStep: null,
@@ -155,6 +158,13 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
 
   setCodexModels: (models) =>
     set({ codexModels: models }),
+
+  setAvailableProviders: (providers) => {
+    const opencode = providers.find((p) => p.id === 'opencode');
+    if (opencode?.models?.length) {
+      set({ opencodeModels: opencode.models });
+    }
+  },
 
   setRepoPath: (repoPath) =>
     set({ repoPath }),
@@ -218,6 +228,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       agentVersion: null,
       latestVersion: null,
       codexModels: [],
+      opencodeModels: [],
       reconnectAttempt: null,
       maxReconnectAttempts: null,
       connectionStep: null,

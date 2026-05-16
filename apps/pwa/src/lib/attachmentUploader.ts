@@ -29,7 +29,7 @@ import {
   type AttachmentCancelRequestPayload,
   type AttachmentCancelResponsePayload,
 } from '@sumicom/quicksave-shared';
-import { getActiveBus } from './busRegistry';
+import { getBusForAgent } from './busRegistry';
 import { primeAttachment } from './attachmentCache';
 
 // ── Public types ──────────────────────────────────────────────────────────
@@ -42,6 +42,8 @@ export interface PendingAttachment {
   mimeType: string;
   name: string;
   bytes: Uint8Array;
+  /** Agent that will receive the upload chunks. */
+  agentId: string;
 }
 
 export type UploadStatus = 'queued' | 'uploading' | 'ready' | 'cancelled' | 'error';
@@ -141,13 +143,14 @@ export function startUpload(pending: PendingAttachment): void {
  */
 export async function cancelUpload(id: string): Promise<void> {
   const task = tasks.get(id);
+  const agentId = task?.pending.agentId;
   if (task) {
     task.cancelled = true;
     tasks.delete(id);
   }
   useAttachmentUploadStore.getState().setUpload(id, { status: 'cancelled' });
 
-  const bus = getActiveBus();
+  const bus = agentId ? getBusForAgent(agentId) : null;
   if (!bus) return;
   try {
     await bus.command<AttachmentCancelResponsePayload, AttachmentCancelRequestPayload>(
@@ -242,9 +245,9 @@ async function runTask(task: UploadTask): Promise<void> {
         : {}),
     };
 
-    const bus = getActiveBus();
+    const bus = getBusForAgent(pending.agentId);
     if (!bus) {
-      console.warn(`[uploader] no active bus, marking error id=${pending.id}`);
+      console.warn(`[uploader] no bus for agent ${pending.agentId}, marking error id=${pending.id}`);
       useAttachmentUploadStore.getState().setUpload(pending.id, {
         status: 'error',
         error: 'Not connected',

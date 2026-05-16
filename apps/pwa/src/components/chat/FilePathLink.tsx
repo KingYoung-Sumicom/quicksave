@@ -43,11 +43,15 @@ export function FilePathLink({ path, children, className, title }: FilePathLinkP
     const id = s.activeSessionId;
     return id ? s.sessions[id]?.cwd ?? '' : '';
   });
+  const agentId = useClaudeStore((s) => {
+    const id = s.activeSessionId;
+    return id ? s.sessions[id]?.machineAgentId ?? '' : '';
+  });
   const openPreview = useFilePreviewStore((s) => s.open);
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    openPreview({ cwd, path });
+    openPreview({ cwd, path, agentId });
   };
 
   return (

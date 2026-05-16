@@ -54,6 +54,18 @@ export const SUPERSEDED_ERROR = 'SUPERSEDED';
 const isSuperseded = (error: unknown): boolean =>
   error instanceof Error && error.message === SUPERSEDED_ERROR;
 
+/** Translate raw OS/git errors into user-readable messages. */
+function humanizeGitError(error: unknown, fallback: string): string {
+  const msg = error instanceof Error ? error.message : String(error);
+  if (msg.includes('ENOENT') || msg.includes('no such file or directory')) {
+    const pathMatch = msg.match(/'([^']+)'/);
+    return pathMatch
+      ? `Repository path not found — it may have been moved or deleted: ${pathMatch[1]}`
+      : 'Repository path not found — it may have been moved or deleted.';
+  }
+  return msg || fallback;
+}
+
 /**
  * Marker attached to a git:* in-flight bus command so `cancelPendingGit` can
  * flag it as superseded without having to cancel the underlying bus promise
@@ -168,7 +180,7 @@ export function useGitOperations(
       setStatus(response);
     } catch (error) {
       if (isSuperseded(error)) return;
-      setError(error instanceof Error ? error.message : 'Failed to fetch status');
+      setError(humanizeGitError(error, 'Failed to fetch status'));
     } finally {
       setLoading(false);
     }
@@ -184,7 +196,7 @@ export function useGitOperations(
       } catch (error) {
         setDiffLoading(key, false);
         if (isSuperseded(error)) return;
-        setError(error instanceof Error ? error.message : 'Failed to fetch diff');
+        setError(humanizeGitError(error, 'Failed to fetch diff'));
       }
     },
     [sendCommand, setFileDiff, setDiffLoading, setError]

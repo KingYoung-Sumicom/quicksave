@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github-dark-dimmed.css';
 import type { FilesReadResponsePayload } from '@sumicom/quicksave-shared';
 import { useFileOps } from '../../hooks/useFileOps';
-import { getActiveBus } from '../../lib/busRegistry';
+import { getBusForAgent } from '../../lib/busRegistry';
 import { useFilePreviewStore } from '../../stores/filePreviewStore';
 import { Spinner } from '../ui/Spinner';
 
@@ -29,10 +29,12 @@ export function MarkdownPreview({
   source,
   fileAbsolutePath,
   cwd,
+  agentId,
 }: {
   source: string;
   fileAbsolutePath: string;
   cwd: string;
+  agentId: string;
 }) {
   const dir = dirnameOf(fileAbsolutePath);
 
@@ -82,7 +84,7 @@ export function MarkdownPreview({
             // Relative or absolute file path → open in preview modal.
             if (url) {
               return (
-                <FileLink dir={dir} cwd={cwd} target={url}>
+                <FileLink dir={dir} cwd={cwd} target={url} agentId={agentId}>
                   {children}
                 </FileLink>
               );
@@ -102,7 +104,7 @@ export function MarkdownPreview({
               const m = text.match(SINGLE_PATH_RE);
               if (m) {
                 return (
-                  <FileLink dir={dir} cwd={cwd} target={m[1]}>
+                  <FileLink dir={dir} cwd={cwd} target={m[1]} agentId={agentId}>
                     {text}
                   </FileLink>
                 );
@@ -123,7 +125,7 @@ export function MarkdownPreview({
               return <img src={url} alt={alt ?? ''} title={title} className="max-w-full h-auto rounded" />;
             }
             if (!url) return <span className="text-slate-500 italic">[image]</span>;
-            return <MarkdownImage dir={dir} cwd={cwd} src={url} alt={alt ?? ''} title={title} />;
+            return <MarkdownImage dir={dir} cwd={cwd} src={url} alt={alt ?? ''} title={title} agentId={agentId} />;
           },
         }}
       >
@@ -140,11 +142,13 @@ function FileLink({
   dir,
   cwd,
   target,
+  agentId,
   children,
 }: {
   dir: string;
   cwd: string;
   target: string;
+  agentId: string;
   children: ReactNode;
 }) {
   const open = useFilePreviewStore((s) => s.open);
@@ -157,7 +161,7 @@ function FileLink({
         e.stopPropagation();
         // Use absolute path so the agent ignores cwd; cwd is still passed
         // for display continuity in the modal header.
-        open({ cwd, path: resolved });
+        open({ cwd, path: resolved, agentId });
       }}
     >
       {children}
@@ -171,14 +175,17 @@ function MarkdownImage({
   src,
   alt,
   title,
+  agentId,
 }: {
   dir: string;
   cwd: string;
   src: string;
   alt: string;
   title?: string;
+  agentId: string;
 }) {
-  const { readFile } = useFileOps(getActiveBus);
+  const getBus = useCallback(() => getBusForAgent(agentId), [agentId]);
+  const { readFile } = useFileOps(getBus);
   const [state, setState] = useState<
     | { kind: 'loading' }
     | { kind: 'ok'; url: string }

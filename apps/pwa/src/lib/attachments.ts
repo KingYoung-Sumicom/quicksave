@@ -23,6 +23,10 @@ import {
 } from '@sumicom/quicksave-shared';
 import type { PendingAttachment } from './attachmentUploader';
 
+/** A `PendingAttachment` without the `agentId` — filled in by the caller once
+ *  the target agent is known (e.g. in the composer). */
+export type PendingAttachmentDraft = Omit<PendingAttachment, 'agentId'>;
+
 export class AttachmentRejectedError extends Error {
   constructor(
     message: string,
@@ -34,7 +38,7 @@ export class AttachmentRejectedError extends Error {
 }
 
 export interface AttachmentIntakeResult {
-  accepted: PendingAttachment[];
+  accepted: PendingAttachmentDraft[];
   rejected: { name: string; reason: AttachmentRejectedError['reason']; message: string }[];
 }
 
@@ -51,7 +55,7 @@ function newAttachmentId(): string {
  * `AttachmentRejectedError` on rejection so callers can surface the reason
  * to the user. Reads bytes via `arrayBuffer()` (one-shot).
  */
-export async function fileToAttachment(file: File): Promise<PendingAttachment> {
+export async function fileToAttachment(file: File): Promise<PendingAttachmentDraft> {
   if (file.size === 0) {
     throw new AttachmentRejectedError(`${file.name} is empty`, 'empty');
   }
@@ -88,7 +92,7 @@ export async function attachmentsFromDataTransfer(
   dt: DataTransfer | null,
   existingCount: number,
 ): Promise<AttachmentIntakeResult> {
-  const accepted: PendingAttachment[] = [];
+  const accepted: PendingAttachmentDraft[] = [];
   const rejected: AttachmentIntakeResult['rejected'] = [];
   if (!dt) return { accepted, rejected };
 
@@ -202,7 +206,7 @@ export async function processPasteInspection(
     return { accepted: [], rejected: [] };
   }
   if (inspection.mode === 'files') {
-    const accepted: PendingAttachment[] = [];
+    const accepted: PendingAttachmentDraft[] = [];
     const rejected: AttachmentIntakeResult['rejected'] = [];
     for (const file of inspection.files) {
       if (opts.existingCount + accepted.length >= PER_MESSAGE_MAX_COUNT) {

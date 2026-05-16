@@ -160,15 +160,19 @@ The architecture uses a layered design: `SessionManager` provides unified coordi
 claude:start → MessageHandler.handleClaudeStart()
   → SessionManager.startSession(opts)
     → provider.startSession(opts, cardBuilder, callbacks)   // returns { sessionId, session: ProviderSession }
-       For ClaudeCliProvider:
-         spawn('claude', ['--output-format', 'stream-json', '--input-format', 'stream-json',
-                          '--permission-prompt-tool', 'stdio', '--append-system-prompt', '...', ...])
-         → Wait for system:init event on stdout to obtain session_id
-         → stdin write { type: 'user', message: { role: 'user', content: prompt } }
-         → consumeStream loop on stdout:
-             control_request → callbacks.handlePermissionRequest → allow/deny via stdin control_response
-             stream_event/assistant/user/system → CardBuilder → callbacks.emitCardEvent
-             result → callbacks.emitStreamEnd
+        For ClaudeCliProvider:
+          spawn('claude', ['--output-format', 'stream-json', '--input-format', 'stream-json',
+                           '--permission-prompt-tool', 'stdio', '--append-system-prompt', '...', ...])
+          → sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` on spawn when `contextWindow` is provided
+          → appends `[1m]` model suffix to model string when `contextWindow > 200000`
+          → Wait for system:init event on stdout to obtain session_id
+          → stdin write { type: 'user', message: { role: 'user', content: prompt, ...attachments } }
+          → consumeStream loop on stdout:
+              control_request → callbacks.handlePermissionRequest → allow/deny via stdin control_response
+              (also fires `callbacks.onToolUse` for every tool_use block)
+              stream_event/assistant/user/system → CardBuilder → callbacks.emitCardEvent
+              (also fires `callbacks.onCacheTouch` on SDK cache hit/write tokens)
+              result → callbacks.emitStreamEnd
        For CodexAppServerProvider:
          processManager.ensureRunning() (initialize handshake first time)
          conversation = await rpc.request('newConversation', {…})
@@ -177,11 +181,11 @@ claude:start → MessageHandler.handleClaudeStart()
   ← sessionId
 
 claude:resume → SessionManager.resumeSession(opts)
-  → 1. Hot resume (active turn): existing.streaming && providerSession.alive
-       → providerSession.sendUserMessage(prompt); the provider consumes the next prompt after the current turn ends
-  → 2. Hot resume (idle): !existing.streaming && providerSession.alive && !modelChanged && !contextWindowChanged
-       → Reuse the same process: providerSession.sendUserMessage(prompt). Avoids the latency and "ghost inactive" flicker of kill+spawn.
-       → For Claude CLI, a contextWindow change can be applied live via providerSession.updateContextWindow(...) before sending.
+   → 1. Hot resume (active turn): existing.streaming && providerSession.alive
+        → providerSession.sendUserMessage(prompt, opts.attachments); the provider consumes the next prompt after the current turn ends
+   → 2. Hot resume (idle): !existing.streaming && providerSession.alive && !modelChanged && !contextWindowChanged
+        → Reuse the same process: providerSession.sendUserMessage(prompt, opts.attachments). Avoids the latency and "ghost inactive" flicker of kill+spawn.
+        → For Claude CLI, a contextWindow change can be applied live via providerSession.updateContextWindow(...) before sending.
   → 3. Cold resume: providerSession is dead, the model changed, or the auto-compact tier changed for a non-CLI provider
        → provider.resumeSession(opts, ...): for the CLI this is `spawn('claude', [..., '--resume', sessionId])`
        → Note: the CLI's --resume may fork a new session_id (reported by the init event).
@@ -249,21 +253,46 @@ Pending permission requests live in a separate `pendingInputRequests` map on `Se
 **ProviderSession interface** (`ai/provider.ts`):
 ```typescript
 interface ProviderSession {
-  sendUserMessage(prompt: string): void;
+  sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void;
   interrupt(): void;
   kill(): void;
   readonly alive: boolean;
-  /** Optional — Claude Code CLI only. Queries `get_context_usage` and returns a
-   *  category-level breakdown of the current context window. */
+  /** Optional — ask the provider for a breakdown of current context window
+   *  usage. Only supported by the Claude Code CLI (via `get_context_usage`
+   *  control_request). Returns null on providers that don't support it. */
   getContextUsage?(): Promise<ContextUsageBreakdown | null>;
   /** Optional — live-switch the auto-compact ceiling without respawning.
-   *  Only the Claude CLI implements it; SDK / Codex providers omit it and
-   *  SessionManager falls back to cold-respawn. */
+   *  Only the Claude CLI provider implements it (sends a top-level
+   *  `update_environment_variables` stdin message; if `decoratedModel` is
+   *  provided, also fires `set_model` so the API's `[1m]` beta header flips
+   *  in sync). SDK / Codex providers omit this method, and SessionManager
+   *  falls back to cold-respawn-on-next-prompt for them. */
   updateContextWindow?(window: number, decoratedModel?: string): Promise<void>;
 }
 ```
 
-The provider receives a `ProviderCallbacks` bundle (`emitCardEvent`, `emitStreamEnd`, `handlePermissionRequest`, `onToolUse`, `onCacheTouch`, `onModelDetected`, `onSessionExited`) so it can drive `SessionManager` without a back-reference. There is no `cancelSession` / `closeSession` on the provider interface — those live on `SessionManager` and are implemented by calling `interrupt()` / `kill()` on the held `ProviderSession`.
+**ProviderCallbacks interface** (`ai/provider.ts`) — sent to each provider at session start so it can drive `SessionManager` without a back-reference:
+```typescript
+interface ProviderCallbacks {
+  emitCardEvent(event: CardEvent): void;
+  emitStreamEnd(result: CardStreamEnd): void;
+  handlePermissionRequest(
+    sessionId: string,
+    req: { toolName: string; toolInput: Record<string, unknown>; toolUseId: string },
+  ): Promise<{ action: 'allow' | 'deny'; response?: string; updatedInput?: Record<string, unknown> }>;
+  /** Fired for EVERY `tool_use` block regardless of whether permission
+   *  callback fires (CLI auto-mode pre-approves MCP tools silently). */
+  onToolUse?(sessionId: string, toolName: string, toolInput: Record<string, unknown>): void;
+  /** Fired on SDK cache hit/write (`cache_creation_input_tokens` > 0 or
+   *  `cache_read_input_tokens` > 0). Resets the PWA's cache TTL countdown. */
+  onCacheTouch?(sessionId: string): void;
+  onModelDetected(model: string): void;
+  /** Fired when the underlying provider process has fully exited. */
+  onSessionExited?(sessionId: string, providerSession: ProviderSession): void;
+}
+```
+
+There is no `cancelSession` / `closeSession` on the provider interface — those live on `SessionManager` and are implemented by calling `interrupt()` / `kill()` on the held `ProviderSession`.
 
 ### Session Registry (persistence)
 
@@ -298,11 +327,12 @@ The provider receives a `ProviderCallbacks` bundle (`emitCardEvent`, `emitStream
 | `preferences-updated` | `ClaudePreferences` | After `setPreferences` writes to disk |
 | `session-config-updated` | `SessionConfigUpdatedPayload` | After `setSessionConfig` (or sandbox MCP `UpdateSessionStatus`) writes |
 
-**Provider interface** (`ai/provider.ts`):
+**CodingAgentProvider interface** (`ai/provider.ts`):
 ```typescript
 interface CodingAgentProvider {
-  readonly id: AgentId;                                 // 'claude-code' | 'codex'
-  readonly historyMode: 'claude-jsonl' | 'memory';
+  readonly id: AgentId;                                 // 'claude-code' | 'codex' | 'opencode' | ...
+  readonly historyMode: ProviderHistoryMode;            // 'claude-jsonl' | 'memory'
+  readonly label: string;                               // e.g. 'Claude Code', 'Codex'
 
   startSession(
     opts: StartSessionOpts,
@@ -315,8 +345,26 @@ interface CodingAgentProvider {
     cardBuilder: StreamCardBuilder,
     callbacks: ProviderCallbacks,
   ): Promise<{ sessionId: string; session: ProviderSession }>;
+
+  /** Probe availability without starting a session. Returns version +
+   *  capabilities (hasApiKey, hasCli, hasPlugin, supportsResume, etc.). */
+  probeProvider(): Promise<ProbeResult>;
 }
 ```
+
+**StartSessionOpts** — passed on initial start or resume:
+- `prompt` — user message
+- `attachments?` — files/text attached to the message
+- `cwd` — project directory
+- `model?` — model override
+- `permissionLevel` — `PermissionLevel` (Claude: `default` / `acceptEdits` / `bypassPermissions` / `plan` / `auto`; Codex: `read-only` / `default` / `auto-review` / `full-access`)
+- `sandboxed` — enable sandbox
+- `systemPrompt?` — custom system prompt (fixed contents are always prepended)
+- `reasoningEffort?` — per-session reasoning depth; Codex maps to SDK `modelReasoningEffort` (`minimal/low/medium/high/xhigh`), Claude to CLI `--effort` (`low/medium/high/xhigh/max`)
+- `contextWindow?` — auto-compact ceiling for Claude Code (200k / 500k / 1M); Claude CLI sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` on spawn and appends `[1m]` model suffix when >200k; Codex ignores
+- `bypassFlagPath?` — sentinel file path for CLI PermissionRequest hook (only `ClaudeCliProvider` uses it)
+
+**ResumeSessionOpts** — same fields as `StartSessionOpts` minus `cwd` resolution differences; SessionManager handles hot vs cold resume based on `providerSession.alive`, model change, and context window change.
 
 To add a new provider, implement this interface and include it in the array passed to the `SessionManager` constructor:
 ```typescript

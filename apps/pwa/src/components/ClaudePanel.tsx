@@ -20,7 +20,7 @@ import { ToolCallGroupPlaceholder } from './chat/ToolCallGroupPlaceholder';
 import { ToolCallVisibilityChip } from './chat/ToolCallVisibilityChip';
 import { AttachmentTray } from './AttachmentTray';
 import { useUiPrefsStore } from '../stores/uiPrefsStore';
-import { getAgentType } from '../lib/claudePresets';
+import { getAgentProvider } from '../lib/agentProvider';
 import type { AttachmentMetadata } from '@sumicom/quicksave-shared';
 import {
   startUpload,
@@ -29,7 +29,7 @@ import {
   useAttachmentUploadStore,
   type PendingAttachment,
 } from '../lib/attachmentUploader';
-import { attachmentsFromDataTransfer, inspectPaste, processPasteInspection } from '../lib/attachments';
+import { attachmentsFromDataTransfer, inspectPaste, processPasteInspection, type PendingAttachmentDraft } from '../lib/attachments';
 
 type StartSessionOpts = { agent?: 'claude-code' | 'codex' | 'opencode' | 'pi'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
 type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
@@ -96,6 +96,7 @@ export function ClaudePanel({
   } = useClaudeStore();
 
   const hideToolCalls = useUiPrefsStore((s) => s.hideToolCalls);
+  const agentId = useConnectionStore((s) => s.agentId ?? '');
 
   // ── Attachment composer state ────────────────────────────────────────────
   // `pendingAttachments` is the set of chips currently displayed; the upload
@@ -112,16 +113,17 @@ export function ClaudePanel({
     return s === 'queued' || s === 'uploading';
   });
 
-  const ingestAttachments = useCallback((accepted: PendingAttachment[], rejected: { message: string }[]) => {
-    if (accepted.length > 0) {
-      setPendingAttachments((prev) => [...prev, ...accepted]);
-      for (const a of accepted) startUpload(a);
+  const ingestAttachments = useCallback((drafts: PendingAttachmentDraft[], rejected: { message: string }[]) => {
+    if (drafts.length > 0) {
+      const withAgent: PendingAttachment[] = drafts.map((d) => ({ ...d, agentId }));
+      setPendingAttachments((prev) => [...prev, ...withAgent]);
+      for (const a of withAgent) startUpload(a);
     }
     if (rejected.length > 0) {
       setAttachmentToast(rejected.map((r) => r.message).join('\n'));
       window.setTimeout(() => setAttachmentToast(null), 4000);
     }
-  }, []);
+  }, [agentId]);
 
   const removePendingAttachment = useCallback((id: string) => {
     setPendingAttachments((prev) => prev.filter((p) => p.id !== id));
@@ -238,7 +240,7 @@ export function ClaudePanel({
     }
   }, [isResuming, cards]);
 
-  const selectedAgentType = getAgentType(selectedAgent);
+  const selectedAgentType = getAgentProvider(selectedAgent);
 
   // View is determined by URL: sessionId present = chat, ?new = new session, absent = sessions list
   const isChat = !!urlSessionId || !!newSession;
@@ -441,7 +443,7 @@ export function ClaudePanel({
     await onResumeSession(activeSessionId, prompt, {});
   }, [activeSessionId, isInactive, onResumeSession]);
 
-  const handleRespondToInput = useCallback((requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string) => {
+  const handleRespondToInput = useCallback((requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string, permissionMode?: string) => {
     if (!onRespondToUserInput) return;
     // Read cards from the live store rather than the closure so this
     // callback reference stays stable across re-renders — required for
@@ -454,6 +456,7 @@ export function ClaudePanel({
       action: action === 'allow' ? (response ? 'respond' : 'allow') : 'deny',
       response,
       allowPattern,
+      permissionMode,
     });
   }, [onRespondToUserInput]);
 

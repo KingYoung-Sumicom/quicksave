@@ -11,7 +11,7 @@ import type {
 } from '@sumicom/quicksave-shared';
 import { useCodexLoginStore } from '../stores/codexLoginStore';
 import { useConnectionStore } from '../stores/connectionStore';
-import { getActiveBus } from '../lib/busRegistry';
+import { getBusForAgent } from '../lib/busRegistry';
 
 /**
  * Hook for driving the Codex OAuth device-auth flow.
@@ -27,7 +27,7 @@ export function useCodexLogin() {
   const loginState = useCodexLoginStore((s) => (agentId ? s.byAgent[agentId] : undefined));
 
   const start = useCallback(async (): Promise<CodexLoginState | null> => {
-    const bus = getActiveBus();
+    const bus = agentId ? getBusForAgent(agentId) : null;
     if (!bus) return null;
     const res = await bus.command<CodexLoginStartResponsePayload>(
       'codex:login-start',
@@ -35,20 +35,20 @@ export function useCodexLogin() {
       { timeoutMs: 60_000, queueWhileDisconnected: false },
     );
     return res;
-  }, []);
+  }, [agentId]);
 
   const refreshStatus = useCallback(async (): Promise<CodexLoginState | null> => {
-    const bus = getActiveBus();
+    const bus = agentId ? getBusForAgent(agentId) : null;
     if (!bus) return null;
     return bus.command<CodexLoginStatusResponsePayload>(
       'codex:login-status',
       {},
       { timeoutMs: 10_000, queueWhileDisconnected: false },
     );
-  }, []);
+  }, [agentId]);
 
   const cancel = useCallback(async (): Promise<boolean> => {
-    const bus = getActiveBus();
+    const bus = agentId ? getBusForAgent(agentId) : null;
     if (!bus) return false;
     const res = await bus.command<CodexLoginCancelResponsePayload>(
       'codex:login-cancel',
@@ -56,10 +56,10 @@ export function useCodexLogin() {
       { timeoutMs: 5_000, queueWhileDisconnected: false },
     );
     return Boolean(res.ok);
-  }, []);
+  }, [agentId]);
 
   const refreshModels = useCallback(async (): Promise<CodexModelInfo[] | null> => {
-    const bus = getActiveBus();
+    const bus = agentId ? getBusForAgent(agentId) : null;
     if (!bus) return null;
     const res = await bus.command<CodexListModelsResponsePayload>(
       'codex:list-models',
@@ -70,7 +70,7 @@ export function useCodexLogin() {
       useConnectionStore.getState().setCodexModels(res.models);
     }
     return res.models;
-  }, []);
+  }, [agentId]);
 
   return { loginState, start, refreshStatus, cancel, refreshModels };
 }

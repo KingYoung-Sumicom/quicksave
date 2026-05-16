@@ -7,7 +7,8 @@ import type {
   AttachmentFetchResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { readAttachmentWithCache } from '../lib/attachmentCache';
-import { getActiveBus } from '../lib/busRegistry';
+import { getBusForAgent } from '../lib/busRegistry';
+import { useClaudeStore } from '../stores/claudeStore';
 
 export type AttachmentBytesState =
   | { status: 'loading' }
@@ -25,17 +26,20 @@ export function useAttachmentBytes(
   sessionId: string | null | undefined,
   attachmentId: string | null | undefined,
 ): AttachmentBytesState {
+  const agentId = useClaudeStore((s) =>
+    sessionId ? (s.sessions[sessionId]?.machineAgentId ?? null) : null,
+  );
   const [state, setState] = useState<AttachmentBytesState>({ status: 'loading' });
 
   useEffect(() => {
-    if (!sessionId || !attachmentId) {
+    if (!sessionId || !attachmentId || !agentId) {
       setState({ status: 'loading' });
       return;
     }
     let cancelled = false;
     setState({ status: 'loading' });
 
-    readAttachmentWithCache({ sessionId, attachmentId }, fetchAttachmentBytes)
+    readAttachmentWithCache({ sessionId, attachmentId }, (req) => fetchAttachmentBytes(req, agentId))
       .then((attachment) => {
         if (cancelled) return;
         setState({ status: 'ready', attachment });
@@ -49,13 +53,13 @@ export function useAttachmentBytes(
     return () => {
       cancelled = true;
     };
-  }, [sessionId, attachmentId]);
+  }, [sessionId, attachmentId, agentId]);
 
   return state;
 }
 
-async function fetchAttachmentBytes(req: AttachmentFetchRequestPayload): Promise<Attachment> {
-  const bus = getActiveBus();
+async function fetchAttachmentBytes(req: AttachmentFetchRequestPayload, agentId: string): Promise<Attachment> {
+  const bus = getBusForAgent(agentId);
   if (!bus) throw new Error('Not connected');
   const res = await bus.command<AttachmentFetchResponsePayload, AttachmentFetchRequestPayload>(
     'attachment:fetch',

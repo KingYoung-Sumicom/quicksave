@@ -42,7 +42,7 @@ import {
 } from '@sumicom/quicksave-shared';
 import { useCodexLoginStore } from './stores/codexLoginStore';
 import { useTerminalStore } from './stores/terminalStore';
-import { registerActiveBusGetter, registerAgentBusGetter, getBusForAgent } from './lib/busRegistry';
+import { registerAgentBusGetter, getBusForAgent } from './lib/busRegistry';
 import { registerWsRetry } from './lib/wsRetryRegistry';
 import { applySessionUpdate } from './lib/applySessionUpdate';
 import { applyHistoryEntry, applyHistoryAction } from './lib/applyHistoryEntry';
@@ -229,12 +229,9 @@ function AppContent() {
     return busesRef.current.get(aid)?.bus ?? null;
   }, []);
 
-  // Register the active-bus getter for hooks (e.g. useCodexLogin) that live
-  // too deep to receive it via props. See lib/busRegistry.ts.
   useEffect(() => {
-    registerActiveBusGetter(getActiveBus);
     registerAgentBusGetter((agentId) => busesRef.current.get(agentId)?.bus ?? null);
-  }, [getActiveBus]);
+  }, []);
 
   // Lazily create the per-agent bus + transport and register its
   // subscriptions. Called on each agent's handshake:ack; idempotent so
@@ -528,7 +525,7 @@ function AppContent() {
     if (clientRef.current) return;
 
     const client = new WebSocketClient(signalingServer, identityPublicKey, {
-      onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences, agentVersion, latestVersion, devBuild, codexModels, platform) => {
+      onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences, agentVersion, latestVersion, devBuild, codexModels, platform, availableProviders) => {
         const { transport } = ensureBusForAgent(agentId);
         transport.notifyConnected();
         // Each handshake-ack establishes a fresh agent session and the agent
@@ -546,6 +543,9 @@ function AppContent() {
         }
         if (codexModels?.length) {
           useConnectionStore.getState().setCodexModels(codexModels);
+        }
+        if (availableProviders?.length) {
+          useConnectionStore.getState().setAvailableProviders(availableProviders);
         }
         // Update the single-agent mirror only when this agent is the one
         // the client treats as active (or no active has been chosen yet).

@@ -61,6 +61,23 @@ describe('isSessionUnread', () => {
 });
 
 describe('sessionStatusKey priority', () => {
+  it('pending wins over thinking (permission request arrives mid-stream → orange beats blue)', () => {
+    const session = makeSummary({
+      isStreaming: true,
+      hasPendingInput: true,
+    });
+    expect(sessionStatusKey(session)).toBe('pending');
+  });
+
+  it('pending wins over unread (orange action cue beats purple new-content cue)', () => {
+    const session = makeSummary({
+      hasPendingInput: true,
+      lastReadAt: 1_000,
+      lastTurnEndedAt: 5_000,
+    });
+    expect(sessionStatusKey(session)).toBe('pending');
+  });
+
   it('thinking wins over unread (live cursor cue beats new-output cue)', () => {
     const session = makeSummary({
       isStreaming: true,
@@ -68,15 +85,6 @@ describe('sessionStatusKey priority', () => {
       lastTurnEndedAt: 5_000,
     });
     expect(sessionStatusKey(session)).toBe('thinking');
-  });
-
-  it('unread wins over pending (purple "you haven\'t seen this" before orange "respond")', () => {
-    const session = makeSummary({
-      hasPendingInput: true,
-      lastReadAt: 1_000,
-      lastTurnEndedAt: 5_000,
-    });
-    expect(sessionStatusKey(session)).toBe('unread');
   });
 
   it('unread wins over closed (an ended session with unseen output still flags purple)', () => {
@@ -88,7 +96,7 @@ describe('sessionStatusKey priority', () => {
     expect(sessionStatusKey(session)).toBe('unread');
   });
 
-  it('pending wins once unread clears (read-but-still-blocked → orange)', () => {
+  it('pending shows even when session is already read (not gated on unread state)', () => {
     const session = makeSummary({
       hasPendingInput: true,
       lastReadAt: 6_000,

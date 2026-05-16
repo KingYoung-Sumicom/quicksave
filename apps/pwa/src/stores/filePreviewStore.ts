@@ -19,6 +19,12 @@ export interface FilePreviewRequest {
   cwd: string;
   /** Path the agent will resolve. Absolute or relative-to-cwd. */
   path: string;
+  /**
+   * Agent that owns this file. When set, file ops go to this specific agent
+   * (via getBusForAgent) instead of the currently-active one. Required for
+   * the file browser where the URL agent may differ from the active agent.
+   */
+  agentId?: string;
   /** Optional override for the agent's preview byte cap. */
   maxBytes?: number;
 }

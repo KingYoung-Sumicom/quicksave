@@ -13,7 +13,7 @@ import { ATTACHMENT_CHUNK_BYTES } from '@sumicom/quicksave-shared';
 
 // Mock the bus registry — every test installs a fresh fake bus.
 vi.mock('./busRegistry', () => ({
-  getActiveBus: () => fakeBus,
+  getBusForAgent: (_agentId: string) => fakeBus,
 }));
 
 interface RecordedCommand {
@@ -33,6 +33,7 @@ function makePending(id: string, bytes: Uint8Array): PendingAttachment {
     mimeType: 'text/plain',
     name: `${id}.txt`,
     bytes,
+    agentId: 'test-agent',
   };
 }
 

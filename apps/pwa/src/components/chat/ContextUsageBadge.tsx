@@ -7,7 +7,8 @@ import type { ContextUsageBreakdown } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../../stores/claudeStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
-import { getModelContextLimit } from '../../lib/claudePresets';
+import { getAgentProvider } from '../../lib/agentProvider';
+import { normalizeAgentId } from '../../lib/claudePresets';
 
 interface ContextUsageBadgeProps {
   sessionId: string;
@@ -53,10 +54,9 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
   const modelFromConfig = config.model as string | undefined;
   const model = modelFromBreakdown ?? modelFromConfig;
   const codexModels = useConnectionStore((s) => s.codexModels);
-  // Prefer the session's own contextWindow over the model-derived default —
-  // a Sonnet session set to 200k should show /200k, not /1M.
+  const agentId = normalizeAgentId((config.agent as string | undefined) ?? 'claude-code');
   const sessionContextWindow = config.contextWindow as number | undefined;
-  const fallbackLimit = getModelContextLimit(modelFromConfig, codexModels, sessionContextWindow);
+  const fallbackLimit = getAgentProvider(agentId).getModelContextLimit(modelFromConfig, { codexModels }, sessionContextWindow);
 
   // Fallback (raw turn tokens) — used when breakdown not yet available.
   const input = session?.lastTurnInputTokens ?? 0;

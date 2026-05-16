@@ -191,6 +191,7 @@ export interface AgentCapabilities {
 export type ProbeResult = {
   version?: string;
   capabilities: AgentCapabilities;
+  models?: Array<{ id: string; name: string }>;
 };
 
 export interface CodingAgentProvider {

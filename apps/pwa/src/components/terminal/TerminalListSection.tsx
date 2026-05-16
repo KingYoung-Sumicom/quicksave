@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTerminalStore } from '../../stores/terminalStore';
 import { useTerminalOps } from '../../hooks/useTerminalOps';
-import { getActiveBus } from '../../lib/busRegistry';
+import { getBusForAgent } from '../../lib/busRegistry';
 import { useProjects, type ProjectEntry } from '../../hooks/useProjects';
 import { useMachineStore } from '../../stores/machineStore';
 import { Spinner } from '../ui/Spinner';
@@ -28,7 +28,10 @@ export function TerminalListSection() {
   const terminals = useTerminalStore((s) => s.terminals);
   const projects = useProjects();
   const machines = useMachineStore((s) => s.machines);
-  const { createTerminal } = useTerminalOps(getActiveBus);
+  const targetAgentIdRef = useRef('');
+  const { createTerminal } = useTerminalOps(
+    useCallback(() => getBusForAgent(targetAgentIdRef.current), []),
+  );
   const [picking, setPicking] = useState(false);
   const [creatingFor, setCreatingFor] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -54,6 +57,7 @@ export function TerminalListSection() {
   const handleSpawn = useCallback(async (project: ProjectEntry) => {
     setCreateError(null);
     setCreatingFor(project.projectId);
+    targetAgentIdRef.current = project.agentId;
     try {
       const res = await createTerminal({ cwd: project.cwd });
       if (res.success && res.terminal) {

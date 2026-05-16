@@ -130,8 +130,10 @@ export function buildClaudeCliArgs(opts: {
     // Universal hook: if the sentinel file exists, approve the tool; otherwise
     // emit nothing so the CLI continues to the permission-prompt-tool (which
     // the daemon serves from AUTO_APPROVE + user interaction).
+    // AskUserQuestion and ExitPlanMode are intentionally excluded — interactive
+    // user prompts must always reach the user even in bypass mode.
     const escapedPath = opts.bypassFlagPath.replace(/"/g, '\\"');
-    const conditionalCommand = `[ -f "${escapedPath}" ] && printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}' || true`;
+    const conditionalCommand = `input=$(cat); [ -f "${escapedPath}" ] && ! printf '%s' "$input" | grep -qE '"tool_name":"(AskUserQuestion|ExitPlanMode)"' && printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}' || true`;
     permissionRequestHooks.push({
       matcher: '*',
       hooks: [{ type: 'command', command: conditionalCommand }],

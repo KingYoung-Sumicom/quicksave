@@ -11,16 +11,9 @@ import {
 import { useSessionConfig } from '../../hooks/useSessionConfig';
 import { useClaudeStore } from '../../stores/claudeStore';
 import { useConnectionStore } from '../../stores/connectionStore';
-import {
-  AGENT_TYPES,
-  clampContextWindowForModel,
-  getContextWindowOptionsForModel,
-  getModelsForAgent,
-  getPermissionModesForAgent,
-  getReasoningEffortsForModel,
-} from '../../lib/claudePresets';
+import { AGENT_TYPES, getAgentProvider } from '../../lib/agentProvider';
+import { normalizeAgentId } from '../../lib/claudePresets';
 import { ButtonGroup } from '../ui/ButtonGroup';
-import { ToggleSwitch } from '../ui/ToggleSwitch';
 
 interface ClaudeSettingsSectionProps {
   /** Session ID — null means new session (shows defaults, changes update store only) */
@@ -39,30 +32,33 @@ export function ClaudeSettingsSection({ sessionId, onSetConfig, agentLocked, hid
   const codexModels = useConnectionStore((s) => s.codexModels);
 
   const rawAgent = (config['agent'] as string | undefined) ?? (config['provider'] as string | undefined);
-  const selectedAgent = rawAgent
-    ? (rawAgent === 'codex' || rawAgent === 'codex-mcp' ? 'codex' : 'claude-code')
-    : DEFAULT_AGENT;
-  const selectedModel = (config['model'] as string | undefined) ?? DEFAULT_MODEL;
-  const selectedPermissionMode = (config['permissionMode'] as string | undefined) ?? DEFAULT_PERMISSION_MODE;
-  const selectedReasoningEffort = (config['reasoningEffort'] as string | undefined) ?? DEFAULT_REASONING_EFFORT;
-  const sandboxed = (config['sandboxed'] as boolean | undefined) ?? false;
-  const contextWindowRaw = (config['contextWindow'] as number | undefined) ?? DEFAULT_CONTEXT_WINDOW;
+  const selectedAgent = rawAgent ? normalizeAgentId(rawAgent) : DEFAULT_AGENT;
+  const provider = getAgentProvider(selectedAgent);
+  const opencodeModels = useConnectionStore((s) => s.opencodeModels);
+  const dynamic = { codexModels, opencodeModels };
 
-  const isClaudeAgent = selectedAgent === 'claude-code';
-  const isCodexAgent = selectedAgent === 'codex';
-  const models = getModelsForAgent(selectedAgent, codexModels);
-  const supportsReasoning = isClaudeAgent
-    ? selectedModel.startsWith('claude-')
-    : isCodexAgent;
-  const reasoningOptions = getReasoningEffortsForModel(selectedAgent, selectedModel, codexModels);
-  const permissionOptions = getPermissionModesForAgent(selectedAgent);
-  // Context window only matters for Claude Code; Codex uses its own per-model
-  // window. Clamp the displayed value so picking Haiku after Sonnet/Opus
-  // 1M doesn't leave the picker showing a setting the model can't honor.
-  const contextWindowOptions = isClaudeAgent
-    ? getContextWindowOptionsForModel(selectedModel)
-    : [];
-  const selectedContextWindow = clampContextWindowForModel(selectedModel, contextWindowRaw);
+  // Build values map from session config with sensible defaults
+  const values: Record<string, unknown> = {
+    model: (config['model'] as string | undefined) ?? DEFAULT_MODEL,
+    permissionMode: (config['permissionMode'] as string | undefined) ?? DEFAULT_PERMISSION_MODE,
+    reasoningEffort: (config['reasoningEffort'] as string | undefined) ?? DEFAULT_REASONING_EFFORT,
+    sandbox: (config['sandboxed'] as boolean | undefined) ?? false,
+    contextWindow: (config['contextWindow'] as number | undefined) ?? DEFAULT_CONTEXT_WINDOW,
+  };
+
+  // Map setting keys to session config keys (sandbox → sandboxed on the wire)
+  const onChange = (key: string, value: unknown) => {
+    const wireKey = key === 'sandbox' ? 'sandboxed' : key;
+    onSetConfig?.(wireKey, value as ConfigValue);
+  };
+
+  // Build hideKeys from hideFields mapping
+  const hideKeys: string[] = [];
+  if (hide.has('model')) hideKeys.push('model');
+  if (hide.has('permission')) hideKeys.push('permissionMode');
+  if (hide.has('reasoningEffort')) hideKeys.push('reasoningEffort');
+  if (hide.has('sandbox')) hideKeys.push('sandbox');
+  if (hide.has('contextWindow')) hideKeys.push('contextWindow');
 
   return (
     <div className="space-y-5">
@@ -76,74 +72,18 @@ export function ClaudeSettingsSection({ sessionId, onSetConfig, agentLocked, hid
         />
       )}
 
-      {!hide.has('model') && (
-        <ButtonGroup
-          label="Model"
-          options={models}
-          value={selectedModel}
-          onSelect={(m) => {
-            onSetConfig?.('model', m.value);
-            // Re-clamp contextWindow when switching to a model that doesn't
-            // support the previously chosen tier (e.g. Sonnet 1M → Haiku).
-            // Without this, the daemon would keep CLAUDE_CODE_AUTO_COMPACT_WINDOW
-            // at 1M for a model the API would refuse it on.
-            if (selectedAgent === 'claude-code') {
-              const clamped = clampContextWindowForModel(m.value, contextWindowRaw);
-              if (clamped !== contextWindowRaw) {
-                onSetConfig?.('contextWindow', clamped);
-              }
-            }
-          }}
-        />
-      )}
+      {provider.renderSettings(values, onChange, {
+        mode: 'active-session',
+        dynamic,
+        hideKeys,
+        sessionId,
+      })}
 
-      {!hide.has('contextWindow') && isClaudeAgent && contextWindowOptions.length > 1 && (
-        <ButtonGroup
-          label="Context window"
-          options={contextWindowOptions.map((o) => ({ value: String(o.value), label: o.label }))}
-          value={String(selectedContextWindow)}
-          onSelect={(o) => onSetConfig?.('contextWindow', Number(o.value))}
-        />
-      )}
-
-      {!hide.has('reasoningEffort') && supportsReasoning && (
-        <ButtonGroup
-          label="Reasoning effort"
-          options={reasoningOptions}
-          value={selectedReasoningEffort}
-          onSelect={(opt) => onSetConfig?.('reasoningEffort', opt.value)}
-        />
-      )}
-
-      {!hide.has('permission') && (
-        <ButtonGroup
-          label="Permission"
-          options={permissionOptions}
-          value={selectedPermissionMode}
-          onSelect={(p) => onSetConfig?.('permissionMode', p.value)}
-          layout="grid-2"
-        />
-      )}
-
-      {/* Sandbox toggle is hidden for codex — its permission preset already
-          encodes sandbox_mode (read-only / workspace-write / danger-full-access). */}
-      {!hide.has('sandbox') && !isCodexAgent && (
-        <ToggleSwitch
-          label="Sandbox"
-          description="Restrict writes to project directory"
-          enabled={sandboxed}
-          onChange={(v) => onSetConfig?.('sandboxed', v)}
-        />
-      )}
-
-      <CodexPendingHint sessionId={sessionId} isCodexAgent={isCodexAgent} />
+      <CodexPendingHint sessionId={sessionId} isCodexAgent={selectedAgent === 'codex'} />
     </div>
   );
 }
 
-// When the user changes model / reasoning effort / permission while a Codex
-// turn is in flight, the daemon queues the override for the next turn/start.
-// Surface that fact so changes don't look like no-ops.
 function CodexPendingHint({
   sessionId,
   isCodexAgent,

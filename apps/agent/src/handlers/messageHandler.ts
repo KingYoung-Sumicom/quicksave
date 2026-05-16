@@ -152,6 +152,7 @@ import { CommitSummaryCliService, CommitSummaryCliError } from '../ai/commitSumm
 import { CommitSummaryStateStore } from '../ai/commitSummaryStore.js';
 import { SessionManager } from '../ai/sessionManager.js';
 import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
+import { OpenCodeProvider } from '../ai/openCodeProvider.js';
 import { AttachmentStaging } from '../ai/attachmentStaging.js';
 import { loadAttachment, removeSessionAttachments } from '../ai/attachmentStore.js';
 import { CodexAppServerProvider } from '../ai/codexAppServer/index.js';
@@ -281,7 +282,7 @@ export class MessageHandler {
     this.defaultRepoPath = repos.length > 0 ? repos[0].path : '';
     this.productionBuild = productionBuild;
     this.claudeService = options?.sessionManager
-      ?? new SessionManager([new ClaudeCodeProvider(), new CodexAppServerProvider()]);
+      ?? new SessionManager([new ClaudeCodeProvider(), new CodexAppServerProvider(), new OpenCodeProvider()]);
     this.codexCacheDir = options?.codexCacheDir ?? join(homedir(), '.codex');
 
     // Load explicit coding paths only (repos and coding paths are independent)
@@ -2289,8 +2290,15 @@ export class MessageHandler {
   private handleClaudeUserInputResponse(
     message: Message<ClaudeUserInputResponsePayload>
   ): Message {
-    const resolved = this.claudeService.resolveUserInput(message.payload);
-    console.log(`[agent:user-input-response] requestId=${message.payload.requestId} action=${message.payload.action} resolved=${resolved}`);
+    const { payload } = message;
+    // On plan approval, update permission level synchronously before resolving
+    // so the CLI sees the correct mode for its first tool call after ExitPlanMode.
+    if (payload.action === 'allow' && payload.permissionMode) {
+      this.claudeService.setPermissionLevel(payload.sessionId, payload.permissionMode)
+        .catch(err => console.error('[plan-approve] setPermissionLevel failed:', err));
+    }
+    const resolved = this.claudeService.resolveUserInput(payload);
+    console.log(`[agent:user-input-response] requestId=${payload.requestId} action=${payload.action} resolved=${resolved}`);
     // No dedicated response type — just acknowledge
     const response = createMessage('claude:user-input-response', { success: resolved });
     response.id = message.id;

@@ -27,8 +27,8 @@ export function Modal({
         onClick={backdropClose ? onClose : undefined}
       />
 
-      {/* Modal */}
-      <div className={`relative bg-slate-800 rounded-lg w-full ${maxWidth} max-h-[90vh] overflow-y-auto`}>
+      {/* Modal — z-[1] ensures it sits above the absolute backdrop in the same stacking context */}
+      <div className={`relative z-[1] bg-slate-800 rounded-lg w-full ${maxWidth} max-h-[90vh] overflow-y-auto`}>
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-slate-700">
           <h2 className="text-lg font-semibold">{title}</h2>

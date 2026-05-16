@@ -63,14 +63,6 @@ export function codexModelsToOptions(models: CodexModelInfo[]): { value: string;
   return models.map((m) => ({ value: m.id, label: m.name }));
 }
 
-export function getModelsForAgent(agentId: AgentId, dynamicCodexModels?: CodexModelInfo[]) {
-  if (agentId === 'codex') {
-    return dynamicCodexModels?.length
-      ? codexModelsToOptions(dynamicCodexModels)
-      : CODEX_MODELS_FALLBACK;
-  }
-  return CLAUDE_MODELS;
-}
 
 export const PERMISSION_MODES = [
   { value: 'default', label: 'Default' },
@@ -98,9 +90,10 @@ export const CODEX_PERMISSION_MODES = [
   { value: 'full-access', label: 'Full Access' },
 ];
 
-export function getPermissionModesForAgent(agentId: AgentId) {
-  return agentId === 'codex' ? CODEX_PERMISSION_MODES : PERMISSION_MODES;
-}
+export const OPENCODE_PERMISSION_MODES = [
+  { value: 'default', label: 'Default' },
+  { value: 'bypassPermissions', label: 'Bypass' },
+];
 
 /** Claude Code's reasoning levels — values accepted by the Claude CLI's
  *  `--effort` flag and the SDK's `Options.effort` field. The CLI accepts
@@ -127,20 +120,6 @@ export const REASONING_EFFORTS_CODEX_FALLBACK = [
 /** Build the reasoning-effort dropdown for the current agent + model.
  *  Claude uses a fixed enum; Codex prefers the per-model
  *  `supported_reasoning_levels` and falls back to its SDK union. */
-export function getReasoningEffortsForModel(
-  agentId: AgentId,
-  modelId: string | undefined,
-  dynamicCodexModels?: CodexModelInfo[],
-) {
-  if (agentId !== 'codex') return REASONING_EFFORTS_CLAUDE;
-  const model = dynamicCodexModels?.find((m) => m.id === modelId);
-  const efforts = model?.reasoningEfforts;
-  if (!efforts || efforts.length === 0) return REASONING_EFFORTS_CODEX_FALLBACK;
-  return efforts.map((e) => ({
-    value: e,
-    label: e === 'xhigh' ? 'X-High' : e[0].toUpperCase() + e.slice(1),
-  }));
-}
 
 export type AgentType = {
   value: AgentId;
@@ -150,25 +129,11 @@ export type AgentType = {
   systemPrompt?: string;
 };
 
-export const AGENT_TYPES: AgentType[] = [
-  {
-    value: 'claude-code',
-    label: 'Claude Code',
-    description: 'Full tool access — reads, edits, runs code',
-  },
-  {
-    value: 'codex',
-    label: 'Codex',
-    description: 'OpenAI Codex via MCP server',
-  },
-];
+const VALID_AGENT_IDS = new Set<AgentId>(['claude-code', 'codex', 'opencode', 'pi']);
 
 export function normalizeAgentId(agentId?: string): AgentId {
-  return agentId === 'codex' || agentId === 'codex-mcp' ? 'codex' : 'claude-code';
-}
-
-export function getAgentType(agentId: AgentId): AgentType {
-  return AGENT_TYPES.find((agent) => agent.value === agentId) ?? AGENT_TYPES[0];
+  if (agentId === 'codex-mcp') return 'codex';
+  return VALID_AGENT_IDS.has(agentId as AgentId) ? (agentId as AgentId) : 'claude-code';
 }
 
 /**

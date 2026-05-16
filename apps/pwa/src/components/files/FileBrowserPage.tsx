@@ -6,7 +6,7 @@ import type { FileEntry, FilesListResponsePayload } from '@sumicom/quicksave-sha
 import { BaseStatusBar, BackButton } from '../BaseStatusBar';
 import { Spinner } from '../ui/Spinner';
 import { useFileOps } from '../../hooks/useFileOps';
-import { getActiveBus } from '../../lib/busRegistry';
+import { getBusForAgent } from '../../lib/busRegistry';
 import { resolveProjectCwd } from '../../lib/projectId';
 import { useMachineStore } from '../../stores/machineStore';
 import { useFilePreviewStore } from '../../stores/filePreviewStore';
@@ -93,6 +93,7 @@ export function FileBrowserPage() {
     <PageShell title={projectName} subtitle={headerSubtitle} goBack={goBack} machineName={machine?.nickname}>
       <Breadcrumb projectId={projectId} relPath={relPath} projectName={projectName} navigate={navigate} />
       <DirectoryView
+        agentId={resolved.agentId}
         projectId={projectId}
         cwd={cwd}
         relPath={relPath}
@@ -192,17 +193,20 @@ function Breadcrumb({
 }
 
 function DirectoryView({
+  agentId,
   projectId,
   cwd,
   relPath,
   navigate,
 }: {
+  agentId: string;
   projectId: string;
   cwd: string;
   relPath: string;
   navigate: ReturnType<typeof useNavigate>;
 }) {
-  const { listFiles } = useFileOps(getActiveBus);
+  const getBus = useCallback(() => getBusForAgent(agentId), [agentId]);
+  const { listFiles } = useFileOps(getBus);
   const openPreview = useFilePreviewStore((s) => s.open);
   const [data, setData] = useState<FilesListResponsePayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -240,9 +244,13 @@ function DirectoryView({
   }
 
   if (!data?.success) {
+    const errMsg = data?.error ?? 'Failed to load directory.';
+    const isEnoent = errMsg.includes('ENOENT') || errMsg.includes('no such file');
     return (
       <div className="px-4 py-6 text-sm text-red-400">
-        {data?.error ?? 'Failed to load directory.'}
+        {isEnoent
+          ? `Directory not found — it may have been moved or deleted: ${data?.path ?? cwd}`
+          : errMsg}
       </div>
     );
   }
@@ -263,7 +271,7 @@ function DirectoryView({
       return;
     }
     if (e.kind === 'file' || e.kind === 'symlink') {
-      openPreview({ cwd, path: next });
+      openPreview({ cwd, path: next, agentId });
       return;
     }
   };

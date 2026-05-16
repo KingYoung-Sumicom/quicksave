@@ -78,6 +78,10 @@ describe('buildClaudeCliArgs', () => {
       expect(cmd).toContain('"behavior":"allow"');
       // Falls through to the prompt-tool path when the sentinel is absent.
       expect(cmd).toContain('|| true');
+      // Interactive prompts must always reach the user even in bypass mode.
+      expect(cmd).toContain('AskUserQuestion');
+      expect(cmd).toContain('ExitPlanMode');
+      expect(cmd).toContain('grep');
     });
 
     it('escapes embedded double quotes in bypassFlagPath', () => {

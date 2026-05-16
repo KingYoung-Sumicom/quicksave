@@ -22,7 +22,7 @@ import { Modal } from './ui/Modal';
 import { ErrorBox } from './ui/ErrorBox';
 import { QRScanner } from './QRScanner';
 import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
-import { getAgentType } from '../lib/claudePresets';
+import { getAgentProvider } from '../lib/agentProvider';
 import { toProjectId } from '../lib/projectId';
 
 type StartSessionOpts = {
@@ -659,7 +659,7 @@ function SessionTab({
     const text = prompt.trim();
     setStarting(true);
     setError(null);
-    const agentType = getAgentType(selectedAgent);
+    const agentType = getAgentProvider(selectedAgent);
     onSetActiveAgent(project.agentId);
     try {
       await onStartSession(text, {
