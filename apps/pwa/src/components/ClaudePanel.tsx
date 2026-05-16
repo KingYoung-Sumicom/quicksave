@@ -314,6 +314,19 @@ export function ClaudePanel({
     }
   }, [isChat]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Reset session-bound store state on unmount. claudeStore is module-level
+  // and survives ProjectDetail's lifecycle, so without this `activeSessionId`
+  // and `cards` carry over to the next panel mount. The new mount's first
+  // urlSessionId effect would then unsub through a fresh (empty) per-hook
+  // ref — a no-op — and the stale snapshot guard in applySessionCards can
+  // drop the new session's snapshot if it races setActiveSession.
+  useEffect(() => {
+    return () => {
+      setActiveSession(null);
+      clearCards();
+    };
+  }, [setActiveSession, clearCards]);
+
   // Auto-scroll: stick to bottom unless user has scrolled up
   const isAtBottomRef = useRef(true);
   useEffect(() => {

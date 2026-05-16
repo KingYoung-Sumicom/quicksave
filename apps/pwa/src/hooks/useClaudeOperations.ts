@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import {
   type CardHistoryResponse,
   type ClaudeStartResponsePayload,
@@ -40,6 +40,22 @@ export function useClaudeOperations(
 ) {
   // Per-session unsubscribe fns for /sessions/:id/cards bus subscriptions.
   const cardsUnsubsRef = useRef<Map<string, () => void>>(new Map());
+
+  // Release every live /sessions/:id/cards subscription when the hook
+  // unmounts. Without this, navigating away from a ProjectDetail leaks the
+  // wire-level subscription (the Map dies with the hook but the bus-side
+  // refcount never decrements), and a subsequent visit to a different
+  // session lands on a panel whose snapshot was dropped because the bus
+  // believes a stale subscriber still owns the path.
+  useEffect(() => {
+    const unsubs = cardsUnsubsRef.current;
+    return () => {
+      for (const unsub of unsubs.values()) {
+        try { unsub(); } catch { /* swallow */ }
+      }
+      unsubs.clear();
+    };
+  }, []);
   const {
     upsertSession,
     setActiveSession,
