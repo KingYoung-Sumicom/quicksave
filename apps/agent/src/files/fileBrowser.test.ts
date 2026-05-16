@@ -353,6 +353,86 @@ describe('FileBrowser', () => {
   });
 
   // -------------------------------------------------------------------------
+  // read() — conditional / If-None-Match revalidation
+  // -------------------------------------------------------------------------
+  describe('read() conditional revalidation', () => {
+    it('returns notModified: true with no content when ifNoneMatch matches current mtime/size', async () => {
+      writeFileSync(join(root, 'cond.txt'), 'hello');
+      const first = await fb.read({ cwd: root, path: 'cond.txt' });
+      expect(first.success).toBe(true);
+      expect(first.kind).toBe('text');
+      const etag = `${first.mtime}-${first.size}`;
+
+      const second = await fb.read({
+        cwd: root,
+        path: 'cond.txt',
+        ifNoneMatch: etag,
+      });
+      expect(second.success).toBe(true);
+      expect(second.notModified).toBe(true);
+      expect(second.content).toBeUndefined();
+      expect(second.kind).toBeUndefined();
+      expect(second.size).toBe(first.size);
+      expect(second.mtime).toBe(first.mtime);
+    });
+
+    it('returns full body when ifNoneMatch does not match (file changed)', async () => {
+      writeFileSync(join(root, 'cond.txt'), 'hello');
+      const first = await fb.read({ cwd: root, path: 'cond.txt' });
+      const staleEtag = `${first.mtime}-${first.size}`;
+
+      // Mutate file — both mtime AND size change so the etag is guaranteed
+      // to differ even on filesystems with low mtime resolution.
+      writeFileSync(join(root, 'cond.txt'), 'hello world!!');
+      const second = await fb.read({
+        cwd: root,
+        path: 'cond.txt',
+        ifNoneMatch: staleEtag,
+      });
+      expect(second.success).toBe(true);
+      expect(second.notModified).toBeFalsy();
+      expect(second.kind).toBe('text');
+      expect(second.content).toBe('hello world!!');
+    });
+
+    it('ifNoneMatch on the image branch short-circuits without reading the file body', async () => {
+      const PNG = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgAAIAAAUAAeImBZsAAAAASUVORK5CYII=',
+        'base64',
+      );
+      writeFileSync(join(root, 'pixel.png'), PNG);
+      const first = await fb.read({
+        cwd: root,
+        path: 'pixel.png',
+        allowImage: true,
+      });
+      expect(first.kind).toBe('image');
+      const etag = `${first.mtime}-${first.size}`;
+
+      const second = await fb.read({
+        cwd: root,
+        path: 'pixel.png',
+        allowImage: true,
+        ifNoneMatch: etag,
+      });
+      expect(second.success).toBe(true);
+      expect(second.notModified).toBe(true);
+      expect(second.content).toBeUndefined();
+      expect(second.kind).toBeUndefined();
+    });
+
+    it('ifNoneMatch is ignored when the file does not exist (failure path takes precedence)', async () => {
+      const res = await fb.read({
+        cwd: root,
+        path: 'missing.txt',
+        ifNoneMatch: '1-1',
+      });
+      expect(res.success).toBe(false);
+      expect(res.notModified).toBeFalsy();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // read() — image branch (allowImage)
   // -------------------------------------------------------------------------
   describe('read() image branch', () => {

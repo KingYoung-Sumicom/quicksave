@@ -12,6 +12,7 @@ import {
   FILE_PREVIEW_PANEL_MAX,
 } from '../../stores/filePreviewStore';
 import { useFileOps } from '../../hooks/useFileOps';
+import { invalidateFileCache } from '../../lib/fileCache';
 import { getBusForAgent } from '../../lib/busRegistry';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { Spinner } from '../ui/Spinner';
@@ -66,6 +67,7 @@ function PreviewBody({
   const { readFile } = useFileOps(getBus);
   const [data, setData] = useState<FilesReadResponsePayload | null>(null);
   const [loading, setLoading] = useState(true);
+  const [reloadNonce, setReloadNonce] = useState(0);
   const reqIdRef = useRef(0);
 
   useEffect(() => {
@@ -89,7 +91,14 @@ function PreviewBody({
       .finally(() => {
         if (myId === reqIdRef.current) setLoading(false);
       });
-  }, [request.cwd, request.path, request.maxBytes, readFile]);
+  }, [request.cwd, request.path, request.maxBytes, readFile, reloadNonce]);
+
+  const refresh = useCallback(() => {
+    // Drop every cached variant for this path, then bump the nonce so the
+    // effect above re-runs through the cold path of readWithCache.
+    invalidateFileCache(request.cwd, request.path);
+    setReloadNonce((n) => n + 1);
+  }, [request.cwd, request.path]);
 
   const displayPath = data?.absolutePath ?? request.path;
   const fileName = displayPath.split('/').pop() || displayPath;
@@ -148,6 +157,22 @@ function PreviewBody({
               {renderSvg ? 'Raw' : 'Rendered'}
             </button>
           )}
+          <button
+            onClick={refresh}
+            disabled={loading}
+            className="p-1 hover:bg-slate-700 rounded-md transition-colors shrink-0 disabled:opacity-40 disabled:hover:bg-transparent"
+            aria-label="Refresh"
+            title="Refresh"
+          >
+            <svg
+              className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`}
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v6h6M20 20v-6h-6M4 10a8 8 0 0114-4.9M20 14a8 8 0 01-14 4.9" />
+            </svg>
+          </button>
           <button
             onClick={onClose}
             className="p-1 hover:bg-slate-700 rounded-md transition-colors shrink-0"

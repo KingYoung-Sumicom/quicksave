@@ -5,13 +5,18 @@
  * `blobCache` machinery.
  *
  * Cache key fingerprint: `${cwd}\0${path}\0${maxBytes ?? ''}\0${allowImage}`
- * — same input → same cached output. No content hash because the agent
- * already returns `mtime`+`size` in metadata; for our use case (file
- * viewer opening the same path repeatedly within a session) the input
- * fingerprint is the natural cache key. Cross-session invalidation is
- * coarse: cached entries are returned even if the file changed on disk
- * since the last read. Callers that know about a write should call
- * `invalidateFileCache(cwd, path)` to flush.
+ * — same input → same cached output.
+ *
+ * Freshness: every cached hit triggers an HTTP-style conditional GET. The
+ * client sends `ifNoneMatch: "${mtime}-${size}"` from the cached entry;
+ * the agent stat()s the file and short-circuits with `notModified: true`
+ * when the fingerprint still matches, skipping the disk read. On a real
+ * change the fresh response replaces the cached entry. Net effect:
+ * always-fresh body, one round-trip + a stat per open, body bytes only
+ * when the file actually changed.
+ *
+ * `invalidateFileCache(cwd, path)` still exists for callers that want to
+ * force-drop an entry (refresh button, external knowledge of a write).
  */
 
 import type {
@@ -41,11 +46,37 @@ export function entryBytesOf(res: FilesReadResponsePayload): number {
   return contentLen + 256;
 }
 
-export function readWithCache(
+export async function readWithCache(
   req: FilesReadRequestPayload,
   fetcher: (req: FilesReadRequestPayload) => Promise<FilesReadResponsePayload>,
 ): Promise<FilesReadResponsePayload> {
+  const cached = await fileCache.peek(req);
+  const etag = etagFor(cached);
+  if (cached && etag) {
+    // Conditional revalidation — send the etag, expect 304 or full body.
+    const fresh = await fetcher({ ...req, ifNoneMatch: etag });
+    if (fresh.success && fresh.notModified) {
+      return cached;
+    }
+    if (fresh.success) {
+      fileCache.prime(req, fresh);
+      return fresh;
+    }
+    // Failure response — don't poison the cache, surface the error and
+    // leave the existing cached entry intact for the next attempt.
+    return fresh;
+  }
+  // Cold path — no cached entry to revalidate against.
   return fileCache.read(req, fetcher);
+}
+
+/** Build an `If-None-Match` token from a cached response, or undefined
+ *  when the entry lacks the metadata we'd need to revalidate (e.g. an
+ *  ancient primed entry without mtime/size). */
+function etagFor(res: FilesReadResponsePayload | undefined): string | undefined {
+  if (!res || !res.success) return undefined;
+  if (typeof res.mtime !== 'number' || typeof res.size !== 'number') return undefined;
+  return `${res.mtime}-${res.size}`;
 }
 
 /** Drop every cached entry for a specific (cwd, path) — across all

@@ -1759,6 +1759,12 @@ export interface FilesReadRequestPayload {
    *  binary placeholder. Used by the markdown viewer to inline `<img>` tags.
    *  Image reads use a separate, larger hard cap (see fileBrowser). */
   allowImage?: boolean;
+  /** HTTP-style conditional read. Format: `"${mtimeMs}-${size}"` derived from
+   *  a previously cached response. When the current file's stat fingerprint
+   *  matches, the agent skips the disk read and returns `notModified: true`
+   *  with no `content`. Clients use this to revalidate a cached entry cheaply
+   *  — round-trip only, no body bytes. */
+  ifNoneMatch?: string;
 }
 
 /** Discriminator explaining whether `content` is present on a successful read. */
@@ -1782,5 +1788,9 @@ export interface FilesReadResponsePayload {
    *  binary/oversized) so the UI can show "3.2 MB binary file". */
   size?: number;
   mtime?: number;
+  /** Set when `ifNoneMatch` matched the current stat fingerprint. Caller
+   *  should keep using its cached body; `content`/`kind` are omitted in
+   *  this case but `size`/`mtime` are still echoed. */
+  notModified?: boolean;
   error?: string;
 }

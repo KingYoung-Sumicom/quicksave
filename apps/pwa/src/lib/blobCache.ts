@@ -47,6 +47,10 @@ export interface BlobCacheConfig<Req, Res> {
 export interface BlobCache<Req, Res> {
   /** Read with both cache layers wrapped around the network fetcher. */
   read(req: Req, fetcher: (req: Req) => Promise<Res>): Promise<Res>;
+  /** Lookup-only: return a cached entry without touching the network, but
+   *  DO refresh LRU position on hit (so a peek-then-revalidate flow is
+   *  treated as a real access). Returns undefined on miss. */
+  peek(req: Req): Promise<Res | undefined>;
   /** Inject a known-good entry (e.g. populated from local upload bytes the
    *  PWA already has). Same caching effect as a successful read. */
   prime(req: Req, res: Res): void;
@@ -280,6 +284,19 @@ export function createBlobCache<Req, Res>(config: BlobCacheConfig<Req, Res>): Bl
     return res;
   }
 
+  async function peek(req: Req): Promise<Res | undefined> {
+    const key = keyFn(req);
+    const hot = l1Get(key);
+    if (hot) return hot.res;
+    const warm = await l2Get(key);
+    if (warm) {
+      l1Set({ ...warm, lastAccessAt: Date.now() });
+      void l2Touch(key);
+      return warm.res;
+    }
+    return undefined;
+  }
+
   function prime(req: Req, res: Res): void {
     if (!shouldCache(res)) return;
     const key = keyFn(req);
@@ -314,5 +331,5 @@ export function createBlobCache<Req, Res>(config: BlobCacheConfig<Req, Res>): Bl
     return { count: l1.size, bytes: l1Bytes };
   }
 
-  return { read, prime, invalidatePrefix, clear, _resetForTest, _l1Stats };
+  return { read, peek, prime, invalidatePrefix, clear, _resetForTest, _l1Stats };
 }

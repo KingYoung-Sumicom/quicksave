@@ -59,6 +59,12 @@ function imageMimeFor(absPath: string): string | undefined {
   return IMAGE_EXT_TO_MIME[absPath.slice(dot + 1).toLowerCase()];
 }
 
+/** Weak ETag built from stat metadata. Same shape that the PWA produces
+ *  from a cached response — keep both sides in sync. */
+function etagOf(meta: { mtime: number; size: number }): string {
+  return `${meta.mtime}-${meta.size}`;
+}
+
 export class FileBrowser {
   async list(payload: FilesListRequestPayload): Promise<FilesListResponsePayload> {
     try {
@@ -116,6 +122,14 @@ export class FileBrowser {
         size: stats.size,
         mtime: Math.floor(stats.mtimeMs),
       };
+
+      // Conditional revalidation — HTTP-style If-None-Match. Caller sends
+      // "${mtime}-${size}" from a prior cached read; if the file is
+      // unchanged, we skip the disk read entirely and the PWA reuses its
+      // cached body. Saves both the readFile() and the on-wire payload.
+      if (payload.ifNoneMatch && payload.ifNoneMatch === etagOf(meta)) {
+        return { success: true, ...meta, notModified: true };
+      }
 
       // Image branch — opt-in via `allowImage`. We use a separate, larger
       // cap because images legitimately exceed the 100 KiB text preview
