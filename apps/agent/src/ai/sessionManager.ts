@@ -46,10 +46,23 @@ import type {
 } from './provider.js';
 import {
   defaultPermissionLevelForAgent,
+  getAgentLabel,
   isFullAccessPermission,
   isPermissionLevelAcceptedForAgent,
   normalizePermissionLevelForAgent,
 } from './provider.js';
+
+/** Capabilities sentinel for providers that haven't implemented `probeProvider`
+ *  yet. Lets the handshake still report the provider's existence without
+ *  fabricating unsupported features. */
+const EMPTY_AGENT_CAPABILITIES = {
+  hasApiKey: false,
+  hasCli: false,
+  hasPlugin: false,
+  supportsResume: false,
+  supportsSandbox: false,
+  supportsStreaming: false,
+} as const;
 
 /**
  * Events emitted:
@@ -1635,14 +1648,20 @@ export class SessionManager extends EventEmitter {
   async probeProviders(): Promise<AgentProviderInfo[]> {
     const results: AgentProviderInfo[] = [];
     for (const [id, provider] of this.providers) {
+      const label = provider.label ?? getAgentLabel(id);
+      if (typeof provider.probeProvider !== 'function') {
+        // Provider hasn't been migrated yet — advertise it with zeroed
+        // capabilities so the PWA still knows it exists.
+        results.push({ id, label, capabilities: EMPTY_AGENT_CAPABILITIES });
+        continue;
+      }
       try {
         const probe = await provider.probeProvider();
-        results.push({ id, label: provider.label, ...probe });
+        results.push({ id, label, ...probe });
       }
       catch (error) {
         console.warn(`[SessionManager] probe failed for ${id}:`, error);
-        // Still advertise the provider (minus version) so the PWA knows it exists.
-        results.push({ id, label: provider.label, capabilities: {} });
+        results.push({ id, label, capabilities: EMPTY_AGENT_CAPABILITIES });
       }
     }
     return results;

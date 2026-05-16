@@ -559,8 +559,9 @@ export class StreamCardBuilder {
     return this.updateEvent(cardId, { pendingInput });
   }
 
-  /** Clear pending input from a card. Ephemeral cards are removed entirely. */
-  clearPendingInput(requestId: string): CardEvent | null {
+  /** Clear pending input from a card. Ephemeral cards are removed entirely.
+   *  Pass `answers` to store user-supplied data (e.g. rejection reason) on the card. */
+  clearPendingInput(requestId: string, answers?: Record<string, string>): CardEvent | null {
     for (const [, card] of this.cards) {
       if (card.pendingInput?.requestId === requestId) {
         if (this.ephemeralCards.has(card.id)) {
@@ -569,7 +570,10 @@ export class StreamCardBuilder {
         }
         // `null` signals "clear" — JSON drops `undefined` so it can't cross
         // the bus. See updateEvent() for the wire convention.
-        return this.updateEvent(card.id, { pendingInput: null });
+        return this.updateEvent(card.id, {
+          pendingInput: null,
+          ...(answers ? { answers } : {}),
+        });
       }
     }
     return null;

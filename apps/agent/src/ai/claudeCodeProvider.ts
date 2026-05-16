@@ -6,7 +6,6 @@ import type {
   CodingAgentProvider,
   ProviderCallbacks,
   ProviderSession,
-  ProbeResult,
   ResumeSessionOpts,
   StartSessionOpts,
 } from './provider.js';
@@ -60,7 +59,6 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
   async probeProvider(): Promise<any> {
     const hasCli = this.isCliAvailable();
     const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
-    const transport = resolveClaudeTransport();
 
     const capabilities = {
       hasApiKey,

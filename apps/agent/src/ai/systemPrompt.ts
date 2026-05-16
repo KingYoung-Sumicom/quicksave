@@ -12,7 +12,7 @@ const STATUS_PROMPT = [
 const COMMIT_TRAILER_PROMPT =
   'When you create git commits in a quicksave session, add `Co-Authored-By: Quicksave AI <save@quicksave.dev>` as a co-author trailer alongside whatever your platform default already adds (e.g. `Co-Authored-By: Claude ...`). Quicksave is the spawning context and should be credited in addition to — not instead of — the underlying model. Both trailers, one per line, after a blank line below the body.';
 
-const PLATFORM_PROMPTS: Record<AgentId, string[]> = {
+const PLATFORM_PROMPTS: Partial<Record<AgentId, string[]>> = {
   'claude-code': [
     `For non-destructive shell commands (ls, cat, find, git log, git status, git diff, etc.), prefer \`${SANDBOX_BASH_TOOL}\` over Bash. SandboxBash runs in a sandboxed environment. Use Bash only for commands that modify state.`,
     `The session status tool name is \`${UPDATE_SESSION_STATUS_TOOL}\`.`,
@@ -28,6 +28,6 @@ const PLATFORM_PROMPTS: Record<AgentId, string[]> = {
 };
 
 export function buildSystemPrompt(agentId: AgentId, extra?: string): string {
-  const base = (PLATFORM_PROMPTS[agentId] ?? PLATFORM_PROMPTS['claude-code']).join('\n\n');
+  const base = (PLATFORM_PROMPTS[agentId] ?? PLATFORM_PROMPTS['claude-code'] ?? []).join('\n\n');
   return extra ? `${base}\n\n${extra}` : base;
 }

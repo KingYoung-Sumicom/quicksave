@@ -68,6 +68,7 @@ import {
   AgentCheckUpdateResponsePayload,
   AgentUpdateResponsePayload,
   AgentRestartResponsePayload,
+  AgentProbePayload,
   ClaudeStartRequestPayload,
   ClaudeStartResponsePayload,
   ClaudeResumeRequestPayload,
@@ -794,7 +795,7 @@ export class MessageHandler {
   private async handleHandshake(
     message: Message<HandshakePayload>,
     peerAddress: string,
-  ): Message<HandshakeAckPayload> {
+  ): Promise<Message<HandshakeAckPayload>> {
     // Fire-and-forget: check npm registry + OpenAI models (12h dedup each)
     this.checkLatestVersion().catch(() => {});
     this.fetchCodexModels().catch(() => {});
@@ -1875,6 +1876,14 @@ export class MessageHandler {
       response.id = message.id;
       return response;
     }
+  }
+
+  private async handleAgentProbe(): Promise<Message<AgentProbePayload>> {
+    const availableProviders = await this.claudeService.probeProviders();
+    return createMessage<AgentProbePayload>(
+      'agent:probe:response',
+      { availableProviders },
+    );
   }
 
   // ==========================================================================

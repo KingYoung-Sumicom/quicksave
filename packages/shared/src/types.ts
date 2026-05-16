@@ -95,6 +95,8 @@ export type MessageType =
   | 'agent:update:response'
   | 'agent:restart'
   | 'agent:restart:response'
+  | 'agent:probe'
+  | 'agent:probe:response'
   // systemd user-unit (auto-start at login) — Linux only
   | 'systemd:status'
   | 'systemd:status:response'

@@ -196,7 +196,10 @@ export type ProbeResult = {
 export interface CodingAgentProvider {
   readonly id: AgentId;
   readonly historyMode: ProviderHistoryMode;
-  readonly label: string;
+  /** Display name surfaced in handshake metadata and `agent:probe` responses.
+   *  Optional so providers compile without metadata; the probe path falls
+   *  back to {@link DEFAULT_AGENT_LABELS} when omitted. */
+  readonly label?: string;
 
   startSession(
     opts: StartSessionOpts,
@@ -210,5 +213,7 @@ export interface CodingAgentProvider {
     callbacks: ProviderCallbacks,
   ): Promise<{ sessionId: string; session: ProviderSession }>;
 
-  probeProvider(): Promise<ProbeResult>;
+  /** Optional capability probe. Providers that omit it advertise only `id`
+   *  and `label` in the `availableProviders` list (with zero capabilities). */
+  probeProvider?(): Promise<ProbeResult>;
 }
