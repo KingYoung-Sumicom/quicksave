@@ -205,8 +205,10 @@ export function ClaudePanel({
       runCards = [];
       runStartId = null;
     };
+    // Tool calls that must always be visible regardless of group collapse state.
+    const ALWAYS_VISIBLE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode', 'TodoWrite']);
     for (const card of cards) {
-      if (card.type === 'tool_call') {
+      if (card.type === 'tool_call' && !ALWAYS_VISIBLE_TOOLS.has(card.toolName)) {
         if (runStartId === null) runStartId = card.id;
         runCards.push(card);
       } else {
