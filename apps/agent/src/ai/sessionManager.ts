@@ -69,8 +69,10 @@ const CLAUDE_AUTO_APPROVE: Record<ClaudePermissionMode, Set<string>> = {
     'WebFetch', 'WebSearch', 'Bash',
     'Skill', 'ToolSearch', 'Config',
     'CronCreate', 'CronDelete', 'CronList', 'RemoteTrigger',
-    'EnterPlanMode', 'ExitPlanMode',
+    'EnterPlanMode',
     'TaskOutput', 'TaskStop',
+    // ExitPlanMode intentionally absent: plan review must always reach the user.
+    // AskUserQuestion intentionally absent: interactive prompts must always reach the user.
   ]),
   acceptEdits: new Set(['Edit', 'Write', 'NotebookEdit', 'TodoWrite', 'Agent', 'EnterWorktree', 'ExitWorktree', 'EnterPlanMode']),
   default:     new Set(['TodoWrite', 'EnterWorktree', 'ExitWorktree', 'Agent', 'EnterPlanMode']),
@@ -378,10 +380,36 @@ export class SessionManager extends EventEmitter {
       // agent prefs bucket — causing a Codex GPT pick to corrupt the user's
       // saved Claude default and leak across sessions on resume.
       // Codex app-server sessions pick the change up on the next turn/start
-      // via the runtime override pipeline. Claude's model is fixed per
-      // session; the value here is consumed by the next cold resume.
+      // via the runtime override pipeline.
       this.enqueueCodexOverrideIfApplicable(sessionId, { model: value });
       this.persistRegistryField(sessionId, 'model', value);
+
+      // For Claude CLI sessions, also drive a `set_model` control_request so
+      // the running process switches immediately rather than waiting for the
+      // next prompt's cold-respawn. The CLI keeps the same session_id when
+      // it accepts `set_model`, so we also bump `spawnedModel` to keep
+      // resumeSession's modelChanged check from kicking off an unnecessary
+      // respawn on the next turn.
+      const ps = this.sessions.get(sessionId);
+      const cliSession = ps?.providerSession as
+        | { alive: boolean; sendControlRequest?: (subtype: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown> }
+        | null
+        | undefined;
+      if (ps?.providerSession?.alive && cliSession && typeof cliSession.sendControlRequest === 'function') {
+        const { decorateModelWithContextWindow } = await import('./claudeCliProvider.js');
+        const ctxWindow = (next.contextWindow as number | undefined) ?? ps.spawnedContextWindow;
+        const decorated = decorateModelWithContextWindow(value, ctxWindow) ?? value;
+        try {
+          await cliSession.sendControlRequest('set_model', { model: decorated }, 5_000);
+          ps.spawnedModel = value;
+        } catch (err) {
+          // CLI rejected — fall back to cold-respawn on next prompt via the
+          // modelChanged check. Leave spawnedModel untouched so that check
+          // fires. Don't roll back sessionConfigs: the user-intended value is
+          // what should apply on respawn.
+          console.warn(`[session-manager] set_model failed for ${sessionId.slice(0, 8)}, will cold-respawn on next prompt:`, err);
+        }
+      }
     } else if (key === 'reasoningEffort' && (typeof value === 'string' || value === null)) {
       const effort = value === null ? null : (value as 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'none');
       this.enqueueCodexOverrideIfApplicable(sessionId, { effort });
@@ -943,10 +971,13 @@ export class SessionManager extends EventEmitter {
     this.pendingInputRequests.delete(response.requestId);
     pending.resolve(response);
 
-    // Clear pending input on the card
+    // Clear pending input on the card; attach rejection reason if present
     const ps = this.sessions.get(pending.request.sessionId);
     if (ps?.cardBuilder) {
-      const cardEvt = ps.cardBuilder.clearPendingInput(response.requestId);
+      const rejectionAnswers = (response.action === 'deny' && response.response)
+        ? { _rejection: response.response }
+        : undefined;
+      const cardEvt = ps.cardBuilder.clearPendingInput(response.requestId, rejectionAnswers);
       if (cardEvt) this.emit('card-event', cardEvt);
     }
 

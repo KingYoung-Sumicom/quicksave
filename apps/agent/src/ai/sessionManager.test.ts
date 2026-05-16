@@ -484,6 +484,111 @@ describe('SessionManager', () => {
     });
   });
 
+  // ── setSessionConfig: model live-switch ──
+
+  describe('setSessionConfig model', () => {
+    it('sends set_model control request when an active Claude CLI session supports it', async () => {
+      const sessionId = 'model-live';
+      const sendControlRequest = vi.fn().mockResolvedValue(undefined);
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession({ sendControlRequest } as any),
+      });
+
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        model: 'claude-opus-4-7',
+        contextWindow: 200_000,
+      });
+      sendControlRequest.mockClear();
+
+      await manager.setSessionConfig(sessionId, 'model', 'claude-sonnet-4-6');
+
+      expect(sendControlRequest).toHaveBeenCalledWith(
+        'set_model',
+        { model: 'claude-sonnet-4-6' },
+        5_000,
+      );
+    });
+
+    it('passes the [1m]-decorated model when contextWindow exceeds 200k', async () => {
+      const sessionId = 'model-1m';
+      const sendControlRequest = vi.fn().mockResolvedValue(undefined);
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession({ sendControlRequest } as any),
+      });
+
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        model: 'claude-opus-4-7',
+        contextWindow: 1_000_000,
+      });
+      sendControlRequest.mockClear();
+
+      await manager.setSessionConfig(sessionId, 'model', 'claude-sonnet-4-6');
+
+      expect(sendControlRequest).toHaveBeenCalledWith(
+        'set_model',
+        { model: 'claude-sonnet-4-6[1m]' },
+        5_000,
+      );
+    });
+
+    it('updates spawnedModel on success so the next prompt does not trigger a cold-respawn', async () => {
+      const sessionId = 'model-no-respawn';
+      const sendControlRequest = vi.fn().mockResolvedValue(undefined);
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession({ sendControlRequest } as any),
+      });
+
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        model: 'claude-opus-4-7',
+        contextWindow: 200_000,
+      });
+
+      await manager.setSessionConfig(sessionId, 'model', 'claude-sonnet-4-6');
+
+      // @ts-expect-error — reaching into private sessions map for assertion.
+      const managed = manager.sessions.get(sessionId)!;
+      expect(managed.spawnedModel).toBe('claude-sonnet-4-6');
+    });
+
+    it('leaves spawnedModel stale when set_model rejects (so cold-respawn fallback fires)', async () => {
+      const sessionId = 'model-error';
+      const sendControlRequest = vi.fn().mockRejectedValue(new Error('CLI rejected'));
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession({ sendControlRequest } as any),
+      });
+
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        model: 'claude-opus-4-7',
+        contextWindow: 200_000,
+      });
+
+      await expect(
+        manager.setSessionConfig(sessionId, 'model', 'claude-sonnet-4-6'),
+      ).resolves.toBeDefined();
+
+      // @ts-expect-error — reaching into private sessions map for assertion.
+      const managed = manager.sessions.get(sessionId)!;
+      expect(managed.spawnedModel).toBe('claude-opus-4-7'); // unchanged
+    });
+
+    it('skips the live-update path entirely when there is no active provider session (cold session)', async () => {
+      const next = await manager.setSessionConfig('inactive-id', 'model', 'claude-sonnet-4-6');
+      expect(next.model).toBe('claude-sonnet-4-6');
+    });
+  });
+
   // ── setSessionConfig: contextWindow live-switch ──
 
   describe('setSessionConfig contextWindow', () => {
@@ -843,6 +948,44 @@ describe('SessionManager', () => {
         toolInput: { command: 'echo hello' },
         toolUseId: 'tu-bash-bypass',
       });
+      expect(result.action).toBe('allow');
+    });
+
+    it('should NOT auto-approve ExitPlanMode in bypassPermissions mode', async () => {
+      manager.setPermissionLevel(sessionId, 'bypassPermissions');
+
+      const promise = callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'ExitPlanMode',
+        toolInput: {},
+        toolUseId: 'tu-exitplan-bypass',
+      });
+
+      const pending = manager.getPendingInputRequests();
+      expect(pending.length).toBeGreaterThan(0);
+      const req = pending.find(p => p.toolUseId === 'tu-exitplan-bypass');
+      expect(req).toBeDefined();
+
+      manager.resolveUserInput({ sessionId, requestId: req!.requestId, action: 'allow' });
+      const result = await promise;
+      expect(result.action).toBe('allow');
+    });
+
+    it('should NOT auto-approve AskUserQuestion in bypassPermissions mode', async () => {
+      manager.setPermissionLevel(sessionId, 'bypassPermissions');
+
+      const promise = callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'AskUserQuestion',
+        toolInput: { questions: [{ question: 'Confirm?', header: 'q', options: [], multiSelect: false }] },
+        toolUseId: 'tu-askuser-bypass',
+      });
+
+      const pending = manager.getPendingInputRequests();
+      expect(pending.length).toBeGreaterThan(0);
+      const req = pending.find(p => p.toolUseId === 'tu-askuser-bypass');
+      expect(req).toBeDefined();
+
+      manager.resolveUserInput({ sessionId, requestId: req!.requestId, action: 'allow', response: 'yes' });
+      const result = await promise;
       expect(result.action).toBe('allow');
     });
 
@@ -1349,7 +1492,7 @@ describe('SessionManager', () => {
       });
       await permA;
 
-      expect(builders.get(sessionA)!.clearPendingInput).toHaveBeenCalledWith(reqA.requestId);
+      expect(builders.get(sessionA)!.clearPendingInput).toHaveBeenCalledWith(reqA.requestId, undefined);
       expect(builders.get(sessionB)!.clearPendingInput).not.toHaveBeenCalled();
 
       const aClearEvent = cardEvents.find(e => e.type === 'update' && e.sessionId === sessionA);
@@ -1364,7 +1507,7 @@ describe('SessionManager', () => {
       });
       await permB;
 
-      expect(builders.get(sessionB)!.clearPendingInput).toHaveBeenCalledWith(reqB.requestId);
+      expect(builders.get(sessionB)!.clearPendingInput).toHaveBeenCalledWith(reqB.requestId, undefined);
 
       const bClearEvent = cardEvents.find(e => e.type === 'update' && e.sessionId === sessionB);
       expect(bClearEvent).toBeDefined();
