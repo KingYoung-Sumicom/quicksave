@@ -610,6 +610,12 @@ export async function runDaemon(): Promise<void> {
     messageHandler.cleanup();
     terminalManager.shutdown();
     connection.disconnect();
+    // Tear down the long-lived opencode serve child if we spawned one.
+    // Imported lazily so non-opencode daemons don't pay for the module load.
+    try {
+      const { getOpenCodeServer } = await import('../ai/openCodeServer.js');
+      await getOpenCodeServer().shutdown();
+    } catch { /* opencode not used this run */ }
     if (debugHttpServer) await debugHttpServer.close();
     await ipcServer.close();
     removeServiceState();

@@ -162,6 +162,31 @@ const savedPrefs = loadPrefs();
   }
 }
 
+// opencode requires `provider/model` ids (e.g. `opencode/big-pickle`).
+// Legacy persisted prefs occasionally hold a leaked Claude model id like
+// `claude-opus-4-7`, which then gets shipped to the daemon and silently
+// fails ("Unexpected server error"). Clear anything that doesn't fit the
+// format so the agent falls through to opencode's configured default.
+{
+  const ocPrefs = savedPrefs.agentPrefs['opencode'];
+  if (ocPrefs.model && !/^[^/\s]+\/[^\s]+$/.test(ocPrefs.model)) {
+    ocPrefs.model = '';
+  }
+}
+
+// One-shot cleanup: an early version of `setAgentSetting` wrote `model` into
+// the per-agent `settings` bag (in addition to the top-level `model`). The
+// stale entry survives in localStorage and, on spread into the values map
+// (settings spread → explicit `model`), would override the real selection
+// with an empty string and leave the picker visually blank. Strip it on
+// load so old installs heal themselves; new writes go through the
+// model-aware short-circuit so this can't be re-introduced.
+for (const bucket of Object.values(savedPrefs.agentPrefs)) {
+  if (bucket?.settings && 'model' in bucket.settings) {
+    delete (bucket.settings as Record<string, unknown>).model;
+  }
+}
+
 /**
  * Locally-stored session summary: extends the shared shape with the agent
  * (machine) that originated the record. Needed for filtering/routing in

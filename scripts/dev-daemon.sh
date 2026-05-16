@@ -15,7 +15,10 @@ if [ -f "$LOCK_FILE" ]; then
   if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
     echo "Stopping existing daemon (pid: $OLD_PID)..."
     kill "$OLD_PID" 2>/dev/null || true
-    for i in $(seq 1 10); do
+    # Grace period: daemon shutdown awaits opencode child exit (up to ~3s
+    # SIGKILL escalation in openCodeServer.shutdown), plus other teardown.
+    # 8s here gives comfortable headroom before we resort to SIGKILL.
+    for i in $(seq 1 40); do
       kill -0 "$OLD_PID" 2>/dev/null || break
       sleep 0.2
     done

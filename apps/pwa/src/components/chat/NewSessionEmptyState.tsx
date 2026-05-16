@@ -31,9 +31,12 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
   const provider = getAgentProvider(selectedAgent);
   const opencodeModels = useConnectionStore((s) => s.opencodeModels);
   const dynamic = { codexModels, opencodeModels };
+  // Spread settings FIRST so `model:` from the agent bucket always wins.
+  // (Old persisted state sometimes carries a stale `settings.model = ''`
+  // that would otherwise override.)
   const values: Record<string, unknown> = {
-    model: selectedModel,
     ...agentPrefs[selectedAgent].settings,
+    model: selectedModel,
   };
   const showCodexLoginGate = selectedAgent === 'codex' && loginState?.loggedIn === false;
 
