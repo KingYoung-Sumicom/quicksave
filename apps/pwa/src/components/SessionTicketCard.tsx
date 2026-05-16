@@ -59,7 +59,7 @@ const BLOCKED_META = { labelId: 'sessionStage.blocked', dotColor: 'bg-red-500', 
 // Product names surfaced as a neutral text chip — intentionally no official
 // logos, to stay clear of Anthropic/OpenAI brand guidelines. Labels are
 // nominative use and not translated.
-const AGENT_LABEL: Record<AgentId, string> = {
+const AGENT_LABEL: Partial<Record<AgentId, string>> = {
   'claude-code': 'Claude',
   'codex': 'Codex',
 };

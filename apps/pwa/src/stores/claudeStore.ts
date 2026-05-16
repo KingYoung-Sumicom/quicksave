@@ -61,6 +61,8 @@ function defaultAgentPrefsMap(): AgentPrefsMap {
   return {
     'claude-code': defaultPrefsForAgent('claude-code'),
     codex: defaultPrefsForAgent('codex'),
+    opencode: defaultPrefsForAgent('opencode'),
+    pi: defaultPrefsForAgent('pi'),
   };
 }
 
