@@ -390,7 +390,7 @@ describe('claudeStore', () => {
       expect(state.selectedAgent).toBe('codex');
       expect(state.selectedModel).toBe('gpt-5.5');
       expect(state.selectedPermissionMode).toBe('full-access');
-      expect(state.agentPrefs.codex.reasoningEffort).toBe('high');
+      expect(state.agentPrefs.codex.settings.reasoningEffort).toBe('high');
       // Other agent untouched (defaults).
       expect(state.agentPrefs['claude-code'].model).toBeTruthy();
 

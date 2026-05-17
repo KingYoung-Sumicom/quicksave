@@ -108,7 +108,7 @@ describe('pathHash', () => {
       vi.restoreAllMocks();
     });
 
-    it('uses connected per-agent paths and drops stale persisted repos', async () => {
+    it('uses connected per-agent paths and retains persisted repos so old hashes resolve', async () => {
       vi.resetModules();
 
       vi.doMock('../stores/machineStore', () => ({
@@ -157,8 +157,12 @@ describe('pathHash', () => {
 
       expect(paths).toContain('/home/jimmy/workspace/new-repo');
       expect(paths).toContain('/home/jimmy/workspace/new-repo/sub');
-      expect(paths).not.toContain('/Users/jimmy/workspace/old-repo');
-      expect(paths).not.toContain('/Users/jimmy/workspace');
+      // Persisted knownRepos/knownCodingPaths are intentionally retained so
+      // hashes recorded from previous sessions still resolve after a new
+      // handshake; otherwise removing a coding path would flip the viewer to
+      // "unavailable" the moment the connection comes up.
+      expect(paths).toContain('/Users/jimmy/workspace/old-repo');
+      expect(paths).toContain('/Users/jimmy/workspace');
 
       vi.restoreAllMocks();
     });
