@@ -7,13 +7,30 @@
  * are correctly identified as non-dev.
  */
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const srcDir = resolve(__dirname, '..', 'src');
 const distDir = resolve(__dirname, '..', 'dist');
 const targetFile = resolve(distDir, 'service', 'types.js');
+
+// Copy non-TS assets that tsc doesn't include
+const assetPatterns = [/\.sb$/];
+(function copyAssets(srcBase, distBase) {
+  for (const entry of readdirSync(srcBase, { withFileTypes: true })) {
+    const srcPath = resolve(srcBase, entry.name);
+    const destPath = resolve(distBase, entry.name);
+    if (entry.isDirectory()) {
+      copyAssets(srcPath, destPath);
+    } else if (assetPatterns.some((re) => re.test(entry.name))) {
+      mkdirSync(distBase, { recursive: true });
+      cpSync(srcPath, destPath);
+    }
+  }
+})(srcDir, distDir);
+console.log('stamp-build-id: assets copied');
 
 // Hash all .js files in dist (excluding types.js itself to avoid circular dep)
 const hash = createHash('md5');
