@@ -84,6 +84,13 @@ export interface ToolCallResult {
   truncated: boolean;
 }
 
+export interface SubagentToolCall {
+  id: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  result?: { content: string; isError: boolean };
+}
+
 export interface SubagentCard extends CardBase {
   type: 'subagent';
   description: string;
@@ -95,6 +102,16 @@ export interface SubagentCard extends CardBase {
   summary?: string;
   toolUseCount: number;
   lastToolName?: string;
+  /** Subagent type from Agent tool input (e.g. "Explore", "Plan", "general-purpose"). */
+  subagentType?: string;
+  /** Requested model override from Agent tool input (e.g. "sonnet", "opus", "haiku"). */
+  requestedModel?: string;
+  /** Actual model used by the subagent. Reserved — not yet available from CLI. */
+  actualModel?: string;
+  /** Initial prompt given to the subagent. */
+  prompt?: string;
+  /** Tool calls made by the subagent, nested here instead of top-level cards. */
+  toolCalls?: SubagentToolCall[];
 }
 
 export type SystemCardSubtype = 'compacted' | 'cost' | 'error' | 'info' | 'warning';

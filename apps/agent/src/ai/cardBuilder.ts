@@ -13,6 +13,7 @@ import type {
   CardHistoryResponse,
   ToolCallCard,
   SubagentCard,
+  SubagentToolCall,
   PendingInputAttachment,
 } from '@sumicom/quicksave-shared';
 import { readFile, readdir, writeFile, mkdir, stat, open } from 'fs/promises';
@@ -257,6 +258,18 @@ export class StreamCardBuilder {
   private agentIdToCardId = new Map<string, CardId>();
   /** Cards created for subagent permissions — removed after resolution. */
   private ephemeralCards = new Set<CardId>();
+  /** Agent tool_use input stashed from assistant message, keyed by tool_use block.id.
+   *  Consumed when task_started arrives with the matching tool_use_id. */
+  private agentToolUseStash = new Map<string, {
+    prompt?: string;
+    subagentType?: string;
+    requestedModel?: string;
+  }>();
+  /** Card ID of the currently running subagent; tool calls are nested here instead of
+   *  being emitted as top-level ToolCallCards. Cleared on task_notification. */
+  private activeSubagentCardId: string | null = null;
+  /** Nested tool_use_id → subagentCardId — lets toolResult() route to the right card. */
+  private nestedToolUseToSubagentCard = new Map<string, string>();
   /** Current streaming assistant_text card (for append_text events) */
   private currentTextCardId: CardId | null = null;
   /** JSONL file byte offset at the start of the current turn — history reads stop here. */
@@ -285,6 +298,9 @@ export class StreamCardBuilder {
     this.toolUseIdToCardId.clear();
     this.agentIdToCardId.clear();
     this.ephemeralCards.clear();
+    this.agentToolUseStash.clear();
+    this.activeSubagentCardId = null;
+    this.nestedToolUseToSubagentCard.clear();
     this.currentTextCardId = null;
   }
 
@@ -388,6 +404,9 @@ export class StreamCardBuilder {
     this.toolUseIdToCardId.clear();
     this.agentIdToCardId.clear();
     this.ephemeralCards.clear();
+    this.agentToolUseStash.clear();
+    this.activeSubagentCardId = null;
+    this.nestedToolUseToSubagentCard.clear();
     this.currentTextCardId = null;
   }
 
@@ -504,6 +523,16 @@ export class StreamCardBuilder {
   toolUse(toolName: string, toolInput: Record<string, unknown>, toolUseId: string): CardEvent {
     this.currentTextCardId = null;
 
+    // Route to active subagent: nest this tool call inside the SubagentCard
+    if (this.activeSubagentCardId) {
+      const subagentCard = this.cards.get(this.activeSubagentCardId) as SubagentCard | undefined;
+      if (subagentCard) {
+        const toolCalls: SubagentToolCall[] = [...(subagentCard.toolCalls ?? []), { id: toolUseId, toolName, toolInput }];
+        this.nestedToolUseToSubagentCard.set(toolUseId, this.activeSubagentCardId);
+        return this.updateEvent(this.activeSubagentCardId, { toolCalls });
+      }
+    }
+
     // Check if card was pre-created from canUseTool
     const existingCardId = this.toolUseIdToCardId.get(toolUseId);
     if (existingCardId) {
@@ -598,6 +627,19 @@ export class StreamCardBuilder {
   }
 
   toolResult(toolUseId: string, content: string, isError: boolean): CardEvent | null {
+    // Route to active subagent's nested tool call
+    const subagentCardId = this.nestedToolUseToSubagentCard.get(toolUseId);
+    if (subagentCardId) {
+      const subagentCard = this.cards.get(subagentCardId) as SubagentCard | undefined;
+      if (!subagentCard?.toolCalls) return null;
+      const truncated = content.length > TOOL_RESULT_TRUNCATE_LENGTH;
+      const resultContent = truncated ? content.slice(0, TOOL_RESULT_TRUNCATE_LENGTH) + ' [truncated]' : content;
+      const toolCalls = subagentCard.toolCalls.map(tc =>
+        tc.id === toolUseId ? { ...tc, result: { content: resultContent, isError } } : tc,
+      );
+      return this.updateEvent(subagentCardId, { toolCalls });
+    }
+
     const cardId = this.toolUseIdToCardId.get(toolUseId);
     if (!cardId) return null;
     const truncated = content.length > TOOL_RESULT_TRUNCATE_LENGTH;
@@ -616,9 +658,31 @@ export class StreamCardBuilder {
     return this.updateEvent(cardId, { answers });
   }
 
-  subagentStart(description: string, agentId: string, toolUseId?: string): CardEvent {
+  /** Stash Agent tool_use input fields for later use when task_started arrives. */
+  stashAgentToolUseInput(toolUseId: string, input: {
+    prompt?: string;
+    subagentType?: string;
+    requestedModel?: string;
+  }): void {
+    this.agentToolUseStash.set(toolUseId, input);
+  }
+
+  subagentStart(
+    description: string,
+    agentId: string,
+    toolUseId?: string,
+    extras?: { prompt?: string; subagentType?: string; requestedModel?: string },
+  ): CardEvent {
     this.currentTextCardId = null;
     const id = this.nextId();
+
+    const stashed = toolUseId ? this.agentToolUseStash.get(toolUseId) : undefined;
+    if (toolUseId) this.agentToolUseStash.delete(toolUseId);
+
+    const subagentType = stashed?.subagentType ?? extras?.subagentType;
+    const requestedModel = stashed?.requestedModel ?? extras?.requestedModel;
+    const prompt = extras?.prompt ?? stashed?.prompt;
+
     const card: SubagentCard = {
       type: 'subagent', id, timestamp: Date.now(),
       description,
@@ -626,9 +690,12 @@ export class StreamCardBuilder {
       agentId,
       status: 'running',
       toolUseCount: 0,
+      ...(subagentType ? { subagentType } : {}),
+      ...(requestedModel ? { requestedModel } : {}),
+      ...(prompt ? { prompt } : {}),
     };
     this.agentIdToCardId.set(agentId, id);
-    // Position after the parent ToolCallCard if we have the toolUseId
+    this.activeSubagentCardId = id;
     const afterCardId = toolUseId ? this.toolUseIdToCardId.get(toolUseId) : undefined;
     return this.addEvent(card, afterCardId);
   }
@@ -652,6 +719,7 @@ export class StreamCardBuilder {
     const cardId = this.agentIdToCardId.get(agentId)
       ?? (toolUseId ? this.agentIdToCardId.get(toolUseId) : undefined);
     if (!cardId) return null;
+    if (cardId === this.activeSubagentCardId) this.activeSubagentCardId = null;
     return this.updateEvent(cardId, { status, summary });
   }
 
@@ -674,6 +742,54 @@ export class StreamCardBuilder {
 
   errorMessage(text: string): CardEvent {
     return this.systemMessage(`Error: ${text}`, 'error');
+  }
+}
+
+/** Read tool calls from a subagent's JSONL — used by buildCardsFromHistory to nest them. */
+async function readSubagentToolCalls(jsonlPath: string): Promise<SubagentToolCall[]> {
+  try {
+    const content = await readFile(jsonlPath, 'utf-8');
+    const messages = parseJSONLContent(content);
+    const resultMap = new Map<string, { content: string; isError: boolean }>();
+    const toolCalls: SubagentToolCall[] = [];
+
+    for (const msg of messages) {
+      const rawMsg = (msg as any).message as any;
+      if (!Array.isArray(rawMsg?.content)) continue;
+      if (msg.type === 'user') {
+        for (const block of rawMsg.content) {
+          if (block.type === 'tool_result' && block.tool_use_id) {
+            const text = extractToolResultText(block.content);
+            resultMap.set(block.tool_use_id, { content: text, isError: !!block.is_error });
+          }
+        }
+      } else if (msg.type === 'assistant') {
+        for (const block of rawMsg.content) {
+          if (block.type === 'tool_use' && block.id && block.name !== 'Agent') {
+            toolCalls.push({
+              id: block.id,
+              toolName: block.name,
+              toolInput: typeof block.input === 'object' && block.input ? block.input : {},
+            });
+          }
+        }
+      }
+    }
+
+    // Attach results and apply truncation
+    for (const tc of toolCalls) {
+      const r = resultMap.get(tc.id);
+      if (r) {
+        const truncated = r.content.length > TOOL_RESULT_TRUNCATE_LENGTH;
+        tc.result = {
+          content: truncated ? r.content.slice(0, TOOL_RESULT_TRUNCATE_LENGTH) + ' [truncated]' : r.content,
+          isError: r.isError,
+        };
+      }
+    }
+    return toolCalls;
+  } catch {
+    return [];
   }
 }
 
@@ -773,23 +889,35 @@ export async function buildCardsFromHistory(
   // Instead, read subagent meta.json files and match by description to the
   // Agent tool_use input.description.
 
-  // Build description → toolUseId map from Agent tool_use blocks
+  // Build description → toolUseId map and capture Agent tool_use input data
   const descToToolUseId = new Map<string, string>();
+  const agentInputByToolUseId = new Map<string, {
+    prompt?: string;
+    subagentType?: string;
+    requestedModel?: string;
+  }>();
   for (const msg of allMessages) {
     const rawMsg = (msg as any).message as any;
     if (!Array.isArray(rawMsg?.content)) continue;
     for (const block of rawMsg.content) {
       if (block.type === 'tool_use' && block.name === 'Agent' && block.id) {
-        const desc = (block.input as any)?.description ?? '';
+        const input = block.input as any;
+        const desc = input?.description ?? '';
         if (desc) descToToolUseId.set(desc, block.id);
+        agentInputByToolUseId.set(block.id, {
+          prompt: typeof input?.prompt === 'string' ? input.prompt : undefined,
+          subagentType: typeof input?.subagent_type === 'string' ? input.subagent_type : undefined,
+          requestedModel: typeof input?.model === 'string' ? input.model : undefined,
+        });
       }
     }
   }
 
+  const subagentsDir = join(claudeProjectDir(cwd), sessionId, 'subagents');
   const toolUseIdToAgentId = new Map<string, string>();
+  const subagentToolCallsByToolUseId = new Map<string, SubagentToolCall[]>();
   try {
     const agentIds = await listSubagentIdsFromDisk(sessionId, cwd);
-    const subagentsDir = join(claudeProjectDir(cwd), sessionId, 'subagents');
 
     for (const agentId of agentIds) {
       try {
@@ -804,6 +932,11 @@ export async function buildCardsFromHistory(
       if (!toolUseIdToAgentId.has(toolUseId)) {
         toolUseIdToAgentId.set(toolUseId, toolUseId);
       }
+    }
+    // Read each subagent's JSONL to extract nested tool calls
+    for (const [toolUseId, agentId] of toolUseIdToAgentId) {
+      const toolCalls = await readSubagentToolCalls(join(subagentsDir, `${agentId}.jsonl`));
+      if (toolCalls.length > 0) subagentToolCallsByToolUseId.set(toolUseId, toolCalls);
     }
   } catch {
     // No subagents or SDK error — fallback: agentId = toolUseId
@@ -973,13 +1106,14 @@ export async function buildCardsFromHistory(
 
           case 'tool_use': {
             if (agentToolUseIds.has(block.id)) {
-              // Agent tool_use → create a ToolCallCard as anchor, then SubagentCard
+              // Agent tool_use → SubagentCard
               const agentId = toolUseIdToAgentId.get(block.id) ?? block.id;
               const result = toolResults.get(block.id);
               const description = (block.input as any)?.description ?? '';
               const summary = result ? result.content.slice(0, 200) : undefined;
+              const agentInput = agentInputByToolUseId.get(block.id);
 
-              // Insert SubagentCard
+              const nestedToolCalls = subagentToolCallsByToolUseId.get(block.id);
               const subagentCard: SubagentCard = {
                 type: 'subagent',
                 id: nextId(),
@@ -989,7 +1123,11 @@ export async function buildCardsFromHistory(
                 agentId,
                 status: result ? 'completed' : 'running',
                 summary,
-                toolUseCount: 0,
+                toolUseCount: nestedToolCalls?.length ?? 0,
+                ...(agentInput?.subagentType ? { subagentType: agentInput.subagentType } : {}),
+                ...(agentInput?.requestedModel ? { requestedModel: agentInput.requestedModel } : {}),
+                ...(agentInput?.prompt ? { prompt: agentInput.prompt } : {}),
+                ...(nestedToolCalls?.length ? { toolCalls: nestedToolCalls } : {}),
               };
               cards.push(subagentCard);
             } else {

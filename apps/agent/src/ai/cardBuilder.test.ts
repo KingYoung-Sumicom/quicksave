@@ -436,6 +436,64 @@ describe('StreamCardBuilder', () => {
       const event = builder.assistantText('new') as CardAddEvent;
       expect(event.type).toBe('add');
     });
+
+    it('merges stashed Agent tool_use input into the card', () => {
+      builder.stashAgentToolUseInput('tu-stash', {
+        prompt: 'Find all tests',
+        subagentType: 'Explore',
+        requestedModel: 'sonnet',
+      });
+      const event = builder.subagentStart('Search tests', 'agent-s', 'tu-stash') as CardAddEvent;
+      const card = event.card as SubagentCard;
+
+      expect(card.subagentType).toBe('Explore');
+      expect(card.requestedModel).toBe('sonnet');
+      expect(card.prompt).toBe('Find all tests');
+    });
+
+    it('prefers extras.prompt over stashed prompt', () => {
+      builder.stashAgentToolUseInput('tu-pref', {
+        prompt: 'stashed prompt',
+        subagentType: 'Plan',
+      });
+      const event = builder.subagentStart('Plan task', 'agent-p2', 'tu-pref', {
+        prompt: 'task_started prompt',
+      }) as CardAddEvent;
+      const card = event.card as SubagentCard;
+
+      expect(card.prompt).toBe('task_started prompt');
+      expect(card.subagentType).toBe('Plan');
+    });
+
+    it('works with extras only (no stash)', () => {
+      const event = builder.subagentStart('Direct', 'agent-d', 'tu-direct', {
+        prompt: 'direct prompt',
+        subagentType: 'general-purpose',
+        requestedModel: 'opus',
+      }) as CardAddEvent;
+      const card = event.card as SubagentCard;
+
+      expect(card.prompt).toBe('direct prompt');
+      expect(card.subagentType).toBe('general-purpose');
+      expect(card.requestedModel).toBe('opus');
+    });
+
+    it('omits undefined fields from the card', () => {
+      const event = builder.subagentStart('No extras', 'agent-n', 'tu-none') as CardAddEvent;
+      const card = event.card as SubagentCard;
+
+      expect(card.subagentType).toBeUndefined();
+      expect(card.requestedModel).toBeUndefined();
+      expect(card.prompt).toBeUndefined();
+    });
+
+    it('consumes the stash entry (one-shot)', () => {
+      builder.stashAgentToolUseInput('tu-once', { subagentType: 'Explore' });
+      builder.subagentStart('First', 'agent-f1', 'tu-once');
+
+      const event = builder.subagentStart('Second', 'agent-f2', 'tu-once') as CardAddEvent;
+      expect((event.card as SubagentCard).subagentType).toBeUndefined();
+    });
   });
 
   describe('subagentProgress()', () => {
@@ -474,6 +532,63 @@ describe('StreamCardBuilder', () => {
     it('returns null when agentId is unknown', () => {
       const result = builder.subagentEnd('unknown', undefined, 'failed');
       expect(result).toBeNull();
+    });
+  });
+
+  // ── nested tool calls (subagent active window) ───────────────────────────
+
+  describe('nested subagent tool calls', () => {
+    it('toolUse() routes to SubagentCard while subagent is active', () => {
+      builder.subagentStart('task', 'agent-n');
+      const event = builder.toolUse('Bash', { command: 'ls' }, 'tu-nested') as CardUpdateEvent;
+
+      expect(event.type).toBe('update');
+      const patch = event.patch as any;
+      expect(patch.toolCalls).toHaveLength(1);
+      expect(patch.toolCalls[0]).toMatchObject({ id: 'tu-nested', toolName: 'Bash', toolInput: { command: 'ls' } });
+      // Should NOT create a ToolCallCard
+      expect(builder.getCards().every(c => c.type !== 'tool_call')).toBe(true);
+    });
+
+    it('toolResult() routes to SubagentCard when toolUseId is nested', () => {
+      builder.subagentStart('task', 'agent-nr');
+      builder.toolUse('Read', { file_path: '/foo' }, 'tu-r');
+      const event = builder.toolResult('tu-r', 'file contents', false) as CardUpdateEvent;
+
+      expect(event.type).toBe('update');
+      const calls = (event.patch as any).toolCalls as any[];
+      expect(calls[0].result).toEqual({ content: 'file contents', isError: false });
+    });
+
+    it('multiple nested tool calls accumulate in order', () => {
+      builder.subagentStart('task', 'agent-multi');
+      builder.toolUse('Bash', {}, 'tu-a');
+      builder.toolUse('Read', {}, 'tu-b');
+      const cards = builder.getCards();
+      const sa = cards.find(c => c.type === 'subagent') as SubagentCard;
+      expect(sa.toolCalls).toHaveLength(2);
+      expect(sa.toolCalls![0].toolName).toBe('Bash');
+      expect(sa.toolCalls![1].toolName).toBe('Read');
+    });
+
+    it('toolUse() resumes normal ToolCallCard after subagentEnd()', () => {
+      builder.subagentStart('task', 'agent-after');
+      builder.subagentEnd('agent-after', undefined, 'completed');
+      const event = builder.toolUse('Bash', {}, 'tu-post') as CardAddEvent;
+
+      expect(event.type).toBe('add');
+      expect((event.card as any).type).toBe('tool_call');
+    });
+
+    it('clearCards() resets nested tool call routing state', () => {
+      builder.subagentStart('task', 'agent-clr');
+      builder.toolUse('Bash', {}, 'tu-clr');
+      builder.clearCards();
+      // After clear, toolResult returns null since mapping is gone
+      expect(builder.toolResult('tu-clr', 'x', false)).toBeNull();
+      // New toolUse creates ToolCallCard (not nested)
+      const event = builder.toolUse('Bash', {}, 'tu-fresh') as CardAddEvent;
+      expect(event.type).toBe('add');
     });
   });
 
@@ -527,6 +642,14 @@ describe('StreamCardBuilder', () => {
       expect(builder.getCards()).toEqual([]);
       // toolResult should return null since mappings are cleared
       expect(builder.toolResult('tu-1', 'x', false)).toBeNull();
+    });
+
+    it('clears the agentToolUseStash', () => {
+      builder.stashAgentToolUseInput('tu-stale', { subagentType: 'Explore' });
+      builder.clearCards();
+
+      const event = builder.subagentStart('After clear', 'agent-ac', 'tu-stale') as CardAddEvent;
+      expect((event.card as SubagentCard).subagentType).toBeUndefined();
     });
   });
 
@@ -934,6 +1057,49 @@ describe('buildCardsFromHistory', () => {
     const sc = subCards[0] as SubagentCard;
     expect(sc.description).toBe('Review PR');
     expect(sc.status).toBe('completed');
+    // No extra input fields in this fixture
+    expect(sc.subagentType).toBeUndefined();
+    expect(sc.requestedModel).toBeUndefined();
+    expect(sc.prompt).toBeUndefined();
+  });
+
+  it('populates subagentType, requestedModel, and prompt from Agent tool_use input', async () => {
+    const jsonl = [
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use', id: 'tu-rich', name: 'Agent',
+            input: {
+              description: 'Find tests',
+              prompt: 'Search the codebase for test files',
+              subagent_type: 'Explore',
+              model: 'haiku',
+            },
+          }],
+        },
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: {
+          content: [{ type: 'tool_result', tool_use_id: 'tu-rich', content: 'Found 12 test files' }],
+        },
+      }),
+    ].join('\n');
+
+    vi.mocked(existsSync).mockImplementation((p: any) => {
+      return typeof p === 'string' && !p.includes('subagents');
+    });
+    vi.mocked(stat).mockResolvedValue({ size: jsonl.length } as any);
+    vi.mocked(readFile).mockResolvedValue(jsonl);
+
+    const result = await buildCardsFromHistory('sess-rich', '/test/cwd');
+    const subCards = result.cards.filter(c => c.type === 'subagent');
+    expect(subCards).toHaveLength(1);
+    const sc = subCards[0] as SubagentCard;
+    expect(sc.subagentType).toBe('Explore');
+    expect(sc.requestedModel).toBe('haiku');
+    expect(sc.prompt).toBe('Search the codebase for test files');
   });
 });
 

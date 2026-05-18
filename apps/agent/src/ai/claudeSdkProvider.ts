@@ -461,7 +461,9 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
       if (subtype === 'task_started') {
         flushText();
         const m = msg as any;
-        emitCard(cb.subagentStart(m.description ?? '', m.task_id, m.tool_use_id));
+        emitCard(cb.subagentStart(m.description ?? '', m.task_id, m.tool_use_id, {
+          prompt: typeof m.prompt === 'string' ? m.prompt : undefined,
+        }));
         return false;
       }
 
@@ -550,7 +552,14 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
           }
         } else if (block.type === 'tool_use') {
           callbacks.onToolUse?.(sessionId, block.name, block.input ?? {});
-          if (block.name !== 'Agent') {
+          if (block.name === 'Agent') {
+            const input = block.input as any;
+            cb.stashAgentToolUseInput(block.id, {
+              prompt: typeof input?.prompt === 'string' ? input.prompt : undefined,
+              subagentType: typeof input?.subagent_type === 'string' ? input.subagent_type : undefined,
+              requestedModel: typeof input?.model === 'string' ? input.model : undefined,
+            });
+          } else {
             emitCard(cb.toolUse(block.name, block.input ?? {}, block.id));
           }
         } else if (block.type === 'server_tool_use' || block.type === 'mcp_tool_use') {

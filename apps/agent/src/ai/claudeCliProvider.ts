@@ -730,7 +730,9 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     if (msg.type === 'system') {
       if (msg.subtype === 'task_started') {
         flushText();
-        emitCard(cb.subagentStart(msg.description ?? '', msg.task_id, msg.tool_use_id));
+        emitCard(cb.subagentStart(msg.description ?? '', msg.task_id, msg.tool_use_id, {
+          prompt: typeof msg.prompt === 'string' ? msg.prompt : undefined,
+        }));
       } else if (msg.subtype === 'task_progress') {
         const cardEvt = cb.subagentProgress(msg.task_id, msg.tool_use_id, msg.usage?.tool_uses, msg.last_tool_name);
         if (cardEvt) emitCard(cardEvt);
@@ -801,7 +803,14 @@ export class ClaudeCliProvider implements CodingAgentProvider {
           }
         } else if (block.type === 'tool_use') {
           callbacks.onToolUse?.(sessionId, block.name, block.input ?? {});
-          if (block.name !== 'Agent') {
+          if (block.name === 'Agent') {
+            const input = block.input as any;
+            cb.stashAgentToolUseInput(block.id, {
+              prompt: typeof input?.prompt === 'string' ? input.prompt : undefined,
+              subagentType: typeof input?.subagent_type === 'string' ? input.subagent_type : undefined,
+              requestedModel: typeof input?.model === 'string' ? input.model : undefined,
+            });
+          } else {
             emitCard(cb.toolUse(block.name, block.input ?? {}, block.id));
           }
         } else if (block.type === 'server_tool_use' || block.type === 'mcp_tool_use') {
@@ -822,6 +831,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     if (msg.type === 'user') {
       if (msg.agentId) return false;  // sidechain
       if (msg.isReplay) return false;  // echoed back by --replay-user-messages; we already added it to cardBuilder history
+      if (msg.parent_tool_use_id) return false;  // synthetic subagent-prompt injection — prompt already shown in SubagentCard
       const content = msg.message?.content;
       if (typeof content === 'string' && content) {
         flushText();
