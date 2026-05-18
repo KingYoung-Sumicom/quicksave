@@ -5,12 +5,19 @@ import { useClaudeStore } from '../stores/claudeStore';
 
 /**
  * Apply a single session-registry entry to the store.
- * Archived entries are removed (the PWA hides archived sessions).
+ *
+ * Archived entries are kept in the store with `archived: true` rather than
+ * removed, so App.tsx's `viewedArchived` effect can bounce the user off a
+ * page whose session just got archived. List views already filter on
+ * `!s.archived`, so archived entries stay invisible in the UI. The initial
+ * `/sessions/history` snapshot never includes archived entries (the
+ * registry only holds active ones in memory), so this only grows the store
+ * for sessions archived during the current PWA session.
  */
 export function applyHistoryEntry(entry: BroadcastSessionEntry, machineAgentId: string): void {
-  const { removeSession, upsertSession } = useClaudeStore.getState();
+  const { upsertSession } = useClaudeStore.getState();
   if (entry.archived) {
-    removeSession(entry.sessionId);
+    upsertSession({ sessionId: entry.sessionId, machineAgentId, archived: true });
     return;
   }
   upsertSession({
