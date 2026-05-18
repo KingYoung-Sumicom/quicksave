@@ -21,7 +21,7 @@ import { CommitForm } from './CommitForm';
 import { FloatingActionButton } from './FloatingActionButton';
 import { Settings } from './Settings';
 
-interface RepoViewProps {
+export interface RepoViewProps {
   onRefresh: () => void;
   onFetchDiff: (path: string, staged: boolean, source?: 'staged' | 'unstaged' | 'untracked') => void;
   onStage: (paths: string[]) => void;

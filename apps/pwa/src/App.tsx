@@ -60,6 +60,8 @@ import { TerminalPage } from './components/terminal/TerminalPage';
 import { FileBrowserPage } from './components/files/FileBrowserPage';
 import { FilePreviewModal } from './components/files/FilePreviewModal';
 import { useFilePreviewStore } from './stores/filePreviewStore';
+import { useSessionRightPanelStore, selectPanelMode } from './stores/sessionRightPanelStore';
+import { GitOpsContext } from './contexts/gitOpsContext';
 import { useProjectConnection } from './hooks/useProjectConnection';
 import { resolveHash, getAllKnownPaths } from './lib/pathHash';
 import {
@@ -72,6 +74,7 @@ import {
 import { SyncClient } from './lib/syncClient';
 import { mergeSyncPayloads, syncPayloadsEqual, type SyncPayloadV3 } from './lib/syncMerge';
 import { useMediaQuery } from './hooks/useMediaQuery';
+import { SessionRightPanel } from './components/SessionRightPanel';
 
 /**
  * Subscribe one agent's bus to all agent-pushed state paths. Snapshots
@@ -331,6 +334,8 @@ function AppContent() {
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const filePreviewOpen = useFilePreviewStore((s) => s.current != null);
   const filePreviewPanelWidth = useFilePreviewStore((s) => s.panelWidth);
+  const sessionPanelMode = useSessionRightPanelStore(selectPanelMode);
+  const sessionPanelWidth = useSessionRightPanelStore((s) => s.panelWidth);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
   const [showGitIdentityModal, setShowGitIdentityModal] = useState(false);
 
@@ -925,10 +930,47 @@ function AppContent() {
     }
   }, []);
 
+  // File preview (z-40) takes priority; session panel (z-30) fills in otherwise.
+  const rightPad = isDesktop
+    ? filePreviewOpen
+      ? filePreviewPanelWidth
+      : sessionPanelMode
+        ? sessionPanelWidth
+        : 0
+    : 0;
+
+  const gitOpsBundle = useMemo(() => ({
+    onRefresh: fetchStatus,
+    onFetchDiff: fetchDiff,
+    onStage: stageFiles,
+    onUnstage: unstageFiles,
+    onStagePatch: stagePatch,
+    onUnstagePatch: unstagePatch,
+    onDiscard: discardChanges,
+    onUntrack: untrackFiles,
+    onAddToGitignore: addToGitignore,
+    onCommit: async (msg: string, desc?: string) => {
+      try {
+        await commit(msg, desc);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : '';
+        if (errMsg.includes('empty ident') || errMsg.includes('Please tell me who you are')) {
+          setShowGitIdentityModal(true);
+        }
+      }
+    },
+    onGenerateAiSummary: generateCommitSummary,
+    onApplyAiSuggestion: applyAiSuggestion,
+    onDismissAiSummary: dismissAiSummary,
+    onSetApiKey: setApiKey,
+    switchRepo,
+  }), [fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, commit, generateCommitSummary, applyAiSuggestion, dismissAiSummary, setApiKey, switchRepo]);
+
   return (
+    <GitOpsContext.Provider value={gitOpsBundle}>
     <div
       className="flex flex-col bg-slate-900 text-slate-100 overflow-hidden h-full transition-[padding] duration-200"
-      style={isDesktop && filePreviewOpen ? { paddingRight: filePreviewPanelWidth } : undefined}
+      style={rightPad ? { paddingRight: rightPad } : undefined}
     >
       {isConnected && <NotificationPrompt onOffer={handlePushOffer} />}
       {isDesktop ? (
@@ -1020,6 +1062,7 @@ function AppContent() {
         />
       )}
     </div>
+    </GitOpsContext.Provider>
   );
 }
 
@@ -1228,6 +1271,7 @@ function ProjectRouteSession({
   const navigate = useNavigate();
   const location = useLocation();
   const isNewSession = searchParams.has('new');
+  const isDesktop = useMediaQuery('(min-width: 768px)');
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
   // Watch the archived flag on the URL-bound session so we can bounce out
   // of pages whose sessionId has been retired in the registry (End Task,
@@ -1389,6 +1433,37 @@ function ProjectRouteSession({
         onResumeSession={boundResumeSession}
         onRespondToUserInput={respondToUserInput}
       />
+      {isDesktop && targetAgentId && cwd && (
+        <SessionRightPanel
+          sessionId={urlSessionId ?? ''}
+          agentId={targetAgentId}
+          cwd={cwd}
+          sessionOps={{
+            sessionId: urlSessionId,
+            projectId,
+            agentId: targetAgentId,
+            cwd,
+            onListProjectRepos: listProjectRepos,
+            onSetSessionConfig: (key, value) => {
+              const sid = getSessionId();
+              if (sid) setSessionConfig(sid, key, value);
+            },
+            onSendControlRequest: sendControlRequest,
+            onCancelSession: () => {
+              const sid = getSessionId();
+              if (sid) cancelSession(sid);
+            },
+            onCloseSession: () => {
+              const sid = getSessionId();
+              if (sid) closeSession(sid);
+            },
+            onEndSession: () => {
+              const sid = getSessionId();
+              if (sid) endSession(sid);
+            },
+          }}
+        />
+      )}
     </>
   );
 }

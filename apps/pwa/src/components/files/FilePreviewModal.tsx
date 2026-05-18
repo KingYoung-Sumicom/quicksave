@@ -21,10 +21,6 @@ import { MarkdownPreview } from './MarkdownPreview';
 /**
  * Single mount point — App.tsx renders this once. It subscribes to the
  * `filePreviewStore` and pops over everything when a request is queued.
- *
- * The viewer mirrors the old in-page FileView: text content for `kind:
- * 'text'`, and a placeholder for binary / oversized so the channel
- * doesn't carry megabytes for files we can't render anyway.
  */
 export function FilePreviewModal() {
   const current = useFilePreviewStore((s) => s.current);
@@ -32,7 +28,6 @@ export function FilePreviewModal() {
   const location = useLocation();
   const isDesktop = useMediaQuery('(min-width: 768px)');
 
-  // ESC closes the modal — mirrors the SwipeableDrawer / Modal idioms.
   useEffect(() => {
     if (!current) return;
     const onKey = (e: KeyboardEvent) => {
@@ -42,25 +37,43 @@ export function FilePreviewModal() {
     return () => window.removeEventListener('keydown', onKey);
   }, [current, close]);
 
-  // Close on navigation. The router updates location.key on every push /
-  // pop, so back-button + sidebar nav both fire this. We deliberately
-  // ignore `current` in deps so the close doesn't re-fire from store
-  // mutations — only from real route changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { close(); }, [location.key]);
 
   if (!current) return null;
-  return <PreviewBody request={current} onClose={close} isDesktop={isDesktop} />;
+
+  if (isDesktop) {
+    return (
+      <DesktopSidePanel onClose={close}>
+        <FileViewerPane request={current} onClose={close} />
+      </DesktopSidePanel>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center sm:p-4">
+      <div className="absolute inset-0 bg-black/60" onClick={close} />
+      <div
+        className="relative bg-slate-800 sm:rounded-lg w-full sm:max-w-3xl max-h-screen sm:max-h-[90vh] flex flex-col shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <FileViewerPane request={current} onClose={close} />
+      </div>
+    </div>
+  );
 }
 
-function PreviewBody({
+/**
+ * Self-contained file viewer pane — handles loading, error, and display.
+ * No positioning wrapper: embed it inside DesktopSidePanel, a modal, or
+ * directly in the session right panel.
+ */
+export function FileViewerPane({
   request,
   onClose,
-  isDesktop,
 }: {
   request: FilePreviewRequest;
   onClose: () => void;
-  isDesktop: boolean;
 }) {
   const agentId = request.agentId ?? '';
   const getBus = useCallback(() => getBusForAgent(agentId), [agentId]);
@@ -94,8 +107,6 @@ function PreviewBody({
   }, [request.cwd, request.path, request.maxBytes, readFile, reloadNonce]);
 
   const refresh = useCallback(() => {
-    // Drop every cached variant for this path, then bump the nonce so the
-    // effect above re-runs through the cold path of readWithCache.
     invalidateFileCache(request.cwd, request.path);
     setReloadNonce((n) => n + 1);
   }, [request.cwd, request.path]);
@@ -107,124 +118,102 @@ function PreviewBody({
   const [renderMarkdown, setRenderMarkdown] = useState(true);
   const [renderSvg, setRenderSvg] = useState(true);
 
-  if (isDesktop) {
-    return (
-      <DesktopSidePanel onClose={onClose}>
-        {renderChrome()}
-      </DesktopSidePanel>
-    );
-  }
-
   return (
-    <div className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center sm:p-4">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div
-        className="relative bg-slate-800 sm:rounded-lg w-full sm:max-w-3xl max-h-screen sm:max-h-[90vh] flex flex-col shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {renderChrome()}
-      </div>
-    </div>
-  );
-
-  function renderChrome() {
-    return (
-      <>
-        {/* Header */}
-        <div className="flex items-start gap-3 p-3 border-b border-slate-700 shrink-0">
-          <svg className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z" />
+    <>
+      {/* Header */}
+      <div className="flex items-start gap-3 p-3 border-b border-slate-700 shrink-0">
+        <svg className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z" />
+        </svg>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-slate-100 truncate">{fileName}</p>
+          <p className="text-[11px] text-slate-500 truncate">{displayPath}</p>
+        </div>
+        {isMarkdown && data?.kind === 'text' && (
+          <button
+            onClick={() => setRenderMarkdown((v) => !v)}
+            className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
+            title={renderMarkdown ? 'Show raw source' : 'Render markdown'}
+          >
+            {renderMarkdown ? 'Raw' : 'Rendered'}
+          </button>
+        )}
+        {isSvg && data?.kind === 'text' && (
+          <button
+            onClick={() => setRenderSvg((v) => !v)}
+            className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
+            title={renderSvg ? 'Show raw source' : 'Render SVG'}
+          >
+            {renderSvg ? 'Raw' : 'Rendered'}
+          </button>
+        )}
+        <button
+          onClick={refresh}
+          disabled={loading}
+          className="p-1 hover:bg-slate-700 rounded-md transition-colors shrink-0 disabled:opacity-40 disabled:hover:bg-transparent"
+          aria-label="Refresh"
+          title="Refresh"
+        >
+          <svg
+            className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v6h6M20 20v-6h-6M4 10a8 8 0 0114-4.9M20 14a8 8 0 01-14 4.9" />
           </svg>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-slate-100 truncate">{fileName}</p>
-            <p className="text-[11px] text-slate-500 truncate">{displayPath}</p>
-          </div>
-          {isMarkdown && data?.kind === 'text' && (
-            <button
-              onClick={() => setRenderMarkdown((v) => !v)}
-              className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
-              title={renderMarkdown ? 'Show raw source' : 'Render markdown'}
-            >
-              {renderMarkdown ? 'Raw' : 'Rendered'}
-            </button>
-          )}
-          {isSvg && data?.kind === 'text' && (
-            <button
-              onClick={() => setRenderSvg((v) => !v)}
-              className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
-              title={renderSvg ? 'Show raw source' : 'Render SVG'}
-            >
-              {renderSvg ? 'Raw' : 'Rendered'}
-            </button>
-          )}
-          <button
-            onClick={refresh}
-            disabled={loading}
-            className="p-1 hover:bg-slate-700 rounded-md transition-colors shrink-0 disabled:opacity-40 disabled:hover:bg-transparent"
-            aria-label="Refresh"
-            title="Refresh"
-          >
-            <svg
-              className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4v6h6M20 20v-6h-6M4 10a8 8 0 0114-4.9M20 14a8 8 0 01-14 4.9" />
-            </svg>
-          </button>
-          <button
-            onClick={onClose}
-            className="p-1 hover:bg-slate-700 rounded-md transition-colors shrink-0"
-            aria-label="Close"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
+        </button>
+        <button
+          onClick={onClose}
+          className="p-1 hover:bg-slate-700 rounded-md transition-colors shrink-0"
+          aria-label="Close"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
 
-        {/* Body */}
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          {loading && (
-            <div className="flex items-center justify-center py-12">
-              <Spinner size="w-5 h-5" color="border-blue-400" />
-            </div>
-          )}
-
-          {!loading && data && !data.success && (
-            <div className="px-4 py-6 text-sm text-red-400">
-              {data.error ?? 'Failed to read file.'}
-            </div>
-          )}
-
-          {!loading && data?.success && (
-            <PreviewContent
-              data={data}
-              displayPath={displayPath}
-              cwd={request.cwd}
-              agentId={request.agentId ?? ''}
-              renderMarkdown={isMarkdown && renderMarkdown}
-              renderSvg={isSvg && renderSvg}
-            />
-          )}
-        </div>
-
-        {/* Footer meta */}
-        {!loading && data?.success && (
-          <div className="px-3 py-1.5 border-t border-slate-700 text-[11px] text-slate-500 flex items-center gap-2 shrink-0">
-            <span>{typeof data.size === 'number' ? formatSize(data.size) : '—'}</span>
-            {data.kind && data.kind !== 'text' && (
-              <>
-                <span className="opacity-60">·</span>
-                <span className="text-amber-400">{data.kind}</span>
-              </>
-            )}
+      {/* Body */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {loading && (
+          <div className="flex items-center justify-center py-12">
+            <Spinner size="w-5 h-5" color="border-blue-400" />
           </div>
         )}
-      </>
-    );
-  }
+
+        {!loading && data && !data.success && (
+          <div className="px-4 py-6 text-sm text-red-400">
+            {data.error ?? 'Failed to read file.'}
+          </div>
+        )}
+
+        {!loading && data?.success && (
+          <PreviewContent
+            data={data}
+            displayPath={displayPath}
+            cwd={request.cwd}
+            agentId={request.agentId ?? ''}
+            renderMarkdown={isMarkdown && renderMarkdown}
+            renderSvg={isSvg && renderSvg}
+          />
+        )}
+      </div>
+
+      {/* Footer meta */}
+      {!loading && data?.success && (
+        <div className="px-3 py-1.5 border-t border-slate-700 text-[11px] text-slate-500 flex items-center gap-2 shrink-0">
+          <span>{typeof data.size === 'number' ? formatSize(data.size) : '—'}</span>
+          {data.kind && data.kind !== 'text' && (
+            <>
+              <span className="opacity-60">·</span>
+              <span className="text-amber-400">{data.kind}</span>
+            </>
+          )}
+        </div>
+      )}
+    </>
+  );
 }
 
 function DesktopSidePanel({
@@ -336,9 +325,6 @@ function PreviewContent({
     );
   }
   if (renderSvg && data.kind === 'text' && typeof data.content === 'string') {
-    // Render via <img> with a data URL — this gives us a passive image
-    // context where any <script> inside the SVG won't execute, so we
-    // don't need a separate sanitiser pass.
     const src = `data:image/svg+xml;utf8,${encodeURIComponent(data.content)}`;
     return (
       <div className="flex items-center justify-center p-4 bg-[length:16px_16px] bg-[linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%),linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%)] bg-[position:0_0,8px_8px]">
@@ -376,11 +362,6 @@ function isSvgPath(filePath: string): boolean {
   return (filePath.split('/').pop() ?? '').toLowerCase().endsWith('.svg');
 }
 
-/**
- * Map a file path to a highlight.js language id. Driven by extension and
- * a few well-known basenames (Dockerfile, Makefile). Returns undefined
- * when we don't recognise the type — caller falls back to plain text.
- */
 function detectLanguage(filePath: string): string | undefined {
   const name = (filePath.split('/').pop() ?? '').toLowerCase();
   if (!name) return undefined;
