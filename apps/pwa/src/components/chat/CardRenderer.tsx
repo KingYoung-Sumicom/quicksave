@@ -10,6 +10,7 @@ import { ThinkingMessage } from './ThinkingMessage';
 import { SystemMessage } from './SystemMessage';
 import { SubagentBlockMessage } from './SubagentBlockMessage';
 import { RecoverySuggestedMessage } from './RecoverySuggestedMessage';
+import { GeneratedImageMessage } from './GeneratedImageMessage';
 
 /** Convert PendingInputAttachment to the legacy ClaudeUserInputRequestPayload shape
  *  expected by existing PermissionPrompt / ToolCallMessage components. */
@@ -30,10 +31,11 @@ function toLegacyPending(
   };
 }
 
-export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId, onRespondToInput, onSendQuickPrompt }: {
+export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId, agentId, onRespondToInput, onSendQuickPrompt }: {
   card: Card;
   isLast: boolean;
   sessionId?: string | null;
+  agentId: string;
   onRespondToInput?: (requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string, permissionMode?: string) => void;
   /** Send a fixed prompt without using the composer input — wired for
    *  recovery_suggested cards' one-tap actions (e.g. `/compact`). */
@@ -90,6 +92,9 @@ export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId
 
     case 'system':
       return <SystemMessage content={card.text} />;
+
+    case 'generated_image':
+      return <GeneratedImageMessage card={card} agentId={agentId} />;
 
     case 'recovery_suggested': {
       const rs = card as RecoverySuggestedCard;

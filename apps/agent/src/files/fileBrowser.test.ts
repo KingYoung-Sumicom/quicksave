@@ -488,8 +488,8 @@ describe('FileBrowser', () => {
       expect(res.content!.length).toBeGreaterThan(0);
     });
 
-    it('image branch enforces its own ceiling — files above 4 MiB return oversized', async () => {
-      const huge = Buffer.alloc(5 * 1024 * 1024, 0x43); // 5 MiB
+    it('image branch enforces its own ceiling — files above 16 MiB return oversized', async () => {
+      const huge = Buffer.alloc(17 * 1024 * 1024, 0x43); // 17 MiB
       writeFileSync(join(root, 'huge.png'), huge);
       const res = await fb.read({ cwd: root, path: 'huge.png', allowImage: true });
       expect(res.success).toBe(true);

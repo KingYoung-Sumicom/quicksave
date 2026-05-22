@@ -87,7 +87,7 @@ export function FileViewerPane({
     setLoading(true);
     setData(null);
     const myId = ++reqIdRef.current;
-    readFile({ cwd: request.cwd, path: request.path, maxBytes: request.maxBytes })
+    readFile({ cwd: request.cwd, path: request.path, maxBytes: request.maxBytes, allowImage: true })
       .then((res) => {
         if (myId !== reqIdRef.current) return;
         setData(res);
@@ -310,7 +310,18 @@ function PreviewContent({
   if (data.kind === 'oversized') {
     return (
       <div className="px-4 py-12 text-center text-sm text-slate-500">
-        File is larger than the 100 KB preview cap.
+        File is larger than the preview cap.
+      </div>
+    );
+  }
+  if (data.kind === 'image' && data.content && data.mimeType) {
+    return (
+      <div className="flex min-h-full items-center justify-center p-3 bg-slate-950">
+        <img
+          src={`data:${data.mimeType};base64,${data.content}`}
+          alt={displayPath.split('/').pop() ?? 'Image preview'}
+          className="max-h-[80vh] max-w-full object-contain"
+        />
       </div>
     );
   }

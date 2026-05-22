@@ -490,7 +490,7 @@ export async function consumeAppServerStream(
         // Started item — image not yet rendered. Show the prompt the
         // model is generating from. Result fields populate on completed.
         const prompt = item.revisedPrompt ?? '';
-        emit(cb.systemMessage(`[generating image: ${prompt || '(no prompt)'}]`, 'info'));
+        emit(cb.generatedImage(prompt || '(no prompt)', 'running'));
         return;
       }
 
@@ -629,15 +629,12 @@ export async function consumeAppServerStream(
 
       case 'imageGeneration': {
         // The status / savedPath only become real on completed; emit an
-        // info system card linking to the saved file when present.
-        const where = item.savedPath ? ` → ${item.savedPath}` : '';
-        const failed = item.status !== 'completed' && item.status !== 'success';
-        emit(
-          cb.systemMessage(
-            `[image ${failed ? 'generation failed' : 'generated'}: ${item.revisedPrompt ?? '(no prompt)'}]${where}`,
-            failed ? 'error' : 'info',
-          ),
-        );
+        // image card with the saved file when present.
+        emit(cb.generatedImage(
+          item.revisedPrompt ?? '(no prompt)',
+          imageGenerationCardStatus(item.status, item.savedPath),
+          item.savedPath,
+        ));
         return;
       }
 
@@ -903,6 +900,17 @@ function stringifyDynamicToolResult(
   }
   if (parts.length > 0) return parts.join('\n');
   return JSON.stringify(items);
+}
+
+function imageGenerationCardStatus(
+  status: string,
+  savedPath: string | undefined,
+): 'running' | 'completed' | 'failed' {
+  if (savedPath) return 'completed';
+  const normalized = status.toLowerCase();
+  if (['completed', 'complete', 'success', 'succeeded', 'done'].includes(normalized)) return 'completed';
+  if (['failed', 'failure', 'error', 'cancelled', 'canceled'].includes(normalized)) return 'failed';
+  return 'running';
 }
 
 function planStatusToTodoStatus(

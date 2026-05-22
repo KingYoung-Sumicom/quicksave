@@ -122,6 +122,13 @@ export interface SystemCard extends CardBase {
   subtype?: SystemCardSubtype;
 }
 
+export interface GeneratedImageCard extends CardBase {
+  type: 'generated_image';
+  prompt: string;
+  status: 'running' | 'completed' | 'failed';
+  savedPath?: string;
+}
+
 /**
  * Inline action card emitted by the agent when it detects the session is
  * stuck on a "poison" turn the API will keep rejecting (e.g. an oversized
@@ -157,6 +164,7 @@ export type Card =
   | ToolCallCard
   | SubagentCard
   | SystemCard
+  | GeneratedImageCard
   | RecoverySuggestedCard;
 
 // ── Card Events (wire protocol: agent → PWA) ─────────────────────────────

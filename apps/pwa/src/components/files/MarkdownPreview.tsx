@@ -222,7 +222,7 @@ function MarkdownImage({
           return;
         }
         if (res.kind === 'oversized') {
-          setState({ kind: 'error', message: 'Image exceeds the 4 MB preview cap' });
+          setState({ kind: 'error', message: 'Image exceeds the 16 MB preview cap' });
           return;
         }
         setState({ kind: 'error', message: 'Unsupported image format' });

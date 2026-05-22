@@ -15,6 +15,7 @@ import type {
   SubagentCard,
   SubagentToolCall,
   PendingInputAttachment,
+  GeneratedImageCard,
 } from '@sumicom/quicksave-shared';
 import { readFile, readdir, writeFile, mkdir, stat, open } from 'fs/promises';
 import { join } from 'path';
@@ -725,6 +726,18 @@ export class StreamCardBuilder {
 
   systemMessage(text: string, subtype?: 'compacted' | 'cost' | 'error' | 'info' | 'warning'): CardEvent {
     const card: Card = { type: 'system', id: this.nextId(), timestamp: Date.now(), text, subtype };
+    return this.addEvent(card);
+  }
+
+  generatedImage(prompt: string, status: GeneratedImageCard['status'], savedPath?: string): CardEvent {
+    const card: GeneratedImageCard = {
+      type: 'generated_image',
+      id: this.nextId(),
+      timestamp: Date.now(),
+      prompt,
+      status,
+      ...(savedPath ? { savedPath } : {}),
+    };
     return this.addEvent(card);
   }
 

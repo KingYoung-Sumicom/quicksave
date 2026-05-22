@@ -718,6 +718,7 @@ export function ClaudePanel({
                       card={card}
                       isLast={card.id === lastCardId}
                       sessionId={activeSessionId}
+                      agentId={agentId}
                       onRespondToInput={handleRespondToInput}
                       onSendQuickPrompt={handleSendQuickPrompt}
                     />

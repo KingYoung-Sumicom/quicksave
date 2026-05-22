@@ -35,8 +35,9 @@ const DEFAULT_PREVIEW_BYTES = 100 * 1024;
 /** Absolute ceiling on `maxBytes` regardless of what the PWA asks for. */
 const HARD_PREVIEW_BYTES = 512 * 1024;
 /** Larger ceiling when the caller opts in to image inlining (`allowImage`).
- *  base64 inflates by ~33%, so 4 MiB on the wire ≈ 3 MiB of source pixels. */
-const HARD_IMAGE_BYTES = 4 * 1024 * 1024;
+ *  Base64 inflates by ~33%, so 16 MiB of source pixels is ~21 MiB before
+ *  transport compression. */
+const HARD_IMAGE_BYTES = 16 * 1024 * 1024;
 /** Bytes to sniff when classifying a file as text vs binary (NUL byte = binary). */
 const SNIFF_BYTES = 8 * 1024;
 

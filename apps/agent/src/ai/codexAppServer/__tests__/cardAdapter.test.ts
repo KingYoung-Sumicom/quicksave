@@ -893,7 +893,7 @@ describe('cardAdapter — surfaced ThreadItem variants', () => {
     expect(info).toBeTruthy();
   });
 
-  it('imageGeneration emits info on started and completed', async () => {
+  it('imageGeneration emits generated image cards on started and completed', async () => {
     const h = harness();
     await h.send('item/started', {
       threadId: 'thr_test',
@@ -919,12 +919,46 @@ describe('cardAdapter — surfaced ThreadItem variants', () => {
     await h.consume;
     const cards = h.events.filter(
       (e): e is Extract<typeof e, { type: 'add' }> =>
-        e.type === 'add' && (e.card as { text?: string }).text?.includes('image') === true,
+        e.type === 'add' && e.card.type === 'generated_image',
     );
-    // Started + completed both emit; completed includes the savedPath.
     expect(cards.length).toBeGreaterThanOrEqual(2);
-    expect(cards[cards.length - 1].card as { text?: string }).toMatchObject({
-      text: expect.stringContaining('/tmp/cat.png'),
+    expect(cards[0].card).toMatchObject({
+      status: 'running',
+      prompt: 'a sleeping cat',
+    });
+    expect(cards[cards.length - 1].card).toMatchObject({
+      status: 'completed',
+      prompt: 'a sleeping cat',
+      savedPath: '/tmp/cat.png',
+    });
+  });
+
+  it('imageGeneration treats savedPath as success even when status is unexpected', async () => {
+    const h = harness();
+    await h.send('item/completed', {
+      threadId: 'thr_test',
+      turnId: 'turn_1',
+      item: {
+        type: 'imageGeneration',
+        id: 'img_saved',
+        status: 'failed',
+        revisedPrompt: 'a beach',
+        result: '',
+        savedPath: '/tmp/beach.png',
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: 'thr_test',
+      turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+    const card = h.events.find(
+      (e): e is Extract<typeof e, { type: 'add' }> =>
+        e.type === 'add' && e.card.type === 'generated_image',
+    );
+    expect(card?.card).toMatchObject({
+      status: 'completed',
+      savedPath: '/tmp/beach.png',
     });
   });
 
