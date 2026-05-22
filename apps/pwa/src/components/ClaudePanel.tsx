@@ -273,7 +273,21 @@ export function ClaudePanel({
 
   // Load session messages when navigating to a different session (or away from one)
   useEffect(() => {
-    if (urlSessionId === activeSessionId) return;
+    if (urlSessionId === activeSessionId) {
+      // Same id, typically because startSession set activeSessionId to the
+      // new id before AddNewPage navigated here. Subscribe via the per-route
+      // hook so the unsub handle lands in the same `cardsUnsubsRef` that
+      // future nav/unsub calls consult; otherwise the wire subscription gets
+      // stranded in the top-level hook and `lastSnapshot` stays frozen at
+      // the just-started state, leaving the chat permanently stuck on the
+      // first message. Do NOT clearCards — that would wipe the optimistic
+      // user card startSession just appended.
+      if (urlSessionId) {
+        isAtBottomRef.current = true;
+        onGetSessionCards(urlSessionId);
+      }
+      return;
+    }
     if (activeSessionId) {
       console.log(`[sub:panel] switching session: unsub ${activeSessionId.slice(0, 8)} → sub ${urlSessionId?.slice(0, 8) ?? 'null'}`);
       onUnsubscribeSession?.(activeSessionId);

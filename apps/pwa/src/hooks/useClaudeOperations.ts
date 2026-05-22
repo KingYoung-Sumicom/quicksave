@@ -239,19 +239,22 @@ export function useClaudeOperations(
           }
         }
         setActiveSession(response.sessionId ?? null);
-        // Subscribe to card events for the new session immediately.
-        // The ClaudePanel navigation effect skips subscription when
-        // urlSessionId already equals activeSessionId, so we must
-        // subscribe here to avoid missing streamed cards.
-        if (response.sessionId) {
-          getSessionCards(response.sessionId, 0, 50, opts?.cwd, /* subscribeOnly */ true);
-        }
+        // ClaudePanel's urlSessionId effect subscribes via the per-route
+        // useClaudeOperations instance once it mounts at the new URL. We
+        // intentionally do NOT subscribe here: doing so would register the
+        // unsub handle in the top-level hook's `cardsUnsubsRef`, while every
+        // later unsubscribe/release-first call runs through the per-route
+        // hook's separate Map. The mismatch would leave a stale wire
+        // subscription whose cached `lastSnapshot` is the just-started
+        // session's empty-or-near-empty initial snapshot — replaying it to a
+        // late-joining subscriber permanently strands the chat on the first
+        // message until reload.
       } catch (error) {
         setStreaming(false);
         setStreamError(error instanceof Error ? error.message : 'Failed to start session');
       }
     },
-    [sendCommand, clearCards, setStreaming, setStreamError, setActiveSession, appendCard, upsertSession, getSessionCards]
+    [sendCommand, clearCards, setStreaming, setStreamError, setActiveSession, appendCard, upsertSession]
   );
 
   const resumeSession = useCallback(
