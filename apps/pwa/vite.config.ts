@@ -71,6 +71,6 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    include: ['quicksave-shared'],
+    include: ['@sumicom/quicksave-shared'],
   },
 });
