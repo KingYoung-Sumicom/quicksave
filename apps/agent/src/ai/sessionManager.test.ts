@@ -989,6 +989,33 @@ describe('SessionManager', () => {
       expect(result.action).toBe('allow');
     });
 
+    it('should auto-approve MCP tool full names in bypassPermissions mode', async () => {
+      // In default CLI mode, MCP tools always send can_use_tool to the daemon
+      // regardless of the PermissionRequest hook decision.  The daemon receives
+      // full MCP names like "mcp__quicksave-sandbox__TaskCreate", not plain names.
+      // Previously the explicit CLAUDE_AUTO_APPROVE set used plain names, so
+      // every MCP tool fell through and showed a dialog even in bypass mode.
+      manager.setPermissionLevel(sessionId, 'bypassPermissions');
+
+      const fullMcpNames = [
+        'mcp__quicksave-sandbox__TaskCreate',
+        'mcp__quicksave-sandbox__TaskGet',
+        'mcp__quicksave-sandbox__TaskList',
+        'mcp__quicksave-sandbox__TaskUpdate',
+        'mcp__quicksave-sandbox__TaskOutput',
+        'mcp__quicksave-sandbox__TaskStop',
+        'mcp__some-external-server__AnyTool',
+      ];
+      for (const toolName of fullMcpNames) {
+        const result = await callbacks.handlePermissionRequest(sessionId, {
+          toolName,
+          toolInput: { title: 'test' },
+          toolUseId: `tu-${toolName.slice(-8)}-bypass`,
+        });
+        expect(result.action).toBe('allow');
+      }
+    });
+
     it('should NOT auto-approve AskUserQuestion in bypassPermissions mode', async () => {
       manager.setPermissionLevel(sessionId, 'bypassPermissions');
 

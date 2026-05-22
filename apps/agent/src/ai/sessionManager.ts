@@ -20,6 +20,7 @@ import type {
   CardHistoryResponse,
   CardStreamEnd,
   SessionNoteEntry,
+  SessionPendingMission,
   SessionRegistryEntry,
   SessionStage,
   SessionUpdatePayload,
@@ -117,6 +118,28 @@ const SESSION_STAGES: readonly SessionStage[] = [
 
 function isSessionStage(value: string): value is SessionStage {
   return (SESSION_STAGES as readonly string[]).includes(value);
+}
+
+function parsePendingMissionUntil(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  if (typeof value !== 'string' || value.trim().length === 0) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function buildPendingMission(input: Record<string, unknown>, existing?: SessionPendingMission): SessionPendingMission | null {
+  const label = typeof input.pendingMissionLabel === 'string' && input.pendingMissionLabel.trim().length > 0
+    ? input.pendingMissionLabel.trim()
+    : existing?.label;
+  const until = parsePendingMissionUntil(input.pendingMissionUntil) ?? existing?.until;
+  if (!label || typeof until !== 'number') return null;
+  const isNewSchedule = existing?.label !== label || existing?.until !== until;
+  return {
+    label,
+    until,
+    startedAt: existing?.startedAt ?? Date.now(),
+    ...(isNewSchedule || existing?.dismissedAt === undefined ? {} : { dismissedAt: existing.dismissedAt }),
+  };
 }
 
 function autoApproveToolsFor(agentId: AgentId, level: PermissionLevel): Set<string> {
@@ -1111,6 +1134,7 @@ export class SessionManager extends EventEmitter {
         lastTurnCacheReadTokens: lastTurn?.cacheReadTokens,
         lastTurnContextUsage: lastTurn?.contextUsage as ClaudeSessionSummary['lastTurnContextUsage'],
         lastReadAt: entry.lastReadAt,
+        pendingMission: entry.pendingMission,
       };
     });
   }
@@ -1405,6 +1429,17 @@ export class SessionManager extends EventEmitter {
       ?? this.sessionPermissions.get(sessionId)
       ?? defaultPermissionLevelForAgent(agentId);
 
+    // In full-access (bypass) mode the PermissionRequest hook handles built-in
+    // tools via the sentinel file.  MCP tools (full names like
+    // "mcp__quicksave-sandbox__TaskCreate") bypass the hook entirely in default
+    // CLI mode and ALWAYS send can_use_tool to the daemon.  Rather than keeping
+    // a fragile explicit list, approve everything here except the three tools
+    // that must always reach the user (matching the hook's own exclusion list).
+    if (isFullAccessPermission(agentId, level)) {
+      const BYPASS_NEVER_SKIP = new Set(['AskUserQuestion', 'ExitPlanMode', 'ExitWorktree']);
+      return !BYPASS_NEVER_SKIP.has(toolName);
+    }
+
     if (!autoApproveToolsFor(agentId, level).has(toolName)) return false;
 
     // For file-writing tools, restrict to project cwd
@@ -1436,6 +1471,9 @@ export class SessionManager extends EventEmitter {
     const entryUpdates: Partial<SessionRegistryEntry> = {};
     let noteToAppend: string | null = null;
     let changed = false;
+    const registryEntry = this.sessions.get(sessionId)?.cwd
+      ? getSessionRegistry().getEntry(this.sessions.get(sessionId)!.cwd, sessionId)
+      : undefined;
 
     if (typeof input.subject === 'string' && input.subject.length > 0) {
       configUpdates.title = input.subject;
@@ -1447,6 +1485,12 @@ export class SessionManager extends EventEmitter {
       configUpdates.stage = input.stage;
       entryUpdates.stage = input.stage;
       changed = true;
+      if (input.stage === 'done') {
+        configUpdates.pendingMissionLabel = null;
+        configUpdates.pendingMissionUntil = null;
+        configUpdates.pendingMissionDismissedAt = null;
+        entryUpdates.pendingMission = undefined;
+      }
     }
 
     if (typeof input.blocked === 'boolean') {
@@ -1462,6 +1506,23 @@ export class SessionManager extends EventEmitter {
       changed = true;
     }
 
+    if (input.clearPendingMission === true) {
+      configUpdates.pendingMissionLabel = null;
+      configUpdates.pendingMissionUntil = null;
+      configUpdates.pendingMissionDismissedAt = null;
+      entryUpdates.pendingMission = undefined;
+      changed = true;
+    } else if (input.pendingMissionLabel !== undefined || input.pendingMissionUntil !== undefined) {
+      const pendingMission = buildPendingMission(input, registryEntry?.pendingMission);
+      if (pendingMission) {
+        configUpdates.pendingMissionLabel = pendingMission.label;
+        configUpdates.pendingMissionUntil = pendingMission.until;
+        configUpdates.pendingMissionDismissedAt = pendingMission.dismissedAt ?? null;
+        entryUpdates.pendingMission = pendingMission;
+        changed = true;
+      }
+    }
+
     if (!changed) return;
 
     const prev = this.sessionConfigs.get(sessionId) ?? {};
@@ -1472,7 +1533,7 @@ export class SessionManager extends EventEmitter {
     const ps = this.sessions.get(sessionId);
     if (ps?.cwd) {
       const registry = getSessionRegistry();
-      const entry = registry.getEntry(ps.cwd, sessionId);
+      const entry = registryEntry ?? registry.getEntry(ps.cwd, sessionId);
       if (entry) {
         let nextHistory = entry.noteHistory;
         if (noteToAppend !== null) {
@@ -1488,6 +1549,9 @@ export class SessionManager extends EventEmitter {
         registry.upsertEntry({
           ...entry,
           ...entryUpdates,
+          ...(Object.prototype.hasOwnProperty.call(entryUpdates, 'pendingMission')
+            ? { pendingMission: entryUpdates.pendingMission }
+            : {}),
           ...(nextHistory !== entry.noteHistory ? { noteHistory: nextHistory } : {}),
           lastAccessedAt: Date.now(),
         });
@@ -1589,6 +1653,7 @@ export class SessionManager extends EventEmitter {
       // update so each PWA client converges on the latest read state without
       // having to wait for the slower /sessions/history snapshot to roll over.
       lastReadAt: registryEntry?.lastReadAt,
+      pendingMission: registryEntry?.pendingMission,
     };
   }
 
