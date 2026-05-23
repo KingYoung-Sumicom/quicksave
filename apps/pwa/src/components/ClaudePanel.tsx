@@ -56,7 +56,65 @@ interface ClaudePanelProps {
   onResumeSession: (sessionId: string, prompt: string, opts?: ResumeSessionOpts) => Promise<void>;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
   onUnsubscribeSession?: (sessionId: string) => void;
+  onDismissPendingMission?: (sessionId: string, cwd: string, dismissedAt?: number) => Promise<void> | void;
   onNewSession?: () => void;
+}
+
+function formatMissionTime(ts: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(ts));
+}
+
+function PendingMissionBanner({
+  session,
+  onDismiss,
+}: {
+  session?: ClaudeSessionSummary;
+  onDismiss?: (sessionId: string, cwd: string, dismissedAt?: number) => Promise<void> | void;
+}) {
+  const mission = session?.pendingMission;
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (!mission) return;
+    const id = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, [mission?.until]);
+
+  if (!session || !mission) return null;
+  const isDue = mission.until <= now;
+  const dismissed = typeof mission.dismissedAt === 'number' && mission.dismissedAt >= mission.until;
+  if (isDue && dismissed) return null;
+
+  return (
+    <div className={clsx(
+      'flex items-center gap-3 px-4 py-2 border-b text-xs',
+      isDue
+        ? 'bg-amber-500/10 border-amber-500/30 text-amber-100'
+        : 'bg-slate-800 border-slate-700 text-slate-300',
+    )}>
+      <span className={clsx('w-2 h-2 rounded-full shrink-0', isDue ? 'bg-amber-400' : 'bg-cyan-400')} />
+      <div className="min-w-0 flex-1">
+        <span className="font-medium">{mission.label}</span>
+        <span className="text-slate-400">
+          {isDue ? ' was expected by ' : ' expected by '}
+          {formatMissionTime(mission.until)}
+        </span>
+      </div>
+      {isDue && session.cwd && onDismiss && (
+        <button
+          onClick={() => onDismiss(session.sessionId, session.cwd!, Date.now())}
+          className="shrink-0 rounded px-2 py-1 text-[11px] font-medium text-amber-100 hover:bg-amber-500/20"
+        >
+          Dismiss
+        </button>
+      )}
+    </div>
+  );
 }
 
 export function ClaudePanel({
@@ -72,6 +130,7 @@ export function ClaudePanel({
 
   onRespondToUserInput,
   onUnsubscribeSession,
+  onDismissPendingMission,
   onNewSession,
 }: ClaudePanelProps) {
   const {
@@ -665,6 +724,7 @@ export function ClaudePanel({
     <div className="flex flex-col flex-1 min-h-0">
       {isChat ? (
         <>
+          <PendingMissionBanner session={activeSession} onDismiss={onDismissPendingMission} />
           {/* Messages */}
           <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 select-text overscroll-contain">
             {historyHasMore && (

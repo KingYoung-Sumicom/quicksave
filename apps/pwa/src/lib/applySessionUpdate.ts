@@ -43,7 +43,11 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     current.lastTurnCacheCreationTokens === payload.lastTurnCacheCreationTokens &&
     current.lastTurnCacheReadTokens === payload.lastTurnCacheReadTokens &&
     current.lastTurnContextUsage?.capturedAt === payload.lastTurnContextUsage?.capturedAt &&
-    current.lastReadAt === payload.lastReadAt
+    current.lastReadAt === payload.lastReadAt &&
+    current.pendingMission?.label === payload.pendingMission?.label &&
+    current.pendingMission?.until === payload.pendingMission?.until &&
+    current.pendingMission?.startedAt === payload.pendingMission?.startedAt &&
+    current.pendingMission?.dismissedAt === payload.pendingMission?.dismissedAt
   ) {
     return;
   }
@@ -69,6 +73,7 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     lastTurnCacheReadTokens: payload.lastTurnCacheReadTokens,
     lastTurnContextUsage: payload.lastTurnContextUsage,
     lastReadAt: payload.lastReadAt,
+    pendingMission: payload.pendingMission,
   });
 
   if (payload.sessionId === activeSessionId) {

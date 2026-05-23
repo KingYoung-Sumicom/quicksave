@@ -113,6 +113,16 @@ export class SessionRegistry {
     return this.registry.get(cwd)?.get(sessionId);
   }
 
+  /**
+   * Refresh one active entry in memory from an externally-written registry
+   * file without writing it back to disk. Used by the daemon watcher for MCP
+   * stdio status updates, which mutate the JSON file outside this process.
+   */
+  applyExternalActiveEntry(entry: SessionRegistryEntry): void {
+    if (!entry.sessionId || !entry.cwd || entry.archived) return;
+    this.setInMemory(entry);
+  }
+
   /** Scan active projects for a session by id. Archived entries are NOT searched. */
   findBySessionId(sessionId: string): SessionRegistryEntry | undefined {
     for (const projectMap of this.registry.values()) {
@@ -343,6 +353,9 @@ export class SessionRegistry {
       if (entry.note === undefined && existing.note !== undefined) preserved.note = existing.note;
       if (entry.noteHistory === undefined && existing.noteHistory !== undefined) {
         preserved.noteHistory = existing.noteHistory;
+      }
+      if (entry.pendingMission === undefined && existing.pendingMission !== undefined) {
+        preserved.pendingMission = existing.pendingMission;
       }
       return Object.keys(preserved).length > 0 ? { ...entry, ...preserved } : entry;
     } catch {

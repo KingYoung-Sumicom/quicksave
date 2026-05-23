@@ -637,6 +637,15 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         if (typeof config.stage === 'string') sessionPatch.stage = config.stage as typeof session.stage;
         if (typeof config.blocked === 'boolean') sessionPatch.blocked = config.blocked;
         if (typeof config.note === 'string') sessionPatch.note = config.note;
+        if (typeof config.pendingMissionLabel === 'string' && typeof config.pendingMissionUntil === 'number') {
+          sessionPatch.pendingMission = {
+            label: config.pendingMissionLabel,
+            until: config.pendingMissionUntil,
+            ...(typeof config.pendingMissionDismissedAt === 'number' ? { dismissedAt: config.pendingMissionDismissedAt } : {}),
+          };
+        } else if (config.pendingMissionLabel === null || config.pendingMissionUntil === null) {
+          sessionPatch.pendingMission = undefined;
+        }
         if (Object.keys(sessionPatch).length > 0) {
           next.sessions = {
             ...state.sessions,

@@ -105,6 +105,8 @@ export const REQUEST_RESPONSE_MAP: Record<string, string> = {
   'session:update-history': 'session:update-history:response',
   'session:delete-history': 'session:delete-history:response',
   'session:list-archived': 'session:list-archived:response',
+  'session:mark-read': 'session:mark-read:response',
+  'session:dismiss-pending-mission': 'session:dismiss-pending-mission:response',
   // Terminals
   'terminal:create': 'terminal:create:response',
   'terminal:close': 'terminal:close:response',

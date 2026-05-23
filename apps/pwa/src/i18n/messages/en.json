@@ -328,6 +328,7 @@
   "sessionStage.verifying": "verifying",
   "sessionStage.done": "done",
   "sessionStage.blocked": "blocked",
+  "sessionStage.pendingMission": "pending mission",
 
   "sessionStatsBar.title": "Estimated prompt cache remaining",
   "sessionStatsBar.expiredTitle": "Prompt cache likely expired — next turn will re-send ~{tokens} tokens as fresh input",

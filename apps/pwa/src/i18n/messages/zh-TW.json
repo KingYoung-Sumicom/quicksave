@@ -328,6 +328,7 @@
   "sessionStage.verifying": "驗證中",
   "sessionStage.done": "完成",
   "sessionStage.blocked": "卡住",
+  "sessionStage.pendingMission": "待完成任務",
 
   "sessionStatsBar.title": "預估 prompt 快取剩餘時間",
   "sessionStatsBar.expiredTitle": "Prompt 快取可能已過期,下一輪會以全新 input 重送約 {tokens} tokens",

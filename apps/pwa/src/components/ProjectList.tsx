@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { FormattedMessage } from 'react-intl';
 import { useProjects } from '../hooks/useProjects';
@@ -10,6 +10,7 @@ import { useTerminalStore } from '../stores/terminalStore';
 import { DesktopSideMenuAppBar } from './DesktopSideMenuAppBar';
 import { SessionTicketCard } from './SessionTicketCard';
 import { isSessionUnread } from './SessionStatusBadge';
+import { compareSessionsForList } from '../lib/sessionOrdering';
 import { TerminalListSection } from './terminal/TerminalListSection';
 import { FileBrowserSection } from './files/FileBrowserSection';
 import { toProjectId } from '../lib/projectId';
@@ -38,6 +39,7 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
   const terminals = useTerminalStore((s) => s.terminals);
   const terminalCount = useMemo(() => Object.keys(terminals).length, [terminals]);
   const [tab, setTab] = useState<'sessions' | 'terminals' | 'files'>('sessions');
+  const [missionNow, setMissionNow] = useState(Date.now());
 
   // Build a cwd → ProjectEntry index so we can attach a project name + route to
   // each session without recomputing per row.
@@ -65,15 +67,13 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
   const flatSessions = useMemo(() => {
     return Object.values(sessions)
       .filter((s) => s.cwd && s.machineAgentId && !s.archived)
-      .sort((a, b) => {
-        const rankA = isSessionUnread(a) ? 4 : a.hasPendingInput ? 3 : a.isStreaming ? 2 : a.isActive ? 1 : 0;
-        const rankB = isSessionUnread(b) ? 4 : b.hasPendingInput ? 3 : b.isStreaming ? 2 : b.isActive ? 1 : 0;
-        if (rankA !== rankB) return rankB - rankA;
-        const tsA = a.lastPromptAt ?? a.lastModified;
-        const tsB = b.lastPromptAt ?? b.lastModified;
-        return tsB - tsA;
-      });
-  }, [sessions]);
+      .sort((a, b) => compareSessionsForList(a, b, missionNow));
+  }, [sessions, missionNow]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setMissionNow(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   if (projects.length === 0) {
     return (

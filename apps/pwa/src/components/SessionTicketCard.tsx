@@ -55,6 +55,7 @@ const STAGE_META: Record<SessionStage, { labelId: string; dotColor: string; chip
 };
 
 const BLOCKED_META = { labelId: 'sessionStage.blocked', dotColor: 'bg-red-500', chipText: 'text-red-300', chipBg: 'bg-red-500/10' };
+const MISSION_META = { labelId: 'sessionStage.pendingMission', chipText: 'text-cyan-300', chipBg: 'bg-cyan-500/10' };
 
 // Product names surfaced as a neutral text chip — intentionally no official
 // logos, to stay clear of Anthropic/OpenAI brand guidelines. Labels are
@@ -102,6 +103,13 @@ function ClockIcon() {
       <path strokeLinecap="round" strokeLinejoin="round" d="M12 7v5l3 2" />
     </svg>
   );
+}
+
+function formatMissionDue(ts: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(ts));
 }
 
 // The leading dot always tracks the runtime session status (standby/pending/
@@ -164,6 +172,11 @@ export function SessionTicketCard({ session, onClick, compact, isActive, isUnrea
               <FormattedMessage id={stageMeta.labelId} />
             </span>
           ) : null}
+          {session.pendingMission && (
+            <span className={clsx('px-1.5 py-px rounded font-medium', MISSION_META.chipBg, MISSION_META.chipText)}>
+              <FormattedMessage id={MISSION_META.labelId} /> · {formatMissionDue(session.pendingMission.until)}
+            </span>
+          )}
           {agent && AGENT_LABEL[agent] && (
             <span className="px-1.5 py-px rounded font-medium bg-slate-500/15 text-slate-300">
               {AGENT_LABEL[agent]}

@@ -171,6 +171,7 @@ interface StatusSnapshot {
   stage: 'investigating' | 'working' | 'verifying' | 'done' | null;
   blocked: boolean | null;
   note: string | null;
+  pendingMission: { label: string; until: number; startedAt?: number; dismissedAt?: number } | null;
   /** Last 5 entries of the append-only event log (oldest first). */
   recentNotes: Array<{ ts: number; text: string }>;
   /** 'stored' = read from registry file, 'unknown' = no file / no session-id hint */
@@ -179,7 +180,7 @@ interface StatusSnapshot {
 
 function readStoredStatus(): StatusSnapshot {
   const empty: StatusSnapshot = {
-    subject: null, stage: null, blocked: null, note: null, recentNotes: [], source: 'unknown',
+    subject: null, stage: null, blocked: null, note: null, pendingMission: null, recentNotes: [], source: 'unknown',
   };
   if (!sessionIdHint) return empty;
   const path = join(sessionRegistryDir, encodedCwd, `${sessionIdHint}.json`);
@@ -187,11 +188,13 @@ function readStoredStatus(): StatusSnapshot {
   try {
     const entry = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
     const history = Array.isArray(entry.noteHistory) ? entry.noteHistory as Array<{ ts: number; text: string }> : [];
+    const mission = entry.pendingMission as StatusSnapshot['pendingMission'];
     return {
       subject: typeof entry.title === 'string' ? entry.title : null,
       stage: (entry.stage as StatusSnapshot['stage']) ?? null,
       blocked: typeof entry.blocked === 'boolean' ? entry.blocked : null,
       note: typeof entry.note === 'string' ? entry.note : null,
+      pendingMission: mission && typeof mission.label === 'string' && typeof mission.until === 'number' ? mission : null,
       recentNotes: history.slice(-5),
       source: 'stored',
     };
@@ -212,11 +215,21 @@ function isSessionStage(value: string): value is NonNullable<StatusSnapshot['sta
     value === 'done';
 }
 
+function parsePendingMissionUntil(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  if (typeof value !== 'string' || value.trim().length === 0) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 function writeStoredStatus(args: {
   subject?: string;
   stage?: 'investigating' | 'working' | 'verifying' | 'done';
   blocked?: boolean;
   note?: string;
+  pendingMissionLabel?: string;
+  pendingMissionUntil?: number | string;
+  clearPendingMission?: boolean;
 }): void {
   const path = sessionRegistryPath();
   if (!path || !existsSync(path)) return;
@@ -235,11 +248,32 @@ function writeStoredStatus(args: {
   }
   if (typeof args.stage === 'string' && isSessionStage(args.stage)) {
     entry.stage = args.stage;
+    if (args.stage === 'done') delete entry.pendingMission;
     changed = true;
   }
   if (typeof args.blocked === 'boolean') {
     entry.blocked = args.blocked;
     changed = true;
+  }
+  if (args.clearPendingMission === true) {
+    delete entry.pendingMission;
+    changed = true;
+  } else if (args.pendingMissionLabel !== undefined || args.pendingMissionUntil !== undefined) {
+    const existing = entry.pendingMission as StatusSnapshot['pendingMission'];
+    const label = typeof args.pendingMissionLabel === 'string' && args.pendingMissionLabel.trim().length > 0
+      ? args.pendingMissionLabel.trim()
+      : existing?.label;
+    const until = parsePendingMissionUntil(args.pendingMissionUntil) ?? existing?.until;
+    if (label && typeof until === 'number') {
+      const isNewSchedule = existing?.label !== label || existing?.until !== until;
+      entry.pendingMission = {
+        label,
+        until,
+        startedAt: existing?.startedAt ?? Date.now(),
+        ...(isNewSchedule || existing?.dismissedAt === undefined ? {} : { dismissedAt: existing.dismissedAt }),
+      };
+      changed = true;
+    }
   }
   if (typeof args.note === 'string' && args.note.length > 0) {
     entry.note = args.note;
@@ -283,6 +317,9 @@ server.tool(
     'completing a sub-goal, hitting a blocker, starting verification, etc. ' +
     'Examples: "handler done, writing tests" / "permission pending on git push" / ' +
     '"ruled out jwt.ts — secret looks right".\n' +
+    '  pendingMissionLabel — Short label for a long-running task that should sit lower in session lists.\n' +
+    '  pendingMissionUntil — Expected completion time as epoch ms or ISO date string.\n' +
+    '  clearPendingMission — Clear the long-running task marker when finished or cancelled.\n' +
     '\n' +
     'Typical flows:\n' +
     '  Bug / debug:    investigating → working → verifying → (loop or done)\n' +
@@ -309,6 +346,9 @@ server.tool(
     blocked: z.boolean().optional().describe('True when stuck, false when unblocked'),
     note: z.string().optional()
       .describe('One progress/finding entry (~12 words). Appended to the session event log; emit on each meaningful state change.'),
+    pendingMissionLabel: z.string().optional().describe('Short label for a long-running task, e.g. "training run"'),
+    pendingMissionUntil: z.union([z.number(), z.string()]).optional().describe('Expected completion time as epoch ms or ISO date string'),
+    clearPendingMission: z.boolean().optional().describe('Clear the long-running task marker'),
   },
   {
     readOnlyHint: false,
@@ -320,7 +360,10 @@ server.tool(
       args.subject === undefined &&
       args.stage === undefined &&
       args.blocked === undefined &&
-      args.note === undefined;
+      args.note === undefined &&
+      args.pendingMissionLabel === undefined &&
+      args.pendingMissionUntil === undefined &&
+      args.clearPendingMission === undefined;
 
     // Codex MCP approval mode "approve" bypasses the daemon permission callback,
     // so this stdio server owns persistence when it has a session-id hint.

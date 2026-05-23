@@ -487,6 +487,42 @@ describe('UpdateSessionStatus auto-approve and metadata write', () => {
       apply({ subject: '', stage: 'planning', blocked: 42, note: null });
       expect(registryMock.upsertEntry).not.toHaveBeenCalled();
     });
+
+    it('writes pending mission metadata and mirrors primitive config keys', () => {
+      apply({
+        pendingMissionLabel: 'training run',
+        pendingMissionUntil: '2026-05-21T08:00:00.000Z',
+      });
+
+      const cfg = manager.getSessionConfig(sessionId);
+      expect(cfg.pendingMissionLabel).toBe('training run');
+      expect(cfg.pendingMissionUntil).toBe(Date.parse('2026-05-21T08:00:00.000Z'));
+
+      const entry = registryMock.upsertEntry.mock.calls.at(-1)![0];
+      expect(entry.pendingMission).toMatchObject({
+        label: 'training run',
+        until: Date.parse('2026-05-21T08:00:00.000Z'),
+      });
+      expect(typeof entry.pendingMission.startedAt).toBe('number');
+    });
+
+    it('clears pending mission when the agent marks the task done', () => {
+      registryMock.getEntry.mockReturnValue({
+        sessionId,
+        cwd,
+        createdAt: 1_000,
+        lastAccessedAt: 1_000,
+        pendingMission: { label: 'training run', until: Date.now() + 60_000, startedAt: 1_000 },
+      });
+
+      apply({ stage: 'done' });
+
+      const cfg = manager.getSessionConfig(sessionId);
+      expect(cfg.pendingMissionLabel).toBeNull();
+      expect(cfg.pendingMissionUntil).toBeNull();
+      const entry = registryMock.upsertEntry.mock.calls.at(-1)![0];
+      expect(entry.pendingMission).toBeUndefined();
+    });
   });
 
   // ── noteHistory append log ──

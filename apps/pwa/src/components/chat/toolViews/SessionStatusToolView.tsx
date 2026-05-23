@@ -17,8 +17,10 @@ export function SessionStatusToolView({ input, headerSuffix }: {
   const stage = (input.stage as string | undefined) || undefined;
   const blocked = typeof input.blocked === 'boolean' ? (input.blocked as boolean) : undefined;
   const note = (input.note as string | undefined) || undefined;
+  const pendingMissionLabel = (input.pendingMissionLabel as string | undefined) || undefined;
+  const clearPendingMission = input.clearPendingMission === true;
 
-  const isDryRun = !subject && !stage && blocked === undefined && !note;
+  const isDryRun = !subject && !stage && blocked === undefined && !note && !pendingMissionLabel && !clearPendingMission;
 
   return (
     <div>
@@ -37,6 +39,16 @@ export function SessionStatusToolView({ input, headerSuffix }: {
         {blocked === false && (
           <span className="shrink-0 text-[10px] uppercase tracking-wide text-slate-500">
             unblocked
+          </span>
+        )}
+        {pendingMissionLabel && (
+          <span className="shrink-0 rounded px-1.5 py-px text-[10px] uppercase tracking-wide bg-cyan-500/20 text-cyan-300">
+            pending mission
+          </span>
+        )}
+        {clearPendingMission && (
+          <span className="shrink-0 text-[10px] uppercase tracking-wide text-slate-500">
+            mission cleared
           </span>
         )}
         {headerSuffix}

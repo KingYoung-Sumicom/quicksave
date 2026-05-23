@@ -1302,6 +1302,7 @@ function ProjectRouteSession({
     closeSession,
     endSession,
     markSessionRead,
+    dismissPendingMission,
     respondToUserInput,
     setSessionConfig,
     sendControlRequest,
@@ -1432,6 +1433,7 @@ function ProjectRouteSession({
         onStartSession={boundStartSession}
         onResumeSession={boundResumeSession}
         onRespondToUserInput={respondToUserInput}
+        onDismissPendingMission={dismissPendingMission}
       />
       {isDesktop && targetAgentId && cwd && (
         <SessionRightPanel

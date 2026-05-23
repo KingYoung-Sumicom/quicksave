@@ -25,6 +25,8 @@ import {
   type SessionListArchivedResponsePayload,
   type SessionMarkReadRequestPayload,
   type SessionMarkReadResponsePayload,
+  type SessionDismissPendingMissionRequestPayload,
+  type SessionDismissPendingMissionResponsePayload,
   type ProjectListSummariesResponsePayload,
   type ProjectListReposResponsePayload,
   type ProjectDeleteRequestPayload,
@@ -415,6 +417,20 @@ export function useClaudeOperations(
     [sendCommand],
   );
 
+  const dismissPendingMission = useCallback(
+    async (sessionId: string, cwd: string, dismissedAt: number = Date.now()) => {
+      try {
+        await sendCommand<SessionDismissPendingMissionResponsePayload, SessionDismissPendingMissionRequestPayload>(
+          'session:dismiss-pending-mission',
+          { sessionId, cwd, dismissedAt },
+        );
+      } catch (error) {
+        console.error('Failed to dismiss pending mission:', error);
+      }
+    },
+    [sendCommand],
+  );
+
   const listArchivedSessions = useCallback(
     async (cwd: string, offset = 0, limit = 20) => {
       try {
@@ -563,6 +579,7 @@ export function useClaudeOperations(
     endSession,
     restoreSession,
     markSessionRead,
+    dismissPendingMission,
     listArchivedSessions,
     respondToUserInput,
     setPreferences,

@@ -39,6 +39,7 @@ export function applyHistoryEntry(entry: BroadcastSessionEntry, machineAgentId: 
     blocked: entry.blocked,
     note: entry.note,
     noteHistory: entry.noteHistory,
+    pendingMission: entry.pendingMission,
     // Runtime-enriched from the event store at broadcast time so inactive
     // sessions still get cache / context usage — otherwise `SessionStatsBar`
     // renders nothing until the session is hot-resumed.

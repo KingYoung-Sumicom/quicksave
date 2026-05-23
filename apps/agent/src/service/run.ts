@@ -13,7 +13,7 @@
  */
 
 import { basename, join, resolve, dirname } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { hostname } from 'os';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
@@ -33,6 +33,7 @@ import {
   ensureDirectories,
   getSocketPath,
   getRunDir,
+  getSessionRegistryDir,
   cleanStaleRuntime,
 } from './singleton.js';
 import { writeServiceState, removeServiceState } from './stateStore.js';
@@ -74,7 +75,70 @@ import { enrichEntry } from '../ai/enrichEntry.js';
 import { getTerminalManager } from '../terminal/terminalManager.js';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
+const REGISTRY_WATCH_INTERVAL_MS = 1_000;
 const PACKAGE_VERSION = '0.8.9';
+
+function startSessionRegistryWatcher(
+  bus: MessageBusServer,
+  claudeService: ReturnType<MessageHandler['getClaudeService']>,
+): () => void {
+  const seen = new Map<string, number>();
+  const registry = getSessionRegistry();
+  const baseDir = getSessionRegistryDir();
+
+  const scan = (publishChanges: boolean) => {
+    if (!existsSync(baseDir)) return;
+    let projectDirs: string[];
+    try {
+      projectDirs = readdirSync(baseDir).filter((name) => name !== 'archived');
+    } catch {
+      return;
+    }
+
+    for (const projectDir of projectDirs) {
+      const projectPath = join(baseDir, projectDir);
+      let files: string[];
+      try {
+        if (!statSync(projectPath).isDirectory()) continue;
+        files = readdirSync(projectPath).filter((file) => file.endsWith('.json'));
+      } catch {
+        continue;
+      }
+
+      for (const file of files) {
+        const path = join(projectPath, file);
+        let mtimeMs: number;
+        try {
+          mtimeMs = statSync(path).mtimeMs;
+        } catch {
+          continue;
+        }
+        const prior = seen.get(path);
+        seen.set(path, mtimeMs);
+        if (prior === undefined || prior === mtimeMs || !publishChanges) continue;
+
+        try {
+          const entry = JSON.parse(readFileSync(path, 'utf-8')) as BroadcastSessionEntry;
+          if (!entry.sessionId || !entry.cwd || entry.archived) continue;
+          registry.applyExternalActiveEntry(entry);
+          const enriched = enrichEntry(entry);
+          bus.publish<SessionHistoryUpdatedPayload>('/sessions/history', {
+            cwd: entry.cwd,
+            entry: enriched,
+            action: 'upsert',
+          });
+          claudeService.emitSessionUpdate(entry.sessionId);
+        } catch (err) {
+          console.warn(`[sessionRegistry] Failed to publish external update for ${path}:`, err);
+        }
+      }
+    }
+  };
+
+  scan(false);
+  const timer = setInterval(() => scan(true), REGISTRY_WATCH_INTERVAL_MS);
+  return () => clearInterval(timer);
+}
 
 export async function runDaemon(): Promise<void> {
   ensureDirectories();
@@ -470,6 +534,7 @@ export async function runDaemon(): Promise<void> {
 
   // Init session registry (loads all entries from disk)
   getSessionRegistry();
+  const stopSessionRegistryWatcher = startSessionRegistryWatcher(bus, claudeService);
 
   // Per-session card stream, pendingInput overlay, and session status are all
   // delivered via the bus (`/sessions/:id/cards` + `/sessions/active`), so the
@@ -606,6 +671,7 @@ export async function runDaemon(): Promise<void> {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
+    stopSessionRegistryWatcher();
 
     messageHandler.cleanup();
     terminalManager.shutdown();

@@ -19,6 +19,7 @@ import type {
 import { ArchivedSessionsList } from './ArchivedSessionsList';
 import { SessionTicketCard } from './SessionTicketCard';
 import { isSessionUnread } from './SessionStatusBadge';
+import { compareSessionsForList } from '../lib/sessionOrdering';
 
 interface ProjectDetailProps {
   isReady: boolean;
@@ -54,6 +55,7 @@ export function ProjectDetail({
   const [showMenu, setShowMenu] = useState(false);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [isLoadingRepos, setIsLoadingRepos] = useState(false);
+  const [missionNow, setMissionNow] = useState(Date.now());
   const cacheProjectRepos = useMachineStore((s) => s.cacheProjectRepos);
 
   // Use cached repos as initial state, update from agent when connected
@@ -82,6 +84,11 @@ export function ProjectDetail({
     }
     fetchRepos();
   }, [fetchRepos]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const id = window.setInterval(() => setMissionNow(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   const handleSelectSession = useCallback((session: ClaudeSessionSummary) => {
     navigate(`/p/${projectId}/s/${session.sessionId}`);
@@ -124,12 +131,7 @@ export function ProjectDetail({
   // Within a tier, fall back to most-recent-first.
   const cwdSessions = Object.values(sessions)
     .filter((s) => (!s.machineAgentId || s.machineAgentId === agentId) && (s.cwd === cwd || (!s.cwd && isReady)) && !s.archived)
-    .sort((a, b) => {
-      const rankA = isSessionUnread(a) ? 4 : a.hasPendingInput ? 3 : a.isStreaming ? 2 : a.isActive ? 1 : 0;
-      const rankB = isSessionUnread(b) ? 4 : b.hasPendingInput ? 3 : b.isStreaming ? 2 : b.isActive ? 1 : 0;
-      if (rankA !== rankB) return rankB - rankA;
-      return b.lastModified - a.lastModified;
-    });
+    .sort((a, b) => compareSessionsForList(a, b, missionNow));
 
   return (
     <div className="flex flex-col h-full overflow-hidden">

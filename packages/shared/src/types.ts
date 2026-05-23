@@ -144,6 +144,8 @@ export type MessageType =
   | 'session:list-archived:response' // agent-response: page of archived entries
   | 'session:mark-read'              // pwa-request: clear the email-style unread mark on a session
   | 'session:mark-read:response'     // agent-response: mark-read ack
+  | 'session:dismiss-pending-mission'          // pwa-request: hide an overdue pending-mission banner
+  | 'session:dismiss-pending-mission:response' // agent-response: dismiss ack
   | 'session:history-updated'        // agent-push: session history changed
   // Push notifications (PWA → agent: hand off a web-push subscription for relay-side delivery)
   | 'push:subscription-offer'
@@ -406,6 +408,17 @@ export interface SessionNoteEntry {
   text: string;
 }
 
+export interface SessionPendingMission {
+  /** Short user-facing label for the long-running work. */
+  label: string;
+  /** Epoch ms when the work is expected to finish. */
+  until: number;
+  /** Epoch ms when the mission was first registered. */
+  startedAt?: number;
+  /** Epoch ms when the user dismissed an overdue mission banner. */
+  dismissedAt?: number;
+}
+
 /** Maximum entries retained in noteHistory before oldest are trimmed. */
 export const SESSION_NOTE_HISTORY_CAP = 50;
 
@@ -436,6 +449,13 @@ export interface SessionRegistryEntry {
    * oldest-first so the registry broadcast stays a reasonable size.
    */
   noteHistory?: SessionNoteEntry[];
+  /**
+   * Long-running task marker set by UpdateSessionStatus. While `until` is in
+   * the future, clients can lower this session in lists without hiding
+   * actionable states like pending input. Once overdue, clients surface a
+   * dismissible banner until the agent clears or updates the mission.
+   */
+  pendingMission?: SessionPendingMission;
   // Session settings — persisted so they survive daemon restarts
   permissionMode?: string;
   sandboxed?: boolean;
@@ -496,6 +516,19 @@ export interface SessionMarkReadResponsePayload {
   success: boolean;
   /** Persisted timestamp the agent stamped onto the registry entry. */
   lastReadAt?: number;
+  error?: string;
+}
+
+export interface SessionDismissPendingMissionRequestPayload {
+  sessionId: string;
+  cwd: string;
+  /** Client-side dismiss timestamp. Agent falls back to Date.now(). */
+  dismissedAt?: number;
+}
+
+export interface SessionDismissPendingMissionResponsePayload {
+  success: boolean;
+  pendingMission?: SessionPendingMission;
   error?: string;
 }
 
@@ -1308,6 +1341,7 @@ export interface ClaudeSessionSummary {
   /** Latest progress note (mirror of the last `noteHistory` entry). */
   note?: string;
   noteHistory?: SessionNoteEntry[];
+  pendingMission?: SessionPendingMission;
   /** Epoch ms of the last `prompt_sent` event for this session. */
   lastPromptAt?: number;
   /** Epoch ms of the last `turn_ended` event — used as the prompt-cache
@@ -1425,6 +1459,8 @@ export interface SessionUpdatePayload {
    *  multiple PWA clients of the same user converge on the same read state
    *  the moment any one of them attends the session. */
   lastReadAt?: number;
+  /** See `SessionRegistryEntry.pendingMission`. */
+  pendingMission?: SessionPendingMission;
 }
 
 // Start Session

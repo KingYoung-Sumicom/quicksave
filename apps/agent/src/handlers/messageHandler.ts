@@ -105,6 +105,8 @@ import {
   SessionListArchivedResponsePayload,
   SessionMarkReadRequestPayload,
   SessionMarkReadResponsePayload,
+  SessionDismissPendingMissionRequestPayload,
+  SessionDismissPendingMissionResponsePayload,
   AgentId,
   CodexModelInfo,
   CodexListModelsResponsePayload,
@@ -760,6 +762,8 @@ export class MessageHandler {
           return this.handleListArchived(message as Message<SessionListArchivedRequestPayload>);
         case 'session:mark-read':
           return this.handleMarkRead(message as Message<SessionMarkReadRequestPayload>);
+        case 'session:dismiss-pending-mission':
+          return this.handleDismissPendingMission(message as Message<SessionDismissPendingMissionRequestPayload>);
         case 'project:list-summaries':
           return this.handleListProjectSummaries(message);
         case 'project:list-repos':
@@ -2511,6 +2515,38 @@ export class MessageHandler {
     const response = createMessage<SessionMarkReadResponsePayload>(
       'session:mark-read:response',
       { success: true, lastReadAt: entry.lastReadAt },
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private handleDismissPendingMission(
+    message: Message<SessionDismissPendingMissionRequestPayload>,
+  ): Message<SessionDismissPendingMissionResponsePayload> {
+    const { sessionId, cwd, dismissedAt } = message.payload;
+    const stamp = typeof dismissedAt === 'number' ? dismissedAt : Date.now();
+    const existing = getSessionRegistry().getEntry(cwd, sessionId);
+    if (!existing?.pendingMission) {
+      const failed = createMessage<SessionDismissPendingMissionResponsePayload>(
+        'session:dismiss-pending-mission:response',
+        { success: false, error: 'Pending mission not found' },
+      );
+      failed.id = message.id;
+      return failed;
+    }
+
+    const pendingMission = {
+      ...existing.pendingMission,
+      dismissedAt: Math.max(existing.pendingMission.dismissedAt ?? 0, stamp),
+    };
+    const updated = getSessionRegistry().updateEntry(cwd, sessionId, { pendingMission });
+    const entry = updated ?? { ...existing, pendingMission };
+    this.onHistoryUpdated?.(cwd, entry, 'upsert');
+    this.claudeService.emitSessionUpdate(sessionId);
+
+    const response = createMessage<SessionDismissPendingMissionResponsePayload>(
+      'session:dismiss-pending-mission:response',
+      { success: true, pendingMission },
     );
     response.id = message.id;
     return response;
