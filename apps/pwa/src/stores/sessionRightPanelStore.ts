@@ -14,12 +14,17 @@ interface PerSessionPanelState {
   mode: SessionPanelMode;
   filesRelPath: string;
   filesPreview: FilesPreview | null;
+  /** Optional cwd override for the Git tab. Set when the user picks a repo
+   *  from the Settings tab's "Git repository" list — Git tab then renders
+   *  that repo instead of the session's own cwd. Null = use session cwd. */
+  gitRepoOverride: string | null;
 }
 
 const DEFAULT_SESSION_STATE: PerSessionPanelState = {
   mode: null,
   filesRelPath: '',
   filesPreview: null,
+  gitRepoOverride: null,
 };
 
 interface SessionRightPanelStore {
@@ -41,6 +46,9 @@ interface SessionRightPanelStore {
   navigateFiles(relPath: string): void;
   openFilePreview(preview: FilesPreview): void;
   closeFilePreview(): void;
+  /** Set/clear the Git tab's per-session cwd override. Null restores
+   *  rendering the session's own cwd. */
+  setGitRepoOverride(path: string | null): void;
 }
 
 const PANEL_WIDTH_KEY = 'quicksave.sessionPanel.panelWidth';
@@ -106,6 +114,7 @@ export const useSessionRightPanelStore = create<SessionRightPanelStore>((set) =>
   navigateFiles: (relPath) => set((s) => updateSession(s, { filesRelPath: relPath, filesPreview: null })),
   openFilePreview: (preview) => set((s) => updateSession(s, { filesPreview: preview })),
   closeFilePreview: () => set((s) => updateSession(s, { filesPreview: null })),
+  setGitRepoOverride: (path) => set((s) => updateSession(s, { gitRepoOverride: path })),
 }));
 
 /** Selector: current session's panel mode (null when not on a session page). */
@@ -121,4 +130,9 @@ export function selectFilesPreview(s: SessionRightPanelStore): FilesPreview | nu
 /** Selector: current session's directory path in the file browser. */
 export function selectFilesRelPath(s: SessionRightPanelStore): string {
   return getSession(s).filesRelPath;
+}
+
+/** Selector: current session's Git tab cwd override (null = use session cwd). */
+export function selectGitRepoOverride(s: SessionRightPanelStore): string | null {
+  return getSession(s).gitRepoOverride;
 }

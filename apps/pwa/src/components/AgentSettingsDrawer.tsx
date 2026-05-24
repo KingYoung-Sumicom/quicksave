@@ -26,6 +26,10 @@ export interface SettingsPanelContentProps {
   onClose?: () => void;
   /** Override "Browse project files" — default navigates to /files route. */
   onOpenFiles?: () => void;
+  /** Override repo click in the "Git repository" list — default navigates to
+   *  /r/:repoId route. Desktop right panel passes this so the click switches
+   *  to its Git tab instead of navigating away. */
+  onOpenRepo?: (repoPath: string) => void;
 }
 
 /**
@@ -45,6 +49,7 @@ export function SettingsPanelContent({
   onEndSession,
   onClose,
   onOpenFiles,
+  onOpenRepo,
 }: SettingsPanelContentProps) {
   const navigate = useNavigate();
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -80,6 +85,10 @@ export function SettingsPanelContent({
   }, [cwd, onListProjectRepos]);
 
   const handleOpenRepo = (repoPath: string) => {
+    if (onOpenRepo) {
+      onOpenRepo(repoPath);
+      return;
+    }
     if (!projectId) return;
     navigate(`/p/${projectId}/r/${pathToHash(repoPath)}`);
     onClose?.();
