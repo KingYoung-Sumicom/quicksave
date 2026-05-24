@@ -39,7 +39,7 @@ export function MarkdownPreview({
   const dir = dirnameOf(fileAbsolutePath);
 
   return (
-    <div className="px-4 py-3 text-sm text-slate-200 leading-relaxed markdown-preview">
+    <div className="px-4 py-3 text-sm text-slate-200 leading-relaxed break-words markdown-preview">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}

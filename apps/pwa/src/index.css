@@ -285,6 +285,19 @@ html, body {
   @apply border-slate-600 my-3;
 }
 
+.markdown-preview {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.markdown-preview a,
+.markdown-preview button,
+.markdown-preview code,
+.markdown-preview th,
+.markdown-preview td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 /* Plan mode cards — more vertical breathing room between sections */
 .plan-markdown h1, .plan-markdown h2, .plan-markdown h3 {
   @apply mt-5 mb-2;
