@@ -6,6 +6,7 @@ import { DEFAULT_CONTEXT_WINDOW } from '@sumicom/quicksave-shared';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
 import { getAgentProvider } from '../../lib/agentProvider';
 import { normalizeAgentId } from '../../lib/claudePresets';
+import { useClaudeStore } from '../../stores/claudeStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 
 interface SessionStatusBarProps {
@@ -27,6 +28,7 @@ export function SessionStatusBar({ sessionId, onSetSessionConfig, children }: Se
   const [openPopover, setOpenPopover] = useState<string | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const codexModels = useConnectionStore((s) => s.codexModels);
+  const allow1mForBilledModels = useClaudeStore((s) => s.allow1mForBilledModels);
 
   const rawAgent = (config.agent as string) ?? 'claude-code';
   const agentId = normalizeAgentId(rawAgent);
@@ -71,6 +73,7 @@ export function SessionStatusBar({ sessionId, onSetSessionConfig, children }: Se
         dynamic,
         openPopover,
         onOpenPopover: setOpenPopover,
+        allow1mForBilledModels,
       })}
 
       {children}

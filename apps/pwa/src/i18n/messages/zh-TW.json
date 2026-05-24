@@ -4,6 +4,10 @@
   "settings.git.commitAttribution.label": "Commit 署名",
   "settings.git.commitAttribution.description": "在 commit 訊息加上 Quicksave trailer",
 
+  "settings.claude.title": "Claude Code",
+  "settings.claude.allowBilled1m.label": "允許 Sonnet 1M context (會吃 credits)",
+  "settings.claude.allowBilled1m.description": "Sonnet 的 1M context 並未包含在任何訂閱方案中,會走 Anthropic 的 usage credits 計費。為避免意外扣款,預設關閉。Opus 1M 在 Pro/Max/Team/Enterprise 是內含的,不受此設定影響。",
+
   "settings.deviceSync.title": "裝置同步",
   "settings.deviceSync.invite.button": "邀請新裝置",
   "settings.deviceSync.invite.description": "在這台產生 QR,讓新裝置掃描以加入同步。",

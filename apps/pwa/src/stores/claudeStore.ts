@@ -46,6 +46,11 @@ const PREFS_KEY = 'quicksave:session-prefs';
 interface PersistedPrefs {
   selectedAgent: AgentId;
   agentPrefs: AgentPrefsMap;
+  /** Opt-in to spending usage credits for 1M context on models that aren't
+   *  included in the user's subscription plan (Sonnet 1M today). Default
+   *  false so the UI keeps the user away from a "silently eat your money"
+   *  failure mode — see docs in claudePresets.ts. */
+  allow1mForBilledModels?: boolean;
 }
 
 /**
@@ -58,6 +63,7 @@ function loadPrefs(): PersistedPrefs {
   const fallback: PersistedPrefs = {
     selectedAgent: DEFAULT_AGENT,
     agentPrefs: defaultAgentPrefsMap(),
+    allow1mForBilledModels: false,
   };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
@@ -70,6 +76,7 @@ function loadPrefs(): PersistedPrefs {
     };
 
     const selectedAgent = parsed.selectedAgent ?? DEFAULT_AGENT;
+    const allow1mForBilledModels = parsed.allow1mForBilledModels === true;
     const merged = defaultAgentPrefsMap();
 
     if (parsed.agentPrefs) {
@@ -120,12 +127,12 @@ function loadPrefs(): PersistedPrefs {
         model: baseModel,
         settings: {
           ...bucket.settings,
-          contextWindow: clampContextWindowForModel(baseModel, cw),
+          contextWindow: clampContextWindowForModel(baseModel, cw, { allowBilled: allow1mForBilledModels }),
         },
       };
     }
 
-    return { selectedAgent, agentPrefs: merged };
+    return { selectedAgent, agentPrefs: merged, allow1mForBilledModels };
   } catch {
     return fallback;
   }
@@ -237,6 +244,9 @@ interface ClaudeStore {
   selectedReasoningEffort: string;
   sandboxEnabled: boolean;
   selectedContextWindow: number;
+  /** User-level opt-in to billed 1M context (Sonnet today). Persisted to
+   *  the same prefs blob as agent settings. See PersistedPrefs.allow1mForBilledModels. */
+  allow1mForBilledModels: boolean;
 
   // Per-session runtime config (keyed by sessionId)
   sessionConfigs: Record<string, Record<string, ConfigValue>>;
@@ -289,6 +299,9 @@ interface ClaudeStore {
   setSelectedReasoningEffort: (effort: string) => void;
   setSandboxEnabled: (enabled: boolean) => void;
   setSelectedContextWindow: (contextWindow: number) => void;
+  /** Toggle the billed-1M opt-in. Flipping off re-clamps every Claude-code
+   *  agent bucket so a stale 1M Sonnet setting can't sneak through. */
+  setAllow1mForBilledModels: (allowed: boolean) => void;
   /** Write a setting (or 'model') on the active agent's prefs.
    *  Used by provider renderSettings onChange callbacks. */
   setAgentSetting: (key: string, value: unknown) => void;
@@ -325,6 +338,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   selectedAgent: savedPrefs.selectedAgent,
   agentPrefs: savedPrefs.agentPrefs,
   ...flatViewOf(savedPrefs.agentPrefs[savedPrefs.selectedAgent]),
+  allow1mForBilledModels: savedPrefs.allow1mForBilledModels === true,
   sessionConfigs: {},
 
   // Sessions
@@ -519,10 +533,10 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   // Session preferences (new session defaults) — persisted to localStorage.
   // Writes go to the active agent's bucket; the flat view is recomputed.
   setSelectedModel: (model) => {
-    const { selectedAgent, agentPrefs } = get();
+    const { selectedAgent, agentPrefs, allow1mForBilledModels } = get();
     const prevCw = agentPrefs[selectedAgent].settings['contextWindow'] as number | undefined;
     const nextCw = selectedAgent === 'claude-code'
-      ? clampContextWindowForModel(model, prevCw)
+      ? clampContextWindowForModel(model, prevCw, { allowBilled: allow1mForBilledModels })
       : prevCw ?? DEFAULT_CONTEXT_WINDOW;
     const updated: AgentPrefsMap = {
       ...agentPrefs,
@@ -532,13 +546,13 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       },
     };
     set({ agentPrefs: updated, selectedModel: model, selectedContextWindow: nextCw });
-    savePrefs({ selectedAgent, agentPrefs: updated });
+    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
   },
   setSelectedAgent: (agent) => {
     const { agentPrefs } = get();
     const prefs = agentPrefs[agent] ?? defaultPrefsForAgent(agent);
     set({ selectedAgent: agent, ...flatViewOf(prefs) });
-    savePrefs({ selectedAgent: agent, agentPrefs });
+    savePrefs({ selectedAgent: agent, agentPrefs, allow1mForBilledModels: get().allow1mForBilledModels });
   },
   setSelectedPermissionMode: (mode) => {
     const { selectedAgent, agentPrefs } = get();
@@ -547,7 +561,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, permissionMode: mode } },
     };
     set({ agentPrefs: updated, selectedPermissionMode: mode });
-    savePrefs({ selectedAgent, agentPrefs: updated });
+    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
   },
   setSelectedReasoningEffort: (effort) => {
     const { selectedAgent, agentPrefs } = get();
@@ -556,7 +570,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, reasoningEffort: effort } },
     };
     set({ agentPrefs: updated, selectedReasoningEffort: effort });
-    savePrefs({ selectedAgent, agentPrefs: updated });
+    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
   },
   setSandboxEnabled: (enabled) => {
     const { selectedAgent, agentPrefs } = get();
@@ -565,19 +579,19 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, sandbox: enabled } },
     };
     set({ agentPrefs: updated, sandboxEnabled: enabled });
-    savePrefs({ selectedAgent, agentPrefs: updated });
+    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
   },
   setSelectedContextWindow: (contextWindow) => {
-    const { selectedAgent, agentPrefs } = get();
+    const { selectedAgent, agentPrefs, allow1mForBilledModels } = get();
     const clamped = selectedAgent === 'claude-code'
-      ? clampContextWindowForModel(agentPrefs[selectedAgent].model, contextWindow)
+      ? clampContextWindowForModel(agentPrefs[selectedAgent].model, contextWindow, { allowBilled: allow1mForBilledModels })
       : contextWindow;
     const updated: AgentPrefsMap = {
       ...agentPrefs,
       [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, contextWindow: clamped } },
     };
     set({ agentPrefs: updated, selectedContextWindow: clamped });
-    savePrefs({ selectedAgent, agentPrefs: updated });
+    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
   },
   setAgentSetting: (key, value) => {
     if (key === 'model') { get().setSelectedModel(value as string); return; }
@@ -592,7 +606,36 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     else if (key === 'sandbox') flatPatch.sandboxEnabled = value;
     else if (key === 'contextWindow') flatPatch.selectedContextWindow = value;
     set({ agentPrefs: updated, ...flatPatch });
-    savePrefs({ selectedAgent, agentPrefs: updated });
+    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
+  },
+  setAllow1mForBilledModels: (allowed) => {
+    const { selectedAgent, agentPrefs } = get();
+    // When flipping OFF, walk the claude-code bucket and clamp any leftover
+    // 1M Sonnet (or other billed-1M) setting back down to 200k so the next
+    // session start doesn't immediately trip the "Usage credits required"
+    // API error. Opus stays at whatever the user had — its 1M is included.
+    let updatedPrefs = agentPrefs;
+    if (!allowed) {
+      const claudeBucket = agentPrefs['claude-code'];
+      if (claudeBucket) {
+        const cw = claudeBucket.settings['contextWindow'] as number | undefined;
+        const clamped = clampContextWindowForModel(claudeBucket.model, cw, { allowBilled: false });
+        if (clamped !== cw) {
+          updatedPrefs = {
+            ...agentPrefs,
+            'claude-code': {
+              ...claudeBucket,
+              settings: { ...claudeBucket.settings, contextWindow: clamped },
+            },
+          };
+        }
+      }
+    }
+    const flatPatch = updatedPrefs === agentPrefs
+      ? {}
+      : flatViewOf(updatedPrefs[selectedAgent]);
+    set({ allow1mForBilledModels: allowed, agentPrefs: updatedPrefs, ...flatPatch });
+    savePrefs({ selectedAgent, agentPrefs: updatedPrefs, allow1mForBilledModels: allowed });
   },
   setAgentPref: (agent, key, value) => {
     const { selectedAgent, agentPrefs } = get();
@@ -607,7 +650,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         ? { agentPrefs: updated, ...flatViewOf(updated[agent]) }
         : { agentPrefs: updated },
     );
-    savePrefs({ selectedAgent, agentPrefs: updated });
+    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
   },
 
   // Per-session runtime config

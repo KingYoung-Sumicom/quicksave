@@ -53,12 +53,17 @@ export interface RenderSettingsOpts {
   hideKeys?: string[];
   /** sessionId — used by some agents for active-session hints. */
   sessionId?: string | null;
+  /** Whether the user has opted into billed 1M context (Sonnet today). When
+   *  false, Sonnet's contextWindow options collapse to 200k. */
+  allow1mForBilledModels?: boolean;
 }
 
 export interface RenderChipsOpts {
   dynamic?: AgentDynamicData;
   openPopover: string | null;
   onOpenPopover: (key: string | null) => void;
+  /** Same opt-in as RenderSettingsOpts.allow1mForBilledModels. */
+  allow1mForBilledModels?: boolean;
 }
 
 export interface AgentProvider {
@@ -590,9 +595,10 @@ class ClaudeCodeAgentProvider extends BaseAgentProvider {
 
     // Filter out context window chip when only one option available
     // by post-processing: replace contextWindow node if it's hidden
-    // (Haiku locked to 200k — options list collapses to one entry).
+    // (Haiku locked to 200k, Sonnet locked to 200k without billed opt-in
+    // — options list collapses to one entry).
     const model = values['model'] as string | undefined;
-    const cwOptions = getContextWindowOptionsForModel(model);
+    const cwOptions = getContextWindowOptionsForModel(model, { allowBilled: opts.allow1mForBilledModels });
     if (cwOptions.length <= 1) {
       const idx = nodes.findIndex(
         (n) => React.isValidElement(n) && (n as React.ReactElement).key === 'contextWindow',
@@ -609,7 +615,7 @@ class ClaudeCodeAgentProvider extends BaseAgentProvider {
     opts: RenderChipsOpts,
   ): React.ReactNode[] {
     const model = values['model'] as string | undefined;
-    const cwOptions = getContextWindowOptionsForModel(model);
+    const cwOptions = getContextWindowOptionsForModel(model, { allowBilled: opts.allow1mForBilledModels });
 
     // Build chips but skip contextWindow if only one option
     const nodes = super.renderStatusChips(values, onChange, opts);

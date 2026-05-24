@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FormattedMessage, useIntl } from 'react-intl';
 import { useGitStore } from '../stores/gitStore';
+import { useClaudeStore } from '../stores/claudeStore';
 import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { PairDeviceModal } from './PairDeviceModal';
 import { ScanToJoinModal } from './ScanToJoinModal';
@@ -99,6 +100,25 @@ export function SettingsPage({ onSendApiKeyToAgent, onPushOffer }: SettingsPageP
 
           <div className="border-t border-slate-700" />
 
+          <div className="space-y-3">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+              <FormattedMessage id="settings.claude.title" />
+            </h3>
+            <label className="flex items-start justify-between cursor-pointer gap-3">
+              <div className="min-w-0">
+                <span className="text-sm text-white">
+                  <FormattedMessage id="settings.claude.allowBilled1m.label" />
+                </span>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  <FormattedMessage id="settings.claude.allowBilled1m.description" />
+                </p>
+              </div>
+              <Allow1mToggle />
+            </label>
+          </div>
+
+          <div className="border-t border-slate-700" />
+
           <ApiKeySection isOpen onSendApiKeyToAgent={onSendApiKeyToAgent} />
 
           <div className="border-t border-slate-700" />
@@ -131,6 +151,22 @@ function AttributionToggle() {
       aria-checked={enabled}
       onClick={() => setEnabled(!enabled)}
       className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full transition-colors duration-200 ease-in-out ${enabled ? 'bg-purple-600' : 'bg-slate-600'}`}
+    >
+      <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out mt-0.5 ${enabled ? 'translate-x-5 ml-0.5' : 'translate-x-0 ml-0.5'}`} />
+    </button>
+  );
+}
+
+function Allow1mToggle() {
+  const enabled = useClaudeStore((s) => s.allow1mForBilledModels);
+  const setEnabled = useClaudeStore((s) => s.setAllow1mForBilledModels);
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={enabled}
+      onClick={() => setEnabled(!enabled)}
+      className={`relative inline-flex h-6 w-11 flex-shrink-0 rounded-full transition-colors duration-200 ease-in-out mt-0.5 ${enabled ? 'bg-amber-600' : 'bg-slate-600'}`}
     >
       <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out mt-0.5 ${enabled ? 'translate-x-5 ml-0.5' : 'translate-x-0 ml-0.5'}`} />
     </button>

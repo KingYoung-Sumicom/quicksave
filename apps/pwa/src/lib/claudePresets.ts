@@ -15,10 +15,32 @@ export const CLAUDE_MODELS = [
   { value: 'claude-opus-4-7', label: 'Opus 4.7' },
 ];
 
-/** Identifies the Claude models that don't support the `context-1m-2025-08-07`
- *  beta. Today only Haiku is locked to 200k; everything else opts into 1M. */
-export function modelSupports1m(model: string): boolean {
-  return !/^claude-haiku/i.test(model);
+/** Models whose 1M context window is *not* included in any subscription plan
+ *  and would be billed to pay-as-you-go usage credits. Sonnet 1M falls here:
+ *  unlike Opus (included on Pro/Max/Team/Enterprise since 2026-03-20), Sonnet
+ *  1M always bills to credits, so enabling it silently would surprise the
+ *  user. We gate it behind an explicit opt-in flag (`allowBilled`). */
+const MODEL_1M_REQUIRES_CREDITS: RegExp[] = [/^claude-sonnet/i];
+
+export interface ModelCapabilityOpts {
+  /** True when the user has explicitly opted into having 1M-context requests
+   *  billed to usage credits for models that aren't included in their plan
+   *  (Sonnet 1M today). Default false. */
+  allowBilled?: boolean;
+}
+
+/** Whether the model can be sent with the `context-1m-2025-08-07` beta given
+ *  the user's billing opt-in.
+ *   - Haiku: always false (model doesn't support the beta).
+ *   - Sonnet: only when `allowBilled` is true (1M is not included in any
+ *     plan and would consume usage credits).
+ *   - Opus / everything else: true (Pro/Max/Team/Enterprise include 1M Opus). */
+export function modelSupports1m(model: string, opts?: ModelCapabilityOpts): boolean {
+  if (/^claude-haiku/i.test(model)) return false;
+  if (MODEL_1M_REQUIRES_CREDITS.some((re) => re.test(model))) {
+    return !!opts?.allowBilled;
+  }
+  return true;
 }
 
 export const CLAUDE_CONTEXT_WINDOWS: { value: number; label: string }[] = [
@@ -28,22 +50,29 @@ export const CLAUDE_CONTEXT_WINDOWS: { value: number; label: string }[] = [
 ];
 
 /** Context-window options available for the given Claude model. Haiku is
- *  pinned to 200k; everything else can opt up to 500k or 1M. */
-export function getContextWindowOptionsForModel(model: string | undefined) {
-  if (!model || !modelSupports1m(model)) {
+ *  pinned to 200k; Sonnet is pinned to 200k unless the user has opted into
+ *  billed 1M; Opus offers the full range. */
+export function getContextWindowOptionsForModel(
+  model: string | undefined,
+  opts?: ModelCapabilityOpts,
+) {
+  if (!model || !modelSupports1m(model, opts)) {
     return CLAUDE_CONTEXT_WINDOWS.filter((w) => w.value <= 200_000);
   }
   return CLAUDE_CONTEXT_WINDOWS;
 }
 
-/** Coerce any persisted contextWindow to a value the model supports. Older
- *  prefs may carry 1M for a model that's since been rolled back to 200k. */
+/** Coerce any persisted contextWindow to a value the model supports under the
+ *  current `allowBilled` setting. Stale prefs (e.g. 1M left over from when
+ *  Opus was selected, then user switched to Sonnet without the billed
+ *  opt-in) get capped at 200k here. */
 export function clampContextWindowForModel(
   model: string | undefined,
   contextWindow: number | undefined,
+  opts?: ModelCapabilityOpts,
 ): number {
   const cw = contextWindow ?? DEFAULT_CONTEXT_WINDOW;
-  if (!model || !modelSupports1m(model)) return 200_000;
+  if (!model || !modelSupports1m(model, opts)) return 200_000;
   return cw;
 }
 

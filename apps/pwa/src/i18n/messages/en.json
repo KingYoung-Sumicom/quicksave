@@ -4,6 +4,10 @@
   "settings.git.commitAttribution.label": "Commit attribution",
   "settings.git.commitAttribution.description": "Add Quicksave trailer to commit messages",
 
+  "settings.claude.title": "Claude Code",
+  "settings.claude.allowBilled1m.label": "Allow 1M context for Sonnet (uses credits)",
+  "settings.claude.allowBilled1m.description": "Sonnet 1M is not included in any subscription plan and bills to Anthropic usage credits. Off by default to avoid surprise charges. Opus 1M is included on Pro/Max/Team/Enterprise and stays available either way.",
+
   "settings.deviceSync.title": "Device sync",
   "settings.deviceSync.invite.button": "Invite new device",
   "settings.deviceSync.invite.description": "Show a QR on this device so the new one can scan and join.",

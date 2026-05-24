@@ -30,6 +30,7 @@ export function ClaudeSettingsSection({ sessionId, onSetConfig, agentLocked, hid
   const hide = new Set(hideFields);
   const config = useSessionConfig(sessionId);
   const codexModels = useConnectionStore((s) => s.codexModels);
+  const allow1mForBilledModels = useClaudeStore((s) => s.allow1mForBilledModels);
 
   const rawAgent = (config['agent'] as string | undefined) ?? (config['provider'] as string | undefined);
   const selectedAgent = rawAgent ? normalizeAgentId(rawAgent) : DEFAULT_AGENT;
@@ -77,6 +78,7 @@ export function ClaudeSettingsSection({ sessionId, onSetConfig, agentLocked, hid
         dynamic,
         hideKeys,
         sessionId,
+        allow1mForBilledModels,
       })}
 
       <CodexPendingHint sessionId={sessionId} isCodexAgent={selectedAgent === 'codex'} />

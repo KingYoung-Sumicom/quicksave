@@ -24,7 +24,7 @@ export interface NewSessionEmptyStateProps {
 
 export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptyStateProps) {
   const intl = useIntl();
-  const { selectedAgent, selectedModel, agentPrefs, setSelectedAgent, setAgentSetting } = useClaudeStore();
+  const { selectedAgent, selectedModel, agentPrefs, allow1mForBilledModels, setSelectedAgent, setAgentSetting } = useClaudeStore();
   const codexModels = useConnectionStore((s) => s.codexModels);
   const { loginState } = useCodexLogin();
 
@@ -85,7 +85,7 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
         {showCodexLoginGate && <CodexLoginBanner />}
 
         {/* Provider-owned settings — model + all knobs */}
-        {provider.renderSettings(values, setAgentSetting, { mode: 'new-session', dynamic })}
+        {provider.renderSettings(values, setAgentSetting, { mode: 'new-session', dynamic, allow1mForBilledModels })}
 
         {/* Hint */}
         <p className="text-xs text-slate-600">
