@@ -10,20 +10,28 @@ import type {
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { readWithCache } from '../lib/fileCache';
 
+interface UseFileOpsOptions {
+  queueWhileDisconnected?: boolean;
+}
+
 /**
  * One-shot file browser commands. Pure request/response — no
  * subscriptions, no streaming — so this is just a thin wrapper around
  * `bus.command`. Mirrors `useTerminalOps` so callers can pass
  * `getActiveBus` in single-agent mode or a multi-agent bus getter.
  */
-export function useFileOps(getBus: () => MessageBusClient | null) {
+export function useFileOps(
+  getBus: () => MessageBusClient | null,
+  options: UseFileOpsOptions = {},
+) {
+  const queueWhileDisconnected = options.queueWhileDisconnected ?? true;
   const sendCommand = useCallback(
     <R, P = unknown>(verb: string, payload: P, timeoutMs = 15000): Promise<R> => {
       const bus = getBus();
       if (!bus) return Promise.reject(new Error('Not connected'));
-      return bus.command<R, P>(verb, payload, { timeoutMs, queueWhileDisconnected: true });
+      return bus.command<R, P>(verb, payload, { timeoutMs, queueWhileDisconnected });
     },
-    [getBus],
+    [getBus, queueWhileDisconnected],
   );
 
   const listFiles = useCallback(

@@ -24,7 +24,7 @@ export function GeneratedImageMessage({
   agentId: string;
 }) {
   const getBus = useCallback(() => getBusForAgent(agentId), [agentId]);
-  const { readFile } = useFileOps(getBus);
+  const { readFile } = useFileOps(getBus, { queueWhileDisconnected: false });
   const openPreview = useFilePreviewStore((s) => s.open);
   const [data, setData] = useState<FilesReadResponsePayload | null>(null);
   const hasImagePath = !!card.savedPath;

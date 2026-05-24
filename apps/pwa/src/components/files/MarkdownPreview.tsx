@@ -185,7 +185,7 @@ function MarkdownImage({
   agentId: string;
 }) {
   const getBus = useCallback(() => getBusForAgent(agentId), [agentId]);
-  const { readFile } = useFileOps(getBus);
+  const { readFile } = useFileOps(getBus, { queueWhileDisconnected: false });
   const [state, setState] = useState<
     | { kind: 'loading' }
     | { kind: 'ok'; url: string }

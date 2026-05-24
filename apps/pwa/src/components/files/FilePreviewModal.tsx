@@ -77,7 +77,7 @@ export function FileViewerPane({
 }) {
   const agentId = request.agentId ?? '';
   const getBus = useCallback(() => getBusForAgent(agentId), [agentId]);
-  const { readFile } = useFileOps(getBus);
+  const { readFile } = useFileOps(getBus, { queueWhileDisconnected: false });
   const [data, setData] = useState<FilesReadResponsePayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [reloadNonce, setReloadNonce] = useState(0);
