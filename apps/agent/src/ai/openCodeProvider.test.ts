@@ -555,6 +555,7 @@ describe('OpenCodeProvider', () => {
     const probe = await provider.probeProvider();
     expect(probe.capabilities.supportsResume).toBe(true);
     expect(probe.capabilities.supportsStreaming).toBe(true);
+    expect(probe.capabilities.supportsAttachments).toBeUndefined();
   });
 
   it('reads models from user opencode.json (avoids `opencode models` /tmp leak)', async () => {

@@ -44,6 +44,7 @@ interface ConnectionStore {
   latestVersion: string | null;
   codexModels: CodexModelInfo[];
   opencodeModels: Array<{ id: string; name: string }>;
+  availableProviders: AgentProviderInfo[];
   reconnectAttempt: number | null;
   maxReconnectAttempts: number | null;
   connectionStep: ConnectionStep | null;
@@ -115,6 +116,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
   latestVersion: null,
   codexModels: [],
   opencodeModels: [],
+  availableProviders: [],
   reconnectAttempt: null,
   maxReconnectAttempts: null,
   connectionStep: null,
@@ -161,9 +163,10 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
 
   setAvailableProviders: (providers) => {
     const opencode = providers.find((p) => p.id === 'opencode');
-    if (opencode?.models?.length) {
-      set({ opencodeModels: opencode.models });
-    }
+    set({
+      availableProviders: providers,
+      ...(opencode?.models?.length ? { opencodeModels: opencode.models } : {}),
+    });
   },
 
   setRepoPath: (repoPath) =>
@@ -229,6 +232,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       latestVersion: null,
       codexModels: [],
       opencodeModels: [],
+      availableProviders: [],
       reconnectAttempt: null,
       maxReconnectAttempts: null,
       connectionStep: null,

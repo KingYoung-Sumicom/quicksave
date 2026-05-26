@@ -645,6 +645,12 @@ export type AgentCapabilities = {
   supportsResume: boolean;
   supportsSandbox: boolean;
   supportsStreaming: boolean;
+  /** Opt-in only: true when the provider actually forwards user-supplied
+   *  file/text/image attachments to the model, not just renders history. */
+  supportsAttachments?: true;
+  /** Positive list of attachment kinds the provider forwards. Omitted means
+   *  all Quicksave attachment kinds are accepted when supportsAttachments is true. */
+  supportedAttachmentKinds?: Array<'image' | 'pdf' | 'text'>;
 };
 
 export interface AgentProviderInfo {

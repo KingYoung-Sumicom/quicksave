@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment } from '@sumicom/quicksave-shared';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { StreamCardBuilder } from '../cardBuilder.js';
+import { persistAttachments } from '../attachmentStore.js';
 import { buildSandboxMcpServerConfig, SANDBOX_MCP_NAME } from '../sandboxMcp.js';
 import type {
   CodexPermissionPreset,
+  AgentCapabilities,
   CodingAgentProvider,
   ProviderCallbacks,
   ProviderHistoryMode,
@@ -24,7 +26,7 @@ import {
   codexApprovalToPermissionPrompt,
   type CodexApprovalMethod,
 } from './approvalMapping.js';
-import { spawnAppServer, type AppServerHandle } from './processManager.js';
+import { detectCodexVersion, spawnAppServer, type AppServerHandle } from './processManager.js';
 import { RuntimeOverrideStore, type RuntimeOverrides } from './overrideStore.js';
 import { TokenAccounting, type CumulativeUsageSeed } from './tokenAccounting.js';
 import type { AskForApproval } from './schema/generated/v2/AskForApproval.js';
@@ -38,6 +40,7 @@ import type { TurnStartResponse } from './schema/generated/v2/TurnStartResponse.
 import type { TurnInterruptParams } from './schema/generated/v2/TurnInterruptParams.js';
 import type { ApprovalsReviewer } from './schema/generated/v2/ApprovalsReviewer.js';
 import type { ReasoningEffort } from './schema/generated/ReasoningEffort.js';
+import type { UserInput } from './schema/generated/v2/UserInput.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
 const __aiDir = dirname(__ownDir);
@@ -54,6 +57,29 @@ export class CodexAppServerProvider implements CodingAgentProvider {
   readonly id: AgentId = 'codex';
   readonly historyMode: ProviderHistoryMode = 'memory';
   readonly label = 'Codex';
+
+  async probeProvider() {
+    let version: string | undefined;
+    try {
+      version = await detectCodexVersion();
+    } catch {
+      // Keep the provider discoverable, but do not advertise attachment
+      // support when the underlying app-server cannot be launched.
+    }
+    const capabilities: AgentCapabilities = {
+      hasApiKey: !!process.env.OPENAI_API_KEY,
+      hasCli: !!version,
+      hasPlugin: true,
+      supportsResume: true,
+      supportsSandbox: false,
+      supportsStreaming: true,
+      ...(version ? {
+        supportsAttachments: true,
+        supportedAttachmentKinds: ['image', 'text'],
+      } : {}),
+    };
+    return { version, capabilities };
+  }
 
   async startSession(
     opts: StartSessionOpts,
@@ -89,7 +115,7 @@ export class CodexAppServerProvider implements CodingAgentProvider {
     // attaches them to the next turn/start.
     overrideStore.enqueue(perTurnOverridesFromOpts(opts, response));
 
-    void session.runTurn(opts.prompt);
+    void session.runTurn(opts.prompt, opts.attachments);
 
     return { sessionId: response.thread.id, session };
   }
@@ -127,7 +153,7 @@ export class CodexAppServerProvider implements CodingAgentProvider {
     callbacks.onModelDetected(response.model);
 
     overrideStore.enqueue(perTurnOverridesFromOpts(opts, response));
-    void session.runTurn(opts.prompt);
+    void session.runTurn(opts.prompt, opts.attachments);
 
     return { sessionId: response.thread.id, session };
   }
@@ -200,8 +226,8 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
     return !this.exited;
   }
 
-  sendUserMessage(prompt: string): void {
-    void this.runTurn(prompt);
+  sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
+    void this.runTurn(prompt, attachments);
   }
 
   enqueueRuntimeOverride(patch: RuntimeOverrides): void {
@@ -230,31 +256,39 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
 
   /** Run a single turn end-to-end: cb.startNewTurn → cb.userMessage →
    * turn/start → consume notifications → emit stream-end. */
-  async runTurn(prompt: string): Promise<void> {
+  async runTurn(prompt: string, attachments?: readonly Attachment[]): Promise<void> {
     if (this.exited) return;
     if (this.running) {
       // Queue — only one turn at a time. Replace any pending prompt
       // with the latest (matches SDK provider behavior).
       this.pendingPrompt = prompt;
+      this.pendingAttachments = attachments;
       return;
     }
     this.running = true;
     try {
-      await this.runTurnImpl(prompt);
+      await this.runTurnImpl(prompt, attachments);
       while (this.pendingPrompt && !this.exited) {
         const next = this.pendingPrompt;
+        const nextAttachments = this.pendingAttachments;
         this.pendingPrompt = null;
-        await this.runTurnImpl(next);
+        this.pendingAttachments = undefined;
+        await this.runTurnImpl(next, nextAttachments);
       }
     } finally {
       this.running = false;
     }
   }
 
-  private async runTurnImpl(prompt: string): Promise<void> {
+  private pendingAttachments: readonly Attachment[] | undefined;
+
+  private async runTurnImpl(prompt: string, attachments?: readonly Attachment[]): Promise<void> {
     const cb = this.cardBuilder;
     cb.startNewTurn();
-    const userEvent = cb.userMessage(prompt);
+    if (attachments && attachments.length > 0) {
+      await persistAttachments(this.threadId, attachments);
+    }
+    const userEvent = cb.userMessage(prompt, attachments);
     this.callbacks.emitCardEvent(userEvent);
 
     let turnId: string | null = null;
@@ -265,7 +299,7 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
     try {
       const params: TurnStartParams = {
         threadId: this.threadId,
-        input: [{ type: 'text', text: prompt, text_elements: [] }],
+        input: attachmentsToCodexUserInput(prompt, attachments),
         ...drained,
       };
       const response = await this.handle.rpc.request<TurnStartResponse>('turn/start', params);
@@ -484,6 +518,50 @@ function normalizeEffort(value: string): ReasoningEffort {
     default:
       return 'medium';
   }
+}
+
+export function attachmentsToCodexUserInput(
+  prompt: string,
+  attachments?: readonly Attachment[],
+): UserInput[] {
+  const input: UserInput[] = [];
+  for (const attachment of attachments ?? []) {
+    if (attachment.kind === 'image') {
+      input.push({
+        type: 'image',
+        url: `data:${normalizeCodexImageMime(attachment.mimeType)};base64,${attachment.data}`,
+      });
+      continue;
+    }
+    if (attachment.kind === 'text') {
+      input.push({
+        type: 'text',
+        text: `<<<file:${attachment.name}>>>\n${decodeBase64Utf8(attachment.data)}\n<<<end:${attachment.name}>>>`,
+        text_elements: [],
+      });
+    }
+  }
+  if (prompt.length > 0 || input.length === 0) {
+    input.push({ type: 'text', text: prompt, text_elements: [] });
+  }
+  return input;
+}
+
+function normalizeCodexImageMime(mimeType: string): string {
+  const lowered = mimeType.toLowerCase();
+  switch (lowered) {
+    case 'image/png':
+    case 'image/jpeg':
+    case 'image/gif':
+    case 'image/webp':
+      return lowered;
+    default:
+      return 'image/png';
+  }
+}
+
+function decodeBase64Utf8(b64: string): string {
+  return Buffer.from(b64, 'base64').toString('utf8');
 }
 
 /** Map Codex's permission preset to the v2 fields we send on

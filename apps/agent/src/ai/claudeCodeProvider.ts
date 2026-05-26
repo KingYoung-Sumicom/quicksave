@@ -67,6 +67,8 @@ export class ClaudeCodeProvider implements CodingAgentProvider {
       supportsResume: true,
       supportsSandbox: !!process.env.QUICKSAVE_SANDBOX,
       supportsStreaming: true,
+      supportsAttachments: true,
+      supportedAttachmentKinds: ['image', 'pdf', 'text'],
     };
 
     return {

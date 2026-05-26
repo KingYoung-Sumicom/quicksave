@@ -500,6 +500,8 @@ class ClaudeCodeAgentProvider extends BaseAgentProvider {
   readonly capabilities: AgentCapabilities = {
     hasApiKey: true, hasCli: true, hasPlugin: true,
     supportsResume: true, supportsSandbox: true, supportsStreaming: true,
+    supportsAttachments: true,
+    supportedAttachmentKinds: ['image', 'pdf', 'text'],
   };
   readonly features = ['controlPalette', 'git', 'sandbox'] as const;
   readonly defaultModel = CLAUDE_MODELS[CLAUDE_MODELS.length - 1].value;
@@ -668,6 +670,8 @@ class CodexAgentProvider extends BaseAgentProvider {
   readonly capabilities: AgentCapabilities = {
     hasApiKey: false, hasCli: true, hasPlugin: true,
     supportsResume: true, supportsSandbox: false, supportsStreaming: true,
+    supportsAttachments: true,
+    supportedAttachmentKinds: ['image', 'text'],
   };
   readonly features = ['git'] as const;
   readonly defaultModel = 'gpt-5.5';

@@ -9,6 +9,7 @@ import type {
   ClaudeUserInputResponsePayload,
   ConfigValue,
   SessionControlRequestResponsePayload,
+  AttachmentKind,
 } from '@sumicom/quicksave-shared';
 import { CardRenderer } from './chat/CardRenderer';
 import { SessionList } from './chat/SessionList';
@@ -156,6 +157,25 @@ export function ClaudePanel({
 
   const hideToolCalls = useUiPrefsStore((s) => s.hideToolCalls);
   const agentId = useConnectionStore((s) => s.agentId ?? '');
+  const availableProviders = useConnectionStore((s) => s.availableProviders);
+  const selectedAgentType = getAgentProvider(selectedAgent);
+  const selectedProviderInfo = availableProviders.find((p) => p.id === selectedAgent);
+  const supportsAttachments = !!(
+    selectedProviderInfo?.capabilities.supportsAttachments
+    ?? selectedAgentType.capabilities.supportsAttachments
+  );
+  const supportedAttachmentKinds = (
+    selectedProviderInfo?.capabilities.supportedAttachmentKinds
+    ?? selectedAgentType.capabilities.supportedAttachmentKinds
+    ?? (supportsAttachments ? ['image', 'pdf', 'text'] : [])
+  ) as AttachmentKind[];
+  const fileAccept = supportedAttachmentKinds.length === 0
+    ? undefined
+    : supportedAttachmentKinds.flatMap((kind) => {
+      if (kind === 'image') return ['image/*'];
+      if (kind === 'pdf') return ['application/pdf'];
+      return ['text/*', 'application/json', 'application/xml'];
+    }).join(',');
 
   // ── Attachment composer state ────────────────────────────────────────────
   // `pendingAttachments` is the set of chips currently displayed; the upload
@@ -184,22 +204,61 @@ export function ClaudePanel({
     }
   }, [agentId]);
 
+  const filterUnsupportedAttachments = useCallback((result: {
+    accepted: PendingAttachmentDraft[];
+    rejected: { name: string; reason: 'unsupported_mime' | 'too_large' | 'too_many' | 'empty'; message: string }[];
+  }) => {
+    if (supportedAttachmentKinds.length === 0) return result;
+    const allowed = new Set(supportedAttachmentKinds);
+    const accepted: PendingAttachmentDraft[] = [];
+    const rejected = [...result.rejected];
+    for (const draft of result.accepted) {
+      if (allowed.has(draft.kind)) {
+        accepted.push(draft);
+      } else {
+        rejected.push({
+          name: draft.name,
+          reason: 'unsupported_mime',
+          message: `Skipped ${draft.name}: ${selectedAgentType.label} does not support ${draft.kind} attachments`,
+        });
+      }
+    }
+    return { accepted, rejected };
+  }, [selectedAgentType.label, supportedAttachmentKinds]);
+
   const removePendingAttachment = useCallback((id: string) => {
     setPendingAttachments((prev) => prev.filter((p) => p.id !== id));
     void cancelUpload(id);
     forgetUpload(id);
   }, []);
 
+  useEffect(() => {
+    if (supportsAttachments) return;
+    if (pendingAttachments.length === 0) {
+      setAttachmentToast(null);
+      setIsDraggingFile(false);
+      return;
+    }
+    for (const attachment of pendingAttachments) {
+      void cancelUpload(attachment.id);
+      forgetUpload(attachment.id);
+    }
+    setPendingAttachments([]);
+    setAttachmentToast(null);
+    setIsDraggingFile(false);
+  }, [supportsAttachments, pendingAttachments]);
+
   const handleFilePick = useCallback(async (files: FileList | null) => {
+    if (!supportsAttachments) return;
     if (!files || files.length === 0) return;
     const dt = new DataTransfer();
     for (let i = 0; i < files.length; i++) {
       const f = files.item(i);
       if (f) dt.items.add(f);
     }
-    const result = await attachmentsFromDataTransfer(dt, pendingAttachments.length);
+    const result = filterUnsupportedAttachments(await attachmentsFromDataTransfer(dt, pendingAttachments.length));
     ingestAttachments(result.accepted, result.rejected);
-  }, [pendingAttachments.length, ingestAttachments]);
+  }, [supportsAttachments, pendingAttachments.length, ingestAttachments, filterUnsupportedAttachments]);
 
   const [isDraggingFile, setIsDraggingFile] = useState(false);
 
@@ -300,8 +359,6 @@ export function ClaudePanel({
       if (last.type !== 'user') setIsResuming(false);
     }
   }, [isResuming, cards]);
-
-  const selectedAgentType = getAgentProvider(selectedAgent);
 
   // View is determined by URL: sessionId present = chat, ?new = new session, absent = sessions list
   const isChat = !!urlSessionId || !!newSession;
@@ -866,24 +923,27 @@ export function ClaudePanel({
                 inputs and is finicky about programmatic `.click()`; using
                 a `<label htmlFor>` with an `sr-only` input is the native,
                 gesture-friendly path. */}
-            <input
-              id="qs-attach-input"
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept="image/*,application/pdf,text/*,application/json,application/xml"
-              className="sr-only"
-              onChange={(e) => {
-                void handleFilePick(e.target.files);
-                e.target.value = '';
-              }}
-            />
+            {supportsAttachments && (
+              <input
+                id="qs-attach-input"
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept={fileAccept}
+                className="sr-only"
+                onChange={(e) => {
+                  void handleFilePick(e.target.files);
+                  e.target.value = '';
+                }}
+              />
+            )}
             <div
               className={clsx(
                 'relative flex flex-col gap-2 rounded-lg transition-colors',
                 isDraggingFile && 'ring-2 ring-blue-400/60 bg-blue-500/5',
               )}
               onDragOver={(e) => {
+                if (!supportsAttachments) return;
                 if (e.dataTransfer?.types?.includes('Files')) {
                   e.preventDefault();
                   setIsDraggingFile(true);
@@ -893,10 +953,13 @@ export function ClaudePanel({
                 if (e.target === e.currentTarget) setIsDraggingFile(false);
               }}
               onDrop={async (e) => {
+                if (!supportsAttachments) return;
                 if (!e.dataTransfer?.types?.includes('Files')) return;
                 e.preventDefault();
                 setIsDraggingFile(false);
-                const result = await attachmentsFromDataTransfer(e.dataTransfer, pendingAttachments.length);
+                const result = filterUnsupportedAttachments(
+                  await attachmentsFromDataTransfer(e.dataTransfer, pendingAttachments.length),
+                );
                 ingestAttachments(result.accepted, result.rejected);
               }}
             >
@@ -930,6 +993,7 @@ export function ClaudePanel({
                 onChange={handleInputChange}
                 onKeyDown={handleKeyDown}
                 onPaste={(e) => {
+                  if (!supportsAttachments) return;
                   // iOS Safari completes paste insertion the moment this
                   // handler returns, so preventDefault MUST happen
                   // synchronously — `inspectPaste` snapshots files + text
@@ -944,8 +1008,9 @@ export function ClaudePanel({
                   };
                   if (inspection.mode === 'long-text') pastedTextCountRef.current += 1;
                   void processPasteInspection(inspection, opts).then((result) => {
-                    if (result.accepted.length > 0 || result.rejected.length > 0) {
-                      ingestAttachments(result.accepted, result.rejected);
+                    const filtered = filterUnsupportedAttachments(result);
+                    if (filtered.accepted.length > 0 || filtered.rejected.length > 0) {
+                      ingestAttachments(filtered.accepted, filtered.rejected);
                     }
                   });
                 }}
@@ -954,16 +1019,20 @@ export function ClaudePanel({
                 rows={1}
               />
               <div className="flex items-center justify-between">
-                <label
-                  htmlFor="qs-attach-input"
-                  className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-700/60 flex-shrink-0 cursor-pointer flex items-center justify-center"
-                  title="Attach files"
-                  aria-label="Attach files"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                  </svg>
-                </label>
+                {supportsAttachments ? (
+                  <label
+                    htmlFor="qs-attach-input"
+                    className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-700/60 flex-shrink-0 cursor-pointer flex items-center justify-center"
+                    title="Attach files"
+                    aria-label="Attach files"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                    </svg>
+                  </label>
+                ) : (
+                  <span className="w-9 h-9 flex-shrink-0" aria-hidden="true" />
+                )}
                 <button
                   onPointerDown={(e) => { e.preventDefault(); handleSend(); }}
                   disabled={(!promptInput.trim() && pendingAttachments.length === 0) || anyUploadInFlight}

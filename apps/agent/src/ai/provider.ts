@@ -194,6 +194,10 @@ export interface AgentCapabilities {
   supportsResume: boolean;
   supportsSandbox: boolean;
   supportsStreaming: boolean;
+  /** Opt-in only: true when attachments are forwarded into the provider turn. */
+  supportsAttachments?: true;
+  /** Positive list of attachment kinds the provider forwards. */
+  supportedAttachmentKinds?: Array<Attachment['kind']>;
 }
 
 export type ProbeResult = {
