@@ -1063,6 +1063,100 @@ describe('buildCardsFromHistory', () => {
     expect(sc.prompt).toBeUndefined();
   });
 
+  it('rebuilds streaming task_started events as subagent cards', async () => {
+    const jsonl = [
+      JSON.stringify({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task-monitor',
+        tool_use_id: 'tu-monitor',
+        description: 'Watch the running command',
+        prompt: 'Monitor progress',
+        subagent_type: 'Monitor',
+      }),
+      JSON.stringify({
+        type: 'system',
+        subtype: 'task_progress',
+        task_id: 'task-monitor',
+        tool_use_id: 'tu-monitor',
+        usage: { tool_uses: 2 },
+        last_tool_name: 'Read',
+      }),
+      JSON.stringify({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task-monitor',
+        tool_use_id: 'tu-monitor',
+        status: 'completed',
+        summary: 'No issues found',
+      }),
+    ].join('\n');
+
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(stat).mockResolvedValue({ size: jsonl.length } as any);
+    vi.mocked(readFile).mockResolvedValue(jsonl);
+
+    const result = await buildCardsFromHistory('sess-task', '/test/cwd');
+    const subCards = result.cards.filter(c => c.type === 'subagent');
+    expect(subCards).toHaveLength(1);
+    const sc = subCards[0] as SubagentCard;
+    expect(sc.description).toBe('Watch the running command');
+    expect(sc.agentId).toBe('task-monitor');
+    expect(sc.toolUseId).toBe('tu-monitor');
+    expect(sc.status).toBe('completed');
+    expect(sc.summary).toBe('No issues found');
+    expect(sc.toolUseCount).toBe(2);
+    expect(sc.lastToolName).toBe('Read');
+    expect(sc.subagentType).toBe('Monitor');
+    expect(sc.prompt).toBe('Monitor progress');
+  });
+
+  it('does not duplicate subagent cards when task events and Agent tool_use are both in the page', async () => {
+    const jsonl = [
+      JSON.stringify({
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task-rich',
+        tool_use_id: 'tu-rich',
+        description: 'Find tests',
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use', id: 'tu-rich', name: 'Agent',
+            input: {
+              description: 'Find tests',
+              prompt: 'Search the codebase for test files',
+              subagent_type: 'Explore',
+            },
+          }],
+        },
+      }),
+      JSON.stringify({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task-rich',
+        tool_use_id: 'tu-rich',
+        status: 'completed',
+        summary: 'Found tests',
+      }),
+    ].join('\n');
+
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(stat).mockResolvedValue({ size: jsonl.length } as any);
+    vi.mocked(readFile).mockResolvedValue(jsonl);
+
+    const result = await buildCardsFromHistory('sess-task-dedupe', '/test/cwd');
+    const subCards = result.cards.filter(c => c.type === 'subagent');
+    expect(subCards).toHaveLength(1);
+    const sc = subCards[0] as SubagentCard;
+    expect(sc.description).toBe('Find tests');
+    expect(sc.status).toBe('completed');
+    expect(sc.summary).toBe('Found tests');
+    expect(sc.subagentType).toBe('Explore');
+  });
+
   it('populates subagentType, requestedModel, and prompt from Agent tool_use input', async () => {
     const jsonl = [
       JSON.stringify({

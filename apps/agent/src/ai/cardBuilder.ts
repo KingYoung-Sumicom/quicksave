@@ -875,8 +875,61 @@ export async function buildCardsFromHistory(
   // The Claude CLI stores this as `toolUseResult` at the message envelope
   // level, separate from the human-readable tool_result.content string.
   const askUserResults = new Map<string, { questions?: any[]; answers?: Record<string, string> }>();
+  const taskStarts = new Map<string, {
+    description: string;
+    agentId: string;
+    toolUseId: string;
+    prompt?: string;
+    subagentType?: string;
+    requestedModel?: string;
+  }>();
+  const taskProgress = new Map<string, { toolUseCount?: number; lastToolName?: string }>();
+  const taskEnds = new Map<string, {
+    status: 'completed' | 'failed' | 'stopped';
+    summary?: string;
+  }>();
+
+  const taskKey = (agentId: unknown, toolUseId: unknown): string | null => {
+    if (typeof toolUseId === 'string' && toolUseId.length > 0) return toolUseId;
+    if (typeof agentId === 'string' && agentId.length > 0) return agentId;
+    return null;
+  };
 
   for (const msg of allMessages) {
+    if ((msg as any).type === 'system') {
+      const subtype = (msg as any).subtype;
+      const key = taskKey((msg as any).task_id, (msg as any).tool_use_id);
+      if (key && subtype === 'task_started') {
+        taskStarts.set(key, {
+          description: typeof (msg as any).description === 'string' ? (msg as any).description : '',
+          agentId: typeof (msg as any).task_id === 'string' ? (msg as any).task_id : key,
+          toolUseId: typeof (msg as any).tool_use_id === 'string' ? (msg as any).tool_use_id : key,
+          prompt: typeof (msg as any).prompt === 'string' ? (msg as any).prompt : undefined,
+          subagentType: typeof (msg as any).subagent_type === 'string'
+            ? (msg as any).subagent_type
+            : typeof (msg as any).subagentType === 'string'
+              ? (msg as any).subagentType
+              : undefined,
+          requestedModel: typeof (msg as any).model === 'string'
+            ? (msg as any).model
+            : typeof (msg as any).requested_model === 'string'
+              ? (msg as any).requested_model
+              : undefined,
+        });
+      } else if (key && subtype === 'task_progress') {
+        taskProgress.set(key, {
+          toolUseCount: typeof (msg as any).usage?.tool_uses === 'number' ? (msg as any).usage.tool_uses : undefined,
+          lastToolName: typeof (msg as any).last_tool_name === 'string' ? (msg as any).last_tool_name : undefined,
+        });
+      } else if (key && subtype === 'task_notification') {
+        const status = (msg as any).status;
+        taskEnds.set(key, {
+          status: status === 'failed' || status === 'stopped' ? status : 'completed',
+          summary: typeof (msg as any).summary === 'string' ? (msg as any).summary : undefined,
+        });
+      }
+    }
+
     const rawMsg = (msg as any).message as any;
     const toolUseResult = (msg as any).toolUseResult;
     if (!Array.isArray(rawMsg?.content)) continue;
@@ -977,13 +1030,62 @@ export async function buildCardsFromHistory(
   let seq = Math.max(0, total - offset - limit);
   const nextId = () => `${sessionId}:h:${++seq}`;
   const cards: Card[] = [];
+  const emittedSubagentKeys = new Set<string>();
+  const slicedAgentToolUseIds = new Set<string>();
+  for (const msg of sliced) {
+    const rawMsg = (msg as any).message as any;
+    if (!Array.isArray(rawMsg?.content)) continue;
+    for (const block of rawMsg.content) {
+      if (block.type === 'tool_use' && block.name === 'Agent' && block.id) {
+        slicedAgentToolUseIds.add(block.id);
+      }
+    }
+  }
+
+  const subagentCardFromTask = (task: {
+    description: string;
+    agentId: string;
+    toolUseId: string;
+    prompt?: string;
+    subagentType?: string;
+    requestedModel?: string;
+  }): SubagentCard => {
+    const key = task.toolUseId || task.agentId;
+    const end = taskEnds.get(key);
+    const progress = taskProgress.get(key);
+    return {
+      type: 'subagent',
+      id: nextId(),
+      timestamp: Date.now(),
+      description: task.description,
+      toolUseId: task.toolUseId,
+      agentId: task.agentId,
+      status: end?.status ?? 'running',
+      ...(end?.summary ? { summary: end.summary } : {}),
+      toolUseCount: progress?.toolUseCount ?? 0,
+      ...(progress?.lastToolName ? { lastToolName: progress.lastToolName } : {}),
+      ...(task.prompt ? { prompt: task.prompt } : {}),
+      ...(task.subagentType ? { subagentType: task.subagentType } : {}),
+      ...(task.requestedModel ? { requestedModel: task.requestedModel } : {}),
+    };
+  };
 
   for (const msg of sliced) {
     // ── System messages ──
     if (msg.type === 'system') {
       const subtype = (msg as any).subtype;
-      // Skip subagent lifecycle events (handled via subagentCards below)
-      if (subtype === 'task_started' || subtype === 'task_progress' || subtype === 'task_notification') continue;
+      const key = taskKey((msg as any).task_id, (msg as any).tool_use_id);
+      if (subtype === 'task_started' && key) {
+        const task = taskStarts.get(key);
+        if (task && !slicedAgentToolUseIds.has(task.toolUseId) && !emittedSubagentKeys.has(key)) {
+          cards.push(subagentCardFromTask(task));
+          emittedSubagentKeys.add(key);
+        }
+        continue;
+      }
+      // Progress/end task events update the task_started card; they do not
+      // render as standalone history cards.
+      if (subtype === 'task_progress' || subtype === 'task_notification') continue;
       // Skip init and status messages (not useful in history)
       if (subtype === 'init' || subtype === 'status' || subtype === 'session_state_changed') continue;
 
@@ -1125,6 +1227,10 @@ export async function buildCardsFromHistory(
               const description = (block.input as any)?.description ?? '';
               const summary = result ? result.content.slice(0, 200) : undefined;
               const agentInput = agentInputByToolUseId.get(block.id);
+              const taskStart = taskStarts.get(block.id);
+              const progress = taskProgress.get(block.id);
+              const end = taskEnds.get(block.id);
+              const prompt = agentInput?.prompt ?? taskStart?.prompt;
 
               const nestedToolCalls = subagentToolCallsByToolUseId.get(block.id);
               const subagentCard: SubagentCard = {
@@ -1134,15 +1240,17 @@ export async function buildCardsFromHistory(
                 description,
                 toolUseId: block.id,
                 agentId,
-                status: result ? 'completed' : 'running',
-                summary,
-                toolUseCount: nestedToolCalls?.length ?? 0,
+                status: end?.status ?? (result ? 'completed' : 'running'),
+                summary: end?.summary ?? summary,
+                toolUseCount: progress?.toolUseCount ?? nestedToolCalls?.length ?? 0,
+                ...(progress?.lastToolName ? { lastToolName: progress.lastToolName } : {}),
                 ...(agentInput?.subagentType ? { subagentType: agentInput.subagentType } : {}),
                 ...(agentInput?.requestedModel ? { requestedModel: agentInput.requestedModel } : {}),
-                ...(agentInput?.prompt ? { prompt: agentInput.prompt } : {}),
+                ...(prompt ? { prompt } : {}),
                 ...(nestedToolCalls?.length ? { toolCalls: nestedToolCalls } : {}),
               };
               cards.push(subagentCard);
+              emittedSubagentKeys.add(block.id);
             } else {
               // Normal tool call
               const toolInput = typeof block.input === 'object' && block.input !== null
