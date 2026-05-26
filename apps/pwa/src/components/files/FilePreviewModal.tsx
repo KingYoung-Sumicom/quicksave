@@ -17,6 +17,7 @@ import { getBusForAgent } from '../../lib/busRegistry';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { Spinner } from '../ui/Spinner';
 import { MarkdownPreview } from './MarkdownPreview';
+import { CsvViewer, isCsvPath, csvDelimiterFor } from './CsvViewer';
 
 /**
  * Single mount point — App.tsx renders this once. It subscribes to the
@@ -115,8 +116,10 @@ export function FileViewerPane({
   const fileName = displayPath.split('/').pop() || displayPath;
   const isMarkdown = useMemo(() => isMarkdownPath(displayPath), [displayPath]);
   const isSvg = useMemo(() => isSvgPath(displayPath), [displayPath]);
+  const isCsv = useMemo(() => isCsvPath(displayPath), [displayPath]);
   const [renderMarkdown, setRenderMarkdown] = useState(true);
   const [renderSvg, setRenderSvg] = useState(true);
+  const [renderCsv, setRenderCsv] = useState(true);
 
   return (
     <>
@@ -145,6 +148,15 @@ export function FileViewerPane({
             title={renderSvg ? 'Show raw source' : 'Render SVG'}
           >
             {renderSvg ? 'Raw' : 'Rendered'}
+          </button>
+        )}
+        {isCsv && data?.kind === 'text' && (
+          <button
+            onClick={() => setRenderCsv((v) => !v)}
+            className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
+            title={renderCsv ? 'Show raw source' : 'Render table'}
+          >
+            {renderCsv ? 'Raw' : 'Table'}
           </button>
         )}
         <button
@@ -196,6 +208,7 @@ export function FileViewerPane({
             agentId={request.agentId ?? ''}
             renderMarkdown={isMarkdown && renderMarkdown}
             renderSvg={isSvg && renderSvg}
+            renderCsv={isCsv && renderCsv}
           />
         )}
       </div>
@@ -280,6 +293,7 @@ function PreviewContent({
   agentId,
   renderMarkdown,
   renderSvg,
+  renderCsv,
 }: {
   data: FilesReadResponsePayload;
   displayPath: string;
@@ -287,6 +301,7 @@ function PreviewContent({
   agentId: string;
   renderMarkdown: boolean;
   renderSvg: boolean;
+  renderCsv: boolean;
 }) {
   const lang = useMemo(() => detectLanguage(displayPath), [displayPath]);
   const highlighted = useMemo(() => {
@@ -324,6 +339,9 @@ function PreviewContent({
         />
       </div>
     );
+  }
+  if (renderCsv && data.kind === 'text' && typeof data.content === 'string') {
+    return <CsvViewer content={data.content} delimiter={csvDelimiterFor(displayPath)} />;
   }
   if (renderMarkdown && data.kind === 'text' && typeof data.content === 'string') {
     return (
