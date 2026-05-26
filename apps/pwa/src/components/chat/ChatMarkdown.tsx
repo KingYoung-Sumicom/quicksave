@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import 'highlight.js/styles/github-dark-dimmed.css';
 import { FilePathLink } from './FilePathLink';
+import { CodeBlock } from '../ui/CodeBlock';
 
 /**
  * Matches a backtick-enclosed token that *looks* like a single file path
@@ -103,6 +104,7 @@ export function ChatMarkdown({ children }: { children: string }) {
             <table className="w-max">{children}</table>
           </div>
         ),
+        pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
         code: (props) => {
           const { className, children, ...rest } = props;
           const text = typeof children === 'string'

@@ -10,6 +10,7 @@ import { useFileOps } from '../../hooks/useFileOps';
 import { getBusForAgent } from '../../lib/busRegistry';
 import { useFilePreviewStore } from '../../stores/filePreviewStore';
 import { Spinner } from '../ui/Spinner';
+import { CodeBlock } from '../ui/CodeBlock';
 
 /** Inline-code paths and link hrefs that look like file paths route to the
  *  preview modal. Matches `ChatMarkdown`'s behaviour. */
@@ -58,7 +59,7 @@ export function MarkdownPreview({
             <blockquote className="border-l-4 border-slate-600 pl-3 my-2 text-slate-400 italic">{children}</blockquote>
           ),
           hr: () => <hr className="my-4 border-slate-700" />,
-          pre: ({ children }) => <pre className="my-2 p-3 bg-slate-900 rounded text-[12px] overflow-x-auto">{children}</pre>,
+          pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
           table: ({ children }: { children?: ReactNode }) => (
             <div className="overflow-x-auto my-2">
               <table className="w-max border-collapse">{children}</table>
