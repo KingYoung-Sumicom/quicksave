@@ -82,7 +82,7 @@ html, body {
   /* Small focused-state bottom pad — the page contents end up nudged above
      the iOS form assistant overlay; chip rows stay above the textarea so
      anything getting clipped at the very bottom is just empty padding. */
-  padding-bottom: 10px;
+  padding-bottom: 0.75rem;
   :root:not(:has(input:focus-visible, textarea:focus-visible, [contenteditable]:focus-visible)) & {
     padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.75rem);
   }

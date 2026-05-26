@@ -21,7 +21,7 @@ import { ToolCallVisibilityChip } from './chat/ToolCallVisibilityChip';
 import { AttachmentTray } from './AttachmentTray';
 import { useUiPrefsStore } from '../stores/uiPrefsStore';
 import { getAgentProvider } from '../lib/agentProvider';
-import type { AttachmentMetadata } from '@sumicom/quicksave-shared';
+import type { AttachmentMetadata, AgentId } from '@sumicom/quicksave-shared';
 import {
   startUpload,
   cancelUpload,
@@ -31,7 +31,7 @@ import {
 } from '../lib/attachmentUploader';
 import { attachmentsFromDataTransfer, inspectPaste, processPasteInspection, type PendingAttachmentDraft } from '../lib/attachments';
 
-type StartSessionOpts = { agent?: 'claude-code' | 'codex' | 'opencode' | 'pi'; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
+type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
 type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
 
 interface SlashCommand {
@@ -880,7 +880,7 @@ export function ClaudePanel({
             />
             <div
               className={clsx(
-                'relative flex items-end gap-2 rounded-lg transition-colors',
+                'relative flex flex-col gap-2 rounded-lg transition-colors',
                 isDraggingFile && 'ring-2 ring-blue-400/60 bg-blue-500/5',
               )}
               onDragOver={(e) => {
@@ -924,16 +924,6 @@ export function ClaudePanel({
                   ))}
                 </div>
               )}
-              <label
-                htmlFor="qs-attach-input"
-                className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-700/60 flex-shrink-0 cursor-pointer flex items-center justify-center"
-                title="Attach files"
-                aria-label="Attach files"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                </svg>
-              </label>
               <textarea
                 ref={inputRef}
                 value={promptInput}
@@ -960,24 +950,36 @@ export function ClaudePanel({
                   });
                 }}
                 placeholder=""
-                className="flex-1 bg-slate-700 rounded-lg px-3 py-2 text-sm resize-none overflow-y-auto focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full bg-slate-700 rounded-lg px-3 py-2 text-sm resize-none overflow-y-auto border border-slate-600 focus:outline-none focus:border-blue-500"
                 rows={1}
               />
-              <button
-                onPointerDown={(e) => { e.preventDefault(); handleSend(); }}
-                disabled={(!promptInput.trim() && pendingAttachments.length === 0) || anyUploadInFlight}
-                className={clsx(
-                  'p-2 rounded-lg transition-colors flex-shrink-0',
-                  (promptInput.trim() || pendingAttachments.length > 0) && !anyUploadInFlight
-                    ? 'bg-blue-600 hover:bg-blue-500'
-                    : 'bg-slate-600 text-slate-400'
-                )}
-                title={anyUploadInFlight ? 'Waiting for uploads…' : 'Send'}
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />
-                </svg>
-              </button>
+              <div className="flex items-center justify-between">
+                <label
+                  htmlFor="qs-attach-input"
+                  className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-700/60 flex-shrink-0 cursor-pointer flex items-center justify-center"
+                  title="Attach files"
+                  aria-label="Attach files"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                </label>
+                <button
+                  onPointerDown={(e) => { e.preventDefault(); handleSend(); }}
+                  disabled={(!promptInput.trim() && pendingAttachments.length === 0) || anyUploadInFlight}
+                  className={clsx(
+                    'p-2 rounded-lg transition-colors flex-shrink-0',
+                    (promptInput.trim() || pendingAttachments.length > 0) && !anyUploadInFlight
+                      ? 'bg-blue-600 hover:bg-blue-500'
+                      : 'bg-slate-600 text-slate-400'
+                  )}
+                  title={anyUploadInFlight ? 'Waiting for uploads…' : 'Send'}
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
         </>
