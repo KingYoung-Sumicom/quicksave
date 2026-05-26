@@ -212,6 +212,11 @@ export interface ManagedSession {
   /** Per-session UUID baked into the PermissionRequest hook command. The daemon
    *  toggles bypass by creating/removing the sentinel file at `bypassFlagPath(bypassToken)`. */
   bypassToken: string;
+  /** Per-session correlation id minted at spawn and baked into the sandbox MCP
+   *  server's `--corr`. Persisted onto the registry entry (`mcpCorrId`) so that
+   *  stdio server can locate this session's entry on a fresh start, before the
+   *  real sessionId exists. */
+  mcpCorrId: string;
   /** Epoch ms of the most recent SDK message whose `usage` reported a cache
    *  hit or write. Provider fires `onCacheTouch` per inner API call; this is
    *  the most reliable anchor for the PWA's prompt-cache countdown because
@@ -555,6 +560,11 @@ export class SessionManager extends EventEmitter {
     const bypassToken = randomUUID();
     applyBypassFlag(bypassToken, isFullAccessPermission(provider.id, level));
 
+    // Mint a correlation id up front so the sandbox MCP server (spawned by the
+    // provider before the real sessionId exists) can find this session's
+    // registry entry by matching `mcpCorrId`. See `sandboxMcpStdio.ts`.
+    const mcpCorrId = randomUUID();
+
     // Create cardBuilder with 'pending' sessionId — will be updated after provider returns real one
     const cardBuilder = new StreamCardBuilder('pending', opts.cwd);
 
@@ -571,6 +581,7 @@ export class SessionManager extends EventEmitter {
         reasoningEffort: opts.reasoningEffort,
         contextWindow: opts.contextWindow,
         bypassFlagPath: bypassFlagPath(bypassToken),
+        mcpCorrId,
         attachments: opts.attachments,
       },
       cardBuilder,
@@ -620,6 +631,7 @@ export class SessionManager extends EventEmitter {
       spawnedModel: opts.model,
       spawnedContextWindow: opts.contextWindow,
       bypassToken,
+      mcpCorrId,
     };
     this.sessions.set(sessionId, managed);
     this.emitSessionUpdate(sessionId);
@@ -750,6 +762,11 @@ export class SessionManager extends EventEmitter {
       const bypassToken = existing?.bypassToken ?? randomUUID();
       applyBypassFlag(bypassToken, isFullAccessPermission(provider.id, level));
 
+      // Reuse the session's existing correlation id (in-memory or persisted on
+      // the registry entry) so a cold re-spawn's MCP server still matches the
+      // same entry; mint one only when resuming a session we've never tracked.
+      const mcpCorrId = existing?.mcpCorrId ?? registryEntry?.mcpCorrId ?? randomUUID();
+
       const { sessionId, session: providerSession } = await provider.resumeSession(
         {
           sessionId: opts.sessionId,
@@ -762,6 +779,7 @@ export class SessionManager extends EventEmitter {
           reasoningEffort: resumeReasoningEffort,
           contextWindow: resumeContextWindow,
           bypassFlagPath: bypassFlagPath(bypassToken),
+          mcpCorrId,
           attachments: opts.attachments,
         },
         cardBuilder,
@@ -799,6 +817,7 @@ export class SessionManager extends EventEmitter {
         existing.streaming = true;
         existing.spawnedModel = resumeModel;
         existing.spawnedContextWindow = resumeContextWindow;
+        existing.mcpCorrId = mcpCorrId;
         // Cold resume can fork a new CLI session_id. Rekey the map + side
         // maps to the new ID so emitSessionUpdate finds the entry and the
         // PWA sees isActive=true (the ghost-inactive bug otherwise).
@@ -823,6 +842,7 @@ export class SessionManager extends EventEmitter {
           spawnedModel: resumeModel,
           spawnedContextWindow: resumeContextWindow,
           bypassToken,
+          mcpCorrId,
         };
         this.sessions.set(sessionId, managed);
       }
@@ -1077,6 +1097,13 @@ export class SessionManager extends EventEmitter {
 
   getSessionAgent(sessionId: string, cwd?: string): AgentId {
     return this.resolveAgentId(sessionId, cwd);
+  }
+
+  /** Correlation id minted for this session's sandbox MCP server, persisted
+   *  onto the registry entry so the stdio server can locate it on a fresh
+   *  start. Undefined for sessions not tracked in memory. */
+  getSessionMcpCorrId(sessionId: string): string | undefined {
+    return this.sessions.get(sessionId)?.mcpCorrId;
   }
 
   getActiveSessionCount(): number {

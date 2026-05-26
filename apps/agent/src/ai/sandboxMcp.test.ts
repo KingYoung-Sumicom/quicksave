@@ -34,6 +34,34 @@ describe('buildSandboxMcpServerConfig', () => {
     ]);
   });
 
+  it('appends --corr when corrId is provided (fresh session, no session-id)', () => {
+    const cfg = buildSandboxMcpServerConfig({
+      ownDir: __thisDir,
+      cwd: '/p',
+      corrId: 'corr-xyz',
+    });
+    expect(cfg.args).toEqual([
+      join(__thisDir, 'sandboxMcpStdio.ts'),
+      '--cwd', '/p',
+      '--corr', 'corr-xyz',
+    ]);
+  });
+
+  it('appends both --session-id and --corr when both are provided', () => {
+    const cfg = buildSandboxMcpServerConfig({
+      ownDir: __thisDir,
+      cwd: '/p',
+      sessionId: 'abc-123',
+      corrId: 'corr-xyz',
+    });
+    expect(cfg.args).toEqual([
+      join(__thisDir, 'sandboxMcpStdio.ts'),
+      '--cwd', '/p',
+      '--session-id', 'abc-123',
+      '--corr', 'corr-xyz',
+    ]);
+  });
+
   it('falls back to node + .js when only the compiled file exists (prod)', () => {
     // Point at a directory that has no sandboxMcpStdio.{ts,js} — simulates prod
     // where only dist/ai/sandboxMcpStdio.js is shipped. We can't easily exercise

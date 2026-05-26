@@ -70,6 +70,9 @@ export function buildClaudeCliArgs(opts: {
   permissionMode?: PermissionLevel;
   systemPrompt?: string;
   resumeSessionId?: string;
+  /** Correlation id for fresh sessions — threaded to the sandbox MCP's `--corr`
+   *  so it can find this session's registry entry before the real sessionId exists. */
+  mcpCorrId?: string;
   sandboxed?: boolean;
   bypassFlagPath?: string;
   /** Auto-compact ceiling. >200k triggers the `[1m]` model suffix so the API
@@ -149,6 +152,7 @@ export function buildClaudeCliArgs(opts: {
         ownDir: opts.ownDir,
         cwd: opts.cwd,
         sessionId: opts.resumeSessionId,
+        corrId: opts.mcpCorrId,
       }),
     },
   };
@@ -415,6 +419,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       model: opts.model,
       permissionMode: opts.permissionLevel,
       systemPrompt: opts.systemPrompt,
+      mcpCorrId: opts.mcpCorrId,
       sandboxed: opts.sandboxed,
       bypassFlagPath: opts.bypassFlagPath,
       contextWindow: opts.contextWindow,
@@ -436,6 +441,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       permissionMode: opts.permissionLevel,
       systemPrompt: opts.systemPrompt,
       resumeSessionId: opts.sessionId,
+      mcpCorrId: opts.mcpCorrId,
       sandboxed: opts.sandboxed,
       bypassFlagPath: opts.bypassFlagPath,
       contextWindow: opts.contextWindow,
@@ -454,6 +460,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     permissionMode?: PermissionLevel;
     systemPrompt?: string;
     resumeSessionId?: string;
+    mcpCorrId?: string;
     sandboxed?: boolean;
     bypassFlagPath?: string;
     contextWindow?: number;

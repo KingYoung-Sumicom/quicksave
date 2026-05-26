@@ -34,6 +34,7 @@ function defaultPrefsForAgent(agent: AgentId): AgentPrefs {
 function defaultAgentPrefsMap(): AgentPrefsMap {
   return {
     'claude-code': defaultPrefsForAgent('claude-code'),
+    'claude-terminal': defaultPrefsForAgent('claude-terminal'),
     codex: defaultPrefsForAgent('codex'),
     opencode: defaultPrefsForAgent('opencode'),
     pi: defaultPrefsForAgent('pi'),

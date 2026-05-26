@@ -494,9 +494,9 @@ function chipIcon(key: string): React.ReactNode {
 // ── Claude Code ───────────────────────────────────────────────────────────────
 
 class ClaudeCodeAgentProvider extends BaseAgentProvider {
-  readonly id = 'claude-code' as const;
-  readonly label = 'Claude Code';
-  readonly description = 'Full tool access — reads, edits, runs code';
+  readonly id: AgentId = 'claude-code';
+  readonly label: string = 'Claude Code';
+  readonly description: string = 'Full tool access — reads, edits, runs code';
   readonly capabilities: AgentCapabilities = {
     hasApiKey: true, hasCli: true, hasPlugin: true,
     supportsResume: true, supportsSandbox: true, supportsStreaming: true,
@@ -831,10 +831,22 @@ class PiAgentProvider extends BaseAgentProvider {
   }
 }
 
+/**
+ * Same shape as Claude Code, but the daemon spawns `claude` in its TUI and
+ * we render the live terminal alongside structured cards. See
+ * `apps/agent/src/ai/claudeTerminal/`.
+ */
+class ClaudeTerminalAgentProvider extends ClaudeCodeAgentProvider {
+  readonly id: AgentId = 'claude-terminal';
+  readonly label: string = 'Claude (Terminal)';
+  readonly description: string = 'Live terminal + structured cards — uses your Claude subscription as interactive use';
+}
+
 // ── Registry ──────────────────────────────────────────────────────────────────
 
 const PROVIDER_INSTANCES: Record<AgentId, AgentProvider> = {
   'claude-code': new ClaudeCodeAgentProvider(),
+  'claude-terminal': new ClaudeTerminalAgentProvider(),
   codex: new CodexAgentProvider(),
   opencode: new OpenCodeAgentProvider(),
   pi: new PiAgentProvider(),

@@ -274,6 +274,7 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
           ownDir: __ownDir,
           cwd: opts.cwd,
           sessionId: resumeSessionId,
+          corrId: opts.mcpCorrId,
         }),
       },
       systemPrompt: opts.systemPrompt

@@ -151,6 +151,10 @@ export interface StartSessionOpts {
    *  hook consults to auto-approve every tool. Presence of the file means bypass
    *  is active. Only ClaudeCliProvider uses it; other providers ignore it. */
   bypassFlagPath?: string;
+  /** Correlation id minted by the daemon at spawn. Threaded into the sandbox
+   *  MCP server's `--corr` so it can locate this session's registry entry
+   *  before the real sessionId exists. See `sandboxMcp.ts` / `sandboxMcpStdio.ts`. */
+  mcpCorrId?: string;
 }
 
 export interface ResumeSessionOpts {
@@ -166,10 +170,14 @@ export interface ResumeSessionOpts {
   reasoningEffort?: string;
   contextWindow?: number;
   bypassFlagPath?: string;
+  /** See {@link StartSessionOpts.mcpCorrId}. On resume the stdio server also
+   *  gets `--session-id`, so this is belt-and-suspenders for cold re-spawns. */
+  mcpCorrId?: string;
 }
 
 export const DEFAULT_AGENT_LABELS: Record<AgentId, string> = {
   'claude-code': 'Claude Code',
+  'claude-terminal': 'Claude (Terminal)',
   'codex': 'Codex',
   'opencode': 'OpenCode',
   'pi': 'Pi',

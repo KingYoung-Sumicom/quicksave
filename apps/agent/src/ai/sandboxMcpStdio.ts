@@ -23,6 +23,7 @@ import { join, dirname } from 'path';
 import { homedir, platform } from 'os';
 import { fileURLToPath } from 'url';
 import { z } from 'zod';
+import { findRegistryPathByCorr } from './sessionRegistryLocator.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
 
@@ -34,6 +35,13 @@ function readArg(flag: string): string | undefined {
 const cwd = readArg('--cwd') ?? process.cwd();
 /** Known only on resume; undefined when the CLI spawns this MCP for a fresh session. */
 const sessionIdHint = readArg('--session-id');
+/**
+ * Correlation id baked in by the daemon at spawn (`buildSandboxMcpServerConfig`).
+ * On a fresh session we have no `--session-id`, so we locate our registry entry
+ * by scanning the project's files for the one whose `mcpCorrId` matches this.
+ * 1:1 with this process, so the match is exact — no "newest file" guessing.
+ */
+const corrIdHint = readArg('--corr');
 
 const realCwd = realpathSync(cwd);
 const realHome = realpathSync(process.env.HOME ?? '/');
@@ -182,9 +190,8 @@ function readStoredStatus(): StatusSnapshot {
   const empty: StatusSnapshot = {
     subject: null, stage: null, blocked: null, note: null, pendingMission: null, recentNotes: [], source: 'unknown',
   };
-  if (!sessionIdHint) return empty;
-  const path = join(sessionRegistryDir, encodedCwd, `${sessionIdHint}.json`);
-  if (!existsSync(path)) return empty;
+  const path = sessionRegistryPath();
+  if (!path || !existsSync(path)) return empty;
   try {
     const entry = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
     const history = Array.isArray(entry.noteHistory) ? entry.noteHistory as Array<{ ts: number; text: string }> : [];
@@ -203,9 +210,30 @@ function readStoredStatus(): StatusSnapshot {
   }
 }
 
+/** Resolved registry path, memoized once we successfully locate it via corr. */
+let resolvedRegistryPath: string | null = null;
+
+/**
+ * Locate this session's registry file.
+ *
+ *  - On resume we're given `--session-id`, so the path is direct.
+ *  - On a fresh session we only have `--corr`; scan the project's registry
+ *    files for the one whose `mcpCorrId` matches and memoize it (the daemon
+ *    stamps `mcpCorrId` onto the entry once it learns the real sessionId, so
+ *    the file may not exist on the very first call — we just retry next time).
+ *
+ * The corr match is exact and 1:1 with this process, so it's safe even when
+ * several sessions share a cwd — unlike picking the newest file.
+ */
 function sessionRegistryPath(): string | null {
-  if (!sessionIdHint) return null;
-  return join(sessionRegistryDir, encodedCwd, `${sessionIdHint}.json`);
+  if (sessionIdHint) {
+    return join(sessionRegistryDir, encodedCwd, `${sessionIdHint}.json`);
+  }
+  if (!corrIdHint) return null;
+  if (resolvedRegistryPath && existsSync(resolvedRegistryPath)) return resolvedRegistryPath;
+  const found = findRegistryPathByCorr(join(sessionRegistryDir, encodedCwd), corrIdHint);
+  if (found) resolvedRegistryPath = found;
+  return found;
 }
 
 function isSessionStage(value: string): value is NonNullable<StatusSnapshot['stage']> {

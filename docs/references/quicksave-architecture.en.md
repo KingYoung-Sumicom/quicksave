@@ -400,6 +400,18 @@ Codex (`CodexPermissionPreset`): `read-only`, `default`, `auto-review`, `full-ac
 - `SandboxBash` (sandbox ON) — auto-approved, executed inside the kernel sandbox
 - `SandboxBash` (sandbox OFF) — treated as `Bash`, subject to the auto-approve rules of the current permissionMode
 
+**Reading status back from the stdio server (correlation id):** `UpdateSessionStatus`'s
+*returned snapshot* comes from the stdio MCP process (`sandboxMcpStdio.ts`) reading the
+`SessionRegistryEntry` file itself — separate from the authoritative write done by the daemon's
+`onToolUse` interception. To locate that file the stdio server needs to know its session id, but on a
+**fresh (non-resume) session the id doesn't exist yet at MCP spawn time** (Claude assigns it after the
+first turn). So the daemon mints a per-session `mcpCorrId` up front (`SessionManager.startSession`),
+bakes it into the spawn args as `--corr` (`buildSandboxMcpServerConfig`), and stamps it onto the
+`SessionRegistryEntry`. The stdio server resolves its file by scanning the project's registry entries
+for the one whose `mcpCorrId` matches (`sessionRegistryLocator.findRegistryPathByCorr`) — exact and 1:1
+with the process, so it's safe even when multiple sessions share a cwd. On resume the server still gets
+`--session-id` and reads directly; `--corr` is belt-and-suspenders for cold re-spawns.
+
 ### System Prompt
 
 Injected via the `--append-system-prompt` CLI argument; passed on both start and resume. Fixed contents:

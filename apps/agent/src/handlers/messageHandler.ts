@@ -2118,6 +2118,7 @@ export class MessageHandler {
         model,
         reasoningEffort,
         contextWindow,
+        mcpCorrId: this.claudeService.getSessionMcpCorrId(sessionId),
       });
       this.onHistoryUpdated?.(cwd, registry.getEntry(cwd, sessionId)!, 'upsert');
 
@@ -2194,6 +2195,7 @@ export class MessageHandler {
         agent: actualAgent,
         lastAccessedAt: Date.now(),
         gitBranch,
+        mcpCorrId: this.claudeService.getSessionMcpCorrId(actualSessionId) ?? existing?.mcpCorrId,
       });
       this.onHistoryUpdated?.(cwd, registry.getEntry(cwd, actualSessionId)!, 'upsert');
 

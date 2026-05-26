@@ -345,6 +345,7 @@ function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promis
       extraArgs: buildCodexSandboxMcpConfigArgs({
         cwd: opts.cwd,
         sessionId: 'sessionId' in opts ? opts.sessionId : undefined,
+        corrId: opts.mcpCorrId,
       }),
     },
   );
@@ -353,11 +354,13 @@ function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promis
 export function buildCodexSandboxMcpConfigArgs(opts: {
   cwd: string;
   sessionId?: string;
+  corrId?: string;
 }): string[] {
   const config = buildSandboxMcpServerConfig({
     ownDir: __aiDir,
     cwd: opts.cwd,
     sessionId: opts.sessionId,
+    corrId: opts.corrId,
   });
   return [
     '-c',

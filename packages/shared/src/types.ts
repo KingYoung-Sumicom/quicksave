@@ -345,7 +345,7 @@ export interface PushSubscriptionOfferResponsePayload {
 /** Any JSON-primitive value that can be stored as a session config entry. */
 export type ConfigValue = string | number | boolean | null;
 
-export type AgentId = 'claude-code' | 'codex' | 'opencode' | 'pi';
+export type AgentId = 'claude-code' | 'claude-terminal' | 'codex' | 'opencode' | 'pi';
 
 /** PWA → Agent: set a single key on a session's config */
 export interface SessionSetConfigRequestPayload {
@@ -456,6 +456,15 @@ export interface SessionRegistryEntry {
    * dismissible banner until the agent clears or updates the mission.
    */
   pendingMission?: SessionPendingMission;
+  /**
+   * Correlation id minted at session spawn and baked into the sandbox MCP
+   * server's `--corr` arg. Lets that stdio server locate THIS entry for a
+   * fresh (non-resume) session, where it has no `--session-id` yet — it scans
+   * the project's registry files for the one whose `mcpCorrId` matches its own.
+   * 1:1 with the MCP child process, so the match is exact and concurrency-safe
+   * (unlike a "newest lastAccessedAt" heuristic). See `sandboxMcpStdio.ts`.
+   */
+  mcpCorrId?: string;
   // Session settings — persisted so they survive daemon restarts
   permissionMode?: string;
   sandboxed?: boolean;

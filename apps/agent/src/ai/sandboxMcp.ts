@@ -54,6 +54,10 @@ export function buildSandboxMcpServerConfig(opts: {
   cwd: string;
   /** When resuming, lets the server's UpdateSessionStatus dry-run read the registry file. */
   sessionId?: string;
+  /** Correlation id for fresh sessions, where `sessionId` isn't known yet at
+   *  spawn. Becomes `--corr`; the stdio server resolves its registry file by
+   *  matching this against each entry's `mcpCorrId`. See `sandboxMcpStdio.ts`. */
+  corrId?: string;
 }): SandboxMcpServerConfig {
   const tsPath = join(opts.ownDir, 'sandboxMcpStdio.ts');
   const jsPath = join(opts.ownDir, 'sandboxMcpStdio.js');
@@ -69,6 +73,7 @@ export function buildSandboxMcpServerConfig(opts: {
 
   const args = [scriptPath, '--cwd', opts.cwd];
   if (opts.sessionId) args.push('--session-id', opts.sessionId);
+  if (opts.corrId) args.push('--corr', opts.corrId);
 
   return { type: 'stdio', command, args };
 }
