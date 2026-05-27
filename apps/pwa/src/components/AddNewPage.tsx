@@ -23,6 +23,7 @@ import { ErrorBox } from './ui/ErrorBox';
 import { QRScanner } from './QRScanner';
 import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
 import { getAgentProvider } from '../lib/agentProvider';
+import { useComposerVoice } from '../hooks/useComposerVoice';
 import { toProjectId } from '../lib/projectId';
 
 type StartSessionOpts = {
@@ -650,6 +651,14 @@ function SessionTab({
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Voice input (shared with the chat composer). Appends transcripts to the
+  // prompt; gated on the selected machine advertising audio support.
+  const voice = useComposerVoice(
+    project?.agentId ?? '',
+    (text) => setPrompt((p) => (p.trim() ? `${p.trim()} ${text}` : text)),
+    setError,
+  );
+
   const isMobile = 'ontouchstart' in window;
 
   const canStart = !!project?.isConnected && !!prompt.trim() && !starting;
@@ -717,6 +726,13 @@ function SessionTab({
 
       {error && <ErrorBar message={error} />}
 
+      {voice.streaming && (
+        <div className="flex items-center gap-1.5 px-4 pt-2 text-xs text-slate-400">
+          <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shrink-0" />
+          <span className="truncate">{voice.interim || 'Listening…'}</span>
+        </div>
+      )}
+
       <div className="border-t border-slate-700 px-4 py-3 bg-slate-900 flex items-end gap-2 safe-area-bottom-input">
         <textarea
           value={prompt}
@@ -732,6 +748,44 @@ function SessionTab({
           rows={2}
           disabled={!project?.isConnected || starting}
         />
+        {voice.showMic && (
+          <button
+            type="button"
+            onPointerDown={(e) => { e.preventDefault(); void voice.onMicPress(); }}
+            disabled={voice.busy || !project?.isConnected}
+            className={clsx(
+              'p-2 rounded-lg transition-colors flex-shrink-0 flex items-center justify-center disabled:opacity-60',
+              voice.recording
+                ? 'bg-red-600 text-white hover:bg-red-500'
+                : voice.arming
+                  ? 'text-amber-400'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/60',
+            )}
+            title={
+              voice.transcribing ? 'Transcribing…'
+                : voice.arming ? 'Starting…'
+                  : voice.recording ? (voice.streaming ? 'Stop (live)' : 'Stop & transcribe')
+                    : voice.configured ? 'Record voice' : 'Voice input — configure in Settings'
+            }
+            aria-label={voice.recording ? 'Stop recording' : 'Record voice'}
+          >
+            {voice.transcribing ? (
+              <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+              </svg>
+            ) : voice.recording ? (
+              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                <rect x="7" y="7" width="10" height="10" rx="2" />
+              </svg>
+            ) : (
+              <svg className={clsx('w-5 h-5', voice.arming && 'animate-pulse')} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 1.5a3 3 0 00-3 3v6a3 3 0 006 0v-6a3 3 0 00-3-3z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10.5a7 7 0 0014 0M12 17.5V21m-3.5 0h7" />
+              </svg>
+            )}
+          </button>
+        )}
         <button
           onPointerDown={(e) => { e.preventDefault(); handleStart(); }}
           disabled={!canStart}
