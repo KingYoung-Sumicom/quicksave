@@ -83,12 +83,22 @@ describe('RealtimeTranscriber', () => {
     expect(Buffer.from(append.audio, 'base64')).toEqual(Buffer.from([1, 2, 3, 4]));
   });
 
-  it('sends a commit on commit()', () => {
+  it('sends a commit after audio was appended', () => {
     const t = newTranscriber();
     t.start();
     socket.emit('open');
+    t.appendAudio(Buffer.from([1, 2]));
     t.commit();
     expect(JSON.parse(socket.sent.at(-1)!).type).toBe('input_audio_buffer.commit');
+  });
+
+  it('skips commit when no audio was appended (avoids empty-buffer error)', () => {
+    const t = newTranscriber();
+    t.start();
+    socket.emit('open');
+    const before = socket.sent.length;
+    t.commit();
+    expect(socket.sent.length).toBe(before); // nothing sent
   });
 
   it('routes delta events to onPartial and completed to onFinal', () => {
@@ -111,6 +121,22 @@ describe('RealtimeTranscriber', () => {
     socket.emit('open');
     socket.emit('message', JSON.stringify({ type: 'error', error: { message: 'bad audio' } }));
     expect(cb.onError).toHaveBeenCalledWith('bad audio');
+  });
+
+  it('suppresses the benign empty-buffer commit error', () => {
+    const cb = makeCb();
+    const t = newTranscriber(cb);
+    t.start();
+    socket.emit('open');
+    socket.emit('message', JSON.stringify({
+      type: 'error',
+      error: { code: 'input_audio_buffer_commit_empty', message: 'buffer too small. Expected at least 100ms' },
+    }));
+    socket.emit('message', JSON.stringify({
+      type: 'error',
+      error: { message: 'Error committing input audio buffer: buffer too small, but buffer only has 0.00ms' },
+    }));
+    expect(cb.onError).not.toHaveBeenCalled();
   });
 
   it('ignores unparseable frames', () => {

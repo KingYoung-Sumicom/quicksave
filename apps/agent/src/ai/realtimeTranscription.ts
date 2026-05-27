@@ -46,6 +46,7 @@ export class RealtimeTranscriber {
   private socket: RealtimeSocket | null = null;
   private opened = false;
   private closed = false;
+  private appendedSinceCommit = false;
   private readonly pending: string[] = [];
 
   constructor(
@@ -101,11 +102,15 @@ export class RealtimeTranscriber {
   /** Queue a frame of PCM16 mono audio for transcription. */
   appendAudio(pcm16: Buffer | Uint8Array): void {
     const audio = Buffer.from(pcm16).toString('base64');
+    this.appendedSinceCommit = true;
     this.send(JSON.stringify({ type: 'input_audio_buffer.append', audio }));
   }
 
-  /** Signal end-of-utterance so the server finalizes the transcript. */
+  /** Signal end-of-utterance so the server finalizes the transcript. Skipped
+   *  when nothing new was appended (server VAD may have already committed). */
   commit(): void {
+    if (!this.appendedSinceCommit) return;
+    this.appendedSinceCommit = false;
     this.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
   }
 
@@ -133,7 +138,7 @@ export class RealtimeTranscriber {
   }
 
   private handleMessage(data: unknown): void {
-    let evt: { type?: string; delta?: unknown; transcript?: unknown; error?: { message?: unknown } };
+    let evt: { type?: string; delta?: unknown; transcript?: unknown; error?: { message?: unknown; code?: unknown } };
     try {
       const text = typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
       evt = JSON.parse(text);
@@ -153,7 +158,13 @@ export class RealtimeTranscriber {
       return;
     }
     if (type === 'error') {
+      const code = typeof evt.error?.code === 'string' ? evt.error.code : '';
       const msg = typeof evt.error?.message === 'string' ? evt.error.message : 'Realtime API error';
+      // Benign: committing an empty/too-short buffer — typically because server
+      // VAD already flushed it. Recognition is unaffected, so don't surface it.
+      if (code === 'input_audio_buffer_commit_empty' || /buffer too small|buffer is empty/i.test(msg)) {
+        return;
+      }
       this.cb.onError(msg);
     }
   }
