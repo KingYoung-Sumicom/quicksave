@@ -60,9 +60,17 @@ export function useVoiceRecorder(): UseVoiceRecorder {
     }
     setError(null);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      });
       const mimeType = pickMimeType();
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      // Speech recognition needs very little fidelity; a low mono bitrate keeps
+      // the inline-base64 upload well under the single-frame cap (~512 KB →
+      // several minutes at 24 kbps instead of ~30 s at the browser default).
+      const recorder = new MediaRecorder(stream, {
+        ...(mimeType ? { mimeType } : {}),
+        audioBitsPerSecond: 24_000,
+      });
       chunksRef.current = [];
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
