@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { create } from 'zustand';
-import type { ConnectionState, Repository, CodingPath, CodexModelInfo, AgentProviderInfo } from '@sumicom/quicksave-shared';
+import type { ConnectionState, Repository, CodingPath, CodexModelInfo, AgentProviderInfo, AgentAudioCapabilities } from '@sumicom/quicksave-shared';
 
 export type ConnectionStep = 'signaling' | 'waiting-for-agent' | 'key-exchange' | 'handshake';
 
@@ -18,6 +18,9 @@ export interface AgentConnectionState {
    *  is older than the platform-aware build; treat as "unknown — hide
    *  platform-specific UI to be safe". */
   platform?: 'linux' | 'darwin' | 'win32' | 'other';
+  /** Machine-level voice capability from the handshake ack. `undefined` ⇒ the
+   *  agent did not advertise voice support; the PWA hides voice UI. */
+  audio?: AgentAudioCapabilities;
   connectedAt: number | null;
   error: string | null;
   /** Relay's view of whether the agent is reachable.
@@ -76,7 +79,7 @@ interface ConnectionStore {
 
   // Multi-agent actions
   setAgentConnecting: (agentId: string) => void;
-  setAgentConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string, devBuild?: boolean, platform?: 'linux' | 'darwin' | 'win32' | 'other') => void;
+  setAgentConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string, devBuild?: boolean, platform?: 'linux' | 'darwin' | 'win32' | 'other', audio?: AgentAudioCapabilities) => void;
   setAgentDisconnected: (agentId: string) => void;
   setAgentError: (agentId: string, error: string) => void;
   setAgentOnlineFor: (agentId: string, online: boolean) => void;
@@ -259,7 +262,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       },
     })),
 
-  setAgentConnected: (agentId, repoPath, isPro, availableRepos, availableCodingPaths, agentVersion, devBuild, platform) =>
+  setAgentConnected: (agentId, repoPath, isPro, availableRepos, availableCodingPaths, agentVersion, devBuild, platform, audio) =>
     set((state) => ({
       agentConnections: {
         ...state.agentConnections,
@@ -272,6 +275,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
           agentVersion: agentVersion || null,
           devBuild: devBuild || false,
           platform,
+          audio,
           connectedAt: Date.now(),
           error: null,
         },

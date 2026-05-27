@@ -162,6 +162,7 @@ import { OpenCodeProvider } from '../ai/openCodeProvider.js';
 import { AttachmentStaging } from '../ai/attachmentStaging.js';
 import { loadAttachment, removeSessionAttachments } from '../ai/attachmentStore.js';
 import { transcribeAudio, listModels } from '../ai/voiceTranscription.js';
+import { probeAudioSupport } from '../ai/voiceStream.js';
 import { CodexAppServerProvider } from '../ai/codexAppServer/index.js';
 import { CodexLoginManager } from '../ai/codexLogin.js';
 import { getTerminalManager } from '../terminal/terminalManager.js';
@@ -827,6 +828,7 @@ export class MessageHandler {
       codexModels: this.codexModelsCache?.models,
       platform: normalizePlatform(osPlatform()),
       availableProviders: availableProviders.length > 0 ? availableProviders : undefined,
+      audio: await probeAudioSupport(),
     });
     response.id = message.id;
 

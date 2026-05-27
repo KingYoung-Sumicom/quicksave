@@ -162,6 +162,12 @@ export function ClaudePanel({
   const hideToolCalls = useUiPrefsStore((s) => s.hideToolCalls);
   const agentId = useConnectionStore((s) => s.agentId ?? '');
   const availableProviders = useConnectionStore((s) => s.availableProviders);
+  // Voice capability this machine advertised at handshake (positive list):
+  // undefined ⇒ no voice UI for this machine's sessions.
+  const agentAudio = useConnectionStore((s) => (s.agentId ? s.agentConnections[s.agentId]?.audio : undefined));
+  const voiceBatchSupported = !!agentAudio?.transcription;
+  const voiceStreamingSupported = !!agentAudio?.streaming;
+  const voiceSupported = voiceBatchSupported || voiceStreamingSupported;
   const selectedAgentType = getAgentProvider(selectedAgent);
   const selectedProviderInfo = availableProviders.find((p) => p.id === selectedAgent);
   const supportsAttachments = !!(
@@ -819,14 +825,15 @@ export function ClaudePanel({
   // unavailable on this network / agent.
   const voiceStream = useVoiceStream(agentId, commitTranscript);
 
-  // Prewarm the WebRTC connection so the first utterance starts instantly.
+  // Prewarm the WebRTC connection so the first utterance starts instantly —
+  // only when this machine advertised streaming support.
   useEffect(() => {
-    if (!agentId) return;
+    if (!agentId || !voiceStreamingSupported) return;
     void getVoiceConfig().then((c) => {
       if (isVoiceConfigUsable(c)) void voiceStream.ensure();
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId]);
+  }, [agentId, voiceStreamingSupported]);
 
   // Surface streaming errors as a toast.
   useEffect(() => {
@@ -868,14 +875,18 @@ export function ClaudePanel({
       return;
     }
     setVoiceConfigured(true);
-    // Prefer live streaming when the prewarmed P2P link is ready; otherwise
-    // fall back to batch record-then-transcribe (works on any network).
-    if (voiceStream.ready) {
+    // Prefer live streaming when the machine supports it and the prewarmed P2P
+    // link is ready; otherwise fall back to batch (if the machine supports it).
+    if (voiceStreamingSupported && voiceStream.ready) {
       await voiceStream.start();
       return;
     }
-    await recorder.start();
-  }, [isTranscribing, voiceStream, recorder, batchStopAndTranscribe]);
+    if (voiceBatchSupported) {
+      await recorder.start();
+      return;
+    }
+    setAttachmentToast('Voice is not supported on this machine.');
+  }, [isTranscribing, voiceStream, recorder, batchStopAndTranscribe, voiceStreamingSupported, voiceBatchSupported]);
 
   const micRecording = voiceStream.recording || recorder.state === 'recording';
 
@@ -1153,7 +1164,7 @@ export function ClaudePanel({
                 </div>
                 {/* Right group: mic, then a one-button-width gap, then send. */}
                 <div className="flex items-center">
-                  {recorder.isSupported && (
+                  {recorder.isSupported && voiceSupported && (
                     <>
                       <button
                         type="button"

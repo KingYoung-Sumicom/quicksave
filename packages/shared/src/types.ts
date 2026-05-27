@@ -680,6 +680,18 @@ export interface AgentProbePayload {
   availableProviders: AgentProviderInfo[];
 }
 
+/**
+ * Machine-level voice capability the agent advertises in the handshake ack.
+ * Positive list: when this field is absent (older agents, or a build without
+ * the voice handlers) the PWA shows no voice UI for that machine's sessions.
+ */
+export interface AgentAudioCapabilities {
+  /** Batch transcription proxy (`voice:transcribe` / `voice:list-models`). */
+  transcription: boolean;
+  /** Live WebRTC streaming (`voice:rtc-*` + Realtime ASR; needs @roamhq/wrtc). */
+  streaming: boolean;
+}
+
 // Handshake
 export interface HandshakePayload {
   publicKey: string; // Base64 encoded
@@ -702,6 +714,9 @@ export interface HandshakeAckPayload {
   /** Agent registry discovered at handshake time (all registered providers).
     *  Only present when at least one non-claude-code agent is available. */
   availableProviders?: AgentProviderInfo[];
+  /** Voice capability of this machine. Absent ⇒ the agent does not support
+    *  voice; the PWA hides voice UI for this machine's sessions. */
+  audio?: AgentAudioCapabilities;
 }
 
 // Codex / OpenAI model discovery

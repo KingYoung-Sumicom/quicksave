@@ -536,7 +536,7 @@ function AppContent() {
     if (clientRef.current) return;
 
     const client = new WebSocketClient(signalingServer, identityPublicKey, {
-      onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences, agentVersion, latestVersion, devBuild, codexModels, platform, availableProviders) => {
+      onConnected: (agentId, path, pro, availableRepos, availableCodingPaths, preferences, agentVersion, latestVersion, devBuild, codexModels, platform, availableProviders, audio) => {
         const { transport } = ensureBusForAgent(agentId);
         transport.notifyConnected();
         // Each handshake-ack establishes a fresh agent session and the agent
@@ -570,7 +570,7 @@ function AppContent() {
           handlersRef.current.setCurrentRepoPath(path);
         }
         // Update multi-agent connection map (authoritative per-agent state)
-        useConnectionStore.getState().setAgentConnected(agentId, path, pro, availableRepos, availableCodingPaths, agentVersion, devBuild, platform);
+        useConnectionStore.getState().setAgentConnected(agentId, path, pro, availableRepos, availableCodingPaths, agentVersion, devBuild, platform, audio);
         const repoPaths = availableRepos?.map((r) => r.path);
         const codingPaths = availableCodingPaths?.map((p) => p.path);
         handlersRef.current.recordConnection(agentId, path, pro, repoPaths, codingPaths);

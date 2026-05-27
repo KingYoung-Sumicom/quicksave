@@ -64,6 +64,15 @@ export function classifyVoiceDcData(data: unknown): VoiceDcInbound {
   return { kind: 'ignore' };
 }
 
+/**
+ * Probe this machine's voice capability for the handshake ack. Batch
+ * transcription is always available in this build; streaming additionally
+ * requires the optional native WebRTC dependency to load.
+ */
+export async function probeAudioSupport(): Promise<{ transcription: boolean; streaming: boolean }> {
+  return { transcription: true, streaming: (await loadWrtc()) !== null };
+}
+
 /** STUN servers from env (comma-separated) or a public default. No TURN. */
 function iceServers(): { urls: string }[] {
   const env = process.env.QUICKSAVE_VOICE_STUN?.trim();
