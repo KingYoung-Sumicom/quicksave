@@ -79,7 +79,9 @@ setInterval(() => {
   }
 }, RECONNECT_WINDOW_MS).unref?.();
 
-const syncStore = new SyncStore();
+const syncStore = new SyncStore({
+  maxBlobSize: Number(process.env.QUICKSAVE_SYNC_MAX_BLOB_BYTES) || 256 * 1024,
+});
 const pairStore = new PairStore({
   onMailboxOutcome: (outcome) => {
     pairMailboxOutcomesTotal.inc({ outcome });

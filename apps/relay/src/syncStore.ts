@@ -23,7 +23,7 @@ export class SyncStore {
   private locks = new Map<string, MailboxLock>();
   private config: Required<Omit<SyncStoreConfig, 'now'>> & { now: () => number };
 
-  constructor(config: SyncStoreConfig = { maxBlobSize: 8192 }) {
+  constructor(config: SyncStoreConfig = { maxBlobSize: 256 * 1024 }) {
     this.config = {
       maxBlobSize: config.maxBlobSize,
       lockTtlMs: config.lockTtlMs ?? 10_000,

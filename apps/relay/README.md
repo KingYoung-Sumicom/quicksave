@@ -53,6 +53,7 @@ reverse proxy (nginx, Caddy, Cloudflare) for production.
 | `VAPID_PRIVATE_KEY`   | unset          | VAPID private key for Web Push                |
 | `VAPID_SUBJECT`       | `mailto:admin@quicksave.dev` | VAPID subject (email or URL)    |
 | `PUSH_STORE_PATH`     | in-memory only | Optional JSON snapshot path for push subscriptions |
+| `QUICKSAVE_SYNC_MAX_BLOB_BYTES` | `262144` (256 KB) | Max size of a single encrypted sync-mailbox blob (`SyncStore.maxBlobSize`). Raise if devices sync large state (many machines / cached projects); a too-small value returns 413 on push. |
 
 `METRICS_HOST` defaults to `127.0.0.1` so `/metrics` is **not** reachable from
 the public internet. Scrape it from inside your trust boundary (Tailscale tail

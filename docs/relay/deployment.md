@@ -11,10 +11,10 @@
 | `RATE_LIMIT_WINDOW` | 60,000 ms | Hardcoded | Sliding window for rate limiting |
 | `RATE_LIMIT_MAX_CONNECTIONS` | 10 | Hardcoded | Max new connections per IP per window |
 | `RATE_LIMIT_MAX_MESSAGES` | 100 | Hardcoded | Max messages per connection per window |
-| `SyncStore.maxBlobSize` | 8,192 bytes | Hardcoded | Max size for a single sync blob |
+| `QUICKSAVE_SYNC_MAX_BLOB_BYTES` | 262,144 bytes (256 KB) | `process.env.QUICKSAVE_SYNC_MAX_BLOB_BYTES` | Max size of a single encrypted sync-mailbox blob (`SyncStore.maxBlobSize`). Push returns 413 above this. |
 | `VERSION` | from `package.json` | Build-time inject | Server version string |
 
-`PORT`, `METRICS_PORT`, and `METRICS_HOST` are runtime-configurable via environment variables. All other values are hardcoded constants.
+`PORT`, `METRICS_PORT`, `METRICS_HOST`, and `QUICKSAVE_SYNC_MAX_BLOB_BYTES` are runtime-configurable via environment variables. All other values are hardcoded constants.
 
 ## Rate Limiting
 
