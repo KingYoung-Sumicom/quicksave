@@ -52,6 +52,11 @@ export function useComposerVoice(
   const [configured, setConfigured] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [arming, setArming] = useState(false);
+  // Explicit "user is streaming" intent. The session's own state can briefly
+  // flip (e.g. a transient ICE 'disconnected', or a VAD segment finalizing),
+  // so we drive the button from intent — set on start, cleared on stop or a
+  // genuine failure — to keep the mic button consistent while audio flows.
+  const [streamingActive, setStreamingActive] = useState(false);
   const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Latest onError without re-subscribing effects on every parent render.
@@ -73,8 +78,13 @@ export function useComposerVoice(
   }, [agentId, streamingSupported]);
 
   useEffect(() => {
-    if (voiceStream.error) onErrorRef.current(voiceStream.error);
+    if (voiceStream.error) { onErrorRef.current(voiceStream.error); setStreamingActive(false); }
   }, [voiceStream.error]);
+
+  // A genuine connection failure ends the utterance — clear the intent.
+  useEffect(() => {
+    if (voiceStream.unavailable) setStreamingActive(false);
+  }, [voiceStream.unavailable]);
 
   useEffect(() => () => { if (armTimerRef.current) clearTimeout(armTimerRef.current); }, []);
 
@@ -106,7 +116,8 @@ export function useComposerVoice(
 
   const onMicPress = useCallback(async () => {
     if (transcribing || arming) return;
-    if (voiceStream.recording) { voiceStream.stop(); return; }
+    // Stop whichever capture is in progress (intent-driven for streaming).
+    if (streamingActive) { setStreamingActive(false); voiceStream.stop(); return; }
     if (recorder.state === 'recording') { await batchStopAndTranscribe(); return; }
 
     const config = await getVoiceConfig();
@@ -120,19 +131,20 @@ export function useComposerVoice(
     try {
       if (streamingSupported && voiceStream.ready) {
         await voiceStream.start();
-        return;
-      }
-      if (batchSupported) {
+        setStreamingActive(true);
+      } else if (batchSupported) {
         await recorder.start();
-        return;
+      } else {
+        onErrorRef.current('Voice is not supported on this machine.');
       }
-      onErrorRef.current('Voice is not supported on this machine.');
+    } catch (err) {
+      onErrorRef.current(err instanceof Error ? err.message : 'Could not start voice input.');
     } finally {
       stopArming();
     }
-  }, [transcribing, arming, voiceStream, recorder, batchStopAndTranscribe, streamingSupported, batchSupported, stopArming]);
+  }, [transcribing, arming, streamingActive, voiceStream, recorder, batchStopAndTranscribe, streamingSupported, batchSupported, stopArming]);
 
-  const recording = voiceStream.recording || recorder.state === 'recording';
+  const recording = streamingActive || recorder.state === 'recording';
 
   return {
     showMic: recorder.isSupported && voiceSupported,
@@ -143,6 +155,6 @@ export function useComposerVoice(
     busy: transcribing || arming,
     interim: voiceStream.interim,
     configured,
-    streaming: voiceStream.recording,
+    streaming: streamingActive,
   };
 }
