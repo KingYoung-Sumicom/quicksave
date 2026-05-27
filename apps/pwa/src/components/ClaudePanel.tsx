@@ -1140,59 +1140,66 @@ export function ClaudePanel({
                       </svg>
                     </label>
                   )}
-                  {recorder.isSupported && (
-                    <button
-                      type="button"
-                      onPointerDown={(e) => { e.preventDefault(); void handleMicPress(); }}
-                      disabled={isTranscribing}
-                      className={clsx(
-                        'p-2 rounded-lg transition-colors flex-shrink-0 flex items-center justify-center disabled:opacity-60',
-                        micRecording
-                          ? 'bg-red-600 text-white hover:bg-red-500'
-                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/60',
-                      )}
-                      title={
-                        isTranscribing
-                          ? 'Transcribing…'
-                          : micRecording
-                            ? (voiceStream.recording ? 'Stop (live)' : 'Stop & transcribe')
-                            : voiceConfigured ? 'Record voice' : 'Voice input — configure in Settings'
-                      }
-                      aria-label={micRecording ? 'Stop recording' : 'Record voice'}
-                    >
-                      {isTranscribing ? (
-                        <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
-                        </svg>
-                      ) : micRecording ? (
-                        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                          <rect x="7" y="7" width="10" height="10" rx="2" />
-                        </svg>
-                      ) : (
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 1.5a3 3 0 00-3 3v6a3 3 0 006 0v-6a3 3 0 00-3-3z" />
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10.5a7 7 0 0014 0M12 17.5V21m-3.5 0h7" />
-                        </svg>
-                      )}
-                    </button>
-                  )}
                 </div>
-                <button
-                  onPointerDown={(e) => { e.preventDefault(); handleSend(); }}
-                  disabled={(!promptInput.trim() && pendingAttachments.length === 0) || anyUploadInFlight}
-                  className={clsx(
-                    'p-2 rounded-lg transition-colors flex-shrink-0',
-                    (promptInput.trim() || pendingAttachments.length > 0) && !anyUploadInFlight
-                      ? 'bg-blue-600 hover:bg-blue-500'
-                      : 'bg-slate-600 text-slate-400'
+                {/* Right group: mic, then a one-button-width gap, then send. */}
+                <div className="flex items-center">
+                  {recorder.isSupported && (
+                    <>
+                      <button
+                        type="button"
+                        onPointerDown={(e) => { e.preventDefault(); void handleMicPress(); }}
+                        disabled={isTranscribing}
+                        className={clsx(
+                          'p-2 rounded-lg transition-colors flex-shrink-0 flex items-center justify-center disabled:opacity-60',
+                          micRecording
+                            ? 'bg-red-600 text-white hover:bg-red-500'
+                            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/60',
+                        )}
+                        title={
+                          isTranscribing
+                            ? 'Transcribing…'
+                            : micRecording
+                              ? (voiceStream.recording ? 'Stop (live)' : 'Stop & transcribe')
+                              : voiceConfigured ? 'Record voice' : 'Voice input — configure in Settings'
+                        }
+                        aria-label={micRecording ? 'Stop recording' : 'Record voice'}
+                      >
+                        {isTranscribing ? (
+                          <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                          </svg>
+                        ) : micRecording ? (
+                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                            <rect x="7" y="7" width="10" height="10" rx="2" />
+                          </svg>
+                        ) : (
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 1.5a3 3 0 00-3 3v6a3 3 0 006 0v-6a3 3 0 00-3-3z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10.5a7 7 0 0014 0M12 17.5V21m-3.5 0h7" />
+                          </svg>
+                        )}
+                      </button>
+                      {/* one-button-width gap between mic and send */}
+                      <span className="w-9 flex-shrink-0" aria-hidden="true" />
+                    </>
                   )}
-                  title={anyUploadInFlight ? 'Waiting for uploads…' : 'Send'}
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />
-                  </svg>
-                </button>
+                  <button
+                    onPointerDown={(e) => { e.preventDefault(); handleSend(); }}
+                    disabled={(!promptInput.trim() && pendingAttachments.length === 0) || anyUploadInFlight}
+                    className={clsx(
+                      'p-2 rounded-lg transition-colors flex-shrink-0',
+                      (promptInput.trim() || pendingAttachments.length > 0) && !anyUploadInFlight
+                        ? 'bg-blue-600 hover:bg-blue-500'
+                        : 'bg-slate-600 text-slate-400'
+                    )}
+                    title={anyUploadInFlight ? 'Waiting for uploads…' : 'Send'}
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
