@@ -1,9 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type {
-  Machine,
-  CachedProjectData,
-} from '../stores/machineStore';
+import type { Machine } from '../stores/machineStore';
 
 /** Last-write-wins wrapper for a single scalar value. */
 export interface Timestamped<T> {
@@ -46,34 +43,6 @@ function unionStrings(a: string[] | undefined, b: string[] | undefined): string[
   return [...new Set([...(a ?? []), ...(b ?? [])])];
 }
 
-function mergeCachedProjects(
-  a: Record<string, CachedProjectData> | undefined,
-  b: Record<string, CachedProjectData> | undefined,
-): Record<string, CachedProjectData> {
-  const out: Record<string, CachedProjectData> = { ...(a ?? {}) };
-  for (const [cwd, bEntry] of Object.entries(b ?? {})) {
-    const aEntry = out[cwd];
-    if (!aEntry) {
-      out[cwd] = bEntry;
-      continue;
-    }
-    // Take whichever side has higher lastActivityAt; prefer its repos too.
-    if (bEntry.lastActivityAt > aEntry.lastActivityAt) {
-      out[cwd] = {
-        ...bEntry,
-        // Preserve repos if remote side lacks them.
-        repos: bEntry.repos ?? aEntry.repos,
-      };
-    } else {
-      out[cwd] = {
-        ...aEntry,
-        repos: aEntry.repos ?? bEntry.repos,
-      };
-    }
-  }
-  return out;
-}
-
 /**
  * Merge two machines representing the same agentId.
  * Synced fields (publicKey, signPublicKey, nickname, icon) use LWW by
@@ -99,7 +68,9 @@ function mergeMachine(a: Machine, b: Machine): Machine {
     knownRepos: unionStrings(a.knownRepos, b.knownRepos),
     knownCodingPaths: unionStrings(a.knownCodingPaths, b.knownCodingPaths),
     isPro: a.isPro || b.isPro,
-    cachedProjects: mergeCachedProjects(a.cachedProjects, b.cachedProjects),
+    // `cachedProjects` is local-only and never travels over the wire; the store
+    // preserves each device's own copy in `applySyncedState`.
+    cachedProjects: {},
   };
 }
 
@@ -203,7 +174,8 @@ function machinesEqual(a: Machine, b: Machine): boolean {
   if (a.isPro !== b.isPro) return false;
   if (!stringSetEqual(a.knownRepos, b.knownRepos)) return false;
   if (!stringSetEqual(a.knownCodingPaths, b.knownCodingPaths)) return false;
-  if (!cachedProjectsEqual(a.cachedProjects, b.cachedProjects)) return false;
+  // `cachedProjects` is local-only and not synced, so it is not part of
+  // wire-equality (comparing it would trigger spurious re-pushes).
   return true;
 }
 
@@ -211,40 +183,5 @@ function stringSetEqual(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   const set = new Set(a);
   for (const v of b) if (!set.has(v)) return false;
-  return true;
-}
-
-function cachedProjectsEqual(
-  a: Record<string, CachedProjectData>,
-  b: Record<string, CachedProjectData>,
-): boolean {
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-  for (const k of keys) {
-    const av = a[k];
-    const bv = b[k];
-    if (!av || !bv) return false;
-    if (av.lastActivityAt !== bv.lastActivityAt) return false;
-    if (av.sessionCount !== bv.sessionCount) return false;
-    if (av.lastSessionTitle !== bv.lastSessionTitle) return false;
-    if (!reposEqual(av.repos, bv.repos)) return false;
-  }
-  return true;
-}
-
-function reposEqual(
-  a: CachedProjectData['repos'],
-  b: CachedProjectData['repos'],
-): boolean {
-  if (!a && !b) return true;
-  if (!a || !b) return false;
-  if (a.length !== b.length) return false;
-  const byPath = new Map(a.map((r) => [r.path, r]));
-  for (const r of b) {
-    const match = byPath.get(r.path);
-    if (!match) return false;
-    if (match.name !== r.name || match.currentBranch !== r.currentBranch || match.isSubmodule !== r.isSubmodule) {
-      return false;
-    }
-  }
   return true;
 }

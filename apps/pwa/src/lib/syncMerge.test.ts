@@ -105,14 +105,12 @@ describe('mergeSyncPayloads', () => {
       expect(merged.machines[0].isPro).toBe(true);
     });
 
-    it('merges cachedProjects per cwd, keeping entry with higher lastActivityAt', () => {
+    it('drops cachedProjects from the merged (wire) result — it is local-only, not synced', () => {
       const a = makePayload({
         machines: [
           makeMachine({
             agentId: 'x',
-            cachedProjects: {
-              '/p1': { lastActivityAt: 100, sessionCount: 1, lastSessionTitle: 'old' },
-            },
+            cachedProjects: { '/p1': { lastActivityAt: 100, sessionCount: 1, lastSessionTitle: 'old' } },
           }),
         ],
       });
@@ -120,18 +118,22 @@ describe('mergeSyncPayloads', () => {
         machines: [
           makeMachine({
             agentId: 'x',
-            cachedProjects: {
-              '/p1': { lastActivityAt: 500, sessionCount: 3, lastSessionTitle: 'new' },
-              '/p2': { lastActivityAt: 200, sessionCount: 1 },
-            },
+            cachedProjects: { '/p2': { lastActivityAt: 200, sessionCount: 1 } },
           }),
         ],
       });
       const merged = mergeSyncPayloads(a, b);
-      const cached = merged.machines[0].cachedProjects;
-      expect(cached['/p1'].lastActivityAt).toBe(500);
-      expect(cached['/p1'].lastSessionTitle).toBe('new');
-      expect(cached['/p2'].lastActivityAt).toBe(200);
+      expect(merged.machines[0].cachedProjects).toEqual({});
+    });
+
+    it('ignores cachedProjects in equality (no spurious re-push)', () => {
+      const a = makePayload({
+        machines: [makeMachine({ agentId: 'x', cachedProjects: { '/p1': { lastActivityAt: 1, sessionCount: 1 } } })],
+      });
+      const b = makePayload({
+        machines: [makeMachine({ agentId: 'x', cachedProjects: {} })],
+      });
+      expect(syncPayloadsEqual(a, b)).toBe(true);
     });
   });
 

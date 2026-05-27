@@ -296,10 +296,19 @@ export const useMachineStore = create<MachineStore>()(
         })),
 
       applySyncedState: (next) =>
-        set(() => ({
-          machines: next.machines.filter(isValidMachineIdentity),
-          machineTombstones: next.machineTombstones,
-        })),
+        set((state) => {
+          // `cachedProjects` is local-only (not synced) — preserve this device's
+          // copy across the wholesale machine replacement so a sync pull doesn't
+          // wipe the locally-cached project list.
+          const localCache = new Map(state.machines.map((m) => [m.agentId, m.cachedProjects]));
+          return {
+            machines: next.machines.filter(isValidMachineIdentity).map((m) => ({
+              ...m,
+              cachedProjects: localCache.get(m.agentId) ?? m.cachedProjects ?? {},
+            })),
+            machineTombstones: next.machineTombstones,
+          };
+        }),
 
       pruneTombstones: () =>
         set((state) => {

@@ -367,7 +367,11 @@ function AppContent() {
       masterSecret: await getMasterSecretExport(),
       apiKey: await getApiKeyExport(),
       voiceConfig: await getVoiceConfigExport(),
-      machines: s.machines,
+      // `cachedProjects` is agent-declared data (the agent is the source of
+      // truth via project:list-summaries); it's kept as a local-only cache and
+      // refreshed on connect, NOT synced through the mailbox — it would bloat
+      // the blob (past the relay cap) for no benefit.
+      machines: s.machines.map((m) => ({ ...m, cachedProjects: {} })),
       machineTombstones: s.machineTombstones,
       exportedAt: new Date().toISOString(),
     };
