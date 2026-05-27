@@ -70,6 +70,8 @@ import {
   getApiKeyExport,
   applyMasterSecret,
   applyApiKey,
+  getVoiceConfigExport,
+  applyVoiceConfig,
 } from './lib/secureStorage';
 import { SyncClient } from './lib/syncClient';
 import { mergeSyncPayloads, syncPayloadsEqual, type SyncPayloadV3 } from './lib/syncMerge';
@@ -364,6 +366,7 @@ function AppContent() {
       version: 3,
       masterSecret: await getMasterSecretExport(),
       apiKey: await getApiKeyExport(),
+      voiceConfig: await getVoiceConfigExport(),
       machines: s.machines,
       machineTombstones: s.machineTombstones,
       exportedAt: new Date().toISOString(),
@@ -404,6 +407,9 @@ function AppContent() {
         }
         if (merged.apiKey) {
           await applyApiKey(merged.apiKey.value, merged.apiKey.updatedAt);
+        }
+        if (merged.voiceConfig) {
+          await applyVoiceConfig(merged.voiceConfig.value, merged.voiceConfig.updatedAt);
         }
 
         // If the merge widened our view beyond the remote blob we read,

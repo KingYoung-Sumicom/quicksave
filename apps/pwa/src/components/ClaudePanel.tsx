@@ -31,6 +31,10 @@ import {
   type PendingAttachment,
 } from '../lib/attachmentUploader';
 import { attachmentsFromDataTransfer, inspectPaste, processPasteInspection, type PendingAttachmentDraft } from '../lib/attachments';
+import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
+import { useVoiceStream } from '../hooks/useVoiceStream';
+import { getVoiceConfig } from '../lib/secureStorage';
+import { transcribeViaAgent, isVoiceConfigUsable } from '../lib/voiceTranscription';
 
 type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
 type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
@@ -191,6 +195,20 @@ export function ClaudePanel({
     const s = uploadStates[p.id]?.status;
     return s === 'queued' || s === 'uploading';
   });
+
+  // ── Voice input ──────────────────────────────────────────────────────────
+  // Recording happens in the browser; transcription is a direct PWA→API call
+  // (no agent), so the configured endpoint must allow this origin (CORS).
+  const recorder = useVoiceRecorder();
+  const [voiceConfigured, setVoiceConfigured] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    getVoiceConfig().then((c) => {
+      if (!cancelled) setVoiceConfigured(isVoiceConfigUsable(c));
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const ingestAttachments = useCallback((drafts: PendingAttachmentDraft[], rejected: { message: string }[]) => {
     if (drafts.length > 0) {
@@ -777,6 +795,90 @@ export function ClaudePanel({
     el.style.height = `${Math.min(el.scrollHeight, lineHeight * 5)}px`;
   }, [saveDraft, setPromptInput]);
 
+  const growInput = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const lineHeight = parseInt(getComputedStyle(el).lineHeight) || 20;
+    el.style.height = `${Math.min(el.scrollHeight, lineHeight * 5)}px`;
+  }, []);
+
+  // Append a finalized transcript to the prompt (shared by streaming + batch).
+  const commitTranscript = useCallback((text: string) => {
+    const prev = useClaudeStore.getState().promptInput;
+    const next = prev.trim() ? `${prev.trim()} ${text}` : text;
+    setPromptInput(next);
+    saveDraft(next);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      growInput();
+    });
+  }, [setPromptInput, saveDraft, growInput]);
+
+  // Streaming voice (WebRTC). Falls back to batch recording when P2P is
+  // unavailable on this network / agent.
+  const voiceStream = useVoiceStream(agentId, commitTranscript);
+
+  // Prewarm the WebRTC connection so the first utterance starts instantly.
+  useEffect(() => {
+    if (!agentId) return;
+    void getVoiceConfig().then((c) => {
+      if (isVoiceConfigUsable(c)) void voiceStream.ensure();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentId]);
+
+  // Surface streaming errors as a toast.
+  useEffect(() => {
+    if (voiceStream.error) setAttachmentToast(voiceStream.error);
+  }, [voiceStream.error]);
+
+  const batchStopAndTranscribe = useCallback(async () => {
+    const blob = await recorder.stop();
+    if (!blob) return;
+    const config = await getVoiceConfig();
+    if (!isVoiceConfigUsable(config)) {
+      setVoiceConfigured(false);
+      setAttachmentToast('Voice transcription is not configured. Set it up in Settings.');
+      return;
+    }
+    setIsTranscribing(true);
+    try {
+      const text = await transcribeViaAgent(blob, config, agentId);
+      if (text) commitTranscript(text);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      setAttachmentToast(err instanceof Error ? err.message : 'Transcription failed.');
+    } finally {
+      setIsTranscribing(false);
+    }
+  }, [recorder, agentId, commitTranscript]);
+
+  const handleMicPress = useCallback(async () => {
+    if (isTranscribing) return;
+    // Stop whichever capture is in progress.
+    if (voiceStream.recording) { voiceStream.stop(); return; }
+    if (recorder.state === 'recording') { await batchStopAndTranscribe(); return; }
+
+    // Idle press → start. Require config first.
+    const config = await getVoiceConfig();
+    if (!isVoiceConfigUsable(config)) {
+      setVoiceConfigured(false);
+      setAttachmentToast('Voice transcription is not configured. Set it up in Settings.');
+      return;
+    }
+    setVoiceConfigured(true);
+    // Prefer live streaming when the prewarmed P2P link is ready; otherwise
+    // fall back to batch record-then-transcribe (works on any network).
+    if (voiceStream.ready) {
+      await voiceStream.start();
+      return;
+    }
+    await recorder.start();
+  }, [isTranscribing, voiceStream, recorder, batchStopAndTranscribe]);
+
+  const micRecording = voiceStream.recording || recorder.state === 'recording';
+
   return (
     <div className="flex flex-col flex-1 min-h-0">
       {isChat ? (
@@ -987,6 +1089,12 @@ export function ClaudePanel({
                   ))}
                 </div>
               )}
+              {voiceStream.recording && (
+                <div className="flex items-center gap-1.5 px-1 text-xs text-slate-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shrink-0" />
+                  <span className="truncate">{voiceStream.interim || 'Listening…'}</span>
+                </div>
+              )}
               <textarea
                 ref={inputRef}
                 value={promptInput}
@@ -1019,20 +1127,57 @@ export function ClaudePanel({
                 rows={1}
               />
               <div className="flex items-center justify-between">
-                {supportsAttachments ? (
-                  <label
-                    htmlFor="qs-attach-input"
-                    className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-700/60 flex-shrink-0 cursor-pointer flex items-center justify-center"
-                    title="Attach files"
-                    aria-label="Attach files"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                    </svg>
-                  </label>
-                ) : (
-                  <span className="w-9 h-9 flex-shrink-0" aria-hidden="true" />
-                )}
+                <div className="flex items-center gap-1">
+                  {supportsAttachments && (
+                    <label
+                      htmlFor="qs-attach-input"
+                      className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-700/60 flex-shrink-0 cursor-pointer flex items-center justify-center"
+                      title="Attach files"
+                      aria-label="Attach files"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                      </svg>
+                    </label>
+                  )}
+                  {recorder.isSupported && (
+                    <button
+                      type="button"
+                      onPointerDown={(e) => { e.preventDefault(); void handleMicPress(); }}
+                      disabled={isTranscribing}
+                      className={clsx(
+                        'p-2 rounded-lg transition-colors flex-shrink-0 flex items-center justify-center disabled:opacity-60',
+                        micRecording
+                          ? 'bg-red-600 text-white hover:bg-red-500'
+                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/60',
+                      )}
+                      title={
+                        isTranscribing
+                          ? 'Transcribing…'
+                          : micRecording
+                            ? (voiceStream.recording ? 'Stop (live)' : 'Stop & transcribe')
+                            : voiceConfigured ? 'Record voice' : 'Voice input — configure in Settings'
+                      }
+                      aria-label={micRecording ? 'Stop recording' : 'Record voice'}
+                    >
+                      {isTranscribing ? (
+                        <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                        </svg>
+                      ) : micRecording ? (
+                        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                          <rect x="7" y="7" width="10" height="10" rx="2" />
+                        </svg>
+                      ) : (
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 1.5a3 3 0 00-3 3v6a3 3 0 006 0v-6a3 3 0 00-3-3z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10.5a7 7 0 0014 0M12 17.5V21m-3.5 0h7" />
+                        </svg>
+                      )}
+                    </button>
+                  )}
+                </div>
                 <button
                   onPointerDown={(e) => { e.preventDefault(); handleSend(); }}
                   disabled={(!promptInput.trim() && pendingAttachments.length === 0) || anyUploadInFlight}

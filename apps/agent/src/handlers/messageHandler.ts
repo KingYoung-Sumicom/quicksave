@@ -92,6 +92,10 @@ import {
   AttachmentCancelResponsePayload,
   AttachmentFetchRequestPayload,
   AttachmentFetchResponsePayload,
+  VoiceTranscribeRequestPayload,
+  VoiceTranscribeResponsePayload,
+  VoiceListModelsRequestPayload,
+  VoiceListModelsResponsePayload,
   SessionSetConfigRequestPayload,
   SessionSetConfigResponsePayload,
   SessionControlRequestPayload,
@@ -157,6 +161,7 @@ import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
 import { OpenCodeProvider } from '../ai/openCodeProvider.js';
 import { AttachmentStaging } from '../ai/attachmentStaging.js';
 import { loadAttachment, removeSessionAttachments } from '../ai/attachmentStore.js';
+import { transcribeAudio, listModels } from '../ai/voiceTranscription.js';
 import { CodexAppServerProvider } from '../ai/codexAppServer/index.js';
 import { CodexLoginManager } from '../ai/codexLogin.js';
 import { getTerminalManager } from '../terminal/terminalManager.js';
@@ -792,6 +797,10 @@ export class MessageHandler {
           return this.handleAttachmentCancel(message as Message<AttachmentCancelRequestPayload>, peerAddress);
         case 'attachment:fetch':
           return this.handleAttachmentFetch(message as Message<AttachmentFetchRequestPayload>);
+        case 'voice:transcribe':
+          return this.handleVoiceTranscribe(message as Message<VoiceTranscribeRequestPayload>);
+        case 'voice:list-models':
+          return this.handleVoiceListModels(message as Message<VoiceListModelsRequestPayload>);
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
     }
@@ -1379,6 +1388,44 @@ export class MessageHandler {
       const response = createMessage<SetApiKeyResponsePayload>('ai:set-api-key:response', {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to save API key',
+      });
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleVoiceTranscribe(
+    message: Message<VoiceTranscribeRequestPayload>,
+  ): Promise<Message<VoiceTranscribeResponsePayload>> {
+    const { audioBase64, mimeType, config } = message.payload;
+    try {
+      const audio = Buffer.from(audioBase64, 'base64');
+      const text = await transcribeAudio(audio, mimeType, config);
+      const response = createMessage<VoiceTranscribeResponsePayload>('voice:transcribe:response', { text });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<VoiceTranscribeResponsePayload>('voice:transcribe:response', {
+        text: '',
+        error: error instanceof Error ? error.message : 'Transcription failed',
+      });
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleVoiceListModels(
+    message: Message<VoiceListModelsRequestPayload>,
+  ): Promise<Message<VoiceListModelsResponsePayload>> {
+    try {
+      const models = await listModels(message.payload.config);
+      const response = createMessage<VoiceListModelsResponsePayload>('voice:list-models:response', { models });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<VoiceListModelsResponsePayload>('voice:list-models:response', {
+        models: [],
+        error: error instanceof Error ? error.message : 'Failed to list models',
       });
       response.id = message.id;
       return response;

@@ -64,7 +64,7 @@
 只有**一個 mailbox**，位址 = `hash(shared_pubkey)`。所有 paired PWA 既是 sender 也是 receiver。
 
 - 每次寫入都是**完整 blob 覆蓋**（單槽）
-- Blob 內容是 `SyncPayloadV3`（`apps/pwa/src/lib/syncMerge.ts`），所有同步欄位用 `Timestamped<T>` 包裝、機器列表配 `machineTombstones`
+- Blob 內容是 `SyncPayloadV3`（`apps/pwa/src/lib/syncMerge.ts`），所有同步欄位用 `Timestamped<T>` 包裝、機器列表配 `machineTombstones`。目前同步的純量包含 `masterSecret`、`apiKey`（Anthropic）與 `voiceConfig`（序列化後的 Whisper 轉寫 key/baseUrl/model，視為單一不透明 LWW 字串，讓語音輸入只需設定一次、撤銷/輪替也只改一處）。新增的選填欄位維持向後相容：舊 blob 缺少時合併為 `null`。
 - 衝突解決：欄位級 LWW（已實作於 `syncMerge.ts`）
 
 ### Read-Modify-Write flow

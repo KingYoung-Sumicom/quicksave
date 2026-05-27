@@ -19,6 +19,10 @@ export interface SyncPayloadV3 {
   version: 3;
   masterSecret: Timestamped<string> | null;
   apiKey: Timestamped<string> | null;
+  /** Serialized VoiceConfig (transcription key/baseUrl/model) as an opaque
+   *  LWW scalar. Optional for backward-compat with payloads written before
+   *  voice input existed. */
+  voiceConfig?: Timestamped<string> | null;
   machines: Machine[];
   /** agentId → deletedAt (ms). Supersedes a machine with older updatedAt. */
   machineTombstones: Record<string, number>;
@@ -142,6 +146,7 @@ export function mergeSyncPayloads(a: SyncPayloadV3, b: SyncPayloadV3): SyncPaylo
     version: 3,
     masterSecret: pickLatest(a.masterSecret, b.masterSecret),
     apiKey: pickLatest(a.apiKey, b.apiKey),
+    voiceConfig: pickLatest(a.voiceConfig, b.voiceConfig),
     machines,
     machineTombstones: tombstones,
     exportedAt: a.exportedAt >= b.exportedAt ? a.exportedAt : b.exportedAt,
@@ -158,6 +163,7 @@ export function mergeSyncPayloads(a: SyncPayloadV3, b: SyncPayloadV3): SyncPaylo
 export function syncPayloadsEqual(a: SyncPayloadV3, b: SyncPayloadV3): boolean {
   if (!timestampedEqual(a.masterSecret, b.masterSecret)) return false;
   if (!timestampedEqual(a.apiKey, b.apiKey)) return false;
+  if (!timestampedEqual(a.voiceConfig ?? null, b.voiceConfig ?? null)) return false;
   if (!recordEqual(a.machineTombstones, b.machineTombstones)) return false;
 
   if (a.machines.length !== b.machines.length) return false;

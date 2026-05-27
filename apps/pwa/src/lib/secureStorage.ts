@@ -13,7 +13,9 @@
  * - If Agent is compromised, only current session is exposed
  */
 
-import { encodeBase64, decodeBase64, generateSessionDEK } from '@sumicom/quicksave-shared';
+import { encodeBase64, decodeBase64, generateSessionDEK, type VoiceConfig } from '@sumicom/quicksave-shared';
+
+export type { VoiceConfig };
 
 const DB_NAME = 'quicksave-secure';
 const DB_VERSION = 1;
@@ -22,10 +24,17 @@ const MASTER_SECRET_KEY = 'master-secret';
 const MASTER_SECRET_META_KEY = 'master-secret-meta';
 const API_KEY_KEY = 'anthropic-api-key';
 const API_KEY_META_KEY = 'anthropic-api-key-meta';
+const VOICE_CONFIG_KEY = 'voice-config';
+const VOICE_CONFIG_META_KEY = 'voice-config-meta';
 
 interface SecretMeta {
   updatedAt: number;
 }
+
+// `VoiceConfig` is defined in @sumicom/quicksave-shared (re-exported above) so
+// the same shape flows PWA → agent in the voice:transcribe request. The config
+// is persisted here (origin-isolated IndexedDB) and synced via the group
+// mailbox so it's configured once and is the single source of truth.
 
 async function putRecord(key: string, value: unknown): Promise<void> {
   const db = await openDatabase();
@@ -294,6 +303,52 @@ export async function getApiKey(): Promise<string | null> {
 export async function hasApiKey(): Promise<boolean> {
   const key = await getApiKey();
   return key !== null;
+}
+
+/** Save the voice/transcription config locally, stamping updatedAt. */
+export async function saveVoiceConfig(config: VoiceConfig): Promise<void> {
+  await putRecord(VOICE_CONFIG_KEY, JSON.stringify(config));
+  await putRecord(VOICE_CONFIG_META_KEY, { updatedAt: Date.now() } satisfies SecretMeta);
+}
+
+/** Returns the parsed voice config, or null if not set / unparseable. */
+export async function getVoiceConfig(): Promise<VoiceConfig | null> {
+  const raw = await getRecord<string>(VOICE_CONFIG_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<VoiceConfig>;
+    return {
+      apiKey: parsed.apiKey ?? '',
+      baseUrl: parsed.baseUrl ?? '',
+      model: parsed.model ?? '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns the serialized voice config with its updatedAt for sync, or null if
+ * not set. The value is the raw JSON string so it merges as an opaque scalar.
+ */
+export async function getVoiceConfigExport(): Promise<{ value: string; updatedAt: number } | null> {
+  const raw = await getRecord<string>(VOICE_CONFIG_KEY);
+  if (!raw) return null;
+  const meta = await getRecord<SecretMeta>(VOICE_CONFIG_META_KEY);
+  return { value: raw, updatedAt: meta?.updatedAt ?? 0 };
+}
+
+/**
+ * Apply a remote voice config only if its updatedAt is newer. Returns true if
+ * local state changed.
+ */
+export async function applyVoiceConfig(value: string, updatedAt: number): Promise<boolean> {
+  const existing = await getVoiceConfigExport();
+  if (existing && existing.updatedAt >= updatedAt && existing.value === value) return false;
+  if (existing && existing.updatedAt > updatedAt) return false;
+  await putRecord(VOICE_CONFIG_KEY, value);
+  await putRecord(VOICE_CONFIG_META_KEY, { updatedAt } satisfies SecretMeta);
+  return true;
 }
 
 /**

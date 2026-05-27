@@ -204,6 +204,39 @@ describe('mergeSyncPayloads', () => {
     });
   });
 
+  describe('voiceConfig', () => {
+    it('LWW when both sides present', () => {
+      const a = makePayload({ voiceConfig: { value: '{"baseUrl":"old"}', updatedAt: 100 } });
+      const b = makePayload({ voiceConfig: { value: '{"baseUrl":"new"}', updatedAt: 200 } });
+      const merged = mergeSyncPayloads(a, b);
+      expect(merged.voiceConfig).toEqual({ value: '{"baseUrl":"new"}', updatedAt: 200 });
+    });
+
+    it('uses non-null side when only one is set', () => {
+      const a = makePayload();
+      const b = makePayload({ voiceConfig: { value: '{"model":"whisper-1"}', updatedAt: 100 } });
+      expect(mergeSyncPayloads(a, b).voiceConfig).toEqual({ value: '{"model":"whisper-1"}', updatedAt: 100 });
+    });
+
+    it('is null when absent from both (backward-compat with older payloads)', () => {
+      expect(mergeSyncPayloads(makePayload(), makePayload()).voiceConfig).toBeNull();
+    });
+
+    it('older updatedAt loses regardless of merge order', () => {
+      const older = makePayload({ voiceConfig: { value: 'old', updatedAt: 100 } });
+      const newer = makePayload({ voiceConfig: { value: 'new', updatedAt: 200 } });
+      expect(mergeSyncPayloads(older, newer).voiceConfig?.value).toBe('new');
+      expect(mergeSyncPayloads(newer, older).voiceConfig?.value).toBe('new');
+    });
+
+    it('syncPayloadsEqual detects voiceConfig differences and ignores absent-vs-null', () => {
+      const a = makePayload({ voiceConfig: { value: 'x', updatedAt: 1 } });
+      const b = makePayload({ voiceConfig: { value: 'y', updatedAt: 1 } });
+      expect(syncPayloadsEqual(a, b)).toBe(false);
+      expect(syncPayloadsEqual(makePayload({ voiceConfig: null }), makePayload())).toBe(true);
+    });
+  });
+
   describe('determinism', () => {
     it('is commutative for independent edits (order of merge does not matter)', () => {
       const a = makePayload({

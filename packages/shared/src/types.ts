@@ -192,6 +192,20 @@ export type MessageType =
   | 'attachment:cancel:response'
   | 'attachment:fetch'
   | 'attachment:fetch:response'
+  // Voice — agent proxies a Whisper-compatible transcription API (the agent
+  // has no CORS constraint, so OpenAI's endpoint works). Config travels in the
+  // request; the single source of truth lives in the PWA's synced store.
+  | 'voice:transcribe'
+  | 'voice:transcribe:response'
+  | 'voice:list-models'
+  | 'voice:list-models:response'
+  // Streaming voice (WebRTC): signaling rides the bus, audio + transcripts ride
+  // the DataChannel. The agent pushes its ICE candidates via the subscription
+  // path `/voice/rtc/{sessionId}`.
+  | 'voice:rtc-connect'
+  | 'voice:rtc-connect:response'
+  | 'voice:rtc-ice'
+  | 'voice:rtc-ice:response'
   // Message bus envelope (transports opaque bus frames; see packages/message-bus)
   | 'bus:frame'
   | 'error';
@@ -1324,6 +1338,98 @@ export interface SetApiKeyResponsePayload {
 export interface GetApiKeyStatusResponsePayload {
   configured: boolean;
 }
+
+// Voice transcription (agent-proxied Whisper-compatible API)
+/**
+ * Voice/transcription settings. The single source of truth lives in the PWA's
+ * synced secure store (so it's configured once and synced across devices); a
+ * copy travels to the agent in each request rather than being persisted there.
+ */
+export interface VoiceConfig {
+  /** Bearer token for the transcription endpoint (optional for open servers). */
+  apiKey: string;
+  /** API base URL, e.g. `https://api.openai.com/v1` or a self-hosted server. */
+  baseUrl: string;
+  /** Transcription model name, e.g. `whisper-1`. */
+  model: string;
+}
+
+export interface VoiceTranscribeRequestPayload {
+  /** base64-encoded audio bytes. Capped to a single bus frame (see PWA). */
+  audioBase64: string;
+  /** MIME type of the recording, e.g. `audio/webm`. */
+  mimeType: string;
+  config: VoiceConfig;
+}
+
+export interface VoiceTranscribeResponsePayload {
+  text: string;
+  error?: string;
+}
+
+export interface VoiceListModelsRequestPayload {
+  config: VoiceConfig;
+}
+
+export interface VoiceListModelsResponsePayload {
+  /** Model ids returned by `GET {baseUrl}/models`, or empty on error. */
+  models: string[];
+  error?: string;
+}
+
+// ── Streaming voice (WebRTC) ────────────────────────────────────────────────
+
+/**
+ * PCM16 little-endian mono is what the OpenAI Realtime transcription API (and
+ * most streaming ASR servers) expect. The PWA captures at this rate via an
+ * AudioWorklet and ships raw frames over the DataChannel.
+ */
+export const VOICE_PCM_SAMPLE_RATE = 24_000;
+
+/** WebRTC offer → answer exchange (bus command). */
+export interface VoiceRtcConnectRequestPayload {
+  /** Correlates the signaling exchange + the agent's ICE subscription path. */
+  sessionId: string;
+  /** SDP offer from the PWA. */
+  sdp: string;
+}
+export interface VoiceRtcConnectResponsePayload {
+  /** SDP answer from the agent. */
+  sdp?: string;
+  error?: string;
+}
+
+/** Trickle ICE candidate, PWA → agent (bus command). The agent's own
+ *  candidates are pushed back on the `/voice/rtc/{sessionId}` subscription. */
+export interface VoiceRtcIceRequestPayload {
+  sessionId: string;
+  /** JSON-serialized RTCIceCandidateInit, or null to signal end-of-candidates. */
+  candidate: string | null;
+}
+export interface VoiceRtcIceResponsePayload {
+  ok: boolean;
+  error?: string;
+}
+
+/** A single ICE candidate the agent pushes to the PWA via subscription. */
+export interface VoiceRtcIceUpdate {
+  candidate: string | null;
+}
+
+/**
+ * Messages exchanged over the voice DataChannel (JSON, except `audio` which the
+ * PWA may send as a binary frame for efficiency). Kept here so PWA and agent
+ * agree on the wire shape independent of the bus.
+ */
+export type VoiceDcMessage =
+  // PWA → agent: begin an utterance; opens an ASR stream with this config.
+  | { t: 'start'; config: VoiceConfig; sampleRate: number }
+  // PWA → agent: end the utterance; agent commits the audio buffer.
+  | { t: 'stop' }
+  // agent → PWA: incremental (partial) or finalized transcript text.
+  | { t: 'transcript'; final: boolean; text: string }
+  // agent → PWA: a non-fatal/fatal error for the current utterance.
+  | { t: 'error'; message: string };
 
 // ============================================================================
 // Claude Code SDK Remote Control Types

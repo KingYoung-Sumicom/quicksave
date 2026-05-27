@@ -64,7 +64,7 @@ Conclusion: drop the entire complexity.
 There is only **one mailbox**, and its address = `hash(shared_pubkey)`. Every paired PWA is both a sender and a receiver.
 
 - Each write is a **full-blob overwrite** (single slot)
-- The blob payload is `SyncPayloadV3` (`apps/pwa/src/lib/syncMerge.ts`); every synced field is wrapped in `Timestamped<T>` and the machine list pairs with `machineTombstones`
+- The blob payload is `SyncPayloadV3` (`apps/pwa/src/lib/syncMerge.ts`); every synced field is wrapped in `Timestamped<T>` and the machine list pairs with `machineTombstones`. Synced scalars currently include `masterSecret`, `apiKey` (Anthropic), and `voiceConfig` (the serialized Whisper transcription key/baseUrl/model — one opaque LWW string so voice input is configured once and revoked/rotated in one place). New optional fields stay backward-compatible: older blobs lacking them merge as `null`.
 - Conflict resolution: field-level LWW (already implemented in `syncMerge.ts`)
 
 ### Read-Modify-Write flow

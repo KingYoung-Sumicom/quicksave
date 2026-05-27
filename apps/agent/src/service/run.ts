@@ -24,6 +24,7 @@ import { BusServerTransport } from '../messageBus/busServerTransport.js';
 import { MessageBusServer } from '@sumicom/quicksave-message-bus';
 import { MessageHandler } from '../handlers/messageHandler.js';
 import { wireLegacyBusVerbs } from '../handlers/legacyBusAdapter.js';
+import { wireVoiceStream } from '../ai/voiceStream.js';
 import { GitOperations } from '../git/operations.js';
 import { IpcServer } from './ipcServer.js';
 import { DebugHttpServer } from './debugHttpServer.js';
@@ -528,6 +529,13 @@ export async function runDaemon(): Promise<void> {
   // pendingRequests machinery. See `handlers/legacyBusAdapter.ts` for the
   // verb list, the `__repoPath` smuggling rule, and the error encoding.
   wireLegacyBusVerbs(bus, messageHandler);
+
+  // Streaming voice (WebRTC) signaling. Registered directly on the bus (not via
+  // the legacy adapter) because it pushes ICE candidates back asynchronously
+  // through `bus.publish('/voice/rtc/:id')`. WebRTC is an optional native dep;
+  // if it can't load, these verbs return an error and the PWA falls back to the
+  // batch `voice:transcribe` path.
+  wireVoiceStream(bus);
 
   // Init preferences from the last session's JSONL (best-effort, non-blocking)
   claudeService.initPreferences().catch(() => {});

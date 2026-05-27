@@ -192,6 +192,7 @@ a local-only HTTP inspector bound to `127.0.0.1:7927` (next free port if
 | `QUICKSAVE_CLAUDE_TRANSPORT`          | Override the Claude Code transport selection                      |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW`     | Read on every turn — switches the Claude CLI auto-compact window without respawn |
 | `OPENAI_API_KEY`                      | Treated as a Codex login (`method: 'api-key'`)                    |
+| `QUICKSAVE_VOICE_STUN`                | Comma-separated STUN URLs for streaming-voice WebRTC ICE (default `stun:stun.l.google.com:19302`). No TURN is used — if P2P can't be established the PWA falls back to batch transcription. |
 
 ## Data location
 

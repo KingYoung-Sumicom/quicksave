@@ -9,6 +9,7 @@ import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { PairDeviceModal } from './PairDeviceModal';
 import { ScanToJoinModal } from './ScanToJoinModal';
 import { ApiKeySection } from './settings/ApiKeySection';
+import { VoiceSection } from './settings/VoiceSection';
 import { DangerZoneSection } from './settings/DangerZoneSection';
 import { NotificationSection } from './settings/NotificationSection';
 import { MachinesSection } from './settings/MachinesSection';
@@ -120,6 +121,10 @@ export function SettingsPage({ onSendApiKeyToAgent, onPushOffer }: SettingsPageP
           <div className="border-t border-slate-700" />
 
           <ApiKeySection isOpen onSendApiKeyToAgent={onSendApiKeyToAgent} />
+
+          <div className="border-t border-slate-700" />
+
+          <VoiceSection isOpen />
 
           <div className="border-t border-slate-700" />
 
