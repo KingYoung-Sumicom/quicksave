@@ -840,6 +840,18 @@ export function ClaudePanel({
     if (voiceStream.error) setAttachmentToast(voiceStream.error);
   }, [voiceStream.error]);
 
+  // "Arming" state: between the press and capture actually starting
+  // (getUserMedia + AudioWorklet / WebRTC). Revealed only after a short delay
+  // so the fast path (permission already granted) goes straight to recording
+  // without a flicker.
+  const [micArming, setMicArming] = useState(false);
+  const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopArming = useCallback(() => {
+    if (armTimerRef.current) { clearTimeout(armTimerRef.current); armTimerRef.current = null; }
+    setMicArming(false);
+  }, []);
+  useEffect(() => () => { if (armTimerRef.current) clearTimeout(armTimerRef.current); }, []);
+
   const batchStopAndTranscribe = useCallback(async () => {
     const blob = await recorder.stop();
     if (!blob) return;
@@ -862,7 +874,7 @@ export function ClaudePanel({
   }, [recorder, agentId, commitTranscript]);
 
   const handleMicPress = useCallback(async () => {
-    if (isTranscribing) return;
+    if (isTranscribing || micArming) return;
     // Stop whichever capture is in progress.
     if (voiceStream.recording) { voiceStream.stop(); return; }
     if (recorder.state === 'recording') { await batchStopAndTranscribe(); return; }
@@ -875,18 +887,26 @@ export function ClaudePanel({
       return;
     }
     setVoiceConfigured(true);
-    // Prefer live streaming when the machine supports it and the prewarmed P2P
-    // link is ready; otherwise fall back to batch (if the machine supports it).
-    if (voiceStreamingSupported && voiceStream.ready) {
-      await voiceStream.start();
-      return;
+    // Show the arming indicator only if capture setup takes longer than a beat.
+    armTimerRef.current = setTimeout(() => setMicArming(true), 120);
+    try {
+      // Prefer live streaming when the machine supports it and the prewarmed
+      // P2P link is ready; otherwise fall back to batch (if supported).
+      if (voiceStreamingSupported && voiceStream.ready) {
+        await voiceStream.start();
+        return;
+      }
+      if (voiceBatchSupported) {
+        await recorder.start();
+        return;
+      }
+      setAttachmentToast('Voice is not supported on this machine.');
+    } finally {
+      stopArming();
     }
-    if (voiceBatchSupported) {
-      await recorder.start();
-      return;
-    }
-    setAttachmentToast('Voice is not supported on this machine.');
-  }, [isTranscribing, voiceStream, recorder, batchStopAndTranscribe, voiceStreamingSupported, voiceBatchSupported]);
+  }, [isTranscribing, micArming, voiceStream, recorder, batchStopAndTranscribe, voiceStreamingSupported, voiceBatchSupported, stopArming]);
+
+  const micBusy = isTranscribing || micArming;
 
   const micRecording = voiceStream.recording || recorder.state === 'recording';
 
@@ -1169,19 +1189,23 @@ export function ClaudePanel({
                       <button
                         type="button"
                         onPointerDown={(e) => { e.preventDefault(); void handleMicPress(); }}
-                        disabled={isTranscribing}
+                        disabled={micBusy}
                         className={clsx(
                           'p-2 rounded-lg transition-colors flex-shrink-0 flex items-center justify-center disabled:opacity-60',
                           micRecording
                             ? 'bg-red-600 text-white hover:bg-red-500'
-                            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/60',
+                            : micArming
+                              ? 'text-amber-400'
+                              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/60',
                         )}
                         title={
                           isTranscribing
                             ? 'Transcribing…'
-                            : micRecording
-                              ? (voiceStream.recording ? 'Stop (live)' : 'Stop & transcribe')
-                              : voiceConfigured ? 'Record voice' : 'Voice input — configure in Settings'
+                            : micArming
+                              ? 'Starting…'
+                              : micRecording
+                                ? (voiceStream.recording ? 'Stop (live)' : 'Stop & transcribe')
+                                : voiceConfigured ? 'Record voice' : 'Voice input — configure in Settings'
                         }
                         aria-label={micRecording ? 'Stop recording' : 'Record voice'}
                       >
@@ -1195,7 +1219,7 @@ export function ClaudePanel({
                             <rect x="7" y="7" width="10" height="10" rx="2" />
                           </svg>
                         ) : (
-                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <svg className={clsx('w-5 h-5', micArming && 'animate-pulse')} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 1.5a3 3 0 00-3 3v6a3 3 0 006 0v-6a3 3 0 00-3-3z" />
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10.5a7 7 0 0014 0M12 17.5V21m-3.5 0h7" />
                           </svg>
