@@ -10,6 +10,7 @@ import type {
   BrowseDirectoryResponsePayload,
   DirectoryEntry,
   AgentId,
+  AttachmentKind,
 } from '@sumicom/quicksave-shared';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useMachineStore } from '../stores/machineStore';
@@ -22,8 +23,10 @@ import { Modal } from './ui/Modal';
 import { ErrorBox } from './ui/ErrorBox';
 import { QRScanner } from './QRScanner';
 import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
+import { AttachmentTray } from './AttachmentTray';
 import { getAgentProvider } from '../lib/agentProvider';
 import { useComposerVoice } from '../hooks/useComposerVoice';
+import { useComposerAttachments } from '../hooks/useComposerAttachments';
 import { toProjectId } from '../lib/projectId';
 
 type StartSessionOpts = {
@@ -659,16 +662,46 @@ function SessionTab({
     setError,
   );
 
+  // Attachment composer (shared with the chat composer).
+  const availableProviders = useConnectionStore((s) => s.availableProviders);
+  const agentType = getAgentProvider(selectedAgent);
+  const providerInfo = availableProviders.find((p) => p.id === selectedAgent);
+  const supportsAttachments = !!(
+    providerInfo?.capabilities.supportsAttachments ?? agentType.capabilities.supportsAttachments
+  );
+  const supportedAttachmentKinds = (
+    providerInfo?.capabilities.supportedAttachmentKinds
+    ?? agentType.capabilities.supportedAttachmentKinds
+    ?? (supportsAttachments ? ['image', 'pdf', 'text'] : [])
+  ) as AttachmentKind[];
+  const fileAccept = supportedAttachmentKinds.length === 0
+    ? undefined
+    : supportedAttachmentKinds.flatMap((kind) => {
+      if (kind === 'image') return ['image/*'];
+      if (kind === 'pdf') return ['application/pdf'];
+      return ['text/*', 'application/json', 'application/xml'];
+    }).join(',');
+  const attach = useComposerAttachments({
+    agentId: project?.agentId ?? '',
+    supportsAttachments: supportsAttachments && !!project?.isConnected,
+    supportedAttachmentKinds,
+    agentLabel: agentType.label,
+    onReject: setError,
+  });
+
   const isMobile = 'ontouchstart' in window;
 
-  const canStart = !!project?.isConnected && !!prompt.trim() && !starting;
+  const canStart = !!project?.isConnected
+    && (!!prompt.trim() || attach.pendingAttachments.length > 0)
+    && attach.allUploadsReady
+    && !starting;
 
   const handleStart = async () => {
     if (!canStart || !project) return;
     const text = prompt.trim();
+    const { attachmentIds, attachmentMetadata } = attach.buildPayload();
     setStarting(true);
     setError(null);
-    const agentType = getAgentProvider(selectedAgent);
     onSetActiveAgent(project.agentId);
     try {
       await onStartSession(text, {
@@ -685,6 +718,7 @@ function SessionTab({
         ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}),
         ...(agentType.allowedTools !== undefined ? { allowedTools: agentType.allowedTools } : {}),
         ...(agentType.systemPrompt ? { systemPrompt: agentType.systemPrompt } : {}),
+        ...(attachmentIds.length > 0 ? { attachmentIds, attachmentMetadata } : {}),
       });
       const streamErr = useClaudeStore.getState().streamError;
       if (streamErr) {
@@ -693,12 +727,14 @@ function SessionTab({
       }
       const sid = useClaudeStore.getState().activeSessionId;
       setPrompt('');
+      attach.clear();
       if (sid) {
         navigate(`/p/${project.projectId}/s/${sid}`);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : intl.formatMessage({ id: 'addNew.session.failed' }));
     } finally {
+      attach.forgetSent(attachmentIds);
       setStarting(false);
     }
   };
@@ -733,21 +769,55 @@ function SessionTab({
         </div>
       )}
 
-      <div className="border-t border-slate-700 px-4 py-3 bg-slate-900 flex items-end gap-2 safe-area-bottom-input">
-        <textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isMobile) {
-              e.preventDefault();
-              handleStart();
-            }
-          }}
-          placeholder={intl.formatMessage({ id: project?.isConnected ? 'addNew.session.promptReady' : 'addNew.session.promptOffline' })}
-          className="flex-1 bg-slate-700 rounded-lg px-3 py-2 text-sm resize-none overflow-y-auto focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
-          rows={2}
-          disabled={!project?.isConnected || starting}
-        />
+      <div className="border-t border-slate-700 px-4 py-3 bg-slate-900 safe-area-bottom-input">
+        <AttachmentTray pending={attach.pendingAttachments} onRemove={attach.removePendingAttachment} />
+        {supportsAttachments && (
+          <input
+            id="qs-new-attach-input"
+            ref={attach.fileInputRef}
+            type="file"
+            multiple
+            accept={fileAccept}
+            className="sr-only"
+            onChange={(e) => { void attach.handleFilePick(e.target.files); e.target.value = ''; }}
+          />
+        )}
+        <div
+          className={clsx(
+            'flex items-end gap-2 rounded-lg transition-colors',
+            attach.isDraggingFile && 'ring-2 ring-blue-400/60 bg-blue-500/5',
+          )}
+          onDragOver={attach.dragHandlers.onDragOver}
+          onDragLeave={attach.dragHandlers.onDragLeave}
+          onDrop={attach.dragHandlers.onDrop}
+        >
+          {supportsAttachments && (
+            <label
+              htmlFor="qs-new-attach-input"
+              className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-700/60 flex-shrink-0 cursor-pointer flex items-center justify-center"
+              title="Attach files"
+              aria-label="Attach files"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+              </svg>
+            </label>
+          )}
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isMobile) {
+                e.preventDefault();
+                handleStart();
+              }
+            }}
+            onPaste={(e) => { if (attach.tryConsumePaste(e.nativeEvent.clipboardData)) e.preventDefault(); }}
+            placeholder={intl.formatMessage({ id: project?.isConnected ? 'addNew.session.promptReady' : 'addNew.session.promptOffline' })}
+            className="flex-1 bg-slate-700 rounded-lg px-3 py-2 text-sm resize-none overflow-y-auto focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+            rows={2}
+            disabled={!project?.isConnected || starting}
+          />
         {voice.showMic && (
           <button
             type="button"
@@ -803,6 +873,7 @@ function SessionTab({
             </svg>
           )}
         </button>
+        </div>
       </div>
     </div>
   );
