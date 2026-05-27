@@ -9,6 +9,9 @@
  */
 import type { VoiceConfig } from '@sumicom/quicksave-shared';
 
+/** Below this the audio is effectively empty (decodes to 0 seconds). */
+export const MIN_AUDIO_BYTES = 1024;
+
 export class VoiceTranscriptionError extends Error {
   constructor(message: string, readonly cause?: unknown) {
     super(message);
@@ -54,6 +57,11 @@ export async function transcribeAudio(
 ): Promise<string> {
   if (!isVoiceConfigUsable(config)) {
     throw new VoiceTranscriptionError('Voice transcription is not configured.');
+  }
+  // Reject effectively-empty audio before spending an API round-trip — a
+  // near-empty container decodes to 0 seconds and the API rejects it anyway.
+  if (audio.length < MIN_AUDIO_BYTES) {
+    throw new VoiceTranscriptionError('No speech captured.');
   }
 
   const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';

@@ -1017,8 +1017,18 @@ export function ClaudePanel({
             )}
             <AttachmentTray pending={pendingAttachments} onRemove={removePendingAttachment} />
             {attachmentToast && (
-              <div className="mb-1.5 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1 whitespace-pre-line">
-                {attachmentToast}
+              <div className="mb-1.5 flex items-start gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1">
+                <span className="flex-1 whitespace-pre-line">{attachmentToast}</span>
+                <button
+                  type="button"
+                  onClick={() => setAttachmentToast(null)}
+                  className="flex-shrink-0 -mr-0.5 text-amber-300/70 hover:text-amber-200"
+                  aria-label="Dismiss"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
               </div>
             )}
             {/* iOS Safari refuses to open the picker for `display: none`

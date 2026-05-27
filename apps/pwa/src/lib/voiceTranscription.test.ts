@@ -43,7 +43,7 @@ describe('isVoiceConfigUsable', () => {
 });
 
 describe('transcribeViaAgent', () => {
-  const audio = new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/webm' });
+  const audio = new Blob([new Uint8Array(2048)], { type: 'audio/webm' }); // ≥ MIN_AUDIO_BYTES
 
   it('throws when config is unusable, without dispatching', async () => {
     await expect(transcribeViaAgent(audio, { ...config, baseUrl: '' }, AGENT)).rejects.toBeInstanceOf(
@@ -54,6 +54,12 @@ describe('transcribeViaAgent', () => {
 
   it('throws when no bus is registered for the agent', async () => {
     await expect(transcribeViaAgent(audio, config, 'other-agent')).rejects.toThrow(/Not connected/);
+  });
+
+  it('rejects an effectively-empty recording without dispatching', async () => {
+    const tiny = new Blob([new Uint8Array(100)], { type: 'audio/webm' });
+    await expect(transcribeViaAgent(tiny, config, AGENT)).rejects.toThrow(/No speech captured/);
+    expect(command).not.toHaveBeenCalled();
   });
 
   it('rejects recordings larger than the frame cap', async () => {

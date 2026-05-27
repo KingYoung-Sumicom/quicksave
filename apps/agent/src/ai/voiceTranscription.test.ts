@@ -19,7 +19,7 @@ function jsonResponse(body: unknown, ok = true, status = 200): Response {
   } as unknown as Response;
 }
 
-const audio = Buffer.from('fake audio bytes');
+const audio = Buffer.alloc(2048, 7); // ≥ MIN_AUDIO_BYTES so it isn't rejected as empty
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -40,6 +40,14 @@ describe('transcribeAudio', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     await expect(transcribeAudio(audio, 'audio/webm', { ...fullConfig, baseUrl: '' })).rejects.toBeInstanceOf(
       VoiceTranscriptionError,
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects effectively-empty audio without calling fetch', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    await expect(transcribeAudio(Buffer.alloc(100), 'audio/webm', fullConfig)).rejects.toThrow(
+      /No speech captured/,
     );
     expect(fetchSpy).not.toHaveBeenCalled();
   });

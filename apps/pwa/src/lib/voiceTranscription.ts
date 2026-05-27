@@ -22,6 +22,10 @@ import { getBusForAgent } from './busRegistry';
  *  512 KB chunk). Longer recordings are rejected client-side. */
 export const MAX_AUDIO_BYTES = 512 * 1024;
 
+/** Below this the recording is effectively empty (silent tap / no mic data);
+ *  a near-empty container decodes to 0 seconds and the API rejects it. */
+export const MIN_AUDIO_BYTES = 1024;
+
 export class VoiceTranscriptionError extends Error {
   constructor(message: string) {
     super(message);
@@ -48,6 +52,9 @@ export async function transcribeViaAgent(
     throw new VoiceTranscriptionError('Not connected to an agent.');
   }
   const bytes = new Uint8Array(await audio.arrayBuffer());
+  if (bytes.byteLength < MIN_AUDIO_BYTES) {
+    throw new VoiceTranscriptionError('No speech captured — please try again.');
+  }
   if (bytes.byteLength > MAX_AUDIO_BYTES) {
     throw new VoiceTranscriptionError('Recording is too long. Please record a shorter clip.');
   }
