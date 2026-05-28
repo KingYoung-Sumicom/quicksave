@@ -136,7 +136,10 @@ export class VoiceStreamSession {
         finish(true);
       };
       pc.onconnectionstatechange = () => {
-        if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+        // 'disconnected' is transient per WebRTC spec (can recover), and we
+        // call close() ourselves which already moves state to 'closed' — so
+        // only treat 'failed' as a genuine, terminal teardown.
+        if (pc.connectionState === 'failed') {
           this.setState('unavailable');
           finish(false);
         }
