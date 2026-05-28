@@ -80,9 +80,7 @@ interface StoreStub {
   sessions: Record<string, ClaudeSessionSummary & { machineAgentId?: string }>;
   activeSessionId: string | null;
   upsertSession: ReturnType<typeof vi.fn>;
-  setStreaming: ReturnType<typeof vi.fn>;
-  setSelectedAgent: ReturnType<typeof vi.fn>;
-  setSelectedPermissionMode: ReturnType<typeof vi.fn>;
+  setActiveSession: ReturnType<typeof vi.fn>;
 }
 
 function setupStore(overrides: Partial<StoreStub> = {}): StoreStub {
@@ -90,9 +88,7 @@ function setupStore(overrides: Partial<StoreStub> = {}): StoreStub {
     sessions: {},
     activeSessionId: null,
     upsertSession: vi.fn(),
-    setStreaming: vi.fn(),
-    setSelectedAgent: vi.fn(),
-    setSelectedPermissionMode: vi.fn(),
+    setActiveSession: vi.fn(),
     ...overrides,
   };
   getStateMock.mockReturnValue(stub);
@@ -327,7 +323,7 @@ describe('applySessionUpdate', () => {
   });
 
   describe('active-session side effects', () => {
-    it('fires setStreaming/setSelectedAgent/setSelectedPermissionMode when sessionId matches activeSessionId and upsert ran', () => {
+    it('reprojects the active session without persisted preference setters when sessionId matches activeSessionId', () => {
       const store = setupStore({ activeSessionId: 's1' });
 
       applySessionUpdate(
@@ -340,15 +336,11 @@ describe('applySessionUpdate', () => {
       );
 
       expect(store.upsertSession).toHaveBeenCalledTimes(1);
-      expect(store.setStreaming).toHaveBeenCalledTimes(1);
-      expect(store.setStreaming).toHaveBeenCalledWith(true);
-      expect(store.setSelectedAgent).toHaveBeenCalledTimes(1);
-      expect(store.setSelectedAgent).toHaveBeenCalledWith('claude-code');
-      expect(store.setSelectedPermissionMode).toHaveBeenCalledTimes(1);
-      expect(store.setSelectedPermissionMode).toHaveBeenCalledWith('acceptEdits');
+      expect(store.setActiveSession).toHaveBeenCalledTimes(1);
+      expect(store.setActiveSession).toHaveBeenCalledWith('s1');
     });
 
-    it('does NOT call setSelectedAgent when agent is undefined (still calls setStreaming)', () => {
+    it('still reprojects the active session when agent is undefined', () => {
       const store = setupStore({ activeSessionId: 's1' });
 
       applySessionUpdate(
@@ -360,13 +352,11 @@ describe('applySessionUpdate', () => {
         MACHINE_AGENT_ID
       );
 
-      expect(store.setStreaming).toHaveBeenCalledTimes(1);
-      expect(store.setStreaming).toHaveBeenCalledWith(false);
-      expect(store.setSelectedAgent).not.toHaveBeenCalled();
-      expect(store.setSelectedPermissionMode).toHaveBeenCalledTimes(1);
+      expect(store.setActiveSession).toHaveBeenCalledTimes(1);
+      expect(store.setActiveSession).toHaveBeenCalledWith('s1');
     });
 
-    it('does NOT call setSelectedPermissionMode when permissionMode is undefined (still calls setStreaming)', () => {
+    it('still reprojects the active session when permissionMode is undefined', () => {
       const store = setupStore({ activeSessionId: 's1' });
 
       applySessionUpdate(
@@ -378,25 +368,21 @@ describe('applySessionUpdate', () => {
         MACHINE_AGENT_ID
       );
 
-      expect(store.setStreaming).toHaveBeenCalledTimes(1);
-      expect(store.setStreaming).toHaveBeenCalledWith(true);
-      expect(store.setSelectedAgent).toHaveBeenCalledTimes(1);
-      expect(store.setSelectedPermissionMode).not.toHaveBeenCalled();
+      expect(store.setActiveSession).toHaveBeenCalledTimes(1);
+      expect(store.setActiveSession).toHaveBeenCalledWith('s1');
     });
 
-    it('does NOT call any of the three setters when sessionId does not match activeSessionId', () => {
+    it('does NOT reproject when sessionId does not match activeSessionId', () => {
       const store = setupStore({ activeSessionId: 'other-session' });
 
       applySessionUpdate(makePayload({ sessionId: 's1', isStreaming: true }), MACHINE_AGENT_ID);
 
       expect(store.upsertSession).toHaveBeenCalledTimes(1);
-      expect(store.setStreaming).not.toHaveBeenCalled();
-      expect(store.setSelectedAgent).not.toHaveBeenCalled();
-      expect(store.setSelectedPermissionMode).not.toHaveBeenCalled();
+      expect(store.setActiveSession).not.toHaveBeenCalled();
     });
 
     it('skips active-session side effects when idempotency short-circuits (early return)', () => {
-      // Snapshot re-delivery on reconnect must NOT cause a setStreaming flicker.
+      // Snapshot re-delivery on reconnect must NOT cause a redundant UI refresh.
       const store = setupStore({
         sessions: { s1: makeSummary() },
         activeSessionId: 's1',
@@ -405,9 +391,7 @@ describe('applySessionUpdate', () => {
       applySessionUpdate(makePayload(), MACHINE_AGENT_ID);
 
       expect(store.upsertSession).not.toHaveBeenCalled();
-      expect(store.setStreaming).not.toHaveBeenCalled();
-      expect(store.setSelectedAgent).not.toHaveBeenCalled();
-      expect(store.setSelectedPermissionMode).not.toHaveBeenCalled();
+      expect(store.setActiveSession).not.toHaveBeenCalled();
     });
   });
 

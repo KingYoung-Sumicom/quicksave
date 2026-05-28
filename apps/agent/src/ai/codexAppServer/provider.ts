@@ -395,6 +395,7 @@ export function buildCodexSandboxMcpConfigArgs(opts: {
     cwd: opts.cwd,
     sessionId: opts.sessionId,
     corrId: opts.corrId,
+    includeSandboxBash: false,
   });
   return [
     '-c',
@@ -403,8 +404,6 @@ export function buildCodexSandboxMcpConfigArgs(opts: {
     `mcp_servers.${SANDBOX_MCP_NAME}.args=${toTomlStringArray(config.args)}`,
     '-c',
     `mcp_servers.${SANDBOX_MCP_NAME}.default_tools_approval_mode="approve"`,
-    '-c',
-    `mcp_servers.${SANDBOX_MCP_NAME}.tools.SandboxBash.approval_mode="approve"`,
     '-c',
     `mcp_servers.${SANDBOX_MCP_NAME}.tools.UpdateSessionStatus.approval_mode="approve"`,
     '-c',
@@ -415,8 +414,6 @@ export function buildCodexSandboxMcpConfigArgs(opts: {
     `apps.${SANDBOX_MCP_NAME}.destructive_enabled=true`,
     '-c',
     `apps.${SANDBOX_MCP_NAME}.open_world_enabled=true`,
-    '-c',
-    `apps.${SANDBOX_MCP_NAME}.tools.SandboxBash.approval_mode="approve"`,
     '-c',
     `apps.${SANDBOX_MCP_NAME}.tools.UpdateSessionStatus.approval_mode="approve"`,
   ];

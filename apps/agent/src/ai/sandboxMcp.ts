@@ -58,6 +58,9 @@ export function buildSandboxMcpServerConfig(opts: {
    *  spawn. Becomes `--corr`; the stdio server resolves its registry file by
    *  matching this against each entry's `mcpCorrId`. See `sandboxMcpStdio.ts`. */
   corrId?: string;
+  /** Hide SandboxBash from the MCP inventory. Codex has native shell execution
+   *  and only needs UpdateSessionStatus from this server. */
+  includeSandboxBash?: boolean;
 }): SandboxMcpServerConfig {
   const tsPath = join(opts.ownDir, 'sandboxMcpStdio.ts');
   const jsPath = join(opts.ownDir, 'sandboxMcpStdio.js');
@@ -74,6 +77,7 @@ export function buildSandboxMcpServerConfig(opts: {
   const args = [scriptPath, '--cwd', opts.cwd];
   if (opts.sessionId) args.push('--session-id', opts.sessionId);
   if (opts.corrId) args.push('--corr', opts.corrId);
+  if (opts.includeSandboxBash === false) args.push('--no-sandbox-bash');
 
   return { type: 'stdio', command, args };
 }

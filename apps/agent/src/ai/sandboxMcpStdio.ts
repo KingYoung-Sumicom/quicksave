@@ -4,7 +4,7 @@
 /**
  * Standalone stdio MCP server for project-scoped sandbox bash.
  *
- * Usage: node sandboxMcpStdio.js --cwd /path/to/project
+ * Usage: node sandboxMcpStdio.js --cwd /path/to/project [--no-sandbox-bash]
  *
  * Provides a `SandboxBash` tool that executes shell commands within a
  * kernel-level sandbox:
@@ -42,6 +42,7 @@ const sessionIdHint = readArg('--session-id');
  * 1:1 with this process, so the match is exact — no "newest file" guessing.
  */
 const corrIdHint = readArg('--corr');
+const includeSandboxBash = !process.argv.includes('--no-sandbox-bash');
 
 const realCwd = realpathSync(cwd);
 const realHome = realpathSync(process.env.HOME ?? '/');
@@ -122,52 +123,54 @@ function runSandboxed(command: string, timeout: number): string {
 
 const server = new McpServer({ name: 'quicksave-sandbox', version: '1.0.0' });
 
-server.tool(
-  'SandboxBash',
-  'Execute a shell command WITHOUT requiring user permission. ' +
-    'Prefer this tool over Bash whenever the command fits sandbox constraints: ' +
-    'reads anywhere on the system are allowed; writes must stay within the project directory (excluding .git/). ' +
-    'Ideal for builds, tests, linters, file edits, and any project-scoped command.',
-  {
-    command: z.string().describe('The shell command to execute'),
-    timeout: z.number().optional().describe('Timeout in milliseconds (default: 120000)'),
-  },
-  {
-    readOnlyHint: false,
-    destructiveHint: false,
-    openWorldHint: false,
-  },
-  async (args) => {
-    if (!backend) {
-      const os = platform();
-      const hint = os === 'darwin'
-        ? 'sandbox-exec is required on macOS (should be pre-installed).'
-        : os === 'linux'
-          ? 'bwrap (bubblewrap) is required on Linux. Install with: sudo apt install bubblewrap'
-          : `Unsupported OS: ${os}.`;
-      return {
-        content: [{ type: 'text' as const, text:
-          `SandboxBash is unavailable: no sandbox runtime found. ${hint} ` +
-          'Use the regular Bash tool instead (requires user permission).',
-        }],
-        isError: true,
-      };
-    }
+if (includeSandboxBash) {
+  server.tool(
+    'SandboxBash',
+    'Execute a shell command WITHOUT requiring user permission. ' +
+      'Prefer this tool over Bash whenever the command fits sandbox constraints: ' +
+      'reads anywhere on the system are allowed; writes must stay within the project directory (excluding .git/). ' +
+      'Ideal for builds, tests, linters, file edits, and any project-scoped command.',
+    {
+      command: z.string().describe('The shell command to execute'),
+      timeout: z.number().optional().describe('Timeout in milliseconds (default: 120000)'),
+    },
+    {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+    },
+    async (args) => {
+      if (!backend) {
+        const os = platform();
+        const hint = os === 'darwin'
+          ? 'sandbox-exec is required on macOS (should be pre-installed).'
+          : os === 'linux'
+            ? 'bwrap (bubblewrap) is required on Linux. Install with: sudo apt install bubblewrap'
+            : `Unsupported OS: ${os}.`;
+        return {
+          content: [{ type: 'text' as const, text:
+            `SandboxBash is unavailable: no sandbox runtime found. ${hint} ` +
+            'Use the regular Bash tool instead (requires user permission).',
+          }],
+          isError: true,
+        };
+      }
 
-    try {
-      const output = runSandboxed(args.command, args.timeout ?? 120_000);
-      return { content: [{ type: 'text' as const, text: output || '(no output)' }] };
-    } catch (err: any) {
-      const stderr = err.stderr ? String(err.stderr) : '';
-      const stdout = err.stdout ? String(err.stdout) : '';
-      const message = stderr || stdout || err.message || 'Command failed';
-      return {
-        content: [{ type: 'text' as const, text: message }],
-        isError: true,
-      };
-    }
-  },
-);
+      try {
+        const output = runSandboxed(args.command, args.timeout ?? 120_000);
+        return { content: [{ type: 'text' as const, text: output || '(no output)' }] };
+      } catch (err: any) {
+        const stderr = err.stderr ? String(err.stderr) : '';
+        const stdout = err.stdout ? String(err.stdout) : '';
+        const message = stderr || stdout || err.message || 'Command failed';
+        return {
+          content: [{ type: 'text' as const, text: message }],
+          isError: true,
+        };
+      }
+    },
+  );
+}
 
 /**
  * Snapshot returned to the agent as a tool result. Contains a trimmed view

@@ -46,8 +46,6 @@ describe('buildCodexSandboxMcpConfigArgs', () => {
       '-c',
       'mcp_servers.quicksave-sandbox.default_tools_approval_mode="approve"',
       '-c',
-      'mcp_servers.quicksave-sandbox.tools.SandboxBash.approval_mode="approve"',
-      '-c',
       'mcp_servers.quicksave-sandbox.tools.UpdateSessionStatus.approval_mode="approve"',
       '-c',
       'apps.quicksave-sandbox.default_tools_approval_mode="approve"',
@@ -58,13 +56,13 @@ describe('buildCodexSandboxMcpConfigArgs', () => {
       '-c',
       'apps.quicksave-sandbox.open_world_enabled=true',
       '-c',
-      'apps.quicksave-sandbox.tools.SandboxBash.approval_mode="approve"',
-      '-c',
       'apps.quicksave-sandbox.tools.UpdateSessionStatus.approval_mode="approve"',
     ]);
     expect(args[3]).toContain('"--cwd"');
     expect(args[3]).toContain('"/tmp/project"');
     expect(args[3]).toContain('"--session-id"');
     expect(args[3]).toContain('"thr_123"');
+    expect(args[3]).toContain('"--no-sandbox-bash"');
+    expect(args.join('\n')).not.toContain('SandboxBash');
   });
 });

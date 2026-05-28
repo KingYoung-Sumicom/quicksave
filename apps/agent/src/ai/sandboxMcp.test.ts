@@ -62,6 +62,19 @@ describe('buildSandboxMcpServerConfig', () => {
     ]);
   });
 
+  it('appends --no-sandbox-bash when SandboxBash is disabled', () => {
+    const cfg = buildSandboxMcpServerConfig({
+      ownDir: __thisDir,
+      cwd: '/p',
+      includeSandboxBash: false,
+    });
+    expect(cfg.args).toEqual([
+      join(__thisDir, 'sandboxMcpStdio.ts'),
+      '--cwd', '/p',
+      '--no-sandbox-bash',
+    ]);
+  });
+
   it('falls back to node + .js when only the compiled file exists (prod)', () => {
     // Point at a directory that has no sandboxMcpStdio.{ts,js} — simulates prod
     // where only dist/ai/sandboxMcpStdio.js is shipped. We can't easily exercise

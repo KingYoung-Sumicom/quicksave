@@ -8,17 +8,15 @@ import { useClaudeStore } from '../stores/claudeStore';
  *
  * Shared by the `/sessions/active` bus snapshot (called per entry) and each
  * subsequent `/sessions/active` update. Performs an idempotency check against
- * the current store state before writing, and syncs the streaming/agent/
- * permission-mode UI refs when the updated session is the active one.
+ * the current store state before writing, and reprojects active-session UI
+ * refs when the updated session is the active one.
  */
 export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId: string): void {
   const {
     sessions,
     activeSessionId,
     upsertSession,
-    setStreaming,
-    setSelectedAgent,
-    setSelectedPermissionMode,
+    setActiveSession,
   } = useClaudeStore.getState();
 
   const agent: AgentId | undefined = payload.agent;
@@ -77,8 +75,10 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
   });
 
   if (payload.sessionId === activeSessionId) {
-    setStreaming(payload.isStreaming);
-    if (agent) setSelectedAgent(agent);
-    if (payload.permissionMode) setSelectedPermissionMode(payload.permissionMode);
+    // Re-project the active session into the flat UI fields without calling
+    // persisted new-session preference setters. Opening or receiving updates
+    // for an existing session must not overwrite the user's saved defaults
+    // for the next new session.
+    setActiveSession(payload.sessionId);
   }
 }
