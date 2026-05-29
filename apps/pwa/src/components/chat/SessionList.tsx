@@ -4,6 +4,7 @@ import { FormattedMessage } from 'react-intl';
 import type { ClaudeSessionSummary } from '@sumicom/quicksave-shared';
 import { StatusDot, sessionStatusKey } from '../SessionStatusBadge';
 import { formatRelativeTime } from '../../lib/formatRelativeTime';
+import { AGENT_LABEL } from '../../lib/agentLabel';
 
 export function SessionList({
   sessions,
@@ -35,6 +36,11 @@ export function SessionList({
                 {session.summary || session.sessionId.slice(0, 12)}
               </p>
               <div className="flex items-center gap-2 mt-1 text-xs text-slate-400">
+                {session.agent && AGENT_LABEL[session.agent] && (
+                  <span className="px-1.5 py-px rounded font-medium bg-slate-500/15 text-slate-300">
+                    {AGENT_LABEL[session.agent]}
+                  </span>
+                )}
                 {session.gitBranch && (
                   <span className="flex items-center gap-1">
                     <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -5,6 +5,7 @@ import { FormattedMessage } from 'react-intl';
 import type { AgentId, ClaudeSessionSummary, SessionStage } from '@sumicom/quicksave-shared';
 import { sessionStatusKey, SESSION_STATUS } from './SessionStatusBadge';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
+import { AGENT_LABEL } from '../lib/agentLabel';
 import { MachineIcon } from './icons/MachineIcon';
 
 interface SessionTicketCardProps {
@@ -56,16 +57,6 @@ const STAGE_META: Record<SessionStage, { labelId: string; dotColor: string; chip
 
 const BLOCKED_META = { labelId: 'sessionStage.blocked', dotColor: 'bg-red-500', chipText: 'text-red-300', chipBg: 'bg-red-500/10' };
 const MISSION_META = { labelId: 'sessionStage.pendingMission', chipText: 'text-cyan-300', chipBg: 'bg-cyan-500/10' };
-
-// Product names surfaced as a neutral text chip — intentionally no official
-// logos, to stay clear of Anthropic/OpenAI brand guidelines. Labels are
-// nominative use and not translated.
-const AGENT_LABEL: Partial<Record<AgentId, string>> = {
-  'claude-code': 'Claude',
-  'codex': 'Codex',
-  'opencode': 'OpenCode',
-  'pi': 'Pi',
-};
 
 function Chevron() {
   return (
