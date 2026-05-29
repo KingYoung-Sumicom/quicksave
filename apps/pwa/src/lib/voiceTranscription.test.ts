@@ -6,7 +6,6 @@ import {
   listModelsViaAgent,
   isVoiceConfigUsable,
   filterVoiceModels,
-  pickVoiceStartPath,
   VoiceTranscriptionError,
   MAX_AUDIO_BYTES,
 } from './voiceTranscription';
@@ -116,24 +115,5 @@ describe('filterVoiceModels', () => {
   it('falls back to the full list when nothing matches (self-hosted naming)', () => {
     const custom = ['my-stt-v2', 'local-model'];
     expect(filterVoiceModels(custom)).toEqual(custom);
-  });
-});
-
-describe('pickVoiceStartPath', () => {
-  it('uses streaming when supported and the link is ready', () => {
-    expect(pickVoiceStartPath({ streamingSupported: true, batchSupported: true, streamReady: true })).toBe('stream');
-  });
-
-  it('falls back to batch when streaming is not ready but batch is supported', () => {
-    expect(pickVoiceStartPath({ streamingSupported: true, batchSupported: true, streamReady: false })).toBe('batch');
-    expect(pickVoiceStartPath({ streamingSupported: false, batchSupported: true, streamReady: false })).toBe('batch');
-  });
-
-  it('reports unavailable when streaming is the only option and the link is not ready (NAT/no TURN)', () => {
-    expect(pickVoiceStartPath({ streamingSupported: true, batchSupported: false, streamReady: false })).toBe('unavailable');
-  });
-
-  it('reports unsupported when the machine advertised no voice capability', () => {
-    expect(pickVoiceStartPath({ streamingSupported: false, batchSupported: false, streamReady: false })).toBe('unsupported');
   });
 });
