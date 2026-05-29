@@ -16,6 +16,7 @@ import type {
   ClaudeUserInputResponsePayload,
   ClaudePreferences,
   ConfigValue,
+  Card,
   CardEvent,
   CardHistoryResponse,
   CardStreamEnd,
@@ -182,6 +183,13 @@ function normalizeAgentId(value: unknown): AgentId | undefined {
   if (value === 'claude-code' || value === 'claude-cli' || value === 'claude-sdk') {
     return 'claude-code';
   }
+  // claude-terminal is a distinct provider (TUI + PTY), NOT an alias of
+  // claude-code. Omitting it here made resolveAgentId() return undefined for
+  // claude-terminal sessions on every config/registry/request path, so a cold
+  // resume (when the in-memory agentId is gone) silently fell back to the
+  // default agent — downgrading the session to claude-code and dropping its
+  // terminalId. See sessionManager resolveAgentId() fallback chain.
+  if (value === 'claude-terminal') return 'claude-terminal';
   if (value === 'codex' || value === 'codex-mcp') {
     return 'codex';
   }
@@ -615,6 +623,7 @@ export class SessionManager extends EventEmitter {
       ...(recordedModel !== undefined ? { model: recordedModel } : {}),
       ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
       ...(opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {}),
+      ...(providerSession?.terminalId !== undefined ? { terminalId: providerSession.terminalId } : {}),
       permissionMode: level,
       sandboxed,
     });
@@ -1200,7 +1209,10 @@ export class SessionManager extends EventEmitter {
       // Memory-mode: use in-memory cards from active turn, falling back to persisted history
       const streamCards = ps?.cardBuilder?.getCards() ?? [];
       const persisted = await loadPersistedCards(sessionId);
-      const cards = [...persisted, ...streamCards];
+      const cardsById = new Map<string, Card>();
+      for (const card of persisted) cardsById.set(card.id, card);
+      for (const card of streamCards) cardsById.set(card.id, card);
+      const cards = Array.from(cardsById.values());
       const total = cards.length;
       const start = Math.max(0, total - offset - limit);
       const end = Math.max(0, total - offset);
@@ -1710,6 +1722,11 @@ export class SessionManager extends EventEmitter {
       // having to wait for the slower /sessions/history snapshot to roll over.
       lastReadAt: registryEntry?.lastReadAt,
       pendingMission: registryEntry?.pendingMission,
+      // Surface the PTY terminal id when this provider owns one. Only the
+      // claude-terminal provider populates it today. The PWA mirrors it onto
+      // ClaudeSessionSummary so the session view can render a TerminalView
+      // alongside the structured card stream.
+      terminalId: ps?.providerSession?.terminalId ?? undefined,
     };
   }
 

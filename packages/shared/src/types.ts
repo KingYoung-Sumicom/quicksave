@@ -1249,13 +1249,15 @@ export type ClaudeModel =
   | 'claude-haiku-4-5'
   | 'claude-sonnet-4-6'
   | 'claude-opus-4-6'
-  | 'claude-opus-4-7';
+  | 'claude-opus-4-7'
+  | 'claude-opus-4-8';
 
 export const CLAUDE_MODELS: { id: ClaudeModel; name: string; label: string; description: string }[] = [
   { id: 'claude-haiku-4-5', name: 'Haiku', label: 'Haiku 4.5', description: 'Fast & affordable' },
   { id: 'claude-sonnet-4-6', name: 'Sonnet', label: 'Sonnet 4.6', description: 'Balanced speed & quality' },
   { id: 'claude-opus-4-6', name: 'Opus', label: 'Opus 4.6', description: 'Highest quality' },
-  { id: 'claude-opus-4-7', name: 'Opus', label: 'Opus 4.7', description: 'Latest flagship' },
+  { id: 'claude-opus-4-7', name: 'Opus', label: 'Opus 4.7', description: 'Previous flagship' },
+  { id: 'claude-opus-4-8', name: 'Opus', label: 'Opus 4.8', description: 'Latest flagship' },
 ];
 
 // Generate Commit Summary
@@ -1517,6 +1519,10 @@ export interface ClaudeSessionSummary {
    * summary so the PWA can derive unread state directly from the wire snapshot
    * instead of round-tripping through the registry path. */
   lastReadAt?: number;
+  /** terminalManager terminal id when the provider owns a PTY the PWA should
+   * render alongside the structured card stream. Only set by the
+   * `claude-terminal` provider. */
+  terminalId?: string;
 }
 
 /** Category breakdown of current context window occupancy, as returned by the
@@ -1619,6 +1625,8 @@ export interface SessionUpdatePayload {
   lastReadAt?: number;
   /** See `SessionRegistryEntry.pendingMission`. */
   pendingMission?: SessionPendingMission;
+  /** See `ClaudeSessionSummary.terminalId`. */
+  terminalId?: string;
 }
 
 // Start Session

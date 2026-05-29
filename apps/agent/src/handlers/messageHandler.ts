@@ -162,6 +162,7 @@ import { CommitSummaryCliService, CommitSummaryCliError } from '../ai/commitSumm
 import { CommitSummaryStateStore } from '../ai/commitSummaryStore.js';
 import { SessionManager } from '../ai/sessionManager.js';
 import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
+import { ClaudeTerminalProvider } from '../ai/claudeTerminal/index.js';
 import { OpenCodeProvider } from '../ai/openCodeProvider.js';
 import { AttachmentStaging } from '../ai/attachmentStaging.js';
 import { loadAttachment, removeSessionAttachments } from '../ai/attachmentStore.js';
@@ -294,7 +295,12 @@ export class MessageHandler {
     this.defaultRepoPath = repos.length > 0 ? repos[0].path : '';
     this.productionBuild = productionBuild;
     this.claudeService = options?.sessionManager
-      ?? new SessionManager([new ClaudeCodeProvider(), new CodexAppServerProvider(), new OpenCodeProvider()]);
+      ?? new SessionManager([
+        new ClaudeCodeProvider(),
+        new ClaudeTerminalProvider(),
+        new CodexAppServerProvider(),
+        new OpenCodeProvider(),
+      ]);
     this.codexCacheDir = options?.codexCacheDir ?? join(homedir(), '.codex');
 
     // Load explicit coding paths only (repos and coding paths are independent)

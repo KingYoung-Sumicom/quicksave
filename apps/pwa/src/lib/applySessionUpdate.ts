@@ -56,7 +56,8 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     current.pendingMission?.label === payload.pendingMission?.label &&
     current.pendingMission?.until === payload.pendingMission?.until &&
     current.pendingMission?.startedAt === payload.pendingMission?.startedAt &&
-    current.pendingMission?.dismissedAt === payload.pendingMission?.dismissedAt
+    current.pendingMission?.dismissedAt === payload.pendingMission?.dismissedAt &&
+    current.terminalId === payload.terminalId
   ) {
     return;
   }
@@ -89,6 +90,7 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     lastTurnContextUsage: payload.lastTurnContextUsage,
     lastReadAt: payload.lastReadAt,
     pendingMission: payload.pendingMission,
+    terminalId: payload.terminalId,
   });
 
   if (payload.sessionId === activeSessionId) {

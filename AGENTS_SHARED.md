@@ -17,6 +17,7 @@ your change actually touches its scope; do not read them speculatively.
 | Add a new PWA -> Agent request/response verb                       | `messageHandler.ts` switch + `handlers/legacyBusAdapter.ts` `LEGACY_BUS_VERBS` allowlist (both required, see architecture section three Command adapter gotcha) |
 | `apps/agent/src/handlers/messageHandler.ts` routing                | `docs/references/quicksave-architecture.en.md`      |
 | `SessionManager` / `CodingAgentProvider` / new AI provider         | `docs/references/quicksave-architecture.en.md` section two |
+| Add a new `AgentId` (coding-agent provider)                        | `packages/shared` `AgentId` union + `sessionManager.ts` `normalizeAgentId` allowlist (omitting it makes cold-resume downgrade the session to the default agent) + `apps/pwa` `agentProvider.tsx` `PROVIDER_INSTANCES` |
 | `AgentConnection` encryption / pubsub                              | `docs/references/quicksave-architecture.en.md` section three |
 | PWA <-> PWA sync mailbox, Ed25519 envelope, TOFU pin, tombstone flow | `docs/guidelines/sync-security.en.md` + `docs/references/quicksave-architecture.en.md` section three |
 | PWA store shape or hook API                                        | `docs/references/quicksave-architecture.en.md` section six |

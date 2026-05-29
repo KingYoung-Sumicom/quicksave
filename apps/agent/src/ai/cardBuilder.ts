@@ -67,6 +67,22 @@ function cardHistoryPath(sessionId: string): string {
   return join(getCardHistoryDir(), `${sessionId}.json`);
 }
 
+function cleanPersistedCard(card: Card): Card {
+  const { pendingInput, ...rest } = card;
+  void pendingInput;
+  if (rest.type === 'assistant_text') {
+    return { ...rest, streaming: false };
+  }
+  return rest;
+}
+
+function mergeCardsById(existing: readonly Card[], incoming: readonly Card[]): Card[] {
+  const byId = new Map<CardId, Card>();
+  for (const card of existing) byId.set(card.id, card);
+  for (const card of incoming) byId.set(card.id, card);
+  return Array.from(byId.values());
+}
+
 /**
  * Load persisted card history for a memory-mode session.
  * Returns cards in insertion order, or empty array if none exist.
@@ -85,15 +101,15 @@ export async function loadPersistedCards(sessionId: string): Promise<Card[]> {
 
 // ── Direct JSONL file reading (replaces SDK getSessionMessages/listSubagents) ──
 
-function encodeCwdPath(cwd: string): string {
+export function encodeCwdPath(cwd: string): string {
   return cwd.replace(/\//g, '-');
 }
 
-function claudeProjectDir(cwd: string): string {
+export function claudeProjectDir(cwd: string): string {
   return join(homedir(), '.claude', 'projects', encodeCwdPath(cwd));
 }
 
-function jsonlPath(sessionId: string, cwd: string): string {
+export function jsonlPath(sessionId: string, cwd: string): string {
   return join(claudeProjectDir(cwd), sessionId + '.jsonl');
 }
 
@@ -314,19 +330,22 @@ export class StreamCardBuilder {
     const cards = this.getCards();
     if (cards.length === 0) return;
 
-    // Strip transient fields before persisting
-    const cleaned = cards.map(c => {
-      const { pendingInput, ...rest } = c;
-      if (rest.type === 'assistant_text') {
-        return { ...rest, streaming: false };
-      }
-      return rest;
-    });
+    await this.persistCardBatch(cards);
+  }
 
+  /** Persist a single card immediately. Used when a memory-mode provider
+   * injects a user prompt into an already-running turn; the card must survive
+   * refresh before the turn's normal end-of-turn persist runs. */
+  async persistCard(card: Card): Promise<void> {
+    await this.persistCardBatch([card]);
+  }
+
+  private async persistCardBatch(cards: readonly Card[]): Promise<void> {
+    if (cards.length === 0) return;
+    const cleaned = cards.map(cleanPersistedCard);
     const dir = getCardHistoryDir();
     const p = cardHistoryPath(this.sessionId);
 
-    // Append to existing history
     let existing: Card[] = [];
     try {
       if (existsSync(p)) {
@@ -336,7 +355,7 @@ export class StreamCardBuilder {
       }
     } catch { /* start fresh */ }
 
-    const merged = [...existing, ...cleaned];
+    const merged = mergeCardsById(existing, cleaned);
     await mkdir(dir, { recursive: true });
     await writeFile(p, JSON.stringify(merged) + '\n');
   }

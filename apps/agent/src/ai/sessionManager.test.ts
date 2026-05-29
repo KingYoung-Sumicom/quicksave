@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionManager, bypassFlagPath, type ManagedSession } from './sessionManager.js';
+import { getSessionRegistry } from './sessionRegistry.js';
 import { setQuicksaveDir } from '../service/singleton.js';
 import type {
   CodingAgentProvider,
@@ -128,6 +129,45 @@ describe('SessionManager', () => {
     it('should fall back to first provider if default is not found', () => {
       const mgr = new SessionManager([provider], 'nonexistent' as any);
       expect(mgr.getSessionAgent('nonexistent')).toBe('claude-code');
+    });
+  });
+
+  // ── Agent id resolution (resolveAgentId via getSessionAgent) ──
+
+  describe('agent id resolution', () => {
+    afterEach(() => {
+      // Restore the shared registry mock's default so later tests see no entry.
+      (getSessionRegistry().getEntry as Mock).mockReturnValue(null);
+    });
+
+    it('keeps a claude-terminal session on cold resume (registry path, not downgraded)', () => {
+      // Regression: normalizeAgentId() used to omit 'claude-terminal', so a
+      // claude-terminal session whose in-memory agentId was gone (cold resume
+      // after close) fell through every resolveAgentId fallback and defaulted
+      // to claude-code — silently dropping the PTY/terminalId. See
+      // normalizeAgentId() in sessionManager.ts.
+      const terminalProvider = createMockProvider('claude-terminal');
+      const mgr = new SessionManager([provider, terminalProvider]); // default = claude-code
+      (getSessionRegistry().getEntry as Mock).mockReturnValue({
+        sessionId: 'term-sess',
+        cwd: '/tmp/term',
+        agent: 'claude-terminal',
+      });
+
+      // Session is NOT in memory — mirrors the cold-resume lookup that broke.
+      expect(mgr.getSessionAgent('term-sess', '/tmp/term')).toBe('claude-terminal');
+    });
+
+    it('still falls back to the default agent for an unknown registry agent', () => {
+      const terminalProvider = createMockProvider('claude-terminal');
+      const mgr = new SessionManager([provider, terminalProvider]); // default = claude-code
+      (getSessionRegistry().getEntry as Mock).mockReturnValue({
+        sessionId: 'bogus-sess',
+        cwd: '/tmp/bogus',
+        agent: 'totally-unknown-agent',
+      });
+
+      expect(mgr.getSessionAgent('bogus-sess', '/tmp/bogus')).toBe('claude-code');
     });
   });
 
@@ -1163,7 +1203,7 @@ describe('SessionManager', () => {
 
       callbacks.onModelDetected('gpt-4');
       // Model should still be the default
-      expect(mgr.getPreferences().model).toBe('claude-opus-4-7');
+      expect(mgr.getPreferences().model).toBe('claude-opus-4-8');
     });
   });
 
@@ -1664,7 +1704,7 @@ describe('SessionManager', () => {
   describe('preferences', () => {
     it('should return default preferences', () => {
       const prefs = manager.getPreferences();
-      expect(prefs.model).toBe('claude-opus-4-7');
+      expect(prefs.model).toBe('claude-opus-4-8');
     });
 
     it('should update preferences and emit event', () => {
@@ -1681,7 +1721,7 @@ describe('SessionManager', () => {
       const events: any[] = [];
       manager.on('preferences-updated', (e) => events.push(e));
 
-      manager.setPreferences({ model: 'claude-opus-4-7' });
+      manager.setPreferences({ model: 'claude-opus-4-8' });
       expect(events).toHaveLength(0);
     });
   });

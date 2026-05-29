@@ -77,6 +77,12 @@ export interface ProviderSession {
   interrupt(): void;
   kill(): void;
   readonly alive: boolean;
+  /** Optional — `terminalManager` terminal id when this provider owns a PTY
+   *  the PWA should render alongside the structured card stream. Only the
+   *  `claude-terminal` provider sets this today. SessionManager copies it into
+   *  the session config so the PWA can pick it up via the existing
+   *  config-updated channel. */
+  readonly terminalId?: string;
   /** Optional in-memory queue snapshot for provider sessions that serialize
    * user turns instead of accepting mid-turn input directly. */
   getQueueState?(): SessionQueueState | null;

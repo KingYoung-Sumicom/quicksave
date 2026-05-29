@@ -8,6 +8,7 @@ import '@xterm/xterm/css/xterm.css';
 import type { TerminalOutputSnapshot, TerminalOutputChunk } from '@sumicom/quicksave-shared';
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { useTerminalOps } from '../../hooks/useTerminalOps';
+import { useMediaQuery } from '../../hooks/useMediaQuery';
 
 interface TerminalViewProps {
   terminalId: string;
@@ -301,7 +302,13 @@ export function TerminalView({ terminalId, getBus, onExit }: TerminalViewProps) 
     return () => clearTimeout(t);
   }, [exitCode, handleExit]);
 
-  // Virtual keys for mobile — hide on desktop.
+  // Virtual keys exist only because a touch device's soft keyboard has no
+  // Ctrl/Tab/Esc/arrow keys. On a device with a fine pointer (desktop with
+  // a physical keyboard) they're redundant clutter, so hide them there.
+  // `(pointer: coarse)` keys off the primary input being touch rather than
+  // viewport width, so a narrowed desktop window keeps its physical-keyboard
+  // experience while a wide tablet still gets the virtual row.
+  const isTouch = useMediaQuery('(pointer: coarse)');
   const sendKey = useCallback((seq: string) => {
     sendInput(terminalId, seq).catch((err) =>
       console.warn('[terminal] key send failed:', err),
@@ -347,13 +354,15 @@ export function TerminalView({ terminalId, getBus, onExit }: TerminalViewProps) 
         onClick={() => termRef.current?.focus()}
         onPaste={onContainerPaste}
       />
-      <VirtualKeys
-        onKey={sendKey}
-        onPaste={handlePaste}
-        pasteError={pasteError}
-        connected={connected}
-        exited={exitCode !== undefined}
-      />
+      {isTouch && (
+        <VirtualKeys
+          onKey={sendKey}
+          onPaste={handlePaste}
+          pasteError={pasteError}
+          connected={connected}
+          exited={exitCode !== undefined}
+        />
+      )}
     </div>
   );
 }
