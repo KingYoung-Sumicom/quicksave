@@ -1435,6 +1435,7 @@ function ProjectRouteSession({
         sessionId={urlSessionId === 'new' ? undefined : urlSessionId}
         newSession={isNewSession}
         cwd={cwd}
+        agentId={targetAgentId ?? undefined}
         onSelectSession={(sid) => navigate(`${projectBasePath}/s/${sid}`)}
         onNewSession={() => navigate(`/add?tab=session&projectId=${encodeURIComponent(projectId ?? '')}`)}
         onGetSessionCards={boundGetCards}

@@ -12,6 +12,7 @@ import type {
   AttachmentKind,
 } from '@sumicom/quicksave-shared';
 import { CardRenderer } from './chat/CardRenderer';
+import { CollapsibleTerminalPanel } from './terminal/CollapsibleTerminalPanel';
 import { SessionList } from './chat/SessionList';
 import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
 import { SessionStatusBar } from './chat/SessionStatusBar';
@@ -40,6 +41,11 @@ interface ClaudePanelProps {
   sessionId?: string;
   newSession?: boolean;
   cwd?: string;
+  /** The machine this session/project belongs to (derived from the URL via
+   *  useProjectConnection). Use this rather than the global active-agent mirror
+   *  so per-machine state (capabilities, uploads) targets the right machine in
+   *  multi-machine setups. Falls back to the mirror when absent. */
+  agentId?: string;
   onGetSessionCards: (sessionId: string, offset?: number, limit?: number) => Promise<void>;
   onSetSessionConfig?: (sessionId: string, key: string, value: ConfigValue) => void;
   onSendControlRequest?: (
@@ -184,6 +190,7 @@ export function ClaudePanel({
   sessionId: urlSessionId,
   newSession,
   cwd,
+  agentId: agentIdProp,
   onGetSessionCards,
   onSetSessionConfig,
   onSendControlRequest,
@@ -218,7 +225,12 @@ export function ClaudePanel({
   } = useClaudeStore();
 
   const hideToolCalls = useUiPrefsStore((s) => s.hideToolCalls);
-  const agentId = useConnectionStore((s) => s.agentId ?? '');
+  // Prefer the viewed project/session's machine; fall back to the global
+  // active-agent mirror only when no prop is supplied. Reading the wrong
+  // machine here would mis-gate per-machine UI (e.g. show the voice mic for a
+  // machine that never advertised audio support).
+  const mirrorAgentId = useConnectionStore((s) => s.agentId ?? '');
+  const agentId = agentIdProp || mirrorAgentId;
   const availableProviders = useConnectionStore((s) => s.availableProviders);
   const selectedAgentType = getAgentProvider(selectedAgent);
   const selectedProviderInfo = availableProviders.find((p) => p.id === selectedAgent);
@@ -790,6 +802,12 @@ export function ClaudePanel({
       {isChat ? (
         <>
           <PendingMissionBanner session={activeSession} onDismiss={onDismissPendingMission} />
+          {viewedSession?.terminalId && viewedSession?.machineAgentId && (
+            <CollapsibleTerminalPanel
+              terminalId={viewedSession.terminalId}
+              machineAgentId={viewedSession.machineAgentId}
+            />
+          )}
           {/* Messages */}
           <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 select-text overscroll-contain">
             {historyHasMore && (
