@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConnectionStore } from '../stores/connectionStore';
 import { getVoiceConfig } from '../lib/secureStorage';
-import { transcribeViaAgent, isVoiceConfigUsable } from '../lib/voiceTranscription';
+import { transcribeViaAgent, isVoiceConfigUsable, pickVoiceStartPath } from '../lib/voiceTranscription';
 import { useVoiceRecorder } from './useVoiceRecorder';
 import { useVoiceStream } from './useVoiceStream';
 
@@ -34,6 +34,9 @@ export interface UseComposerVoice {
   configured: boolean;
   /** True when this is a live-streaming utterance (vs batch). */
   streaming: boolean;
+  /** Streaming is the only path but P2P couldn't be established on this
+   *  network (no TURN, no batch fallback) — the mic can't do anything. */
+  unavailable: boolean;
 }
 
 export function useComposerVoice(
@@ -116,15 +119,19 @@ export function useComposerVoice(
       return;
     }
     setConfigured(true);
+    const path = pickVoiceStartPath({ streamingSupported, batchSupported, streamReady: voiceStream.ready });
+    if (path === 'unavailable') {
+      onErrorRef.current('Live voice couldn’t connect on this network, and this machine has no fallback.');
+      return;
+    }
+    if (path === 'unsupported') {
+      onErrorRef.current('Voice is not supported on this machine.');
+      return;
+    }
     armTimerRef.current = setTimeout(() => setArming(true), 120);
     try {
-      if (streamingSupported && voiceStream.ready) {
-        await voiceStream.start();
-      } else if (batchSupported) {
-        await recorder.start();
-      } else {
-        onErrorRef.current('Voice is not supported on this machine.');
-      }
+      if (path === 'stream') await voiceStream.start();
+      else await recorder.start();
     } catch (err) {
       onErrorRef.current(err instanceof Error ? err.message : 'Could not start voice input.');
     } finally {
@@ -142,5 +149,7 @@ export function useComposerVoice(
     interim: voiceStream.interim,
     configured,
     streaming: voiceStream.recording,
+    // Dead state: streaming-only machine whose P2P link failed to establish.
+    unavailable: streamingSupported && !batchSupported && voiceStream.unavailable,
   };
 }

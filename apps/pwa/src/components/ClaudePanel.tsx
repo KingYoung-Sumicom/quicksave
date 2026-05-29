@@ -1063,7 +1063,9 @@ export function ClaudePanel({
                         ? 'bg-red-600 text-white hover:bg-red-500'
                         : voice.arming
                           ? 'text-amber-400'
-                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/60',
+                          : voice.unavailable
+                            ? 'text-slate-600'
+                            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/60',
                     )}
                     title={
                       voice.transcribing
@@ -1072,7 +1074,9 @@ export function ClaudePanel({
                           ? 'Starting…'
                           : voice.recording
                             ? (voice.streaming ? 'Stop (live)' : 'Stop & transcribe')
-                            : voice.configured ? 'Record voice' : 'Voice input — configure in Settings'
+                            : voice.unavailable
+                              ? 'Live voice unavailable on this network'
+                              : voice.configured ? 'Record voice' : 'Voice input — configure in Settings'
                     }
                     aria-label={voice.recording ? 'Stop recording' : 'Record voice'}
                   >

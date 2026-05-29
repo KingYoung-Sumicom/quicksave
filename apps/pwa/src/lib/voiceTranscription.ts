@@ -52,6 +52,29 @@ export function filterVoiceModels(ids: string[]): string[] {
   return voice.length > 0 ? voice : ids;
 }
 
+export type VoiceStartPath = 'stream' | 'batch' | 'unavailable' | 'unsupported';
+
+/**
+ * Decide how a mic press should start, given the machine's capabilities and
+ * whether the prewarmed streaming link is ready. Pure + exported for testing.
+ *
+ * - `stream`      — streaming supported and the P2P link is ready
+ * - `batch`       — fall back to record-then-send (batch transcription works)
+ * - `unavailable` — streaming is the only option but P2P couldn't be set up
+ *                   (e.g. NAT punch-through failed and there is no TURN)
+ * - `unsupported` — the machine advertised no voice capability at all
+ */
+export function pickVoiceStartPath(opts: {
+  streamingSupported: boolean;
+  batchSupported: boolean;
+  streamReady: boolean;
+}): VoiceStartPath {
+  if (opts.streamingSupported && opts.streamReady) return 'stream';
+  if (opts.batchSupported) return 'batch';
+  if (opts.streamingSupported) return 'unavailable';
+  return 'unsupported';
+}
+
 /** Send a recording to the agent for transcription; returns the text. */
 export async function transcribeViaAgent(
   audio: Blob,
