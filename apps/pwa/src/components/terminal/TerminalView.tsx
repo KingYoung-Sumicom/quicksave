@@ -350,7 +350,7 @@ export function TerminalView({ terminalId, getBus, onExit }: TerminalViewProps) 
     <div className="flex flex-col h-full bg-slate-900">
       <div
         ref={containerRef}
-        className="flex-1 min-h-0 w-full overflow-hidden"
+        className="terminal-center flex-1 min-h-0 w-full overflow-hidden"
         onClick={() => termRef.current?.focus()}
         onPaste={onContainerPaste}
       />

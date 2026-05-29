@@ -44,6 +44,17 @@ html, body {
   padding-right: env(safe-area-inset-right);
 }
 
+/* The PTY is pinned to 80 columns (see TerminalView.fitToStandardCols),
+   so on a wide window the rendered screen is narrower than its container
+   and xterm leaves it flush-left with empty black space on the right.
+   `.xterm-screen` is the element carrying the real 80-col pixel width;
+   centering it with auto inline margins keeps the terminal centered as the
+   font scales or the window resizes. The absolute `.xterm-viewport` (black
+   background + scrollbar) still spans the full width, so nothing else moves. */
+.terminal-center .xterm-screen {
+  margin-inline: auto;
+}
+
 /* Shared app bar height — kept in sync across all status bars.
    Mobile is taller so a two-line session title can fit. */
 :root {
