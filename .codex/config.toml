@@ -1,0 +1,7 @@
+[[skills.config]]
+path = "../.claude/skills/release"
+enabled = true
+
+[[skills.config]]
+path = "skills/dev-agent"
+enabled = true

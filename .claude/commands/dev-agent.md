@@ -21,7 +21,7 @@ kill $(cat ~/.quicksave/run/service.lock 2>/dev/null) 2>/dev/null || true
 2. Wait briefly for the process to die, then spawn the dev daemon:
 
 ```bash
-cd /Users/jimmy/workspace/quicksave/apps/agent && nohup node --import tsx src/index.ts service run >> ~/.quicksave/run/daemon.log 2>&1 &
+cd apps/agent && nohup node --import tsx src/index.ts service run >> ~/.quicksave/run/daemon.log 2>&1 &
 ```
 
 3. Verify it started:
