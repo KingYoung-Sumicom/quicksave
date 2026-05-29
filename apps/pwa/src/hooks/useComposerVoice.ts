@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: MIT
 /**
  * Shared voice-input logic for message composers (ClaudePanel + the new-session
- * view). Voice is streaming-only by design (WebRTC + realtime ASR): if a
- * machine doesn't advertise streaming, or the browser can't capture, the mic is
- * not shown; if the P2P link can't be established, the mic is disabled. There
- * is intentionally no record-then-send batch fallback.
+ * view). The input mode is user-selected (VoiceConfig.mode):
+ *
+ * - `streaming` — live WebRTC + realtime ASR. Requires the machine to advertise
+ *   `audio.streaming` (wrtc) and the P2P link to establish; otherwise the mic
+ *   is hidden / disabled (no automatic fallback).
+ * - `batch` — record-then-send to `/audio/transcriptions`. Requires the machine
+ *   to advertise `audio.transcription`.
  *
  * The hook owns the mic lifecycle + the "arming" state and feeds finalized
  * transcripts to the caller; the caller renders the button and decides where
@@ -14,39 +17,41 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConnectionStore } from '../stores/connectionStore';
 import { getVoiceConfig } from '../lib/secureStorage';
-import { isVoiceConfigUsable } from '../lib/voiceTranscription';
+import { transcribeViaAgent, isVoiceConfigUsable } from '../lib/voiceTranscription';
+import { useVoiceRecorder } from './useVoiceRecorder';
 import { useVoiceStream } from './useVoiceStream';
 
 export interface UseComposerVoice {
   /** Whether to render the mic button at all (browser can capture + machine
-   *  advertises streaming). */
+   *  supports the selected mode). */
   showMic: boolean;
-  /** Press handler: starts or stops the live streaming utterance. */
+  /** Press handler: starts or stops capture for the selected mode. */
   onMicPress: () => Promise<void>;
-  /** True while a live utterance is streaming. */
+  /** True while a live utterance is streaming or a batch clip is recording. */
   recording: boolean;
   /** True between press and capture actually starting (setup in progress). */
   arming: boolean;
-  /** recording || arming — the button should reflect this as "busy". */
+  /** True while a batch clip is being transcribed (post-recording). */
+  transcribing: boolean;
+  /** recording || arming || transcribing — the button should reflect this. */
   busy: boolean;
-  /** Live partial transcript for the in-progress utterance. */
+  /** Live partial transcript for the in-progress streaming utterance. */
   interim: string;
   /** True when a usable VoiceConfig is stored (for the idle tooltip). */
   configured: boolean;
-  /** True while the live utterance is streaming (alias of `recording`; kept
-   *  distinct for callers that show a streaming-specific caption). */
+  /** True while a live streaming utterance is in progress (drives the caption). */
   streaming: boolean;
-  /** Streaming P2P couldn't be established on this network (no TURN). The mic
-   *  is shown but disabled, since there is no fallback. */
+  /** Streaming mode only: P2P couldn't be established on this network (no
+   *  TURN). The mic is shown but disabled, since there is no fallback. */
   unavailable: boolean;
 }
 
-// Browser capabilities required to capture + stream mic audio over WebRTC.
+// Browser capabilities required to capture mic audio (both modes use
+// getUserMedia; streaming additionally needs WebRTC + AudioContext).
 const browserCanCapture =
-  typeof navigator !== 'undefined' &&
-  !!navigator.mediaDevices?.getUserMedia &&
-  typeof RTCPeerConnection !== 'undefined' &&
-  typeof AudioContext !== 'undefined';
+  typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia;
+const browserCanStream =
+  browserCanCapture && typeof RTCPeerConnection !== 'undefined' && typeof AudioContext !== 'undefined';
 
 export function useComposerVoice(
   agentId: string,
@@ -55,10 +60,14 @@ export function useComposerVoice(
 ): UseComposerVoice {
   const agentAudio = useConnectionStore((s) => (agentId ? s.agentConnections[agentId]?.audio : undefined));
   const streamingSupported = !!agentAudio?.streaming;
+  const batchSupported = !!agentAudio?.transcription;
 
+  const recorder = useVoiceRecorder();
   const voiceStream = useVoiceStream(agentId, onTranscript);
 
+  const [mode, setMode] = useState<'streaming' | 'batch'>('streaming');
   const [configured, setConfigured] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [arming, setArming] = useState(false);
   const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -68,17 +77,20 @@ export function useComposerVoice(
 
   useEffect(() => {
     let cancelled = false;
-    getVoiceConfig().then((c) => { if (!cancelled) setConfigured(isVoiceConfigUsable(c)); });
+    getVoiceConfig().then((c) => {
+      if (cancelled || !c) return;
+      setConfigured(isVoiceConfigUsable(c));
+      setMode(c.mode);
+    });
     return () => { cancelled = true; };
   }, []);
 
-  // Prewarm the WebRTC link so the first utterance starts instantly — only when
-  // the machine advertised streaming support.
+  // Prewarm the WebRTC link so the first streaming utterance starts instantly.
   useEffect(() => {
-    if (!agentId || !streamingSupported) return;
+    if (!agentId || mode !== 'streaming' || !streamingSupported) return;
     void getVoiceConfig().then((c) => { if (isVoiceConfigUsable(c)) void voiceStream.ensure(); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId, streamingSupported]);
+  }, [agentId, mode, streamingSupported]);
 
   useEffect(() => {
     if (voiceStream.error) onErrorRef.current(voiceStream.error);
@@ -91,16 +103,37 @@ export function useComposerVoice(
     setArming(false);
   }, []);
 
+  const batchStopAndTranscribe = useCallback(async () => {
+    const blob = await recorder.stop();
+    if (!blob) return;
+    const config = await getVoiceConfig();
+    if (!isVoiceConfigUsable(config)) {
+      setConfigured(false);
+      onErrorRef.current('Voice transcription is not configured. Set it up in Settings.');
+      return;
+    }
+    setTranscribing(true);
+    try {
+      const text = await transcribeViaAgent(blob, config, agentId);
+      if (text) onTranscript(text);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      onErrorRef.current(err instanceof Error ? err.message : 'Transcription failed.');
+    } finally {
+      setTranscribing(false);
+    }
+  }, [recorder, agentId, onTranscript]);
+
   const onMicPress = useCallback(async () => {
-    if (arming) return;
+    if (transcribing || arming) return;
+    // Stop whichever capture is in progress.
     if (voiceStream.recording) { voiceStream.stop(); return; }
-    // No streaming link → nothing to do (the button is disabled in this state,
-    // but guard anyway).
-    if (!voiceStream.ready) {
+    if (recorder.state === 'recording') { await batchStopAndTranscribe(); return; }
+
+    if (mode === 'streaming' && !voiceStream.ready) {
       onErrorRef.current('Live voice couldn’t connect on this network.');
       return;
     }
-
     const config = await getVoiceConfig();
     if (!isVoiceConfigUsable(config)) {
       setConfigured(false);
@@ -110,23 +143,27 @@ export function useComposerVoice(
     setConfigured(true);
     armTimerRef.current = setTimeout(() => setArming(true), 120);
     try {
-      await voiceStream.start();
+      if (mode === 'streaming') await voiceStream.start();
+      else await recorder.start();
     } catch (err) {
       onErrorRef.current(err instanceof Error ? err.message : 'Could not start voice input.');
     } finally {
       stopArming();
     }
-  }, [arming, voiceStream, stopArming]);
+  }, [transcribing, arming, mode, voiceStream, recorder, batchStopAndTranscribe, stopArming]);
+
+  const modeSupported = mode === 'streaming' ? (browserCanStream && streamingSupported) : (browserCanCapture && batchSupported);
 
   return {
-    showMic: browserCanCapture && streamingSupported,
+    showMic: modeSupported,
     onMicPress,
-    recording: voiceStream.recording,
+    recording: voiceStream.recording || recorder.state === 'recording',
     arming,
-    busy: arming,
+    transcribing,
+    busy: transcribing || arming,
     interim: voiceStream.interim,
     configured,
     streaming: voiceStream.recording,
-    unavailable: voiceStream.unavailable,
+    unavailable: mode === 'streaming' && streamingSupported && voiceStream.unavailable,
   };
 }

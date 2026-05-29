@@ -7,6 +7,7 @@ import type { VoiceConfig } from '@sumicom/quicksave-shared';
 const config: VoiceConfig = {
   apiKey: 'sk-test',
   baseUrl: 'https://api.openai.com/v1',
+  mode: 'streaming',
   transcribeModel: 'whisper-1',
   streamModel: 'gpt-4o-transcribe',
 };

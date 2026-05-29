@@ -320,6 +320,7 @@ export async function getVoiceConfig(): Promise<VoiceConfig | null> {
     return {
       apiKey: parsed.apiKey ?? '',
       baseUrl: parsed.baseUrl ?? '',
+      mode: parsed.mode === 'batch' ? 'batch' : 'streaming',
       // Migrate the pre-split single `model` field → batch model.
       transcribeModel: parsed.transcribeModel ?? parsed.model ?? '',
       streamModel: parsed.streamModel ?? '',

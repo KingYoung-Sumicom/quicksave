@@ -7,6 +7,7 @@ import type { VoiceConfig } from '@sumicom/quicksave-shared';
 const fullConfig: VoiceConfig = {
   apiKey: 'sk-test',
   baseUrl: 'https://whisper.example.com/v1',
+  mode: 'batch',
   transcribeModel: 'whisper-1',
   streamModel: 'gpt-4o-transcribe',
 };

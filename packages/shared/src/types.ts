@@ -1371,6 +1371,9 @@ export interface VoiceConfig {
   apiKey: string;
   /** API base URL, e.g. `https://api.openai.com/v1` or a self-hosted server. */
   baseUrl: string;
+  /** Which input mode the mic uses. `streaming` = live WebRTC + realtime ASR;
+   *  `batch` = record-then-send to `/audio/transcriptions`. User-selected. */
+  mode: 'streaming' | 'batch';
   /** Model for batch transcription — POST `{baseUrl}/audio/transcriptions`
    *  (e.g. `whisper-1`). */
   transcribeModel: string;

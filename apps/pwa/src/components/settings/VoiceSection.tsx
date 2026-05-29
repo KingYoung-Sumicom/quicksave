@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { useState, useEffect } from 'react';
+import { clsx } from 'clsx';
 import { FormattedMessage, useIntl } from 'react-intl';
 import { Spinner } from '../ui/Spinner';
 import { ErrorBox } from '../ui/ErrorBox';
@@ -62,6 +63,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
   const connected = useConnectionStore((s) => s.state === 'connected');
 
   const [apiKey, setApiKey] = useState('');
+  const [mode, setMode] = useState<'streaming' | 'batch'>('streaming');
   const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
   const [transcribeModel, setTranscribeModel] = useState(DEFAULT_TRANSCRIBE_MODEL);
   const [streamModel, setStreamModel] = useState(DEFAULT_STREAM_MODEL);
@@ -78,6 +80,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
     if (!isOpen) return;
     getVoiceConfig().then((c) => {
       if (!c) return;
+      setMode(c.mode);
       if (c.baseUrl) setBaseUrl(c.baseUrl);
       if (c.transcribeModel) setTranscribeModel(c.transcribeModel);
       if (c.streamModel) setStreamModel(c.streamModel);
@@ -91,6 +94,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
     const existing = await getVoiceConfig();
     return {
       apiKey: apiKey.trim() || existing?.apiKey || '',
+      mode,
       baseUrl: baseUrl.trim(),
       transcribeModel: transcribeModel.trim() || DEFAULT_TRANSCRIBE_MODEL,
       streamModel: streamModel.trim() || DEFAULT_STREAM_MODEL,
@@ -156,6 +160,34 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
       <p className="text-sm text-slate-300">
         <FormattedMessage id="settings.voice.description" />
       </p>
+
+      {/* Input mode: live streaming (WebRTC) vs record-then-send (batch). */}
+      <label className="block text-xs text-slate-400">
+        <FormattedMessage id="settings.voice.mode.label" />
+      </label>
+      <div className="grid grid-cols-2 gap-2">
+        {(['streaming', 'batch'] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => setMode(m)}
+            disabled={isSaving}
+            className={clsx(
+              'rounded-md border px-3 py-2 text-left transition-colors',
+              mode === m
+                ? 'border-purple-500 bg-purple-500/10'
+                : 'border-slate-600 bg-slate-700 hover:bg-slate-600',
+            )}
+          >
+            <span className="block text-sm text-white">
+              <FormattedMessage id={`settings.voice.mode.${m}`} />
+            </span>
+            <span className="block text-[11px] text-slate-400">
+              <FormattedMessage id={`settings.voice.mode.${m}.hint`} />
+            </span>
+          </button>
+        ))}
+      </div>
 
       <label className="block text-xs text-slate-400">
         <FormattedMessage id="settings.voice.baseUrl.label" />
