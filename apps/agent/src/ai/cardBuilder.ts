@@ -16,6 +16,7 @@ import type {
   SubagentToolCall,
   PendingInputAttachment,
   GeneratedImageCard,
+  SystemCard,
 } from '@sumicom/quicksave-shared';
 import { readFile, readdir, writeFile, mkdir, stat, open } from 'fs/promises';
 import { join } from 'path';
@@ -258,6 +259,74 @@ function extractToolResultText(content: unknown): string {
       .join('\n');
   }
   return JSON.stringify(content);
+}
+
+/** Compact "1m 25s" / "45s" duration for the `text` fallback. The PWA renders
+ *  its own badge from `meta.durationMs`; this keeps debug logs and non-PWA
+ *  consumers readable. */
+export function formatDurationMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '0s';
+  const totalSec = Math.round(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+/** Build a structured `turn_duration` system card from a Claude JSONL entry. */
+export function turnDurationCard(
+  msg: { durationMs?: unknown; messageCount?: unknown },
+  id: CardId,
+): SystemCard {
+  const durationMs = typeof msg.durationMs === 'number' ? msg.durationMs : 0;
+  const messageCount = typeof msg.messageCount === 'number' ? msg.messageCount : 0;
+  return {
+    type: 'system',
+    id,
+    timestamp: Date.now(),
+    text: `Turn: ${formatDurationMs(durationMs)} · ${messageCount} messages`,
+    subtype: 'info',
+    meta: { kind: 'turn_duration', durationMs, messageCount },
+  };
+}
+
+/** Build a structured `stop_hook_summary` system card from a Claude JSONL entry.
+ *  Flags as `warning` when any hook errored or blocked continuation — that's the
+ *  channel that surfaces hook misconfigs (e.g. a bad interpreter path). */
+export function stopHookSummaryCard(
+  msg: {
+    hookInfos?: unknown;
+    hookErrors?: unknown;
+    level?: unknown;
+    preventedContinuation?: unknown;
+    stopReason?: unknown;
+  },
+  id: CardId,
+): SystemCard {
+  const hooks = Array.isArray(msg.hookInfos)
+    ? msg.hookInfos.map((h: any) => ({
+        command: typeof h?.command === 'string' ? h.command : '',
+        durationMs: typeof h?.durationMs === 'number' ? h.durationMs : 0,
+      }))
+    : [];
+  const errors = Array.isArray(msg.hookErrors)
+    ? msg.hookErrors.filter((e: unknown): e is string => typeof e === 'string')
+    : [];
+  const preventedContinuation = msg.preventedContinuation === true;
+  const level = typeof msg.level === 'string' ? msg.level : undefined;
+  const stopReason =
+    typeof msg.stopReason === 'string' && msg.stopReason ? msg.stopReason : undefined;
+  const text =
+    errors.length > 0
+      ? `Stop hook: ${hooks.length} ran, ${errors.length} error${errors.length > 1 ? 's' : ''}`
+      : `Stop hook: ${hooks.length} ran`;
+  return {
+    type: 'system',
+    id,
+    timestamp: Date.now(),
+    text,
+    subtype: errors.length > 0 || preventedContinuation ? 'warning' : 'info',
+    meta: { kind: 'stop_hook_summary', hooks, errors, level, preventedContinuation, stopReason },
+  };
 }
 
 // ============================================================================
@@ -748,6 +817,23 @@ export class StreamCardBuilder {
     return this.addEvent(card);
   }
 
+  /** Live structured `turn_duration` card — mirrors the history builder so a
+   *  reload renders identically. */
+  turnDuration(raw: { durationMs?: unknown; messageCount?: unknown }): CardEvent {
+    return this.addEvent(turnDurationCard(raw, this.nextId()));
+  }
+
+  /** Live structured `stop_hook_summary` card — see history builder counterpart. */
+  stopHookSummary(raw: {
+    hookInfos?: unknown;
+    hookErrors?: unknown;
+    level?: unknown;
+    preventedContinuation?: unknown;
+    stopReason?: unknown;
+  }): CardEvent {
+    return this.addEvent(stopHookSummaryCard(raw, this.nextId()));
+  }
+
   generatedImage(prompt: string, status: GeneratedImageCard['status'], savedPath?: string): CardEvent {
     const card: GeneratedImageCard = {
       type: 'generated_image',
@@ -1110,6 +1196,10 @@ export async function buildCardsFromHistory(
 
       if (subtype === 'compact_boundary') {
         cards.push({ type: 'system', id: nextId(), timestamp: Date.now(), text: 'Context compacted', subtype: 'compacted' });
+      } else if (subtype === 'turn_duration') {
+        cards.push(turnDurationCard(msg as any, nextId()));
+      } else if (subtype === 'stop_hook_summary') {
+        cards.push(stopHookSummaryCard(msg as any, nextId()));
       } else {
         // Unknown system subtype — show as info
         cards.push({ type: 'system', id: nextId(), timestamp: Date.now(), text: subtype ?? 'System event', subtype: 'info' });

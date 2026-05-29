@@ -91,7 +91,7 @@ export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId
     }
 
     case 'system':
-      return <SystemMessage content={card.text} />;
+      return <SystemMessage card={card} />;
 
     case 'generated_image':
       return <GeneratedImageMessage card={card} agentId={agentId} />;

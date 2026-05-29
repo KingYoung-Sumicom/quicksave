@@ -40,8 +40,14 @@ import { existsSync } from 'fs';
 import { readFile, writeFile, mkdir, stat } from 'fs/promises';
 
 // Import after mocks are set up
-const { StreamCardBuilder, loadPersistedCards, buildCardsFromHistory } =
-  await import('./cardBuilder.js');
+const {
+  StreamCardBuilder,
+  loadPersistedCards,
+  buildCardsFromHistory,
+  formatDurationMs,
+  turnDurationCard,
+  stopHookSummaryCard,
+} = await import('./cardBuilder.js');
 
 // ============================================================================
 // StreamCardBuilder
@@ -824,6 +830,36 @@ describe('StreamCardBuilder.persistCards()', () => {
     expect(written[0].text).toBe('old');
     expect(written[1].text).toBe('new');
   });
+
+  it('upserts cards by id when persisting again', async () => {
+    const existing: Card[] = [{ type: 'user', id: 'sess-p4:1', timestamp: 1, text: 'old text' }];
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFile).mockResolvedValue(JSON.stringify(existing));
+    vi.mocked(mkdir).mockResolvedValue(undefined);
+    vi.mocked(writeFile).mockResolvedValue(undefined);
+
+    const builder = new StreamCardBuilder('sess-p4', 'stream-p4', '/cwd');
+    builder.userMessage('new text');
+    await builder.persistCards();
+
+    const written = JSON.parse((vi.mocked(writeFile).mock.calls[0][1] as string).trim());
+    expect(written).toHaveLength(1);
+    expect(written[0].text).toBe('new text');
+  });
+
+  it('persists one card immediately', async () => {
+    vi.mocked(existsSync).mockReturnValue(false);
+    vi.mocked(mkdir).mockResolvedValue(undefined);
+    vi.mocked(writeFile).mockResolvedValue(undefined);
+
+    const builder = new StreamCardBuilder('sess-p5', 'stream-p5', '/cwd');
+    const event = builder.userMessage('steered prompt') as CardAddEvent;
+    await builder.persistCard(event.card);
+
+    const written = JSON.parse((vi.mocked(writeFile).mock.calls[0][1] as string).trim());
+    expect(written).toHaveLength(1);
+    expect(written[0]).toMatchObject({ type: 'user', text: 'steered prompt' });
+  });
 });
 
 // ============================================================================
@@ -1194,6 +1230,83 @@ describe('buildCardsFromHistory', () => {
     expect(sc.subagentType).toBe('Explore');
     expect(sc.requestedModel).toBe('haiku');
     expect(sc.prompt).toBe('Search the codebase for test files');
+  });
+});
+
+// ============================================================================
+// Structured system cards (turn_duration / stop_hook_summary)
+// ============================================================================
+
+describe('formatDurationMs', () => {
+  it('renders sub-minute durations as seconds', () => {
+    expect(formatDurationMs(45_000)).toBe('45s');
+    expect(formatDurationMs(0)).toBe('0s');
+  });
+  it('renders minute+ durations as "Nm Ss"', () => {
+    expect(formatDurationMs(85_022)).toBe('1m 25s');
+  });
+  it('clamps invalid input to 0s', () => {
+    expect(formatDurationMs(-5)).toBe('0s');
+    expect(formatDurationMs(NaN)).toBe('0s');
+  });
+});
+
+describe('turnDurationCard', () => {
+  it('builds a structured turn_duration card with a readable text fallback', () => {
+    const card = turnDurationCard({ durationMs: 85_022, messageCount: 44 }, 'c1');
+    expect(card.type).toBe('system');
+    expect(card.subtype).toBe('info');
+    expect(card.text).toBe('Turn: 1m 25s · 44 messages');
+    expect(card.meta).toEqual({ kind: 'turn_duration', durationMs: 85_022, messageCount: 44 });
+  });
+  it('defaults missing numeric fields to 0', () => {
+    const card = turnDurationCard({}, 'c2');
+    expect(card.meta).toEqual({ kind: 'turn_duration', durationMs: 0, messageCount: 0 });
+  });
+});
+
+describe('stopHookSummaryCard', () => {
+  it('flags errors as a warning and keeps the hook command + error detail', () => {
+    const card = stopHookSummaryCard(
+      {
+        hookInfos: [{ command: "'npx tsx' '/h' '/sock'", durationMs: 14 }],
+        hookErrors: ['Failed: /bin/sh: 1: npx tsx: not found'],
+        level: 'suggestion',
+        preventedContinuation: false,
+      },
+      'c3',
+    );
+    expect(card.subtype).toBe('warning');
+    expect(card.text).toBe('Stop hook: 1 ran, 1 error');
+    expect(card.meta).toEqual({
+      kind: 'stop_hook_summary',
+      hooks: [{ command: "'npx tsx' '/h' '/sock'", durationMs: 14 }],
+      errors: ['Failed: /bin/sh: 1: npx tsx: not found'],
+      level: 'suggestion',
+      preventedContinuation: false,
+      stopReason: undefined,
+    });
+  });
+  it('renders a clean run as info with no errors', () => {
+    const card = stopHookSummaryCard(
+      { hookInfos: [{ command: 'node /h /sock', durationMs: 3 }], hookErrors: [], preventedContinuation: false },
+      'c4',
+    );
+    expect(card.subtype).toBe('info');
+    expect(card.text).toBe('Stop hook: 1 ran');
+    expect(card.meta.kind).toBe('stop_hook_summary');
+    if (card.meta.kind === 'stop_hook_summary') expect(card.meta.errors).toEqual([]);
+  });
+  it('treats preventedContinuation as a warning even without errors', () => {
+    const card = stopHookSummaryCard(
+      { hookInfos: [], hookErrors: [], preventedContinuation: true, stopReason: 'blocked' },
+      'c5',
+    );
+    expect(card.subtype).toBe('warning');
+    if (card.meta.kind === 'stop_hook_summary') {
+      expect(card.meta.preventedContinuation).toBe(true);
+      expect(card.meta.stopReason).toBe('blocked');
+    }
   });
 });
 

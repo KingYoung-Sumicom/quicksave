@@ -116,10 +116,44 @@ export interface SubagentCard extends CardBase {
 
 export type SystemCardSubtype = 'compacted' | 'cost' | 'error' | 'info' | 'warning';
 
+/**
+ * Optional structured payload for system cards that carry more than a one-line
+ * string. `text` stays populated as a human-readable fallback (debug logs,
+ * non-PWA consumers); `meta` lets the PWA render something richer — a duration
+ * badge, a collapsible hook summary — instead of printing the raw subtype name.
+ *
+ * Sourced from Claude's own `type:"system"` JSONL entries:
+ *   - `turn_duration`    → `{ durationMs, messageCount }`
+ *   - `stop_hook_summary`→ `{ hooks[], errors[], level, preventedContinuation, stopReason }`
+ */
+export type SystemCardMeta =
+  | {
+      kind: 'turn_duration';
+      /** Wall-clock duration of the turn in milliseconds. */
+      durationMs: number;
+      /** Messages exchanged during the turn. */
+      messageCount: number;
+    }
+  | {
+      kind: 'stop_hook_summary';
+      /** One entry per Stop hook that ran, with its command and wall-clock time. */
+      hooks: { command: string; durationMs: number }[];
+      /** Non-blocking hook error summaries (stderr). Empty when all hooks succeeded. */
+      errors: string[];
+      /** Claude's severity hint, e.g. "suggestion". */
+      level?: string;
+      /** True if a hook blocked Claude from continuing the turn. */
+      preventedContinuation: boolean;
+      /** Reason string from a blocking hook, when present. */
+      stopReason?: string;
+    };
+
 export interface SystemCard extends CardBase {
   type: 'system';
   text: string;
   subtype?: SystemCardSubtype;
+  /** Structured payload for rich rendering; see `SystemCardMeta`. */
+  meta?: SystemCardMeta;
 }
 
 export interface GeneratedImageCard extends CardBase {

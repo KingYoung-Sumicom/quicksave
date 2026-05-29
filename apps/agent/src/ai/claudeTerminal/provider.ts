@@ -578,6 +578,14 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
       const model = (msg as { model?: string }).model;
       if (model) callbacks.onModelDetected(model);
     }
+    // Structured per-turn system entries. Emit live so they match what
+    // buildCardsFromHistory reconstructs on reload (same card shape + meta).
+    if (msg.type === 'system' && msg.subtype === 'turn_duration') {
+      callbacks.emitCardEvent(cardBuilder.turnDuration(msg as Record<string, unknown>));
+    }
+    if (msg.type === 'system' && msg.subtype === 'stop_hook_summary') {
+      callbacks.emitCardEvent(cardBuilder.stopHookSummary(msg as Record<string, unknown>));
+    }
   }
 }
 
