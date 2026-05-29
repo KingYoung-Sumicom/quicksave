@@ -7,7 +7,8 @@ import type { VoiceConfig } from '@sumicom/quicksave-shared';
 const fullConfig: VoiceConfig = {
   apiKey: 'sk-test',
   baseUrl: 'https://whisper.example.com/v1',
-  model: 'whisper-1',
+  transcribeModel: 'whisper-1',
+  streamModel: 'gpt-4o-transcribe',
 };
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
@@ -26,11 +27,11 @@ afterEach(() => {
 });
 
 describe('isVoiceConfigUsable', () => {
-  it('requires baseUrl and model, but not apiKey', () => {
+  it('requires baseUrl and transcribeModel, but not apiKey', () => {
     expect(isVoiceConfigUsable(fullConfig)).toBe(true);
     expect(isVoiceConfigUsable(null)).toBe(false);
     expect(isVoiceConfigUsable({ ...fullConfig, baseUrl: ' ' })).toBe(false);
-    expect(isVoiceConfigUsable({ ...fullConfig, model: '' })).toBe(false);
+    expect(isVoiceConfigUsable({ ...fullConfig, transcribeModel: '' })).toBe(false);
     expect(isVoiceConfigUsable({ ...fullConfig, apiKey: '' })).toBe(true);
   });
 });

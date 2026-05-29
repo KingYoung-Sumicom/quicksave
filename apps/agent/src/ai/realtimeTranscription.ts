@@ -61,6 +61,10 @@ export class RealtimeTranscriber {
       this.cb.onError('Invalid audio sample rate');
       return;
     }
+    if (!this.config.streamModel.trim()) {
+      this.cb.onError('No streaming model configured. Set a realtime model (e.g. gpt-4o-transcribe) in Settings.');
+      return;
+    }
     // GA Realtime API: no `OpenAI-Beta` header (the beta interface is gone).
     const headers: Record<string, string> = {};
     if (this.config.apiKey.trim()) headers.Authorization = `Bearer ${this.config.apiKey.trim()}`;
@@ -81,7 +85,7 @@ export class RealtimeTranscriber {
             audio: {
               input: {
                 format: { type: 'audio/pcm', rate: this.sampleRate },
-                transcription: { model: this.config.model.trim() },
+                transcription: { model: this.config.streamModel.trim() },
               },
             },
           },

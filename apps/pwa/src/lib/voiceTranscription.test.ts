@@ -5,6 +5,7 @@ import {
   transcribeViaAgent,
   listModelsViaAgent,
   isVoiceConfigUsable,
+  filterVoiceModels,
   VoiceTranscriptionError,
   MAX_AUDIO_BYTES,
 } from './voiceTranscription';
@@ -14,7 +15,8 @@ import type { VoiceConfig } from '@sumicom/quicksave-shared';
 const config: VoiceConfig = {
   apiKey: 'sk-test',
   baseUrl: 'https://api.openai.com/v1',
-  model: 'whisper-1',
+  transcribeModel: 'whisper-1',
+  streamModel: 'gpt-4o-transcribe',
 };
 
 const AGENT = 'agent-1';
@@ -34,10 +36,12 @@ afterEach(() => {
 });
 
 describe('isVoiceConfigUsable', () => {
-  it('requires baseUrl and model, not apiKey', () => {
+  it('requires baseUrl and at least one model, not apiKey', () => {
     expect(isVoiceConfigUsable(config)).toBe(true);
     expect(isVoiceConfigUsable(null)).toBe(false);
     expect(isVoiceConfigUsable({ ...config, baseUrl: ' ' })).toBe(false);
+    expect(isVoiceConfigUsable({ ...config, transcribeModel: '', streamModel: '' })).toBe(false);
+    expect(isVoiceConfigUsable({ ...config, transcribeModel: '' })).toBe(true); // streamModel still set
     expect(isVoiceConfigUsable({ ...config, apiKey: '' })).toBe(true);
   });
 });
@@ -99,5 +103,17 @@ describe('listModelsViaAgent', () => {
 
   it('throws when no bus is registered', async () => {
     await expect(listModelsViaAgent(config, 'other-agent')).rejects.toThrow(/Not connected/);
+  });
+});
+
+describe('filterVoiceModels', () => {
+  it('keeps only voice-relevant models from a noisy list', () => {
+    const all = ['gpt-4o', 'dall-e-3', 'whisper-1', 'text-embedding-3-small', 'gpt-4o-transcribe', 'gpt-realtime'];
+    expect(filterVoiceModels(all)).toEqual(['whisper-1', 'gpt-4o-transcribe', 'gpt-realtime']);
+  });
+
+  it('falls back to the full list when nothing matches (self-hosted naming)', () => {
+    const custom = ['my-stt-v2', 'local-model'];
+    expect(filterVoiceModels(custom)).toEqual(custom);
   });
 });

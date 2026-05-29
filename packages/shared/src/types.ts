@@ -1371,8 +1371,13 @@ export interface VoiceConfig {
   apiKey: string;
   /** API base URL, e.g. `https://api.openai.com/v1` or a self-hosted server. */
   baseUrl: string;
-  /** Transcription model name, e.g. `whisper-1`. */
-  model: string;
+  /** Model for batch transcription — POST `{baseUrl}/audio/transcriptions`
+   *  (e.g. `whisper-1`). */
+  transcribeModel: string;
+  /** Model for realtime streaming — WS `{baseUrl}/realtime` (e.g.
+   *  `gpt-4o-transcribe`). Realtime requires a realtime-capable model;
+   *  `whisper-1` is batch-only. */
+  streamModel: string;
 }
 
 export interface VoiceTranscribeRequestPayload {

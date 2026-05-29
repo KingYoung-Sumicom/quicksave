@@ -19,9 +19,9 @@ export class VoiceTranscriptionError extends Error {
   }
 }
 
-/** True when the config has the minimum needed to attempt a request. */
+/** True when the config has the minimum needed for batch transcription. */
 export function isVoiceConfigUsable(config: VoiceConfig | null | undefined): config is VoiceConfig {
-  return !!config && config.baseUrl.trim().length > 0 && config.model.trim().length > 0;
+  return !!config && config.baseUrl.trim().length > 0 && config.transcribeModel.trim().length > 0;
 }
 
 /** Join base URL + path without doubling or dropping the slash. */
@@ -67,7 +67,7 @@ export async function transcribeAudio(
   const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
   const form = new FormData();
   form.append('file', new Blob([audio], { type: mimeType || 'audio/webm' }), `recording.${ext}`);
-  form.append('model', config.model.trim());
+  form.append('model', config.transcribeModel.trim());
   form.append('response_format', 'json');
 
   let res: Response;

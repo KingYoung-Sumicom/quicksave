@@ -33,9 +33,23 @@ export class VoiceTranscriptionError extends Error {
   }
 }
 
-/** True when the config has the minimum needed to attempt transcription. */
+/** True when voice is configured enough to attempt anything (base URL + at
+ *  least one model). Per-path readiness is checked where each path runs. */
 export function isVoiceConfigUsable(config: VoiceConfig | null): config is VoiceConfig {
-  return !!config && config.baseUrl.trim().length > 0 && config.model.trim().length > 0;
+  return !!config && config.baseUrl.trim().length > 0
+    && (config.transcribeModel.trim().length > 0 || config.streamModel.trim().length > 0);
+}
+
+/**
+ * Trim a raw `/models` list down to voice-relevant entries so the picker isn't
+ * polluted with chat/embedding/image models. Matches common transcription and
+ * realtime naming (whisper, transcribe, realtime, audio). Falls back to the
+ * full list if nothing matches — a self-hosted server may name its model
+ * arbitrarily, and hiding everything would be worse than a noisy list.
+ */
+export function filterVoiceModels(ids: string[]): string[] {
+  const voice = ids.filter((id) => /whisper|transcrib|realtime|audio/i.test(id));
+  return voice.length > 0 ? voice : ids;
 }
 
 /** Send a recording to the agent for transcription; returns the text. */

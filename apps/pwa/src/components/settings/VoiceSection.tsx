@@ -5,22 +5,56 @@ import { FormattedMessage, useIntl } from 'react-intl';
 import { Spinner } from '../ui/Spinner';
 import { ErrorBox } from '../ui/ErrorBox';
 import { getVoiceConfig, saveVoiceConfig } from '../../lib/secureStorage';
-import { listModelsViaAgent } from '../../lib/voiceTranscription';
+import { listModelsViaAgent, filterVoiceModels } from '../../lib/voiceTranscription';
 import { useConnectionStore } from '../../stores/connectionStore';
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
-const DEFAULT_MODEL = 'whisper-1';
+const DEFAULT_TRANSCRIBE_MODEL = 'whisper-1';
+const DEFAULT_STREAM_MODEL = 'gpt-4o-transcribe';
 
 interface VoiceSectionProps {
   isOpen: boolean;
 }
 
+/** A model field that renders a dropdown of fetched (voice-filtered) models
+ *  when available, else a free-text input. */
+function ModelField({
+  labelId, hintId, value, onChange, models, placeholder, disabled,
+}: {
+  labelId: string;
+  hintId: string;
+  value: string;
+  onChange: (v: string) => void;
+  models: string[] | null;
+  placeholder: string;
+  disabled: boolean;
+}) {
+  const cls = 'w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent';
+  return (
+    <div className="space-y-1">
+      <label className="block text-xs text-slate-400"><FormattedMessage id={labelId} /></label>
+      {models && models.length > 0 ? (
+        <select value={value} onChange={(e) => onChange(e.target.value)} className={cls} disabled={disabled}>
+          {!models.includes(value) && value && <option value={value}>{value}</option>}
+          {models.map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+      ) : (
+        <input type="text" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={cls} disabled={disabled} />
+      )}
+      <p className="text-[11px] text-slate-500"><FormattedMessage id={hintId} /></p>
+    </div>
+  );
+}
+
 /**
- * Voice-input transcription settings. The key/baseUrl/model are stored
+ * Voice-input transcription settings. The key/baseUrl/models are stored
  * locally and synced across devices via the shared mailbox, so the user
  * configures this once (single source of truth). Transcription runs on the
  * agent, so the model list can be refreshed via the connected agent — which
  * works for OpenAI too, since the agent has no browser CORS limit.
+ *
+ * Batch and streaming use different models (e.g. whisper-1 vs gpt-4o-transcribe),
+ * so they are configured separately.
  */
 export function VoiceSection({ isOpen }: VoiceSectionProps) {
   const intl = useIntl();
@@ -29,7 +63,8 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
 
   const [apiKey, setApiKey] = useState('');
   const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [transcribeModel, setTranscribeModel] = useState(DEFAULT_TRANSCRIBE_MODEL);
+  const [streamModel, setStreamModel] = useState(DEFAULT_STREAM_MODEL);
   const [keyStored, setKeyStored] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,7 +79,8 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
     getVoiceConfig().then((c) => {
       if (!c) return;
       if (c.baseUrl) setBaseUrl(c.baseUrl);
-      if (c.model) setModel(c.model);
+      if (c.transcribeModel) setTranscribeModel(c.transcribeModel);
+      if (c.streamModel) setStreamModel(c.streamModel);
       setKeyStored(c.apiKey.length > 0);
     });
   }, [isOpen]);
@@ -56,7 +92,8 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
     return {
       apiKey: apiKey.trim() || existing?.apiKey || '',
       baseUrl: baseUrl.trim(),
-      model: model.trim() || DEFAULT_MODEL,
+      transcribeModel: transcribeModel.trim() || DEFAULT_TRANSCRIBE_MODEL,
+      streamModel: streamModel.trim() || DEFAULT_STREAM_MODEL,
     };
   }
 
@@ -93,11 +130,9 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
     setRefreshError(null);
     try {
       const list = await listModelsViaAgent(await resolveConfig(), agentId);
-      setModels(list);
-      if (list.length > 0 && !list.includes(model.trim())) {
-        // Keep the user's current model if present; otherwise leave as-is so
-        // they can pick from the dropdown explicitly.
-      }
+      // Trim to voice-relevant models so the picker isn't full of chat/image
+      // models (falls back to the full list for self-hosted servers).
+      setModels(filterVoiceModels(list));
     } catch (err) {
       setModels(null);
       setRefreshError(
@@ -134,10 +169,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
         disabled={isSaving}
       />
 
-      <div className="flex items-center justify-between">
-        <label className="block text-xs text-slate-400">
-          <FormattedMessage id="settings.voice.model.label" />
-        </label>
+      <div className="flex items-center justify-end">
         <button
           type="button"
           onClick={handleRefreshModels}
@@ -148,28 +180,25 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
           <FormattedMessage id="settings.voice.models.refresh" />
         </button>
       </div>
-      {models && models.length > 0 ? (
-        <select
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-          disabled={isSaving}
-        >
-          {!models.includes(model) && model && <option value={model}>{model}</option>}
-          {models.map((m) => (
-            <option key={m} value={m}>{m}</option>
-          ))}
-        </select>
-      ) : (
-        <input
-          type="text"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          placeholder={DEFAULT_MODEL}
-          className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-          disabled={isSaving}
-        />
-      )}
+
+      <ModelField
+        labelId="settings.voice.transcribeModel.label"
+        hintId="settings.voice.transcribeModel.hint"
+        value={transcribeModel}
+        onChange={setTranscribeModel}
+        models={models}
+        placeholder={DEFAULT_TRANSCRIBE_MODEL}
+        disabled={isSaving}
+      />
+      <ModelField
+        labelId="settings.voice.streamModel.label"
+        hintId="settings.voice.streamModel.hint"
+        value={streamModel}
+        onChange={setStreamModel}
+        models={models}
+        placeholder={DEFAULT_STREAM_MODEL}
+        disabled={isSaving}
+      />
       {refreshError && <p className="text-xs text-amber-400">{refreshError}</p>}
 
       <div className="flex items-center justify-between">

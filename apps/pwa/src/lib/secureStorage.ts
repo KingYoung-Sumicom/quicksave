@@ -316,11 +316,13 @@ export async function getVoiceConfig(): Promise<VoiceConfig | null> {
   const raw = await getRecord<string>(VOICE_CONFIG_KEY);
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as Partial<VoiceConfig>;
+    const parsed = JSON.parse(raw) as Partial<VoiceConfig> & { model?: string };
     return {
       apiKey: parsed.apiKey ?? '',
       baseUrl: parsed.baseUrl ?? '',
-      model: parsed.model ?? '',
+      // Migrate the pre-split single `model` field → batch model.
+      transcribeModel: parsed.transcribeModel ?? parsed.model ?? '',
+      streamModel: parsed.streamModel ?? '',
     };
   } catch {
     return null;
