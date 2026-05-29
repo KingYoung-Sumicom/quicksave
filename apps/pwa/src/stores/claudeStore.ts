@@ -370,7 +370,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         // active sessions are not in the incoming set and must be untouched.
         if (session.machineAgentId !== machineAgentId) continue;
         if (session.isActive && !activeSessionIds.has(id)) {
-          updated[id] = { ...session, isActive: false, isStreaming: false, hasPendingInput: false };
+          updated[id] = { ...session, isActive: false, isStreaming: false, hasPendingInput: false, queueState: null };
         }
       }
       return { sessions: updated };
@@ -381,7 +381,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       let changed = false;
       for (const [id, session] of Object.entries(updated)) {
         if (session.isActive) {
-          updated[id] = { ...session, isActive: false, isStreaming: false, hasPendingInput: false };
+          updated[id] = { ...session, isActive: false, isStreaming: false, hasPendingInput: false, queueState: null };
           changed = true;
         }
       }

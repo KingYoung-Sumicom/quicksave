@@ -98,6 +98,8 @@ export const REQUEST_RESPONSE_MAP: Record<string, string> = {
   // Claude Code SDK
   'claude:start': 'claude:start:response',
   'claude:resume': 'claude:resume:response',
+  'claude:interrupt': 'claude:interrupt:response',
+  'claude:steer-queued': 'claude:steer-queued:response',
   'claude:cancel': 'claude:cancel:response',
   'claude:get-messages': 'claude:get-messages:response',
   'claude:set-preferences': 'claude:set-preferences:response',

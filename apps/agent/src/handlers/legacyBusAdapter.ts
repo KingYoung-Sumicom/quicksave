@@ -15,7 +15,7 @@ import type { MessageHandler } from './messageHandler.js';
  * and translates the response back into a bus result frame.
  *
  * **This list is one of three coupled sources** for the request/response
- * surface — see CLAUDE.md "Doc Sync Pointers". Adding a new verb requires
+ * surface — see AGENTS.md "Documentation Sync Pointers". Adding a new verb requires
  * touching:
  *   1. `messageHandler.ts` switch (the handler itself)
  *   2. This array (the bus exposure)
@@ -73,6 +73,8 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   // claude
   'claude:start',
   'claude:resume',
+  'claude:interrupt',
+  'claude:steer-queued',
   'claude:cancel',
   'claude:close',
   'claude:end-task',

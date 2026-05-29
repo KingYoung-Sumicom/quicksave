@@ -5,6 +5,8 @@ import {
   type CardHistoryResponse,
   type ClaudeStartResponsePayload,
   type ClaudeResumeResponsePayload,
+  type ClaudeInterruptResponsePayload,
+  type ClaudeSteerQueuedResponsePayload,
   type ClaudeCancelResponsePayload,
   type ClaudeCloseResponsePayload,
   type ClaudeEndTaskResponsePayload,
@@ -31,11 +33,43 @@ import {
   type ProjectListReposResponsePayload,
   type ProjectDeleteRequestPayload,
   type ProjectDeleteResponsePayload,
+  type SessionQueueState,
 } from '@sumicom/quicksave-shared';
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { useClaudeStore } from '../stores/claudeStore';
 import { applySessionCardsSnapshot, applySessionCardsUpdate } from '../lib/applySessionCards';
 import { primeUploadedAttachment } from '../lib/attachmentUploader';
+
+const QUEUE_PREVIEW_MAX = 80;
+const OPTIMISTIC_QUEUE_MIN_MS = 1500;
+
+function queuedPromptPreview(prompt: string): string | undefined {
+  const compact = prompt.replace(/\s+/g, ' ').trim();
+  if (!compact) return undefined;
+  return compact.length > QUEUE_PREVIEW_MAX
+    ? `${compact.slice(0, QUEUE_PREVIEW_MAX - 3)}...`
+    : compact;
+}
+
+function appendOptimisticQueueState(
+  current: SessionQueueState | null | undefined,
+  prompt: string,
+  optimisticUntil: number,
+): SessionQueueState {
+  const preview = queuedPromptPreview(prompt);
+  const existingPreviews = current?.queuedPromptPreviews
+    ?? (current?.latestPromptPreview ? [current.latestPromptPreview] : []);
+  const queuedPromptPreviews = preview
+    ? [...existingPreviews, preview]
+    : existingPreviews;
+  return {
+    pendingUserMessages: (current?.pendingUserMessages ?? existingPreviews.length) + 1,
+    latestPromptPreview: preview ?? current?.latestPromptPreview,
+    ...(queuedPromptPreviews.length > 0 ? { queuedPromptPreviews } : {}),
+    canInterruptCurrentTurn: true,
+    optimisticUntil,
+  };
+}
 
 export function useClaudeOperations(
   getBus: () => MessageBusClient | null,
@@ -261,9 +295,26 @@ export function useClaudeOperations(
 
   const resumeSession = useCallback(
     async (sessionId: string, prompt: string, cwd?: string, opts?: { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] }) => {
-      const wasAlreadyStreaming = useClaudeStore.getState().isStreaming;
+      const state = useClaudeStore.getState();
+      const session = state.sessions[sessionId];
+      const wasAlreadyStreaming = state.isStreaming || session?.isStreaming === true;
       setStreaming(true);
       setStreamError(null);
+      if (wasAlreadyStreaming) {
+        const optimisticUntil = Date.now() + OPTIMISTIC_QUEUE_MIN_MS;
+        upsertSession({
+          sessionId,
+          isActive: true,
+          isStreaming: true,
+          queueState: appendOptimisticQueueState(session?.queueState, prompt, optimisticUntil),
+        });
+        window.setTimeout(() => {
+          const latest = useClaudeStore.getState().sessions[sessionId]?.queueState;
+          if (latest?.optimisticUntil === optimisticUntil) {
+            upsertSession({ sessionId, queueState: null });
+          }
+        }, OPTIMISTIC_QUEUE_MIN_MS);
+      }
       // Prime the attachment cache BEFORE appending the optimistic card so
       // the chip's first render reads bytes from L1 instead of firing
       // `attachment:fetch` against the agent's disk store, which may not
@@ -276,15 +327,17 @@ export function useClaudeOperations(
           primeUploadedAttachment(sessionId, id);
         }
       }
-      appendCard({
-        type: 'user',
-        id: `local-user-${Date.now()}`,
-        timestamp: Date.now(),
-        text: prompt,
-        ...(opts?.attachmentMetadata && opts.attachmentMetadata.length > 0
-          ? { attachments: opts.attachmentMetadata }
-          : {}),
-      });
+      if (!wasAlreadyStreaming) {
+        appendCard({
+          type: 'user',
+          id: `local-user-${Date.now()}`,
+          timestamp: Date.now(),
+          text: prompt,
+          ...(opts?.attachmentMetadata && opts.attachmentMetadata.length > 0
+            ? { attachments: opts.attachmentMetadata }
+            : {}),
+        });
+      }
       try {
         console.log(`[sub] resume → implicit subscribe session=${sessionId.slice(0, 8)}`);
         const response = await sendCommand<ClaudeResumeResponsePayload>(
@@ -311,6 +364,7 @@ export function useClaudeOperations(
           isActive: true,
           isStreaming: true,
           hasPendingInput: false,
+          ...(response.queueState !== undefined ? { queueState: response.queueState } : {}),
         });
         // Push local upload bytes into the cache for this session so the
         // sender never has to re-fetch what it just uploaded.
@@ -357,6 +411,31 @@ export function useClaudeOperations(
       }
     },
     [sendCommand, setStreaming]
+  );
+
+  const interruptSession = useCallback(
+    async (sessionId: string) => {
+      try {
+        await sendCommand<ClaudeInterruptResponsePayload>('claude:interrupt', { sessionId });
+      } catch (error) {
+        console.error('Failed to interrupt session:', error);
+      }
+    },
+    [sendCommand]
+  );
+
+  const steerQueuedSession = useCallback(
+    async (sessionId: string, interruptCurrentTurn = true) => {
+      try {
+        await sendCommand<ClaudeSteerQueuedResponsePayload>(
+          'claude:steer-queued',
+          { sessionId, interruptCurrentTurn },
+        );
+      } catch (error) {
+        console.error('Failed to steer queued message:', error);
+      }
+    },
+    [sendCommand]
   );
 
   const closeSession = useCallback(
@@ -574,6 +653,8 @@ export function useClaudeOperations(
     getSessionCards,
     startSession,
     resumeSession,
+    interruptSession,
+    steerQueuedSession,
     cancelSession,
     closeSession,
     endSession,

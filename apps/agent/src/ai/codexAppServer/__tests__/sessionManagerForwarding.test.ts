@@ -24,14 +24,24 @@ class StubCodexAppServerSession implements ProviderSession {
   alive = true;
   enqueued: Record<string, unknown>[] = [];
   sendUserMessages: string[] = [];
+  interruptCalls = 0;
+  steerQueuedCalls: Array<{ interruptCurrentTurn?: boolean }> = [];
+  queueState: ReturnType<NonNullable<ProviderSession['getQueueState']>> = null;
   enqueueRuntimeOverride(patch: Record<string, unknown>): void {
     this.enqueued.push(patch);
   }
   sendUserMessage(prompt: string): void {
     this.sendUserMessages.push(prompt);
   }
+  getQueueState() {
+    return this.queueState;
+  }
   interrupt(): void {
-    /* noop */
+    this.interruptCalls++;
+  }
+  async steerQueuedMessage(opts?: { interruptCurrentTurn?: boolean }): Promise<boolean> {
+    this.steerQueuedCalls.push({ interruptCurrentTurn: opts?.interruptCurrentTurn });
+    return true;
   }
   kill(): void {
     /* noop */
@@ -174,6 +184,41 @@ describe('SessionManager → CodexAppServer hot-resume forwarding', () => {
       cwd: '/tmp/test',
     });
     expect(session.sendUserMessages).toEqual(['follow-up']);
+  });
+
+  it('active hot-resume emits queueState from provider session', async () => {
+    const { sm, sessionId, session } = await setupActiveCodexSession();
+    const updates: Array<ReturnType<SessionManager['buildSessionUpdatePayload']>> = [];
+    sm.on('session-updated', (e) => updates.push(e as ReturnType<SessionManager['buildSessionUpdatePayload']>));
+    session.queueState = {
+      pendingUserMessages: 1,
+      latestPromptPreview: 'latest queued',
+      canInterruptCurrentTurn: true,
+    };
+    await sm.resumeSession({
+      sessionId,
+      prompt: 'follow-up',
+      cwd: '/tmp/test',
+    });
+    expect(updates.at(-1)?.queueState).toEqual(session.queueState);
+  });
+
+  it('interruptSession interrupts without clearing queued state', async () => {
+    const { sm, sessionId, session } = await setupActiveCodexSession();
+    session.queueState = {
+      pendingUserMessages: 1,
+      latestPromptPreview: 'latest queued',
+      canInterruptCurrentTurn: true,
+    };
+    await expect(sm.interruptSession(sessionId)).resolves.toBe(true);
+    expect(session.interruptCalls).toBe(1);
+    expect(sm.buildSessionUpdatePayload(sessionId).queueState).toEqual(session.queueState);
+  });
+
+  it('steerQueuedMessage asks the provider to inject the queued prompt', async () => {
+    const { sm, sessionId, session } = await setupActiveCodexSession();
+    await expect(sm.steerQueuedMessage(sessionId, { interruptCurrentTurn: true })).resolves.toBe(true);
+    expect(session.steerQueuedCalls).toEqual([{ interruptCurrentTurn: true }]);
   });
 
   it('idle hot-resume forwards the prompt to sendUserMessage', async () => {

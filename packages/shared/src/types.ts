@@ -109,6 +109,10 @@ export type MessageType =
   | 'claude:start:response'
   | 'claude:resume'
   | 'claude:resume:response'
+  | 'claude:interrupt'
+  | 'claude:interrupt:response'
+  | 'claude:steer-queued'           // pwa-request: inject queued prompt into current turn
+  | 'claude:steer-queued:response'  // agent-response: queued prompt steered
   | 'claude:cancel'
   | 'claude:cancel:response'
   | 'claude:close'
@@ -1467,6 +1471,7 @@ export interface ClaudeSessionSummary {
   archived?: boolean;
   isStreaming?: boolean;
   hasPendingInput?: boolean;
+  queueState?: SessionQueueState | null;
   permissionMode?: string;
   // Ticket-model metadata — mirrored from `SessionRegistryEntry` so home-screen
   // session cards can render stage/blocked/latest-note without joining manually.
@@ -1563,6 +1568,22 @@ export interface ContextUsageBreakdown {
   capturedAt?: number;
 }
 
+/** In-memory queue state for user messages submitted while a provider turn is
+ * already running. This is intentionally ephemeral: it survives PWA refresh via
+ * `/sessions/active` snapshots, but not daemon restarts. */
+export interface SessionQueueState {
+  pendingUserMessages: number;
+  latestPromptPreview?: string;
+  /** FIFO previews for queued user messages. Omitted by older agents; clients
+   * can fall back to `latestPromptPreview` when absent. */
+  queuedPromptPreviews?: string[];
+  canInterruptCurrentTurn?: boolean;
+  /** PWA-local marker for a just-submitted active-turn prompt. Daemon payloads
+   * omit this; the client uses it to keep the badge visible through immediate
+   * authoritative null updates. */
+  optimisticUntil?: number;
+}
+
 /**
  * Payload emitted by the agent for the `/sessions/active` bus subscription:
  * snapshot is `SessionUpdatePayload[]`, each update is one
@@ -1576,6 +1597,7 @@ export interface SessionUpdatePayload {
   agent?: AgentId;
   isStreaming: boolean;
   hasPendingInput: boolean;
+  queueState?: SessionQueueState | null;
   permissionMode?: string;
   sandboxed?: boolean;
   lastPromptAt?: number;
@@ -1641,6 +1663,7 @@ export interface ClaudeResumeRequestPayload {
 export interface ClaudeResumeResponsePayload {
   success: boolean;
   sessionId?: string;
+  queueState?: SessionQueueState | null;
   error?: string;
 }
 
@@ -1650,6 +1673,29 @@ export interface ClaudeCancelRequestPayload {
 }
 
 export interface ClaudeCancelResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+// Interrupt current turn without clearing queued user messages.
+export interface ClaudeInterruptRequestPayload {
+  sessionId: string;
+}
+
+export interface ClaudeInterruptResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+// Steer the currently queued user message into the active turn. For Codex this
+// maps to app-server `turn/steer`; when `interruptCurrentTurn` is true the
+// provider also interrupts the running turn after steering.
+export interface ClaudeSteerQueuedRequestPayload {
+  sessionId: string;
+  interruptCurrentTurn?: boolean;
+}
+
+export interface ClaudeSteerQueuedResponsePayload {
   success: boolean;
   error?: string;
 }

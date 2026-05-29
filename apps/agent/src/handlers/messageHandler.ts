@@ -73,6 +73,10 @@ import {
   ClaudeStartResponsePayload,
   ClaudeResumeRequestPayload,
   ClaudeResumeResponsePayload,
+  ClaudeInterruptRequestPayload,
+  ClaudeInterruptResponsePayload,
+  ClaudeSteerQueuedRequestPayload,
+  ClaudeSteerQueuedResponsePayload,
   ClaudeCancelRequestPayload,
   ClaudeCancelResponsePayload,
   ClaudeCloseRequestPayload,
@@ -742,6 +746,10 @@ export class MessageHandler {
           return this.handleClaudeStart(message as Message<ClaudeStartRequestPayload>, peerAddress);
         case 'claude:resume':
           return this.handleClaudeResume(message as Message<ClaudeResumeRequestPayload>, peerAddress);
+        case 'claude:interrupt':
+          return this.handleClaudeInterrupt(message as Message<ClaudeInterruptRequestPayload>);
+        case 'claude:steer-queued':
+          return this.handleClaudeSteerQueued(message as Message<ClaudeSteerQueuedRequestPayload>);
         case 'claude:cancel':
           return this.handleClaudeCancel(message as Message<ClaudeCancelRequestPayload>);
         case 'claude:close':
@@ -2250,7 +2258,11 @@ export class MessageHandler {
 
       const response = createMessage<ClaudeResumeResponsePayload>(
         'claude:resume:response',
-        { success: true, sessionId: actualSessionId }
+        {
+          success: true,
+          sessionId: actualSessionId,
+          queueState: this.claudeService.buildSessionUpdatePayload(actualSessionId).queueState,
+        }
       );
       response.id = message.id;
       return response;
@@ -2276,6 +2288,32 @@ export class MessageHandler {
     const response = createMessage<ClaudeCancelResponsePayload>(
       'claude:cancel:response',
       { success, error: success ? undefined : 'Session not found or already ended' }
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleClaudeInterrupt(
+    message: Message<ClaudeInterruptRequestPayload>
+  ): Promise<Message<ClaudeInterruptResponsePayload>> {
+    const { sessionId } = message.payload;
+    const success = await this.claudeService.interruptSession(sessionId);
+    const response = createMessage<ClaudeInterruptResponsePayload>(
+      'claude:interrupt:response',
+      { success, error: success ? undefined : 'Session not found or already ended' }
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleClaudeSteerQueued(
+    message: Message<ClaudeSteerQueuedRequestPayload>
+  ): Promise<Message<ClaudeSteerQueuedResponsePayload>> {
+    const { sessionId, interruptCurrentTurn } = message.payload;
+    const success = await this.claudeService.steerQueuedMessage(sessionId, { interruptCurrentTurn });
+    const response = createMessage<ClaudeSteerQueuedResponsePayload>(
+      'claude:steer-queued:response',
+      { success, error: success ? undefined : 'No queued message or active turn to steer' }
     );
     response.id = message.id;
     return response;

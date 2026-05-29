@@ -104,7 +104,7 @@ export function SessionAppBar({
             ? <BackButton onClick={() => navigate(-1)} />
             : <MenuButton onClick={onOpenMenu} />
         }
-        center={<SessionStatusIndicator />}
+        center={<SessionStatusIndicator sessionId={sessionId} />}
         right={desktopRight}
       />
 
@@ -129,22 +129,23 @@ export function SessionAppBar({
   );
 }
 
-function SessionStatusIndicator() {
+function SessionStatusIndicator({ sessionId }: { sessionId?: string }) {
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
   const sessions = useClaudeStore((s) => s.sessions);
   const sessionConfigs = useClaudeStore((s) => s.sessionConfigs);
+  const displaySessionId = sessionId && sessionId !== 'new' ? sessionId : activeSessionId;
 
-  if (!activeSessionId) return null;
+  if (!displaySessionId) return null;
 
-  const session = sessions[activeSessionId];
+  const session = sessions[displaySessionId];
   const statusKey: SessionStatusKey = session ? sessionStatusKey(session) : 'thinking';
-  const title = (sessionConfigs[activeSessionId]?.title as string) || session?.summary;
+  const title = (sessionConfigs[displaySessionId]?.title as string) || session?.summary;
 
   return (
-    <div className="flex items-center justify-center gap-2">
+    <div className="flex min-w-0 items-center justify-center gap-2">
       <StatusDot statusKey={statusKey} />
       {title && (
-        <span className="text-sm text-slate-300 line-clamp-2 min-w-0">{title}</span>
+        <span className="text-sm text-slate-300 line-clamp-1 min-w-0">{title}</span>
       )}
     </div>
   );

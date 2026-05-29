@@ -49,6 +49,7 @@ interface ClaudePanelProps {
   ) => Promise<SessionControlRequestResponsePayload>;
   onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string, opts?: ResumeSessionOpts) => Promise<void>;
+  onSteerQueuedSession?: (sessionId: string) => Promise<void> | void;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
   onUnsubscribeSession?: (sessionId: string) => void;
   onDismissPendingMission?: (sessionId: string, cwd: string, dismissedAt?: number) => Promise<void> | void;
@@ -112,6 +113,72 @@ function PendingMissionBanner({
   );
 }
 
+function QueuedComposerPanel({
+  session,
+  onSteerQueuedSession,
+}: {
+  session?: ClaudeSessionSummary;
+  onSteerQueuedSession?: (sessionId: string) => Promise<void> | void;
+}) {
+  const queueState = session?.queueState;
+  const hasQueuedMessage = !!queueState && queueState.pendingUserMessages > 0;
+  if (!session || !hasQueuedMessage) return null;
+
+  const canSteerQueuedMessage = queueState.canInterruptCurrentTurn && !!onSteerQueuedSession;
+  const messageCount = queueState.pendingUserMessages;
+  const queuedPromptPreviews = queueState.queuedPromptPreviews && queueState.queuedPromptPreviews.length > 0
+    ? queueState.queuedPromptPreviews
+    : [queueState.latestPromptPreview || 'Queued message'];
+  const hiddenQueuedMessageCount = Math.max(0, messageCount - queuedPromptPreviews.length);
+
+  return (
+    <div className="mb-2 rounded-lg border border-cyan-500/25 bg-cyan-950/25 px-3 py-2">
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 text-[11px] font-semibold uppercase tracking-wide text-cyan-200">
+          Queued messages
+          {messageCount > 1 ? ` (${messageCount})` : ''}
+        </span>
+        {canSteerQueuedMessage && (
+          <button
+            type="button"
+            onClick={() => onSteerQueuedSession(session.sessionId)}
+            className="inline-flex shrink-0 items-center gap-1 rounded border border-cyan-400/35 bg-cyan-400/10 px-2 py-1 text-[11px] font-semibold text-cyan-50 hover:bg-cyan-400/20"
+            aria-label="Steer queued message now"
+            title="Steer queued message now"
+          >
+            <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+              <path d="M3 8h8" strokeLinecap="round" />
+              <path d="M8 5l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span>Steer now</span>
+          </button>
+        )}
+      </div>
+      <div className="mt-1.5 max-h-32 space-y-1 overflow-y-auto pr-1">
+        {queuedPromptPreviews.map((preview, index) => (
+          <div
+            key={`${index}-${preview}`}
+            className="flex min-w-0 items-center gap-2 rounded border border-slate-700/80 bg-slate-950/50 px-2 py-1 text-xs text-slate-100"
+          >
+            <span className="w-4 shrink-0 text-right text-[10px] font-semibold tabular-nums text-cyan-200/80">
+              {index + 1}
+            </span>
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-300" />
+            <span className="min-w-0 flex-1 truncate">
+              {preview}
+            </span>
+          </div>
+        ))}
+        {hiddenQueuedMessageCount > 0 && (
+          <div className="px-2 py-0.5 text-[11px] text-slate-400">
+            +{hiddenQueuedMessageCount} queued message{hiddenQueuedMessageCount === 1 ? '' : 's'}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ClaudePanel({
   onSelectSession,
   sessionId: urlSessionId,
@@ -122,6 +189,7 @@ export function ClaudePanel({
   onSendControlRequest,
   onStartSession,
   onResumeSession,
+  onSteerQueuedSession,
 
   onRespondToUserInput,
   onUnsubscribeSession,
@@ -261,6 +329,8 @@ export function ClaudePanel({
   }, [cards, hideToolCalls, expandedGroups]);
 
   const activeSession = activeSessionId ? sessions[activeSessionId] : undefined;
+  const viewedSessionId = urlSessionId ?? activeSessionId;
+  const viewedSession = viewedSessionId ? sessions[viewedSessionId] : undefined;
   const isInactiveRaw = !!activeSessionId && !!activeSession && activeSession.isActive === false;
   // Stabilize: only update isInactive when the session is actually found in the list.
   // Prevents flicker during session list refresh (where activeSession is briefly undefined).
@@ -838,6 +908,7 @@ export function ClaudePanel({
 
           {/* Input */}
           <div className="border-t border-slate-700 px-4 pt-3 flex-shrink-0 bg-slate-900 safe-area-bottom-input touch-none">
+            <QueuedComposerPanel session={viewedSession ?? activeSession} onSteerQueuedSession={onSteerQueuedSession} />
             {activeSessionId && (
               <SessionStatusBar
                 sessionId={activeSessionId}

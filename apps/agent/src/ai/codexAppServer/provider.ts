@@ -38,6 +38,7 @@ import type { ThreadResumeResponse } from './schema/generated/v2/ThreadResumeRes
 import type { TurnStartParams } from './schema/generated/v2/TurnStartParams.js';
 import type { TurnStartResponse } from './schema/generated/v2/TurnStartResponse.js';
 import type { TurnInterruptParams } from './schema/generated/v2/TurnInterruptParams.js';
+import type { TurnSteerParams } from './schema/generated/v2/TurnSteerParams.js';
 import type { ApprovalsReviewer } from './schema/generated/v2/ApprovalsReviewer.js';
 import type { ReasoningEffort } from './schema/generated/ReasoningEffort.js';
 import type { UserInput } from './schema/generated/v2/UserInput.js';
@@ -196,7 +197,7 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
   private readonly cardBuilder: StreamCardBuilder;
   private readonly callbacks: ProviderCallbacks;
   private currentTurnId: string | null = null;
-  private pendingPrompt: string | null = null;
+  private pendingTurns: Array<{ prompt: string; attachments?: readonly Attachment[] }> = [];
   private running = false;
   private exited = false;
 
@@ -230,6 +231,17 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
     void this.runTurn(prompt, attachments);
   }
 
+  getQueueState() {
+    if (this.pendingTurns.length === 0) return null;
+    const queuedPromptPreviews = this.pendingTurns.map((turn) => previewPrompt(turn.prompt));
+    return {
+      pendingUserMessages: this.pendingTurns.length,
+      latestPromptPreview: queuedPromptPreviews.at(-1),
+      queuedPromptPreviews,
+      canInterruptCurrentTurn: this.currentTurnId !== null,
+    };
+  }
+
   enqueueRuntimeOverride(patch: RuntimeOverrides): void {
     this.overrideStore.enqueue(patch);
   }
@@ -259,28 +271,84 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
   async runTurn(prompt: string, attachments?: readonly Attachment[]): Promise<void> {
     if (this.exited) return;
     if (this.running) {
-      // Queue — only one turn at a time. Replace any pending prompt
-      // with the latest (matches SDK provider behavior).
-      this.pendingPrompt = prompt;
-      this.pendingAttachments = attachments;
+      // Queue — only one turn at a time, preserving FIFO order.
+      this.pendingTurns.push({ prompt, attachments });
+      this.callbacks.onQueueStateChange?.(this.threadId);
       return;
     }
     this.running = true;
     try {
       await this.runTurnImpl(prompt, attachments);
-      while (this.pendingPrompt && !this.exited) {
-        const next = this.pendingPrompt;
-        const nextAttachments = this.pendingAttachments;
-        this.pendingPrompt = null;
-        this.pendingAttachments = undefined;
-        await this.runTurnImpl(next, nextAttachments);
+      while (this.pendingTurns.length > 0 && !this.exited) {
+        const next = this.pendingTurns.shift()!;
+        this.callbacks.onQueueStateChange?.(this.threadId);
+        await this.runTurnImpl(next.prompt, next.attachments);
       }
     } finally {
       this.running = false;
     }
   }
 
-  private pendingAttachments: readonly Attachment[] | undefined;
+  async steerQueuedMessage(opts?: { interruptCurrentTurn?: boolean }): Promise<boolean> {
+    if (this.pendingTurns.length === 0 || !this.currentTurnId) return false;
+    const queued = this.pendingTurns.shift()!;
+    this.callbacks.onQueueStateChange?.(this.threadId);
+
+    const steered = await this.steerCurrentTurn(
+      queued.prompt,
+      queued.attachments,
+      this.currentTurnId,
+      opts,
+    );
+    if (!steered) {
+      this.pendingTurns.unshift(queued);
+      this.callbacks.onQueueStateChange?.(this.threadId);
+    }
+    return steered;
+  }
+
+  private async steerCurrentTurn(
+    prompt: string,
+    attachments: readonly Attachment[] | undefined,
+    expectedTurnId: string,
+    opts?: { interruptCurrentTurn?: boolean },
+  ): Promise<boolean> {
+    try {
+      if (attachments && attachments.length > 0) {
+        await persistAttachments(this.threadId, attachments);
+      }
+      console.log(`[codex-app] steer active turn session=${this.threadId.slice(0, 8)} turn=${expectedTurnId.slice(0, 8)}`);
+      await this.handle.rpc.request<unknown>(
+        'turn/steer',
+        {
+          threadId: this.threadId,
+          input: attachmentsToCodexUserInput(prompt, attachments),
+          expectedTurnId,
+        } satisfies TurnSteerParams,
+      );
+      const userEvent = this.cardBuilder.userMessage(prompt, attachments);
+      this.callbacks.emitCardEvent(userEvent);
+
+      if (opts?.interruptCurrentTurn) {
+        try {
+          await this.handle.rpc.request<unknown>(
+            'turn/interrupt',
+            { threadId: this.threadId, turnId: expectedTurnId } satisfies TurnInterruptParams,
+          );
+        } catch (err) {
+          console.warn(
+            `[codex-app] failed to interrupt steered turn session=${this.threadId.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+      return true;
+    } catch (err) {
+      console.warn(
+        `[codex-app] failed to steer active turn session=${this.threadId.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return false;
+    }
+  }
 
   private async runTurnImpl(prompt: string, attachments?: readonly Attachment[]): Promise<void> {
     const cb = this.cardBuilder;
@@ -383,6 +451,11 @@ function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promis
       }),
     },
   );
+}
+
+function previewPrompt(prompt: string): string {
+  const normalized = prompt.replace(/\s+/g, ' ').trim();
+  return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
 }
 
 export function buildCodexSandboxMcpConfigArgs(opts: {

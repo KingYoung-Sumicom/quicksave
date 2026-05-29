@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment, CardEvent, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, CardEvent, CardStreamEnd, ContextUsageBreakdown, SessionQueueState } from '@sumicom/quicksave-shared';
 import type { StreamCardBuilder } from './cardBuilder.js';
 
 export const CLAUDE_PERMISSION_MODES = [
@@ -77,6 +77,12 @@ export interface ProviderSession {
   interrupt(): void;
   kill(): void;
   readonly alive: boolean;
+  /** Optional in-memory queue snapshot for provider sessions that serialize
+   * user turns instead of accepting mid-turn input directly. */
+  getQueueState?(): SessionQueueState | null;
+  /** Optional — inject the provider's queued user message into the current
+   * active turn instead of waiting for the next turn. */
+  steerQueuedMessage?(opts?: { interruptCurrentTurn?: boolean }): Promise<boolean> | boolean;
   /** Optional — ask the provider for a breakdown of current context window
    * usage. Only supported by the Claude Code CLI (via `get_context_usage`
    * control_request). Returns null on providers that don't support it. */
@@ -115,6 +121,8 @@ export interface ProviderCallbacks {
    * resets the 5-minute (or 1h) cache TTL on the server. SessionManager uses
    * this to anchor the PWA's countdown without waiting for the turn to end. */
   onCacheTouch?(sessionId: string): void;
+  /** Fired when a provider's in-memory user-message queue changes. */
+  onQueueStateChange?(sessionId: string): void;
   onModelDetected(model: string): void;
   /** Fired when the underlying provider process has fully exited. SessionManager
    * uses this to remove the session from its in-memory map and emit

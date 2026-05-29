@@ -3,6 +3,12 @@
 import type { AgentId, SessionUpdatePayload } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../stores/claudeStore';
 
+function sameStringArray(a?: readonly string[], b?: readonly string[]): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
+}
+
 /**
  * Apply a single session-updated payload from the agent.
  *
@@ -28,6 +34,11 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     current.archived === payload.archived &&
     current.isStreaming === payload.isStreaming &&
     current.hasPendingInput === payload.hasPendingInput &&
+    current.queueState?.pendingUserMessages === payload.queueState?.pendingUserMessages &&
+    current.queueState?.latestPromptPreview === payload.queueState?.latestPromptPreview &&
+    sameStringArray(current.queueState?.queuedPromptPreviews, payload.queueState?.queuedPromptPreviews) &&
+    current.queueState?.canInterruptCurrentTurn === payload.queueState?.canInterruptCurrentTurn &&
+    current.queueState?.optimisticUntil === payload.queueState?.optimisticUntil &&
     current.agent === agent &&
     current.permissionMode === payload.permissionMode &&
     current.lastPromptAt === payload.lastPromptAt &&
@@ -50,6 +61,11 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     return;
   }
 
+  const queueState = payload.queueState
+    ?? (current?.queueState?.optimisticUntil && current.queueState.optimisticUntil > Date.now() && payload.isStreaming
+      ? current.queueState
+      : null);
+
   upsertSession({
     sessionId: payload.sessionId,
     machineAgentId,
@@ -57,6 +73,7 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     archived: payload.archived,
     isStreaming: payload.isStreaming,
     hasPendingInput: payload.hasPendingInput,
+    queueState,
     agent,
     permissionMode: payload.permissionMode,
     lastPromptAt: payload.lastPromptAt,

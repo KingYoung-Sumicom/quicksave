@@ -137,6 +137,9 @@ describe('applySessionUpdate', () => {
         lastTurnCacheCreationTokens: payload.lastTurnCacheCreationTokens,
         lastTurnCacheReadTokens: payload.lastTurnCacheReadTokens,
         lastTurnContextUsage: context,
+        lastReadAt: payload.lastReadAt,
+        pendingMission: payload.pendingMission,
+        queueState: null,
       });
     });
 
@@ -176,6 +179,25 @@ describe('applySessionUpdate', () => {
         field: 'hasPendingInput',
         existing: { hasPendingInput: false },
         incoming: { hasPendingInput: true },
+      },
+      {
+        field: 'queueState.queuedPromptPreviews',
+        existing: {
+          queueState: {
+            pendingUserMessages: 2,
+            latestPromptPreview: 'second',
+            queuedPromptPreviews: ['first', 'second'],
+            canInterruptCurrentTurn: true,
+          },
+        },
+        incoming: {
+          queueState: {
+            pendingUserMessages: 2,
+            latestPromptPreview: 'second',
+            queuedPromptPreviews: ['first', 'changed'],
+            canInterruptCurrentTurn: true,
+          },
+        },
       },
       {
         field: 'agent',
@@ -319,6 +341,66 @@ describe('applySessionUpdate', () => {
       applySessionUpdate(makePayload({ lastTurnContextUsage: ctxIncoming }), MACHINE_AGENT_ID);
 
       expect(store.upsertSession).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('queueState optimistic replacement', () => {
+    it('replaces optimistic queue state with authoritative payload even when visible fields match', () => {
+      const authoritativeQueueState = {
+        pendingUserMessages: 1,
+        latestPromptPreview: 'queued prompt',
+        canInterruptCurrentTurn: true,
+      };
+      const store = setupStore({
+        sessions: {
+          s1: makeSummary({
+            isStreaming: true,
+            queueState: {
+              ...authoritativeQueueState,
+              optimisticUntil: Date.now() + 10_000,
+            },
+          }),
+        },
+      });
+
+      applySessionUpdate(
+        makePayload({
+          isStreaming: true,
+          queueState: authoritativeQueueState,
+        }),
+        MACHINE_AGENT_ID
+      );
+
+      expect(store.upsertSession).toHaveBeenCalledTimes(1);
+      expect(store.upsertSession.mock.calls[0][0].queueState).toEqual(authoritativeQueueState);
+    });
+
+    it('keeps a fresh optimistic queue state when a null streaming payload arrives first', () => {
+      const optimisticQueueState = {
+        pendingUserMessages: 1,
+        latestPromptPreview: 'queued prompt',
+        canInterruptCurrentTurn: true,
+        optimisticUntil: Date.now() + 10_000,
+      };
+      const store = setupStore({
+        sessions: {
+          s1: makeSummary({
+            isStreaming: true,
+            queueState: optimisticQueueState,
+          }),
+        },
+      });
+
+      applySessionUpdate(
+        makePayload({
+          isStreaming: true,
+          queueState: null,
+        }),
+        MACHINE_AGENT_ID
+      );
+
+      expect(store.upsertSession).toHaveBeenCalledTimes(1);
+      expect(store.upsertSession.mock.calls[0][0].queueState).toEqual(optimisticQueueState);
     });
   });
 

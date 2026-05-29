@@ -45,6 +45,8 @@ EN_FILES = [p.replace(".zh-TW.md", ".en.md") for p in ZH_TW_FILES]
 # English-facing files that link to one of the renamed files.
 EXTERNAL_FILES = [
     "CLAUDE.md",
+    "AGENTS.md",
+    "AGENTS_SHARED.md",
     "README.md",
     "docs/guidelines.md",
     "docs/plans/2026-04-17-agentic-commit-message-plan.md",

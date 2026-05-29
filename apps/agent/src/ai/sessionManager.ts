@@ -691,6 +691,7 @@ export class SessionManager extends EventEmitter {
         await persistAttachments(opts.sessionId, opts.attachments);
       }
       existing.providerSession.sendUserMessage(opts.prompt, opts.attachments);
+      this.emitSessionUpdate(opts.sessionId);
       return opts.sessionId;
     }
 
@@ -877,6 +878,26 @@ export class SessionManager extends EventEmitter {
     // user intent ("stop" = don't do that thing).
     this.cancelPendingInputsForSession(sessionId);
     return true;
+  }
+
+  async interruptSession(sessionId: string): Promise<boolean> {
+    const ps = this.sessions.get(sessionId);
+    if (!ps?.providerSession) return false;
+    console.log(`[session-manager] interrupt current turn session=${sessionId.slice(0, 8)}`);
+    ps.providerSession.interrupt();
+    this.emitSessionUpdate(sessionId);
+    return true;
+  }
+
+  async steerQueuedMessage(sessionId: string, opts?: { interruptCurrentTurn?: boolean }): Promise<boolean> {
+    const ps = this.sessions.get(sessionId);
+    if (!ps?.providerSession?.alive) return false;
+    const steerQueuedMessage = ps.providerSession.steerQueuedMessage;
+    if (!steerQueuedMessage) return false;
+    console.log(`[session-manager] steer queued message session=${sessionId.slice(0, 8)} interrupt=${opts?.interruptCurrentTurn === true}`);
+    const ok = await steerQueuedMessage.call(ps.providerSession, opts);
+    this.emitSessionUpdate(sessionId);
+    return ok;
   }
 
   /** Send a raw control_request to the active provider session (CLI only). */
@@ -1325,6 +1346,13 @@ export class SessionManager extends EventEmitter {
         }
         this.emitSessionUpdate(sessionId);
       },
+      onQueueStateChange: (sessionId: string) => {
+        const ps = this.sessions.get(sessionId);
+        if (ps?.providerSession?.alive) {
+          ps.streaming = true;
+        }
+        this.emitSessionUpdate(sessionId);
+      },
       onModelDetected: (model: string) => {
         console.log(`[session-manager] model detected: ${model} (agent=${agentId})`);
         if (agentId === 'claude-code') {
@@ -1663,6 +1691,7 @@ export class SessionManager extends EventEmitter {
       agent: ps?.agentId ?? this.sessionAgents.get(sessionId),
       isStreaming: ps?.streaming ?? false,
       hasPendingInput,
+      queueState: ps?.providerSession?.getQueueState?.() ?? null,
       permissionMode: ps?.permissionLevel ?? this.sessionPermissions.get(sessionId),
       sandboxed: ps?.sandboxed ?? this.sessionSandboxed.get(sessionId) ?? false,
       lastPromptAt: stats.lastPromptAt ?? undefined,
