@@ -34,11 +34,32 @@ import { getClaudeBin } from '../claudeCliProvider.js';
 import { HookBridge, type HookEventName, type HookRequest } from './hookBridge.js';
 import { buildHookSettings } from './settingsBuilder.js';
 import { JsonlTail } from './jsonlTail.js';
+import { CardSynth } from './cardSynth.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
 
-/** Hooks we register for M1. Add PreToolUse / PostToolUse / PermissionRequest in M2. */
-const M1_HOOKS: HookEventName[] = ['UserPromptSubmit', 'Stop'];
+/**
+ * Hooks we register for M2:
+ *   - UserPromptSubmit: fires when the user submits text into the TUI.
+ *   - PreToolUse:       fires immediately before claude executes a tool —
+ *                       lets us emit a tool_use card without waiting for
+ *                       the assistant message JSONL flush.
+ *   - PostToolUse:      fires immediately after the tool returns — same
+ *                       latency win for tool_result cards.
+ *   - PermissionRequest: fires before tool execution when the tool needs
+ *                       user confirmation. We bridge it to
+ *                       `ProviderCallbacks.handlePermissionRequest` so the
+ *                       PWA dialog (not the TUI's y/n) decides.
+ *   - Stop:             fires when the assistant turn completes — anchors
+ *                       the stream-end CardEvent that stops the spinner.
+ */
+const ACTIVE_HOOKS: HookEventName[] = [
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PostToolUse',
+  'PermissionRequest',
+  'Stop',
+];
 
 /**
  * Delay before the FIRST attempt to type into a freshly spawned TUI. Claude
@@ -63,18 +84,26 @@ const SESSION_DISCOVER_TIMEOUT_MS = 30_000;
  * Pick the right interpreter + handler path so the hook command works whether
  * the daemon runs from source (tsx, .ts file) or compiled output (node, .js).
  */
-function resolveHookCommand(): { interpreter: string; handlerPath: string } {
+export function resolveHookCommand(): { interpreter: string; handlerPath: string } {
   // We resolve relative to this file's location. When compiled, this file is
   // `<dist>/.../claudeTerminal/provider.js` and hookHandler.js sits next to it.
   // When running via tsx in dev, this file is `<src>/.../claudeTerminal/provider.ts`
   // and hookHandler.ts sits next to it; spawning a fresh `node hookHandler.ts`
-  // would fail, so we use `npx tsx` instead.
+  // would fail, so we run it through `tsx`.
   const jsHandler = join(__ownDir, 'hookHandler.js');
   if (existsSync(jsHandler)) {
     return { interpreter: 'node', handlerPath: jsHandler };
   }
+  // Dev: resolve `tsx` by absolute path, NOT `npx tsx`. Claude runs the hook
+  // command with cwd = the user's project dir; in this pnpm monorepo `tsx`
+  // lives at `apps/agent/node_modules/.bin/tsx` (not hoisted to the workspace
+  // root), so `npx tsx` searches upward from the wrong cwd, falls through to a
+  // registry fetch, and dies with `sh: 1: tsx: not found` — exactly the Stop
+  // hook failure this guards against. See sandboxMcp.ts for the same fix.
+  // __ownDir is apps/agent/src/ai/claudeTerminal → three levels up is apps/agent.
   const tsHandler = join(__ownDir, 'hookHandler.ts');
-  return { interpreter: 'npx tsx', handlerPath: tsHandler };
+  const tsxBin = join(__ownDir, '..', '..', '..', 'node_modules', '.bin', 'tsx');
+  return { interpreter: tsxBin, handlerPath: tsHandler };
 }
 
 // ============================================================================
@@ -84,6 +113,7 @@ function resolveHookCommand(): { interpreter: string; handlerPath: string } {
 class TerminalProviderSession implements ProviderSession {
   public readonly sessionId: string;
   public readonly terminalId: string;
+  public readonly synth: CardSynth;
   private readonly bridge: HookBridge;
   private readonly tail: JsonlTail;
   private _alive = true;
@@ -93,11 +123,13 @@ class TerminalProviderSession implements ProviderSession {
     terminalId: string;
     bridge: HookBridge;
     tail: JsonlTail;
+    synth: CardSynth;
   }) {
     this.sessionId = opts.sessionId;
     this.terminalId = opts.terminalId;
     this.bridge = opts.bridge;
     this.tail = opts.tail;
+    this.synth = opts.synth;
   }
 
   sendUserMessage(prompt: string, _attachments?: readonly Attachment[]): void {
@@ -176,7 +208,7 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
     const settings = buildHookSettings({
       handlerPath,
       socketPath: bridge.socketPath,
-      events: M1_HOOKS,
+      events: ACTIVE_HOOKS,
       nodeBin: interpreter,
     });
 
@@ -184,6 +216,14 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
     const args: string[] = [];
     if (opts.model) args.push('--model', opts.model);
     args.push('--settings', JSON.stringify(settings));
+    // Forward the user's permission preset. `bypassPermissions` skips the TUI
+    // y/n prompt AND our PermissionRequest hook — exactly what the user
+    // wants when they pick it. For `acceptEdits` / `plan` / `auto` we pass
+    // through directly; claude TUI honors them. For `default` we omit the
+    // flag and let claude use its built-in default.
+    if (opts.permissionLevel && opts.permissionLevel !== 'default') {
+      args.push('--permission-mode', opts.permissionLevel);
+    }
     if (resumeSessionId) args.push('--resume', resumeSessionId);
 
     // 4. Snapshot existing JSONLs so we can detect the new one.
@@ -254,11 +294,17 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
     const tail = new JsonlTail(jsonlPath(sessionId, opts.cwd));
     tail.start(50);
 
+    const synth = new CardSynth({
+      cardBuilder,
+      emit: (evt) => callbacks.emitCardEvent(evt),
+    });
+
     const session = new TerminalProviderSession({
       sessionId,
       terminalId: term.terminalId,
       bridge,
       tail,
+      synth,
     });
 
     // 9. Wire hook events → callbacks.
@@ -390,12 +436,77 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
     cardBuilder: StreamCardBuilder,
     callbacks: ProviderCallbacks,
   ): void {
-    // M1: only UserPromptSubmit + Stop. Both are fire-and-forget — record the
-    // event and respond null immediately so claude doesn't wait.
-    try {
-      if (req.event === 'UserPromptSubmit') {
-        // Future: mark activeTurn = true, snapshot jsonlCutoff.
-      } else if (req.event === 'Stop') {
+    switch (req.event) {
+      case 'UserPromptSubmit':
+        // Fire-and-forget. Future: mark activeTurn = true, snapshot jsonlCutoff.
+        req.respond(null);
+        return;
+
+      case 'PreToolUse': {
+        const p = req.payload as { tool_name?: string; tool_input?: unknown; tool_use_id?: string };
+        const tool_use_id = typeof p.tool_use_id === 'string' ? p.tool_use_id : '';
+        const tool_name = typeof p.tool_name === 'string' ? p.tool_name : 'unknown';
+        const tool_input = (p.tool_input && typeof p.tool_input === 'object')
+          ? p.tool_input as Record<string, unknown>
+          : {};
+        if (tool_use_id) session.synth.emitToolUse(tool_use_id, tool_name, tool_input);
+        callbacks.onToolUse?.(session.sessionId, tool_name, tool_input);
+        req.respond(null);
+        return;
+      }
+
+      case 'PostToolUse': {
+        const p = req.payload as {
+          tool_use_id?: string;
+          tool_response?: unknown;
+          is_error?: boolean;
+        };
+        const tool_use_id = typeof p.tool_use_id === 'string' ? p.tool_use_id : '';
+        if (tool_use_id) {
+          const content = CardSynth.stringifyHookToolResponse(p.tool_response);
+          session.synth.emitToolResult(tool_use_id, content, !!p.is_error);
+        }
+        req.respond(null);
+        return;
+      }
+
+      case 'PermissionRequest': {
+        // ASYNC — listener returns immediately; respond is called from the
+        // PWA dialog promise resolution. HookBridge has a fallback timer
+        // (HOOK_RESPONSE_FALLBACK_MS = 30s) so a hanging dialog can't lock
+        // the TUI forever.
+        const p = req.payload as { tool_name?: string; tool_input?: unknown; tool_use_id?: string };
+        const toolName = typeof p.tool_name === 'string' ? p.tool_name : 'unknown';
+        const toolInput = (p.tool_input && typeof p.tool_input === 'object')
+          ? p.tool_input as Record<string, unknown>
+          : {};
+        const toolUseId = typeof p.tool_use_id === 'string' ? p.tool_use_id : '';
+        callbacks.handlePermissionRequest(session.sessionId, { toolName, toolInput, toolUseId })
+          .then((decision) => {
+            if (decision.action === 'deny') {
+              req.respond({
+                hookSpecificOutput: {
+                  hookEventName: 'PermissionRequest',
+                  decision: { behavior: 'deny', message: decision.response || 'Denied' },
+                },
+              });
+            } else {
+              req.respond({
+                hookSpecificOutput: {
+                  hookEventName: 'PermissionRequest',
+                  decision: { behavior: 'allow' },
+                },
+              });
+            }
+          })
+          .catch((err) => {
+            console.error('[claude-terminal] permission callback failed:', err);
+            req.respond(null);
+          });
+        return;
+      }
+
+      case 'Stop': {
         // Emit a stream-end card so the PWA spinner stops.
         const streamEnd: CardStreamEnd = {
           sessionId: session.sessionId,
@@ -403,36 +514,61 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
         };
         callbacks.emitStreamEnd(streamEnd);
         void cardBuilder.scheduleDeferredClear();
+        req.respond(null);
+        return;
       }
-    } finally {
-      req.respond(null);
+
+      default:
+        req.respond(null);
     }
   }
 
   private handleJsonlMessage(
     msg: { type?: string; message?: { content?: unknown; role?: string }; subtype?: string },
-    _session: TerminalProviderSession,
+    session: TerminalProviderSession,
     cardBuilder: StreamCardBuilder,
     callbacks: ProviderCallbacks,
   ): void {
-    // M1: render assistant text + user prompts from JSONL. PreToolUse /
-    // PostToolUse hook integration comes in M2 where cardSynth dedupes vs JSONL.
+    // Assistant turn: text → card, tool_use → routed through synth (deduped
+    // against PreToolUse hook).
     if (msg.type === 'assistant' && msg.message?.content) {
-      const blocks = msg.message.content as Array<{ type?: string; text?: string }>;
+      const blocks = msg.message.content as Array<{
+        type?: string;
+        text?: string;
+        name?: string;
+        id?: string;
+        input?: Record<string, unknown>;
+      }>;
       for (const block of blocks) {
         if (block.type === 'text' && typeof block.text === 'string' && block.text) {
           callbacks.emitCardEvent(cardBuilder.assistantText(block.text));
+        } else if (block.type === 'tool_use' && typeof block.id === 'string') {
+          const name = typeof block.name === 'string' ? block.name : 'unknown';
+          const input = (block.input && typeof block.input === 'object') ? block.input : {};
+          session.synth.emitToolUse(block.id, name, input);
+          callbacks.onToolUse?.(session.sessionId, name, input);
         }
       }
     }
+    // User turn: prompt text → card, tool_result blocks → routed through synth
+    // (deduped against PostToolUse hook).
     if (msg.type === 'user' && msg.message?.content) {
       const content = msg.message.content;
       if (typeof content === 'string' && content) {
         callbacks.emitCardEvent(cardBuilder.userMessage(content));
       } else if (Array.isArray(content)) {
-        for (const block of content as Array<{ type?: string; text?: string }>) {
+        for (const block of content as Array<{
+          type?: string;
+          text?: string;
+          tool_use_id?: string;
+          content?: unknown;
+          is_error?: boolean;
+        }>) {
           if (block.type === 'text' && typeof block.text === 'string' && block.text) {
             callbacks.emitCardEvent(cardBuilder.userMessage(block.text));
+          } else if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+            const text = CardSynth.stringifyHookToolResponse(block.content);
+            session.synth.emitToolResult(block.tool_use_id, text, !!block.is_error);
           }
         }
       }
