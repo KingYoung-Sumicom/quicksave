@@ -46,6 +46,8 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
    - Race conditions (e.g., clearCards before snapshotCutoff)
    - State after reconnect (e.g., pubsub subscriptions lost)
    - Missing or out-of-order events
+   - Memory-mode provider cold resume: persisted card ids must not collide
+     with new turn card ids, and history snapshots should remain chronological
    - Put these in a dedicated `edgeCases.test.ts` or alongside the relevant module
 
 3. **Integration tests** — Cross-module flows with real filesystem.

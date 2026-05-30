@@ -23,6 +23,7 @@ vi.mock('./cardBuilder.js', () => {
     jsonlCutoff: null,
     updateSessionId: vi.fn(),
     snapshotCutoff: vi.fn().mockResolvedValue(undefined),
+    seedSequenceFromCards: vi.fn(),
     getCards: vi.fn().mockReturnValue([]),
     userMessage: vi.fn().mockReturnValue({ type: 'add', card: { type: 'user', id: 'u1', text: 'hi' } }),
     clearPendingInput: vi.fn().mockReturnValue(null),
@@ -1523,6 +1524,7 @@ describe('SessionManager', () => {
             builders.set(newId, builder);
           }),
           snapshotCutoff: vi.fn().mockResolvedValue(undefined),
+          seedSequenceFromCards: vi.fn(),
           getCards: vi.fn().mockReturnValue([]),
           userMessage: vi.fn(),
           clearPendingInput: vi.fn().mockImplementation((_requestId: string) => ({
@@ -1826,6 +1828,7 @@ describe('SessionManager', () => {
         jsonlCutoff: null,
         updateSessionId: vi.fn(),
         snapshotCutoff: vi.fn().mockResolvedValue(undefined),
+        seedSequenceFromCards: vi.fn(),
         getCards: vi.fn().mockReturnValue([{ type: 'assistant_text', id: 'sc1', text: 'streaming' }]),
         userMessage: vi.fn(),
         clearPendingInput: vi.fn(),
@@ -2123,6 +2126,31 @@ describe('SessionManager', () => {
 
       expect(codexProvider.resumeSession).toHaveBeenCalled();
       expect(provider.resumeSession).not.toHaveBeenCalled();
+    });
+
+    it('seeds memory-mode card ids from persisted cards before cold resume', async () => {
+      const sessionId = 'codex-resume-history';
+      const persistedCards = [
+        { type: 'user', id: `${sessionId}:34`, timestamp: 1, text: 'old codex card' },
+      ];
+      const { StreamCardBuilder, loadPersistedCards } = await import('./cardBuilder.js');
+      (loadPersistedCards as Mock).mockResolvedValue(persistedCards);
+      (codexProvider.resumeSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+
+      await multiManager.resumeSession({
+        sessionId,
+        prompt: 'continue',
+        cwd: '/tmp/test',
+        agent: 'codex' as any,
+      });
+
+      const cardBuilder = (StreamCardBuilder as Mock).mock.results.at(-1)?.value;
+      expect(loadPersistedCards).toHaveBeenCalledWith(sessionId);
+      expect(cardBuilder.seedSequenceFromCards).toHaveBeenCalledWith(persistedCards);
+      expect((codexProvider.resumeSession as Mock).mock.calls[0][1]).toBe(cardBuilder);
     });
 
     it('should include agent in session-updated events', async () => {

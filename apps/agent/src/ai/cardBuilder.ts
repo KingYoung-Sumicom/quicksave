@@ -81,7 +81,31 @@ function mergeCardsById(existing: readonly Card[], incoming: readonly Card[]): C
   const byId = new Map<CardId, Card>();
   for (const card of existing) byId.set(card.id, card);
   for (const card of incoming) byId.set(card.id, card);
-  return Array.from(byId.values());
+  return sortCardsChronologically(Array.from(byId.values()));
+}
+
+function sortCardsChronologically(cards: readonly Card[]): Card[] {
+  return cards
+    .map((card, index) => ({ card, index }))
+    .sort((a, b) => {
+      const at = Number.isFinite(a.card.timestamp) ? a.card.timestamp : 0;
+      const bt = Number.isFinite(b.card.timestamp) ? b.card.timestamp : 0;
+      return at - bt || a.index - b.index;
+    })
+    .map(({ card }) => card);
+}
+
+function maxCardSequenceForSession(cards: readonly Card[], sessionId: string): number {
+  const prefix = `${sessionId}:`;
+  let max = 0;
+  for (const card of cards) {
+    if (!card.id.startsWith(prefix)) continue;
+    const raw = card.id.slice(prefix.length);
+    if (!/^\d+$/.test(raw)) continue;
+    const seq = Number(raw);
+    if (Number.isSafeInteger(seq) && seq > max) max = seq;
+  }
+  return max;
 }
 
 /**
@@ -94,7 +118,7 @@ export async function loadPersistedCards(sessionId: string): Promise<Card[]> {
   try {
     const raw = await readFile(p, 'utf-8');
     const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
+    return Array.isArray(data) ? sortCardsChronologically(data) : [];
   } catch {
     return [];
   }
@@ -371,6 +395,14 @@ export class StreamCardBuilder {
 
   updateSessionId(sessionId: string): void {
     this.sessionId = sessionId;
+  }
+
+  /** Continue the local card id counter after persisted memory-mode history.
+   * Used on cold resume after daemon restart so new Codex/OpenCode cards
+   * append after existing cards instead of reusing `sessionId:1`, `:2`, ...
+   * and overwriting or reordering older history. */
+  seedSequenceFromCards(cards: readonly Card[]): void {
+    this.seq = Math.max(this.seq, maxCardSequenceForSession(cards, this.sessionId));
   }
 
   /** Start a new turn: reset per-turn state, keep accumulated cards. */

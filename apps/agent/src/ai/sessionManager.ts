@@ -757,6 +757,9 @@ export class SessionManager extends EventEmitter {
       );
 
       const cardBuilder = existing?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.cwd);
+      if (provider.historyMode === 'memory') {
+        cardBuilder.seedSequenceFromCards(await loadPersistedCards(opts.sessionId));
+      }
       await cardBuilder.snapshotCutoff();
       const callbacks = this.makeCallbacks(provider.id);
 

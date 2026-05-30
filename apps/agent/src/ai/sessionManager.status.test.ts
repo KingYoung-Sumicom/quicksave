@@ -17,6 +17,7 @@ vi.mock('./cardBuilder.js', () => {
     jsonlCutoff: null,
     updateSessionId: vi.fn(),
     snapshotCutoff: vi.fn().mockResolvedValue(undefined),
+    seedSequenceFromCards: vi.fn(),
     getCards: vi.fn().mockReturnValue([]),
     userMessage: vi.fn().mockReturnValue({ type: 'add', card: { type: 'user', id: 'u1', text: 'hi' } }),
     clearPendingInput: vi.fn().mockReturnValue(null),

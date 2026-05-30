@@ -529,7 +529,7 @@ function seedOverrideStoreFromResponse(
   });
 }
 
-function buildThreadStartParams(opts: StartSessionOpts): ThreadStartParams {
+export function buildThreadStartParams(opts: StartSessionOpts): ThreadStartParams {
   const preset = normalizePermissionLevelForAgent('codex', opts.permissionLevel) as CodexPermissionPreset;
   const perm = mapCodexPresetToInitialThreadOpts(preset, opts.sandboxed);
   return {
@@ -549,11 +549,11 @@ function buildThreadStartParams(opts: StartSessionOpts): ThreadStartParams {
     ephemeral: null,
     sessionStartSource: null,
     experimentalRawEvents: false,
-    persistExtendedHistory: false,
+    persistExtendedHistory: true,
   };
 }
 
-function buildThreadResumeParams(opts: ResumeSessionOpts): ThreadResumeParams {
+export function buildThreadResumeParams(opts: ResumeSessionOpts): ThreadResumeParams {
   const preset = normalizePermissionLevelForAgent('codex', opts.permissionLevel) as CodexPermissionPreset;
   const perm = mapCodexPresetToInitialThreadOpts(preset, opts.sandboxed);
   return {
@@ -573,7 +573,7 @@ function buildThreadResumeParams(opts: ResumeSessionOpts): ThreadResumeParams {
     developerInstructions: opts.systemPrompt ?? null,
     personality: null,
     excludeTurns: true,
-    persistExtendedHistory: false,
+    persistExtendedHistory: true,
   };
 }
 

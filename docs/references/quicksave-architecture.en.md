@@ -142,12 +142,18 @@ The architecture uses a layered design: `SessionManager` provides unified coordi
      `QUICKSAVE_PROVIDER` env vars; CLI is the default.
 
 2. **`CodexAppServerProvider` (id `'codex'`)** — JSON-RPC v2 client speaking
-   `codex app-server` (initialize handshake → newConversation → sendUserTurn →
-   notification stream). See `apps/agent/src/ai/codexAppServer/`.
+   `codex app-server` (initialize handshake → `thread/start` or
+   `thread/resume` → `turn/start` → notification stream). It enables
+   `persistExtendedHistory` on Codex threads so future `thread/read` /
+   `thread/turns/list` calls can reconstruct richer stored history. See
+   `apps/agent/src/ai/codexAppServer/`.
 
 3. **`SessionManager`** — Generic coordination layer (extends EventEmitter)
    - Session state management (`ManagedSession` map + per-session agent / permission / sandbox / config side maps)
-   - Card assembly and history (StreamCardBuilder, buildCardsFromHistory, loadPersistedCards)
+   - Card assembly and history (StreamCardBuilder, buildCardsFromHistory,
+     loadPersistedCards). Memory-mode providers store card history in
+     `~/.quicksave/state/card-history`; cold resume seeds the card id
+     sequence from that persisted history before a new turn starts.
    - Permission flow (auto-approve table, runtime allow patterns, PWA forwarding via `handlePermissionRequest` callback)
    - Preferences and per-session config
    - Event emission (`card-event`, `card-stream-end`, `user-input-request`, `user-input-resolved`, `session-updated`, `preferences-updated`, `session-config-updated`)
@@ -188,6 +194,9 @@ claude:resume → SessionManager.resumeSession(opts)
         → Reuse the same process: providerSession.sendUserMessage(prompt, opts.attachments). Avoids the latency and "ghost inactive" flicker of kill+spawn.
         → For Claude CLI, a contextWindow change can be applied live via providerSession.updateContextWindow(...) before sending.
   → 3. Cold resume: providerSession is dead, the model changed, or the auto-compact tier changed for a non-CLI provider
+       → For `historyMode: 'memory'` providers, SessionManager loads persisted cards
+         and seeds StreamCardBuilder's sequence counter so new card ids append
+         after existing history instead of colliding with older `sessionId:N` ids.
        → provider.resumeSession(opts, ...): for the CLI this is `spawn('claude', [..., '--resume', sessionId])`
        → Note: the CLI's --resume may fork a new session_id (reported by the init event).
          If the new id differs from opts.sessionId, SessionManager rekeys the sessions map

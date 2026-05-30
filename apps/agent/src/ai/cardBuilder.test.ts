@@ -689,6 +689,19 @@ describe('StreamCardBuilder', () => {
     });
   });
 
+  describe('seedSequenceFromCards()', () => {
+    it('continues ids after persisted memory-mode cards', () => {
+      builder.seedSequenceFromCards([
+        { type: 'user', id: `${SESSION_ID}:1`, timestamp: 1, text: 'old' },
+        { type: 'assistant_text', id: `${SESSION_ID}:34`, timestamp: 2, text: 'old reply', streaming: false },
+        { type: 'user', id: 'other-session:99', timestamp: 3, text: 'ignore' },
+      ]);
+
+      const event = builder.userMessage('after cold resume') as CardAddEvent;
+      expect(event.card.id).toBe(`${SESSION_ID}:35`);
+    });
+  });
+
   // ── findCardByRequestId / hasToolCard ────────────────────────────────────
 
   describe('findCardByRequestId()', () => {
@@ -760,6 +773,25 @@ describe('loadPersistedCards', () => {
     expect(result).toEqual(cards);
   });
 
+  it('sorts cards by timestamp to repair history files affected by id collisions', async () => {
+    const cards: Card[] = [
+      { type: 'assistant_text', id: 'sess-1:34', timestamp: 200, text: 'old tail', streaming: false },
+      { type: 'user', id: 'sess-1:1', timestamp: 300, text: 'new resume prompt' },
+      { type: 'assistant_text', id: 'sess-1:2', timestamp: 400, text: 'new reply', streaming: false },
+      { type: 'user', id: 'sess-1:12', timestamp: 100, text: 'older prompt' },
+    ];
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFile).mockResolvedValue(JSON.stringify(cards));
+
+    const result = await loadPersistedCards('sess-1');
+    expect(result.map((c) => (c as any).text)).toEqual([
+      'older prompt',
+      'old tail',
+      'new resume prompt',
+      'new reply',
+    ]);
+  });
+
   it('returns empty array on invalid JSON', async () => {
     vi.mocked(existsSync).mockReturnValue(true);
     vi.mocked(readFile).mockResolvedValue('not-json');
@@ -829,6 +861,22 @@ describe('StreamCardBuilder.persistCards()', () => {
     expect(written).toHaveLength(2);
     expect(written[0].text).toBe('old');
     expect(written[1].text).toBe('new');
+  });
+
+  it('writes merged memory history in timestamp order', async () => {
+    const existing: Card[] = [{ type: 'assistant_text', id: 'sess-p6:20', timestamp: 20, text: 'older tail', streaming: false }];
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(readFile).mockResolvedValue(JSON.stringify(existing));
+    vi.mocked(mkdir).mockResolvedValue(undefined);
+    vi.mocked(writeFile).mockResolvedValue(undefined);
+
+    const builder = new StreamCardBuilder('sess-p6', 'stream-p6', '/cwd');
+    const event = builder.userMessage('new after resume') as CardAddEvent;
+    event.card.timestamp = 30;
+    await builder.persistCards();
+
+    const written = JSON.parse((vi.mocked(writeFile).mock.calls[0][1] as string).trim());
+    expect(written.map((c: Card) => (c as any).text)).toEqual(['older tail', 'new after resume']);
   });
 
   it('upserts cards by id when persisting again', async () => {
