@@ -1317,6 +1317,7 @@ function ProjectRouteSession({
     respondToUserInput,
     setSessionConfig,
     sendControlRequest,
+    listSlashCommands,
     unsubscribeSession,
     listProjectRepos,
   } = useClaudeOperations(agentBus);
@@ -1440,7 +1441,7 @@ function ProjectRouteSession({
         onNewSession={() => navigate(`/add?tab=session&projectId=${encodeURIComponent(projectId ?? '')}`)}
         onGetSessionCards={boundGetCards}
         onSetSessionConfig={(sid, key, value) => setSessionConfig(sid, key, value)}
-        onSendControlRequest={sendControlRequest}
+        onListSlashCommands={listSlashCommands}
         onUnsubscribeSession={unsubscribeSession}
         onStartSession={boundStartSession}
         onResumeSession={boundResumeSession}

@@ -2,35 +2,27 @@
 description: Restart quicksave daemon from source with tsx (dev mode)
 ---
 
-Restart the quicksave dev daemon. Kill any existing daemon, then spawn a new one from source using tsx.
+Restart the quicksave dev daemon from source using the repo script. This is a forced restart: daemon-owned Claude / Codex sessions will be killed when the daemon exits.
 
 ## Steps
 
-1. Kill existing daemon:
+1. Schedule the forced delayed restart:
 
 ```bash
-quicksave service stop 2>/dev/null || true
+bash scripts/dev-daemon-delayed.sh 5
 ```
 
-If that fails, force kill:
+Use a longer delay if you need time to return a final message before the daemon exits:
 
 ```bash
-kill $(cat ~/.quicksave/run/service.lock 2>/dev/null) 2>/dev/null || true
+bash scripts/dev-daemon-delayed.sh 30
 ```
 
-2. Wait briefly for the process to die, then spawn the dev daemon:
-
-```bash
-cd apps/agent && nohup node --import tsx src/index.ts service run >> ~/.quicksave/run/daemon.log 2>&1 &
-```
-
-3. Verify it started:
+2. Verify it started after the delay:
 
 ```bash
 quicksave service status
 ```
-
-Confirm the output shows version `0.6.0` (or whatever the current dev version is) and `connected` status.
 
 If it fails, check the log:
 

@@ -199,6 +199,42 @@ describe('SessionManager', () => {
       expect(sessions[0].permissionMode).toBe('acceptEdits');
     });
 
+    it('lists provider slash commands for an active session', async () => {
+      const sessionId = 'test-session-slash';
+      const listSlashCommands = vi.fn().mockResolvedValue([
+        { name: 'review', description: 'review changes' },
+      ]);
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession({ listSlashCommands }),
+      });
+
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+      });
+
+      await expect(manager.listSlashCommands(sessionId, { cwd: '/tmp/test' }))
+        .resolves.toEqual([{ name: 'review', description: 'review changes' }]);
+      expect(listSlashCommands).toHaveBeenCalledWith({ cwd: '/tmp/test' });
+    });
+
+    it('rejects slash command listing when the provider does not support it', async () => {
+      const sessionId = 'test-session-no-slash';
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+      });
+
+      await expect(manager.listSlashCommands(sessionId))
+        .rejects.toThrow('Provider does not support slash commands');
+    });
+
     it('should reflect hasPendingInput when a permission request is pending', async () => {
       const sessionId = 'test-session-pending';
       (provider.startSession as Mock).mockResolvedValue({

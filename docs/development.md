@@ -54,20 +54,24 @@ your local source via `tsx`:
 
 If you're running inside a Claude CLI that the daemon spawned (typical
 when Claude is assisting you through Quicksave itself), the plain script
-will kill your own parent and terminate your conversation mid-stream.
-Use the delayed variant — it schedules the restart in a detached session
-so the current turn can finish and reply first:
+will kill your own parent immediately and terminate your conversation
+mid-stream. Use the delayed variant — it schedules a forced restart in a
+detached session so the current turn can finish and reply first:
 
 ```bash
 ./scripts/dev-daemon-delayed.sh 30   # restart in 30 seconds
 ```
 
-Pass `--force` to skip the guard wait and restart after the delay even
-when the caller is inside the daemon's own process tree:
+The delayed restart is forced by default. `--force` is still accepted for
+older muscle memory, but it is now a no-op:
 
 ```bash
 ./scripts/dev-daemon-delayed.sh --force 5
 ```
+
+Daemon-owned Claude / Codex sessions are children of the daemon, so this
+restart path kills them. A non-disruptive restart would require a separate
+wrapper that keeps provider sessions outside the daemon process tree.
 
 `setsid` detaches the scheduler into a new process group, so SIGTERM to
 the old daemon doesn't propagate to it. Progress is logged to

@@ -85,6 +85,7 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   // session
   'session:set-config',
   'session:control-request',
+  'session:list-slash-commands',
   'session:update-history',
   'session:delete-history',
   'session:list-archived',

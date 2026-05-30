@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment, CardEvent, CardStreamEnd, ContextUsageBreakdown, SessionQueueState } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, CardEvent, CardStreamEnd, ContextUsageBreakdown, SessionQueueState, SlashCommandInfo } from '@sumicom/quicksave-shared';
 import type { StreamCardBuilder } from './cardBuilder.js';
 
 export const CLAUDE_PERMISSION_MODES = [
@@ -94,6 +94,8 @@ export interface ProviderSession {
    * usage. Only supported by the Claude Code CLI (via `get_context_usage`
    * control_request). Returns null on providers that don't support it. */
   getContextUsage?(): Promise<ContextUsageBreakdown | null>;
+  /** Optional — provider-specific slash-command suggestions for the composer. */
+  listSlashCommands?(opts?: { cwd?: string; forceReload?: boolean }): Promise<SlashCommandInfo[]>;
   /** Optional — live-switch the auto-compact ceiling without respawning.
    * Only the Claude CLI provider implements it (sends a top-level
    * `update_environment_variables` stdin message; if `decoratedModel` is

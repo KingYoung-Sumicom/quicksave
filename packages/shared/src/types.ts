@@ -139,6 +139,8 @@ export type MessageType =
   | 'session:config-updated'       // agent-push: session config changed
   | 'session:control-request'        // pwa-request: send raw control_request to CLI session
   | 'session:control-request:response' // agent-response: control response payload
+  | 'session:list-slash-commands'        // pwa-request: list provider-specific slash commands
+  | 'session:list-slash-commands:response' // agent-response: slash command list
   // Session registry (history)
   | 'session:update-history'         // pwa-request: update session history entry
   | 'session:update-history:response' // agent-response: update ack
@@ -387,6 +389,32 @@ export interface SessionControlRequestResponsePayload {
   sessionId: string;
   /** The response body from the CLI (for 'success' control_response) */
   response?: unknown;
+  error?: string;
+}
+
+export interface SlashCommandInfo {
+  /** Name shown after the leading slash in the command popup. */
+  name: string;
+  description?: string;
+  argumentHint?: string;
+  /** Provider-origin hint for clients that want to group or style commands. */
+  source?: 'claude' | 'codex-skill';
+}
+
+/** PWA → Agent: list slash-command suggestions for a live session. */
+export interface SessionListSlashCommandsRequestPayload {
+  sessionId: string;
+  /** Optional cwd to scope provider-specific discovery such as Codex skills. */
+  cwd?: string;
+  /** Force providers with caches to refresh their command source. */
+  forceReload?: boolean;
+}
+
+/** Agent → PWA: provider-neutral slash-command suggestions. */
+export interface SessionListSlashCommandsResponsePayload {
+  success: boolean;
+  sessionId: string;
+  commands: SlashCommandInfo[];
   error?: string;
 }
 

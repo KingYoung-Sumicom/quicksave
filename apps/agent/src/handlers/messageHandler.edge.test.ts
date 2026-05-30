@@ -25,6 +25,9 @@ const makeMockSession = () => ({
   interrupt: vi.fn(),
   kill: vi.fn(),
   alive: true,
+  listSlashCommands: vi.fn(async () => [
+    { name: 'mock-command', description: 'mock slash command' },
+  ]),
 });
 vi.mock('../ai/claudeCodeProvider.js', () => ({
   ClaudeCodeProvider: vi.fn().mockImplementation(() => ({
@@ -414,7 +417,40 @@ describe('MessageHandler — edge cases', () => {
   });
 
   // =========================================================================
-  // 8. Concurrent operations — get-cards during session startup
+  // 8. Provider-neutral slash command listing
+  // =========================================================================
+
+  describe('session:list-slash-commands', () => {
+    it('should return commands from the active provider session', async () => {
+      const startMsg = createMessage('claude:start', {
+        prompt: 'Slash command test',
+        cwd: repoPath,
+      } as any);
+      const startResp = await handler.handleMessage(startMsg, peerA);
+      expect(startResp.type).toBe('claude:start:response');
+      expect((startResp.payload as any).success).toBe(true);
+
+      const sessionId = (startResp.payload as any).sessionId;
+      const msg = createMessage('session:list-slash-commands', {
+        sessionId,
+        cwd: repoPath,
+      } as any);
+      const resp = await handler.handleMessage(msg, peerA);
+
+      expect(resp.type).toBe('session:list-slash-commands:response');
+      expect(resp.id).toBe(msg.id);
+      expect((resp.payload as any)).toEqual({
+        success: true,
+        sessionId,
+        commands: [
+          { name: 'mock-command', description: 'mock slash command' },
+        ],
+      });
+    });
+  });
+
+  // =========================================================================
+  // 9. Concurrent operations — get-cards during session startup
   // =========================================================================
 
   describe('concurrent get-cards during session startup', () => {

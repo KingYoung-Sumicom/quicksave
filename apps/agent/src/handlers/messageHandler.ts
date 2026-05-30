@@ -104,6 +104,8 @@ import {
   SessionSetConfigResponsePayload,
   SessionControlRequestPayload,
   SessionControlRequestResponsePayload,
+  SessionListSlashCommandsRequestPayload,
+  SessionListSlashCommandsResponsePayload,
   SessionRegistryEntry,
   SessionUpdateHistoryRequestPayload,
   SessionUpdateHistoryResponsePayload,
@@ -774,6 +776,8 @@ export class MessageHandler {
           return this.handleSetSessionConfig(message as Message<SessionSetConfigRequestPayload>);
         case 'session:control-request':
           return this.handleControlRequest(message as Message<SessionControlRequestPayload>);
+        case 'session:list-slash-commands':
+          return this.handleListSlashCommands(message as Message<SessionListSlashCommandsRequestPayload>);
         case 'session:update-history':
           return this.handleUpdateHistory(message as Message<SessionUpdateHistoryRequestPayload>);
         case 'session:delete-history':
@@ -2518,6 +2522,29 @@ export class MessageHandler {
       const response = createMessage<SessionControlRequestResponsePayload>(
         'session:control-request:response',
         { success: false, sessionId, error: errMsg },
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleListSlashCommands(
+    message: Message<SessionListSlashCommandsRequestPayload>,
+  ): Promise<Message<SessionListSlashCommandsResponsePayload>> {
+    const { sessionId, cwd, forceReload } = message.payload;
+    try {
+      const commands = await this.claudeService.listSlashCommands(sessionId, { cwd, forceReload });
+      const response = createMessage<SessionListSlashCommandsResponsePayload>(
+        'session:list-slash-commands:response',
+        { success: true, sessionId, commands },
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      const response = createMessage<SessionListSlashCommandsResponsePayload>(
+        'session:list-slash-commands:response',
+        { success: false, sessionId, commands: [], error: errMsg },
       );
       response.id = message.id;
       return response;

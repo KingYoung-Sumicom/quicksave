@@ -109,6 +109,7 @@ export const REQUEST_RESPONSE_MAP: Record<string, string> = {
   'session:list-archived': 'session:list-archived:response',
   'session:mark-read': 'session:mark-read:response',
   'session:dismiss-pending-mission': 'session:dismiss-pending-mission:response',
+  'session:list-slash-commands': 'session:list-slash-commands:response',
   // Terminals
   'terminal:create': 'terminal:create:response',
   'terminal:close': 'terminal:close:response',

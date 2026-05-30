@@ -8,7 +8,8 @@ import type {
   ClaudeSessionSummary,
   ClaudeUserInputResponsePayload,
   ConfigValue,
-  SessionControlRequestResponsePayload,
+  SessionListSlashCommandsResponsePayload,
+  SlashCommandInfo,
   AttachmentKind,
 } from '@sumicom/quicksave-shared';
 import { CardRenderer } from './chat/CardRenderer';
@@ -30,12 +31,6 @@ import { useComposerAttachments } from '../hooks/useComposerAttachments';
 type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
 type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean };
 
-interface SlashCommand {
-  name: string;
-  description: string;
-  argumentHint?: string;
-}
-
 interface ClaudePanelProps {
   onSelectSession?: (sessionId: string) => void;
   sessionId?: string;
@@ -48,11 +43,10 @@ interface ClaudePanelProps {
   agentId?: string;
   onGetSessionCards: (sessionId: string, offset?: number, limit?: number) => Promise<void>;
   onSetSessionConfig?: (sessionId: string, key: string, value: ConfigValue) => void;
-  onSendControlRequest?: (
+  onListSlashCommands?: (
     sessionId: string,
-    subtype: string,
-    params?: Record<string, unknown>,
-  ) => Promise<SessionControlRequestResponsePayload>;
+    opts?: { cwd?: string; forceReload?: boolean },
+  ) => Promise<SessionListSlashCommandsResponsePayload>;
   onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string, opts?: ResumeSessionOpts) => Promise<void>;
   onSteerQueuedSession?: (sessionId: string) => Promise<void> | void;
@@ -193,7 +187,7 @@ export function ClaudePanel({
   agentId: agentIdProp,
   onGetSessionCards,
   onSetSessionConfig,
-  onSendControlRequest,
+  onListSlashCommands,
   onStartSession,
   onResumeSession,
   onSteerQueuedSession,
@@ -639,16 +633,16 @@ export function ClaudePanel({
   }, [historyHasMore, handleLoadMore]);
 
   // ── Slash-command autocomplete ──
-  // Source: `reload_plugins` control_request → `commands: [{name, description, argumentHint}]`.
-  // Cached per active session (the list is per-CLI-process and rarely changes). New-session
-  // view has no CLI to ask, so the popover stays dormant until the session starts.
-  const [slashCommands, setSlashCommands] = useState<SlashCommand[] | null>(null);
-  const slashCommandsSessionIdRef = useRef<string | null>(null);
+  // Source: provider-neutral `session:list-slash-commands`. New-session view
+  // has no live provider session to ask, so the popover stays dormant until a
+  // session starts.
+  const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[] | null>(null);
+  const slashCommandsCacheKeyRef = useRef<string | null>(null);
   const slashCommandsFetchingRef = useRef(false);
   const [slashIndex, setSlashIndex] = useState(0);
 
   const slashQuery = useMemo(() => {
-    const m = /^\s*\/(\w*)$/.exec(promptInput);
+    const m = /^\s*\/([^\s]*)$/.exec(promptInput);
     return m ? m[1] : null;
   }, [promptInput]);
   const slashOpen = slashQuery !== null;
@@ -674,36 +668,35 @@ export function ClaudePanel({
   // Lazy-fetch the command list the first time the popover opens for a session.
   useEffect(() => {
     if (!slashOpen) return;
-    if (!activeSessionId || !onSendControlRequest) return;
-    if (slashCommandsSessionIdRef.current === activeSessionId && slashCommands) return;
+    if (!activeSessionId || !onListSlashCommands) return;
+    const cacheKey = `${activeSessionId}:${cwd ?? ''}`;
+    if (slashCommandsCacheKeyRef.current === cacheKey && slashCommands) return;
     if (slashCommandsFetchingRef.current) return;
     slashCommandsFetchingRef.current = true;
-    onSendControlRequest(activeSessionId, 'reload_plugins')
+    onListSlashCommands(activeSessionId, { cwd })
       .then((resp) => {
         if (!resp.success) return;
-        const commands = (resp.response as { commands?: SlashCommand[] } | undefined)?.commands;
-        if (Array.isArray(commands)) {
-          slashCommandsSessionIdRef.current = activeSessionId;
-          setSlashCommands(commands);
-        }
+        slashCommandsCacheKeyRef.current = cacheKey;
+        setSlashCommands(resp.commands);
       })
       .catch((err) => {
-        console.warn('[slash] reload_plugins failed:', err);
+        console.warn('[slash] list commands failed:', err);
       })
       .finally(() => {
         slashCommandsFetchingRef.current = false;
       });
-  }, [slashOpen, activeSessionId, onSendControlRequest, slashCommands]);
+  }, [slashOpen, activeSessionId, onListSlashCommands, slashCommands, cwd]);
 
   // Drop the cache when switching sessions; the new session has its own command set.
   useEffect(() => {
-    if (slashCommandsSessionIdRef.current && slashCommandsSessionIdRef.current !== activeSessionId) {
-      slashCommandsSessionIdRef.current = null;
+    const cacheKey = activeSessionId ? `${activeSessionId}:${cwd ?? ''}` : null;
+    if (slashCommandsCacheKeyRef.current && slashCommandsCacheKeyRef.current !== cacheKey) {
+      slashCommandsCacheKeyRef.current = null;
       setSlashCommands(null);
     }
-  }, [activeSessionId]);
+  }, [activeSessionId, cwd]);
 
-  const insertSlashCommand = useCallback((cmd: SlashCommand) => {
+  const insertSlashCommand = useCallback((cmd: SlashCommandInfo) => {
     setPromptInput(`/${cmd.name} `);
     requestAnimationFrame(() => {
       const el = inputRef.current;
@@ -993,7 +986,7 @@ export function ClaudePanel({
                 <div ref={slashListRef} className="absolute left-0 right-0 bottom-full mb-2 max-h-56 overflow-y-auto rounded-lg border border-slate-700 bg-slate-800 shadow-lg z-10">
                   {filteredSlashCommands.map((cmd, i) => (
                     <button
-                      key={cmd.name}
+                      key={`${cmd.source ?? 'command'}:${cmd.name}`}
                       type="button"
                       onPointerDown={(e) => { e.preventDefault(); insertSlashCommand(cmd); }}
                       onMouseEnter={() => setSlashIndex(i)}

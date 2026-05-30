@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, SlashCommandInfo } from '@sumicom/quicksave-shared';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,6 +41,8 @@ import type { TurnStartResponse } from './schema/generated/v2/TurnStartResponse.
 import type { TurnInterruptParams } from './schema/generated/v2/TurnInterruptParams.js';
 import type { TurnSteerParams } from './schema/generated/v2/TurnSteerParams.js';
 import type { ApprovalsReviewer } from './schema/generated/v2/ApprovalsReviewer.js';
+import type { SkillsListParams } from './schema/generated/v2/SkillsListParams.js';
+import type { SkillsListResponse } from './schema/generated/v2/SkillsListResponse.js';
 import type { ReasoningEffort } from './schema/generated/ReasoningEffort.js';
 import type { UserInput } from './schema/generated/v2/UserInput.js';
 
@@ -257,6 +259,18 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
 
   hasPendingOverride(): boolean {
     return this.overrideStore.hasPending();
+  }
+
+  async listSlashCommands(opts?: { cwd?: string; forceReload?: boolean }): Promise<SlashCommandInfo[]> {
+    const response = await this.handle.rpc.request<SkillsListResponse>(
+      'skills/list',
+      {
+        cwds: opts?.cwd ? [opts.cwd] : [],
+        forceReload: opts?.forceReload === true,
+        perCwdExtraUserRoots: null,
+      } satisfies SkillsListParams,
+    );
+    return codexSkillsToSlashCommands(response, opts?.cwd);
   }
 
   interrupt(): void {
@@ -527,6 +541,55 @@ function seedOverrideStoreFromResponse(
     permissionProfile: resp.permissionProfile,
     approvalsReviewer: resp.approvalsReviewer,
   });
+}
+
+export function codexSkillsToSlashCommands(
+  response: SkillsListResponse,
+  preferredCwd?: string,
+): SlashCommandInfo[] {
+  const entries = Array.isArray(response.data) ? response.data : [];
+  const selectedEntries = preferredCwd
+    ? entries.filter((entry) => entry.cwd === preferredCwd)
+    : entries;
+  const sourceEntries = selectedEntries.length > 0 ? selectedEntries : entries;
+  const seen = new Set<string>();
+  const commands: SlashCommandInfo[] = [];
+
+  for (const entry of sourceEntries) {
+    for (const skill of entry.skills ?? []) {
+      if (!skill.enabled) continue;
+      const name = normalizeSlashCommandName(skill.name);
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+
+      const description = firstNonBlank(
+        skill.interface?.shortDescription,
+        skill.shortDescription,
+        skill.description,
+      );
+      commands.push({
+        name,
+        ...(description ? { description } : {}),
+        source: 'codex-skill',
+      });
+    }
+  }
+
+  return commands;
+}
+
+function normalizeSlashCommandName(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const name = value.trim().replace(/^\/+/, '');
+  return name.length > 0 ? name : null;
+}
+
+function firstNonBlank(...values: Array<string | null | undefined>): string | undefined {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
 }
 
 export function buildThreadStartParams(opts: StartSessionOpts): ThreadStartParams {

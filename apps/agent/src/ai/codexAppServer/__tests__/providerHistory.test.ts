@@ -3,7 +3,8 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ResumeSessionOpts, StartSessionOpts } from '../../provider.js';
-import { buildThreadResumeParams, buildThreadStartParams } from '../provider.js';
+import { buildThreadResumeParams, buildThreadStartParams, codexSkillsToSlashCommands } from '../provider.js';
+import type { SkillsListResponse } from '../schema/generated/v2/SkillsListResponse.js';
 
 describe('CodexAppServerProvider history persistence', () => {
   it('enables extended history when starting a thread', () => {
@@ -27,5 +28,73 @@ describe('CodexAppServerProvider history persistence', () => {
     };
 
     expect(buildThreadResumeParams(opts).persistExtendedHistory).toBe(true);
+  });
+
+  it('maps enabled Codex skills to slash command suggestions', () => {
+    const response: SkillsListResponse = {
+      data: [
+        {
+          cwd: '/repo',
+          errors: [],
+          skills: [
+            {
+              name: '/imagegen',
+              description: 'Generate images',
+              shortDescription: 'Legacy visual generation',
+              interface: {
+                shortDescription: 'Create visual assets',
+                defaultPrompt: 'Use the imagegen skill.',
+              },
+              path: '/skills/imagegen/SKILL.md',
+              scope: 'system',
+              enabled: true,
+            },
+            {
+              name: 'disabled',
+              description: 'Do not show this',
+              path: '/skills/disabled/SKILL.md',
+              scope: 'system',
+              enabled: false,
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(codexSkillsToSlashCommands(response, '/repo')).toEqual([
+      {
+        name: 'imagegen',
+        description: 'Create visual assets',
+        source: 'codex-skill',
+      },
+    ]);
+  });
+
+  it('falls back to all Codex skill entries when the preferred cwd has none', () => {
+    const response: SkillsListResponse = {
+      data: [
+        {
+          cwd: '/other',
+          errors: [],
+          skills: [
+            {
+              name: 'openai-docs',
+              description: 'Official OpenAI docs',
+              path: '/skills/openai-docs/SKILL.md',
+              scope: 'system',
+              enabled: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(codexSkillsToSlashCommands(response, '/repo')).toEqual([
+      {
+        name: 'openai-docs',
+        description: 'Official OpenAI docs',
+        source: 'codex-skill',
+      },
+    ]);
   });
 });

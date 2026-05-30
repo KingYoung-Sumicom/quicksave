@@ -22,6 +22,8 @@ import {
   type SessionSetConfigResponsePayload,
   type SessionControlRequestPayload,
   type SessionControlRequestResponsePayload,
+  type SessionListSlashCommandsRequestPayload,
+  type SessionListSlashCommandsResponsePayload,
   type SessionUpdateHistoryResponsePayload,
   type SessionListArchivedRequestPayload,
   type SessionListArchivedResponsePayload,
@@ -582,6 +584,20 @@ export function useClaudeOperations(
     [sendCommand],
   );
 
+  const listSlashCommands = useCallback(
+    async (
+      sessionId: string,
+      opts?: { cwd?: string; forceReload?: boolean },
+    ): Promise<SessionListSlashCommandsResponsePayload> => {
+      return sendCommand<SessionListSlashCommandsResponsePayload, SessionListSlashCommandsRequestPayload>(
+        'session:list-slash-commands',
+        { sessionId, cwd: opts?.cwd, forceReload: opts?.forceReload },
+        30_000,
+      );
+    },
+    [sendCommand],
+  );
+
   const respondToUserInput = useCallback(
     (response: ClaudeUserInputResponsePayload) => {
       sendCommand<void, ClaudeUserInputResponsePayload>(
@@ -669,6 +685,7 @@ export function useClaudeOperations(
     setSessionPermission,
     setSessionConfig,
     sendControlRequest,
+    listSlashCommands,
     unsubscribeSession,
     listProjectSummaries,
     listProjectRepos,

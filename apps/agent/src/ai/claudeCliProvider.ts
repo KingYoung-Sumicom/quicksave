@@ -5,7 +5,7 @@ import { createInterface } from 'readline';
 import { join, dirname } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
-import type { Attachment, CardEvent, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
+import type { Attachment, CardEvent, CardStreamEnd, ContextUsageBreakdown, SlashCommandInfo } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
 import { SANDBOX_MCP_NAME, SANDBOX_BASH_TOOL, buildSandboxMcpServerConfig } from './sandboxMcp.js';
 import { DebugLogger } from './debugLogger.js';
@@ -224,6 +224,34 @@ function extractToolResultText(content: unknown): string {
   return JSON.stringify(content);
 }
 
+function parseClaudeSlashCommands(response: unknown): SlashCommandInfo[] {
+  const commands = (response as { commands?: unknown } | null | undefined)?.commands;
+  if (!Array.isArray(commands)) return [];
+  const out: SlashCommandInfo[] = [];
+  for (const command of commands) {
+    if (!command || typeof command !== 'object') continue;
+    const raw = command as Record<string, unknown>;
+    const name = normalizeSlashCommandName(raw.name);
+    if (!name) continue;
+    const description = typeof raw.description === 'string' ? raw.description.trim() : '';
+    const rawArgumentHint = raw.argumentHint ?? raw.argument_hint;
+    const argumentHint = typeof rawArgumentHint === 'string' ? rawArgumentHint.trim() : '';
+    out.push({
+      name,
+      ...(description ? { description } : {}),
+      ...(argumentHint ? { argumentHint } : {}),
+      source: 'claude',
+    });
+  }
+  return out;
+}
+
+function normalizeSlashCommandName(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const name = value.trim().replace(/^\/+/, '');
+  return name.length > 0 ? name : null;
+}
+
 // ============================================================================
 // CliProviderSession — wraps a ChildProcess for ProviderSession interface
 // ============================================================================
@@ -295,6 +323,11 @@ export class CliProviderSession implements ProviderSession {
         reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
+  }
+
+  async listSlashCommands(): Promise<SlashCommandInfo[]> {
+    const response = await this.sendControlRequest('reload_plugins');
+    return parseClaudeSlashCommands(response);
   }
 
   sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {

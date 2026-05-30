@@ -24,6 +24,7 @@ import type {
   SessionPendingMission,
   SessionRegistryEntry,
   SessionStage,
+  SlashCommandInfo,
   SessionUpdatePayload,
 } from '@sumicom/quicksave-shared';
 import {
@@ -931,6 +932,21 @@ export class SessionManager extends EventEmitter {
       throw new Error('Provider does not support raw control_request');
     }
     return session.sendControlRequest(subtype, params);
+  }
+
+  async listSlashCommands(
+    sessionId: string,
+    opts?: { cwd?: string; forceReload?: boolean },
+  ): Promise<SlashCommandInfo[]> {
+    const ps = this.sessions.get(sessionId);
+    if (!ps?.providerSession?.alive) {
+      throw new Error('Session is not active');
+    }
+    const session = ps.providerSession;
+    if (typeof session.listSlashCommands !== 'function') {
+      throw new Error('Provider does not support slash commands');
+    }
+    return session.listSlashCommands(opts);
   }
 
   closeSession(sessionId: string): boolean {

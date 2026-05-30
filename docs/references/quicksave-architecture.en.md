@@ -221,6 +221,13 @@ claude:end-task → MessageHandler.handleClaudeEndTask
        + onHistoryUpdated(cwd, entry, 'upsert') broadcasts /sessions/history
   The PWA's End Task button takes this path; the session disappears from the active list and moves to archived.
 
+session:list-slash-commands → MessageHandler.handleListSlashCommands()
+  → SessionManager.listSlashCommands(sessionId, { cwd, forceReload })
+    → providerSession.listSlashCommands()
+       - Claude CLI: sends the existing `reload_plugins` control_request and maps the returned commands to `SlashCommandInfo`
+       - Codex app-server: calls `skills/list` and maps enabled skills to slash suggestions
+  The PWA composer uses this provider-neutral verb for the slash-command popup on active sessions.
+
 Provider process exits naturally (stdout EOF, RPC close, or crash):
   → callbacks.onSessionExited(sessionId, providerSession) (after a synthetic streamEnd if no result was emitted)
   → SessionManager.onSessionExited:
@@ -271,6 +278,10 @@ interface ProviderSession {
    *  usage. Only supported by the Claude Code CLI (via `get_context_usage`
    *  control_request). Returns null on providers that don't support it. */
   getContextUsage?(): Promise<ContextUsageBreakdown | null>;
+  /** Optional — provider-specific slash-command suggestions for the composer.
+   *  Claude CLI backs this with `reload_plugins`; Codex backs it with
+   *  `skills/list` mapped to `SlashCommandInfo`. */
+  listSlashCommands?(opts?: { cwd?: string; forceReload?: boolean }): Promise<SlashCommandInfo[]>;
   /** Optional — live-switch the auto-compact ceiling without respawning.
    *  Only the Claude CLI provider implements it (sends a top-level
    *  `update_environment_variables` stdin message; if `decoratedModel` is
@@ -660,7 +671,7 @@ interface Message {
 | Subsystem | Purpose |
 |---|---|
 | `claude:` | AI session control (start/resume/cancel/close/end-task/...; many types) |
-| `session:` | Session config + history (`set-config`, `control-request`, `update-history`, `delete-history`, `list-archived`, `history-updated`, `config-updated`) |
+| `session:` | Session config + history + active provider control (`set-config`, `control-request`, `list-slash-commands`, `update-history`, `delete-history`, `list-archived`, `history-updated`, `config-updated`) |
 | `git:` | Git operations (status/diff/stage/commit/...) |
 | `agent:` | Daemon management (list-repos/add-repo/clone-repo/check-update/update/restart/...) |
 | `ai:` | AI utilities (generate-commit-summary, commit-summary:clear, commit-summary:updated, set-api-key, get-api-key-status) |
@@ -696,6 +707,7 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 | `claude:user-input-response` | PWA→Agent | `bus.command('claude:user-input-response', …)` | Reply to a tool approval/permission prompt |
 | `claude:set-preferences` | PWA→Agent | `bus.command('claude:set-preferences', …)` | Write global preferences (reads go through the `/preferences` sub) |
 | `claude:set-session-permission` | PWA→Agent | `bus.command('claude:set-session-permission', …)` | Change a session's permission mode |
+| `session:list-slash-commands` | PWA→Agent | `bus.command('session:list-slash-commands', …)` | Ask the active provider for composer slash suggestions. Returns `SlashCommandInfo[]`; Claude uses `reload_plugins`, Codex maps enabled `skills/list` entries |
 | — | Agent→PWA push | `bus.subscribe('/sessions/:id/cards')` → `{kind: 'card', event}` / `{kind: 'stream-end', result}` | The old `claude:card-event` / `claude:card-stream-end` / `claude:user-input-request` have all moved to this path (CardBuilder carries the input request inside the pendingInput overlay) |
 | — | Agent→PWA push | `bus.subscribe('/sessions/active')` | Replaces the removed `claude:active-sessions` command and `claude:session-updated` push |
 | — | Agent→PWA push | `bus.subscribe('/preferences')` | Replaces the removed `claude:get-preferences` command and `claude:preferences-updated` push |
