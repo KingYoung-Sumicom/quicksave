@@ -77,7 +77,7 @@ import { getTerminalManager } from '../terminal/terminalManager.js';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const REGISTRY_WATCH_INTERVAL_MS = 1_000;
-const PACKAGE_VERSION = '0.8.9';
+const PACKAGE_VERSION = '0.8.10';
 
 function startSessionRegistryWatcher(
   bus: MessageBusServer,
