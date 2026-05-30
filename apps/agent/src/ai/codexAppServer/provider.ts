@@ -18,6 +18,7 @@ import type {
   StartSessionOpts,
 } from '../provider.js';
 import { normalizePermissionLevelForAgent } from '../provider.js';
+import { queueStateFor, type QueuedUserPrompt } from '../queuedUserPrompts.js';
 import { getEventStore } from '../../storage/eventStore.js';
 
 import { consumeAppServerStream } from './cardAdapter.js';
@@ -197,7 +198,7 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
   private readonly cardBuilder: StreamCardBuilder;
   private readonly callbacks: ProviderCallbacks;
   private currentTurnId: string | null = null;
-  private pendingTurns: Array<{ prompt: string; attachments?: readonly Attachment[] }> = [];
+  private pendingTurns: QueuedUserPrompt[] = [];
   private running = false;
   private exited = false;
 
@@ -228,18 +229,26 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
   }
 
   sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
+    if (this.currentTurnId) {
+      this.pendingTurns.push({ prompt, attachments });
+      this.callbacks.onQueueStateChange?.(this.threadId);
+      return;
+    }
+    void this.runTurn(prompt, attachments);
+  }
+
+  interruptThenSendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
+    if (this.currentTurnId) this.interrupt();
+    if (this.running) {
+      this.pendingTurns.push({ prompt, attachments });
+      this.callbacks.onQueueStateChange?.(this.threadId);
+      return;
+    }
     void this.runTurn(prompt, attachments);
   }
 
   getQueueState() {
-    if (this.pendingTurns.length === 0) return null;
-    const queuedPromptPreviews = this.pendingTurns.map((turn) => previewPrompt(turn.prompt));
-    return {
-      pendingUserMessages: this.pendingTurns.length,
-      latestPromptPreview: queuedPromptPreviews.at(-1),
-      queuedPromptPreviews,
-      canInterruptCurrentTurn: this.currentTurnId !== null,
-    };
+    return queueStateFor(this.pendingTurns, this.currentTurnId !== null);
   }
 
   enqueueRuntimeOverride(patch: RuntimeOverrides): void {
@@ -291,6 +300,10 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
 
   async steerQueuedMessage(opts?: { interruptCurrentTurn?: boolean }): Promise<boolean> {
     if (this.pendingTurns.length === 0 || !this.currentTurnId) return false;
+    if (opts?.interruptCurrentTurn) {
+      this.interrupt();
+      return true;
+    }
     const queued = this.pendingTurns.shift()!;
     this.callbacks.onQueueStateChange?.(this.threadId);
 
@@ -328,6 +341,13 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
       );
       const userEvent = this.cardBuilder.userMessage(prompt, attachments);
       this.callbacks.emitCardEvent(userEvent);
+      if (userEvent.type === 'add') {
+        try {
+          await this.cardBuilder.persistCard(userEvent.card);
+        } catch {
+          // best-effort; the end-of-turn persist will retry if this process lives
+        }
+      }
 
       if (opts?.interruptCurrentTurn) {
         try {
@@ -451,11 +471,6 @@ function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promis
       }),
     },
   );
-}
-
-function previewPrompt(prompt: string): string {
-  const normalized = prompt.replace(/\s+/g, ' ').trim();
-  return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
 }
 
 export function buildCodexSandboxMcpConfigArgs(opts: {

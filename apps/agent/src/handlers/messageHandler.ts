@@ -2206,7 +2206,7 @@ export class MessageHandler {
     message: Message<ClaudeResumeRequestPayload>,
     peerAddress: string,
   ): Promise<Message<ClaudeResumeResponsePayload>> {
-    const { sessionId: requestedId, prompt, cwd: payloadCwd, agent, attachmentIds } = message.payload;
+    const { sessionId: requestedId, prompt, cwd: payloadCwd, agent, attachmentIds, interruptCurrentTurn } = message.payload;
     const legacyProvider = (message.payload as { provider?: 'claude-cli' | 'claude-sdk' | 'codex-mcp' }).provider;
     const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
     const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
@@ -2236,6 +2236,7 @@ export class MessageHandler {
         cwd,
         agent: resolvedAgent,
         attachments,
+        interruptCurrentTurn,
       });
 
       console.log(`[agent:resume] session resumed: ${actualSessionId}`);

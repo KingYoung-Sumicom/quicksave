@@ -9,7 +9,7 @@ import type { AgentId } from './types.js';
 
 // Claude defaults. The wire protocol's `ClaudePreferences` and the PWA's
 // claude-agent prefs both seed from these.
-export const DEFAULT_MODEL = 'claude-opus-4-7';
+export const DEFAULT_MODEL = 'claude-opus-4-8';
 export const DEFAULT_PERMISSION_MODE = 'auto';
 export const DEFAULT_REASONING_EFFORT = 'high' as const;
 export const DEFAULT_AGENT: AgentId = 'claude-code';

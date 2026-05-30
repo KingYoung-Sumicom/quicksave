@@ -28,7 +28,7 @@ import { useComposerVoice } from '../hooks/useComposerVoice';
 import { useComposerAttachments } from '../hooks/useComposerAttachments';
 
 type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
-type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
+type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean };
 
 interface SlashCommand {
   name: string;
@@ -149,14 +149,14 @@ function QueuedComposerPanel({
             type="button"
             onClick={() => onSteerQueuedSession(session.sessionId)}
             className="inline-flex shrink-0 items-center gap-1 rounded border border-cyan-400/35 bg-cyan-400/10 px-2 py-1 text-[11px] font-semibold text-cyan-50 hover:bg-cyan-400/20"
-            aria-label="Steer queued message now"
-            title="Steer queued message now"
+            aria-label="Interrupt and send queued message"
+            title="Interrupt and send queued message"
           >
             <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
               <path d="M3 8h8" strokeLinecap="round" />
               <path d="M8 5l3 3-3 3" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-            <span>Steer now</span>
+            <span>Interrupt now</span>
           </button>
         )}
       </div>
@@ -526,7 +526,7 @@ export function ClaudePanel({
     }
   }, [activeSessionId, setActiveSession, clearCards, onNewSession, onUnsubscribeSession]);
 
-  const handleSend = useCallback(async () => {
+  const handleSend = useCallback(async (interruptCurrentTurn = false) => {
     const prompt = promptInput.trim();
     // A turn is sendable if there's prompt text OR at least one ready attachment.
     const hasContent = prompt.length > 0 || attach.pendingAttachments.length > 0;
@@ -554,6 +554,7 @@ export function ClaudePanel({
         if (isInactive) setIsResuming(true);
         await onResumeSession(activeSessionId, prompt, {
           ...(attachmentIds.length > 0 ? { attachmentIds, attachmentMetadata } : {}),
+          ...(interruptCurrentTurn ? { interruptCurrentTurn: true } : {}),
         });
       } else {
         await onStartSession(prompt, {
@@ -578,7 +579,7 @@ export function ClaudePanel({
       // Clean up the upload manager state for the chips that just shipped.
       attach.forgetSent(attachmentIds);
     }
-  }, [promptInput, attach, isStreaming, activeSessionId, isInactive, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedReasoningEffort, selectedContextWindow, selectedAgentType, setPromptInput, onResumeSession, onStartSession, draftKey]);
+  }, [promptInput, attach, activeSessionId, isInactive, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedReasoningEffort, selectedContextWindow, selectedAgentType, setPromptInput, onResumeSession, onStartSession, draftKey]);
 
   /**
    * Send a fixed prompt without using the composer input. Used by inline
@@ -799,6 +800,8 @@ export function ClaudePanel({
   // While capturing/transcribing, lock the rest of the composer (textarea,
   // attach, send) so a stray tap can't edit or submit mid-utterance.
   const voiceActive = voice.recording || voice.busy;
+  const composerHasContent = promptInput.trim().length > 0 || attach.pendingAttachments.length > 0;
+  const canSubmitComposer = !voiceActive && composerHasContent && !attach.anyUploadInFlight;
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -1097,13 +1100,14 @@ export function ClaudePanel({
                     )}
                   </button>
                 )}
-                <div className="flex w-9 flex-shrink-0 items-center justify-end">
+                <div className="flex flex-shrink-0 items-center justify-end">
                   <button
-                    onPointerDown={(e) => { e.preventDefault(); handleSend(); }}
-                    disabled={voiceActive || (!promptInput.trim() && attach.pendingAttachments.length === 0) || attach.anyUploadInFlight}
+                    type="button"
+                    onPointerDown={(e) => { e.preventDefault(); handleSend(false); }}
+                    disabled={!canSubmitComposer}
                     className={clsx(
                       'p-2 rounded-lg transition-colors flex-shrink-0',
-                      !voiceActive && (promptInput.trim() || attach.pendingAttachments.length > 0) && !attach.anyUploadInFlight
+                      canSubmitComposer
                         ? 'bg-blue-600 hover:bg-blue-500'
                         : 'bg-slate-600 text-slate-400'
                     )}

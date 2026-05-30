@@ -1672,6 +1672,10 @@ export interface ClaudeResumeRequestPayload {
   prompt: string;
   cwd?: string;
   agent?: AgentId;
+  /** Interrupt the active turn before sending this prompt. Providers that can
+   * preserve ordering should run the prompt as the next turn instead of
+   * steering it into the interrupted turn. */
+  interruptCurrentTurn?: boolean;
   /** Ids of attachments previously staged via `attachment:upload`. */
   attachmentIds?: string[];
 }
@@ -1703,9 +1707,10 @@ export interface ClaudeInterruptResponsePayload {
   error?: string;
 }
 
-// Steer the currently queued user message into the active turn. For Codex this
-// maps to app-server `turn/steer`; when `interruptCurrentTurn` is true the
-// provider also interrupts the running turn after steering.
+// Steer or expedite the currently queued user message. Providers that support
+// same-turn steering can inject it into the active turn; when
+// `interruptCurrentTurn` is true they interrupt the current turn so the queued
+// prompt runs next.
 export interface ClaudeSteerQueuedRequestPayload {
   sessionId: string;
   interruptCurrentTurn?: boolean;

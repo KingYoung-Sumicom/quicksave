@@ -62,6 +62,13 @@ so the current turn can finish and reply first:
 ./scripts/dev-daemon-delayed.sh 30   # restart in 30 seconds
 ```
 
+Pass `--force` to skip the guard wait and restart after the delay even
+when the caller is inside the daemon's own process tree:
+
+```bash
+./scripts/dev-daemon-delayed.sh --force 5
+```
+
 `setsid` detaches the scheduler into a new process group, so SIGTERM to
 the old daemon doesn't propagate to it. Progress is logged to
 `~/.quicksave/run/dev-daemon-delayed.log`.

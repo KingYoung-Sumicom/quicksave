@@ -24,6 +24,7 @@ class StubCodexAppServerSession implements ProviderSession {
   alive = true;
   enqueued: Record<string, unknown>[] = [];
   sendUserMessages: string[] = [];
+  interruptThenSendUserMessages: string[] = [];
   interruptCalls = 0;
   steerQueuedCalls: Array<{ interruptCurrentTurn?: boolean }> = [];
   queueState: ReturnType<NonNullable<ProviderSession['getQueueState']>> = null;
@@ -32,6 +33,9 @@ class StubCodexAppServerSession implements ProviderSession {
   }
   sendUserMessage(prompt: string): void {
     this.sendUserMessages.push(prompt);
+  }
+  interruptThenSendUserMessage(prompt: string): void {
+    this.interruptThenSendUserMessages.push(prompt);
   }
   getQueueState() {
     return this.queueState;
@@ -201,6 +205,18 @@ describe('SessionManager → CodexAppServer hot-resume forwarding', () => {
       cwd: '/tmp/test',
     });
     expect(updates.at(-1)?.queueState).toEqual(session.queueState);
+  });
+
+  it('active hot-resume can request interrupt before sending the prompt', async () => {
+    const { sm, sessionId, session } = await setupActiveCodexSession();
+    await sm.resumeSession({
+      sessionId,
+      prompt: 'changed plan',
+      cwd: '/tmp/test',
+      interruptCurrentTurn: true,
+    });
+    expect(session.sendUserMessages).toEqual([]);
+    expect(session.interruptThenSendUserMessages).toEqual(['changed plan']);
   });
 
   it('interruptSession interrupts without clearing queued state', async () => {

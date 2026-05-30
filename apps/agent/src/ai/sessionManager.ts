@@ -655,6 +655,7 @@ export class SessionManager extends EventEmitter {
     agent?: AgentId;
     /** Attachments resolved from staging by the messageHandler. */
     attachments?: readonly Attachment[];
+    interruptCurrentTurn?: boolean;
   }): Promise<string> {
     const existing = this.sessions.get(opts.sessionId);
     const agentId = this.resolveAgentId(opts.sessionId, opts.cwd, opts.agent);
@@ -699,7 +700,14 @@ export class SessionManager extends EventEmitter {
       if (opts.attachments && opts.attachments.length > 0) {
         await persistAttachments(opts.sessionId, opts.attachments);
       }
-      existing.providerSession.sendUserMessage(opts.prompt, opts.attachments);
+      if (opts.interruptCurrentTurn && existing.providerSession.interruptThenSendUserMessage) {
+        existing.providerSession.interruptThenSendUserMessage(opts.prompt, opts.attachments);
+      } else if (opts.interruptCurrentTurn) {
+        existing.providerSession.interrupt();
+        existing.providerSession.sendUserMessage(opts.prompt, opts.attachments);
+      } else {
+        existing.providerSession.sendUserMessage(opts.prompt, opts.attachments);
+      }
       this.emitSessionUpdate(opts.sessionId);
       return opts.sessionId;
     }

@@ -100,6 +100,105 @@ describe('CliProviderSession.sendUserMessage', () => {
     expect(cardBuilder.getCards()).toHaveLength(0);
     expect(stdinWrites).toHaveLength(0);
   });
+
+  it('queues prompts during an active turn instead of writing to stdin immediately', () => {
+    const { proc, stdinWrites } = makeFakeProcess();
+    const cardBuilder = new StreamCardBuilder('sess-1', '/tmp');
+    const session = new CliProviderSession(proc);
+    session.sessionId = 'sess-1';
+    session.cardBuilder = cardBuilder;
+    session.activeTurn = true;
+    const queueUpdates: string[] = [];
+    session.callbacks = {
+      ...makeCallbacks().callbacks,
+      onQueueStateChange: (sessionId) => queueUpdates.push(sessionId),
+    };
+
+    session.sendUserMessage('first queued');
+    session.sendUserMessage('second queued');
+
+    expect(stdinWrites).toHaveLength(0);
+    expect(cardBuilder.getCards()).toHaveLength(0);
+    expect(queueUpdates).toEqual(['sess-1', 'sess-1']);
+    expect(session.getQueueState()).toMatchObject({
+      pendingUserMessages: 2,
+      latestPromptPreview: 'second queued',
+      queuedPromptPreviews: ['first queued', 'second queued'],
+      canInterruptCurrentTurn: true,
+    });
+  });
+
+  it('Steer now sends the first queued prompt and interrupts when requested', async () => {
+    const { proc, stdinWrites } = makeFakeProcess();
+    const cardBuilder = new StreamCardBuilder('sess-1', '/tmp');
+    const session = new CliProviderSession(proc);
+    session.sessionId = 'sess-1';
+    session.cardBuilder = cardBuilder;
+    session.activeTurn = true;
+
+    (session as any).queuedUserPrompts = [
+      { prompt: 'first queued' },
+      { prompt: 'second queued' },
+    ];
+    await expect(session.steerQueuedMessage({ interruptCurrentTurn: true })).resolves.toBe(true);
+
+    expect(stdinWrites).toHaveLength(2);
+    expect(JSON.parse(stdinWrites[0].trim())).toMatchObject({
+      type: 'control_request',
+      request: { subtype: 'interrupt' },
+    });
+    expect(JSON.parse(stdinWrites[1].trim())).toEqual({
+      type: 'user',
+      message: { role: 'user', content: 'first queued' },
+    });
+    expect((cardBuilder.getCards()[0] as any).text).toBe('first queued');
+    expect(session.getQueueState()).toMatchObject({
+      pendingUserMessages: 1,
+      latestPromptPreview: 'second queued',
+      queuedPromptPreviews: ['second queued'],
+    });
+  });
+
+  it('sends the next queued prompt automatically when the active turn ends', () => {
+    const { proc, stdinWrites } = makeFakeProcess();
+    const cardBuilder = new StreamCardBuilder('sess-1', '/tmp');
+    const session = new CliProviderSession(proc);
+    session.sessionId = 'sess-1';
+    session.cardBuilder = cardBuilder;
+    session.activeTurn = true;
+
+    (session as any).queuedUserPrompts = [{ prompt: 'next turn' }];
+    session.activeTurn = false;
+    expect(session.sendNextQueuedMessage()).toBe(true);
+
+    expect(stdinWrites).toHaveLength(1);
+    expect(JSON.parse(stdinWrites[0].trim())).toEqual({
+      type: 'user',
+      message: { role: 'user', content: 'next turn' },
+    });
+    expect(session.activeTurn).toBe(true);
+    expect(session.getQueueState()).toBeNull();
+  });
+
+  it('interrupt-then-send writes interrupt before the user prompt', () => {
+    const { proc, stdinWrites } = makeFakeProcess();
+    const cardBuilder = new StreamCardBuilder('sess-1', '/tmp');
+    const session = new CliProviderSession(proc);
+    session.cardBuilder = cardBuilder;
+    session.activeTurn = true;
+
+    session.interruptThenSendUserMessage('next instruction');
+
+    expect(stdinWrites).toHaveLength(2);
+    expect(JSON.parse(stdinWrites[0].trim())).toMatchObject({
+      type: 'control_request',
+      request: { subtype: 'interrupt' },
+    });
+    expect(JSON.parse(stdinWrites[1].trim())).toEqual({
+      type: 'user',
+      message: { role: 'user', content: 'next instruction' },
+    });
+  });
 });
 
 describe('SdkProviderSession.sendUserMessage', () => {

@@ -4,6 +4,16 @@
 
 Before designing or implementing features, consult `docs/guidelines.md` for an index of design and engineering guidelines. Each entry points to a detailed document.
 
+## Standing Project Knowledge
+
+- Communicate with the user in Traditional Chinese. The user also understands Japanese, but does not understand Korean; do not reply in Korean.
+- For attachments, file previews, screenshots, or any large per-item bytes, snapshots and lists should carry metadata only. Fetch bytes on demand by id and reuse the shared PWA cache machinery instead of embedding base64/blob data inline.
+- Claude session history is reconstructed from `.claude/projects/...` JSONL through `apps/agent/src/ai/cardBuilder.ts`. Keep raw Claude JSONL reading centralized there unless a broader architecture change explicitly moves that responsibility.
+- Quicksave daemon runtime paths: log `~/.quicksave/run/daemon.log`, state `~/.quicksave/state/service.json`, socket `~/.quicksave/run/service.sock`, lock `~/.quicksave/run/service.lock`, config `~/.quicksave/agent.json`.
+- When restarting the daemon from inside a daemon-spawned agent session, prefer `scripts/dev-daemon-delayed.sh` so the current conversation is not killed by the daemon restart. Preserve its explicit `bash scripts/dev-daemon.sh` invocation because `scripts/dev-daemon.sh` is tracked without an executable bit.
+- Refactor priority should be based on change spread and change frequency, not lines saved. Prefer reducing patterns that force edits across many files.
+- When a UI fix creates a reusable rule, record it in the appropriate guideline document linked from `docs/guidelines.md`, with the reason, so the rule does not get buried in a one-off plan.
+
 ## Documentation Sync Pointers
 
 **After every non-trivial code change, check whether one of these docs

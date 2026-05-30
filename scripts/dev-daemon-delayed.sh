@@ -6,7 +6,14 @@
 # while it owns the current agent session would kill that session.
 #
 # Usage:
-#   ./scripts/dev-daemon-delayed.sh [delay_seconds]
+#   ./scripts/dev-daemon-delayed.sh [--force] [delay_seconds]
+#
+#   --force    Skip the guard-pid wait. The restart proceeds after the
+#              delay regardless of whether the caller is the daemon's own
+#              agent session. Use this when you accept that the calling
+#              Claude / Codex conversation will be killed (e.g. you want
+#              the new provider available immediately and will restart
+#              the conversation yourself).
 #
 # Default delay: 30s. The actual restart happens via dev-daemon.sh after
 # the current agent session has exited, when applicable.
@@ -17,6 +24,12 @@
 # protects the restart worker process itself; the active agent session is
 # protected by waiting for its daemon-child guard PID to exit naturally.
 set -euo pipefail
+
+FORCE=0
+if [ "${1:-}" = "--force" ]; then
+  FORCE=1
+  shift
+fi
 
 DELAY="${1:-30}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -47,13 +60,17 @@ find_daemon_child_guard() {
 }
 
 GUARD_PID=""
-OLD_PID="$(cat "$LOCK_FILE" 2>/dev/null || true)"
-if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
-  GUARD_PID="$(find_daemon_child_guard "$OLD_PID" || true)"
+if [ "$FORCE" = "0" ]; then
+  OLD_PID="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+    GUARD_PID="$(find_daemon_child_guard "$OLD_PID" || true)"
+  fi
 fi
 
 if [ -n "$GUARD_PID" ]; then
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Scheduling dev-daemon restart after guard pid $GUARD_PID exits, then ${DELAY}s delay (caller pid=$$)" >> "$LOG_FILE"
+elif [ "$FORCE" = "1" ]; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Scheduling forced dev-daemon restart in ${DELAY}s — caller agent session will be killed (caller pid=$$)" >> "$LOG_FILE"
 else
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Scheduling dev-daemon restart in ${DELAY}s (caller pid=$$)" >> "$LOG_FILE"
 fi
@@ -80,6 +97,8 @@ disown || true
 
 if [ -n "$GUARD_PID" ]; then
   echo "Scheduled restart after guard pid $GUARD_PID exits, then ${DELAY}s. Tail: tail -f $LOG_FILE"
+elif [ "$FORCE" = "1" ]; then
+  echo "Scheduled forced restart in ${DELAY}s — caller agent session WILL BE KILLED. Tail: tail -f $LOG_FILE"
 else
   echo "Scheduled restart in ${DELAY}s. Tail: tail -f $LOG_FILE"
 fi

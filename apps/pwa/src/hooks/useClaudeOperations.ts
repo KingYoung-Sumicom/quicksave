@@ -240,7 +240,7 @@ export function useClaudeOperations(
             reasoningEffort: opts?.reasoningEffort,
             // contextWindow drives CLAUDE_CODE_AUTO_COMPACT_WINDOW on the
             // spawned CLI; without it the model defaults to its full window
-            // (1M for opus-4-7) and auto-compact never fires at the user's pick.
+            // (1M for opus-4-8) and auto-compact never fires at the user's pick.
             ...(opts?.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {}),
             ...(opts?.cwd ? { cwd: opts.cwd } : {}),
             ...(opts?.attachmentIds && opts.attachmentIds.length > 0
@@ -294,13 +294,14 @@ export function useClaudeOperations(
   );
 
   const resumeSession = useCallback(
-    async (sessionId: string, prompt: string, cwd?: string, opts?: { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] }) => {
+    async (sessionId: string, prompt: string, cwd?: string, opts?: { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean }) => {
       const state = useClaudeStore.getState();
       const session = state.sessions[sessionId];
       const wasAlreadyStreaming = state.isStreaming || session?.isStreaming === true;
+      const queueInsteadOfAppend = wasAlreadyStreaming && !opts?.interruptCurrentTurn;
       setStreaming(true);
       setStreamError(null);
-      if (wasAlreadyStreaming) {
+      if (queueInsteadOfAppend) {
         const optimisticUntil = Date.now() + OPTIMISTIC_QUEUE_MIN_MS;
         upsertSession({
           sessionId,
@@ -327,7 +328,7 @@ export function useClaudeOperations(
           primeUploadedAttachment(sessionId, id);
         }
       }
-      if (!wasAlreadyStreaming) {
+      if (!queueInsteadOfAppend) {
         appendCard({
           type: 'user',
           id: `local-user-${Date.now()}`,
@@ -346,6 +347,7 @@ export function useClaudeOperations(
             sessionId,
             prompt,
             ...(cwd ? { cwd } : {}),
+            ...(opts?.interruptCurrentTurn ? { interruptCurrentTurn: true } : {}),
             ...(opts?.attachmentIds && opts.attachmentIds.length > 0
               ? { attachmentIds: opts.attachmentIds }
               : {}),

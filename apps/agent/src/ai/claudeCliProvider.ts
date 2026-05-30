@@ -11,6 +11,7 @@ import { SANDBOX_MCP_NAME, SANDBOX_BASH_TOOL, buildSandboxMcpServerConfig } from
 import { DebugLogger } from './debugLogger.js';
 import { attachmentsToContentBlocks } from './contentBlocks.js';
 import { persistAttachments } from './attachmentStore.js';
+import { queueStateFor, type QueuedUserPrompt } from './queuedUserPrompts.js';
 import type {
   CodingAgentProvider,
   ProviderSession,
@@ -248,6 +249,8 @@ export class CliProviderSession implements ProviderSession {
    * user-message card-event so other PWA tabs subscribed to this session
    * see follow-up prompts in real time. */
   public callbacks: ProviderCallbacks | null = null;
+  public sessionId: string | null = null;
+  private queuedUserPrompts: QueuedUserPrompt[] = [];
 
   constructor(proc: ChildProcess) {
     this.process = proc;
@@ -296,6 +299,63 @@ export class CliProviderSession implements ProviderSession {
 
   sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
     if (!this.process || this.process.killed) return;
+    if (this.activeTurn) {
+      this.queuedUserPrompts.push({ prompt, attachments });
+      this.emitQueueStateChange();
+      return;
+    }
+    this.sendUserMessageNow(prompt, attachments);
+  }
+
+  interruptThenSendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
+    if (!this.process || this.process.killed) return;
+    this.interrupt();
+    this.sendUserMessageNow(prompt, attachments);
+  }
+
+  getQueueState() {
+    return queueStateFor(this.queuedUserPrompts, this.activeTurn && !!this.process && !this.process.killed);
+  }
+
+  async steerQueuedMessage(opts?: { interruptCurrentTurn?: boolean }): Promise<boolean> {
+    if (this.queuedUserPrompts.length === 0) return false;
+    const next = this.queuedUserPrompts.shift()!;
+    this.emitQueueStateChange();
+    if (opts?.interruptCurrentTurn) this.interrupt();
+    const sent = this.sendUserMessageNow(next.prompt, next.attachments);
+    if (!sent) {
+      this.queuedUserPrompts.unshift(next);
+      this.emitQueueStateChange();
+      return false;
+    }
+    return true;
+  }
+
+  sendNextQueuedMessage(): boolean {
+    if (this.queuedUserPrompts.length === 0) return false;
+    const next = this.queuedUserPrompts.shift()!;
+    this.emitQueueStateChange();
+    const sent = this.sendUserMessageNow(next.prompt, next.attachments);
+    if (!sent) {
+      this.queuedUserPrompts.unshift(next);
+      this.emitQueueStateChange();
+    }
+    return sent;
+  }
+
+  clearQueuedMessages(): void {
+    if (this.queuedUserPrompts.length === 0) return;
+    this.queuedUserPrompts = [];
+    this.emitQueueStateChange();
+  }
+
+  private emitQueueStateChange(): void {
+    if (this.sessionId) this.callbacks?.onQueueStateChange?.(this.sessionId);
+  }
+
+  private sendUserMessageNow(prompt: string, attachments?: readonly Attachment[]): boolean {
+    if (!this.process || this.process.killed) return false;
+    this.cardBuilder?.cancelDeferredClear?.();
     // Record the prompt in the cardBuilder so getCards on reconnect/refresh
     // returns it before the CLI has flushed it to the session JSONL.
     // (--replay-user-messages will echo this prompt back to us; the
@@ -316,6 +376,7 @@ export class CliProviderSession implements ProviderSession {
     };
     this.debugLog?.logRawEvent({ ...userMsg, _direction: 'stdin' });
     this.process.stdin!.write(JSON.stringify(userMsg) + '\n');
+    return true;
   }
 
   interrupt(): void {
@@ -392,6 +453,8 @@ export class CliProviderSession implements ProviderSession {
       this.process.kill('SIGTERM');
       this.process = null;
     }
+    this.activeTurn = false;
+    this.clearQueuedMessages();
   }
 
   get alive(): boolean {
@@ -563,6 +626,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
     });
 
     const cliSession = new CliProviderSession(proc);
+    cliSession.sessionId = sessionId;
     cliSession.cardBuilder = cardBuilder;
     cliSession.callbacks = callbacks;
     const debugLog = new DebugLogger(sessionId);
@@ -648,6 +712,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
         cliSession.resultEmitted = true;
         cb.startNewTurn();
         cliSession.activeTurn = false;
+        cliSession.sendNextQueuedMessage();
       }
     };
 
@@ -671,6 +736,7 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       // Process exited — clean up
       cliSession.process = null;
       cliSession.activeTurn = false;
+      cliSession.clearQueuedMessages();
 
       // Fail any still-pending control_requests — no response will ever arrive.
       for (const [reqId, pending] of cliSession.pendingControlResponses) {

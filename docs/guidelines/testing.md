@@ -64,6 +64,16 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
 2. Fix the bug (green)
 3. If the bug involves a race condition, write an adversarial test that exposes the timing window, with a `// BUG:` comment if the fix is only partial
 
+### Timeouts
+
+Do not mask flaky tests by simply raising timeouts. When a test times out,
+investigate the root cause first: real CLI spawns under parallel load, missing
+mocks, race conditions, or an operation that is not correctly awaited.
+
+If a test flakes because it spawns a real process, prefer mocking the provider,
+isolating the test from parallel execution, or fixing the race. Only extend a
+timeout when the operation is legitimately slow and already correctly awaited.
+
 ## PWA Tests (`apps/pwa`)
 
 ```bash

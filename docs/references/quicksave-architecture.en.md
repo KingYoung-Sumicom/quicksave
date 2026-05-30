@@ -182,7 +182,8 @@ claude:start → MessageHandler.handleClaudeStart()
 
 claude:resume → SessionManager.resumeSession(opts)
    → 1. Hot resume (active turn): existing.streaming && providerSession.alive
-        → providerSession.sendUserMessage(prompt, opts.attachments); the provider consumes the next prompt after the current turn ends
+        → providerSession.sendUserMessage(prompt, opts.attachments); providers with in-memory turn queues keep the prompt until the current turn ends
+        → If opts.interruptCurrentTurn is true, SessionManager calls providerSession.interruptThenSendUserMessage(...) when available; otherwise it interrupts then sends.
    → 2. Hot resume (idle): !existing.streaming && providerSession.alive && !modelChanged && !contextWindowChanged
         → Reuse the same process: providerSession.sendUserMessage(prompt, opts.attachments). Avoids the latency and "ghost inactive" flicker of kill+spawn.
         → For Claude CLI, a contextWindow change can be applied live via providerSession.updateContextWindow(...) before sending.
@@ -674,7 +675,8 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 |---|---|---|---|
 | — | Agent→PWA push | `bus.subscribe('/sessions/history')` | Full snapshot of historical sessions + incremental updates (replaces the now-removed `claude:list-sessions` command, avoiding races with `/sessions/active`) |
 | `claude:start` | PWA→Agent | `bus.command('claude:start', …)` | Start a new session. `attachmentIds?` resolved from staging |
-| `claude:resume` | PWA→Agent | `bus.command('claude:resume', …)` | Resume a session. `attachmentIds?` resolved from staging |
+| `claude:resume` | PWA→Agent | `bus.command('claude:resume', …)` | Resume a session. `attachmentIds?` resolved from staging; `interruptCurrentTurn?` interrupts the active turn before sending |
+| `claude:steer-queued` | PWA→Agent | `bus.command('claude:steer-queued', …)` | Steer or expedite the first queued prompt; `interruptCurrentTurn?` cancels the active turn so the queued prompt runs next |
 | `attachment:upload` | PWA→Agent | `bus.command('attachment:upload', …)` | One chunk of a staged attachment (meta on chunk 0) |
 | `attachment:cancel` | PWA→Agent | `bus.command('attachment:cancel', …)` | Drop a staged attachment before send |
 | `attachment:fetch` | PWA→Agent | `bus.command('attachment:fetch', …)` | On-demand bytes for a metadata-only chip on `UserCard.attachments[]` |

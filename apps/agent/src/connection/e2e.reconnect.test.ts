@@ -142,7 +142,7 @@ describe('reconnect after agent socket disruption', () => {
     );
     await flush(20);
     expect(snapshots).toHaveLength(1);
-    expect(snapshots[0].model).toBe('claude-opus-4-7');
+    expect(snapshots[0].model).toBe('claude-opus-4-8');
 
     // Switch to fake timers BEFORE closing so the reconnect setTimeout
     // queues onto the fake clock (real timers would make this test slow
@@ -239,6 +239,6 @@ describe('reconnect after agent socket disruption', () => {
     );
     await flush(20);
     expect(snapshots).toHaveLength(1);
-    expect(snapshots[0].model).toBe('claude-opus-4-7');
+    expect(snapshots[0].model).toBe('claude-opus-4-8');
   });
 });

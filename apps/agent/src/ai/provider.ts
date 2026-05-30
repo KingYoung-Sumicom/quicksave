@@ -74,6 +74,7 @@ export type ProviderHistoryMode = 'claude-jsonl' | 'memory';
 /** Represents a running provider session. */
 export interface ProviderSession {
   sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void;
+  interruptThenSendUserMessage?(prompt: string, attachments?: readonly Attachment[]): void;
   interrupt(): void;
   kill(): void;
   readonly alive: boolean;
