@@ -6,15 +6,23 @@ Release version $ARGUMENTS of quicksave.
 
 ## Step 1: Bump version strings
 
-Search for ALL occurrences of the current version across the codebase and replace with $ARGUMENTS:
+Determine every old Quicksave version string that must disappear before
+publishing. Do not assume the package manifests are the only source of truth:
+the agent also has runtime version constants and tests. Search the whole repo
+excluding generated/dependency directories:
 
 ```bash
-grep -rn '<current_version>' apps/agent/ packages/shared/ --include='*.ts' --include='*.json'
+rg -n --hidden --glob '!node_modules/**' --glob '!.git/**' --glob '!dist/**' '0\.[0-9]+\.[0-9]+'
 ```
 
-Files that typically contain version strings:
+Replace the previous release version and any stale runtime versions with
+$ARGUMENTS. Files that typically contain version strings:
+- `package.json`
 - `packages/shared/package.json`
+- `packages/message-bus/package.json`
 - `apps/agent/package.json`
+- `apps/pwa/package.json`
+- `apps/relay/package.json`
 - `apps/agent/src/index.ts` (CLI version + display string)
 - `apps/agent/src/service/run.ts` (PACKAGE_VERSION)
 - `apps/agent/src/service/ipcClient.ts` (PACKAGE_VERSION)
@@ -23,12 +31,25 @@ Files that typically contain version strings:
 - `apps/agent/src/service/ipc.test.ts` (test assertions)
 - `apps/agent/src/service/singleton.test.ts` (test assertion)
 
-IMPORTANT: Use grep to find the current version first, then replace ALL occurrences. Do NOT leave any behind. Verify with a second grep after replacing.
+IMPORTANT: Use `rg` to find all old versions first, then replace ALL relevant
+occurrences. Do NOT publish while any previous Quicksave release version
+remains in tracked source/config files. Verify with a second search after
+replacing. For example, when releasing `0.8.14` after a bad `0.8.13`, both
+`0.8.12` and `0.8.13` must be gone:
+
+```bash
+rg -n --hidden --glob '!node_modules/**' --glob '!.git/**' --glob '!dist/**' '0\.8\.(12|13)'
+```
+
+Expected: no output. If any old version appears in runtime code, tests,
+package manifests, docs for the current release, or release metadata, stop and
+fix it before committing/tagging.
 
 ## Step 2: Run tests
 
 ```bash
-cd apps/agent && npx vitest run
+pnpm -r build
+pnpm -r test
 ```
 
 All tests must pass before proceeding.
@@ -77,3 +98,16 @@ Confirm the tag was pushed:
 git log --oneline -1
 git tag -l "v$ARGUMENTS"
 ```
+
+Confirm the publish workflow completed and npm sees the new version:
+
+```bash
+gh run list --workflow publish.yml --limit 5
+npm view @sumicom/quicksave version
+npm view @sumicom/quicksave-shared version
+npm view @sumicom/quicksave-message-bus version
+```
+
+All three `npm view` commands must print `$ARGUMENTS`. Also repeat the old
+version search one last time on the pushed commit before calling the release
+done.
