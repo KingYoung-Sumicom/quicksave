@@ -1,4 +1,13 @@
 {
+  "errorReport.title": "發生未預期錯誤",
+  "errorReport.description": "App 遇到未預期的 JavaScript 錯誤。請複製這份報告並回報給支援人員。",
+  "errorReport.messageLabel": "錯誤",
+  "errorReport.textAreaLabel": "JavaScript 錯誤報告",
+  "errorReport.copy": "複製報告",
+  "errorReport.copy.copied": "已複製!",
+  "errorReport.copy.failed": "複製失敗",
+  "errorReport.close": "關閉",
+
   "settings.title": "設定",
   "settings.git.title": "Git",
   "settings.git.commitAttribution.label": "Commit 署名",

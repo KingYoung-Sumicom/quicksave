@@ -780,6 +780,31 @@ export interface CodexListModelsResponsePayload {
   loggedIn?: boolean;
 }
 
+export type CodexQuotaWindowId = 'five_hour' | 'seven_day' | 'unknown';
+
+export interface CodexQuotaWindow {
+  id: CodexQuotaWindowId;
+  label: string;
+  /** Server-reported used quota percentage for this reset window. */
+  usedPercent: number;
+  /** Reset time as unix milliseconds. Undefined/null means the CLI did not expose it. */
+  resetAt?: number | null;
+  /** Length of this quota cycle in minutes, e.g. 300 for 5h or 10080 for 7d. */
+  windowDurationMins?: number | null;
+}
+
+export interface CodexQuotaSnapshot {
+  source: 'app-server';
+  /** Unix ms when the agent last attempted a quota read. */
+  fetchedAt: number;
+  /** Agent-side cache TTL used to decide when a subscriber gets a refresh. */
+  ttlMs: number;
+  /** True when this snapshot is older than the agent-side TTL. */
+  stale: boolean;
+  windows: CodexQuotaWindow[];
+  error?: string;
+}
+
 /** Device-code OAuth state mirrored from the spawned `codex login --device-auth`. */
 export interface CodexLoginState {
   /** True once auth credentials appear (either ChatGPT OAuth or OPENAI_API_KEY). */
@@ -1547,9 +1572,10 @@ export interface ClaudeSessionSummary {
   lastTurnInputTokens?: number;
   lastTurnCacheCreationTokens?: number;
   lastTurnCacheReadTokens?: number;
-  /** Full context-window breakdown from the most recent `turn_ended` — fetched
-   * via the CLI's `get_context_usage` control_request. Only populated for
-   * claude-code sessions. */
+  /** Full context-window breakdown from the most recent `turn_ended`. Claude
+   *  populates this via the CLI's `get_context_usage` control_request; Codex
+   *  can populate a synthetic breakdown from app-server token usage and
+   *  `modelContextWindow`. */
   lastTurnContextUsage?: ContextUsageBreakdown;
   /** See `SessionRegistryEntry.lastReadAt` — the agent broadcasts it on the
    * summary so the PWA can derive unread state directly from the wire snapshot
@@ -1561,9 +1587,10 @@ export interface ClaudeSessionSummary {
   terminalId?: string;
 }
 
-/** Category breakdown of current context window occupancy, as returned by the
- * Claude Code CLI's `get_context_usage` control_request. Fields mirror the
- * CLI's own schema; see `apps/agent/src/service/run.ts` for the ingestion site. */
+/** Category breakdown of current context window occupancy. Claude fields
+ *  mirror the CLI's `get_context_usage` schema; Codex may use a synthetic
+ *  breakdown derived from app-server token usage. See
+ *  `apps/agent/src/service/run.ts` for the ingestion site. */
 export interface ContextUsageBreakdown {
   categories: Array<{
     name: string;

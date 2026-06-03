@@ -12,14 +12,17 @@ function notification(
   totalIn: number,
   totalOut: number,
   totalCached = 0,
+  lastCached = 0,
+  modelContextWindow: number | null = null,
   threadId = 'thr_1',
 ): ThreadTokenUsageUpdatedNotification {
   return {
     threadId,
     turnId,
     tokenUsage: makeUsage(
-      makeBreakdown(lastIn, lastOut),
+      makeBreakdown(lastIn, lastOut, lastCached),
       makeBreakdown(totalIn, totalOut, totalCached),
+      modelContextWindow,
     ),
   };
 }
@@ -27,11 +30,13 @@ function notification(
 describe('TokenAccounting.observe + toCardStreamEndUsage', () => {
   it('passes per-turn `last` through as input/output and exposes cumulative `total`', () => {
     const t = new TokenAccounting();
-    t.observe(notification('turn_1', 100, 50, 1000, 500, 200));
+    t.observe(notification('turn_1', 100, 50, 1000, 500, 200, 25, 1_000_000));
     const usage = TokenAccounting.toCardStreamEndUsage(t['byTurn'].get('turn_1'));
     expect(usage).toEqual({
       input: 100,
       output: 50,
+      cacheRead: 25,
+      modelContextWindow: 1_000_000,
       cumulativeInput: 1000,
       cumulativeOutput: 500,
       cumulativeCachedInput: 200,

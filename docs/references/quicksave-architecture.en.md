@@ -80,6 +80,7 @@ apps/agent/src/
 │   │   ├── version.ts          #   Pinned `codex` minimum-version check
 │   │   └── schema/generated/   #   Vendored TS bindings from `codex app-server generate-ts`
 │   ├── codexLogin.ts           # `codex login --device-auth` orchestration
+│   ├── codexQuota.ts           # Agent-wide Codex quota cache via account/rateLimits/read
 │   ├── cardBuilder.ts          # StreamCardBuilder: stream-json events → CardEvent
 │   ├── sessionStore.ts         # Per-session JSONL message history (cold-resume reads)
 │   ├── sessionRegistry.ts      # SessionRegistry: active+archived metadata (see below)
@@ -120,6 +121,7 @@ acquireLock()
   → bus.onSubscribe('/sessions/active'|'/preferences'|'/sessions/history'|
                     '/repos/commit-summary'|'/sessions/config'|
                     '/sessions/:sessionId/cards'|'/sessions/:sessionId/attention'|
+                    '/codex/quota'|
                     '/terminals'|'/terminals/:terminalId/output', ...)
   → claudeService.on('card-event' | 'card-stream-end' | …) → bus.publish(...)
   → wireLegacyBusVerbs(bus, messageHandler)          # Bridge LEGACY_BUS_VERBS → handleMessage
@@ -156,7 +158,7 @@ The architecture uses a layered design: `SessionManager` provides unified coordi
      sequence from that persisted history before a new turn starts.
    - Permission flow (auto-approve table, runtime allow patterns, PWA forwarding via `handlePermissionRequest` callback)
    - Preferences and per-session config
-   - Event emission (`card-event`, `card-stream-end`, `user-input-request`, `user-input-resolved`, `session-updated`, `preferences-updated`, `session-config-updated`)
+   - Event emission (`card-event`, `card-stream-end`, `user-input-request`, `user-input-resolved`, `session-updated`, `preferences-updated`, `session-config-updated`, `codex-turn-settled`)
    - Session registry integration; on-disk bypass-flag sentinel for CLI auto-approve hook
    - Cold-resume queueing via `coldResumeInFlight` so prompts arriving during a respawn don't get lost
 
@@ -307,6 +309,9 @@ interface ProviderCallbacks {
   /** Fired on SDK cache hit/write (`cache_creation_input_tokens` > 0 or
    *  `cache_read_input_tokens` > 0). Resets the PWA's cache TTL countdown. */
   onCacheTouch?(sessionId: string): void;
+  /** Fired after a provider turn settles. Codex uses this to refresh the
+   *  agent-wide quota cache after each completed prompt. */
+  onTurnSettled?(sessionId: string): void;
   onModelDetected(model: string): void;
   /** Fired when the underlying provider process has fully exited. */
   onSessionExited?(sessionId: string, providerSession: ProviderSession): void;
@@ -347,6 +352,16 @@ There is no `cancelSession` / `closeSession` on the provider interface — those
 | `session-updated` | `SessionUpdatePayload` | On session state change (active / streaming / pending) |
 | `preferences-updated` | `ClaudePreferences` | After `setPreferences` writes to disk |
 | `session-config-updated` | `SessionConfigUpdatedPayload` | After `setSessionConfig` (or sandbox MCP `UpdateSessionStatus`) writes |
+| `codex-turn-settled` | `{ sessionId }` | After a Codex app-server turn settles; `service/run.ts` refreshes `/codex/quota` |
+
+`CardStreamEnd.tokenUsage` carries per-turn `input`/`output`, optional prompt-cache
+fields, and Codex cumulative counters. For Codex app-server sessions,
+`thread/tokenUsage/updated.modelContextWindow` is copied to
+`tokenUsage.modelContextWindow`; `service/run.ts` uses that to synthesize
+`lastTurnContextUsage` when the provider does not implement `getContextUsage()`.
+The PWA context badge therefore treats Codex runtime usage as authoritative for
+the denominator, while `/codex/models` remains only a model/reasoning picker
+source because app-server `model/list` does not expose context-window size.
 
 **CodingAgentProvider interface** (`ai/provider.ts`):
 ```typescript
@@ -516,6 +531,7 @@ All request-response, state subscribe, and server push between PWA and Agent go 
 | `/sessions/config` | `Record<sessionId, Record<key, ConfigValue>>` | `SessionConfigUpdatedPayload` | `claudeService.getAllSessionConfigs()` + `session-config-updated` event |
 | `/sessions/:sessionId/cards` | `CardHistoryResponse` (offset=0, with pendingInput overlay + title) | `SessionCardsUpdate` (`{ kind: 'card', event }` or `{ kind: 'stream-end', result }`) | `claudeService.getCards()` + `card-event` / `card-stream-end` events |
 | `/sessions/:sessionId/attention` | `null` (presence-only) | — | The PWA only subscribes when on the session page and the tab is visible+focused; `subscriberCount === 0` acts as the push gate |
+| `/codex/quota` | `CodexQuotaSnapshot \| null` | `CodexQuotaSnapshot` | Agent-wide `CodexQuotaService`; stale-on-subscribe refreshes after 5 minutes, and `codex-turn-settled` force-refreshes after each Codex prompt |
 | `/terminals` | `TerminalSummary[]` | `TerminalsUpdate` (`{ kind: 'upsert', terminal }` or `{ kind: 'remove', terminalId }`) | `terminalManager.listSummaries()` + `terminals-updated` / `terminal-updated` events |
 | `/terminals/:terminalId/output` | `TerminalOutputSnapshot \| null` (scrollback + seq + size + exit status) | `TerminalOutputChunk` (next chunk of output, monotonic `seq`) | `terminalManager.outputSnapshot()` + PTY `'data'` event |
 
@@ -675,7 +691,7 @@ interface Message {
 | `git:` | Git operations (status/diff/stage/commit/...) |
 | `agent:` | Daemon management (list-repos/add-repo/clone-repo/check-update/update/restart/...) |
 | `ai:` | AI utilities (generate-commit-summary, commit-summary:clear, commit-summary:updated, set-api-key, get-api-key-status) |
-| `codex:` | Codex model list + device-auth login flow (`list-models`, `login-start/-status/-cancel`, `login-updated`) |
+| `codex:` | Codex model list + device-auth login flow (`list-models`, `login-start/-status/-cancel`, `login-updated`); quota is exposed through the `/codex/quota` bus subscription, not a request/response verb |
 | `project:` | Project summaries (`list-summaries`, `list-repos`, `delete`) |
 | `push:` | Web Push subscription handoff (`push:subscription-offer`) |
 | `terminal:` | PTY terminal (create/input/resize/rename/close) |
@@ -713,6 +729,7 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 | — | Agent→PWA push | `bus.subscribe('/preferences')` | Replaces the removed `claude:get-preferences` command and `claude:preferences-updated` push |
 | — | Agent→PWA push | `bus.subscribe('/sessions/config')` | Config dict for all sessions (replaces the removed `session:get-config` command; for one-shot reads use `bus.getSnapshot('/sessions/config')`) |
 | — | Agent→PWA push | `bus.subscribe('/repos/commit-summary')` | AI commit summary state for all repos (replaces the removed `ai:commit-summary:get` command) |
+| — | Agent→PWA push | `bus.subscribe('/codex/quota')` | Agent-wide Codex quota snapshot (`5h` / `7d` windows only). The agent owns the app-server query and refreshes after Codex turns or when a subscriber finds the cache older than 5 minutes |
 | `bus:frame` | Bidirectional | — | MessageBus envelope: payload is `ClientFrame` / `ServerFrame` (sub / unsub / cmd / snap / upd / result / sub-error) |
 | `push:subscription-offer` | PWA→Agent | Goes through the legacy WS path (`connection.send`) | Multi-agent routing requires `sendToAgent`; the bus is single-active-agent |
 | `push:subscription-offer:response` | Agent→PWA | Registration result `{success, error?}` |
@@ -796,6 +813,12 @@ claudeStore.ts
   selectedModel / selectedPermissionMode / selectedReasoningEffort
   sandboxEnabled / contextWindow
   sessionConfigs: Record<sessionId, Record<key, ConfigValue>>
+
+codexQuotaStore.ts
+  byAgent: Record<agentId, CodexQuotaSnapshot | null>
+  // Mirrors `/codex/quota` snapshots per connected machine. The PWA composer
+  // renders only sanitized windows (`5h`, `7d`, usedPercent, resetAt,
+  // windowDurationMins); credentials and account identity never enter this store.
 
 identityStore.ts
   publicKey: string | null             // base64 X25519 group pubkey (same across all PWAs)

@@ -438,6 +438,7 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
         // best-effort
       }
       cb.clearCards();
+      this.callbacks.onTurnSettled?.(this.threadId);
     }
   }
 

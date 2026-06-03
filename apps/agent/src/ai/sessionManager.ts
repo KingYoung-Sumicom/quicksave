@@ -76,6 +76,7 @@ const EMPTY_AGENT_CAPABILITIES = {
  *   'session-updated'        ({ sessionId, isActive, isStreaming, hasPendingInput, permissionMode })
  *   'preferences-updated'    (prefs: ClaudePreferences)
  *   'session-config-updated' ({ sessionId, config: Record<string, ConfigValue> })
+ *   'codex-turn-settled'     ({ sessionId })
  */
 
 /** Tools auto-approved at each permission level (no user prompt). */
@@ -1391,6 +1392,11 @@ export class SessionManager extends EventEmitter {
           ps.streaming = true;
         }
         this.emitSessionUpdate(sessionId);
+      },
+      onTurnSettled: (sessionId: string) => {
+        if (agentId === 'codex') {
+          this.emit('codex-turn-settled', { sessionId });
+        }
       },
       onModelDetected: (model: string) => {
         console.log(`[session-manager] model detected: ${model} (agent=${agentId})`);

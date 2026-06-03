@@ -123,6 +123,7 @@ import {
   CodexLoginStartResponsePayload,
   CodexLoginStatusResponsePayload,
   CodexLoginCancelResponsePayload,
+  CodexQuotaSnapshot,
   ProjectListSummariesResponsePayload,
   ProjectSummary,
   ProjectDeleteRequestPayload,
@@ -172,6 +173,7 @@ import { transcribeAudio, listModels } from '../ai/voiceTranscription.js';
 import { probeAudioSupport } from '../ai/voiceStream.js';
 import { CodexAppServerProvider } from '../ai/codexAppServer/index.js';
 import { CodexLoginManager } from '../ai/codexLogin.js';
+import { CodexQuotaService } from '../ai/codexQuota.js';
 import { getTerminalManager } from '../terminal/terminalManager.js';
 import { getFileBrowser } from '../files/fileBrowser.js';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
@@ -263,6 +265,7 @@ export class MessageHandler {
   private codexModelsCache: { models: CodexModelInfo[]; checkedAt: number } | null = null;
   private codexModelsCheckInFlight: Promise<CodexModelInfo[] | null> | null = null;
   private codexModelsUpdateHandler: ((models: CodexModelInfo[]) => void) | null = null;
+  private codexQuotaService = new CodexQuotaService();
   /** Override for tests; defaults to `~/.codex`. Still consulted by
    *  `getCodexLoginStatus` to read `auth.json`; no longer used for model
    *  discovery (that flows through `model/list` against a short-lived
@@ -467,6 +470,23 @@ export class MessageHandler {
    */
   setCodexModelsUpdateHandler(handler: (models: CodexModelInfo[]) => void): void {
     this.codexModelsUpdateHandler = handler;
+  }
+
+  /** Snapshot accessor for the bus `/codex/quota` subscription. */
+  getCachedCodexQuota(): CodexQuotaSnapshot | null {
+    return this.codexQuotaService.getSnapshot();
+  }
+
+  setCodexQuotaUpdateHandler(handler: (snapshot: CodexQuotaSnapshot) => void): void {
+    this.codexQuotaService.setUpdateHandler(handler);
+  }
+
+  refreshCodexQuota(force = false): Promise<CodexQuotaSnapshot> {
+    return this.codexQuotaService.refresh({ force });
+  }
+
+  refreshCodexQuotaIfStale(): void {
+    this.codexQuotaService.refreshIfStale();
   }
 
   /**

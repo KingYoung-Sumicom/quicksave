@@ -376,7 +376,7 @@ describe('cardAdapter — token accounting via thread/tokenUsage/updated (R1)', 
     await h.send('thread/tokenUsage/updated', {
       threadId: 'thr_test',
       turnId: 'turn_1',
-      tokenUsage: makeUsage(makeBreakdown(40, 20), makeBreakdown(40, 20, 5)),
+      tokenUsage: makeUsage(makeBreakdown(40, 20, 5), makeBreakdown(40, 20, 5), 1_000_000),
     });
     await h.send('turn/completed', {
       threadId: 'thr_test',
@@ -386,6 +386,8 @@ describe('cardAdapter — token accounting via thread/tokenUsage/updated (R1)', 
     expect(h.streamEnd?.tokenUsage).toEqual({
       input: 40,
       output: 20,
+      cacheRead: 5,
+      modelContextWindow: 1_000_000,
       cumulativeInput: 40,
       cumulativeOutput: 20,
       cumulativeCachedInput: 5,

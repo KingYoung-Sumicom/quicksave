@@ -15,6 +15,7 @@ import {
   CODEX_MODELS_FALLBACK,
   getContextWindowOptionsForModel,
   clampContextWindowForModel,
+  getModelContextLimit as getPresetModelContextLimit,
   codexModelsToOptions,
   type AgentType,
 } from './claudePresets';
@@ -714,9 +715,8 @@ class CodexAgentProvider extends BaseAgentProvider {
     ];
   }
 
-  getModelContextLimit(_model?: string, _dynamic?: AgentDynamicData, sessionCtxWindow?: number): number {
-    if (sessionCtxWindow && sessionCtxWindow > 0) return sessionCtxWindow;
-    return 200_000;
+  getModelContextLimit(model?: string, dynamic?: AgentDynamicData, _sessionCtxWindow?: number): number {
+    return getPresetModelContextLimit(model, dynamic?.codexModels);
   }
 }
 

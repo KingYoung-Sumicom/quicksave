@@ -104,6 +104,7 @@ export class WebSocketClient {
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private isManualDisconnect = false;
   private wasConnected = false;
+  private suppressedCloseSocket: WebSocket | null = null;
 
   // Key exchange retry config
   private static readonly MAX_KEY_EXCHANGE_RETRIES = 5;
@@ -169,6 +170,7 @@ export class WebSocketClient {
 
     this.connectPromise = new Promise((resolve, reject) => {
       if (!this.ws) return reject(new Error('WebSocket not initialized'));
+      const currentSocket = this.ws;
 
       this.ws.onopen = () => {
         console.log('Connected to signaling server (key-based)');
@@ -191,8 +193,16 @@ export class WebSocketClient {
         reject(new Error('Failed to connect to signaling server'));
       };
 
-      this.ws.onclose = () => {
-        console.log('WebSocket connection closed');
+      this.ws.onclose = (event) => {
+        console.log('WebSocket connection closed', {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+        });
+        if (this.suppressedCloseSocket === currentSocket) {
+          this.suppressedCloseSocket = null;
+          return;
+        }
         this.handleDisconnection();
       };
     });
@@ -809,6 +819,37 @@ export class WebSocketClient {
     if (this.reconnectTimeout) return; // already trying — let it run
     this.reconnectAttempts = 0;
     this.eventHandlers.onReconnecting(1, this.maxReconnectAttempts);
+    void this.attemptReconnect();
+  }
+
+  /**
+   * iOS PWAs can return from the background with a WebSocket that still looks
+   * OPEN in JavaScript even though the carrier/NAT path is dead. Rebuild the
+   * socket immediately on foreground resume instead of waiting for the browser
+   * or the next relay heartbeat to notice.
+   */
+  refreshAfterResume(): void {
+    if (this.isManualDisconnect) return;
+    if (this.sessions.size === 0) return;
+
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+
+    this.reconnectAttempts = 0;
+    this.eventHandlers.onReconnecting(1, this.maxReconnectAttempts);
+
+    if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
+      const staleSocket = this.ws;
+      this.suppressedCloseSocket = staleSocket;
+      try {
+        staleSocket.close(4000, 'resume refresh');
+      } catch {
+        // Ignore close failures; attemptReconnect replaces this.ws below.
+      }
+    }
+
     void this.attemptReconnect();
   }
 

@@ -29,6 +29,7 @@ import {
   type ClaudePreferences,
   type CodexLoginState,
   type CodexModelInfo,
+  type CodexQuotaSnapshot,
   type CommitSummaryState,
   type ConfigValue,
   type Message,
@@ -41,6 +42,7 @@ import {
   type TerminalsUpdate,
 } from '@sumicom/quicksave-shared';
 import { useCodexLoginStore } from './stores/codexLoginStore';
+import { useCodexQuotaStore } from './stores/codexQuotaStore';
 import { useTerminalStore } from './stores/terminalStore';
 import { registerAgentBusGetter, getBusForAgent } from './lib/busRegistry';
 import { registerWsRetry } from './lib/wsRetryRegistry';
@@ -158,6 +160,12 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
       if (models.length > 0) useConnectionStore.getState().setCodexModels(models);
     },
     onError: (err) => console.warn('[bus] /codex/models error:', err),
+  });
+
+  bus.subscribe<CodexQuotaSnapshot | null, CodexQuotaSnapshot>('/codex/quota', {
+    onSnapshot: (snapshot) => useCodexQuotaStore.getState().set(agentId, snapshot),
+    onUpdate: (snapshot) => useCodexQuotaStore.getState().set(agentId, snapshot),
+    onError: (err) => console.warn('[bus] /codex/quota error:', err),
   });
 
   bus.subscribe<TerminalSummary[], TerminalsUpdate>('/terminals', {
@@ -799,6 +807,45 @@ function AppContent() {
   }, []);
 
   const isConnected = state === 'connected';
+
+  useEffect(() => {
+    let hiddenAt: number | null = null;
+    let lastRefreshAt = 0;
+
+    const markHidden = () => {
+      hiddenAt = Date.now();
+    };
+
+    const refreshIfResumed = () => {
+      if (document.visibilityState === 'hidden') return;
+      if (hiddenAt === null) return;
+
+      const awayMs = Date.now() - hiddenAt;
+      hiddenAt = null;
+      if (awayMs < 2_000) return;
+      if (Date.now() - lastRefreshAt < 3_000) return;
+
+      lastRefreshAt = Date.now();
+      clientRef.current?.refreshAfterResume();
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        markHidden();
+      } else {
+        refreshIfResumed();
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', markHidden);
+    window.addEventListener('pageshow', refreshIfResumed);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', markHidden);
+      window.removeEventListener('pageshow', refreshIfResumed);
+    };
+  }, []);
 
   // Auto-connect to ALL known machines on startup
   const autoConnectAllRef = useRef(false);
@@ -1532,29 +1579,27 @@ function App() {
     if (!splash) return;
 
     const hide = () => {
+      splash.classList.add('fade-out');
       requestAnimationFrame(() => splash.classList.add('fade-out'));
     };
-    const show = () => splash.classList.remove('fade-out');
 
     hide();
 
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        show();
-      } else {
+      if (document.visibilityState !== 'hidden') {
         hide();
       }
     };
     const onPageShow = () => hide();
+    const failSafe = window.setTimeout(hide, 1_000);
 
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('pageshow', onPageShow);
-    window.addEventListener('pagehide', show);
 
     return () => {
+      window.clearTimeout(failSafe);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pageshow', onPageShow);
-      window.removeEventListener('pagehide', show);
     };
   }, []);
 

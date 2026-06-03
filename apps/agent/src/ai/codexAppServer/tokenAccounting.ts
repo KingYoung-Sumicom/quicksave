@@ -129,6 +129,8 @@ export class TokenAccounting {
     return {
       input: usage.last.inputTokens,
       output: usage.last.outputTokens,
+      ...(usage.last.cachedInputTokens > 0 ? { cacheRead: usage.last.cachedInputTokens } : {}),
+      ...(usage.modelContextWindow && usage.modelContextWindow > 0 ? { modelContextWindow: usage.modelContextWindow } : {}),
       cumulativeInput: usage.total.inputTokens,
       cumulativeOutput: usage.total.outputTokens,
       cumulativeCachedInput: usage.total.cachedInputTokens,

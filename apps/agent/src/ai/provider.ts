@@ -132,6 +132,9 @@ export interface ProviderCallbacks {
   onCacheTouch?(sessionId: string): void;
   /** Fired when a provider's in-memory user-message queue changes. */
   onQueueStateChange?(sessionId: string): void;
+  /** Fired when one provider turn has fully settled, after stream-end emission
+   *  and local card persistence. */
+  onTurnSettled?(sessionId: string): void;
   onModelDetected(model: string): void;
   /** Fired when the underlying provider process has fully exited. SessionManager
    * uses this to remove the session from its in-memory map and emit

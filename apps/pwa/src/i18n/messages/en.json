@@ -1,4 +1,13 @@
 {
+  "errorReport.title": "Something went wrong",
+  "errorReport.description": "The app hit an unexpected JavaScript error. Copy this report and send it to support.",
+  "errorReport.messageLabel": "Error",
+  "errorReport.textAreaLabel": "JavaScript error report",
+  "errorReport.copy": "Copy report",
+  "errorReport.copy.copied": "Copied!",
+  "errorReport.copy.failed": "Copy failed",
+  "errorReport.close": "Close",
+
   "settings.title": "Settings",
   "settings.git.title": "Git",
   "settings.git.commitAttribution.label": "Commit attribution",

@@ -86,14 +86,37 @@ export const CODEX_MODELS_FALLBACK = [
   { value: 'gpt-5.2', label: 'GPT-5.2' },
 ];
 
+const CODEX_MODEL_LABEL_OVERRIDES: Record<string, string> = {
+  'gpt-5.5': 'GPT-5.5',
+  'gpt-5.4': 'GPT-5.4',
+  'gpt-5.4-mini': 'GPT-5.4-Mini',
+  'gpt-5.3-codex': 'GPT-5.3-Codex',
+  'gpt-5.3-codex-spark': 'GPT-5.3-Codex-Spark',
+  'gpt-5.2': 'GPT-5.2',
+};
+
+export function formatCodexModelLabel(id: string, name?: string): string {
+  const normalizedId = id.toLowerCase();
+  const override = CODEX_MODEL_LABEL_OVERRIDES[normalizedId];
+  const trimmedName = name?.trim();
+
+  if (override && (!trimmedName || trimmedName.toLowerCase() === normalizedId)) {
+    return override;
+  }
+  return trimmedName || override || id;
+}
+
 /** @deprecated Use CLAUDE_MODELS instead */
 export const MODELS = CLAUDE_MODELS;
 
 /** Convert dynamic CodexModelInfo[] to button group options */
 export function codexModelsToOptions(models: CodexModelInfo[]): { value: string; label: string }[] {
-  return models.map((m) => ({ value: m.id, label: m.name }));
+  return models.map((m) => ({ value: m.id, label: formatCodexModelLabel(m.id, m.name) }));
 }
 
+const CODEX_CONTEXT_WINDOW_FALLBACKS: Record<string, number> = {
+  'gpt-5.5': 1_000_000,
+};
 
 export const PERMISSION_MODES = [
   { value: 'default', label: 'Default' },
@@ -175,7 +198,9 @@ export function normalizeAgentId(agentId?: string): AgentId {
  *   2. Legacy `[1m]` suffix on the model string (kept for backwards-compat
  *      until older session configs are migrated).
  *   3. Codex per-model context advertised by the daemon.
- *   4. 200k fallback so the bar still renders for unknown ids.
+ *   4. Narrow Codex fallback for models whose app-server runtime usage
+ *      reports 1M after the first turn but `model/list` omits the field.
+ *   5. 200k fallback so the bar still renders for unknown ids.
  */
 export function getModelContextLimit(
   model?: string,
@@ -187,5 +212,7 @@ export function getModelContextLimit(
   if (/\[1m\]$/i.test(model)) return 1_000_000;
   const codexMatch = dynamicCodexModels?.find((m) => m.id === model);
   if (codexMatch?.contextWindow) return codexMatch.contextWindow;
+  const normalizedModel = model.toLowerCase();
+  if (CODEX_CONTEXT_WINDOW_FALLBACKS[normalizedModel]) return CODEX_CONTEXT_WINDOW_FALLBACKS[normalizedModel];
   return 200_000;
 }

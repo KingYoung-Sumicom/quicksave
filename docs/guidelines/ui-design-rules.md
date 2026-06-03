@@ -26,6 +26,19 @@ The viewport meta tag in `apps/pwa/index.html` must include `interactive-widget=
 
 ---
 
+### Splash screen must not reappear on app backgrounding
+
+The static `#app-splash` in `apps/pwa/index.html` is a cold-start mask only.
+Once React has mounted and hidden it, do not remove its `fade-out` class on
+`pagehide` or `visibilitychange: hidden`.
+
+**Why:** On iOS PWAs, returning from another app can leave a stale WebSocket
+or delayed foreground event while the app is already interactive. If the splash
+is shown again during backgrounding, a slow reconnect path can look like the
+entire app is stuck on the launch screen.
+
+---
+
 ### No vertical scrolling inside chat view elements
 
 Inside the chat view (`apps/pwa/src/components/ClaudePanel.tsx`), only the top-level messages container (`chatContainerRef`, the `flex-1 overflow-y-auto … overscroll-contain` wrapper) and the input-row textarea/slash-command popover may have vertical scroll. No element inside the messages list itself (subagent blocks, tool results, plan views, etc.) may have vertical scroll.

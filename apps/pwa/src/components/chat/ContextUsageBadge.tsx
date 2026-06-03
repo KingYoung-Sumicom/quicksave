@@ -56,21 +56,21 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
   const codexModels = useConnectionStore((s) => s.codexModels);
   const agentId = normalizeAgentId((config.agent as string | undefined) ?? 'claude-code');
   const sessionContextWindow = config.contextWindow as number | undefined;
-  const fallbackLimit = getAgentProvider(agentId).getModelContextLimit(modelFromConfig, { codexModels }, sessionContextWindow);
+  const configuredContextWindow = agentId === 'claude-code' ? sessionContextWindow : undefined;
+  const fallbackLimit = getAgentProvider(agentId).getModelContextLimit(modelFromConfig, { codexModels }, configuredContextWindow);
 
   // Fallback (raw turn tokens) — used when breakdown not yet available.
   const input = session?.lastTurnInputTokens ?? 0;
   const cacheCreation = session?.lastTurnCacheCreationTokens ?? 0;
   const cacheRead = session?.lastTurnCacheReadTokens ?? 0;
-  const rawUsed = input + cacheCreation + cacheRead;
+  const rawUsed = agentId === 'codex' ? input : input + cacheCreation + cacheRead;
 
   const used = breakdown?.totalTokens ?? rawUsed;
-  // Prefer the user's selected contextWindow over breakdown.maxTokens.
-  // Why: changing the chip only triggers a cold-resume on the NEXT prompt
-  // (sessionManager.resumeSession), so until then breakdown.maxTokens still
-  // reports the previous window the running CLI was spawned with. Showing
-  // the user's pick keeps the chip and badge in sync with their intent.
-  const limit = sessionContextWindow ?? breakdown?.maxTokens ?? fallbackLimit;
+  // Claude has an explicit per-session context-window picker. Codex does not:
+  // its denominator comes from app-server `modelContextWindow` when available,
+  // then the Codex model fallback. Reusing Claude's 200k default for Codex
+  // would under-report GPT-5.5's 1M window.
+  const limit = configuredContextWindow ?? breakdown?.maxTokens ?? fallbackLimit;
 
   const turnCount = session?.turnCount ?? 0;
   const totalInput = session?.totalInputTokens ?? 0;

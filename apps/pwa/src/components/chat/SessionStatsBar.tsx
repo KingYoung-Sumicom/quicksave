@@ -5,7 +5,11 @@ import { useIntl } from 'react-intl';
 import { clsx } from 'clsx';
 import { DEFAULT_KV_CACHE_LIFETIME_MS } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../../stores/claudeStore';
+import { useSessionConfig } from '../../hooks/useSessionConfig';
+import { normalizeAgentId } from '../../lib/claudePresets';
 import { ContextUsageBadge, formatTokens } from './ContextUsageBadge';
+
+const OPENAI_PROMPT_CACHE_LIFETIME_MS = 24 * DEFAULT_KV_CACHE_LIFETIME_MS;
 
 interface SessionStatsBarProps {
   sessionId: string;
@@ -17,34 +21,40 @@ interface SessionStatsBarProps {
   onClear?: () => void;
 }
 
-function formatCountdown(remainingMs: number): string {
+export function formatCountdown(remainingMs: number): string {
   const totalSec = Math.max(0, Math.floor(remainingMs / 1000));
+  const dd = Math.floor(totalSec / 86_400);
+  const hh = Math.floor((totalSec % 86_400) / 3_600);
   const mm = Math.floor(totalSec / 60);
   const ss = totalSec % 60;
+  if (dd > 0) return `${dd}d ${String(hh).padStart(2, '0')}h`;
+  if (hh > 0) return `${hh}h ${String(Math.floor((totalSec % 3_600) / 60)).padStart(2, '0')}m`;
   return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
 }
 
 export function SessionStatsBar({
   sessionId,
-  cacheLifetimeMs = DEFAULT_KV_CACHE_LIFETIME_MS,
+  cacheLifetimeMs,
   onCompact,
   onClear,
 }: SessionStatsBarProps) {
   const intl = useIntl();
   const session = useClaudeStore((s) => s.sessions[sessionId]);
+  const config = useSessionConfig(sessionId);
+  const agentId = normalizeAgentId((config.agent as string | undefined) ?? 'claude-code');
+  const effectiveCacheLifetimeMs = cacheLifetimeMs ?? (
+    agentId === 'codex' ? OPENAI_PROMPT_CACHE_LIFETIME_MS : DEFAULT_KV_CACHE_LIFETIME_MS
+  );
   const lastTurnTotal = (session?.lastTurnInputTokens ?? 0)
     + (session?.lastTurnCacheCreationTokens ?? 0)
     + (session?.lastTurnCacheReadTokens ?? 0);
   const hasContextData = lastTurnTotal > 0;
   const contextTokens = session?.lastTurnContextUsage?.totalTokens ?? lastTurnTotal;
 
-  // Anthropic refreshes the cache TTL on every cache hit/write (per the
-  // prompt-caching docs), so the most reliable anchor is the timestamp of the
-  // last SDK message whose `usage` reported cache activity — surfaced as
-  // `lastCacheTouchAt`. That timer ticks for inner API calls inside long
-  // autonomous turns too. Fall back to turn-end / prompt-sent for sessions
-  // that haven't hit the cache yet (or whose daemon was restarted, since the
-  // touch timestamp is in-memory only).
+  // The best anchor is the timestamp of the latest provider message whose
+  // usage reported cache activity. Claude emits this mid-turn via
+  // `lastCacheTouchAt`; Codex currently reports cached tokens at turn end, so
+  // the turn-end fallback anchors its prompt-cache countdown.
   const cacheAnchor = Math.max(
     session?.lastCacheTouchAt ?? 0,
     session?.lastTurnEndedAt ?? 0,
@@ -61,7 +71,7 @@ export function SessionStatsBar({
   const hasCountdown = typeof cacheAnchor === 'number';
   if (!hasContextData && !hasCountdown) return null;
 
-  const remainingMs = hasCountdown ? Math.max(0, cacheAnchor! + cacheLifetimeMs - now) : 0;
+  const remainingMs = hasCountdown ? Math.max(0, cacheAnchor! + effectiveCacheLifetimeMs - now) : 0;
   const expired = hasCountdown && remainingMs <= 0;
 
   return (

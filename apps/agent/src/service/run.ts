@@ -65,6 +65,8 @@ import {
   type SessionUpdatePayload,
   type CodexLoginState,
   type CodexModelInfo,
+  type CodexQuotaSnapshot,
+  type ContextUsageBreakdown,
   type TerminalSummary,
   type TerminalsUpdate,
   type TerminalOutputSnapshot,
@@ -78,6 +80,40 @@ import { getTerminalManager } from '../terminal/terminalManager.js';
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const REGISTRY_WATCH_INTERVAL_MS = 1_000;
 const PACKAGE_VERSION = '0.8.11';
+
+function buildCodexContextUsage({
+  model,
+  modelContextWindow,
+  cumulativeInputTokens,
+  cumulativeOutputTokens,
+  cumulativeCachedInputTokens,
+}: {
+  model?: string;
+  modelContextWindow?: number;
+  cumulativeInputTokens?: number;
+  cumulativeOutputTokens?: number;
+  cumulativeCachedInputTokens?: number;
+}): ContextUsageBreakdown | null {
+  if (!modelContextWindow || modelContextWindow <= 0) return null;
+  const inputTokens = Math.max(0, cumulativeInputTokens ?? 0);
+  const outputTokens = Math.max(0, cumulativeOutputTokens ?? 0);
+  const cachedInputTokens = Math.max(0, Math.min(cumulativeCachedInputTokens ?? 0, inputTokens));
+  const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens);
+  const totalTokens = inputTokens + outputTokens;
+  return {
+    categories: [
+      { name: 'Codex input', tokens: uncachedInputTokens, color: 'claude' },
+      { name: 'Codex cached input', tokens: cachedInputTokens, color: 'warning' },
+      { name: 'Codex output', tokens: outputTokens, color: 'purple_FOR_SUBAGENTS_ONLY' },
+    ],
+    totalTokens,
+    maxTokens: modelContextWindow,
+    rawMaxTokens: modelContextWindow,
+    autocompactSource: 'codex-token-usage',
+    percentage: modelContextWindow > 0 ? (totalTokens / modelContextWindow) * 100 : 0,
+    model,
+  };
+}
 
 function startSessionRegistryWatcher(
   bus: MessageBusServer,
@@ -379,13 +415,22 @@ export async function runDaemon(): Promise<void> {
     const cumulativeInputTokens = result.tokenUsage?.cumulativeInput;
     const cumulativeOutputTokens = result.tokenUsage?.cumulativeOutput;
     const cumulativeCachedInputTokens = result.tokenUsage?.cumulativeCachedInput;
+    const modelContextWindow = result.tokenUsage?.modelContextWindow;
     const costUsd = result.totalCostUsd ?? 0;
 
     // Fetch the CLI's context-window breakdown before recording the turn.
     // Only the Claude Code CLI responds; other providers return null quickly.
     // Fire-and-record to avoid blocking the peer notification above.
     (async () => {
-      const contextUsage = await claudeService.getSessionContextUsage(result.sessionId).catch(() => null);
+      const providerContextUsage = await claudeService.getSessionContextUsage(result.sessionId).catch(() => null);
+      const contextUsage = providerContextUsage
+        ?? buildCodexContextUsage({
+          model: claudeService.getSessionConfig(result.sessionId).model as string | undefined,
+          modelContextWindow,
+          cumulativeInputTokens,
+          cumulativeOutputTokens,
+          cumulativeCachedInputTokens,
+        });
 
       getEventStore().record({
         type: 'turn_ended',
@@ -521,6 +566,24 @@ export async function runDaemon(): Promise<void> {
     { snapshot: () => messageHandler.getCachedCodexModels() },
   );
   messageHandler.primeCodexModelsCache();
+
+  // Agent-wide Codex quota snapshot. The daemon owns the cache because the
+  // query goes through local Codex app-server credentials; the PWA only renders
+  // sanitized reset windows. Subscribers get the current cache immediately,
+  // then the agent refreshes in the background if the cache is older than TTL.
+  messageHandler.setCodexQuotaUpdateHandler((snapshot) => {
+    bus.publish<CodexQuotaSnapshot>('/codex/quota', snapshot);
+  });
+  bus.onSubscribe<'/codex/quota', CodexQuotaSnapshot | null, CodexQuotaSnapshot>(
+    '/codex/quota',
+    {
+      snapshot: () => messageHandler.getCachedCodexQuota(),
+      onSubscribed: () => messageHandler.refreshCodexQuotaIfStale(),
+    },
+  );
+  claudeService.on('codex-turn-settled', () => {
+    void messageHandler.refreshCodexQuota(true);
+  });
 
   // ── MessageBus command adapter ────────────────────────────────────────────
   // Every request-response verb from the legacy MessageHandler is exposed as a

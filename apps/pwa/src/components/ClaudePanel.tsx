@@ -18,6 +18,7 @@ import { SessionList } from './chat/SessionList';
 import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
 import { SessionStatusBar } from './chat/SessionStatusBar';
 import { SessionStatsBar } from './chat/SessionStatsBar';
+import { CodexQuotaBadges } from './chat/CodexQuotaBadges';
 import { StreamingReconnectIndicator } from './chat/StreamingReconnectIndicator';
 import { ToolCallGroupPlaceholder } from './chat/ToolCallGroupPlaceholder';
 import { ToolCallVisibilityChip } from './chat/ToolCallVisibilityChip';
@@ -932,6 +933,7 @@ export function ClaudePanel({
                 onSetSessionConfig={onSetSessionConfig}
               >
                 <ToolCallVisibilityChip onChange={handleToggleVisibility} />
+                <CodexQuotaBadges sessionId={activeSessionId} agentId={agentId} />
                 <SessionStatsBar
                   sessionId={activeSessionId}
                   onCompact={() => onResumeSession(activeSessionId, '/compact')}

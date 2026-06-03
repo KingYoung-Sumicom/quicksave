@@ -4,6 +4,7 @@ import { describe, it, expect } from 'vitest';
 import {
   normalizeAgentId,
   codexModelsToOptions,
+  formatCodexModelLabel,
   CLAUDE_MODELS,
   modelSupports1m,
   getContextWindowOptionsForModel,
@@ -44,6 +45,21 @@ describe('claudePresets', () => {
         { value: 'o4-mini', label: 'o4-mini' },
         { value: 'o3', label: 'o3' },
       ]);
+    });
+
+    it('formats known Codex ids when app-server returns the raw id as name', () => {
+      const result = codexModelsToOptions([
+        { id: 'gpt-5.3-codex', name: 'gpt-5.3-codex' },
+        { id: 'gpt-5.2', name: 'gpt-5.2' },
+      ]);
+      expect(result).toEqual([
+        { value: 'gpt-5.3-codex', label: 'GPT-5.3-Codex' },
+        { value: 'gpt-5.2', label: 'GPT-5.2' },
+      ]);
+    });
+
+    it('preserves custom app-server display names for unknown models', () => {
+      expect(formatCodexModelLabel('custom-model', 'Custom Model')).toBe('Custom Model');
     });
 
     it('handles empty array', () => {
@@ -149,6 +165,10 @@ describe('claudePresets', () => {
     it('reads codex contextWindow from the dynamic list', () => {
       const dynamic = [{ id: 'gpt-5', name: 'GPT-5', contextWindow: 400_000 }];
       expect(getModelContextLimit('gpt-5', dynamic)).toBe(400_000);
+    });
+
+    it('falls back to 1M for GPT-5.5 before runtime usage arrives', () => {
+      expect(getModelContextLimit('gpt-5.5')).toBe(1_000_000);
     });
   });
 });

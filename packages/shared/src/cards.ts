@@ -287,10 +287,13 @@ export interface CardStreamEnd {
   tokenUsage?: {
     input: number;
     output: number;
-    /** Tokens written into the prompt cache this turn (Claude only). */
+    /** Tokens written into the prompt cache this turn. */
     cacheCreation?: number;
-    /** Tokens read from the prompt cache this turn (Claude only). */
+    /** Tokens read from the prompt cache this turn. */
     cacheRead?: number;
+    /** Context window reported by the provider for the active model. Codex
+     *  surfaces this via `thread/tokenUsage/updated.modelContextWindow`. */
+    modelContextWindow?: number;
     /** Codex reports usage as session-cumulative; the provider converts to
      *  per-turn deltas above and surfaces the raw cumulative here so the
      *  agent can persist it and seed `prev` after a daemon restart. */
