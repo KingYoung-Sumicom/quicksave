@@ -11,6 +11,9 @@ import type { RateLimitSnapshot } from './codexAppServer/schema/generated/v2/Rat
 import type { RateLimitWindow } from './codexAppServer/schema/generated/v2/RateLimitWindow.js';
 
 export const CODEX_QUOTA_TTL_MS = 5 * 60 * 1000;
+export const CODEX_QUOTA_DEBOUNCE_MS = 3 * 60 * 1000;
+const TEMPORARY_UNAVAILABLE_ERROR = 'Codex quota is temporarily unavailable from ChatGPT. Quicksave will retry automatically.';
+const AUTH_UNAVAILABLE_ERROR = 'Codex quota is unavailable because Codex is not signed in. Sign in again if this persists.';
 
 type QuotaFetcher = (ttlMs: number) => Promise<CodexQuotaSnapshot>;
 
@@ -18,10 +21,12 @@ export class CodexQuotaService {
   private cache: CodexQuotaSnapshot | null = null;
   private refreshInFlight: Promise<CodexQuotaSnapshot> | null = null;
   private updateHandler: ((snapshot: CodexQuotaSnapshot) => void) | null = null;
+  private lastRefreshAttemptAt: number | null = null;
 
   constructor(
     private readonly ttlMs = CODEX_QUOTA_TTL_MS,
     private readonly fetcher: QuotaFetcher = fetchCodexQuotaFromAppServer,
+    private readonly debounceMs = CODEX_QUOTA_DEBOUNCE_MS,
   ) {}
 
   setUpdateHandler(handler: (snapshot: CodexQuotaSnapshot) => void): void {
@@ -36,15 +41,19 @@ export class CodexQuotaService {
     const cached = this.getSnapshot();
     if (!opts.force && cached && !cached.stale) return Promise.resolve(cached);
     if (this.refreshInFlight) return this.refreshInFlight;
+    if (cached && this.isDebounced()) return Promise.resolve(cached);
 
     const refresh = (async () => {
+      this.lastRefreshAttemptAt = Date.now();
       try {
         const snapshot = await this.fetcher(this.ttlMs);
         this.cache = snapshot;
         this.updateHandler?.(snapshot);
         return snapshot;
       } catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
+        const rawError = err instanceof Error ? err.message : String(err);
+        const error = summarizeCodexQuotaError(err);
+        console.warn('[codex-quota] refresh failed:', rawError);
         const previous = this.getSnapshot();
         const snapshot: CodexQuotaSnapshot = previous
           ? { ...previous, stale: true, error }
@@ -52,7 +61,7 @@ export class CodexQuotaService {
               source: 'app-server',
               fetchedAt: Date.now(),
               ttlMs: this.ttlMs,
-              stale: false,
+              stale: true,
               windows: [],
               error,
             };
@@ -75,6 +84,11 @@ export class CodexQuotaService {
         /* refresh() normalizes errors into snapshots */
       });
     }
+  }
+
+  private isDebounced(now = Date.now()): boolean {
+    return this.lastRefreshAttemptAt !== null
+      && now - this.lastRefreshAttemptAt < this.debounceMs;
   }
 }
 
@@ -120,6 +134,38 @@ export function selectCodexRateLimits(response: GetAccountRateLimitsResponse): R
   return byId?.codex
     ?? Object.values(byId ?? {}).find((value): value is RateLimitSnapshot => Boolean(value))
     ?? response.rateLimits;
+}
+
+export function summarizeCodexQuotaError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const normalized = raw.replace(/\s+/g, ' ').trim();
+  const lower = normalized.toLowerCase();
+
+  if (
+    lower.includes('503')
+    || lower.includes('service unavailable')
+    || lower.includes('upstream connect error')
+    || lower.includes('remote connection failure')
+    || lower.includes('connection refused')
+    || lower.includes('econnreset')
+    || lower.includes('timeout')
+  ) {
+    return TEMPORARY_UNAVAILABLE_ERROR;
+  }
+
+  if (
+    lower.includes('401')
+    || lower.includes('403')
+    || lower.includes('unauthorized')
+    || lower.includes('forbidden')
+    || lower.includes('not logged in')
+  ) {
+    return AUTH_UNAVAILABLE_ERROR;
+  }
+
+  if (!normalized) return 'Codex quota is unavailable. Quicksave will retry automatically.';
+  const summary = normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
+  return `Codex quota is unavailable: ${summary}`;
 }
 
 function projectRateLimitWindow(
@@ -171,6 +217,6 @@ function normalizeEpochMs(value: number | null): number | null {
 function withStaleFlag(snapshot: CodexQuotaSnapshot, ttlMs: number): CodexQuotaSnapshot {
   return {
     ...snapshot,
-    stale: Date.now() - snapshot.fetchedAt >= ttlMs,
+    stale: Boolean(snapshot.error) || snapshot.stale || Date.now() - snapshot.fetchedAt >= ttlMs,
   };
 }

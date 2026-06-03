@@ -1,12 +1,25 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CodexQuotaSnapshot } from '@sumicom/quicksave-shared';
 import {
+  CODEX_QUOTA_DEBOUNCE_MS,
   CODEX_QUOTA_TTL_MS,
   CodexQuotaService,
   projectCodexQuotaResponse,
+  summarizeCodexQuotaError,
 } from './codexQuota.js';
+
+let warnSpy: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+  warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  warnSpy.mockRestore();
+  vi.useRealTimers();
+});
 
 describe('projectCodexQuotaResponse', () => {
   it('maps Codex primary and secondary windows into 5h and 7d quota windows', () => {
@@ -79,7 +92,10 @@ describe('projectCodexQuotaResponse', () => {
 });
 
 describe('CodexQuotaService', () => {
-  it('reuses a fresh cached snapshot and refreshes when forced', async () => {
+  it('debounces forced refreshes for three minutes', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-03T00:00:00.000Z'));
+
     let calls = 0;
     const service = new CodexQuotaService(60_000, async () => {
       calls += 1;
@@ -91,8 +107,14 @@ describe('CodexQuotaService', () => {
     });
     await service.refresh();
     await expect(service.refresh({ force: true })).resolves.toMatchObject({
+      windows: [expect.objectContaining({ usedPercent: 10 })],
+    });
+
+    vi.setSystemTime(Date.now() + CODEX_QUOTA_DEBOUNCE_MS);
+    await expect(service.refresh({ force: true })).resolves.toMatchObject({
       windows: [expect.objectContaining({ usedPercent: 20 })],
     });
+
     expect(calls).toBe(2);
   });
 
@@ -101,15 +123,65 @@ describe('CodexQuotaService', () => {
     const service = new CodexQuotaService(60_000, async () => {
       if (fail) throw new Error('quota unavailable');
       return makeSnapshot(1);
-    });
+    }, 0);
 
     await service.refresh();
     fail = true;
 
     const snapshot = await service.refresh({ force: true });
-    expect(snapshot.error).toBe('quota unavailable');
+    expect(snapshot.error).toBe('Codex quota is unavailable: quota unavailable');
     expect(snapshot.stale).toBe(true);
     expect(snapshot.windows).toEqual(makeSnapshot(1).windows);
+    expect(service.getSnapshot()?.stale).toBe(true);
+  });
+
+  it('marks an initial failed read stale and uses a concise error', async () => {
+    const service = new CodexQuotaService(60_000, async () => {
+      throw new Error('account/rateLimits/read: failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 503 Service Unavailable; body=upstream connect error or disconnect/reset before headers');
+    });
+
+    const snapshot = await service.refresh();
+    expect(snapshot).toMatchObject({
+      stale: true,
+      windows: [],
+      error: 'Codex quota is temporarily unavailable from ChatGPT. Quicksave will retry automatically.',
+    });
+    expect(snapshot.error).not.toContain('backend-api/wham/usage');
+    expect(service.getSnapshot()?.stale).toBe(true);
+  });
+
+  it('debounces stale retry attempts after a failed read', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-03T00:00:00.000Z'));
+
+    let calls = 0;
+    const service = new CodexQuotaService(60_000, async () => {
+      calls += 1;
+      throw new Error('503 Service Unavailable');
+    });
+
+    const first = await service.refresh();
+    const second = await service.refresh({ force: true });
+    expect(second).toMatchObject({ error: first.error });
+    expect(calls).toBe(1);
+
+    vi.setSystemTime(Date.now() + CODEX_QUOTA_DEBOUNCE_MS);
+    await service.refresh({ force: true });
+    expect(calls).toBe(2);
+  });
+});
+
+describe('summarizeCodexQuotaError', () => {
+  it('collapses ChatGPT upstream 503 details into a temporary unavailable message', () => {
+    expect(summarizeCodexQuotaError(new Error(
+      'account/rateLimits/read: failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 503 Service Unavailable; body=upstream connect error',
+    ))).toBe('Codex quota is temporarily unavailable from ChatGPT. Quicksave will retry automatically.');
+  });
+
+  it('collapses auth failures into a login-oriented message', () => {
+    expect(summarizeCodexQuotaError(new Error('403 Forbidden'))).toBe(
+      'Codex quota is unavailable because Codex is not signed in. Sign in again if this persists.',
+    );
   });
 });
 
