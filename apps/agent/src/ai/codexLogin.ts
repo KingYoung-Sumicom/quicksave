@@ -5,6 +5,7 @@ import { readFile } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
 import type { CodexLoginState } from '@sumicom/quicksave-shared';
+import { buildCodexCliEnv, getCodexBin } from './codexAppServer/processManager.js';
 
 /**
  * Coordinates `codex login --device-auth` on behalf of the PWA. The daemon
@@ -82,9 +83,10 @@ export class CodexLoginManager {
     this.state = { loggedIn: false, inProgress: true };
     this.emit();
 
-    const child = spawn('codex', ['login', '--device-auth'], {
+    const codexBin = getCodexBin();
+    const child = spawn(codexBin, ['login', '--device-auth'], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: process.env,
+      env: buildCodexCliEnv(process.env, codexBin),
     });
     this.child = child;
     this.stdoutBuf = '';

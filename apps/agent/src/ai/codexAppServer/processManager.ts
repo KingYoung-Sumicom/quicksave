@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { execFile } from 'node:child_process';
+import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { accessSync, constants, readdirSync } from 'node:fs';
+import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 
 import { CodexRpcClient } from './rpcClient.js';
@@ -14,6 +15,7 @@ import type {
 import { CODEX_SCHEMA_PINNED_VERSION } from './version.js';
 
 const execFileAsync = promisify(execFile);
+let _codexBin: string | undefined;
 
 export interface SpawnAppServerOptions {
   /** Override the codex binary path. Defaults to `'codex'` from PATH. */
@@ -54,16 +56,75 @@ export interface AppServerInitOptions {
   capabilities?: InitializeCapabilities | null;
 }
 
+export function _resetCodexBinCache(): void {
+  _codexBin = undefined;
+}
+
 /**
- * Detect the installed codex CLI version. Throws if `codex` isn't on
- * PATH (or at the supplied path).
+ * Resolve the Codex CLI path once. Background daemons, especially systemd
+ * user units, often start with a smaller PATH than the user's shell.
  */
-export async function detectCodexVersion(codexBin = 'codex'): Promise<string> {
-  const { stdout } = await execFileAsync(codexBin, ['--version']);
+export function getCodexBin(): string {
+  if (_codexBin) return _codexBin;
+
+  const explicit = process.env.QUICKSAVE_CODEX_BIN?.trim();
+  if (explicit) {
+    _codexBin = explicit;
+    return _codexBin;
+  }
+
+  const fromPath = resolveFromPath('codex', process.env);
+  if (fromPath) {
+    _codexBin = fromPath;
+    return _codexBin;
+  }
+
+  for (const candidate of commonCodexCandidates()) {
+    if (isExecutable(candidate)) {
+      _codexBin = candidate;
+      return _codexBin;
+    }
+  }
+
+  _codexBin = 'codex';
+  return _codexBin;
+}
+
+/**
+ * Build the environment used for Codex CLI child processes. When Codex is
+ * installed under nvm/npm, the shim may rely on `env node`; prepend both the
+ * resolved Codex bin directory and this daemon's Node directory.
+ */
+export function buildCodexCliEnv(
+  env: Record<string, string | undefined> = process.env,
+  codexBin = getCodexBin(),
+): Record<string, string> {
+  const out = filterUndefined(env);
+  const pathKey = findPathKey(out);
+  const prepend: string[] = [];
+  if (isAbsolute(codexBin)) prepend.push(dirname(codexBin));
+  if (isAbsolute(process.execPath)) prepend.push(dirname(process.execPath));
+  out[pathKey] = mergePath(prepend, out[pathKey]);
+  return out;
+}
+
+/**
+ * Detect the installed codex CLI version. Throws if the resolved CLI cannot
+ * be executed.
+ */
+export async function detectCodexVersion(
+  codexBin = getCodexBin(),
+  env: Record<string, string | undefined> = process.env,
+): Promise<string> {
+  const { stdout } = await execFileAsync(codexBin, ['--version'], {
+    encoding: 'utf8',
+    env: buildCodexCliEnv(env, codexBin),
+  });
   // Output looks like `codex-cli 0.125.0` (or just `0.125.0` on some
   // builds). Take the last whitespace-separated token.
-  const last = stdout.trim().split(/\s+/).pop() ?? '';
-  if (!last) throw new Error(`unexpected codex --version output: ${JSON.stringify(stdout)}`);
+  const text = stdout.toString();
+  const last = text.trim().split(/\s+/).pop() ?? '';
+  if (!last) throw new Error(`unexpected codex --version output: ${JSON.stringify(text)}`);
   return last;
 }
 
@@ -109,12 +170,16 @@ export async function spawnAppServer(
   opts: SpawnAppServerOptions = {},
 ): Promise<AppServerHandle> {
   const log = opts.log ?? { warn: () => {} };
-  const codexBin = opts.codexBin ?? 'codex';
+  const codexBin = opts.codexBin ?? getCodexBin();
   const args = ['app-server', ...(opts.extraArgs ?? [])];
+  const env = buildCodexCliEnv(
+    opts.env ? { ...process.env, ...filterUndefined(opts.env) } : process.env,
+    codexBin,
+  );
 
   let cliVersion = '';
   try {
-    cliVersion = await detectCodexVersion(codexBin);
+    cliVersion = await detectCodexVersion(codexBin, env);
     checkSchemaVersionCompatibility(cliVersion, log);
   } catch (err) {
     throw new Error(
@@ -124,7 +189,7 @@ export async function spawnAppServer(
 
   const spawnOpts: SpawnOptions = {
     cwd: opts.cwd,
-    env: opts.env ? { ...process.env, ...filterUndefined(opts.env) } : process.env,
+    env,
     stdio: ['pipe', 'pipe', 'pipe'],
   };
   const child = spawn(codexBin, args, spawnOpts);
@@ -219,4 +284,75 @@ function filterUndefined(env: Record<string, string | undefined>): Record<string
     if (v !== undefined) out[k] = v;
   }
   return out;
+}
+
+function commonCodexCandidates(): string[] {
+  const home = process.env.HOME;
+  if (!home) return ['/usr/local/bin/codex', '/opt/homebrew/bin/codex'];
+
+  const candidates = [
+    join(home, '.npm-global', 'bin', 'codex'),
+    join(home, '.local', 'bin', 'codex'),
+    join(home, '.volta', 'bin', 'codex'),
+    join(home, '.bun', 'bin', 'codex'),
+    '/usr/local/bin/codex',
+    '/opt/homebrew/bin/codex',
+  ];
+
+  appendVersionedNodeBins(candidates, join(home, '.nvm', 'versions', 'node'), (root, ver) =>
+    join(root, ver, 'bin', 'codex'));
+  appendVersionedNodeBins(candidates, join(home, '.local', 'share', 'fnm', 'node-versions'), (root, ver) =>
+    join(root, ver, 'installation', 'bin', 'codex'));
+
+  return candidates;
+}
+
+function appendVersionedNodeBins(
+  candidates: string[],
+  root: string,
+  makePath: (root: string, version: string) => string,
+): void {
+  try {
+    for (const version of readdirSync(root)) {
+      candidates.push(makePath(root, version));
+    }
+  } catch {
+    // Missing version manager directory.
+  }
+}
+
+function resolveFromPath(command: string, env: Record<string, string | undefined>): string | undefined {
+  const pathValue = env[findPathKey(env)];
+  if (!pathValue) return undefined;
+  for (const dir of pathValue.split(delimiter)) {
+    if (!dir) continue;
+    const candidate = join(dir, command);
+    if (isExecutable(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+function isExecutable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function findPathKey(env: Record<string, string | undefined>): string {
+  return Object.keys(env).find((key) => key.toLowerCase() === 'path') ?? 'PATH';
+}
+
+function mergePath(prepend: string[], existing: string | undefined): string {
+  const seen = new Set<string>();
+  const parts = [...prepend, ...(existing ? existing.split(delimiter) : [])]
+    .filter((part) => part.length > 0)
+    .filter((part) => {
+      if (seen.has(part)) return false;
+      seen.add(part);
+      return true;
+    });
+  return parts.join(delimiter);
 }
