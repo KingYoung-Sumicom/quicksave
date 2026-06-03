@@ -16,7 +16,6 @@ import { BusClientTransport } from './lib/busClientTransport';
 import { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { ConnectionSetup } from './components/ConnectionSetup';
 import { ConnectingOverlay, ConnectingStages } from './components/ConnectingOverlay';
-import { FleetStatusBar } from './components/FleetStatusBar';
 import { SessionAppBar } from './components/SessionAppBar';
 import { NewSessionAppBar } from './components/NewSessionAppBar';
 import { RepoView } from './components/RepoView';
@@ -971,10 +970,7 @@ function AppContent() {
       onAddMachine={() => {/* TODO: wire add machine modal */}}
     />
   ) : (
-    <div className="flex flex-col h-screen overflow-hidden">
-      <FleetStatusBar title="Quicksave" onOpenSettings={() => navigate('/settings')} />
-      <ConnectionSetup onConnect={handleConnect} />
-    </div>
+    <ConnectionSetup onConnect={handleConnect} />
   );
 
   const handlePushOffer = useCallback((msg: Message<PushSubscriptionOfferPayload>) => {
@@ -1042,12 +1038,7 @@ function AppContent() {
             <Route path="/pair" element={<JoinGroupPage />} />
             <Route
               path="*"
-              element={
-                <div className="flex flex-col h-full overflow-hidden">
-                  <FleetStatusBar title="Quicksave" onOpenSettings={() => navigate('/settings')} />
-                  <ConnectionSetup onConnect={handleConnect} />
-                </div>
-              }
+              element={<ConnectionSetup onConnect={handleConnect} />}
             />
           </Routes>
         ) : (

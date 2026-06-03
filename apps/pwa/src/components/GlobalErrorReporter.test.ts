@@ -1,7 +1,12 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
-import { createJavaScriptErrorReport, reportAsText, type JavaScriptErrorReport } from './GlobalErrorReporter';
+import {
+  createJavaScriptErrorReport,
+  isIgnorableJavaScriptError,
+  reportAsText,
+  type JavaScriptErrorReport,
+} from './GlobalErrorReporter';
 
 describe('createJavaScriptErrorReport', () => {
   it('keeps Error messages and stack traces', () => {
@@ -21,6 +26,14 @@ describe('createJavaScriptErrorReport', () => {
     const report = createJavaScriptErrorReport('unhandled-rejection', { code: 'E_FAIL' });
 
     expect(report.message).toContain('"code": "E_FAIL"');
+  });
+
+  it('keeps DOMException-like rejection messages', () => {
+    const error = new DOMException('media stopped', 'AbortError');
+
+    const report = createJavaScriptErrorReport('unhandled-rejection', error);
+
+    expect(report.message).toBe('media stopped');
   });
 });
 
@@ -56,5 +69,28 @@ describe('reportAsText', () => {
       'React component stack:',
       'at BrokenComponent',
     ].join('\n'));
+  });
+});
+
+describe('isIgnorableJavaScriptError', () => {
+  it('ignores Firefox media abort promise rejections', () => {
+    const reason = new DOMException(
+      "The fetching process for the media resource was aborted by the user agent at the user's request.",
+      'AbortError',
+    );
+
+    expect(isIgnorableJavaScriptError('unhandled-rejection', reason)).toBe(true);
+  });
+
+  it('does not ignore unrelated abort errors', () => {
+    const reason = new DOMException('The operation was aborted.', 'AbortError');
+
+    expect(isIgnorableJavaScriptError('unhandled-rejection', reason)).toBe(false);
+  });
+
+  it('does not ignore render errors with the same message', () => {
+    const reason = "The fetching process for the media resource was aborted by the user agent at the user's request.";
+
+    expect(isIgnorableJavaScriptError('react-render', reason)).toBe(false);
   });
 });

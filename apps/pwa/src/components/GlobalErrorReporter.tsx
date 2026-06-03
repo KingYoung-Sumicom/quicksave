@@ -67,6 +67,19 @@ export function createJavaScriptErrorReport(
   };
 }
 
+export function isIgnorableJavaScriptError(
+  source: JavaScriptErrorReport['source'],
+  error: unknown,
+): boolean {
+  if (source !== 'unhandled-rejection') return false;
+
+  const { message } = normalizeError(error);
+  const normalizedMessage = message.toLowerCase();
+
+  return normalizedMessage.includes('fetching process for the media resource')
+    && normalizedMessage.includes('aborted by the user agent');
+}
+
 export function reportAsText(report: JavaScriptErrorReport): string {
   const lines = [
     'Quicksave JavaScript error report',
@@ -100,6 +113,8 @@ export function GlobalErrorReporter({ children }: GlobalErrorReporterProps) {
     error: unknown,
     componentStack?: string,
   ) => {
+    if (isIgnorableJavaScriptError(source, error)) return;
+
     const next = createJavaScriptErrorReport(source, error, componentStack);
     setReport(next);
   }, []);
@@ -109,6 +124,10 @@ export function GlobalErrorReporter({ children }: GlobalErrorReporterProps) {
       showReport('window-error', event.error ?? event.message);
     };
     const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      if (isIgnorableJavaScriptError('unhandled-rejection', event.reason)) {
+        event.preventDefault();
+        return;
+      }
       showReport('unhandled-rejection', event.reason);
     };
 
@@ -216,6 +235,22 @@ function normalizeError(error: unknown): { message: string; stack?: string } {
 
   if (typeof error === 'string') {
     return { message: error };
+  }
+
+  if (error && typeof error === 'object') {
+    const errorLike = error as { message?: unknown; name?: unknown; stack?: unknown };
+    const message = typeof errorLike.message === 'string'
+      ? errorLike.message
+      : typeof errorLike.name === 'string'
+        ? errorLike.name
+        : null;
+
+    if (message) {
+      return {
+        message,
+        stack: typeof errorLike.stack === 'string' ? errorLike.stack : undefined,
+      };
+    }
   }
 
   try {
