@@ -48,6 +48,8 @@ describe('buildCodexSandboxMcpConfigArgs', () => {
       '-c',
       'mcp_servers.quicksave-sandbox.tools.UpdateSessionStatus.approval_mode="approve"',
       '-c',
+      'mcp_servers.quicksave-sandbox.tools.DisplayMarkdownReport.approval_mode="approve"',
+      '-c',
       'apps.quicksave-sandbox.default_tools_approval_mode="approve"',
       '-c',
       'apps.quicksave-sandbox.default_tools_enabled=true',
@@ -57,6 +59,8 @@ describe('buildCodexSandboxMcpConfigArgs', () => {
       'apps.quicksave-sandbox.open_world_enabled=true',
       '-c',
       'apps.quicksave-sandbox.tools.UpdateSessionStatus.approval_mode="approve"',
+      '-c',
+      'apps.quicksave-sandbox.tools.DisplayMarkdownReport.approval_mode="approve"',
     ]);
     expect(args[3]).toContain('"--cwd"');
     expect(args[3]).toContain('"/tmp/project"');
