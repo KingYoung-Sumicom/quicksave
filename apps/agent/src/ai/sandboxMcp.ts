@@ -14,6 +14,7 @@ export const SANDBOX_MCP_NAME = 'quicksave-sandbox';
 export const SANDBOX_MCP_PREFIX = `mcp__${SANDBOX_MCP_NAME}__`;
 export const SANDBOX_BASH_TOOL = `${SANDBOX_MCP_PREFIX}SandboxBash`;
 export const UPDATE_SESSION_STATUS_TOOL = `${SANDBOX_MCP_PREFIX}UpdateSessionStatus`;
+export const DISPLAY_MARKDOWN_REPORT_TOOL = `${SANDBOX_MCP_PREFIX}DisplayMarkdownReport`;
 
 export interface SandboxMcpServerConfig {
   type: 'stdio';

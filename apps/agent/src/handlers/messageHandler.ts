@@ -96,6 +96,8 @@ import {
   AttachmentCancelResponsePayload,
   AttachmentFetchRequestPayload,
   AttachmentFetchResponsePayload,
+  ArtifactFetchRequestPayload,
+  ArtifactFetchResponsePayload,
   VoiceTranscribeRequestPayload,
   VoiceTranscribeResponsePayload,
   VoiceListModelsRequestPayload,
@@ -169,6 +171,7 @@ import { ClaudeTerminalProvider } from '../ai/claudeTerminal/index.js';
 import { OpenCodeProvider } from '../ai/openCodeProvider.js';
 import { AttachmentStaging } from '../ai/attachmentStaging.js';
 import { loadAttachment, removeSessionAttachments } from '../ai/attachmentStore.js';
+import { loadArtifactBySession } from '../ai/artifactStore.js';
 import { transcribeAudio, listModels } from '../ai/voiceTranscription.js';
 import { probeAudioSupport } from '../ai/voiceStream.js';
 import { CodexAppServerProvider } from '../ai/codexAppServer/index.js';
@@ -591,12 +594,12 @@ export class MessageHandler {
     // They persist until the user reconnects and explicitly responds.
   }
 
-  cleanup(): void {
+  async cleanup(): Promise<void> {
     if (this.attachmentGcTimer) {
       clearInterval(this.attachmentGcTimer);
       this.attachmentGcTimer = null;
     }
-    this.claudeService.cleanup();
+    await this.claudeService.cleanup();
   }
 
   getActiveSessionCount(): number {
@@ -836,6 +839,8 @@ export class MessageHandler {
           return this.handleAttachmentCancel(message as Message<AttachmentCancelRequestPayload>, peerAddress);
         case 'attachment:fetch':
           return this.handleAttachmentFetch(message as Message<AttachmentFetchRequestPayload>);
+        case 'artifact:fetch':
+          return this.handleArtifactFetch(message as Message<ArtifactFetchRequestPayload>);
         case 'voice:transcribe':
           return this.handleVoiceTranscribe(message as Message<VoiceTranscribeRequestPayload>);
         case 'voice:list-models':
@@ -3108,6 +3113,19 @@ export class MessageHandler {
       return this.createErrorResponse(message.id, 'attachment_not_found', `attachment ${attachmentId} not on disk for session ${sessionId}`);
     }
     const response = createMessage<AttachmentFetchResponsePayload>('attachment:fetch:response', { attachment });
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleArtifactFetch(
+    message: Message<ArtifactFetchRequestPayload>,
+  ): Promise<Message> {
+    const { sessionId, artifactId } = message.payload;
+    const artifact = await loadArtifactBySession(sessionId, artifactId);
+    if (!artifact) {
+      return this.createErrorResponse(message.id, 'artifact_not_found', `artifact ${artifactId} not on disk for session ${sessionId}`);
+    }
+    const response = createMessage<ArtifactFetchResponsePayload>('artifact:fetch:response', { artifact });
     response.id = message.id;
     return response;
   }

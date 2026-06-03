@@ -15,12 +15,14 @@ import type {
 // ── Mock filesystem for persistence/history tests ────────────────────────────
 
 vi.mock('fs/promises', () => ({
+  appendFile: vi.fn(),
   readFile: vi.fn(),
   readdir: vi.fn(),
   writeFile: vi.fn(),
   mkdir: vi.fn(),
   stat: vi.fn(),
   open: vi.fn(),
+  rename: vi.fn(),
 }));
 
 vi.mock('fs', () => ({

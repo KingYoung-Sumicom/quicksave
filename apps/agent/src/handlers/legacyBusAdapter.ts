@@ -110,6 +110,8 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   'attachment:upload',
   'attachment:cancel',
   'attachment:fetch',
+  // artifacts
+  'artifact:fetch',
   'voice:transcribe',
   'voice:list-models',
 ];

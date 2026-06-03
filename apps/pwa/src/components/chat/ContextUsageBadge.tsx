@@ -23,6 +23,24 @@ export function formatTokens(n: number): string {
   return (n / 1_000_000).toFixed(2) + 'M';
 }
 
+export function resolveContextUsageLimit({
+  agentId,
+  configuredContextWindow,
+  breakdownMaxTokens,
+  fallbackLimit,
+}: {
+  agentId: string;
+  configuredContextWindow?: number;
+  breakdownMaxTokens?: number;
+  fallbackLimit: number;
+}): number {
+  if (configuredContextWindow && configuredContextWindow > 0) return configuredContextWindow;
+  if (agentId === 'codex') {
+    return Math.max(fallbackLimit, breakdownMaxTokens ?? 0);
+  }
+  return breakdownMaxTokens ?? fallbackLimit;
+}
+
 function formatPct(value: number, total: number): string {
   if (total <= 0) return '0%';
   const p = (value / total) * 100;
@@ -67,10 +85,20 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
 
   const used = breakdown?.totalTokens ?? rawUsed;
   // Claude has an explicit per-session context-window picker. Codex does not:
-  // its denominator comes from app-server `modelContextWindow` when available,
-  // then the Codex model fallback. Reusing Claude's 200k default for Codex
-  // would under-report GPT-5.5's 1M window.
-  const limit = configuredContextWindow ?? breakdown?.maxTokens ?? fallbackLimit;
+  // its denominator comes from Codex model metadata/fallbacks. Runtime
+  // `modelContextWindow` can be an auto-compact threshold, so do not let a
+  // smaller runtime value replace the advertised model context.
+  const limit = resolveContextUsageLimit({
+    agentId,
+    configuredContextWindow,
+    breakdownMaxTokens: breakdown?.maxTokens,
+    fallbackLimit,
+  });
+  const codexRuntimeThreshold = agentId === 'codex' && breakdown?.maxTokens && breakdown.maxTokens < limit
+    ? breakdown.maxTokens
+    : undefined;
+  const autoCompactThreshold = breakdown?.autoCompactThreshold ?? codexRuntimeThreshold;
+  const isAutoCompactEnabled = breakdown?.isAutoCompactEnabled || !!codexRuntimeThreshold;
 
   const turnCount = session?.turnCount ?? 0;
   const totalInput = session?.totalInputTokens ?? 0;
@@ -152,11 +180,11 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
               <div className="h-2 rounded-full bg-slate-700 overflow-hidden">
                 <div className={clsx('h-full transition-all', barTone)} style={{ width: `${pct}%` }} />
               </div>
-              {breakdown?.isAutoCompactEnabled && breakdown.autoCompactThreshold && (
+              {isAutoCompactEnabled && autoCompactThreshold && (
                 <p className="text-[10px] text-slate-500 mt-1">
                   <FormattedMessage
                     id="contextUsage.autoCompactHint"
-                    values={{ tokens: formatTokens(breakdown.autoCompactThreshold) }}
+                    values={{ tokens: formatTokens(autoCompactThreshold) }}
                   />
                 </p>
               )}

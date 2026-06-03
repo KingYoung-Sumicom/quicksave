@@ -11,6 +11,7 @@ import { SystemMessage } from './SystemMessage';
 import { SubagentBlockMessage } from './SubagentBlockMessage';
 import { RecoverySuggestedMessage } from './RecoverySuggestedMessage';
 import { GeneratedImageMessage } from './GeneratedImageMessage';
+import { ArtifactMessage } from './ArtifactMessage';
 
 /** Convert PendingInputAttachment to the legacy ClaudeUserInputRequestPayload shape
  *  expected by existing PermissionPrompt / ToolCallMessage components. */
@@ -95,6 +96,9 @@ export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId
 
     case 'generated_image':
       return <GeneratedImageMessage card={card} agentId={agentId} />;
+
+    case 'artifact':
+      return <ArtifactMessage artifact={card.artifact} />;
 
     case 'recovery_suggested': {
       const rs = card as RecoverySuggestedCard;

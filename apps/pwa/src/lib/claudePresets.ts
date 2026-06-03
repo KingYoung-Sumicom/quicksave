@@ -115,7 +115,9 @@ export function codexModelsToOptions(models: CodexModelInfo[]): { value: string;
 }
 
 const CODEX_CONTEXT_WINDOW_FALLBACKS: Record<string, number> = {
-  'gpt-5.5': 1_000_000,
+  // Codex app-server `model/list` does not currently expose context-window
+  // metadata. GPT-5.5 has a larger API window, but Codex advertises 400k.
+  'gpt-5.5': 400_000,
 };
 
 export const PERMISSION_MODES = [

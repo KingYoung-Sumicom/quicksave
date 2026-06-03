@@ -198,6 +198,10 @@ export type MessageType =
   | 'attachment:cancel:response'
   | 'attachment:fetch'
   | 'attachment:fetch:response'
+  // Artifacts — generated display outputs (e.g. Markdown reports) fetched on
+  // demand by the PWA. Full bytes never ride card snapshots or tool results.
+  | 'artifact:fetch'
+  | 'artifact:fetch:response'
   // Voice — agent proxies a Whisper-compatible transcription API (the agent
   // has no CORS constraint, so OpenAI's endpoint works). Config travels in the
   // request; the single source of truth lives in the PWA's synced store.

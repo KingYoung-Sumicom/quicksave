@@ -76,7 +76,7 @@ export interface ProviderSession {
   sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void;
   interruptThenSendUserMessage?(prompt: string, attachments?: readonly Attachment[]): void;
   interrupt(): void;
-  kill(): void;
+  kill(): void | Promise<void>;
   readonly alive: boolean;
   /** Optional — `terminalManager` terminal id when this provider owns a PTY
    *  the PWA should render alongside the structured card stream. Only the

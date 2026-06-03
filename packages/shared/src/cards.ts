@@ -163,6 +163,11 @@ export interface GeneratedImageCard extends CardBase {
   savedPath?: string;
 }
 
+export interface ArtifactCard extends CardBase {
+  type: 'artifact';
+  artifact: import('./artifacts.js').MarkdownArtifactRef;
+}
+
 /**
  * Inline action card emitted by the agent when it detects the session is
  * stuck on a "poison" turn the API will keep rejecting (e.g. an oversized
@@ -199,6 +204,7 @@ export type Card =
   | SubagentCard
   | SystemCard
   | GeneratedImageCard
+  | ArtifactCard
   | RecoverySuggestedCard;
 
 // ── Card Events (wire protocol: agent → PWA) ─────────────────────────────

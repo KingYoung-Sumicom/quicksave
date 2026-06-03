@@ -39,6 +39,7 @@ import {
 } from './singleton.js';
 import { writeServiceState, removeServiceState } from './stateStore.js';
 import { wasLaunchedBySystemd } from './systemdUnit.js';
+import { buildCodexContextUsage } from './contextUsage.js';
 import { IPC_VERSION, BUILD_ID, isDebugEnabled, isDev } from './types.js';
 import type {
   ServiceState,
@@ -66,7 +67,6 @@ import {
   type CodexLoginState,
   type CodexModelInfo,
   type CodexQuotaSnapshot,
-  type ContextUsageBreakdown,
   type TerminalSummary,
   type TerminalsUpdate,
   type TerminalOutputSnapshot,
@@ -80,40 +80,6 @@ import { getTerminalManager } from '../terminal/terminalManager.js';
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const REGISTRY_WATCH_INTERVAL_MS = 1_000;
 const PACKAGE_VERSION = '0.8.11';
-
-function buildCodexContextUsage({
-  model,
-  modelContextWindow,
-  cumulativeInputTokens,
-  cumulativeOutputTokens,
-  cumulativeCachedInputTokens,
-}: {
-  model?: string;
-  modelContextWindow?: number;
-  cumulativeInputTokens?: number;
-  cumulativeOutputTokens?: number;
-  cumulativeCachedInputTokens?: number;
-}): ContextUsageBreakdown | null {
-  if (!modelContextWindow || modelContextWindow <= 0) return null;
-  const inputTokens = Math.max(0, cumulativeInputTokens ?? 0);
-  const outputTokens = Math.max(0, cumulativeOutputTokens ?? 0);
-  const cachedInputTokens = Math.max(0, Math.min(cumulativeCachedInputTokens ?? 0, inputTokens));
-  const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens);
-  const totalTokens = inputTokens + outputTokens;
-  return {
-    categories: [
-      { name: 'Codex input', tokens: uncachedInputTokens, color: 'claude' },
-      { name: 'Codex cached input', tokens: cachedInputTokens, color: 'warning' },
-      { name: 'Codex output', tokens: outputTokens, color: 'purple_FOR_SUBAGENTS_ONLY' },
-    ],
-    totalTokens,
-    maxTokens: modelContextWindow,
-    rawMaxTokens: modelContextWindow,
-    autocompactSource: 'codex-token-usage',
-    percentage: modelContextWindow > 0 ? (totalTokens / modelContextWindow) * 100 : 0,
-    model,
-  };
-}
 
 function startSessionRegistryWatcher(
   bus: MessageBusServer,
@@ -427,9 +393,8 @@ export async function runDaemon(): Promise<void> {
         ?? buildCodexContextUsage({
           model: claudeService.getSessionConfig(result.sessionId).model as string | undefined,
           modelContextWindow,
-          cumulativeInputTokens,
-          cumulativeOutputTokens,
-          cumulativeCachedInputTokens,
+          inputTokens,
+          cachedInputTokens: cacheReadTokens,
         });
 
       getEventStore().record({
@@ -744,7 +709,7 @@ export async function runDaemon(): Promise<void> {
     }
     stopSessionRegistryWatcher();
 
-    messageHandler.cleanup();
+    await messageHandler.cleanup();
     terminalManager.shutdown();
     connection.disconnect();
     // Tear down the long-lived opencode serve child if we spawned one.

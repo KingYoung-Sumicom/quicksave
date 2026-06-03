@@ -17,8 +17,9 @@ import type {
   PendingInputAttachment,
   GeneratedImageCard,
   SystemCard,
+  MarkdownArtifactRef,
 } from '@sumicom/quicksave-shared';
-import { readFile, readdir, writeFile, mkdir, stat, open } from 'fs/promises';
+import { appendFile, readFile, readdir, writeFile, mkdir, stat, open, rename } from 'fs/promises';
 import { join } from 'path';
 import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
@@ -68,6 +69,17 @@ function cardHistoryPath(sessionId: string): string {
   return join(getCardHistoryDir(), `${sessionId}.json`);
 }
 
+function cardHistoryLogPath(sessionId: string): string {
+  return join(getCardHistoryDir(), `${sessionId}.jsonl`);
+}
+
+type CardHistoryLogEntry =
+  | { op: 'seed'; cards: Card[] }
+  | { op: 'upsert'; card: Card }
+  | { op: 'patch'; cardId: CardId; patch: Record<string, unknown> }
+  | { op: 'append_text'; cardId: CardId; text: string }
+  | { op: 'remove'; cardId: CardId };
+
 function cleanPersistedCard(card: Card): Card {
   const { pendingInput, ...rest } = card;
   void pendingInput;
@@ -113,15 +125,89 @@ function maxCardSequenceForSession(cards: readonly Card[], sessionId: string): n
  * Returns cards in insertion order, or empty array if none exist.
  */
 export async function loadPersistedCards(sessionId: string): Promise<Card[]> {
-  const p = cardHistoryPath(sessionId);
-  if (!existsSync(p)) return [];
+  const migratedCards = await migrateLegacyCardHistory(sessionId);
+  const p = cardHistoryLogPath(sessionId);
+  if (!existsSync(p)) return migratedCards ?? [];
   try {
     const raw = await readFile(p, 'utf-8');
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? sortCardsChronologically(data) : [];
+    const replayed = replayCardHistoryLog(raw);
+    return migratedCards ? mergeCardsById(migratedCards, replayed) : replayed;
   } catch {
-    return [];
+    return migratedCards ?? [];
   }
+}
+
+async function migrateLegacyCardHistory(sessionId: string): Promise<Card[] | null> {
+  const legacyPath = cardHistoryPath(sessionId);
+  if (!existsSync(legacyPath)) return null;
+  try {
+    const raw = await readFile(legacyPath, 'utf-8');
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data) || data.length === 0) return null;
+    const cards = sortCardsChronologically(data).map(cleanPersistedCard);
+    try {
+      await mkdir(getCardHistoryDir(), { recursive: true });
+      await appendFile(cardHistoryLogPath(sessionId), JSON.stringify({ op: 'seed', cards } satisfies CardHistoryLogEntry) + '\n');
+      await rename(legacyPath, `${legacyPath}.migrated-${Date.now()}`);
+    } catch {
+      // Keep the legacy file as fallback; the next read can retry migration.
+    }
+    return cards;
+  } catch {
+    return null;
+  }
+}
+
+function replayCardHistoryLog(raw: string): Card[] {
+  const cardsById = new Map<CardId, Card>();
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    let entry: CardHistoryLogEntry;
+    try {
+      entry = JSON.parse(line) as CardHistoryLogEntry;
+    } catch {
+      continue;
+    }
+    switch (entry.op) {
+      case 'seed':
+        for (const card of entry.cards ?? []) {
+          if (!card?.id || cardsById.has(card.id)) continue;
+          cardsById.set(card.id, cleanPersistedCard(card));
+        }
+        break;
+      case 'upsert':
+        if (entry.card?.id) cardsById.set(entry.card.id, cleanPersistedCard(entry.card));
+        break;
+      case 'patch': {
+        const existing = cardsById.get(entry.cardId);
+        if (!existing) break;
+        const bag = existing as unknown as Record<string, unknown>;
+        for (const [key, value] of Object.entries(entry.patch ?? {})) {
+          if (value === null) delete bag[key];
+          else bag[key] = value;
+        }
+        cardsById.set(entry.cardId, cleanPersistedCard(existing));
+        break;
+      }
+      case 'append_text': {
+        const existing = cardsById.get(entry.cardId);
+        if (existing && 'text' in existing) {
+          (existing as { text: string }).text += entry.text;
+          cardsById.set(entry.cardId, cleanPersistedCard(existing));
+        }
+        break;
+      }
+      case 'remove':
+        cardsById.delete(entry.cardId);
+        break;
+    }
+  }
+  return sortCardsChronologically(Array.from(cardsById.values()));
+}
+
+async function appendCardHistoryEntry(sessionId: string, entry: CardHistoryLogEntry): Promise<void> {
+  await mkdir(getCardHistoryDir(), { recursive: true });
+  await appendFile(cardHistoryLogPath(sessionId), JSON.stringify(entry) + '\n');
 }
 
 // ── Direct JSONL file reading (replaces SDK getSessionMessages/listSubagents) ──
@@ -364,6 +450,8 @@ export class StreamCardBuilder {
   private cards = new Map<CardId, Card>();
   /** tool_use_id → CardId, for pairing tool_result to ToolCallCard */
   private toolUseIdToCardId = new Map<string, CardId>();
+  /** artifactId → CardId, for de-duping generated display artifact cards. */
+  private artifactIdToCardId = new Map<string, CardId>();
   /** agentId (task_id) → CardId, for matching subagent updates */
   private agentIdToCardId = new Map<string, CardId>();
   /** Cards created for subagent permissions — removed after resolution. */
@@ -387,6 +475,8 @@ export class StreamCardBuilder {
   /** Token identifying an in-flight deferred clear. A later call (new turn, cancel)
    * replaces this token, causing the pending polling task to bail out. */
   private _pendingClearToken: symbol | null = null;
+  private persistMemoryCards = false;
+  private cardHistoryWriteQueue: Promise<void> = Promise.resolve();
 
   constructor(sessionId: string, cwd: string) {
     this.sessionId = sessionId;
@@ -395,6 +485,10 @@ export class StreamCardBuilder {
 
   updateSessionId(sessionId: string): void {
     this.sessionId = sessionId;
+  }
+
+  enableMemoryPersistence(enabled = true): void {
+    this.persistMemoryCards = enabled;
   }
 
   /** Continue the local card id counter after persisted memory-mode history.
@@ -414,6 +508,7 @@ export class StreamCardBuilder {
   clearCards(): void {
     this.cards.clear();
     this.toolUseIdToCardId.clear();
+    this.artifactIdToCardId.clear();
     this.agentIdToCardId.clear();
     this.ephemeralCards.clear();
     this.agentToolUseStash.clear();
@@ -431,6 +526,14 @@ export class StreamCardBuilder {
     const cards = this.getCards();
     if (cards.length === 0) return;
 
+    if (this.persistMemoryCards) {
+      for (const card of cards) {
+        this.enqueueCardHistoryEntry({ op: 'upsert', card: cleanPersistedCard(card) });
+      }
+      await this.flushCardHistoryWrites();
+      return;
+    }
+
     await this.persistCardBatch(cards);
   }
 
@@ -438,7 +541,20 @@ export class StreamCardBuilder {
    * injects a user prompt into an already-running turn; the card must survive
    * refresh before the turn's normal end-of-turn persist runs. */
   async persistCard(card: Card): Promise<void> {
+    if (this.persistMemoryCards) {
+      this.enqueueCardHistoryEntry({ op: 'upsert', card: cleanPersistedCard(card) });
+      await this.flushCardHistoryWrites();
+      return;
+    }
     await this.persistCardBatch([card]);
+  }
+
+  async flushCardHistoryWrites(): Promise<void> {
+    try {
+      await this.cardHistoryWriteQueue;
+    } catch {
+      // Individual write failures are intentionally swallowed in the queue.
+    }
   }
 
   private async persistCardBatch(cards: readonly Card[]): Promise<void> {
@@ -523,6 +639,7 @@ export class StreamCardBuilder {
     this._jsonlCutoff = lastSize >= 0 ? lastSize : null;
     this.cards.clear();
     this.toolUseIdToCardId.clear();
+    this.artifactIdToCardId.clear();
     this.agentIdToCardId.clear();
     this.ephemeralCards.clear();
     this.agentToolUseStash.clear();
@@ -545,12 +662,26 @@ export class StreamCardBuilder {
     this._jsonlCutoff = value;
   }
 
+  private enqueueCardHistoryEntry(entry: CardHistoryLogEntry): void {
+    if (!this.persistMemoryCards || this.sessionId === 'pending') return;
+    const sessionId = this.sessionId;
+    this.cardHistoryWriteQueue = this.cardHistoryWriteQueue
+      .catch(() => undefined)
+      .then(() => appendCardHistoryEntry(sessionId, entry))
+      .catch((err) => {
+        console.warn(
+          `[card-history] append failed for session=${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+  }
+
   private nextId(): CardId {
     return `${this.sessionId}:${++this.seq}`;
   }
 
   private addEvent(card: Card, afterCardId?: CardId): CardAddEvent {
     this.cards.set(card.id, card);
+    this.enqueueCardHistoryEntry({ op: 'upsert', card: cleanPersistedCard(card) });
     return { type: 'add', sessionId: this.sessionId, card, afterCardId };
   }
 
@@ -566,6 +697,7 @@ export class StreamCardBuilder {
         if (value === null) delete bag[key];
         else bag[key] = value;
       }
+      this.enqueueCardHistoryEntry({ op: 'patch', cardId, patch });
     }
     return { type: 'update', sessionId: this.sessionId, cardId, patch };
   }
@@ -574,12 +706,14 @@ export class StreamCardBuilder {
     const existing = this.cards.get(cardId);
     if (existing && 'text' in existing) {
       (existing as any).text += text;
+      this.enqueueCardHistoryEntry({ op: 'append_text', cardId, text });
     }
     return { type: 'append_text', sessionId: this.sessionId, cardId, text };
   }
 
   private removeEvent(cardId: CardId): CardRemoveEvent {
     this.cards.delete(cardId);
+    this.enqueueCardHistoryEntry({ op: 'remove', cardId });
     return { type: 'remove', sessionId: this.sessionId, cardId };
   }
 
@@ -876,6 +1010,24 @@ export class StreamCardBuilder {
       ...(savedPath ? { savedPath } : {}),
     };
     return this.addEvent(card);
+  }
+
+  artifact(ref: MarkdownArtifactRef, afterToolUseId?: string): CardEvent {
+    this.currentTextCardId = null;
+    const existingCardId = this.artifactIdToCardId.get(ref.artifactId);
+    if (existingCardId) {
+      return this.updateEvent(existingCardId, { artifact: ref });
+    }
+    const id = `${this.sessionId}:artifact:${ref.artifactId}`;
+    this.artifactIdToCardId.set(ref.artifactId, id);
+    const card: Card = {
+      type: 'artifact',
+      id,
+      timestamp: Date.now(),
+      artifact: ref,
+    };
+    const afterCardId = afterToolUseId ? this.toolUseIdToCardId.get(afterToolUseId) : undefined;
+    return this.addEvent(card, afterCardId);
   }
 
   recoverySuggested(reason: string, action: 'compact', label: string): CardEvent {

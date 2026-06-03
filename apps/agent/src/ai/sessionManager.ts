@@ -6,6 +6,7 @@ import { resolve, join } from 'path';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { mkdirSync, writeFileSync, rmSync } from 'fs';
 import { getRunDir } from '../service/singleton.js';
+import { normalizeStoredContextUsage } from '../service/contextUsage.js';
 import type {
   AgentId,
   AgentProviderInfo,
@@ -577,6 +578,7 @@ export class SessionManager extends EventEmitter {
 
     // Create cardBuilder with 'pending' sessionId — will be updated after provider returns real one
     const cardBuilder = new StreamCardBuilder('pending', opts.cwd);
+    cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory');
 
     const callbacks = this.makeCallbacks(provider.id);
 
@@ -685,7 +687,7 @@ export class SessionManager extends EventEmitter {
         ? `model changed (${existing!.spawnedModel} → ${desiredModel})`
         : `context window changed (${existing!.spawnedContextWindow} → ${desiredContextWindow})`;
       console.log(`[session-manager] ${reason} — killing provider for cold resume session=${opts.sessionId.slice(0, 8)}`);
-      existing!.providerSession!.kill();
+      await this.killProviderSession(existing!.providerSession!);
       existing!.streaming = false;
       existing!.providerSession = null;
     }
@@ -759,6 +761,7 @@ export class SessionManager extends EventEmitter {
       );
 
       const cardBuilder = existing?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.cwd);
+      cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory');
       if (provider.historyMode === 'memory') {
         cardBuilder.seedSequenceFromCards(await loadPersistedCards(opts.sessionId));
       }
@@ -954,7 +957,7 @@ export class SessionManager extends EventEmitter {
     const ps = this.sessions.get(sessionId);
     if (!ps) return false;
     if (ps.providerSession) {
-      ps.providerSession.kill();
+      void this.killProviderSession(ps.providerSession);
       ps.providerSession = null;
     }
     if (ps.bypassToken) applyBypassFlag(ps.bypassToken, false);
@@ -1217,7 +1220,7 @@ export class SessionManager extends EventEmitter {
         lastTurnInputTokens: lastTurn?.inputTokens,
         lastTurnCacheCreationTokens: lastTurn?.cacheCreationTokens,
         lastTurnCacheReadTokens: lastTurn?.cacheReadTokens,
-        lastTurnContextUsage: lastTurn?.contextUsage as ClaudeSessionSummary['lastTurnContextUsage'],
+        lastTurnContextUsage: normalizeStoredContextUsage(lastTurn?.contextUsage) as ClaudeSessionSummary['lastTurnContextUsage'],
         lastReadAt: entry.lastReadAt,
         pendingMission: entry.pendingMission,
       };
@@ -1325,19 +1328,30 @@ export class SessionManager extends EventEmitter {
     return { pendingInputs, activeSessions: this.getActiveSessions() };
   }
 
-  cleanup(): void {
+  async cleanup(): Promise<void> {
     for (const [requestId, pending] of this.pendingInputRequests) {
       pending.resolve({ sessionId: '', requestId, action: 'allow' });
     }
     this.pendingInputRequests.clear();
 
+    const kills: Promise<void>[] = [];
     for (const [, ps] of this.sessions) {
       if (ps.providerSession) {
-        try { ps.providerSession.kill(); } catch {}
+        kills.push(this.killProviderSession(ps.providerSession));
         ps.providerSession = null;
       }
     }
     this.sessions.clear();
+    await Promise.allSettled(kills);
+  }
+
+  private async killProviderSession(session: ProviderSession): Promise<void> {
+    try {
+      await session.kill();
+    } catch {
+      // Provider shutdown is best-effort; callers still need the manager to
+      // drain its maps and finish daemon shutdown.
+    }
   }
 
   // ── Private: Callbacks Factory ──
@@ -1749,7 +1763,7 @@ export class SessionManager extends EventEmitter {
       lastTurnInputTokens: lastTurn?.inputTokens,
       lastTurnCacheCreationTokens: lastTurn?.cacheCreationTokens,
       lastTurnCacheReadTokens: lastTurn?.cacheReadTokens,
-      lastTurnContextUsage: lastTurn?.contextUsage as SessionUpdatePayload['lastTurnContextUsage'],
+      lastTurnContextUsage: normalizeStoredContextUsage(lastTurn?.contextUsage) as SessionUpdatePayload['lastTurnContextUsage'],
       // `lastReadAt` lives on the registry — re-deliver it on every active-list
       // update so each PWA client converges on the latest read state without
       // having to wait for the slower /sessions/history snapshot to roll over.

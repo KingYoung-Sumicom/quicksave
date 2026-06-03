@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { CardEvent, CardStreamEnd } from '@sumicom/quicksave-shared';
+import type { CardEvent, CardStreamEnd, MarkdownArtifactRef } from '@sumicom/quicksave-shared';
 
 import type { StreamCardBuilder } from '../cardBuilder.js';
 import type { ProviderCallbacks } from '../provider.js';
@@ -594,7 +594,9 @@ export async function consumeAppServerStream(
         }
         const failed = item.status === 'failed' || item.error != null;
         const text = mcpResultText(item);
-        emit(cb.toolResult(item.id, text, failed));
+        const artifact = failed ? null : parseMarkdownArtifactRefText(text);
+        emit(cb.toolResult(item.id, artifact ? artifactResultSummary(artifact) : text, failed));
+        if (artifact) emit(cb.artifact(artifact, item.id));
         return;
       }
 
@@ -884,6 +886,40 @@ function mcpResultText(item: Extract<ThreadItem, { type: 'mcpToolCall' }>): stri
     if (structured !== undefined) return JSON.stringify(structured);
   }
   return JSON.stringify(result);
+}
+
+function parseMarkdownArtifactRefText(text: string): MarkdownArtifactRef | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const ref = parsed as Record<string, unknown>;
+  if (ref.refKind !== 'artifact' || ref.kind !== 'markdown') return null;
+  if (
+    typeof ref.artifactId !== 'string' ||
+    typeof ref.sessionId !== 'string' ||
+    typeof ref.cwd !== 'string' ||
+    typeof ref.title !== 'string' ||
+    ref.mimeType !== 'text/markdown' ||
+    typeof ref.size !== 'number' ||
+    typeof ref.createdAt !== 'number'
+  ) {
+    return null;
+  }
+  return ref as unknown as MarkdownArtifactRef;
+}
+
+function artifactResultSummary(ref: MarkdownArtifactRef): string {
+  return `Displayed markdown report: ${ref.title} (${formatBytes(ref.size)})`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function stringifyDynamicToolResult(

@@ -119,4 +119,6 @@ export const REQUEST_RESPONSE_MAP: Record<string, string> = {
   // File browser
   'files:list': 'files:list:response',
   'files:read': 'files:read:response',
+  // Artifacts
+  'artifact:fetch': 'artifact:fetch:response',
 };

@@ -192,7 +192,7 @@ export interface CodexAppServerProviderSession extends ProviderSession {
   hasPendingOverride(): boolean;
 }
 
-class CodexAppServerSession implements CodexAppServerProviderSession {
+export class CodexAppServerSession implements CodexAppServerProviderSession {
   private readonly handle: AppServerHandle;
   private readonly tokens: TokenAccounting;
   private readonly overrideStore: RuntimeOverrideStore;
@@ -285,8 +285,25 @@ class CodexAppServerSession implements CodexAppServerProviderSession {
       });
   }
 
-  kill(): void {
-    void this.handle.shutdown();
+  async kill(): Promise<void> {
+    if (this.exited) return;
+    this.exited = true;
+    this.pendingTurns = [];
+    try {
+      await this.cardBuilder.persistCards();
+    } catch {
+      // best-effort; shutdown should continue even if history persistence fails
+    }
+    try {
+      await this.handle.shutdown();
+    } catch {
+      // best-effort
+    }
+    try {
+      await this.cardBuilder.persistCards();
+    } catch {
+      // best-effort
+    }
   }
 
   /** Run a single turn end-to-end: cb.startNewTurn → cb.userMessage →
@@ -510,6 +527,8 @@ export function buildCodexSandboxMcpConfigArgs(opts: {
     '-c',
     `mcp_servers.${SANDBOX_MCP_NAME}.tools.UpdateSessionStatus.approval_mode="approve"`,
     '-c',
+    `mcp_servers.${SANDBOX_MCP_NAME}.tools.DisplayMarkdownReport.approval_mode="approve"`,
+    '-c',
     `apps.${SANDBOX_MCP_NAME}.default_tools_approval_mode="approve"`,
     '-c',
     `apps.${SANDBOX_MCP_NAME}.default_tools_enabled=true`,
@@ -519,6 +538,8 @@ export function buildCodexSandboxMcpConfigArgs(opts: {
     `apps.${SANDBOX_MCP_NAME}.open_world_enabled=true`,
     '-c',
     `apps.${SANDBOX_MCP_NAME}.tools.UpdateSessionStatus.approval_mode="approve"`,
+    '-c',
+    `apps.${SANDBOX_MCP_NAME}.tools.DisplayMarkdownReport.approval_mode="approve"`,
   ];
 }
 

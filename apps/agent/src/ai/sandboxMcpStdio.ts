@@ -24,6 +24,7 @@ import { homedir, platform } from 'os';
 import { fileURLToPath } from 'url';
 import { z } from 'zod';
 import { findRegistryPathByCorr } from './sessionRegistryLocator.js';
+import { publishMarkdownArtifact } from './artifactStore.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
 
@@ -171,6 +172,72 @@ if (includeSandboxBash) {
     },
   );
 }
+
+function currentSessionInfo(): { sessionId: string; cwd: string } | null {
+  const path = sessionRegistryPath();
+  if (path && existsSync(path)) {
+    try {
+      const entry = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+      if (typeof entry.sessionId === 'string' && typeof entry.cwd === 'string') {
+        return { sessionId: entry.sessionId, cwd: entry.cwd };
+      }
+    } catch {
+      return null;
+    }
+  }
+  if (sessionIdHint) return { sessionId: sessionIdHint, cwd };
+  return null;
+}
+
+server.tool(
+  'DisplayMarkdownReport',
+  'Display a generated Markdown report to the user as a visible Quicksave chat message/artifact card. ' +
+    'Use this when you have written a Markdown report that the user should read in the UI, especially when the report is long, data-heavy, or wasteful to repeat in the assistant message. ' +
+    'First write the report to a .md or .markdown file inside the project directory, then call this tool with that file path. ' +
+    'Quicksave copies the file into artifact storage, renders it in the chat UI, and returns only a small artifact reference. ' +
+    'After calling this tool, do not paste the full report into your assistant response; briefly mention that the report is shown in the artifact card.',
+  {
+    path: z.string().describe('Path to a generated .md/.markdown report inside the project directory. Relative paths resolve from the project cwd.'),
+    title: z.string().optional().describe('User-facing report title shown on the artifact card. Defaults to the file name.'),
+  },
+  {
+    readOnlyHint: false,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+  async (args) => {
+    const session = currentSessionInfo();
+    if (!session) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: 'DisplayMarkdownReport failed: no session registry entry is available yet. Try again after the session is fully initialized.',
+        }],
+        isError: true,
+      };
+    }
+    try {
+      const artifact = await publishMarkdownArtifact({
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        sourcePath: args.path,
+        title: args.title,
+      });
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(artifact),
+        }],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to display markdown report';
+      return {
+        content: [{ type: 'text' as const, text: `DisplayMarkdownReport failed: ${message}` }],
+        isError: true,
+      };
+    }
+  },
+);
 
 /**
  * Snapshot returned to the agent as a tool result. Contains a trimmed view

@@ -24,6 +24,7 @@ vi.mock('./cardBuilder.js', () => {
     updateSessionId: vi.fn(),
     snapshotCutoff: vi.fn().mockResolvedValue(undefined),
     seedSequenceFromCards: vi.fn(),
+    enableMemoryPersistence: vi.fn(),
     getCards: vi.fn().mockReturnValue([]),
     userMessage: vi.fn().mockReturnValue({ type: 'add', card: { type: 'user', id: 'u1', text: 'hi' } }),
     clearPendingInput: vi.fn().mockReturnValue(null),
@@ -321,6 +322,33 @@ describe('SessionManager — adversarial edge cases', () => {
       expect(r1.action).toBe('allow');
       expect(r2.action).toBe('allow');
       expect(manager.getPendingInputRequests()).toHaveLength(0);
+    });
+
+    it('cleanup() awaits async provider kills before returning', async () => {
+      const sessionId = 'cleanup-awaits-kill';
+      let releaseKill!: () => void;
+      let killFinished = false;
+      const killPromise = new Promise<void>((resolve) => {
+        releaseKill = () => {
+          killFinished = true;
+          resolve();
+        };
+      });
+      const session = createMockProviderSession({
+        kill: vi.fn(() => killPromise),
+      });
+      (provider.startSession as Mock).mockResolvedValue({ sessionId, session });
+
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
+
+      const cleanupPromise = manager.cleanup();
+      await Promise.resolve();
+      expect(session.kill).toHaveBeenCalledTimes(1);
+      expect(killFinished).toBe(false);
+
+      releaseKill();
+      await cleanupPromise;
+      expect(killFinished).toBe(true);
     });
   });
 

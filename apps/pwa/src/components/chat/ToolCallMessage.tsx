@@ -12,6 +12,8 @@ import { LONG_BASH_COMMAND_THRESHOLD } from './toolViews/BashToolView';
 import { InlinePermissionActions } from './InlinePermissionActions';
 import { InteractiveQuestionView } from './InteractiveQuestionView';
 import { linkifyPaths } from './linkifyPaths';
+import { ArtifactMessage } from './ArtifactMessage';
+import type { MarkdownArtifactRef } from '@sumicom/quicksave-shared';
 
 /** Tools whose stdout typically contains paths worth linkifying. */
 const LINKIFY_RESULT_TOOLS = new Set(['Bash', 'Glob', 'Grep', SANDBOX_BASH_TOOL]);
@@ -93,6 +95,7 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
   // Prefer the agent-attached answers (set the moment the user responds);
   // fall back to anything embedded in the CLI tool_result.
   const askAnswers = toolAnswers ?? (parsedResult as { answers?: Record<string, string> } | undefined)?.answers;
+  const artifactRef = parseMarkdownArtifactRef(parsedResult);
 
   const hasPending = !!pendingInputRequest;
 
@@ -198,14 +201,32 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
           <InlineToolResult
             content={resultContent}
             toolName={toolName}
-            suppressContent={resultSuppressed}
+            suppressContent={resultSuppressed || !!artifactRef}
             expanded={resultAutoExpand || resultExpanded}
           />
         )}
+        {artifactRef && <ArtifactMessage artifact={artifactRef} />}
         {pendingInputRequest && onRespond && pendingInputRequest.inputType === 'permission' && (
           <InlinePermissionActions request={pendingInputRequest} onRespond={onRespond} />
         )}
       </div>
     </div>
   );
+}
+
+function parseMarkdownArtifactRef(value: Record<string, unknown> | undefined): MarkdownArtifactRef | null {
+  if (!value) return null;
+  if (value.refKind !== 'artifact' || value.kind !== 'markdown') return null;
+  if (
+    typeof value.artifactId !== 'string' ||
+    typeof value.sessionId !== 'string' ||
+    typeof value.cwd !== 'string' ||
+    typeof value.title !== 'string' ||
+    value.mimeType !== 'text/markdown' ||
+    typeof value.size !== 'number' ||
+    typeof value.createdAt !== 'number'
+  ) {
+    return null;
+  }
+  return value as unknown as MarkdownArtifactRef;
 }

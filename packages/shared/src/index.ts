@@ -12,6 +12,9 @@ export * from './cards.js';
 // Attachments (image/pdf/text uploads attached to user messages)
 export * from './attachments.js';
 
+// Artifacts (agent-owned display outputs fetched on demand)
+export * from './artifacts.js';
+
 // Crypto utilities
 export * from './crypto.js';
 

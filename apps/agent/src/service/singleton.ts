@@ -78,6 +78,10 @@ export function getAttachmentsDir(): string {
   return join(getStateDir(), 'attachments');
 }
 
+export function getArtifactsDir(): string {
+  return join(getStateDir(), 'artifacts');
+}
+
 /**
  * Ensure all required directories exist.
  */

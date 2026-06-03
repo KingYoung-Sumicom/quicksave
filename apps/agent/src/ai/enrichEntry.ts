@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 import type {
   BroadcastSessionEntry,
-  ContextUsageBreakdown,
   SessionRegistryEntry,
 } from '@sumicom/quicksave-shared';
 import { getEventStore } from '../storage/eventStore.js';
+import { normalizeStoredContextUsage } from '../service/contextUsage.js';
 
 /**
  * Join runtime event-store stats onto a registry entry for broadcast on
@@ -30,6 +30,6 @@ export function enrichEntry(entry: SessionRegistryEntry): BroadcastSessionEntry 
     lastTurnInputTokens: lastTurn?.inputTokens,
     lastTurnCacheCreationTokens: lastTurn?.cacheCreationTokens,
     lastTurnCacheReadTokens: lastTurn?.cacheReadTokens,
-    lastTurnContextUsage: lastTurn?.contextUsage as ContextUsageBreakdown | undefined,
+    lastTurnContextUsage: normalizeStoredContextUsage(lastTurn?.contextUsage),
   };
 }

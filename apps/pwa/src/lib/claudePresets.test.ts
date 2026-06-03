@@ -167,8 +167,8 @@ describe('claudePresets', () => {
       expect(getModelContextLimit('gpt-5', dynamic)).toBe(400_000);
     });
 
-    it('falls back to 1M for GPT-5.5 before runtime usage arrives', () => {
-      expect(getModelContextLimit('gpt-5.5')).toBe(1_000_000);
+    it('falls back to Codex 400k for GPT-5.5 before runtime usage arrives', () => {
+      expect(getModelContextLimit('gpt-5.5')).toBe(400_000);
     });
   });
 });

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import type { CardStreamEnd } from '@sumicom/quicksave-shared';
+import type { CardStreamEnd, MarkdownArtifactRef } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
 import type {
   CodingAgentProvider,
@@ -58,6 +58,40 @@ function textFromUnknown(value: unknown): string {
     }
   }
   return String(value);
+}
+
+function parseMarkdownArtifactRefText(text: string): MarkdownArtifactRef | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const ref = parsed as Record<string, unknown>;
+  if (ref.refKind !== 'artifact' || ref.kind !== 'markdown') return null;
+  if (
+    typeof ref.artifactId !== 'string' ||
+    typeof ref.sessionId !== 'string' ||
+    typeof ref.cwd !== 'string' ||
+    typeof ref.title !== 'string' ||
+    ref.mimeType !== 'text/markdown' ||
+    typeof ref.size !== 'number' ||
+    typeof ref.createdAt !== 'number'
+  ) {
+    return null;
+  }
+  return ref as unknown as MarkdownArtifactRef;
+}
+
+function artifactResultSummary(ref: MarkdownArtifactRef): string {
+  return `Displayed markdown report: ${ref.title} (${formatBytes(ref.size)})`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function emitAssistantMessage(cb: StreamCardBuilder, callbacks: ProviderCallbacks, text: string): void {
@@ -174,10 +208,20 @@ class CodexMcpSession implements ProviderSession {
     void this.close();
   }
 
-  kill(): void {
+  async kill(): Promise<void> {
     if (this.closed) return;
     this.closeReason = 'kill';
-    void this.close();
+    try {
+      await this.cardBuilder.persistCards();
+    } catch {
+      // best-effort
+    }
+    await this.close();
+    try {
+      await this.cardBuilder.persistCards();
+    } catch {
+      // best-effort
+    }
   }
 
   get alive(): boolean {
@@ -241,6 +285,11 @@ class CodexMcpSession implements ProviderSession {
             success: true,
           });
           // Clear accumulated cards — memory-mode provider has no JSONL to snapshot
+          try {
+            await this.cardBuilder.persistCards();
+          } catch {
+            // best-effort
+          }
           this.cardBuilder.clearCards();
         } catch (error) {
           const sessionId = this.threadId ?? '';
@@ -396,9 +445,17 @@ class CodexMcpSession implements ProviderSession {
           : undefined;
       if (!parentToolUseId) return;
       const resultText = textFromUnknown(item.output ?? item.result ?? item.content ?? item.text);
-      const event = this.cardBuilder.toolResult(parentToolUseId, resultText, !!item.is_error);
+      const artifact = item.is_error ? null : parseMarkdownArtifactRefText(resultText);
+      const event = this.cardBuilder.toolResult(
+        parentToolUseId,
+        artifact ? artifactResultSummary(artifact) : resultText,
+        !!item.is_error,
+      );
       if (event) {
         this.callbacks.emitCardEvent(event);
+      }
+      if (artifact) {
+        this.callbacks.emitCardEvent(this.cardBuilder.artifact(artifact, parentToolUseId));
       }
     }
   }
