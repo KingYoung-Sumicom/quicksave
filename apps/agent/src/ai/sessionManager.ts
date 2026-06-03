@@ -335,14 +335,12 @@ export class SessionManager extends EventEmitter {
     }
 
     if (cwd) {
-      const registryEntry = getSessionRegistry().getEntry(cwd, sessionId);
-      const registryAgent = normalizeAgentId(
-        registryEntry?.agent
-          ?? ((registryEntry as { provider?: string } | undefined)?.provider),
-      );
-      if (registryAgent && this.providers.has(registryAgent)) {
-        return registryAgent;
-      }
+      const registry = getSessionRegistry();
+      const registryEntry =
+        registry.getEntry(cwd, sessionId)
+        ?? registry.readArchivedEntry(cwd, sessionId);
+      const registryAgent = this.resolveRegistryAgent(registryEntry);
+      if (registryAgent) return registryAgent;
     }
 
     const normalizedRequest = normalizeAgentId(requestedAgent);
@@ -364,7 +362,11 @@ export class SessionManager extends EventEmitter {
     const configAgent = normalizeAgentId(rawConfig?.agent ?? rawConfig?.provider);
     if (configAgent && this.providers.has(configAgent)) return configAgent;
 
-    const registryAgent = normalizeAgentId(getSessionRegistry().findBySessionId(sessionId)?.agent);
+    const registry = getSessionRegistry();
+    const registryAgent = normalizeAgentId(
+      registry.findBySessionId(sessionId)?.agent
+      ?? registry.findArchivedBySessionId(sessionId)?.agent,
+    );
     if (registryAgent && this.providers.has(registryAgent)) return registryAgent;
 
     return this.defaultAgentId;
@@ -752,7 +754,10 @@ export class SessionManager extends EventEmitter {
     try {
       // Restore session settings from in-memory maps, falling back to persisted
       // registry (survives daemon restarts).
-      const registryEntry = getSessionRegistry().getEntry(opts.cwd, opts.sessionId);
+      const registry = getSessionRegistry();
+      const registryEntry =
+        registry.getEntry(opts.cwd, opts.sessionId)
+        ?? registry.readArchivedEntry(opts.cwd, opts.sessionId);
       const sandboxed = this.sessionSandboxed.get(opts.sessionId) ?? registryEntry?.sandboxed ?? false;
       const provider = this.getProvider(agentId);
       const level = normalizePermissionLevelForAgent(
@@ -1195,8 +1200,7 @@ export class SessionManager extends EventEmitter {
         cwd: entry.cwd,
         agent: this.sessions.get(entry.sessionId)?.agentId
           ?? this.sessionAgents.get(entry.sessionId)
-          ?? entry.agent
-          ?? ((entry as { provider?: string }).provider === 'codex-mcp' ? 'codex' : (entry as { provider?: string }).provider ? 'claude-code' : undefined),
+          ?? this.resolveRegistryAgent(entry, eventStore.getSessionAgent(entry.sessionId)),
         gitBranch: entry.gitBranch,
         messageCount: entry.messageCount,
         isActive: this.sessions.has(entry.sessionId),
@@ -1727,6 +1731,10 @@ export class SessionManager extends EventEmitter {
     const stats = eventStore.getSessionStats(sessionId);
     const lastTurn = eventStore.getLastTurn(sessionId);
     const registryEntry = getSessionRegistry().findBySessionId(sessionId);
+    const registryAgent = this.resolveRegistryAgent(
+      registryEntry,
+      eventStore.getSessionAgent(sessionId),
+    );
     return {
       sessionId,
       // `isActive` reflects in-memory presence, NOT "currently doing work".
@@ -1746,8 +1754,8 @@ export class SessionManager extends EventEmitter {
       // keep the entry visible and let a follow-up prompt cold-resume it.
       // PWA uses `archived=true` as the strong "navigate away from the
       // defunct session page" signal.
-      archived: !ps && !getSessionRegistry().findBySessionId(sessionId),
-      agent: ps?.agentId ?? this.sessionAgents.get(sessionId),
+      archived: !ps && !registryEntry,
+      agent: ps?.agentId ?? this.sessionAgents.get(sessionId) ?? registryAgent,
       isStreaming: ps?.streaming ?? false,
       hasPendingInput,
       queueState: ps?.providerSession?.getQueueState?.() ?? null,
@@ -1805,6 +1813,21 @@ export class SessionManager extends EventEmitter {
         return;
       }
     }
+  }
+
+  private resolveRegistryAgent(
+    entry: SessionRegistryEntry | undefined,
+    fallback?: unknown,
+  ): AgentId | undefined {
+    const agent = this.resolveKnownAgent(entry?.agent)
+      ?? this.resolveKnownAgent((entry as { provider?: string } | undefined)?.provider)
+      ?? this.resolveKnownAgent(fallback);
+    return agent;
+  }
+
+  private resolveKnownAgent(value: unknown): AgentId | undefined {
+    const agent = normalizeAgentId(value);
+    return agent && this.providers.has(agent) ? agent : undefined;
   }
 
   private async persistAllowPattern(cwd: string, pattern: string): Promise<void> {

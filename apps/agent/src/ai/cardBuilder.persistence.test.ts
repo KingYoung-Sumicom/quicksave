@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -66,5 +66,41 @@ describe('memory-mode card history persistence', () => {
     const secondRead = await loadPersistedCards('legacy');
     expect(secondRead).toHaveLength(2);
     expect(secondRead.map((card) => card.id)).toEqual(['legacy:1', 'legacy:2']);
+  });
+
+  it('keeps the legacy snapshot mtime when migrating to JSONL', async () => {
+    mkdirSync(cardHistoryDir(), { recursive: true });
+    const legacyCards: Card[] = [
+      { type: 'user', id: 'legacy-mtime:1', timestamp: 1, text: 'old prompt' },
+    ];
+    const legacyPath = join(cardHistoryDir(), 'legacy-mtime.json');
+    const logPath = join(cardHistoryDir(), 'legacy-mtime.jsonl');
+    writeFileSync(legacyPath, JSON.stringify(legacyCards) + '\n');
+    const legacyTime = new Date('2026-05-01T12:00:00.000Z');
+    utimesSync(legacyPath, legacyTime, legacyTime);
+
+    await loadPersistedCards('legacy-mtime');
+
+    expect(existsSync(logPath)).toBe(true);
+    expect(Math.abs(statSync(logPath).mtimeMs - legacyTime.getTime())).toBeLessThan(1000);
+  });
+
+  it('repairs JSONL mtime for histories already migrated by the old code', async () => {
+    mkdirSync(cardHistoryDir(), { recursive: true });
+    const cards: Card[] = [
+      { type: 'user', id: 'already-migrated:1', timestamp: 1, text: 'old prompt' },
+    ];
+    const legacyTime = new Date('2026-05-01T12:00:00.000Z');
+    const migratedAt = new Date('2026-06-03T10:30:00.000Z');
+    const logPath = join(cardHistoryDir(), 'already-migrated.jsonl');
+    const migratedPath = join(cardHistoryDir(), `already-migrated.json.migrated-${migratedAt.getTime()}`);
+    writeFileSync(logPath, JSON.stringify({ op: 'seed', cards }) + '\n');
+    writeFileSync(migratedPath, JSON.stringify(cards) + '\n');
+    utimesSync(logPath, migratedAt, migratedAt);
+    utimesSync(migratedPath, legacyTime, legacyTime);
+
+    await loadPersistedCards('already-migrated');
+
+    expect(Math.abs(statSync(logPath).mtimeMs - legacyTime.getTime())).toBeLessThan(1000);
   });
 });

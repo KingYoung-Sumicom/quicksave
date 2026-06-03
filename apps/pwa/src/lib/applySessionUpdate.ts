@@ -25,8 +25,8 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     setActiveSession,
   } = useClaudeStore.getState();
 
-  const agent: AgentId | undefined = payload.agent;
   const current = sessions[payload.sessionId];
+  const agent: AgentId | undefined = payload.agent ?? current?.agent;
   if (
     current &&
     current.machineAgentId === machineAgentId &&

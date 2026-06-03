@@ -132,6 +132,25 @@ export class SessionRegistry {
     return undefined;
   }
 
+  /** Scan archived entries for a session by id. Active entries are NOT searched. */
+  findArchivedBySessionId(sessionId: string): SessionRegistryEntry | undefined {
+    const archivedRoot = join(getSessionRegistryDir(), ARCHIVED_SUBDIR);
+    if (!existsSync(archivedRoot)) return undefined;
+
+    for (const projectDir of this.listArchivedProjectDirs(archivedRoot)) {
+      const path = join(archivedRoot, projectDir, `${sessionId}.json`);
+      if (!existsSync(path)) continue;
+      try {
+        const raw = readFileSync(path, 'utf-8');
+        const entry = JSON.parse(raw) as SessionRegistryEntry;
+        if (entry.sessionId && entry.cwd) return entry;
+      } catch (err) {
+        console.warn(`[sessionRegistry] Failed to read archived entry ${sessionId}:`, err);
+      }
+    }
+    return undefined;
+  }
+
   /** Active entries only — archived entries are never in memory. */
   getEntriesForProject(cwd?: string): SessionRegistryEntry[] {
     if (cwd) {

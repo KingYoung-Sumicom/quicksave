@@ -132,6 +132,23 @@ describe('EventStore', () => {
     });
   });
 
+  describe('getSessionAgent', () => {
+    it('returns null when no prompt event records an agent', () => {
+      store.record({ type: 'prompt_sent', sessionId: 's1', time: 1000, data: { kind: 'start' } });
+      store.record({ type: 'turn_ended', sessionId: 's1', time: 2000, data: { agent: 'codex' } });
+
+      expect(store.getSessionAgent('s1')).toBeNull();
+    });
+
+    it('returns the latest prompt agent for the session', () => {
+      store.record({ type: 'prompt_sent', sessionId: 's1', time: 1000, data: { agent: 'claude-code' } });
+      store.record({ type: 'prompt_sent', sessionId: 's1', time: 2000, data: { agent: 'codex' } });
+      store.record({ type: 'prompt_sent', sessionId: 's2', time: 3000, data: { agent: 'opencode' } });
+
+      expect(store.getSessionAgent('s1')).toBe('codex');
+    });
+  });
+
   describe('getLastTurn', () => {
     it('returns null when no turn_ended events exist', () => {
       expect(store.getLastTurn('s1')).toBeNull();

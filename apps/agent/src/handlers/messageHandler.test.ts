@@ -931,6 +931,71 @@ describe('MessageHandler', () => {
     });
   });
 
+  describe('handleMessage - claude:resume', () => {
+    it('unarchives an existing registry entry instead of replacing its metadata', async () => {
+      const sessionId = 'archived-resume-session';
+      const archivedEntry: SessionRegistryEntry = {
+        sessionId,
+        cwd: testRepoPath,
+        agent: 'codex',
+        repoName: 'test-repo',
+        title: 'Old Codex title',
+        firstPrompt: 'old first prompt',
+        createdAt: 111,
+        lastAccessedAt: 222,
+        mcpCorrId: 'corr-old',
+        archived: true,
+      };
+      getSessionRegistry().upsertEntry(archivedEntry);
+
+      const claudeService = (handler as unknown as {
+        claudeService: {
+          getSessionConfig: (sessionId: string) => Record<string, unknown>;
+          resumeSession: (opts: unknown) => Promise<string>;
+          getSessionAgent: (sessionId: string, cwd?: string) => string;
+          getSessionMcpCorrId: (sessionId: string) => string | undefined;
+          buildSessionUpdatePayload: (sessionId: string) => { queueState: null };
+        };
+      }).claudeService;
+
+      vi.spyOn(claudeService, 'getSessionConfig').mockReturnValue({});
+      vi.spyOn(claudeService, 'resumeSession').mockResolvedValue(sessionId);
+      vi.spyOn(claudeService, 'getSessionAgent').mockReturnValue('codex');
+      vi.spyOn(claudeService, 'getSessionMcpCorrId').mockReturnValue('corr-new');
+      vi.spyOn(claudeService, 'buildSessionUpdatePayload').mockReturnValue({ queueState: null });
+
+      const historyEvents: Array<{ cwd: string; entry: SessionRegistryEntry; action: string }> = [];
+      handler.onHistoryUpdated = (cwd, entry, action) => {
+        historyEvents.push({ cwd, entry, action });
+      };
+
+      const msg = createMessage('claude:resume', {
+        sessionId,
+        prompt: 'continue',
+        cwd: testRepoPath,
+      });
+      const response = await handler.handleMessage(msg);
+
+      expect(response.type).toBe('claude:resume:response');
+      expect((response.payload as any).success).toBe(true);
+
+      const active = getSessionRegistry().getEntry(testRepoPath, sessionId);
+      expect(active).toMatchObject({
+        sessionId,
+        cwd: testRepoPath,
+        agent: 'codex',
+        archived: false,
+        title: archivedEntry.title,
+        firstPrompt: archivedEntry.firstPrompt,
+        createdAt: archivedEntry.createdAt,
+        mcpCorrId: 'corr-new',
+      });
+      expect(getSessionRegistry().readArchivedEntry(testRepoPath, sessionId)).toBeUndefined();
+      expect(historyEvents).toHaveLength(1);
+      expect(historyEvents[0].entry.archived).toBe(false);
+    });
+  });
+
   describe('handleMessage - claude:end-task', () => {
     let projectDir: string;
 

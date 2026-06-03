@@ -153,6 +153,18 @@ describe('applySessionUpdate', () => {
       const arg = store.upsertSession.mock.calls[0][0];
       expect(arg).not.toHaveProperty('sandboxed');
     });
+
+    it('preserves the existing agent when an update omits agent', () => {
+      const store = setupStore({
+        sessions: { s1: makeSummary({ agent: 'codex' as AgentId }) },
+      });
+      const payload = makePayload({ agent: undefined, isActive: false });
+
+      applySessionUpdate(payload, MACHINE_AGENT_ID);
+
+      expect(store.upsertSession).toHaveBeenCalledTimes(1);
+      expect(store.upsertSession.mock.calls[0][0].agent).toBe('codex');
+    });
   });
 
   describe('idempotency', () => {

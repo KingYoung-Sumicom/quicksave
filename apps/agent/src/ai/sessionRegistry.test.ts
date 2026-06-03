@@ -438,6 +438,29 @@ describe('SessionRegistry', () => {
     });
   });
 
+  describe('findArchivedBySessionId', () => {
+    it('returns an archived entry by session id when cwd is not known', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry({
+        sessionId: 'archived-codex-session',
+        cwd: '/home/user/codex-project',
+        agent: 'codex',
+        archived: true,
+      });
+      registry.upsertEntry(entry);
+
+      expect(registry.findArchivedBySessionId(entry.sessionId)).toEqual(entry);
+    });
+
+    it('does not return active entries', () => {
+      const registry = new SessionRegistry();
+      const entry = makeEntry({ sessionId: 'active-only' });
+      registry.upsertEntry(entry);
+
+      expect(registry.findArchivedBySessionId(entry.sessionId)).toBeUndefined();
+    });
+  });
+
   describe('listArchivedEntries', () => {
     it('returns [] when archived subtree is missing', () => {
       const registry = new SessionRegistry();

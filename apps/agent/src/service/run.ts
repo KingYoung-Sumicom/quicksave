@@ -296,7 +296,12 @@ export async function runDaemon(): Promise<void> {
       snapshot: async ({ params }) => {
         const sessionId = params.sessionId;
         const liveCwd = claudeService.getSessionCwd(sessionId);
-        const cwd = liveCwd ?? getSessionRegistry().findBySessionId(sessionId)?.cwd ?? '';
+        const registry = getSessionRegistry();
+        const cwd =
+          liveCwd
+          ?? registry.findBySessionId(sessionId)?.cwd
+          ?? registry.findArchivedBySessionId(sessionId)?.cwd
+          ?? '';
         return claudeService.getCards(sessionId, cwd, 0, 50);
       },
     },

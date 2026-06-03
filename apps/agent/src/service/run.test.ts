@@ -136,6 +136,20 @@ describe('enrichEntry', () => {
     expect(out.pinned).toBe(true);
   });
 
+  it('infers missing registry agent from prompt events', () => {
+    const store = getEventStore();
+    store.record({
+      type: 'prompt_sent',
+      sessionId: 's1',
+      time: 1500,
+      data: { kind: 'start', agent: 'codex' },
+    });
+
+    const out = enrichEntry(baseEntry({ agent: 'unknown-agent' as any }));
+
+    expect(out.agent).toBe('codex');
+  });
+
   it('scopes stats by sessionId so other sessions do not leak in', () => {
     const store = getEventStore();
     store.record({

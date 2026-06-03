@@ -19,7 +19,7 @@ import type {
   SystemCard,
   MarkdownArtifactRef,
 } from '@sumicom/quicksave-shared';
-import { appendFile, readFile, readdir, writeFile, mkdir, stat, open, rename } from 'fs/promises';
+import { appendFile, readFile, readdir, writeFile, mkdir, stat, open, rename, utimes } from 'fs/promises';
 import { join } from 'path';
 import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
@@ -120,6 +120,70 @@ function maxCardSequenceForSession(cards: readonly Card[], sessionId: string): n
   return max;
 }
 
+async function statOrNull(path: string): Promise<Awaited<ReturnType<typeof stat>> | null> {
+  try {
+    return await stat(path);
+  } catch {
+    return null;
+  }
+}
+
+function statTimeMs(value: number | bigint | undefined): number {
+  if (typeof value === 'bigint') return Number(value);
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function isSeedOnlyCardHistoryLog(raw: string): boolean {
+  let sawSeed = false;
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    let entry: Partial<CardHistoryLogEntry>;
+    try {
+      entry = JSON.parse(line) as Partial<CardHistoryLogEntry>;
+    } catch {
+      return false;
+    }
+    if (entry.op !== 'seed') return false;
+    sawSeed = true;
+  }
+  return sawSeed;
+}
+
+async function repairMigratedCardHistoryLogMtime(sessionId: string, raw: string): Promise<void> {
+  if (!isSeedOnlyCardHistoryLog(raw)) return;
+  const logPath = cardHistoryLogPath(sessionId);
+  const logStat = await statOrNull(logPath);
+  if (!logStat) return;
+
+  let files: string[];
+  try {
+    files = await readdir(getCardHistoryDir());
+  } catch {
+    return;
+  }
+
+  const prefix = `${sessionId}.json.migrated-`;
+  const candidates = files
+    .filter((file) => file.startsWith(prefix))
+    .map((file) => ({
+      file,
+      migratedAtMs: Number(file.slice(prefix.length)),
+    }))
+    .filter((candidate) => Number.isFinite(candidate.migratedAtMs))
+    .sort((a, b) => b.migratedAtMs - a.migratedAtMs);
+
+  const logMtimeMs = statTimeMs(logStat.mtimeMs);
+  for (const candidate of candidates) {
+    if (Math.abs(logMtimeMs - candidate.migratedAtMs) > 5000) continue;
+    const migratedStat = await statOrNull(join(getCardHistoryDir(), candidate.file));
+    const targetMtimeMs = statTimeMs(migratedStat?.mtimeMs);
+    if (targetMtimeMs <= 0 || targetMtimeMs >= logMtimeMs) return;
+    const targetAtimeMs = Math.max(statTimeMs(migratedStat?.atimeMs), targetMtimeMs);
+    await utimes(logPath, new Date(targetAtimeMs), new Date(targetMtimeMs));
+    return;
+  }
+}
+
 /**
  * Load persisted card history for a memory-mode session.
  * Returns cards in insertion order, or empty array if none exist.
@@ -130,6 +194,7 @@ export async function loadPersistedCards(sessionId: string): Promise<Card[]> {
   if (!existsSync(p)) return migratedCards ?? [];
   try {
     const raw = await readFile(p, 'utf-8');
+    await repairMigratedCardHistoryLogMtime(sessionId, raw);
     const replayed = replayCardHistoryLog(raw);
     return migratedCards ? mergeCardsById(migratedCards, replayed) : replayed;
   } catch {
@@ -141,13 +206,28 @@ async function migrateLegacyCardHistory(sessionId: string): Promise<Card[] | nul
   const legacyPath = cardHistoryPath(sessionId);
   if (!existsSync(legacyPath)) return null;
   try {
+    const legacyStat = await statOrNull(legacyPath);
     const raw = await readFile(legacyPath, 'utf-8');
     const data = JSON.parse(raw);
     if (!Array.isArray(data) || data.length === 0) return null;
     const cards = sortCardsChronologically(data).map(cleanPersistedCard);
     try {
+      const logPath = cardHistoryLogPath(sessionId);
+      const existingLogStat = existsSync(logPath) ? await statOrNull(logPath) : null;
       await mkdir(getCardHistoryDir(), { recursive: true });
-      await appendFile(cardHistoryLogPath(sessionId), JSON.stringify({ op: 'seed', cards } satisfies CardHistoryLogEntry) + '\n');
+      await appendFile(logPath, JSON.stringify({ op: 'seed', cards } satisfies CardHistoryLogEntry) + '\n');
+      const targetMtimeMs = Math.max(
+        statTimeMs(legacyStat?.mtimeMs),
+        statTimeMs(existingLogStat?.mtimeMs),
+      );
+      if (targetMtimeMs > 0) {
+        const targetAtimeMs = Math.max(
+          statTimeMs(legacyStat?.atimeMs),
+          statTimeMs(existingLogStat?.atimeMs),
+          targetMtimeMs,
+        );
+        await utimes(logPath, new Date(targetAtimeMs), new Date(targetMtimeMs));
+      }
       await rename(legacyPath, `${legacyPath}.migrated-${Date.now()}`);
     } catch {
       // Keep the legacy file as fallback; the next read can retry migration.

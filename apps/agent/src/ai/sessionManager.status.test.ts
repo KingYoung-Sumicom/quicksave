@@ -37,8 +37,10 @@ vi.mock('./cardBuilder.js', () => {
 // Shared registry mock — accessible from tests via the imported getSessionRegistry.
 const registryMock = {
   getEntry: vi.fn().mockReturnValue(null),
+  readArchivedEntry: vi.fn().mockReturnValue(undefined),
   getEntriesForProject: vi.fn().mockReturnValue([]),
   findBySessionId: vi.fn().mockReturnValue(undefined),
+  findArchivedBySessionId: vi.fn().mockReturnValue(undefined),
   upsertEntry: vi.fn(),
   updateEntry: vi.fn(),
 };

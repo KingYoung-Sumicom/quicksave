@@ -88,6 +88,7 @@ export class EventStore {
   private lastCacheTouchStmt: Database.Statement;
   private sessionEventsStmt: Database.Statement;
   private lastTurnStmt: Database.Statement;
+  private sessionAgentStmt: Database.Statement;
 
   constructor(dbPath: string) {
     const dir = dirname(dbPath);
@@ -144,6 +145,16 @@ export class EventStore {
     this.lastTurnStmt = this.db.prepare(
       `SELECT time, data FROM events WHERE session_id = ? AND type = 'turn_ended' ORDER BY time DESC, id DESC LIMIT 1`
     );
+
+    this.sessionAgentStmt = this.db.prepare(`
+      SELECT json_extract(data, '$.agent') AS agent
+      FROM events
+      WHERE session_id = ?
+        AND type = 'prompt_sent'
+        AND json_extract(data, '$.agent') IS NOT NULL
+      ORDER BY time DESC, id DESC
+      LIMIT 1
+    `);
   }
 
   record(params: {
@@ -200,6 +211,11 @@ export class EventStore {
       cumulativeCachedInputTokens: typeof data.cumulativeCachedInputTokens === 'number' ? data.cumulativeCachedInputTokens : undefined,
       contextUsage: data.contextUsage ?? undefined,
     };
+  }
+
+  getSessionAgent(sessionId: string): string | null {
+    const row = this.sessionAgentStmt.get(sessionId) as { agent: string | null } | undefined;
+    return typeof row?.agent === 'string' && row.agent.length > 0 ? row.agent : null;
   }
 
   close(): void {

@@ -2279,13 +2279,18 @@ export class MessageHandler {
 
       // Update session history
       const registry = getSessionRegistry();
-      const existing = registry.getEntry(cwd, requestedId) ?? registry.getEntry(cwd, actualSessionId);
+      const existing =
+        registry.getEntry(cwd, requestedId)
+        ?? registry.getEntry(cwd, actualSessionId)
+        ?? registry.readArchivedEntry(cwd, requestedId)
+        ?? registry.readArchivedEntry(cwd, actualSessionId);
       const gitBranch = await this.getGitBranchQuiet(cwd);
       const actualAgent = this.claudeService.getSessionAgent(actualSessionId, cwd);
       registry.upsertEntry({
         ...(existing ?? { sessionId: actualSessionId, cwd, repoName: basename(cwd), createdAt: Date.now() }),
         sessionId: actualSessionId,
         agent: actualAgent,
+        archived: false,
         lastAccessedAt: Date.now(),
         gitBranch,
         mcpCorrId: this.claudeService.getSessionMcpCorrId(actualSessionId) ?? existing?.mcpCorrId,

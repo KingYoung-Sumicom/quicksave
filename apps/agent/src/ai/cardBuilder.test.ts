@@ -23,6 +23,7 @@ vi.mock('fs/promises', () => ({
   stat: vi.fn(),
   open: vi.fn(),
   rename: vi.fn(),
+  utimes: vi.fn(),
 }));
 
 vi.mock('fs', () => ({

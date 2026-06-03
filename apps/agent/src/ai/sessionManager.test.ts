@@ -48,8 +48,10 @@ vi.mock('./cardBuilder.js', () => {
 vi.mock('./sessionRegistry.js', () => ({
   getSessionRegistry: vi.fn().mockReturnValue({
     getEntry: vi.fn().mockReturnValue(null),
+    readArchivedEntry: vi.fn().mockReturnValue(undefined),
     getEntriesForProject: vi.fn().mockReturnValue([]),
     findBySessionId: vi.fn().mockReturnValue(undefined),
+    findArchivedBySessionId: vi.fn().mockReturnValue(undefined),
     upsertEntry: vi.fn(),
     updateEntry: vi.fn(),
   }),
@@ -139,6 +141,7 @@ describe('SessionManager', () => {
     afterEach(() => {
       // Restore the shared registry mock's default so later tests see no entry.
       (getSessionRegistry().getEntry as Mock).mockReturnValue(null);
+      (getSessionRegistry().readArchivedEntry as Mock).mockReturnValue(undefined);
     });
 
     it('keeps a claude-terminal session on cold resume (registry path, not downgraded)', () => {
@@ -169,6 +172,20 @@ describe('SessionManager', () => {
       });
 
       expect(mgr.getSessionAgent('bogus-sess', '/tmp/bogus')).toBe('claude-code');
+    });
+
+    it('keeps an archived codex session on the memory provider', () => {
+      const codexProvider = createMockProvider('codex', 'memory');
+      const mgr = new SessionManager([provider, codexProvider]); // default = claude-code
+      (getSessionRegistry().getEntry as Mock).mockReturnValue(null);
+      (getSessionRegistry().readArchivedEntry as Mock).mockReturnValue({
+        sessionId: 'archived-codex',
+        cwd: '/tmp/codex',
+        agent: 'codex',
+        archived: true,
+      });
+
+      expect(mgr.getSessionAgent('archived-codex', '/tmp/codex')).toBe('codex');
     });
   });
 
@@ -1910,6 +1927,35 @@ describe('SessionManager', () => {
       expect(loadPersistedCards).toHaveBeenCalledWith('some-session');
       expect(result.cards).toHaveLength(1);
     });
+
+    it('uses memory history for archived codex registry entries', async () => {
+      const codexProvider = createMockProvider('codex', 'memory');
+      const mgr = new SessionManager([provider, codexProvider]); // default = claude-code
+      (getSessionRegistry().getEntry as Mock).mockReturnValue(null);
+      (getSessionRegistry().readArchivedEntry as Mock).mockReturnValue({
+        sessionId: 'archived-codex',
+        cwd: '/tmp/codex',
+        agent: 'codex',
+        archived: true,
+      });
+
+      const { buildCardsFromHistory, loadPersistedCards } = await import('./cardBuilder.js');
+      (loadPersistedCards as Mock).mockResolvedValue([
+        { type: 'user', id: 'p1', text: 'persisted codex' },
+      ]);
+
+      const result = await mgr.getCards('archived-codex', '/tmp/codex');
+
+      expect(loadPersistedCards).toHaveBeenCalledWith('archived-codex');
+      expect(buildCardsFromHistory).not.toHaveBeenCalledWith(
+        'archived-codex',
+        '/tmp/codex',
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(result.cards).toHaveLength(1);
+    });
   });
 
   // ── Query helpers ──
@@ -2164,6 +2210,55 @@ describe('SessionManager', () => {
       expect(provider.resumeSession).not.toHaveBeenCalled();
     });
 
+    it('resumes archived codex sessions with their persisted settings', async () => {
+      const sessionId = 'archived-codex-resume';
+      const archivedEntry = {
+        sessionId,
+        cwd: '/tmp/codex',
+        agent: 'codex',
+        archived: true,
+        permissionMode: 'full-access',
+        sandboxed: true,
+        model: 'gpt-5.3-codex',
+        reasoningEffort: 'high',
+        contextWindow: 200000,
+        mcpCorrId: 'corr-old',
+      };
+      (getSessionRegistry().getEntry as Mock).mockReturnValue(null);
+      (getSessionRegistry().readArchivedEntry as Mock).mockImplementation((cwd: string, id: string) => {
+        return cwd === archivedEntry.cwd && id === sessionId ? archivedEntry : undefined;
+      });
+      (codexProvider.resumeSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+
+      try {
+        await multiManager.resumeSession({
+          sessionId,
+          prompt: 'Continue',
+          cwd: archivedEntry.cwd,
+        });
+
+        expect(codexProvider.resumeSession).toHaveBeenCalled();
+        expect(provider.resumeSession).not.toHaveBeenCalled();
+        const resumeOpts = (codexProvider.resumeSession as Mock).mock.calls[0][0];
+        expect(resumeOpts).toMatchObject({
+          sessionId,
+          cwd: archivedEntry.cwd,
+          model: archivedEntry.model,
+          permissionLevel: 'full-access',
+          sandboxed: true,
+          reasoningEffort: archivedEntry.reasoningEffort,
+          contextWindow: archivedEntry.contextWindow,
+          mcpCorrId: archivedEntry.mcpCorrId,
+        });
+      } finally {
+        (getSessionRegistry().getEntry as Mock).mockReturnValue(null);
+        (getSessionRegistry().readArchivedEntry as Mock).mockReturnValue(undefined);
+      }
+    });
+
     it('seeds memory-mode card ids from persisted cards before cold resume', async () => {
       const sessionId = 'codex-resume-history';
       const persistedCards = [
@@ -2208,6 +2303,28 @@ describe('SessionManager', () => {
       const startEvent = events.find(e => e.sessionId === sessionId);
       expect(startEvent).toBeDefined();
       expect(startEvent.agent).toBe('codex');
+    });
+
+    it('keeps registry-only codex sessions labeled as codex in update payloads', () => {
+      const sessionId = 'codex-cold-1';
+      const registry = getSessionRegistry();
+      (registry.findBySessionId as Mock).mockReturnValue({
+        sessionId,
+        cwd: '/tmp/test',
+        agent: 'codex',
+        createdAt: 1_000,
+        lastAccessedAt: 2_000,
+      });
+
+      try {
+        const payload = multiManager.buildSessionUpdatePayload(sessionId);
+
+        expect(payload.isActive).toBe(false);
+        expect(payload.archived).toBe(false);
+        expect(payload.agent).toBe('codex');
+      } finally {
+        (registry.findBySessionId as Mock).mockReturnValue(undefined);
+      }
     });
 
     it('should report agent in getActiveSessions', async () => {

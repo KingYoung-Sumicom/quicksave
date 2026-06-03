@@ -44,8 +44,10 @@ vi.mock('./cardBuilder.js', () => {
 vi.mock('./sessionRegistry.js', () => ({
   getSessionRegistry: vi.fn().mockReturnValue({
     getEntry: vi.fn().mockReturnValue(null),
+    readArchivedEntry: vi.fn().mockReturnValue(undefined),
     getEntriesForProject: vi.fn().mockReturnValue([]),
     findBySessionId: vi.fn().mockReturnValue(undefined),
+    findArchivedBySessionId: vi.fn().mockReturnValue(undefined),
     upsertEntry: vi.fn(),
     updateEntry: vi.fn(),
   }),

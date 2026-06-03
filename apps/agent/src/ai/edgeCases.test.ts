@@ -124,6 +124,7 @@ vi.mock('fs/promises', () => ({
   mkdir: vi.fn(),
   stat: vi.fn(),
   open: vi.fn(),
+  utimes: vi.fn(),
 }));
 
 vi.mock('fs', () => ({
@@ -143,8 +144,10 @@ vi.mock('os', () => ({
 vi.mock('./sessionRegistry.js', () => ({
   getSessionRegistry: () => ({
     getEntry: vi.fn().mockReturnValue(null),
+    readArchivedEntry: vi.fn().mockReturnValue(undefined),
     getEntriesForProject: vi.fn().mockReturnValue([]),
     findBySessionId: vi.fn().mockReturnValue(undefined),
+    findArchivedBySessionId: vi.fn().mockReturnValue(undefined),
     upsertEntry: vi.fn(),
   }),
 }));
