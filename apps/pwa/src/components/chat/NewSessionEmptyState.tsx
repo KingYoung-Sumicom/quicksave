@@ -60,6 +60,8 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
                 onSelect={projectSelector.onSelect}
                 placeholder={intl.formatMessage({ id: 'newSession.project.placeholder' })}
                 offlineLabel={intl.formatMessage({ id: 'newSession.project.offline' })}
+                filterPlaceholder={intl.formatMessage({ id: 'newSession.project.filter' })}
+                noMatchLabel={intl.formatMessage({ id: 'newSession.project.noMatch' })}
               />
             </div>
           ) : (
@@ -102,20 +104,40 @@ function ProjectDropdown({
   onSelect,
   placeholder,
   offlineLabel,
+  filterPlaceholder,
+  noMatchLabel,
 }: {
   projects: ProjectEntry[];
   selected: ProjectEntry | null;
   onSelect: (projectId: string) => void;
   placeholder: string;
   offlineLabel: string;
+  filterPlaceholder: string;
+  noMatchLabel: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState('');
+
+  const closeDropdown = () => {
+    setOpen(false);
+    setFilter('');
+  };
+
+  const query = filter.trim().toLowerCase();
+  const filtered = query
+    ? projects.filter(
+        (p) =>
+          p.displayName.toLowerCase().includes(query) ||
+          p.cwd.toLowerCase().includes(query) ||
+          p.machineName.toLowerCase().includes(query)
+      )
+    : projects;
 
   return (
     <div className="relative">
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => (open ? closeDropdown() : setOpen(true))}
         className="w-full min-w-[16rem] flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-left text-slate-200 text-sm rounded-md px-2.5 py-1.5 border border-slate-700 focus:outline-none focus:border-blue-500 transition-colors"
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -139,34 +161,50 @@ function ProjectDropdown({
 
       {open && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <ul
-            role="listbox"
-            className="absolute left-0 right-0 top-full mt-1 z-50 max-h-72 overflow-y-auto bg-slate-900 rounded-lg shadow-xl border border-slate-700 py-1"
-          >
-            {projects.map((p) => {
-              const isSelected = selected?.projectId === p.projectId;
-              return (
-                <li key={p.projectId} role="option" aria-selected={isSelected}>
-                  <button
-                    type="button"
-                    disabled={!p.isConnected}
-                    onClick={() => {
-                      onSelect(p.projectId);
-                      setOpen(false);
-                    }}
-                    className={clsx(
-                      'w-full text-left px-3 py-2 transition-colors',
-                      isSelected ? 'bg-blue-600/20' : 'hover:bg-slate-800',
-                      !p.isConnected && 'opacity-50 cursor-not-allowed'
-                    )}
-                  >
-                    <ProjectRow project={p} offlineLabel={offlineLabel} />
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+          <div className="fixed inset-0 z-40" onClick={closeDropdown} />
+          <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-slate-900 rounded-lg shadow-xl border border-slate-700">
+            <div className="p-1.5 border-b border-slate-700">
+              <input
+                type="text"
+                value={filter}
+                autoFocus
+                onChange={(e) => setFilter(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') closeDropdown();
+                }}
+                placeholder={filterPlaceholder}
+                className="w-full bg-slate-800 border border-slate-600 rounded-md px-2.5 py-1.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+            {filtered.length === 0 ? (
+              <p className="px-3 py-3 text-xs text-slate-500 text-center">{noMatchLabel}</p>
+            ) : (
+              <ul role="listbox" className="max-h-72 overflow-y-auto py-1">
+                {filtered.map((p) => {
+                  const isSelected = selected?.projectId === p.projectId;
+                  return (
+                    <li key={p.projectId} role="option" aria-selected={isSelected}>
+                      <button
+                        type="button"
+                        disabled={!p.isConnected}
+                        onClick={() => {
+                          onSelect(p.projectId);
+                          closeDropdown();
+                        }}
+                        className={clsx(
+                          'w-full text-left px-3 py-2 transition-colors',
+                          isSelected ? 'bg-blue-600/20' : 'hover:bg-slate-800',
+                          !p.isConnected && 'opacity-50 cursor-not-allowed'
+                        )}
+                      >
+                        <ProjectRow project={p} offlineLabel={offlineLabel} />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
         </>
       )}
     </div>

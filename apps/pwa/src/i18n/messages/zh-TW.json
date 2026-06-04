@@ -141,6 +141,8 @@
   "newSession.title": "新任務",
   "newSession.project.placeholder": "選擇專案…",
   "newSession.project.offline": "離線",
+  "newSession.project.filter": "篩選專案…",
+  "newSession.project.noMatch": "沒有符合的專案",
   "newSession.agent": "Agent",
   "newSession.model": "模型",
   "newSession.reasoningEffort": "推理強度",

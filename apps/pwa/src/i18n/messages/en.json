@@ -141,6 +141,8 @@
   "newSession.title": "New Task",
   "newSession.project.placeholder": "Select a project…",
   "newSession.project.offline": "offline",
+  "newSession.project.filter": "Filter projects…",
+  "newSession.project.noMatch": "No matching projects",
   "newSession.agent": "Agent",
   "newSession.model": "Model",
   "newSession.reasoningEffort": "Reasoning Effort",
