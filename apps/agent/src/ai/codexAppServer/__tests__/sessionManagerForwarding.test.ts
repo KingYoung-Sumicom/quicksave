@@ -27,6 +27,7 @@ class StubCodexAppServerSession implements ProviderSession {
   interruptThenSendUserMessages: string[] = [];
   interruptCalls = 0;
   steerQueuedCalls: Array<{ interruptCurrentTurn?: boolean }> = [];
+  deleteQueuedCalls: string[] = [];
   queueState: ReturnType<NonNullable<ProviderSession['getQueueState']>> = null;
   enqueueRuntimeOverride(patch: Record<string, unknown>): void {
     this.enqueued.push(patch);
@@ -45,6 +46,10 @@ class StubCodexAppServerSession implements ProviderSession {
   }
   async steerQueuedMessage(opts?: { interruptCurrentTurn?: boolean }): Promise<boolean> {
     this.steerQueuedCalls.push({ interruptCurrentTurn: opts?.interruptCurrentTurn });
+    return true;
+  }
+  deleteQueuedMessage(id: string): boolean {
+    this.deleteQueuedCalls.push(id);
     return true;
   }
   kill(): void {
@@ -235,6 +240,12 @@ describe('SessionManager → CodexAppServer hot-resume forwarding', () => {
     const { sm, sessionId, session } = await setupActiveCodexSession();
     await expect(sm.steerQueuedMessage(sessionId, { interruptCurrentTurn: true })).resolves.toBe(true);
     expect(session.steerQueuedCalls).toEqual([{ interruptCurrentTurn: true }]);
+  });
+
+  it('deleteQueuedMessage asks the provider to remove the queued prompt by id', async () => {
+    const { sm, sessionId, session } = await setupActiveCodexSession();
+    await expect(sm.deleteQueuedMessage(sessionId, 'queued-123')).resolves.toBe(true);
+    expect(session.deleteQueuedCalls).toEqual(['queued-123']);
   });
 
   it('idle hot-resume forwards the prompt to sendUserMessage', async () => {

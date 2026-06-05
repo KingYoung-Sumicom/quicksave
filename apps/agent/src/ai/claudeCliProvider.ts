@@ -11,7 +11,7 @@ import { SANDBOX_MCP_NAME, SANDBOX_BASH_TOOL, buildSandboxMcpServerConfig } from
 import { DebugLogger } from './debugLogger.js';
 import { attachmentsToContentBlocks } from './contentBlocks.js';
 import { persistAttachments } from './attachmentStore.js';
-import { queueStateFor, type QueuedUserPrompt } from './queuedUserPrompts.js';
+import { makeQueuedUserPrompt, queueStateFor, type QueuedUserPrompt } from './queuedUserPrompts.js';
 import type {
   CodingAgentProvider,
   ProviderSession,
@@ -333,7 +333,7 @@ export class CliProviderSession implements ProviderSession {
   sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
     if (!this.process || this.process.killed) return;
     if (this.activeTurn) {
-      this.queuedUserPrompts.push({ prompt, attachments });
+      this.queuedUserPrompts.push(makeQueuedUserPrompt(prompt, attachments));
       this.emitQueueStateChange();
       return;
     }
@@ -380,6 +380,17 @@ export class CliProviderSession implements ProviderSession {
     if (this.queuedUserPrompts.length === 0) return;
     this.queuedUserPrompts = [];
     this.emitQueueStateChange();
+  }
+
+  /** Remove a single queued message by id. No-op (returns false) when the id is
+   * no longer queued — e.g. it already advanced into the active turn — so a
+   * raced delete never removes the wrong message. */
+  deleteQueuedMessage(id: string): boolean {
+    const index = this.queuedUserPrompts.findIndex((q) => q.id === id);
+    if (index === -1) return false;
+    this.queuedUserPrompts.splice(index, 1);
+    this.emitQueueStateChange();
+    return true;
   }
 
   private emitQueueStateChange(): void {

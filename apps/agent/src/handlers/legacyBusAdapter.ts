@@ -75,6 +75,7 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   'claude:resume',
   'claude:interrupt',
   'claude:steer-queued',
+  'claude:delete-queued',
   'claude:cancel',
   'claude:close',
   'claude:end-task',

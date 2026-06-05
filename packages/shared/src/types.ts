@@ -113,6 +113,8 @@ export type MessageType =
   | 'claude:interrupt:response'
   | 'claude:steer-queued'           // pwa-request: inject queued prompt into current turn
   | 'claude:steer-queued:response'  // agent-response: queued prompt steered
+  | 'claude:delete-queued'          // pwa-request: drop a queued user message by id
+  | 'claude:delete-queued:response' // agent-response: queued message removed
   | 'claude:cancel'
   | 'claude:cancel:response'
   | 'claude:close'
@@ -1650,6 +1652,11 @@ export interface SessionQueueState {
   /** FIFO previews for queued user messages. Omitted by older agents; clients
    * can fall back to `latestPromptPreview` when absent. */
   queuedPromptPreviews?: string[];
+  /** Stable per-message ids, index-aligned with `queuedPromptPreviews`. Used to
+   * target a specific queued message for deletion (`claude:delete-queued`)
+   * without relying on array position, which shifts as the queue advances.
+   * Omitted by older agents and by PWA-local optimistic state. */
+  queuedPromptIds?: string[];
   canInterruptCurrentTurn?: boolean;
   /** PWA-local marker for a just-submitted active-turn prompt. Daemon payloads
    * omit this; the client uses it to keep the badge visible through immediate
@@ -1776,6 +1783,19 @@ export interface ClaudeSteerQueuedRequestPayload {
 }
 
 export interface ClaudeSteerQueuedResponsePayload {
+  success: boolean;
+  error?: string;
+}
+
+// Delete a specific queued user message by id. `success` is false when the id
+// is no longer queued (e.g. it already advanced into the active turn), so a
+// raced delete is a safe no-op rather than removing the wrong message.
+export interface ClaudeDeleteQueuedRequestPayload {
+  sessionId: string;
+  queuedId: string;
+}
+
+export interface ClaudeDeleteQueuedResponsePayload {
   success: boolean;
   error?: string;
 }

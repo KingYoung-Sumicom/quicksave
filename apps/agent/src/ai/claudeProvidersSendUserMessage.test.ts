@@ -128,6 +128,56 @@ describe('CliProviderSession.sendUserMessage', () => {
     });
   });
 
+  it('deleteQueuedMessage removes one queued prompt by id and emits a queue update', () => {
+    const { proc, stdinWrites } = makeFakeProcess();
+    const cardBuilder = new StreamCardBuilder('sess-1', '/tmp');
+    const session = new CliProviderSession(proc);
+    session.sessionId = 'sess-1';
+    session.cardBuilder = cardBuilder;
+    session.activeTurn = true;
+    const queueUpdates: string[] = [];
+    session.callbacks = {
+      ...makeCallbacks().callbacks,
+      onQueueStateChange: (sessionId) => queueUpdates.push(sessionId),
+    };
+
+    session.sendUserMessage('first queued');
+    session.sendUserMessage('second queued');
+    const ids = session.getQueueState()?.queuedPromptIds ?? [];
+    expect(ids).toHaveLength(2);
+
+    expect(session.deleteQueuedMessage(ids[0])).toBe(true);
+
+    // Deletion never writes to the CLI — it only mutates the in-memory queue.
+    expect(stdinWrites).toHaveLength(0);
+    expect(session.getQueueState()).toMatchObject({
+      pendingUserMessages: 1,
+      latestPromptPreview: 'second queued',
+      queuedPromptPreviews: ['second queued'],
+      queuedPromptIds: [ids[1]],
+    });
+    // two enqueues + one delete = three queue-state emits
+    expect(queueUpdates).toEqual(['sess-1', 'sess-1', 'sess-1']);
+  });
+
+  it('deleteQueuedMessage returns false for an unknown id and leaves the queue intact', () => {
+    const { proc } = makeFakeProcess();
+    const cardBuilder = new StreamCardBuilder('sess-1', '/tmp');
+    const session = new CliProviderSession(proc);
+    session.sessionId = 'sess-1';
+    session.cardBuilder = cardBuilder;
+    session.activeTurn = true;
+    session.callbacks = makeCallbacks().callbacks;
+
+    session.sendUserMessage('only queued');
+
+    expect(session.deleteQueuedMessage('does-not-exist')).toBe(false);
+    expect(session.getQueueState()).toMatchObject({
+      pendingUserMessages: 1,
+      queuedPromptPreviews: ['only queued'],
+    });
+  });
+
   it('Steer now sends the first queued prompt and interrupts when requested', async () => {
     const { proc, stdinWrites } = makeFakeProcess();
     const cardBuilder = new StreamCardBuilder('sess-1', '/tmp');

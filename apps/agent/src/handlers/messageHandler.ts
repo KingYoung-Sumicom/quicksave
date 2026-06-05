@@ -77,6 +77,8 @@ import {
   ClaudeInterruptResponsePayload,
   ClaudeSteerQueuedRequestPayload,
   ClaudeSteerQueuedResponsePayload,
+  ClaudeDeleteQueuedRequestPayload,
+  ClaudeDeleteQueuedResponsePayload,
   ClaudeCancelRequestPayload,
   ClaudeCancelResponsePayload,
   ClaudeCloseRequestPayload,
@@ -781,6 +783,8 @@ export class MessageHandler {
           return this.handleClaudeInterrupt(message as Message<ClaudeInterruptRequestPayload>);
         case 'claude:steer-queued':
           return this.handleClaudeSteerQueued(message as Message<ClaudeSteerQueuedRequestPayload>);
+        case 'claude:delete-queued':
+          return this.handleClaudeDeleteQueued(message as Message<ClaudeDeleteQueuedRequestPayload>);
         case 'claude:cancel':
           return this.handleClaudeCancel(message as Message<ClaudeCancelRequestPayload>);
         case 'claude:close':
@@ -2355,6 +2359,19 @@ export class MessageHandler {
     const response = createMessage<ClaudeSteerQueuedResponsePayload>(
       'claude:steer-queued:response',
       { success, error: success ? undefined : 'No queued message or active turn to steer' }
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleClaudeDeleteQueued(
+    message: Message<ClaudeDeleteQueuedRequestPayload>
+  ): Promise<Message<ClaudeDeleteQueuedResponsePayload>> {
+    const { sessionId, queuedId } = message.payload;
+    const success = await this.claudeService.deleteQueuedMessage(sessionId, queuedId);
+    const response = createMessage<ClaudeDeleteQueuedResponsePayload>(
+      'claude:delete-queued:response',
+      { success, error: success ? undefined : 'No matching queued message to delete' }
     );
     response.id = message.id;
     return response;

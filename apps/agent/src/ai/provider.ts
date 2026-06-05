@@ -90,6 +90,9 @@ export interface ProviderSession {
   /** Optional — inject the provider's queued user message into the current
    * active turn instead of waiting for the next turn. */
   steerQueuedMessage?(opts?: { interruptCurrentTurn?: boolean }): Promise<boolean> | boolean;
+  /** Optional — remove a single queued user message by id. Returns false when
+   * the id is no longer queued (already advanced or unknown). */
+  deleteQueuedMessage?(id: string): boolean;
   /** Optional — ask the provider for a breakdown of current context window
    * usage. Only supported by the Claude Code CLI (via `get_context_usage`
    * control_request). Returns null on providers that don't support it. */

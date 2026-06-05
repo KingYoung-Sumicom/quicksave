@@ -7,6 +7,7 @@ import {
   type ClaudeResumeResponsePayload,
   type ClaudeInterruptResponsePayload,
   type ClaudeSteerQueuedResponsePayload,
+  type ClaudeDeleteQueuedResponsePayload,
   type ClaudeCancelResponsePayload,
   type ClaudeCloseResponsePayload,
   type ClaudeEndTaskResponsePayload,
@@ -442,6 +443,20 @@ export function useClaudeOperations(
     [sendCommand]
   );
 
+  const deleteQueuedSession = useCallback(
+    async (sessionId: string, queuedId: string) => {
+      try {
+        await sendCommand<ClaudeDeleteQueuedResponsePayload>(
+          'claude:delete-queued',
+          { sessionId, queuedId },
+        );
+      } catch (error) {
+        console.error('Failed to delete queued message:', error);
+      }
+    },
+    [sendCommand]
+  );
+
   const closeSession = useCallback(
     async (sessionId: string) => {
       setStreaming(false);
@@ -673,6 +688,7 @@ export function useClaudeOperations(
     resumeSession,
     interruptSession,
     steerQueuedSession,
+    deleteQueuedSession,
     cancelSession,
     closeSession,
     endSession,

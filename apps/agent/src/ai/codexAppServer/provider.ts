@@ -18,7 +18,7 @@ import type {
   StartSessionOpts,
 } from '../provider.js';
 import { normalizePermissionLevelForAgent } from '../provider.js';
-import { queueStateFor, type QueuedUserPrompt } from '../queuedUserPrompts.js';
+import { makeQueuedUserPrompt, queueStateFor, type QueuedUserPrompt } from '../queuedUserPrompts.js';
 import { getEventStore } from '../../storage/eventStore.js';
 
 import { consumeAppServerStream } from './cardAdapter.js';
@@ -232,7 +232,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
 
   sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
     if (this.currentTurnId) {
-      this.pendingTurns.push({ prompt, attachments });
+      this.pendingTurns.push(makeQueuedUserPrompt(prompt, attachments));
       this.callbacks.onQueueStateChange?.(this.threadId);
       return;
     }
@@ -242,7 +242,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   interruptThenSendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
     if (this.currentTurnId) this.interrupt();
     if (this.running) {
-      this.pendingTurns.push({ prompt, attachments });
+      this.pendingTurns.push(makeQueuedUserPrompt(prompt, attachments));
       this.callbacks.onQueueStateChange?.(this.threadId);
       return;
     }
@@ -312,7 +312,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     if (this.exited) return;
     if (this.running) {
       // Queue — only one turn at a time, preserving FIFO order.
-      this.pendingTurns.push({ prompt, attachments });
+      this.pendingTurns.push(makeQueuedUserPrompt(prompt, attachments));
       this.callbacks.onQueueStateChange?.(this.threadId);
       return;
     }
@@ -349,6 +349,16 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       this.callbacks.onQueueStateChange?.(this.threadId);
     }
     return steered;
+  }
+
+  /** Remove a single queued message by id. No-op (returns false) when the id is
+   * no longer queued — e.g. it already advanced into the active turn. */
+  deleteQueuedMessage(id: string): boolean {
+    const index = this.pendingTurns.findIndex((q) => q.id === id);
+    if (index === -1) return false;
+    this.pendingTurns.splice(index, 1);
+    this.callbacks.onQueueStateChange?.(this.threadId);
+    return true;
   }
 
   private async steerCurrentTurn(

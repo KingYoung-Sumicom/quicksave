@@ -51,6 +51,7 @@ interface ClaudePanelProps {
   onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string, opts?: ResumeSessionOpts) => Promise<void>;
   onSteerQueuedSession?: (sessionId: string) => Promise<void> | void;
+  onDeleteQueuedSession?: (sessionId: string, queuedId: string) => Promise<void> | void;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
   onUnsubscribeSession?: (sessionId: string) => void;
   onDismissPendingMission?: (sessionId: string, cwd: string, dismissedAt?: number) => Promise<void> | void;
@@ -117,9 +118,11 @@ function PendingMissionBanner({
 function QueuedComposerPanel({
   session,
   onSteerQueuedSession,
+  onDeleteQueuedSession,
 }: {
   session?: ClaudeSessionSummary;
   onSteerQueuedSession?: (sessionId: string) => Promise<void> | void;
+  onDeleteQueuedSession?: (sessionId: string, queuedId: string) => Promise<void> | void;
 }) {
   const queueState = session?.queueState;
   const hasQueuedMessage = !!queueState && queueState.pendingUserMessages > 0;
@@ -156,20 +159,39 @@ function QueuedComposerPanel({
         )}
       </div>
       <div className="mt-1.5 max-h-32 space-y-1 overflow-y-auto pr-1">
-        {queuedPromptPreviews.map((preview, index) => (
-          <div
-            key={`${index}-${preview}`}
-            className="flex min-w-0 items-center gap-2 rounded border border-slate-700/80 bg-slate-950/50 px-2 py-1 text-xs text-slate-100"
-          >
-            <span className="w-4 shrink-0 text-right text-[10px] font-semibold tabular-nums text-cyan-200/80">
-              {index + 1}
-            </span>
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-300" />
-            <span className="min-w-0 flex-1 truncate">
-              {preview}
-            </span>
-          </div>
-        ))}
+        {queuedPromptPreviews.map((preview, index) => {
+          // Stable id, index-aligned with previews. Absent during PWA-local
+          // optimistic state (and from older agents) — hide delete until the
+          // authoritative queue update arrives so we never delete by position.
+          const queuedId = queueState.queuedPromptIds?.[index];
+          return (
+            <div
+              key={queuedId ?? `${index}-${preview}`}
+              className="flex min-w-0 items-center gap-2 rounded border border-slate-700/80 bg-slate-950/50 px-2 py-1 text-xs text-slate-100"
+            >
+              <span className="w-4 shrink-0 text-right text-[10px] font-semibold tabular-nums text-cyan-200/80">
+                {index + 1}
+              </span>
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-300" />
+              <span className="min-w-0 flex-1 truncate">
+                {preview}
+              </span>
+              {queuedId && onDeleteQueuedSession && (
+                <button
+                  type="button"
+                  onClick={() => onDeleteQueuedSession(session.sessionId, queuedId)}
+                  className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-rose-500/15 hover:text-rose-300"
+                  aria-label="Delete queued message"
+                  title="Delete queued message"
+                >
+                  <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+                    <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
+                  </svg>
+                </button>
+              )}
+            </div>
+          );
+        })}
         {hiddenQueuedMessageCount > 0 && (
           <div className="px-2 py-0.5 text-[11px] text-slate-400">
             +{hiddenQueuedMessageCount} queued message{hiddenQueuedMessageCount === 1 ? '' : 's'}
@@ -192,6 +214,7 @@ export function ClaudePanel({
   onStartSession,
   onResumeSession,
   onSteerQueuedSession,
+  onDeleteQueuedSession,
 
   onRespondToUserInput,
   onUnsubscribeSession,
@@ -926,7 +949,7 @@ export function ClaudePanel({
 
           {/* Input */}
           <div className="border-t border-slate-700 px-4 pt-3 flex-shrink-0 bg-slate-900 safe-area-bottom-input touch-none">
-            <QueuedComposerPanel session={viewedSession ?? activeSession} onSteerQueuedSession={onSteerQueuedSession} />
+            <QueuedComposerPanel session={viewedSession ?? activeSession} onSteerQueuedSession={onSteerQueuedSession} onDeleteQueuedSession={onDeleteQueuedSession} />
             {activeSessionId && (
               <SessionStatusBar
                 sessionId={activeSessionId}

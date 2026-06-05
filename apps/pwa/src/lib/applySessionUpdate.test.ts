@@ -212,6 +212,29 @@ describe('applySessionUpdate', () => {
         },
       },
       {
+        // Same previews and count, only the stable ids differ — must still
+        // upsert so the delete buttons target the right messages.
+        field: 'queueState.queuedPromptIds',
+        existing: {
+          queueState: {
+            pendingUserMessages: 2,
+            latestPromptPreview: 'second',
+            queuedPromptPreviews: ['first', 'second'],
+            queuedPromptIds: ['id-a', 'id-b'],
+            canInterruptCurrentTurn: true,
+          },
+        },
+        incoming: {
+          queueState: {
+            pendingUserMessages: 2,
+            latestPromptPreview: 'second',
+            queuedPromptPreviews: ['first', 'second'],
+            queuedPromptIds: ['id-a', 'id-c'],
+            canInterruptCurrentTurn: true,
+          },
+        },
+      },
+      {
         field: 'agent',
         existing: { agent: 'claude-code' as AgentId },
         incoming: { agent: 'codex' as AgentId },

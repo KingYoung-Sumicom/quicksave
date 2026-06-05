@@ -713,6 +713,7 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 | `claude:start` | PWA→Agent | `bus.command('claude:start', …)` | Start a new session. `attachmentIds?` resolved from staging |
 | `claude:resume` | PWA→Agent | `bus.command('claude:resume', …)` | Resume a session. `attachmentIds?` resolved from staging; `interruptCurrentTurn?` interrupts the active turn before sending |
 | `claude:steer-queued` | PWA→Agent | `bus.command('claude:steer-queued', …)` | Steer or expedite the first queued prompt; `interruptCurrentTurn?` cancels the active turn so the queued prompt runs next |
+| `claude:delete-queued` | PWA→Agent | `bus.command('claude:delete-queued', …)` | Remove one queued user message by `queuedId` (the stable id surfaced in `SessionQueueState.queuedPromptIds`). No-op if it already advanced into the active turn |
 | `attachment:upload` | PWA→Agent | `bus.command('attachment:upload', …)` | One chunk of a staged attachment (meta on chunk 0) |
 | `attachment:cancel` | PWA→Agent | `bus.command('attachment:cancel', …)` | Drop a staged attachment before send |
 | `attachment:fetch` | PWA→Agent | `bus.command('attachment:fetch', …)` | On-demand bytes for a metadata-only chip on `UserCard.attachments[]` |

@@ -37,6 +37,7 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     current.queueState?.pendingUserMessages === payload.queueState?.pendingUserMessages &&
     current.queueState?.latestPromptPreview === payload.queueState?.latestPromptPreview &&
     sameStringArray(current.queueState?.queuedPromptPreviews, payload.queueState?.queuedPromptPreviews) &&
+    sameStringArray(current.queueState?.queuedPromptIds, payload.queueState?.queuedPromptIds) &&
     current.queueState?.canInterruptCurrentTurn === payload.queueState?.canInterruptCurrentTurn &&
     current.queueState?.optimisticUntil === payload.queueState?.optimisticUntil &&
     current.agent === agent &&

@@ -1347,6 +1347,7 @@ function ProjectRouteSession({
     startSession,
     resumeSession,
     steerQueuedSession,
+    deleteQueuedSession,
     cancelSession,
     closeSession,
     endSession,
@@ -1484,6 +1485,7 @@ function ProjectRouteSession({
         onStartSession={boundStartSession}
         onResumeSession={boundResumeSession}
         onSteerQueuedSession={(sid) => steerQueuedSession(sid, true)}
+        onDeleteQueuedSession={(sid, qid) => deleteQueuedSession(sid, qid)}
         onRespondToUserInput={respondToUserInput}
         onDismissPendingMission={dismissPendingMission}
       />

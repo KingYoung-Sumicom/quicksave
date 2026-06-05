@@ -930,6 +930,17 @@ export class SessionManager extends EventEmitter {
     return ok;
   }
 
+  async deleteQueuedMessage(sessionId: string, queuedId: string): Promise<boolean> {
+    const ps = this.sessions.get(sessionId);
+    if (!ps?.providerSession?.alive) return false;
+    const deleteQueuedMessage = ps.providerSession.deleteQueuedMessage;
+    if (!deleteQueuedMessage) return false;
+    console.log(`[session-manager] delete queued message session=${sessionId.slice(0, 8)} queued=${queuedId.slice(0, 8)}`);
+    const ok = deleteQueuedMessage.call(ps.providerSession, queuedId);
+    this.emitSessionUpdate(sessionId);
+    return ok;
+  }
+
   /** Send a raw control_request to the active provider session (CLI only). */
   async sendControlRequest(sessionId: string, subtype: string, params?: Record<string, unknown>): Promise<unknown> {
     const ps = this.sessions.get(sessionId);
