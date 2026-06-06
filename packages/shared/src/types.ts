@@ -218,6 +218,19 @@ export type MessageType =
   | 'voice:rtc-connect:response'
   | 'voice:rtc-ice'
   | 'voice:rtc-ice:response'
+  // Voice intermediary agent (the "AI coworker"): a daemon-side tool-calling
+  // LLM that interprets the coding agent and lets the user steer by voice. The
+  // PWA attaches it to a coding session, forwards final STT transcripts as
+  // utterances, and plays back synthesized speech (fetched by id). See
+  // apps/agent/src/ai/voiceIntermediary and the architecture reference.
+  | 'voice-agent:attach'
+  | 'voice-agent:attach:response'
+  | 'voice-agent:detach'
+  | 'voice-agent:detach:response'
+  | 'voice-agent:utterance'
+  | 'voice-agent:utterance:response'
+  | 'voice-agent:fetch-audio'
+  | 'voice-agent:fetch-audio:response'
   // Message bus envelope (transports opaque bus frames; see packages/message-bus)
   | 'bus:frame'
   | 'error';
@@ -1440,6 +1453,16 @@ export interface VoiceConfig {
    *  `gpt-4o-transcribe`). Realtime requires a realtime-capable model;
    *  `whisper-1` is batch-only. */
   streamModel: string;
+  /** Chat model for the voice intermediary agent's brain — POST
+   *  `{baseUrl}/chat/completions` (OpenAI-compatible, tool-calling). Optional;
+   *  the voice agent stays disabled while empty. */
+  agentModel?: string;
+  /** Model for text-to-speech — POST `{baseUrl}/audio/speech` (e.g. `tts-1`,
+   *  `gpt-4o-mini-tts`). Optional; the agent runs silently while empty. */
+  ttsModel?: string;
+  /** Voice id for TTS (e.g. `alloy`, `nova`). Provider-specific; defaults to a
+   *  server-side default when empty. */
+  ttsVoice?: string;
 }
 
 export interface VoiceTranscribeRequestPayload {
@@ -1464,6 +1487,71 @@ export interface VoiceListModelsResponsePayload {
   models: string[];
   error?: string;
 }
+
+// ── Voice intermediary agent ("AI coworker") ────────────────────────────────
+
+/** PWA → agent: attach the voice intermediary to a coding session and bring up
+ *  its tool-calling brain. Re-sending refreshes the config in place. */
+export interface VoiceAgentAttachRequestPayload {
+  sessionId: string;
+  config: VoiceConfig;
+}
+export interface VoiceAgentAttachResponsePayload {
+  ok: boolean;
+  /** True when a brain model is configured and the session is live, i.e. the
+   *  agent will actually respond. False means attached-but-idle (mis-config). */
+  active: boolean;
+  error?: string;
+}
+
+/** PWA → agent: detach (tear down) the voice intermediary for a session. */
+export interface VoiceAgentDetachRequestPayload {
+  sessionId: string;
+}
+export interface VoiceAgentDetachResponsePayload {
+  ok: boolean;
+}
+
+/** PWA → agent: a final user utterance (STT transcript) routed to the voice
+ *  agent instead of the composer. Triggers one tool-calling turn. */
+export interface VoiceAgentUtteranceRequestPayload {
+  sessionId: string;
+  text: string;
+}
+export interface VoiceAgentUtteranceResponsePayload {
+  ok: boolean;
+  error?: string;
+}
+
+/** PWA → agent: fetch synthesized speech bytes by id. Speech is delivered
+ *  metadata-first (a `speak` event carries the `audioId`); bytes come on demand
+ *  here and are cached PWA-side, mirroring the attachment/artifact convention. */
+export interface VoiceAgentFetchAudioRequestPayload {
+  sessionId: string;
+  audioId: string;
+}
+export interface VoiceAgentFetchAudioResponsePayload {
+  /** base64-encoded audio, or empty when the id has expired/evicted. */
+  audioBase64: string;
+  mimeType: string;
+  error?: string;
+}
+
+/** Lifecycle state of a session's voice agent, surfaced for UI affordances. */
+export type VoiceAgentState = 'idle' | 'thinking' | 'speaking' | 'listening';
+
+/**
+ * agent → PWA push on `/sessions/:sessionId/voice-agent`. The voice agent emits
+ * lifecycle + speech events as it runs. Audio bytes are NOT inlined: `speak`
+ * carries an `audioId` the PWA fetches via `voice-agent:fetch-audio`. `action`
+ * narrates a tool the agent took (e.g. "steered the coding agent") for the UI
+ * log; `error` surfaces a brain/TTS failure.
+ */
+export type VoiceAgentEvent =
+  | { kind: 'state'; state: VoiceAgentState }
+  | { kind: 'speak'; audioId: string; text: string; mimeType: string }
+  | { kind: 'action'; summary: string }
+  | { kind: 'error'; message: string };
 
 // ── Streaming voice (WebRTC) ────────────────────────────────────────────────
 

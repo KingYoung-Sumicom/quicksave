@@ -60,6 +60,7 @@ import {
   type Message,
   type Repository,
   type SessionCardsUpdate,
+  type VoiceAgentEvent,
   type BroadcastSessionEntry,
   type SessionConfigUpdatedPayload,
   type SessionHistoryUpdatedPayload,
@@ -246,6 +247,7 @@ export async function runDaemon(): Promise<void> {
   // Pub/sub: ClaudeCodeService emits card events → send only to peers subscribed to that session
   const claudeService = messageHandler.getClaudeService();
   const commitSummaryStore = messageHandler.getCommitSummaryStore();
+  const voiceIntermediary = messageHandler.getVoiceIntermediary();
 
   // ── MessageBus subscription paths ─────────────────────────────────────────
   // Each onSubscribe delivers the current state atomically in its `snap`
@@ -317,6 +319,16 @@ export async function runDaemon(): Promise<void> {
     '/sessions/:sessionId/attention',
     { snapshot: () => null },
   );
+
+  // Voice intermediary ("AI coworker") events: state / speak / action / error.
+  // No snapshot — the agent is event-driven and re-derives from cards on attach.
+  bus.onSubscribe<'/sessions/:sessionId/voice-agent', null, VoiceAgentEvent>(
+    '/sessions/:sessionId/voice-agent',
+    { snapshot: () => null },
+  );
+  voiceIntermediary.on('event', (sessionId: string, event: VoiceAgentEvent) => {
+    bus.publish<VoiceAgentEvent>(`/sessions/${sessionId}/voice-agent`, event);
+  });
 
   // ── Terminals (PTY-backed interactive shells) ──────────────────────────
   // `/terminals`          — full list + upsert/remove events.
@@ -478,6 +490,10 @@ export async function runDaemon(): Promise<void> {
         title: request.title,
       },
     });
+
+    // Proactively wake the voice agent (if attached) so it can narrate the
+    // pending permission and ask the user — "it wants to run X, shall I allow?".
+    voiceIntermediary.notifyPendingPermission(request);
   });
   claudeService.on('user-input-resolved', (info) => {
     // CardBuilder.clearPendingInput emits a card-event (update with

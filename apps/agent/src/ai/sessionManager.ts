@@ -449,7 +449,7 @@ export class SessionManager extends EventEmitter {
       // respawn on the next turn.
       const ps = this.sessions.get(sessionId);
       const cliSession = ps?.providerSession as
-        | { alive: boolean; sendControlRequest?: (subtype: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown> }
+        | { alive: boolean; sendControlRequest?: (subtype: string, params?: Record<string, unknown>, idleTimeoutMs?: number, wallClockTimeoutMs?: number) => Promise<unknown> }
         | null
         | undefined;
       if (ps?.providerSession?.alive && cliSession && typeof cliSession.sendControlRequest === 'function') {
@@ -457,7 +457,10 @@ export class SessionManager extends EventEmitter {
         const ctxWindow = (next.contextWindow as number | undefined) ?? ps.spawnedContextWindow;
         const decorated = decorateModelWithContextWindow(value, ctxWindow) ?? value;
         try {
-          await cliSession.sendControlRequest('set_model', { model: decorated }, 5_000);
+          // wall-clock cap mirrors the idle one: this can fire mid-turn (e.g. a
+          // model/effort switch while a tool call is in flight), where the idle
+          // clock is paused — without the wall cap the await would hang forever.
+          await cliSession.sendControlRequest('set_model', { model: decorated }, 5_000, 5_000);
           ps.spawnedModel = value;
         } catch (err) {
           // CLI rejected — fall back to cold-respawn on next prompt via the
@@ -919,6 +922,33 @@ export class SessionManager extends EventEmitter {
     return true;
   }
 
+  /**
+   * Inject a user prompt into a LIVE session from a daemon-side driver (the
+   * voice intermediary's `send_to_coding_agent` tool). Mirrors the normal send
+   * path without the resume/cold-start machinery, so it requires the session to
+   * already be open — returns false otherwise. With `interrupt`, the in-flight
+   * turn is interrupted first so the prompt steers immediately; otherwise it
+   * follows the provider's normal queue-or-send behavior.
+   */
+  sendUserMessageToSession(sessionId: string, prompt: string, opts?: { interrupt?: boolean }): boolean {
+    const ps = this.sessions.get(sessionId);
+    if (!ps?.providerSession?.alive) return false;
+    const session = ps.providerSession;
+    console.log(`[session-manager] voice steer session=${sessionId.slice(0, 8)} interrupt=${opts?.interrupt === true}`);
+    if (opts?.interrupt) {
+      if (typeof session.interruptThenSendUserMessage === 'function') {
+        session.interruptThenSendUserMessage(prompt);
+      } else {
+        session.interrupt();
+        session.sendUserMessage(prompt);
+      }
+    } else {
+      session.sendUserMessage(prompt);
+    }
+    this.emitSessionUpdate(sessionId);
+    return true;
+  }
+
   async steerQueuedMessage(sessionId: string, opts?: { interruptCurrentTurn?: boolean }): Promise<boolean> {
     const ps = this.sessions.get(sessionId);
     if (!ps?.providerSession?.alive) return false;
@@ -1025,17 +1055,32 @@ export class SessionManager extends EventEmitter {
       // bypassPermissions is handled entirely on the daemon side (hook + AUTO_APPROVE).
       // Send `default` to the CLI so it never enters its own bypass mode.
       const cliMode = isFullAccessPermission(agentId, level) ? 'default' : level;
-      try {
-        await session.sendControlRequest('set_permission_mode', { mode: cliMode });
-      } catch (err) {
-        // CLI rejected — roll back in-memory state so config stays consistent with the CLI.
-        if (ps) ps.permissionLevel = prevLevel;
-        this.sessionPermissions.set(sessionId, prevLevel);
-        if (ps?.bypassToken) {
-          applyBypassFlag(ps.bypassToken, isFullAccessPermission(agentId, prevLevel));
+      if (session.activeTurn && typeof session.queuePermissionMode === 'function') {
+        // A turn is in flight (e.g. a tool call awaiting approval). Sending
+        // set_permission_mode now would race the busy control channel and risk
+        // hanging on the paused idle clock, so defer it to the next idle
+        // boundary. The optimistic in-memory state and bypass sentinel already
+        // reflect the change; the CLI catches up when the turn ends. No
+        // rollback — the switch is honored, just applied a little later.
+        console.log(`[permission] session=${sessionId.slice(0, 8)} ${prevLevel}->${level} queued (mid-turn), cliMode=${cliMode}`);
+        session.queuePermissionMode(cliMode);
+      } else {
+        try {
+          console.log(`[permission] session=${sessionId.slice(0, 8)} ${prevLevel}->${level} sending set_permission_mode mode=${cliMode}`);
+          await session.sendControlRequest('set_permission_mode', { mode: cliMode }, 15_000, 15_000);
+          console.log(`[permission] session=${sessionId.slice(0, 8)} set_permission_mode mode=${cliMode} acked`);
+        } catch (err) {
+          // CLI rejected at idle — the mode is genuinely invalid for this
+          // session. Roll back in-memory state so config stays consistent.
+          console.warn(`[permission] session=${sessionId.slice(0, 8)} set_permission_mode mode=${cliMode} REJECTED, rolling back to ${prevLevel}:`, err);
+          if (ps) ps.permissionLevel = prevLevel;
+          this.sessionPermissions.set(sessionId, prevLevel);
+          if (ps?.bypassToken) {
+            applyBypassFlag(ps.bypassToken, isFullAccessPermission(agentId, prevLevel));
+          }
+          this.emitSessionUpdate(sessionId);
+          throw err;
         }
-        this.emitSessionUpdate(sessionId);
-        throw err;
       }
     } else if (session?.alive && typeof session.enqueueRuntimeOverride === 'function') {
       // Codex app-server: queue approvalPolicy/sandboxPolicy/approvalsReviewer

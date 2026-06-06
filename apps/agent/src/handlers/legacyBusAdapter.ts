@@ -115,6 +115,11 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   'artifact:fetch',
   'voice:transcribe',
   'voice:list-models',
+  // voice intermediary ("AI coworker")
+  'voice-agent:attach',
+  'voice-agent:detach',
+  'voice-agent:utterance',
+  'voice-agent:fetch-audio',
 ];
 
 /**

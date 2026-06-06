@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { describe, it, expect } from 'vitest';
-import { classifyVoiceDcData } from './voiceStream.js';
+import { classifyVoiceDcData, wireVoiceStream, type VoiceBus } from './voiceStream.js';
 
 describe('classifyVoiceDcData', () => {
   it('parses a JSON control message', () => {
@@ -39,5 +39,24 @@ describe('classifyVoiceDcData', () => {
   it('ignores unknown payload types', () => {
     expect(classifyVoiceDcData(42).kind).toBe('ignore');
     expect(classifyVoiceDcData(null).kind).toBe('ignore');
+  });
+});
+
+describe('wireVoiceStream', () => {
+  it('registers the /voice/rtc/:sessionId push path so trickled ICE can reach the PWA', () => {
+    const subscribed: string[] = [];
+    const commands: string[] = [];
+    const bus: VoiceBus = {
+      onCommand: (verb) => { commands.push(verb); },
+      onSubscribe: (pattern) => { subscribed.push(pattern); },
+      publish: () => {},
+    };
+
+    wireVoiceStream(bus);
+
+    // Without this registration the server rejects the PWA's subscription and
+    // the agent's candidates publish to zero peers — the P2P-timeout bug.
+    expect(subscribed).toContain('/voice/rtc/:sessionId');
+    expect(commands).toEqual(expect.arrayContaining(['voice:rtc-connect', 'voice:rtc-ice']));
   });
 });

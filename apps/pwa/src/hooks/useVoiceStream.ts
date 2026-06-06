@@ -20,9 +20,12 @@ export interface UseVoiceStream {
   /** Live partial transcript for the in-progress utterance. */
   interim: string;
   error: string | null;
-  /** Connect if not already; returns true when ready. */
-  ensure: () => Promise<boolean>;
-  start: () => Promise<void>;
+  /** Connect if not already; returns true when ready. Pass `acquireMic` to grab
+   *  the mic before the offer (unlocks Safari's host ICE candidates). */
+  ensure: (acquireMic?: boolean) => Promise<boolean>;
+  /** Connect (mic-first) if needed, then begin an utterance. Resolves true once
+   *  recording, false if the P2P link couldn't be established. */
+  start: () => Promise<boolean>;
   stop: () => void;
 }
 
@@ -43,15 +46,30 @@ export function useVoiceStream(agentId: string, onFinalText: (text: string) => v
     };
   }, []);
 
-  const ensure = useCallback(async (): Promise<boolean> => {
+  const ensure = useCallback(async (acquireMic = false): Promise<boolean> => {
     if (sessionRef.current && (state === 'ready' || state === 'recording')) return true;
-    if (connectingRef.current) return connectingRef.current;
+    if (connectingRef.current) {
+      // A connect is already in flight (typically the passive prewarm). Wait for
+      // it: reuse it if it produced a ready session; otherwise fall through and
+      // retry — acquiring the mic this time if the gesture asked for it. The
+      // prewarm can't grab the mic, so on iOS its attempt always fails, and a
+      // tap landing inside that window must not inherit the doomed result.
+      const inflight = await connectingRef.current;
+      if (inflight && sessionRef.current) return true;
+      if (!acquireMic) return inflight;
+    }
 
     const connect = (async () => {
       const config = await getVoiceConfig();
       if (!isVoiceConfigUsable(config) || !agentId) {
         setState('unavailable');
         return false;
+      }
+      // A prior (e.g. prewarmed) session that never reached 'ready' may linger;
+      // replace it so the gesture path can re-establish with the mic in hand.
+      if (sessionRef.current) {
+        sessionRef.current.close();
+        sessionRef.current = null;
       }
       const session = new VoiceStreamSession(agentId, crypto.randomUUID(), config, {
         onPartial: (text) => setInterim(text),
@@ -66,7 +84,7 @@ export function useVoiceStream(agentId: string, onFinalText: (text: string) => v
         onState: (s) => setState(s),
       });
       sessionRef.current = session;
-      const ok = await session.connect();
+      const ok = await session.connect({ acquireMic });
       if (!ok) {
         session.close();
         sessionRef.current = null;
@@ -80,10 +98,13 @@ export function useVoiceStream(agentId: string, onFinalText: (text: string) => v
     return result;
   }, [agentId, state]);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (): Promise<boolean> => {
     setError(null);
-    const ok = await ensure();
+    // Establish on the user gesture with the mic acquired first, so Safari
+    // exposes host candidates (the passive prewarm can't grab the mic on iOS).
+    const ok = await ensure(true);
     if (ok) await sessionRef.current?.startUtterance();
+    return ok;
   }, [ensure]);
 
   const stop = useCallback(() => {

@@ -32,6 +32,9 @@ export interface VoiceBus {
     verb: string,
     handler: (payload: Req, ctx: { peer: string }) => Promise<Res> | Res,
   ): void;
+  /** Register a subscribable push path. REQUIRED before `publish` to it can
+   *  reach anyone — the server rejects subscriptions to unregistered patterns. */
+  onSubscribe(pattern: string, handler: { snapshot: (ctx: unknown) => unknown }): void;
   publish<T>(path: string, data: T): void;
 }
 
@@ -241,6 +244,13 @@ export class VoiceStreamManager {
  */
 export function wireVoiceStream(bus: VoiceBus): VoiceStreamManager {
   const manager = new VoiceStreamManager(bus);
+
+  // The agent trickles its ICE candidates to the PWA on this path. It MUST be
+  // registered like any subscribable path — otherwise the server rejects the
+  // PWA's `sub` with `sub-error` and `publish()` reaches zero peers, so the
+  // agent's candidates never arrive and P2P always times out (remote
+  // candidates = 0). Push-only, so the snapshot is null.
+  bus.onSubscribe('/voice/rtc/:sessionId', { snapshot: () => null });
 
   bus.onCommand<VoiceRtcConnectRequestPayload, VoiceRtcConnectResponsePayload>(
     'voice:rtc-connect',

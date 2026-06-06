@@ -13,6 +13,7 @@ import type {
   AttachmentKind,
 } from '@sumicom/quicksave-shared';
 import { CardRenderer } from './chat/CardRenderer';
+import { VoiceCoworkerControl } from './VoiceCoworkerControl';
 import { CollapsibleTerminalPanel } from './terminal/CollapsibleTerminalPanel';
 import { SessionList } from './chat/SessionList';
 import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
@@ -1073,6 +1074,9 @@ export function ClaudePanel({
                     </label>
                   )}
                 </div>
+                {viewedSessionId && agentId && (
+                  <VoiceCoworkerControl agentId={agentId} sessionId={viewedSessionId} />
+                )}
                 {voice.showMic && (
                   <button
                     type="button"

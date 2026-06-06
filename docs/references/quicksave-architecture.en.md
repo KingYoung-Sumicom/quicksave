@@ -491,6 +491,44 @@ Generation can take ~2 minutes; if state lived in the PWA it would be interrupte
 - After a successful commit, `handleCommit` automatically calls `commitSummaryStore.clear(repoPath)` (the suggestion is now stale)
 - The PWA gitStore only mirrors: on receiving `ai:commit-summary:updated` → `applyCommitSummaryState()`; the user-typed commit draft still lives in PWA localStorage and is not sent to the agent
 
+### Voice Intermediary ("AI coworker")
+
+`apps/agent/src/ai/voiceIntermediary/` — a daemon-side, tool-calling LLM that
+interprets a coding session's output and lets the user steer it by voice. It is
+**not** a `CodingAgentProvider`; it wraps one. Brain (chat) and TTS both ride the
+**same OpenAI-compatible endpoint as STT** (`VoiceConfig`) via raw `fetch`, so a
+missing `ANTHROPIC_API_KEY` (subscription users) doesn't disable it.
+
+- **`VoiceIntermediaryManager`** (held by `MessageHandler`; its `'event'` is
+  bridged to the bus in `service/run.ts`): `attach`/`detach`/`handleUtterance`
+  per session, an LRU audio store for fetch-by-id, and `notifyPendingPermission`
+  (wired off the existing `user-input-request` event so the agent proactively
+  narrates a pending permission — "it wants to run X, shall I allow?").
+- **`VoiceIntermediarySession`**: per-session brain history in RAM — **no
+  persistent store; the coding agent's cards ARE the memory** (it re-derives via
+  `read_cards`). Each utterance runs a tool loop: narrate → silent tools → speak.
+  Assistant text *is* the spoken output (synthesized to mp3); there is no `speak`
+  tool.
+- **Seven tools** (`tools.ts`), all bound to existing `SessionManager` methods
+  except the new `sendUserMessageToSession`: `send_to_coding_agent`,
+  `stop_coding_agent`, `respond_to_permission`, `set_permission_mode`,
+  `get_status`, `read_cards`, `remember`.
+- **Trust boundary** (steer, don't decide): steering is free (reversible);
+  irreversible moves — answering a permission prompt, widening autonomy — only
+  RELAY the user's spoken decision, enforced by the system prompt.
+- **Workspace memory** (`memory.ts`): a plain, human-editable markdown file
+  `<cwd>/.quicksave/voice-memory.md` (+ optional global `~/.quicksave/voice-memory.md`),
+  loaded into the system prompt on attach and appended by `remember`.
+  Deliberately separate from the coding agent's own `CLAUDE.md`/`AGENTS.md` (which
+  steer the coding agent — writing coworker notes there would pollute it).
+
+PWA side: `hooks/useVoiceAgent.ts` (attach + subscribe + reuse composer STT,
+routing the final transcript to `voice-agent:utterance`), `lib/voiceOutput.ts`
+(sequential mp3 playback with barge-in), `lib/voiceAgentClient.ts` (verb
+wrappers), `components/VoiceCoworkerControl.tsx` (composer-toolbar toggle), and
+three extra `VoiceConfig` fields in `settings/VoiceSection.tsx`
+(`agentModel`/`ttsModel`/`ttsVoice`).
+
 ---
 
 ## 三、Communication Architecture
@@ -697,7 +735,8 @@ interface Message {
 | `terminal:` | PTY terminal (create/input/resize/rename/close) |
 | `files:` | Read-only file browser (list / read; pure request-response, no bus subscription) |
 | `attachment:` | Chunked upload + cancel for files and long-pasted text (see "Attachment Staging" in §三) |
-| `voice:` | Voice input. **Batch**: `voice:transcribe` (audio bytes + `VoiceConfig` in, text out) and `voice:list-models` (lists `{baseUrl}/models` for the Settings dropdown). **Streaming (WebRTC)**: `voice:rtc-connect` (SDP offer→answer) and `voice:rtc-ice` (PWA→agent trickle ICE); the agent pushes its own ICE candidates on the `/voice/rtc/{sessionId}` subscription. The agent proxies a Whisper-compatible API (no browser CORS limit; OpenAI works). `VoiceConfig` (key/baseUrl + separate `transcribeModel` for batch and `streamModel` for realtime) is the PWA's synced single source of truth and travels in each request; the agent persists nothing. Streaming audio + transcripts ride the WebRTC **DataChannel** (`VoiceDcMessage`: PCM16 binary frames up, `start`/`stop` control, `transcript`/`error` down), not the bus. The `voice:rtc-*` verbs are wired directly via `bus.onCommand` in `service/run.ts` (`wireVoiceStream`), **not** through `LEGACY_BUS_VERBS`, because they push ICE asynchronously. `@roamhq/wrtc` is an optional, lazily-loaded native dep. **The input mode is user-selected** (`VoiceConfig.mode`: `streaming` | `batch`) — there is no automatic fallback between them. `streaming` needs `audio.streaming` (wrtc) + the P2P link (no TURN; if it can't connect the mic is disabled with a "live voice unavailable" tooltip); `batch` needs `audio.transcription`. The composer hides the mic when the selected mode isn't supported on that machine. |
+| `voice:` | Voice input. **Batch**: `voice:transcribe` (audio bytes + `VoiceConfig` in, text out) and `voice:list-models` (lists `{baseUrl}/models` for the Settings dropdown). **Streaming (WebRTC)**: `voice:rtc-connect` (SDP offer→answer) and `voice:rtc-ice` (PWA→agent trickle ICE); the agent pushes its own ICE candidates on the `/voice/rtc/{sessionId}` subscription. The agent proxies a Whisper-compatible API (no browser CORS limit; OpenAI works). `VoiceConfig` (key/baseUrl + separate `transcribeModel` for batch and `streamModel` for realtime) is the PWA's synced single source of truth and travels in each request; the agent persists nothing. Streaming audio + transcripts ride the WebRTC **DataChannel** (`VoiceDcMessage`: PCM16 binary frames up, `start`/`stop` control, `transcript`/`error` down), not the bus. The `voice:rtc-*` verbs are wired directly via `bus.onCommand` in `service/run.ts` (`wireVoiceStream`), **not** through `LEGACY_BUS_VERBS`, because they push ICE asynchronously. `@roamhq/wrtc` is an optional, lazily-loaded native dep. **The input mode is user-selected** (`VoiceConfig.mode`: `streaming` | `batch`) — there is no automatic fallback between them. `streaming` needs `audio.streaming` (wrtc) + the P2P link (STUN-only, no TURN). The link is established **mic-first on the user's first tap** — acquiring the mic before the SDP offer is what makes Safari/iOS expose real host ICE candidates (the passive prewarm can't, since iOS gates `getUserMedia` on a user gesture; non-iOS browsers still prewarm for an instant first utterance). If a tapped attempt still can't connect (e.g. no TURN across NAT/CGNAT), the mic shows a "live voice unavailable" tooltip after that attempt; `batch` needs `audio.transcription`. The composer hides the mic when the selected mode isn't supported on that machine. |
+| `voice-agent:` | Voice intermediary ("AI coworker"). `voice-agent:attach` (bring up the brain for a session + `VoiceConfig`), `voice-agent:detach`, `voice-agent:utterance` (final STT transcript in; the spoken reply streams back asynchronously), `voice-agent:fetch-audio` (synthesized mp3 bytes by id — metadata-first, never inlined in the push). Wired through `LEGACY_BUS_VERBS` + the `MessageHandler` switch. The agent pushes `VoiceAgentEvent` (`state`/`speak`/`action`/`error`) on the `/sessions/:sessionId/voice-agent` subscription. See section two "Voice Intermediary". |
 | `systemd:` | Linux-only `quicksave.service` user-unit install/uninstall/status (see `docs/references/agent-cli.md`) |
 | `bus:frame` | MessageBus envelope (transports opaque bus frames; see `packages/message-bus`) |
 | `ping`/`pong` | Heartbeat |

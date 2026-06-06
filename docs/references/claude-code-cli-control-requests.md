@@ -208,23 +208,21 @@ If you see a color token that has no mapping, grep the bundle: `grep -oE '<TOKEN
 
 ## Calling from our code
 
-`apps/agent/src/ai/claudeCliProvider.ts` exposes `sendControlRequest(subtype, body?, timeoutMs?)`:
-- The idle-timeout timer **pauses during `activeTurn`**, so back-to-back turns can hang the request. Wrap in a wall-clock `Promise.race` with a `setTimeout` when calling mid-turn.
+`apps/agent/src/ai/claudeCliProvider.ts` exposes `sendControlRequest(subtype, body?, idleTimeoutMs?, wallClockTimeoutMs?)`:
+- The idle-timeout timer **pauses during `activeTurn`**, so a request the CLI defers until the turn ends never expires on the idle clock alone. **Any caller that can fire mid-turn MUST pass `wallClockTimeoutMs`** — it caps real elapsed time regardless of `activeTurn`. Omitting it means an unanswered mid-turn request hangs forever (this caused a session-freeze bug: a `set_model` + `set_permission_mode` change made while a tool call awaited approval deadlocked the daemon).
+- `setSessionConfig`'s model switch (`set_model`, 5s/5s) sends mid-turn with the wall cap and cold-respawns on failure.
+- `setPermissionLevel` does NOT send mid-turn: when `activeTurn` holds it calls `CliProviderSession.queuePermissionMode(cliMode)` and the read loop flushes it via `flushPendingPermissionMode()` at the next turn end (so the switch is honored a little later instead of risking a hang or being rolled back). It only sends `set_permission_mode` inline when the session is idle.
+- The read loop must NOT `await` permission decisions (`can_use_tool` → `handleControlRequest`) inline — it fires them fire-and-forget so the loop stays free to route `control_response`s for concurrent control requests. Awaiting there reintroduces the same deadlock.
 - Keep method implementations optional on `ProviderSession` (`getContextUsage?()`) so non-CLI providers (Claude Agent SDK, OpenAI Codex, etc.) can simply omit them.
 
-Example — `getContextUsage`:
+Example — `getContextUsage` (wall cap built in, no `Promise.race` needed):
 
 ```ts
 async getContextUsage(): Promise<ContextUsageBreakdown | null> {
   if (!this.process || this.process.killed) return null;
-  const wallTimeout = new Promise<null>((resolve) =>
-    setTimeout(() => resolve(null), 10_000)
-  );
   try {
-    const response = await Promise.race([
-      this.sendControlRequest('get_context_usage', undefined, 10_000),
-      wallTimeout,
-    ]);
+    // idle 10s + wall-clock 10s — the wall cap is the real ceiling mid-turn.
+    const response = await this.sendControlRequest('get_context_usage', undefined, 10_000, 10_000);
     return (response as ContextUsageBreakdown | null) ?? null;
   } catch {
     return null;

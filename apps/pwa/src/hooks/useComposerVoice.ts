@@ -69,6 +69,12 @@ export function useComposerVoice(
   const [configured, setConfigured] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [arming, setArming] = useState(false);
+  // Set when a user-gesture attempt to establish the streaming link fails (e.g.
+  // no TURN on this network). Drives the disabled/greyed mic affordance. We
+  // deliberately do NOT mirror the prewarm's failure here: on iOS the passive
+  // prewarm can't grab the mic so it always fails, and surfacing that would
+  // wrongly disable the button before the user ever taps.
+  const [liveUnavailable, setLiveUnavailable] = useState(false);
   const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Latest onError without re-subscribing effects on every parent render.
@@ -130,10 +136,6 @@ export function useComposerVoice(
     if (voiceStream.recording) { voiceStream.stop(); return; }
     if (recorder.state === 'recording') { await batchStopAndTranscribe(); return; }
 
-    if (mode === 'streaming' && !voiceStream.ready) {
-      onErrorRef.current('Live voice couldn’t connect on this network.');
-      return;
-    }
     const config = await getVoiceConfig();
     if (!isVoiceConfigUsable(config)) {
       setConfigured(false);
@@ -143,8 +145,19 @@ export function useComposerVoice(
     setConfigured(true);
     armTimerRef.current = setTimeout(() => setArming(true), 120);
     try {
-      if (mode === 'streaming') await voiceStream.start();
-      else await recorder.start();
+      if (mode === 'streaming') {
+        // Establish the P2P link on this gesture if it isn't up yet — the mic
+        // permission grab is what unlocks Safari's host ICE candidates — then
+        // start recording. start() resolves false if the link can't be made.
+        setLiveUnavailable(false);
+        const ok = await voiceStream.start();
+        if (!ok) {
+          setLiveUnavailable(true);
+          onErrorRef.current('Live voice couldn’t connect on this network.');
+        }
+      } else {
+        await recorder.start();
+      }
     } catch (err) {
       onErrorRef.current(err instanceof Error ? err.message : 'Could not start voice input.');
     } finally {
@@ -164,6 +177,6 @@ export function useComposerVoice(
     interim: voiceStream.interim,
     configured,
     streaming: voiceStream.recording,
-    unavailable: mode === 'streaming' && streamingSupported && voiceStream.unavailable,
+    unavailable: mode === 'streaming' && streamingSupported && liveUnavailable,
   };
 }

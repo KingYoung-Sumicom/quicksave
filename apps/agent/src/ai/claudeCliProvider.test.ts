@@ -1,9 +1,14 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { buildClaudeCliArgs, decorateModelWithContextWindow } from './claudeCliProvider.js';
+import {
+  buildClaudeCliArgs,
+  decorateModelWithContextWindow,
+  CliProviderSession,
+  ClaudeCliProvider,
+} from './claudeCliProvider.js';
 import { SANDBOX_BASH_TOOL } from './sandboxMcp.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
@@ -220,5 +225,142 @@ describe('decorateModelWithContextWindow', () => {
   it('does not double-append when the suffix is already present', () => {
     expect(decorateModelWithContextWindow('claude-opus-4-7[1m]', 1_000_000))
       .toBe('claude-opus-4-7[1m]');
+  });
+});
+
+function mockProc() {
+  return { killed: false, stdin: { write: vi.fn() }, kill: vi.fn() } as any;
+}
+
+describe('CliProviderSession.sendControlRequest wall-clock cap', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('rejects at the wall-clock cap even while a turn is active (idle clock paused)', async () => {
+    vi.useFakeTimers();
+    const session = new CliProviderSession(mockProc());
+    // Simulate a tool call in flight: the idle timer must NOT advance.
+    session.activeTurn = true;
+
+    const pending = session.sendControlRequest('set_model', { model: 'x' }, 5_000, 5_000);
+    const onReject = vi.fn();
+    pending.catch(onReject);
+
+    // 4s of wall time: under the 5s cap, still pending.
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(onReject).not.toHaveBeenCalled();
+
+    // Cross the 5s wall cap — must reject despite activeTurn freezing the idle clock.
+    await vi.advanceTimersByTimeAsync(1_500);
+    await expect(pending).rejects.toThrow(/wall-clock/);
+    // The pending entry is cleaned up so a late response can't double-resolve.
+    expect(session.pendingControlResponses.size).toBe(0);
+  });
+
+  it('without a wall cap, an active turn keeps the request pending indefinitely', async () => {
+    vi.useFakeTimers();
+    const session = new CliProviderSession(mockProc());
+    session.activeTurn = true;
+
+    let settled = false;
+    session.sendControlRequest('reload_plugins', undefined, 5_000).then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+
+    // Far beyond the idle timeout, but the idle clock is paused by activeTurn.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(settled).toBe(false);
+    expect(session.pendingControlResponses.size).toBe(1);
+  });
+});
+
+describe('CliProviderSession deferred permission mode', () => {
+  // flushPendingPermissionMode → sendControlRequest starts a polling interval
+  // that only clears on response/timeout; fake timers keep it from leaking.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('flushPendingPermissionMode writes set_permission_mode to stdin when idle', () => {
+    vi.useFakeTimers();
+    const proc = mockProc();
+    const session = new CliProviderSession(proc);
+    session.queuePermissionMode('plan');
+
+    session.flushPendingPermissionMode();
+
+    expect(proc.stdin.write).toHaveBeenCalledTimes(1);
+    const written = JSON.parse((proc.stdin.write as any).mock.calls[0][0].trim());
+    expect(written.type).toBe('control_request');
+    expect(written.request).toMatchObject({ subtype: 'set_permission_mode', mode: 'plan' });
+  });
+
+  it('flushPendingPermissionMode is a no-op when nothing is queued', () => {
+    const proc = mockProc();
+    const session = new CliProviderSession(proc);
+
+    session.flushPendingPermissionMode();
+
+    expect(proc.stdin.write).not.toHaveBeenCalled();
+  });
+
+  it('last queued mode wins', () => {
+    vi.useFakeTimers();
+    const proc = mockProc();
+    const session = new CliProviderSession(proc);
+    session.queuePermissionMode('plan');
+    session.queuePermissionMode('acceptEdits');
+
+    session.flushPendingPermissionMode();
+
+    const written = JSON.parse((proc.stdin.write as any).mock.calls[0][0].trim());
+    expect(written.request.mode).toBe('acceptEdits');
+  });
+
+  it('does not write when the process is dead', () => {
+    const proc = mockProc();
+    proc.killed = true;
+    const session = new CliProviderSession(proc);
+    session.queuePermissionMode('plan');
+
+    session.flushPendingPermissionMode();
+
+    expect(proc.stdin.write).not.toHaveBeenCalled();
+  });
+});
+
+describe('routeMessage permission handling does not block the read loop', () => {
+  it('returns immediately for can_use_tool even if the permission decision never resolves', async () => {
+    const provider = new ClaudeCliProvider();
+    const session = new CliProviderSession(mockProc());
+
+    // handlePermissionRequest blocks forever — mirrors a user who walks away
+    // mid-approval. The read loop must not await it, otherwise concurrent
+    // control_responses (set_model / set_permission_mode) can never be routed.
+    let decisionRequested = false;
+    const callbacks: any = {
+      handlePermissionRequest: vi.fn(() => {
+        decisionRequested = true;
+        return new Promise(() => {}); // never resolves
+      }),
+    };
+
+    const msg = {
+      type: 'control_request',
+      request_id: 'req-1',
+      request: { subtype: 'can_use_tool', tool_name: 'Bash', input: {}, tool_use_id: 'tu-1' },
+    };
+
+    const noop = () => {};
+    const result = await Promise.race([
+      (provider as any).routeMessage('sess', msg, session, {}, callbacks, noop, noop, noop, undefined),
+      new Promise((resolve) => setTimeout(() => resolve('TIMEOUT'), 100)),
+    ]);
+
+    // routeMessage resolved on its own (false), not via the 100ms guard.
+    expect(result).toBe(false);
+    expect(decisionRequested).toBe(true);
   });
 });

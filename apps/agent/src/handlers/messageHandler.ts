@@ -92,6 +92,14 @@ import {
   ClaudeSetSessionPermissionRequestPayload,
   ClaudeSetSessionPermissionResponsePayload,
   CardHistoryResponse,
+  VoiceAgentAttachRequestPayload,
+  VoiceAgentAttachResponsePayload,
+  VoiceAgentDetachRequestPayload,
+  VoiceAgentDetachResponsePayload,
+  VoiceAgentUtteranceRequestPayload,
+  VoiceAgentUtteranceResponsePayload,
+  VoiceAgentFetchAudioRequestPayload,
+  VoiceAgentFetchAudioResponsePayload,
   AttachmentUploadRequestPayload,
   AttachmentUploadResponsePayload,
   AttachmentCancelRequestPayload,
@@ -168,6 +176,7 @@ import { CommitSummaryService } from '../ai/commitSummary.js';
 import { CommitSummaryCliService, CommitSummaryCliError } from '../ai/commitSummaryCli.js';
 import { CommitSummaryStateStore } from '../ai/commitSummaryStore.js';
 import { SessionManager } from '../ai/sessionManager.js';
+import { VoiceIntermediaryManager } from '../ai/voiceIntermediary/index.js';
 import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
 import { ClaudeTerminalProvider } from '../ai/claudeTerminal/index.js';
 import { OpenCodeProvider } from '../ai/openCodeProvider.js';
@@ -262,6 +271,9 @@ export class MessageHandler {
    *  `state-updated` event to `connection.broadcast` (see service/run.ts). */
   private commitSummaryStore: CommitSummaryStateStore = new CommitSummaryStateStore();
   private claudeService: SessionManager;
+  /** Voice intermediary ("AI coworker"). Bound to `claudeService` so its tools
+   *  can steer/observe coding sessions; events wired to the bus in `run.ts`. */
+  private voiceIntermediary: VoiceIntermediaryManager;
   private attachmentStaging: AttachmentStaging = new AttachmentStaging();
   private attachmentGcTimer: NodeJS.Timeout | null = null;
   private pushClient: PushClient | null = null;
@@ -311,6 +323,7 @@ export class MessageHandler {
         new CodexAppServerProvider(),
         new OpenCodeProvider(),
       ]);
+    this.voiceIntermediary = new VoiceIntermediaryManager(this.claudeService);
     this.codexCacheDir = options?.codexCacheDir ?? join(homedir(), '.codex');
 
     // Load explicit coding paths only (repos and coding paths are independent)
@@ -617,6 +630,12 @@ export class MessageHandler {
     return this.claudeService;
   }
 
+  /** Exposed so the daemon can republish voice-agent events on the bus and feed
+   *  it coding-side permission prompts (see service/run.ts). */
+  getVoiceIntermediary(): VoiceIntermediaryManager {
+    return this.voiceIntermediary;
+  }
+
   /** Daemon wires this after construction so push:subscription-offer can
    *  forward to the relay. Absent in tests or when VAPID/signaling aren't
    *  configured — offer responses will report an error in that case. */
@@ -799,6 +818,14 @@ export class MessageHandler {
           return this.handleSetSessionPermission(message as Message<ClaudeSetSessionPermissionRequestPayload>);
         case 'claude:get-cards':
           return this.handleClaudeGetCards(message as Message<ClaudeGetMessagesRequestPayload>, peerAddress);
+        case 'voice-agent:attach':
+          return this.handleVoiceAgentAttach(message as Message<VoiceAgentAttachRequestPayload>);
+        case 'voice-agent:detach':
+          return this.handleVoiceAgentDetach(message as Message<VoiceAgentDetachRequestPayload>);
+        case 'voice-agent:utterance':
+          return this.handleVoiceAgentUtterance(message as Message<VoiceAgentUtteranceRequestPayload>);
+        case 'voice-agent:fetch-audio':
+          return this.handleVoiceAgentFetchAudio(message as Message<VoiceAgentFetchAudioRequestPayload>);
         case 'session:set-config':
           return this.handleSetSessionConfig(message as Message<SessionSetConfigRequestPayload>);
         case 'session:control-request':
@@ -2481,6 +2508,64 @@ export class MessageHandler {
       response.id = message.id;
       return response;
     }
+  }
+
+  private handleVoiceAgentAttach(
+    message: Message<VoiceAgentAttachRequestPayload>,
+  ): Message<VoiceAgentAttachResponsePayload> {
+    const { sessionId, config } = message.payload;
+    let result: { ok: boolean; active: boolean };
+    try {
+      result = this.voiceIntermediary.attach(sessionId, config);
+    } catch (err) {
+      console.error('[voice-agent:attach] failed:', err);
+      result = { ok: false, active: false };
+    }
+    const response = createMessage<VoiceAgentAttachResponsePayload>('voice-agent:attach:response', {
+      ok: result.ok,
+      active: result.active,
+      error: result.ok ? undefined : 'attach failed',
+    });
+    response.id = message.id;
+    return response;
+  }
+
+  private handleVoiceAgentDetach(
+    message: Message<VoiceAgentDetachRequestPayload>,
+  ): Message<VoiceAgentDetachResponsePayload> {
+    this.voiceIntermediary.detach(message.payload.sessionId);
+    const response = createMessage<VoiceAgentDetachResponsePayload>('voice-agent:detach:response', { ok: true });
+    response.id = message.id;
+    return response;
+  }
+
+  private async handleVoiceAgentUtterance(
+    message: Message<VoiceAgentUtteranceRequestPayload>,
+  ): Promise<Message<VoiceAgentUtteranceResponsePayload>> {
+    const { sessionId, text } = message.payload;
+    // Fire-and-forget the tool loop: the spoken result streams back over the
+    // `/sessions/:id/voice-agent` subscription. Ack receipt immediately so the
+    // bus request doesn't block for the whole (multi-second) turn.
+    void this.voiceIntermediary.handleUtterance(sessionId, text).catch((err) => {
+      console.error('[voice-agent:utterance] turn failed:', err);
+    });
+    const response = createMessage<VoiceAgentUtteranceResponsePayload>('voice-agent:utterance:response', { ok: true });
+    response.id = message.id;
+    return response;
+  }
+
+  private handleVoiceAgentFetchAudio(
+    message: Message<VoiceAgentFetchAudioRequestPayload>,
+  ): Message<VoiceAgentFetchAudioResponsePayload> {
+    const stored = this.voiceIntermediary.getAudio(message.payload.audioId);
+    const response = createMessage<VoiceAgentFetchAudioResponsePayload>(
+      'voice-agent:fetch-audio:response',
+      stored
+        ? { audioBase64: stored.audio.toString('base64'), mimeType: stored.mimeType }
+        : { audioBase64: '', mimeType: '', error: 'audio expired' },
+    );
+    response.id = message.id;
+    return response;
   }
 
   private handleSetPreferences(message: Message<ClaudeSetPreferencesRequestPayload>): Message<ClaudeSetPreferencesResponsePayload> {

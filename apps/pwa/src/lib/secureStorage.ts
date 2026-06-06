@@ -311,10 +311,16 @@ export async function saveVoiceConfig(config: VoiceConfig): Promise<void> {
   await putRecord(VOICE_CONFIG_META_KEY, { updatedAt: Date.now() } satisfies SecretMeta);
 }
 
-/** Returns the parsed voice config, or null if not set / unparseable. */
-export async function getVoiceConfig(): Promise<VoiceConfig | null> {
-  const raw = await getRecord<string>(VOICE_CONFIG_KEY);
-  if (!raw) return null;
+/**
+ * Parse the persisted JSON into a `VoiceConfig`, applying field migrations.
+ * Exported for unit testing. Returns null on unparseable input.
+ *
+ * IMPORTANT: every persisted field must be carried through here — anything
+ * omitted is silently dropped on read, which looks exactly like "the save
+ * didn't stick" (it did; the read was lossy). That regression is what cost the
+ * voice-intermediary fields a round-trip.
+ */
+export function parseVoiceConfig(raw: string): VoiceConfig | null {
   try {
     const parsed = JSON.parse(raw) as Partial<VoiceConfig> & { model?: string };
     return {
@@ -324,10 +330,21 @@ export async function getVoiceConfig(): Promise<VoiceConfig | null> {
       // Migrate the pre-split single `model` field → batch model.
       transcribeModel: parsed.transcribeModel ?? parsed.model ?? '',
       streamModel: parsed.streamModel ?? '',
+      // Voice intermediary ("AI coworker") — optional.
+      agentModel: parsed.agentModel,
+      ttsModel: parsed.ttsModel,
+      ttsVoice: parsed.ttsVoice,
     };
   } catch {
     return null;
   }
+}
+
+/** Returns the parsed voice config, or null if not set / unparseable. */
+export async function getVoiceConfig(): Promise<VoiceConfig | null> {
+  const raw = await getRecord<string>(VOICE_CONFIG_KEY);
+  if (!raw) return null;
+  return parseVoiceConfig(raw);
 }
 
 /**

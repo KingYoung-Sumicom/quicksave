@@ -279,6 +279,11 @@ export class CliProviderSession implements ProviderSession {
   public callbacks: ProviderCallbacks | null = null;
   public sessionId: string | null = null;
   private queuedUserPrompts: QueuedUserPrompt[] = [];
+  /** CLI permission mode requested mid-turn, deferred to the next idle
+   * boundary. Sending `set_permission_mode` while `activeTurn` holds risks
+   * hanging (the idle-timeout clock is paused), so we queue it and flush it at
+   * turn end via `flushPendingPermissionMode`. Last write wins. */
+  private pendingPermissionMode: string | null = null;
 
   constructor(proc: ChildProcess) {
     this.process = proc;
@@ -286,10 +291,20 @@ export class CliProviderSession implements ProviderSession {
 
   /**
    * Send a generic control_request and await the response from the CLI.
-   * Timeout counts only idle time: while `activeTurn` is true the clock is
+   * Timeout counts only idle time: while `activeTurn` is true the idle clock is
    * paused, so a compaction or long tool loop will not expire the request.
+   *
+   * Pass `wallClockTimeoutMs` to also cap real elapsed time regardless of
+   * `activeTurn`. Mid-turn callers (set_model / set_permission_mode) MUST set
+   * it — without a wall ceiling, a request the CLI defers until the turn ends
+   * hangs forever, since the idle clock never advances while `activeTurn` holds.
    */
-  sendControlRequest(subtype: string, params?: Record<string, unknown>, idleTimeoutMs = 15_000): Promise<unknown> {
+  sendControlRequest(
+    subtype: string,
+    params?: Record<string, unknown>,
+    idleTimeoutMs = 15_000,
+    wallClockTimeoutMs?: number,
+  ): Promise<unknown> {
     if (!this.process || this.process.killed) {
       return Promise.reject(new Error('CLI process is not alive'));
     }
@@ -300,12 +315,19 @@ export class CliProviderSession implements ProviderSession {
     return new Promise((resolve, reject) => {
       const tickMs = 500;
       let idleAccumulated = 0;
+      let wallAccumulated = 0;
       const timer = setInterval(() => {
+        wallAccumulated += tickMs;
         if (!this.activeTurn) idleAccumulated += tickMs;
-        if (idleAccumulated >= idleTimeoutMs) {
+        const wallExpired = wallClockTimeoutMs != null && wallAccumulated >= wallClockTimeoutMs;
+        if (idleAccumulated >= idleTimeoutMs || wallExpired) {
           clearInterval(timer);
           this.pendingControlResponses.delete(requestId);
-          reject(new Error(`Control request ${subtype} timed out after ${idleTimeoutMs}ms idle`));
+          reject(new Error(
+            wallExpired
+              ? `Control request ${subtype} timed out after ${wallClockTimeoutMs}ms wall-clock`
+              : `Control request ${subtype} timed out after ${idleTimeoutMs}ms idle`,
+          ));
         }
       }, tickMs);
 
@@ -393,6 +415,29 @@ export class CliProviderSession implements ProviderSession {
     return true;
   }
 
+  /** Defer a CLI permission-mode switch to the next idle boundary. Use this
+   * instead of `sendControlRequest('set_permission_mode')` while a turn is in
+   * flight — the request would otherwise risk hanging on the paused idle clock.
+   * `flushPendingPermissionMode` applies it once the turn ends. */
+  queuePermissionMode(cliMode: string): void {
+    this.pendingPermissionMode = cliMode;
+  }
+
+  /** Apply a deferred permission-mode switch now that the session is idle.
+   * Fire-and-forget with a wall-clock cap so a non-responsive CLI cannot wedge
+   * the read loop. No-op when nothing is queued or the process is dead. */
+  flushPendingPermissionMode(): void {
+    const mode = this.pendingPermissionMode;
+    if (mode == null) return;
+    this.pendingPermissionMode = null;
+    if (!this.process || this.process.killed) return;
+    const short = this.sessionId?.slice(0, 8) ?? '????????';
+    console.log(`[permission] session=${short} flushing deferred set_permission_mode mode=${mode} at turn end`);
+    void this.sendControlRequest('set_permission_mode', { mode }, 15_000, 15_000)
+      .then(() => console.log(`[permission] session=${short} deferred set_permission_mode mode=${mode} acked`))
+      .catch((err) => console.warn(`[permission] session=${short} deferred set_permission_mode mode=${mode} failed:`, err));
+  }
+
   private emitQueueStateChange(): void {
     if (this.sessionId) this.callbacks?.onQueueStateChange?.(this.sessionId);
   }
@@ -441,15 +486,11 @@ export class CliProviderSession implements ProviderSession {
 
   async getContextUsage(): Promise<ContextUsageBreakdown | null> {
     if (!this.process || this.process.killed) return null;
-    // Wall-clock cap: sendControlRequest's idle clock pauses while another
+    // 10s wall-clock cap: sendControlRequest's idle clock pauses while another
     // turn is in flight, so without a hard ceiling this could hang across
-    // back-to-back turns. 10s is plenty — the CLI normally answers in <100ms.
-    const wallTimeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000));
+    // back-to-back turns. The CLI normally answers in <100ms.
     try {
-      const response = await Promise.race([
-        this.sendControlRequest('get_context_usage', undefined, 10_000),
-        wallTimeout,
-      ]);
+      const response = await this.sendControlRequest('get_context_usage', undefined, 10_000, 10_000);
       return (response as ContextUsageBreakdown | null) ?? null;
     } catch {
       return null;
@@ -484,11 +525,7 @@ export class CliProviderSession implements ProviderSession {
     if (decoratedModel) {
       // 5s wall-clock — set_model normally returns in <100ms; if the CLI is
       // mid-turn the idle clock pauses, so the wall cap is the real ceiling.
-      const wallTimeout = new Promise<void>((resolve) => setTimeout(() => resolve(), 5_000));
-      await Promise.race([
-        this.sendControlRequest('set_model', { model: decoratedModel }, 5_000).then(() => undefined).catch(() => undefined),
-        wallTimeout,
-      ]);
+      await this.sendControlRequest('set_model', { model: decoratedModel }, 5_000, 5_000).catch(() => undefined);
     }
   }
 
@@ -756,6 +793,9 @@ export class ClaudeCliProvider implements CodingAgentProvider {
         cliSession.resultEmitted = true;
         cb.startNewTurn();
         cliSession.activeTurn = false;
+        // Apply any permission-mode switch deferred during the turn BEFORE the
+        // next queued prompt starts, so that prompt runs under the new mode.
+        cliSession.flushPendingPermissionMode();
         cliSession.sendNextQueuedMessage();
       }
     };
@@ -781,6 +821,9 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       cliSession.process = null;
       cliSession.activeTurn = false;
       cliSession.clearQueuedMessages();
+      // Drop any deferred permission-mode switch — the process is gone, and the
+      // mode is persisted to the registry by setPermissionLevel for cold resume.
+      cliSession.flushPendingPermissionMode();
 
       // Fail any still-pending control_requests — no response will ever arrive.
       for (const [reqId, pending] of cliSession.pendingControlResponses) {
@@ -815,7 +858,17 @@ export class ClaudeCliProvider implements CodingAgentProvider {
   ): Promise<boolean> {
     // ── Control requests (permissions) ──
     if (msg.type === 'control_request' && msg.request?.subtype === 'can_use_tool') {
-      await this.handleControlRequest(sessionId, msg, cliSession, callbacks);
+      // Do NOT await: the permission decision can block on the user
+      // indefinitely, and the stdin read loop must stay free to route
+      // control_responses for control_requests WE sent concurrently
+      // (set_model / set_permission_mode from a mid-turn settings change).
+      // Awaiting here deadlocks those — their responses queue up unread behind
+      // this line while `activeTurn` keeps their idle-timeout paused, so
+      // neither the permission prompt nor the settings change ever progresses.
+      // handleControlRequest writes its own control_response when it resolves.
+      void this.handleControlRequest(sessionId, msg, cliSession, callbacks).catch((err) => {
+        console.error(`[cli] permission request failed session=${sessionId.slice(0, 8)}:`, err);
+      });
       return false;
     }
 

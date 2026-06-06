@@ -498,7 +498,7 @@ describe('SessionManager', () => {
       // Daemon-side state is still bypass so AUTO_APPROVE works via prompt-tool.
       expect(manager.getPermissionLevel(sessionId)).toBe('bypassPermissions');
       // But the CLI was never told to enter its native bypass mode.
-      expect(sendControlRequest).toHaveBeenCalledWith('set_permission_mode', { mode: 'default' });
+      expect(sendControlRequest).toHaveBeenCalledWith('set_permission_mode', { mode: 'default' }, 15_000, 15_000);
       expect(sendControlRequest).not.toHaveBeenCalledWith(
         'set_permission_mode',
         expect.objectContaining({ mode: 'bypassPermissions' }),
@@ -520,7 +520,31 @@ describe('SessionManager', () => {
 
       await manager.setPermissionLevel(sessionId, 'plan');
 
-      expect(sendControlRequest).toHaveBeenCalledWith('set_permission_mode', { mode: 'plan' });
+      expect(sendControlRequest).toHaveBeenCalledWith('set_permission_mode', { mode: 'plan' }, 15_000, 15_000);
+    });
+
+    it('defers set_permission_mode to the turn-end queue when a turn is in flight', async () => {
+      const sessionId = 'perm-midturn';
+      const sendControlRequest = vi.fn().mockResolvedValue(undefined);
+      const queuePermissionMode = vi.fn();
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession({
+          sendControlRequest,
+          queuePermissionMode,
+          activeTurn: true,
+        } as any),
+      });
+
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
+
+      await manager.setPermissionLevel(sessionId, 'plan');
+
+      // Mid-turn: queued, not sent — so the busy control channel can't hang it.
+      expect(queuePermissionMode).toHaveBeenCalledWith('plan');
+      expect(sendControlRequest).not.toHaveBeenCalled();
+      // Optimistic state still reflects the requested mode (no rollback).
+      expect(manager.getPermissionLevel(sessionId)).toBe('plan');
     });
 
     it('should emit session-updated with new permissionMode', async () => {
@@ -603,6 +627,7 @@ describe('SessionManager', () => {
         'set_model',
         { model: 'claude-sonnet-4-6' },
         5_000,
+        5_000,
       );
     });
 
@@ -627,6 +652,7 @@ describe('SessionManager', () => {
       expect(sendControlRequest).toHaveBeenCalledWith(
         'set_model',
         { model: 'claude-sonnet-4-6[1m]' },
+        5_000,
         5_000,
       );
     });

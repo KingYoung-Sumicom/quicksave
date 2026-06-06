@@ -8,10 +8,14 @@ import { ErrorBox } from '../ui/ErrorBox';
 import { getVoiceConfig, saveVoiceConfig } from '../../lib/secureStorage';
 import { listModelsViaAgent, filterVoiceModels } from '../../lib/voiceTranscription';
 import { useConnectionStore } from '../../stores/connectionStore';
+import { VoiceRtcDebugPanel } from './VoiceRtcDebugPanel';
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_TRANSCRIBE_MODEL = 'whisper-1';
 const DEFAULT_STREAM_MODEL = 'gpt-4o-transcribe';
+/** Known OpenAI(-compatible) TTS voices — `/models` doesn't list these, so the
+ *  voice picker is a fixed dropdown (a saved custom value is still preserved). */
+const TTS_VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse'];
 
 interface VoiceSectionProps {
   isOpen: boolean;
@@ -20,29 +24,35 @@ interface VoiceSectionProps {
 /** A model field that renders a dropdown of fetched (voice-filtered) models
  *  when available, else a free-text input. */
 function ModelField({
-  labelId, hintId, value, onChange, models, placeholder, disabled,
+  labelId, hintId, label, hint, value, onChange, models, placeholder, disabled, allowEmpty,
 }: {
-  labelId: string;
-  hintId: string;
+  labelId?: string;
+  hintId?: string;
+  /** Literal label/hint, used when no i18n id is supplied. */
+  label?: string;
+  hint?: string;
   value: string;
   onChange: (v: string) => void;
   models: string[] | null;
   placeholder: string;
   disabled: boolean;
+  /** Show a blank option (for optional fields that may be left empty). */
+  allowEmpty?: boolean;
 }) {
   const cls = 'w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent';
   return (
     <div className="space-y-1">
-      <label className="block text-xs text-slate-400"><FormattedMessage id={labelId} /></label>
+      <label className="block text-xs text-slate-400">{labelId ? <FormattedMessage id={labelId} /> : label}</label>
       {models && models.length > 0 ? (
         <select value={value} onChange={(e) => onChange(e.target.value)} className={cls} disabled={disabled}>
+          {allowEmpty && <option value="">—</option>}
           {!models.includes(value) && value && <option value={value}>{value}</option>}
           {models.map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
       ) : (
         <input type="text" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className={cls} disabled={disabled} />
       )}
-      <p className="text-[11px] text-slate-500"><FormattedMessage id={hintId} /></p>
+      {(hintId || hint) && <p className="text-[11px] text-slate-500">{hintId ? <FormattedMessage id={hintId} /> : hint}</p>}
     </div>
   );
 }
@@ -67,12 +77,19 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
   const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
   const [transcribeModel, setTranscribeModel] = useState(DEFAULT_TRANSCRIBE_MODEL);
   const [streamModel, setStreamModel] = useState(DEFAULT_STREAM_MODEL);
+  // Voice intermediary ("AI coworker") — brain (chat) + TTS, same endpoint.
+  const [agentModel, setAgentModel] = useState('');
+  const [ttsModel, setTtsModel] = useState('');
+  const [ttsVoice, setTtsVoice] = useState('');
   const [keyStored, setKeyStored] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
   const [models, setModels] = useState<string[] | null>(null);
+  // Full, unfiltered list — the coworker's chat/TTS models aren't voice models,
+  // so they need the raw `/models` list, not the voice-filtered `models`.
+  const [allModels, setAllModels] = useState<string[] | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
@@ -84,6 +101,9 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
       if (c.baseUrl) setBaseUrl(c.baseUrl);
       if (c.transcribeModel) setTranscribeModel(c.transcribeModel);
       if (c.streamModel) setStreamModel(c.streamModel);
+      if (c.agentModel) setAgentModel(c.agentModel);
+      if (c.ttsModel) setTtsModel(c.ttsModel);
+      if (c.ttsVoice) setTtsVoice(c.ttsVoice);
       setKeyStored(c.apiKey.length > 0);
     });
   }, [isOpen]);
@@ -98,6 +118,9 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
       baseUrl: baseUrl.trim(),
       transcribeModel: transcribeModel.trim() || DEFAULT_TRANSCRIBE_MODEL,
       streamModel: streamModel.trim() || DEFAULT_STREAM_MODEL,
+      agentModel: agentModel.trim() || undefined,
+      ttsModel: ttsModel.trim() || undefined,
+      ttsVoice: ttsVoice.trim() || undefined,
     };
   }
 
@@ -137,6 +160,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
       // Trim to voice-relevant models so the picker isn't full of chat/image
       // models (falls back to the full list for self-hosted servers).
       setModels(filterVoiceModels(list));
+      setAllModels(list);
     } catch (err) {
       setModels(null);
       setRefreshError(
@@ -150,6 +174,13 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
   const keyPlaceholder = intl.formatMessage({
     id: keyStored ? 'settings.voice.apiKey.placeholder.update' : 'settings.voice.apiKey.placeholder.new',
   });
+
+  // TTS models out of the full list (fall back to the full list if none match).
+  const ttsModelOptions = allModels
+    ? (allModels.filter((m) => /tts|speech|audio/i.test(m)).length > 0
+        ? allModels.filter((m) => /tts|speech|audio/i.test(m))
+        : allModels)
+    : null;
 
   return (
     <div className="space-y-3">
@@ -195,7 +226,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
       <input
         type="url"
         value={baseUrl}
-        onChange={(e) => { setBaseUrl(e.target.value); setModels(null); }}
+        onChange={(e) => { setBaseUrl(e.target.value); setModels(null); setAllModels(null); }}
         placeholder={DEFAULT_BASE_URL}
         className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
         disabled={isSaving}
@@ -232,6 +263,45 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
         disabled={isSaving}
       />
       {refreshError && <p className="text-xs text-amber-400">{refreshError}</p>}
+
+      {/* Voice intermediary ("AI coworker") — brain + TTS on the same endpoint. */}
+      <div className="pt-3 mt-1 border-t border-slate-700/60 space-y-2">
+        <h4 className="text-xs font-semibold text-slate-300">語音同事（中介 agent）</h4>
+        <p className="text-xs text-slate-500">
+          用同一個 endpoint 詮釋 coding agent 的輸出、並讓你用語音操控。留空即停用；按上方「Refresh models」載入下拉選單。
+        </p>
+
+        <ModelField
+          label="Brain 模型（chat completions）"
+          hint="例如 gpt-4o-mini"
+          value={agentModel}
+          onChange={setAgentModel}
+          models={allModels}
+          placeholder="gpt-4o-mini"
+          disabled={isSaving}
+          allowEmpty
+        />
+        <ModelField
+          label="TTS 模型（audio/speech）"
+          hint="例如 gpt-4o-mini-tts 或 tts-1"
+          value={ttsModel}
+          onChange={setTtsModel}
+          models={ttsModelOptions}
+          placeholder="gpt-4o-mini-tts"
+          disabled={isSaving}
+          allowEmpty
+        />
+        <ModelField
+          label="TTS 語音"
+          hint="例如 alloy / nova"
+          value={ttsVoice}
+          onChange={setTtsVoice}
+          models={TTS_VOICES}
+          placeholder="alloy"
+          disabled={isSaving}
+          allowEmpty
+        />
+      </div>
 
       <div className="flex items-center justify-between">
         <label className="block text-xs text-slate-400">
@@ -277,6 +347,15 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
           <FormattedMessage id="settings.voice.save" />
         )}
       </button>
+
+      <details className="pt-2 mt-1 border-t border-slate-700/60">
+        <summary className="text-xs text-slate-400 cursor-pointer select-none hover:text-slate-200">
+          WebRTC 診斷（串流語音連線測試）
+        </summary>
+        <div className="mt-2">
+          <VoiceRtcDebugPanel />
+        </div>
+      </details>
     </div>
   );
 }
