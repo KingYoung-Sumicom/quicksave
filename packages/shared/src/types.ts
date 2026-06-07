@@ -1467,6 +1467,9 @@ export interface VoiceConfig {
   /** Voice id for TTS (e.g. `alloy`, `nova`). Provider-specific; defaults to a
    *  server-side default when empty. */
   ttsVoice?: string;
+  /** Optional provider-specific TTS style instructions (supported by newer
+   *  speech models such as `gpt-4o-mini-tts`; ignored by unsupported servers). */
+  ttsInstructions?: string;
 }
 
 export interface VoiceTranscribeRequestPayload {

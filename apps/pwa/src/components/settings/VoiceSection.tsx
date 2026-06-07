@@ -15,7 +15,7 @@ const DEFAULT_TRANSCRIBE_MODEL = 'whisper-1';
 const DEFAULT_STREAM_MODEL = 'gpt-4o-transcribe';
 /** Known OpenAI(-compatible) TTS voices — `/models` doesn't list these, so the
  *  voice picker is a fixed dropdown (a saved custom value is still preserved). */
-const TTS_VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse'];
+const TTS_VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar'];
 
 interface VoiceSectionProps {
   isOpen: boolean;
@@ -81,6 +81,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
   const [agentModel, setAgentModel] = useState('');
   const [ttsModel, setTtsModel] = useState('');
   const [ttsVoice, setTtsVoice] = useState('');
+  const [ttsInstructions, setTtsInstructions] = useState('');
   const [keyStored, setKeyStored] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,6 +105,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
       if (c.agentModel) setAgentModel(c.agentModel);
       if (c.ttsModel) setTtsModel(c.ttsModel);
       if (c.ttsVoice) setTtsVoice(c.ttsVoice);
+      if (c.ttsInstructions) setTtsInstructions(c.ttsInstructions);
       setKeyStored(c.apiKey.length > 0);
     });
   }, [isOpen]);
@@ -121,6 +123,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
       agentModel: agentModel.trim() || undefined,
       ttsModel: ttsModel.trim() || undefined,
       ttsVoice: ttsVoice.trim() || undefined,
+      ttsInstructions: ttsInstructions.trim() || undefined,
     };
   }
 
@@ -293,7 +296,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
         />
         <ModelField
           label="TTS 語音"
-          hint="例如 alloy / nova"
+          hint="例如 marin / cedar / alloy"
           value={ttsVoice}
           onChange={setTtsVoice}
           models={TTS_VOICES}
@@ -301,6 +304,18 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
           disabled={isSaving}
           allowEmpty
         />
+        <div className="space-y-1">
+          <label className="block text-xs text-slate-400">TTS 語音指示</label>
+          <textarea
+            value={ttsInstructions}
+            onChange={(e) => setTtsInstructions(e.target.value)}
+            placeholder="例如：自然、溫和、語速稍快，像在口頭回報工作進度。"
+            rows={3}
+            className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-y"
+            disabled={isSaving}
+          />
+          <p className="text-[11px] text-slate-500">支援新版 TTS 模型；不支援的 provider 可能會忽略或回錯。</p>
+        </div>
       </div>
 
       <div className="flex items-center justify-between">

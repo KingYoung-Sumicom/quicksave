@@ -334,6 +334,7 @@ export function parseVoiceConfig(raw: string): VoiceConfig | null {
       agentModel: parsed.agentModel,
       ttsModel: parsed.ttsModel,
       ttsVoice: parsed.ttsVoice,
+      ttsInstructions: parsed.ttsInstructions,
     };
   } catch {
     return null;

@@ -54,6 +54,7 @@ export async function synthesizeSpeech(
   const doFetch = opts?.fetchImpl ?? fetch;
   let res: Response;
   const clientRequestId = `quicksave-tts-${randomUUID()}`;
+  const instructions = config.ttsInstructions?.trim();
   try {
     res = await doFetch(apiUrl(config.baseUrl, '/audio/speech'), {
       method: 'POST',
@@ -66,6 +67,7 @@ export async function synthesizeSpeech(
         voice: config.ttsVoice?.trim() || 'alloy',
         input: text,
         response_format: 'mp3',
+        ...(instructions ? { instructions } : {}),
       }),
       signal: opts?.signal,
     });

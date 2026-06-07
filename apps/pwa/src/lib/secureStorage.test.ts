@@ -14,6 +14,7 @@ describe('parseVoiceConfig', () => {
       agentModel: 'gpt-4o-mini',
       ttsModel: 'gpt-4o-mini-tts',
       ttsVoice: 'nova',
+      ttsInstructions: '聲音自然、溫和，語速稍快。',
     });
     expect(parseVoiceConfig(raw)).toEqual({
       apiKey: 'k',
@@ -24,6 +25,7 @@ describe('parseVoiceConfig', () => {
       agentModel: 'gpt-4o-mini',
       ttsModel: 'gpt-4o-mini-tts',
       ttsVoice: 'nova',
+      ttsInstructions: '聲音自然、溫和，語速稍快。',
     });
   });
 
@@ -33,6 +35,7 @@ describe('parseVoiceConfig', () => {
     expect(cfg?.agentModel).toBeUndefined();
     expect(cfg?.ttsModel).toBeUndefined();
     expect(cfg?.ttsVoice).toBeUndefined();
+    expect(cfg?.ttsInstructions).toBeUndefined();
   });
 
   it('migrates the pre-split single `model` field to transcribeModel', () => {

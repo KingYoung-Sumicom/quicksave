@@ -74,6 +74,7 @@ const CONFIG: VoiceConfig = {
   agentModel: 'gpt-voice',
   ttsModel: 'tts-1',
   ttsVoice: 'alloy',
+  ttsInstructions: '自然、溫和、語速稍快。',
 };
 
 let quicksaveDir: string;
@@ -322,6 +323,8 @@ describe('voice system prompt', () => {
     expect(prompt).toContain('內部工具與 coding agent 是你的執行能力');
     expect(prompt).toContain('不要說「我去叫 coding agent」');
     expect(prompt).toContain('我來處理');
+    expect(prompt).toContain('預設只講 1 到 3 句');
+    expect(prompt).toContain('絕不把長輸出');
   });
 });
 
@@ -364,6 +367,7 @@ describe('voice TTS client', () => {
       voice: CONFIG.ttsVoice,
       input: '測試語音',
       response_format: 'mp3',
+      instructions: CONFIG.ttsInstructions,
     });
     expect(headers?.['Content-Type']).toBe('application/json');
     expect(headers?.['X-Client-Request-Id']).toMatch(/^quicksave-tts-/);
