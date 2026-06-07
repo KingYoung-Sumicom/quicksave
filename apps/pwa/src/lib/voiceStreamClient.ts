@@ -35,6 +35,7 @@ export type VoiceStreamState = 'connecting' | 'ready' | 'recording' | 'unavailab
 export interface VoiceStreamCallbacks {
   onPartial(text: string): void;
   onFinal(text: string): void;
+  onSpeechActivity?(active: boolean): void;
   onError(message: string): void;
   onState(state: VoiceStreamState): void;
 }
@@ -332,6 +333,8 @@ export class VoiceStreamSession {
     if (msg.t === 'transcript') {
       if (msg.final) this.cb.onFinal(msg.text);
       else this.cb.onPartial(msg.text);
+    } else if (msg.t === 'speech') {
+      this.cb.onSpeechActivity?.(msg.active);
     } else if (msg.t === 'error') {
       this.cb.onError(msg.message);
     }

@@ -20,6 +20,8 @@ export interface RealtimeCallbacks {
   onPartial(text: string): void;
   onFinal(text: string): void;
   onError(message: string): void;
+  onSpeechStarted?(): void;
+  onSpeechStopped?(): void;
   onClose?(): void;
 }
 
@@ -86,6 +88,12 @@ export class RealtimeTranscriber {
               input: {
                 format: { type: 'audio/pcm', rate: this.sampleRate },
                 transcription: { model: this.config.streamModel.trim() },
+                turn_detection: {
+                  type: 'server_vad',
+                  threshold: 0.5,
+                  prefix_padding_ms: 300,
+                  silence_duration_ms: 2000,
+                },
               },
             },
           },
@@ -150,6 +158,15 @@ export class RealtimeTranscriber {
       return; // ignore unparseable frames
     }
     const type = typeof evt.type === 'string' ? evt.type : '';
+
+    if (type === 'input_audio_buffer.speech_started') {
+      this.cb.onSpeechStarted?.();
+      return;
+    }
+    if (type === 'input_audio_buffer.speech_stopped') {
+      this.cb.onSpeechStopped?.();
+      return;
+    }
 
     // Tolerant matching so minor schema drift across providers/versions still
     // routes partial vs final correctly.

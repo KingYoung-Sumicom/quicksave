@@ -10,13 +10,16 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import type {
+  CardEvent,
+  CardStreamEnd,
   ClaudeUserInputRequestPayload,
   VoiceAgentEvent,
+  VoiceAgentPlaybackEventRequestPayload,
   VoiceConfig,
 } from '@sumicom/quicksave-shared';
 import type { FetchLike } from './llm.js';
 import type { CodingSessionBridge } from './tools.js';
-import { VoiceIntermediarySession } from './session.js';
+import { VoiceIntermediarySession, type VoiceTurnMeta } from './session.js';
 
 /** The SessionManager surface the manager needs, beyond the tool bridge. */
 export type VoiceManagerBridge = CodingSessionBridge & {
@@ -86,7 +89,11 @@ export class VoiceIntermediaryManager extends EventEmitter {
     return this.sessions.has(sessionId);
   }
 
-  async handleUtterance(sessionId: string, text: string): Promise<void> {
+  async handleUtterance(
+    sessionId: string,
+    text: string,
+    meta: VoiceTurnMeta = {},
+  ): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed) return;
     const session = this.sessions.get(sessionId);
@@ -98,7 +105,11 @@ export class VoiceIntermediaryManager extends EventEmitter {
       this.emitEvent(sessionId, { kind: 'error', message: '尚未設定語音 agent 模型（agentModel）。' });
       return;
     }
-    await session.handleUtterance(trimmed);
+    await session.handleUtterance(trimmed, meta);
+  }
+
+  recordPlaybackEvent(event: VoiceAgentPlaybackEventRequestPayload): void {
+    this.sessions.get(event.sessionId)?.recordPlaybackEvent(event);
   }
 
   /**
@@ -112,8 +123,22 @@ export class VoiceIntermediaryManager extends EventEmitter {
     const tool = request.toolName ?? request.title;
     const detail = request.toolInput ? ` 內容：${safeBrief(request.toolInput)}` : '';
     void session.notify(
-      `coding agent 要權限執行「${tool}」。${detail} 這可能不可逆，先別自己決定——用講的說明並詢問使用者，得到口頭同意再用 respond_to_permission 回覆（request_id：${request.requestId}）。`,
+      `目前工作需要權限執行「${tool}」。${detail} 這可能不可逆，先別自己決定——用講的說明並詢問使用者，得到口頭同意再用 respond_to_permission 回覆（request_id：${request.requestId}）。`,
     );
+  }
+
+  recordCardEvent(event: CardEvent): void {
+    this.sessions.get(event.sessionId)?.recordCardEvent(event);
+  }
+
+  recordStreamEnd(result: CardStreamEnd): void {
+    this.sessions.get(result.sessionId)?.recordStreamEnd(result);
+  }
+
+  notifyStreamEnd(result: CardStreamEnd): void {
+    const session = this.sessions.get(result.sessionId);
+    if (!session || !session.hasBrain()) return;
+    void session.notifyCodingTurnEnded(result);
   }
 
   getAudio(audioId: string): StoredAudio | null {

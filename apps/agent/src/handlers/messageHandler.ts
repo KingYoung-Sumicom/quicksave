@@ -98,6 +98,8 @@ import {
   VoiceAgentDetachResponsePayload,
   VoiceAgentUtteranceRequestPayload,
   VoiceAgentUtteranceResponsePayload,
+  VoiceAgentPlaybackEventRequestPayload,
+  VoiceAgentPlaybackEventResponsePayload,
   VoiceAgentFetchAudioRequestPayload,
   VoiceAgentFetchAudioResponsePayload,
   AttachmentUploadRequestPayload,
@@ -112,6 +114,8 @@ import {
   VoiceTranscribeResponsePayload,
   VoiceListModelsRequestPayload,
   VoiceListModelsResponsePayload,
+  VoiceLogEventRequestPayload,
+  VoiceLogEventResponsePayload,
   SessionSetConfigRequestPayload,
   SessionSetConfigResponsePayload,
   SessionControlRequestPayload,
@@ -185,6 +189,7 @@ import { loadAttachment, removeSessionAttachments } from '../ai/attachmentStore.
 import { loadArtifactBySession } from '../ai/artifactStore.js';
 import { transcribeAudio, listModels } from '../ai/voiceTranscription.js';
 import { probeAudioSupport } from '../ai/voiceStream.js';
+import { voiceEventLogger } from '../ai/voiceLog.js';
 import { CodexAppServerProvider } from '../ai/codexAppServer/index.js';
 import { CodexLoginManager } from '../ai/codexLogin.js';
 import { CodexQuotaService } from '../ai/codexQuota.js';
@@ -824,6 +829,8 @@ export class MessageHandler {
           return this.handleVoiceAgentDetach(message as Message<VoiceAgentDetachRequestPayload>);
         case 'voice-agent:utterance':
           return this.handleVoiceAgentUtterance(message as Message<VoiceAgentUtteranceRequestPayload>);
+        case 'voice-agent:playback-event':
+          return this.handleVoiceAgentPlaybackEvent(message as Message<VoiceAgentPlaybackEventRequestPayload>);
         case 'voice-agent:fetch-audio':
           return this.handleVoiceAgentFetchAudio(message as Message<VoiceAgentFetchAudioRequestPayload>);
         case 'session:set-config':
@@ -876,6 +883,8 @@ export class MessageHandler {
           return this.handleVoiceTranscribe(message as Message<VoiceTranscribeRequestPayload>);
         case 'voice:list-models':
           return this.handleVoiceListModels(message as Message<VoiceListModelsRequestPayload>);
+        case 'voice:log-event':
+          return this.handleVoiceLogEvent(message as Message<VoiceLogEventRequestPayload>);
         default:
           return this.createErrorResponse(message.id, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type: ${message.type}`);
     }
@@ -1474,13 +1483,30 @@ export class MessageHandler {
     message: Message<VoiceTranscribeRequestPayload>,
   ): Promise<Message<VoiceTranscribeResponsePayload>> {
     const { audioBase64, mimeType, config } = message.payload;
+    const audioBytes = Buffer.byteLength(audioBase64, 'base64');
+    voiceEventLogger.log({
+      event: 'stt.request',
+      phase: 'stt',
+      data: { mode: config.mode, model: config.transcribeModel, mimeType, audioBytes },
+    });
     try {
       const audio = Buffer.from(audioBase64, 'base64');
       const text = await transcribeAudio(audio, mimeType, config);
+      voiceEventLogger.log({
+        event: 'stt.result',
+        phase: 'stt',
+        data: { mode: config.mode, model: config.transcribeModel, text, textChars: text.length },
+      });
       const response = createMessage<VoiceTranscribeResponsePayload>('voice:transcribe:response', { text });
       response.id = message.id;
       return response;
     } catch (error) {
+      voiceEventLogger.log({
+        event: 'stt.error',
+        phase: 'stt',
+        level: 'error',
+        data: { mode: config.mode, model: config.transcribeModel, message: error instanceof Error ? error.message : 'Transcription failed' },
+      });
       const response = createMessage<VoiceTranscribeResponsePayload>('voice:transcribe:response', {
         text: '',
         error: error instanceof Error ? error.message : 'Transcription failed',
@@ -1488,6 +1514,15 @@ export class MessageHandler {
       response.id = message.id;
       return response;
     }
+  }
+
+  private handleVoiceLogEvent(
+    message: Message<VoiceLogEventRequestPayload>,
+  ): Message<VoiceLogEventResponsePayload> {
+    voiceEventLogger.log(message.payload);
+    const response = createMessage<VoiceLogEventResponsePayload>('voice:log-event:response', { ok: true });
+    response.id = message.id;
+    return response;
   }
 
   private async handleVoiceListModels(
@@ -2514,6 +2549,20 @@ export class MessageHandler {
     message: Message<VoiceAgentAttachRequestPayload>,
   ): Message<VoiceAgentAttachResponsePayload> {
     const { sessionId, config } = message.payload;
+    voiceEventLogger.log({
+      sessionId,
+      event: 'voice_agent.attach',
+      phase: 'voice_agent',
+      data: {
+        mode: config.mode,
+        baseUrl: config.baseUrl,
+        transcribeModel: config.transcribeModel,
+        streamModel: config.streamModel,
+        agentModel: config.agentModel,
+        ttsModel: config.ttsModel,
+        ttsVoice: config.ttsVoice,
+      },
+    });
     let result: { ok: boolean; active: boolean };
     try {
       result = this.voiceIntermediary.attach(sessionId, config);
@@ -2533,6 +2582,11 @@ export class MessageHandler {
   private handleVoiceAgentDetach(
     message: Message<VoiceAgentDetachRequestPayload>,
   ): Message<VoiceAgentDetachResponsePayload> {
+    voiceEventLogger.log({
+      sessionId: message.payload.sessionId,
+      event: 'voice_agent.detach',
+      phase: 'voice_agent',
+    });
     this.voiceIntermediary.detach(message.payload.sessionId);
     const response = createMessage<VoiceAgentDetachResponsePayload>('voice-agent:detach:response', { ok: true });
     response.id = message.id;
@@ -2542,14 +2596,38 @@ export class MessageHandler {
   private async handleVoiceAgentUtterance(
     message: Message<VoiceAgentUtteranceRequestPayload>,
   ): Promise<Message<VoiceAgentUtteranceResponsePayload>> {
-    const { sessionId, text } = message.payload;
+    const { sessionId, text, turnId, interactionId, utteranceId } = message.payload;
+    voiceEventLogger.log({
+      sessionId,
+      event: 'voice_agent.utterance.received',
+      phase: 'voice_agent',
+      turnId,
+      data: { text, textChars: text.length, interactionId, utteranceId },
+    });
     // Fire-and-forget the tool loop: the spoken result streams back over the
     // `/sessions/:id/voice-agent` subscription. Ack receipt immediately so the
     // bus request doesn't block for the whole (multi-second) turn.
-    void this.voiceIntermediary.handleUtterance(sessionId, text).catch((err) => {
+    void this.voiceIntermediary.handleUtterance(sessionId, text, { turnId, interactionId, utteranceId }).catch((err) => {
       console.error('[voice-agent:utterance] turn failed:', err);
     });
     const response = createMessage<VoiceAgentUtteranceResponsePayload>('voice-agent:utterance:response', { ok: true });
+    response.id = message.id;
+    return response;
+  }
+
+  private handleVoiceAgentPlaybackEvent(
+    message: Message<VoiceAgentPlaybackEventRequestPayload>,
+  ): Message<VoiceAgentPlaybackEventResponsePayload> {
+    const { sessionId, event, audioId, turnId, interactionId, utteranceId, reason } = message.payload;
+    voiceEventLogger.log({
+      sessionId,
+      event: `playback.${event}`,
+      phase: 'playback',
+      turnId,
+      data: { audioId, interactionId, utteranceId, reason },
+    });
+    this.voiceIntermediary.recordPlaybackEvent(message.payload);
+    const response = createMessage<VoiceAgentPlaybackEventResponsePayload>('voice-agent:playback-event:response', { ok: true });
     response.id = message.id;
     return response;
   }
@@ -2558,6 +2636,16 @@ export class MessageHandler {
     message: Message<VoiceAgentFetchAudioRequestPayload>,
   ): Message<VoiceAgentFetchAudioResponsePayload> {
     const stored = this.voiceIntermediary.getAudio(message.payload.audioId);
+    voiceEventLogger.log({
+      sessionId: message.payload.sessionId,
+      event: stored ? 'tts.audio.fetch' : 'tts.audio.expired',
+      phase: 'tts',
+      data: {
+        audioId: message.payload.audioId,
+        mimeType: stored?.mimeType,
+        audioBytes: stored?.audio.length,
+      },
+    });
     const response = createMessage<VoiceAgentFetchAudioResponsePayload>(
       'voice-agent:fetch-audio:response',
       stored

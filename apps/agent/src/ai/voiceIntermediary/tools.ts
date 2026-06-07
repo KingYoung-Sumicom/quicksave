@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The voice intermediary's tool layer. Seven tools, all bound to EXISTING
+ * The voice intermediary's tool layer. Silent tools, mostly bound to EXISTING
  * `SessionManager` methods (only `sendUserMessageToSession` is new) plus the
  * workspace memory file. Speaking is NOT a tool — assistant text is synthesized
  * by the session loop; tools are the silent actions the coworker can take.
@@ -20,6 +20,7 @@ import type {
 } from '@sumicom/quicksave-shared';
 import { appendMemory, type MemorySection } from './memory.js';
 import type { ToolSchema } from './llm.js';
+import { formatVoiceHistoryEvent, type VoiceHistoryReadOptions, type VoiceHistoryEvent } from './historyStore.js';
 
 /**
  * The slice of `SessionManager` the tools depend on. `SessionManager`
@@ -42,6 +43,10 @@ export interface VoiceToolContext {
   sessionId: string;
   cwd: string;
   bridge: CodingSessionBridge;
+  /** Recent live card events already observed by the voice intermediary. */
+  liveContext?: string;
+  /** Read prior voice-agent JSONL history, including compacted context. */
+  readVoiceHistory?: (opts: VoiceHistoryReadOptions) => Promise<VoiceHistoryEvent[]>;
   /** Narrate a side effect to the UI log (not spoken). */
   emitAction: (summary: string) => void;
 }
@@ -52,11 +57,11 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
     function: {
       name: 'send_to_coding_agent',
       description:
-        'Send a prompt/instruction to the coding agent to steer it. Use for "tell it to…", "ask it to…", redirection, answering its open questions. Set interrupt=true ONLY when the user wants to stop the current work and change course now ("no, stop and do X instead"); otherwise the prompt queues politely.',
+        'Internally dispatch implementation work. To the user, present this as your own action ("I will handle it", "I am checking"), not as asking another agent. Use for "do X", redirection, and answering open questions. Set interrupt=true ONLY when the user wants to stop the current work and change course now ("no, stop and do X instead"); otherwise the prompt queues politely.',
       parameters: {
         type: 'object',
         properties: {
-          prompt: { type: 'string', description: 'The instruction to give the coding agent, in the project/user language.' },
+          prompt: { type: 'string', description: 'The internal implementation instruction, in the project/user language.' },
           interrupt: { type: 'boolean', description: 'Interrupt the in-flight turn before sending. Default false.' },
         },
         required: ['prompt'],
@@ -67,7 +72,7 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
     type: 'function',
     function: {
       name: 'stop_coding_agent',
-      description: 'Interrupt the coding agent\'s current turn without sending a new prompt. Use when the user just says "stop" / "halt".',
+      description: 'Interrupt the current implementation turn without sending a new prompt. Use when the user just says "stop" / "halt"; tell the user you stopped the current work.',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -93,7 +98,7 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
     function: {
       name: 'set_permission_mode',
       description:
-        'Change the coding agent\'s autonomy. Confirm verbally with the user before widening autonomy. Modes: default, acceptEdits, bypassPermissions, plan, auto (Claude); read-only, default, auto-review, full-access (Codex).',
+        'Change implementation autonomy. Confirm verbally with the user before widening autonomy. Modes: default, acceptEdits, bypassPermissions, plan, auto (Claude); read-only, default, auto-review, full-access (Codex).',
       parameters: {
         type: 'object',
         properties: {
@@ -108,7 +113,7 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
     function: {
       name: 'get_status',
       description:
-        'Glance at the coding agent right now: is it streaming, is a permission prompt pending (with its request_id and tool), what autonomy mode. Cheap — prefer this over read_cards when the user asks "what\'s it doing?".',
+        'Glance at current work: is it running, is a permission prompt pending (with its request_id and tool), what autonomy mode. Cheap — prefer this over read_cards when the user asks what is happening. Summarize as your own status update.',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -117,7 +122,7 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
     function: {
       name: 'read_cards',
       description:
-        'Read or search the recent coding-agent transcript (messages, tool calls + results, errors). Pass query to filter. Use to interpret what happened and answer detailed questions. Summarize for the user — do NOT read it back verbatim.',
+        'Read or search the recent implementation transcript (messages, tool calls + results, errors). Pass query to filter. Use to interpret what happened and answer detailed questions. Summarize as your own status update — do NOT read it back verbatim and do NOT say you are reading another agent.',
       parameters: {
         type: 'object',
         properties: {
@@ -140,6 +145,23 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
           section: { type: 'string', enum: ['preference', 'decision', 'fact', 'note'], description: 'Which section it belongs in.' },
         },
         required: ['note'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_voice_history',
+      description:
+        'Search or browse this voice agent\'s own persisted JSONL history, including messages before compaction. Use when the user asks what they told you earlier, why you made a voice-agent decision, or when active context lacks older voice conversation details. Summarize; do not read raw history aloud.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Optional case-insensitive search text.' },
+          limit: { type: 'number', description: 'How many recent matching history events to read (1-100, default 20).' },
+          before_seq: { type: 'number', description: 'Only read events before this sequence number.' },
+          include_runtime_events: { type: 'boolean', description: 'Include runtime/log events. Default false.' },
+        },
       },
     },
   },
@@ -210,13 +232,13 @@ export async function executeTool(
       const interrupt = !!args.interrupt;
       const ok = bridge.sendUserMessageToSession(sessionId, prompt, { interrupt });
       if (!ok) return 'error: the coding session is not running';
-      emitAction(interrupt ? `中斷並引導：${truncate(prompt, 60)}` : `下指令：${truncate(prompt, 60)}`);
+      emitAction(interrupt ? `改做：${truncate(prompt, 60)}` : `開始處理：${truncate(prompt, 60)}`);
       return interrupt ? 'interrupted and sent' : 'sent (will run on the next turn boundary)';
     }
 
     case 'stop_coding_agent': {
       const ok = await bridge.interruptSession(sessionId);
-      if (ok) emitAction('請 coding agent 停下');
+      if (ok) emitAction('已停止目前工作');
       return ok ? 'stopped the current turn' : 'nothing was running to stop';
     }
 
@@ -275,6 +297,9 @@ export async function executeTool(
         return `error reading cards: ${(err as Error).message}`;
       }
       let lines = resp.cards.map(formatCardForBrain).filter(Boolean);
+      if (ctx.liveContext?.trim()) {
+        lines.push(...ctx.liveContext.split('\n').map((l) => l.trim()).filter(Boolean));
+      }
       if (query) lines = lines.filter((l) => l.toLowerCase().includes(query));
       if (lines.length === 0) return query ? `no cards matched "${query}"` : 'no transcript yet';
       return lines.join('\n');
@@ -289,6 +314,18 @@ export async function executeTool(
       await appendMemory(cwd, note, section);
       emitAction(`記住：${truncate(note, 60)}`);
       return 'remembered';
+    }
+
+    case 'read_voice_history': {
+      if (!ctx.readVoiceHistory) return 'error: voice history is unavailable';
+      const events = await ctx.readVoiceHistory({
+        query: typeof args.query === 'string' ? args.query : undefined,
+        limit: Math.min(100, Math.max(1, Number(args.limit) || 20)),
+        beforeSeq: Number.isFinite(Number(args.before_seq)) ? Number(args.before_seq) : undefined,
+        includeRuntimeEvents: args.include_runtime_events === true,
+      });
+      if (events.length === 0) return 'no voice history matched';
+      return events.map(formatVoiceHistoryEvent).join('\n');
     }
 
     default:

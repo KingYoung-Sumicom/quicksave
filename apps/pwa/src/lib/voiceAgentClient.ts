@@ -13,8 +13,12 @@ import type {
   VoiceAgentDetachResponsePayload,
   VoiceAgentUtteranceRequestPayload,
   VoiceAgentUtteranceResponsePayload,
+  VoiceAgentPlaybackEventRequestPayload,
+  VoiceAgentPlaybackEventResponsePayload,
   VoiceAgentFetchAudioRequestPayload,
   VoiceAgentFetchAudioResponsePayload,
+  VoiceLogEventRequestPayload,
+  VoiceLogEventResponsePayload,
   VoiceConfig,
 } from '@sumicom/quicksave-shared';
 import { getBusForAgent } from './busRegistry';
@@ -53,14 +57,28 @@ export async function sendVoiceAgentUtterance(
   agentId: string,
   sessionId: string,
   text: string,
+  meta: Pick<VoiceAgentUtteranceRequestPayload, 'turnId' | 'interactionId' | 'utteranceId'> = {},
 ): Promise<VoiceAgentUtteranceResponsePayload> {
   const bus = getBusForAgent(agentId);
   if (!bus) return { ok: false, error: 'Not connected to an agent.' };
   return bus.command<VoiceAgentUtteranceResponsePayload, VoiceAgentUtteranceRequestPayload>(
     'voice-agent:utterance',
-    { sessionId, text },
+    { sessionId, text, ...meta },
     { timeoutMs: 10_000 },
   );
+}
+
+export function sendVoiceAgentPlaybackEvent(
+  agentId: string,
+  event: VoiceAgentPlaybackEventRequestPayload,
+): void {
+  const bus = getBusForAgent(agentId);
+  if (!bus) return;
+  void bus.command<VoiceAgentPlaybackEventResponsePayload, VoiceAgentPlaybackEventRequestPayload>(
+    'voice-agent:playback-event',
+    event,
+    { timeoutMs: 5_000 },
+  ).catch(() => undefined);
 }
 
 /** Fetch synthesized speech bytes by id. Returns null when expired/empty. */
@@ -78,6 +96,19 @@ export async function fetchVoiceAgentAudio(
   );
   if (!res.audioBase64) return null;
   return { bytes: decodeBase64(res.audioBase64), mimeType: res.mimeType || 'audio/mpeg' };
+}
+
+export function logVoiceEvent(
+  agentId: string,
+  event: VoiceLogEventRequestPayload,
+): void {
+  const bus = getBusForAgent(agentId);
+  if (!bus) return;
+  void bus.command<VoiceLogEventResponsePayload, VoiceLogEventRequestPayload>(
+    'voice:log-event',
+    event,
+    { timeoutMs: 5_000 },
+  ).catch(() => undefined);
 }
 
 function decodeBase64(b64: string): Uint8Array {

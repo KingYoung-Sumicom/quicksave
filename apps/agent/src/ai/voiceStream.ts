@@ -25,6 +25,7 @@ import type {
   VoiceRtcIceUpdate,
 } from '@sumicom/quicksave-shared';
 import { RealtimeTranscriber } from './realtimeTranscription.js';
+import { voiceEventLogger } from './voiceLog.js';
 
 /** Structural subset of MessageBusServer we depend on (keeps this testable). */
 export interface VoiceBus {
@@ -196,7 +197,7 @@ export class VoiceStreamManager {
       if (inbound.kind !== 'control') return;
       const msg = inbound.msg;
       if (msg.t === 'start') {
-        this.startUtterance(peer, msg.config, msg.sampleRate, sendDc);
+        this.startUtterance(sessionId, peer, msg.config, msg.sampleRate, sendDc);
       } else if (msg.t === 'stop') {
         peer.transcriber?.commit();
       }
@@ -205,6 +206,7 @@ export class VoiceStreamManager {
   }
 
   private startUtterance(
+    sessionId: string,
     peer: VoicePeer,
     config: VoiceConfig,
     sampleRate: number,
@@ -212,9 +214,26 @@ export class VoiceStreamManager {
   ): void {
     peer.transcriber?.close();
     peer.transcriber = new RealtimeTranscriber(config, sampleRate, {
-      onPartial: (text) => sendDc({ t: 'transcript', final: false, text }),
-      onFinal: (text) => sendDc({ t: 'transcript', final: true, text }),
-      onError: (message) => sendDc({ t: 'error', message }),
+      onSpeechStarted: () => {
+        voiceEventLogger.log({ sessionId, event: 'vad.speech_started', phase: 'vad' });
+        sendDc({ t: 'speech', active: true });
+      },
+      onSpeechStopped: () => {
+        voiceEventLogger.log({ sessionId, event: 'vad.speech_stopped', phase: 'vad' });
+        sendDc({ t: 'speech', active: false });
+      },
+      onPartial: (text) => {
+        voiceEventLogger.log({ sessionId, event: 'asr.partial', phase: 'asr', data: { textChars: text.length } });
+        sendDc({ t: 'transcript', final: false, text });
+      },
+      onFinal: (text) => {
+        voiceEventLogger.log({ sessionId, event: 'asr.final_fragment', phase: 'asr', data: { text, textChars: text.length } });
+        sendDc({ t: 'transcript', final: true, text });
+      },
+      onError: (message) => {
+        voiceEventLogger.log({ sessionId, event: 'asr.error', phase: 'asr', level: 'error', data: { message } });
+        sendDc({ t: 'error', message });
+      },
     });
     peer.transcriber.start();
   }

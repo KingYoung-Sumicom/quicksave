@@ -38,6 +38,8 @@ function makeCb() {
     onPartial: vi.fn(),
     onFinal: vi.fn(),
     onError: vi.fn(),
+    onSpeechStarted: vi.fn(),
+    onSpeechStopped: vi.fn(),
     onClose: vi.fn(),
   };
 }
@@ -71,6 +73,10 @@ describe('RealtimeTranscriber', () => {
     expect(cfg.session.type).toBe('transcription');
     expect(cfg.session.audio.input.format).toEqual({ type: 'audio/pcm', rate: 24_000 });
     expect(cfg.session.audio.input.transcription.model).toBe('gpt-4o-transcribe');
+    expect(cfg.session.audio.input.turn_detection).toMatchObject({
+      type: 'server_vad',
+      silence_duration_ms: 2000,
+    });
   });
 
   it('buffers audio sent before open, then flushes after open', () => {
@@ -114,6 +120,17 @@ describe('RealtimeTranscriber', () => {
     expect(cb.onPartial).toHaveBeenNthCalledWith(1, 'he');
     expect(cb.onPartial).toHaveBeenNthCalledWith(2, 'llo');
     expect(cb.onFinal).toHaveBeenCalledWith('hello');
+  });
+
+  it('routes server VAD speech events to callbacks', () => {
+    const cb = makeCb();
+    const t = newTranscriber(cb);
+    t.start();
+    socket.emit('open');
+    socket.emit('message', JSON.stringify({ type: 'input_audio_buffer.speech_started' }));
+    socket.emit('message', JSON.stringify({ type: 'input_audio_buffer.speech_stopped' }));
+    expect(cb.onSpeechStarted).toHaveBeenCalledOnce();
+    expect(cb.onSpeechStopped).toHaveBeenCalledOnce();
   });
 
   it('routes error events to onError', () => {

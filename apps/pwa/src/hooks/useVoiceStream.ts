@@ -29,7 +29,12 @@ export interface UseVoiceStream {
   stop: () => void;
 }
 
-export function useVoiceStream(agentId: string, onFinalText: (text: string) => void): UseVoiceStream {
+export function useVoiceStream(
+  agentId: string,
+  onFinalText: (text: string) => void,
+  onSpeechActivity?: (active: boolean) => void,
+  onPartialText?: (text: string) => void,
+): UseVoiceStream {
   const [state, setState] = useState<VoiceStreamState | 'idle'>('idle');
   const [interim, setInterim] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +43,10 @@ export function useVoiceStream(agentId: string, onFinalText: (text: string) => v
   const connectingRef = useRef<Promise<boolean> | null>(null);
   const onFinalRef = useRef(onFinalText);
   onFinalRef.current = onFinalText;
+  const onSpeechActivityRef = useRef(onSpeechActivity);
+  onSpeechActivityRef.current = onSpeechActivity;
+  const onPartialTextRef = useRef(onPartialText);
+  onPartialTextRef.current = onPartialText;
 
   useEffect(() => {
     return () => {
@@ -72,11 +81,15 @@ export function useVoiceStream(agentId: string, onFinalText: (text: string) => v
         sessionRef.current = null;
       }
       const session = new VoiceStreamSession(agentId, crypto.randomUUID(), config, {
-        onPartial: (text) => setInterim(text),
+        onPartial: (text) => {
+          setInterim(text);
+          onPartialTextRef.current?.(text);
+        },
         onFinal: (text) => {
           setInterim('');
           if (text) onFinalRef.current(text);
         },
+        onSpeechActivity: (active) => onSpeechActivityRef.current?.(active),
         onError: (message) => {
           setInterim('');
           setError(message);

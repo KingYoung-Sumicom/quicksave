@@ -8,7 +8,7 @@
  * coding agent's output and lets the user steer by voice.
  */
 import clsx from 'clsx';
-import { useVoiceAgent } from '../hooks/useVoiceAgent';
+import { useVoiceAgent, type UseVoiceAgent } from '../hooks/useVoiceAgent';
 
 const STATE_LABEL: Record<string, string> = {
   idle: '待命',
@@ -49,8 +49,17 @@ function CoworkerGlyph({ className }: { className?: string }) {
   );
 }
 
-export function VoiceCoworkerControl({ agentId, sessionId }: { agentId: string; sessionId: string }) {
-  const va = useVoiceAgent(agentId, sessionId);
+export function VoiceCoworkerControl({
+  agentId,
+  sessionId,
+  voiceAgent,
+}: {
+  agentId: string;
+  sessionId: string;
+  voiceAgent?: UseVoiceAgent;
+}) {
+  const ownVoiceAgent = useVoiceAgent(agentId, sessionId);
+  const va = voiceAgent ?? ownVoiceAgent;
 
   return (
     <div className="flex items-center gap-1.5 text-xs">
@@ -105,6 +114,83 @@ export function VoiceCoworkerControl({ agentId, sessionId }: { agentId: string; 
             💬 {va.lastSpoken}
           </span>
         )
+      )}
+    </div>
+  );
+}
+
+export function VoiceCoworkerStatusPanel({ voiceAgent }: { voiceAgent: UseVoiceAgent }) {
+  const va = voiceAgent;
+  const latestAction = va.actionLog.length > 0 ? va.actionLog[va.actionLog.length - 1] : undefined;
+  const statusText = va.recording && va.interim
+    ? va.interim
+    : va.active
+      ? STATE_LABEL[va.state] ?? '待命'
+      : '尚未連上語音同事';
+
+  return (
+    <div className="rounded-lg border border-purple-500/25 bg-slate-800/80 px-3 py-3">
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={va.toggle}
+          className="flex shrink-0 items-center justify-center rounded-lg bg-purple-600 p-2 text-white hover:bg-purple-500"
+          title="關閉語音同事"
+          aria-label="關閉語音同事"
+        >
+          <CoworkerGlyph className="h-5 w-5" />
+        </button>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className={clsx(
+              'h-2 w-2 shrink-0 rounded-full',
+              va.recording ? 'bg-red-400 animate-pulse' : va.active ? 'bg-purple-300' : 'bg-amber-300',
+            )} />
+            <span className="truncate text-sm font-medium text-slate-100">
+              {statusText}
+            </span>
+          </div>
+          <div className="mt-1 truncate text-xs text-slate-400">
+            {va.error
+              ? va.error
+              : latestAction
+                ? latestAction
+                : va.lastSpoken || '語音同事開啟後，這裡會顯示聆聽、思考、說話與動作狀態。'}
+          </div>
+        </div>
+        <button
+          type="button"
+          onPointerDown={(e) => {
+            e.preventDefault();
+            va.onTalkPress();
+          }}
+          disabled={!va.active || va.busy}
+          className={clsx(
+            'flex h-10 w-10 shrink-0 items-center justify-center rounded-lg transition-colors disabled:opacity-50',
+            va.recording ? 'bg-red-600 text-white hover:bg-red-500' : 'bg-slate-700 text-slate-200 hover:bg-slate-600',
+          )}
+          title={va.recording ? '停止' : '按一下說話'}
+          aria-label={va.recording ? '停止說話' : '按下說話'}
+        >
+          <MicGlyph className="h-5 w-5" />
+        </button>
+      </div>
+
+      {(va.lastSpoken || va.actionLog.length > 0 || va.error) && (
+        <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+          <div className="min-w-0 rounded border border-slate-700 bg-slate-900/70 px-2 py-1.5">
+            <div className="mb-1 text-[10px] font-semibold uppercase text-slate-500">Last spoken</div>
+            <div className={clsx('truncate', va.error ? 'text-red-300' : 'text-slate-200')} title={va.error ?? va.lastSpoken}>
+              {va.error ?? va.lastSpoken ?? '—'}
+            </div>
+          </div>
+          <div className="min-w-0 rounded border border-slate-700 bg-slate-900/70 px-2 py-1.5">
+            <div className="mb-1 text-[10px] font-semibold uppercase text-slate-500">Last action</div>
+            <div className="truncate text-slate-200" title={latestAction}>
+              {latestAction ?? '—'}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

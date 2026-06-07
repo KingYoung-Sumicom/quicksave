@@ -14,6 +14,21 @@ Before designing or implementing features, consult `docs/guidelines.md` for an i
 - Refactor priority should be based on change spread and change frequency, not lines saved. Prefer reducing patterns that force edits across many files.
 - When a UI fix creates a reusable rule, record it in the appropriate guideline document linked from `docs/guidelines.md`, with the reason, so the rule does not get buried in a one-off plan.
 
+## Learning Notes
+
+- When an agent loses time to a repo-specific pitfall, sandbox/tool limitation,
+  daemon lifecycle gotcha, or command pattern that another agent is likely to
+  repeat, pause before finishing and decide whether to record a reusable note.
+- Record the note when all three are true: another agent could plausibly hit the
+  same issue, a short rule would have prevented it, and the lesson is specific
+  to this project or runtime rather than generic engineering advice.
+- Put repo-wide reminders in this file. Put domain-specific rules in the
+  relevant guideline from `docs/guidelines.md`. Keep one-off session findings in
+  `UpdateSessionStatus note` instead of project docs.
+- Keep learning notes short and operational: name the bad pattern, the preferred
+  pattern, and the reason. Do not commit the note unless the user explicitly
+  asks for a git commit.
+
 ## Documentation Sync Pointers
 
 **After every non-trivial code change, check whether one of these docs
@@ -57,6 +72,18 @@ doc(s) your change touches.
 - Agent tests: `cd apps/agent && npx vitest run`
 - Agent coverage: `cd apps/agent && npx vitest run --coverage`
 - PWA type-check: `cd apps/pwa && npx tsc --noEmit`
+- After changing `packages/shared/src`, run `cd packages/shared && npx tsc`
+  before app type-checks; apps consume the local `packages/shared/dist/*.d.ts`.
+- Focused Vitest runs must use paths relative to the package cwd. Good:
+  `cd apps/agent && npx vitest run src/ai/voiceStream.test.ts`; good:
+  `cd apps/pwa && npx vitest run src/lib/voiceStreamClient.test.ts`. Avoid
+  passing repo-root paths after `pnpm --filter ... test --`; Vitest may ignore
+  the filter/path combo and run the whole app suite.
+- Some agent suites open local HTTP or Unix sockets (`service/ipc`,
+  `service/debugHttpServer`, `claudeTerminal/hookBridge`). In sandboxed agent
+  sessions those can fail with `listen EPERM`; prefer focused tests that avoid
+  socket-listening suites unless you are explicitly verifying daemon IPC/debug
+  behavior.
 
 ## Testing
 

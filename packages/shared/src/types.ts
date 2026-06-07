@@ -211,6 +211,8 @@ export type MessageType =
   | 'voice:transcribe:response'
   | 'voice:list-models'
   | 'voice:list-models:response'
+  | 'voice:log-event'
+  | 'voice:log-event:response'
   // Streaming voice (WebRTC): signaling rides the bus, audio + transcripts ride
   // the DataChannel. The agent pushes its ICE candidates via the subscription
   // path `/voice/rtc/{sessionId}`.
@@ -229,6 +231,8 @@ export type MessageType =
   | 'voice-agent:detach:response'
   | 'voice-agent:utterance'
   | 'voice-agent:utterance:response'
+  | 'voice-agent:playback-event'
+  | 'voice-agent:playback-event:response'
   | 'voice-agent:fetch-audio'
   | 'voice-agent:fetch-audio:response'
   // Message bus envelope (transports opaque bus frames; see packages/message-bus)
@@ -1488,6 +1492,19 @@ export interface VoiceListModelsResponsePayload {
   error?: string;
 }
 
+export interface VoiceLogEventRequestPayload {
+  sessionId?: string;
+  event: string;
+  level?: 'debug' | 'info' | 'warn' | 'error';
+  phase?: string;
+  turnId?: string;
+  data?: Record<string, unknown>;
+}
+
+export interface VoiceLogEventResponsePayload {
+  ok: boolean;
+}
+
 // ── Voice intermediary agent ("AI coworker") ────────────────────────────────
 
 /** PWA → agent: attach the voice intermediary to a coding session and bring up
@@ -1517,8 +1534,26 @@ export interface VoiceAgentDetachResponsePayload {
 export interface VoiceAgentUtteranceRequestPayload {
   sessionId: string;
   text: string;
+  /** Correlates PWA VAD/ASR/intent logs with backend LLM/TTS logs. */
+  turnId?: string;
+  interactionId?: string;
+  utteranceId?: string;
 }
 export interface VoiceAgentUtteranceResponsePayload {
+  ok: boolean;
+  error?: string;
+}
+
+export interface VoiceAgentPlaybackEventRequestPayload {
+  sessionId: string;
+  event: 'started' | 'ended' | 'interrupted' | 'unavailable';
+  audioId?: string;
+  turnId?: string;
+  interactionId?: string;
+  utteranceId?: string;
+  reason?: string;
+}
+export interface VoiceAgentPlaybackEventResponsePayload {
   ok: boolean;
   error?: string;
 }
@@ -1549,6 +1584,7 @@ export type VoiceAgentState = 'idle' | 'thinking' | 'speaking' | 'listening';
  */
 export type VoiceAgentEvent =
   | { kind: 'state'; state: VoiceAgentState }
+  | { kind: 'speech-text'; text: string }
   | { kind: 'speak'; audioId: string; text: string; mimeType: string }
   | { kind: 'action'; summary: string }
   | { kind: 'error'; message: string };
@@ -1602,6 +1638,8 @@ export type VoiceDcMessage =
   | { t: 'start'; config: VoiceConfig; sampleRate: number }
   // PWA → agent: end the utterance; agent commits the audio buffer.
   | { t: 'stop' }
+  // agent → PWA: server-side VAD says the user started/stopped speaking.
+  | { t: 'speech'; active: boolean }
   // agent → PWA: incremental (partial) or finalized transcript text.
   | { t: 'transcript'; final: boolean; text: string }
   // agent → PWA: a non-fatal/fatal error for the current utterance.

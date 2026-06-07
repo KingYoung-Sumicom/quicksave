@@ -14,22 +14,62 @@
 export interface AudioPlayer {
   /** Play a clip to completion. Resolves when it ends OR when `stop()` cuts it
    *  short — never rejects, so the queue never wedges on a playback error. */
-  play(bytes: Uint8Array, mimeType: string): Promise<void>;
+  play(bytes: Uint8Array, mimeType: string, onStart?: () => void): Promise<void>;
   /** Stop the current clip now (settles the pending `play`). */
   stop(): void;
 }
 
 export type AudioFetcher = (audioId: string) => Promise<{ bytes: Uint8Array; mimeType: string } | null>;
 
+export interface VoiceCueBackend {
+  playGraceCue(): void;
+  startProcessingCue(): void;
+  stopProcessingCue(): void;
+  dispose(): void;
+}
+
+/**
+ * Local, non-TTS audio cues for hands-free voice flow:
+ * - a short, soft cue when the grace window starts,
+ * - a quiet rhythmic cue while the voice intermediary is processing.
+ */
+export class VoiceCues {
+  constructor(private readonly backend: VoiceCueBackend = new WebAudioCueBackend()) {}
+
+  graceStarted(): void {
+    this.backend.stopProcessingCue();
+    this.backend.playGraceCue();
+  }
+
+  processingStarted(): void {
+    this.backend.startProcessingCue();
+  }
+
+  stopProcessing(): void {
+    this.backend.stopProcessingCue();
+  }
+
+  dispose(): void {
+    this.backend.dispose();
+  }
+}
+
 export class VoiceOutput {
   private queue: string[] = [];
   private pumping = false;
+  private currentAudioId: string | undefined;
   /** Bumped on every interrupt; in-flight fetch/playback compares against it. */
   private generation = 0;
 
   constructor(
     private readonly fetcher: AudioFetcher,
     private readonly player: AudioPlayer = new HtmlAudioPlayer(),
+    private readonly opts: {
+      onPlaybackStart?: (audioId: string) => void;
+      onPlaybackEnd?: (audioId: string) => void;
+      onPlaybackInterrupted?: (audioId?: string) => void;
+      onPlaybackUnavailable?: (audioId: string) => void;
+    } = {},
   ) {}
 
   enqueue(audioId: string): void {
@@ -39,14 +79,17 @@ export class VoiceOutput {
   }
 
   /** Barge-in: discard everything queued and stop what's playing. */
-  interrupt(): void {
+  interrupt(opts: { report?: boolean } = {}): void {
+    const report = opts.report !== false;
     this.generation++;
     this.queue = [];
     this.player.stop();
+    if (report && this.currentAudioId) this.opts.onPlaybackInterrupted?.(this.currentAudioId);
+    this.currentAudioId = undefined;
   }
 
   dispose(): void {
-    this.interrupt();
+    this.interrupt({ report: false });
   }
 
   private async pump(): Promise<void> {
@@ -56,16 +99,102 @@ export class VoiceOutput {
       while (this.queue.length > 0) {
         const gen = this.generation;
         const audioId = this.queue.shift()!;
+        this.currentAudioId = audioId;
         const clip = await this.fetcher(audioId).catch(() => null);
         if (gen !== this.generation) return; // barged during fetch
-        if (!clip) continue;
-        await this.player.play(clip.bytes, clip.mimeType);
+        if (!clip) {
+          this.opts.onPlaybackUnavailable?.(audioId);
+          if (this.currentAudioId === audioId) this.currentAudioId = undefined;
+          continue;
+        }
+        await this.player.play(clip.bytes, clip.mimeType, () => this.opts.onPlaybackStart?.(audioId));
         if (gen !== this.generation) return; // barged during playback
+        this.opts.onPlaybackEnd?.(audioId);
+        if (this.currentAudioId === audioId) this.currentAudioId = undefined;
       }
     } finally {
       this.pumping = false;
       // A late enqueue that raced the unwinding loop still gets serviced.
       if (this.queue.length > 0) void this.pump();
+    }
+  }
+}
+
+class WebAudioCueBackend implements VoiceCueBackend {
+  private ctx: AudioContext | null = null;
+  private processingTimer: ReturnType<typeof setInterval> | null = null;
+
+  playGraceCue(): void {
+    this.playTone(660, 0.07, 0, 0.12);
+    this.playTone(880, 0.08, 0.11, 0.11);
+  }
+
+  startProcessingCue(): void {
+    if (this.processingTimer) return;
+    this.playProcessingPulse();
+    this.processingTimer = setInterval(() => this.playProcessingPulse(), 1200);
+  }
+
+  stopProcessingCue(): void {
+    if (this.processingTimer) {
+      clearInterval(this.processingTimer);
+      this.processingTimer = null;
+    }
+  }
+
+  dispose(): void {
+    this.stopProcessingCue();
+  }
+
+  private playProcessingPulse(): void {
+    this.playTone(520, 0.055, 0, 0.09);
+    this.playTone(620, 0.055, 0.09, 0.08);
+  }
+
+  private playTone(frequency: number, durationSec: number, delaySec = 0, volume = 0.03): void {
+    const ctx = this.audioContext();
+    if (!ctx) return;
+    try {
+      const start = ctx.currentTime + delaySec;
+      const end = start + durationSec;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(frequency, start);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(volume, start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, end);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(end + 0.02);
+      osc.onended = () => {
+        try {
+          osc.disconnect();
+          gain.disconnect();
+        } catch {
+          /* ignore */
+        }
+      };
+    } catch {
+      // Local cues are optional; failures must never affect voice input.
+    }
+  }
+
+  private audioContext(): AudioContext | null {
+    if (this.ctx) return this.ctx;
+    if (typeof window === 'undefined') return null;
+    const audioWindow = window as unknown as {
+      AudioContext?: typeof AudioContext;
+      webkitAudioContext?: typeof AudioContext;
+    };
+    const Ctor = audioWindow.AudioContext ?? audioWindow.webkitAudioContext;
+    if (!Ctor) return null;
+    try {
+      this.ctx = new Ctor();
+      return this.ctx;
+    } catch {
+      return null;
     }
   }
 }
@@ -76,7 +205,7 @@ export class HtmlAudioPlayer implements AudioPlayer {
   private url: string | null = null;
   private settle: (() => void) | null = null;
 
-  play(bytes: Uint8Array, mimeType: string): Promise<void> {
+  play(bytes: Uint8Array, mimeType: string, onStart?: () => void): Promise<void> {
     this.stop();
     const blob = new Blob([bytes as unknown as BlobPart], { type: mimeType || 'audio/mpeg' });
     const url = URL.createObjectURL(blob);
@@ -84,15 +213,24 @@ export class HtmlAudioPlayer implements AudioPlayer {
     this.el = el;
     this.url = url;
     return new Promise<void>((resolve) => {
+      let active = true;
+      let started = false;
+      const markStarted = () => {
+        if (!active || started) return;
+        started = true;
+        onStart?.();
+      };
       const done = () => {
+        active = false;
         if (this.settle === done) this.settle = null;
         this.cleanup(el, url);
         resolve();
       };
       this.settle = done;
+      el.onplaying = markStarted;
       el.onended = done;
       el.onerror = done;
-      el.play().catch(() => done());
+      el.play().then(markStarted).catch(() => done());
     });
   }
 
@@ -110,6 +248,7 @@ export class HtmlAudioPlayer implements AudioPlayer {
   }
 
   private cleanup(el: HTMLAudioElement, url: string): void {
+    el.onplaying = null;
     el.onended = null;
     el.onerror = null;
     if (this.el === el) this.el = null;

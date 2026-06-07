@@ -13,7 +13,7 @@ import type {
   AttachmentKind,
 } from '@sumicom/quicksave-shared';
 import { CardRenderer } from './chat/CardRenderer';
-import { VoiceCoworkerControl } from './VoiceCoworkerControl';
+import { VoiceCoworkerControl, VoiceCoworkerStatusPanel } from './VoiceCoworkerControl';
 import { CollapsibleTerminalPanel } from './terminal/CollapsibleTerminalPanel';
 import { SessionList } from './chat/SessionList';
 import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
@@ -29,6 +29,7 @@ import { getAgentProvider } from '../lib/agentProvider';
 import type { AttachmentMetadata, AgentId } from '@sumicom/quicksave-shared';
 import { useComposerVoice } from '../hooks/useComposerVoice';
 import { useComposerAttachments } from '../hooks/useComposerAttachments';
+import { useVoiceAgent } from '../hooks/useVoiceAgent';
 
 type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
 type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean };
@@ -815,6 +816,7 @@ export function ClaudePanel({
   // Voice input (streaming-first, batch fallback) — shared with the new-session
   // composer. Transcripts append to the prompt; errors surface as the toast.
   const voice = useComposerVoice(agentId, commitTranscript, setAttachmentToast);
+  const voiceCoworker = useVoiceAgent(agentId, viewedSessionId ?? undefined);
   // While capturing/transcribing, lock the rest of the composer (textarea,
   // attach, send) so a stray tap can't edit or submit mid-utterance.
   const voiceActive = voice.recording || voice.busy;
@@ -965,7 +967,9 @@ export function ClaudePanel({
                 />
               </SessionStatusBar>
             )}
-            <AttachmentTray pending={attach.pendingAttachments} onRemove={attach.removePendingAttachment} />
+            {!voiceCoworker.enabled && (
+              <AttachmentTray pending={attach.pendingAttachments} onRemove={attach.removePendingAttachment} />
+            )}
             {attachmentToast && (
               <div className="mb-1.5 flex items-start gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1">
                 <span className="flex-1 whitespace-pre-line">{attachmentToast}</span>
@@ -1008,7 +1012,7 @@ export function ClaudePanel({
               onDragLeave={attach.dragHandlers.onDragLeave}
               onDrop={attach.dragHandlers.onDrop}
             >
-              {slashOpen && filteredSlashCommands.length > 0 && (
+              {!voiceCoworker.enabled && slashOpen && filteredSlashCommands.length > 0 && (
                 <div ref={slashListRef} className="absolute left-0 right-0 bottom-full mb-2 max-h-56 overflow-y-auto rounded-lg border border-slate-700 bg-slate-800 shadow-lg z-10">
                   {filteredSlashCommands.map((cmd, i) => (
                     <button
@@ -1032,115 +1036,121 @@ export function ClaudePanel({
                   ))}
                 </div>
               )}
-              {voice.streaming && (
+              {voiceCoworker.enabled ? (
+                <VoiceCoworkerStatusPanel voiceAgent={voiceCoworker} />
+              ) : voice.streaming && (
                 <div className="flex items-center gap-1.5 px-1 text-xs text-slate-400">
                   <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shrink-0" />
                   <span className="truncate">{voice.interim || 'Listening…'}</span>
                 </div>
               )}
-              <textarea
-                ref={inputRef}
-                value={promptInput}
-                onChange={handleInputChange}
-                onKeyDown={handleKeyDown}
-                onPaste={(e) => {
-                  // iOS Safari completes paste insertion the moment this handler
-                  // returns, so the snapshot + preventDefault MUST be synchronous.
-                  if (attach.tryConsumePaste(e.nativeEvent.clipboardData)) e.preventDefault();
-                }}
-                placeholder=""
-                disabled={voiceActive}
-                className="w-full bg-slate-700 rounded-lg px-3 py-2 text-sm resize-none overflow-y-auto border border-slate-600 focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                rows={1}
-              />
-              {/* Button row: attach (left), mic (center), send (right). While
-                  voice is active the attach + send + textarea are locked so a
-                  stray tap can't edit or submit mid-utterance. */}
-              <div className="flex items-center justify-between">
-                <div className="flex w-9 flex-shrink-0 items-center justify-start">
-                  {supportsAttachments && (
-                    <label
-                      htmlFor="qs-attach-input"
-                      className={clsx(
-                        'p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-700/60 flex-shrink-0 flex items-center justify-center',
-                        voiceActive ? 'opacity-40 pointer-events-none' : 'cursor-pointer',
+              {!voiceCoworker.enabled && (
+                <>
+                  <textarea
+                    ref={inputRef}
+                    value={promptInput}
+                    onChange={handleInputChange}
+                    onKeyDown={handleKeyDown}
+                    onPaste={(e) => {
+                      // iOS Safari completes paste insertion the moment this handler
+                      // returns, so the snapshot + preventDefault MUST be synchronous.
+                      if (attach.tryConsumePaste(e.nativeEvent.clipboardData)) e.preventDefault();
+                    }}
+                    placeholder=""
+                    disabled={voiceActive}
+                    className="w-full bg-slate-700 rounded-lg px-3 py-2 text-sm resize-none overflow-y-auto border border-slate-600 focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                    rows={1}
+                  />
+                  {/* Button row: attach (left), mic (center), send (right). While
+                      voice is active the attach + send + textarea are locked so a
+                      stray tap can't edit or submit mid-utterance. */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex w-9 flex-shrink-0 items-center justify-start">
+                      {supportsAttachments && (
+                        <label
+                          htmlFor="qs-attach-input"
+                          className={clsx(
+                            'p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-700/60 flex-shrink-0 flex items-center justify-center',
+                            voiceActive ? 'opacity-40 pointer-events-none' : 'cursor-pointer',
+                          )}
+                          title="Attach files"
+                          aria-label="Attach files"
+                        >
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                          </svg>
+                        </label>
                       )}
-                      title="Attach files"
-                      aria-label="Attach files"
-                    >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                      </svg>
-                    </label>
-                  )}
-                </div>
-                {viewedSessionId && agentId && (
-                  <VoiceCoworkerControl agentId={agentId} sessionId={viewedSessionId} />
-                )}
-                {voice.showMic && (
-                  <button
-                    type="button"
-                    onPointerDown={(e) => { e.preventDefault(); void voice.onMicPress(); }}
-                    disabled={voice.busy || voice.unavailable}
-                    className={clsx(
-                      'p-2 rounded-lg transition-colors flex-shrink-0 flex items-center justify-center disabled:opacity-60',
-                      voice.recording
-                        ? 'bg-red-600 text-white hover:bg-red-500'
-                        : voice.arming
-                          ? 'text-amber-400'
-                          : voice.unavailable
-                            ? 'text-slate-600'
-                            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/60',
+                    </div>
+                    {viewedSessionId && agentId && (
+                      <VoiceCoworkerControl agentId={agentId} sessionId={viewedSessionId} voiceAgent={voiceCoworker} />
                     )}
-                    title={
-                      voice.transcribing
-                        ? 'Transcribing…'
-                        : voice.arming
-                          ? 'Starting…'
-                          : voice.recording
-                            ? 'Stop'
-                            : voice.unavailable
-                              ? 'Live voice unavailable on this network'
-                              : voice.configured ? 'Record voice' : 'Voice input — configure in Settings'
-                    }
-                    aria-label={voice.recording ? 'Stop recording' : 'Record voice'}
-                  >
-                    {voice.transcribing ? (
-                      <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
-                      </svg>
-                    ) : voice.recording ? (
-                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                        <rect x="7" y="7" width="10" height="10" rx="2" />
-                      </svg>
-                    ) : (
-                      <svg className={clsx('w-5 h-5', voice.arming && 'animate-pulse')} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 1.5a3 3 0 00-3 3v6a3 3 0 006 0v-6a3 3 0 00-3-3z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10.5a7 7 0 0014 0M12 17.5V21m-3.5 0h7" />
-                      </svg>
+                    {voice.showMic && (
+                      <button
+                        type="button"
+                        onPointerDown={(e) => { e.preventDefault(); void voice.onMicPress(); }}
+                        disabled={voice.busy || voice.unavailable}
+                        className={clsx(
+                          'p-2 rounded-lg transition-colors flex-shrink-0 flex items-center justify-center disabled:opacity-60',
+                          voice.recording
+                            ? 'bg-red-600 text-white hover:bg-red-500'
+                            : voice.arming
+                              ? 'text-amber-400'
+                              : voice.unavailable
+                                ? 'text-slate-600'
+                                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700/60',
+                        )}
+                        title={
+                          voice.transcribing
+                            ? 'Transcribing…'
+                            : voice.arming
+                              ? 'Starting…'
+                              : voice.recording
+                                ? 'Stop'
+                                : voice.unavailable
+                                  ? 'Live voice unavailable on this network'
+                                  : voice.configured ? 'Record voice' : 'Voice input — configure in Settings'
+                        }
+                        aria-label={voice.recording ? 'Stop recording' : 'Record voice'}
+                      >
+                        {voice.transcribing ? (
+                          <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                          </svg>
+                        ) : voice.recording ? (
+                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                            <rect x="7" y="7" width="10" height="10" rx="2" />
+                          </svg>
+                        ) : (
+                          <svg className={clsx('w-5 h-5', voice.arming && 'animate-pulse')} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 1.5a3 3 0 00-3 3v6a3 3 0 006 0v-6a3 3 0 00-3-3z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 10.5a7 7 0 0014 0M12 17.5V21m-3.5 0h7" />
+                          </svg>
+                        )}
+                      </button>
                     )}
-                  </button>
-                )}
-                <div className="flex flex-shrink-0 items-center justify-end">
-                  <button
-                    type="button"
-                    onPointerDown={(e) => { e.preventDefault(); handleSend(false); }}
-                    disabled={!canSubmitComposer}
-                    className={clsx(
-                      'p-2 rounded-lg transition-colors flex-shrink-0',
-                      canSubmitComposer
-                        ? 'bg-blue-600 hover:bg-blue-500'
-                        : 'bg-slate-600 text-slate-400'
-                    )}
-                    title={attach.anyUploadInFlight ? 'Waiting for uploads…' : 'Send'}
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
+                    <div className="flex flex-shrink-0 items-center justify-end">
+                      <button
+                        type="button"
+                        onPointerDown={(e) => { e.preventDefault(); handleSend(false); }}
+                        disabled={!canSubmitComposer}
+                        className={clsx(
+                          'p-2 rounded-lg transition-colors flex-shrink-0',
+                          canSubmitComposer
+                            ? 'bg-blue-600 hover:bg-blue-500'
+                            : 'bg-slate-600 text-slate-400'
+                        )}
+                        title={attach.anyUploadInFlight ? 'Waiting for uploads…' : 'Send'}
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </>

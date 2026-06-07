@@ -17,9 +17,16 @@ import {
   attachVoiceAgent,
   detachVoiceAgent,
   sendVoiceAgentUtterance,
+  sendVoiceAgentPlaybackEvent,
   fetchVoiceAgentAudio,
+  logVoiceEvent,
 } from '../lib/voiceAgentClient';
-import { VoiceOutput } from '../lib/voiceOutput';
+import { VoiceCues, VoiceOutput } from '../lib/voiceOutput';
+import {
+  VoiceInterruptionController,
+  type VoiceInterruptionAction,
+  type VoiceInterruptionEvent,
+} from '../lib/voiceInterruptionController';
 import { useComposerVoice } from './useComposerVoice';
 
 export interface UseVoiceAgent {
@@ -47,32 +54,169 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
   const [actionLog, setActionLog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const outputRef = useRef<VoiceOutput | null>(null);
+  const cuesRef = useRef<VoiceCues | null>(null);
+  const autoListenPausedRef = useRef(false);
+  const autoListenAttemptedRef = useRef(false);
+  const interruptionRef = useRef(new VoiceInterruptionController());
 
   const onTranscript = useCallback(
     (text: string) => {
       if (!sessionId) return;
+      const ctx = interruptionRef.current.logContext();
       outputRef.current?.interrupt(); // barge-in: cut the agent off when the user speaks
       setError(null);
-      void sendVoiceAgentUtterance(agentId, sessionId, text).catch((e) =>
-        setError(String(e?.message ?? e)),
-      );
+      void sendVoiceAgentUtterance(agentId, sessionId, text, {
+        turnId: ctx.turnId,
+        interactionId: ctx.data?.interactionId as string | undefined,
+        utteranceId: ctx.data?.utteranceId as string | undefined,
+      }).catch((e) => {
+        cuesRef.current?.stopProcessing();
+        setError(String(e?.message ?? e));
+      });
     },
     [agentId, sessionId],
   );
 
-  const voice = useComposerVoice(agentId, onTranscript, setError);
+  const runInterruptionActions = useCallback((actions: readonly VoiceInterruptionAction[]) => {
+    for (const action of actions) {
+      switch (action.type) {
+        case 'log':
+          logVoiceEvent(agentId, {
+            sessionId,
+            event: action.event,
+            phase: 'interruption',
+            turnId: action.turnId,
+            data: action.data,
+          });
+          break;
+        case 'interrupt_agent_speech':
+          outputRef.current?.interrupt();
+          cuesRef.current?.stopProcessing();
+          logVoiceEvent(agentId, {
+            sessionId,
+            event: 'barge_in.interrupt_agent_speech',
+            phase: 'interruption',
+            turnId: action.turnId,
+            data: { reason: action.reason, snapshot: action.snapshot },
+          });
+          break;
+        case 'cancel_pending_commit':
+          cuesRef.current?.stopProcessing();
+          break;
+        case 'resume_agent_speech':
+          logVoiceEvent(agentId, {
+            sessionId,
+            event: 'barge_in.resume_agent_speech_unimplemented',
+            phase: 'interruption',
+            data: { reason: action.reason },
+          });
+          break;
+      }
+    }
+  }, [agentId, sessionId]);
 
-  // Barge-in the instant recording starts, not only when the transcript lands.
-  useEffect(() => {
-    if (voice.recording) outputRef.current?.interrupt();
-  }, [voice.recording]);
+  const handleInterruptionEvent = useCallback((event: VoiceInterruptionEvent) => {
+    runInterruptionActions(interruptionRef.current.handle(event));
+  }, [runInterruptionActions]);
+
+  const voice = useComposerVoice(agentId, onTranscript, setError, {
+    sessionIdForLogs: sessionId,
+    onGraceStarted: () => {
+      handleInterruptionEvent({ type: 'intent_grace_started' });
+      cuesRef.current?.graceStarted();
+    },
+    onIntentCommitted: () => {
+      handleInterruptionEvent({ type: 'intent_committed' });
+      cuesRef.current?.processingStarted();
+    },
+    onIntentCancelled: () => {
+      handleInterruptionEvent({ type: 'intent_cancelled', reason: 'speech_activity' });
+      cuesRef.current?.stopProcessing();
+    },
+    onSpeechStarted: () => handleInterruptionEvent({ type: 'user_speech_started' }),
+    onSpeechStopped: () => handleInterruptionEvent({ type: 'user_speech_stopped' }),
+    onTranscriptPartial: (textChars) => handleInterruptionEvent({ type: 'transcript_partial', textChars }),
+    onTranscriptFinal: (textChars) => handleInterruptionEvent({ type: 'transcript_final', textChars }),
+    shouldSuppressTranscript: () => interruptionRef.current.shouldSuppressTranscript(),
+    getLogContext: () => interruptionRef.current.logContext(),
+  });
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+
+  const startAutoListening = useCallback(async () => {
+    const voiceNow = voiceRef.current;
+    if (autoListenPausedRef.current || voiceNow.recording || voiceNow.busy || !voiceNow.showMic) return;
+    autoListenAttemptedRef.current = true;
+    const ok = await voiceNow.startListening();
+    if (!ok) {
+      setError((prev) => prev ?? '瀏覽器可能需要你按一下麥克風，才能開始聆聽。');
+    }
+  }, []);
 
   useEffect(() => {
     if (!enabled || !sessionId) return;
     let cancelled = false;
     let unsub: (() => void) | undefined;
-    const output = new VoiceOutput((audioId) => fetchVoiceAgentAudio(agentId, sessionId, audioId));
+    const cues = new VoiceCues();
+    const output = new VoiceOutput(
+      (audioId) => fetchVoiceAgentAudio(agentId, sessionId, audioId),
+      undefined,
+      {
+        onPlaybackStart: (audioId) => {
+          const ctx = interruptionRef.current.logContext();
+          cues.stopProcessing();
+          handleInterruptionEvent({ type: 'agent_speech_started', audioId });
+          sendVoiceAgentPlaybackEvent(agentId, {
+            sessionId,
+            event: 'started',
+            audioId,
+            turnId: ctx.turnId,
+            interactionId: ctx.data?.interactionId as string | undefined,
+            utteranceId: ctx.data?.utteranceId as string | undefined,
+          });
+        },
+        onPlaybackEnd: (audioId) => {
+          const ctx = interruptionRef.current.logContext();
+          handleInterruptionEvent({ type: 'agent_speech_ended' });
+          sendVoiceAgentPlaybackEvent(agentId, {
+            sessionId,
+            event: 'ended',
+            audioId,
+            turnId: ctx.turnId,
+            interactionId: ctx.data?.interactionId as string | undefined,
+            utteranceId: ctx.data?.utteranceId as string | undefined,
+          });
+        },
+        onPlaybackInterrupted: (audioId) => {
+          const ctx = interruptionRef.current.logContext();
+          handleInterruptionEvent({ type: 'agent_speech_interrupted' });
+          sendVoiceAgentPlaybackEvent(agentId, {
+            sessionId,
+            event: 'interrupted',
+            audioId,
+            turnId: ctx.turnId,
+            interactionId: ctx.data?.interactionId as string | undefined,
+            utteranceId: ctx.data?.utteranceId as string | undefined,
+            reason: 'barge_in_or_dispose',
+          });
+        },
+        onPlaybackUnavailable: (audioId) => {
+          const ctx = interruptionRef.current.logContext();
+          cues.stopProcessing();
+          handleInterruptionEvent({ type: 'agent_speech_unavailable' });
+          sendVoiceAgentPlaybackEvent(agentId, {
+            sessionId,
+            event: 'unavailable',
+            audioId,
+            turnId: ctx.turnId,
+            interactionId: ctx.data?.interactionId as string | undefined,
+            utteranceId: ctx.data?.utteranceId as string | undefined,
+          });
+        },
+      },
+    );
     outputRef.current = output;
+    cuesRef.current = cues;
     setState('idle');
     setActionLog([]);
 
@@ -87,7 +231,11 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
         const res = await attachVoiceAgent(agentId, sessionId, cfg);
         if (cancelled) return;
         setActive(!!res.active);
-        if (!res.active) setError(res.error ?? '語音 agent 模型未設定，或 session 未啟動。');
+        if (!res.active) {
+          autoListenPausedRef.current = true;
+          voiceRef.current.stopListening();
+          setError(res.error ?? '語音 agent 模型未設定，或 session 未啟動。');
+        }
       } catch (e) {
         if (!cancelled) setError(String((e as Error)?.message ?? e));
       }
@@ -98,15 +246,26 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
           switch (ev.kind) {
             case 'state':
               setState(ev.state);
+              if (ev.state === 'thinking') handleInterruptionEvent({ type: 'agent_thinking_started' });
+              if (ev.state === 'idle') handleInterruptionEvent({ type: 'agent_idle' });
+              break;
+            case 'speech-text':
+              setLastSpoken(ev.text);
               break;
             case 'speak':
               setLastSpoken(ev.text);
-              output.enqueue(ev.audioId);
+              handleInterruptionEvent({ type: 'agent_response_ready', audioId: ev.audioId || undefined });
+              if (ev.audioId) {
+                output.enqueue(ev.audioId);
+              } else {
+                cues.stopProcessing();
+              }
               break;
             case 'action':
               setActionLog((log) => [...log.slice(-19), ev.summary]);
               break;
             case 'error':
+              cues.stopProcessing();
               setError(ev.message);
               break;
           }
@@ -118,14 +277,50 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
     return () => {
       cancelled = true;
       unsub?.();
+      cues.dispose();
       output.dispose();
       outputRef.current = null;
+      cuesRef.current = null;
+      interruptionRef.current.reset();
+      autoListenAttemptedRef.current = false;
+      autoListenPausedRef.current = false;
+      voiceRef.current.stopListening();
       setActive(false);
       void detachVoiceAgent(agentId, sessionId);
     };
   }, [enabled, sessionId, agentId]);
 
-  const toggle = useCallback(() => setEnabled((e) => !e), []);
+  useEffect(() => {
+    if (!enabled || !active || autoListenAttemptedRef.current) return;
+    void startAutoListening();
+  }, [enabled, active, voice.showMic, voice.busy, voice.recording, startAutoListening]);
+
+  const toggle = useCallback(() => {
+    const next = !enabled;
+    setEnabled(next);
+    setError(null);
+    if (next) {
+      autoListenPausedRef.current = false;
+      autoListenAttemptedRef.current = false;
+      void startAutoListening();
+    } else {
+      autoListenPausedRef.current = false;
+      autoListenAttemptedRef.current = false;
+      interruptionRef.current.reset();
+      voiceRef.current.stopListening();
+    }
+  }, [enabled, startAutoListening]);
+
+  const onTalkPress = useCallback(() => {
+    if (voice.recording) {
+      autoListenPausedRef.current = true;
+      voiceRef.current.stopListening();
+      return;
+    }
+    autoListenPausedRef.current = false;
+    autoListenAttemptedRef.current = false;
+    void startAutoListening();
+  }, [startAutoListening, voice.recording]);
 
   return {
     enabled,
@@ -135,7 +330,7 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
     lastSpoken,
     actionLog,
     error,
-    onTalkPress: voice.onMicPress,
+    onTalkPress,
     recording: voice.recording,
     interim: voice.interim,
     busy: voice.busy,

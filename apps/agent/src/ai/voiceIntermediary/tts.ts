@@ -7,15 +7,22 @@
  * (keeping the API key server-side) and hands the PWA an id to fetch on demand.
  */
 import type { VoiceConfig } from '@sumicom/quicksave-shared';
+import { randomUUID } from 'crypto';
 import type { FetchLike } from './llm.js';
 
 export interface SynthesizedSpeech {
   audio: Buffer;
   mimeType: string;
+  requestId?: string;
 }
 
 export class VoiceTtsError extends Error {
-  constructor(message: string, readonly cause?: unknown) {
+  constructor(
+    message: string,
+    readonly cause?: unknown,
+    readonly status?: number,
+    readonly requestId?: string,
+  ) {
     super(message);
     this.name = 'VoiceTtsError';
   }
@@ -46,10 +53,14 @@ export async function synthesizeSpeech(
 
   const doFetch = opts?.fetchImpl ?? fetch;
   let res: Response;
+  const clientRequestId = `quicksave-tts-${randomUUID()}`;
   try {
     res = await doFetch(apiUrl(config.baseUrl, '/audio/speech'), {
       method: 'POST',
-      headers: authHeaders(config),
+      headers: {
+        ...authHeaders(config),
+        'X-Client-Request-Id': clientRequestId,
+      },
       body: JSON.stringify({
         model,
         voice: config.ttsVoice?.trim() || 'alloy',
@@ -62,11 +73,17 @@ export async function synthesizeSpeech(
     throw new VoiceTtsError('Could not reach the speech endpoint.', err);
   }
 
+  const requestId = res.headers.get('x-request-id') ?? clientRequestId;
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
-    throw new VoiceTtsError(`Speech synthesis failed (${res.status})${detail ? `: ${detail.slice(0, 200)}` : ''}`);
+    throw new VoiceTtsError(
+      `Speech synthesis failed (${res.status})${detail ? `: ${detail.slice(0, 200)}` : ''}`,
+      undefined,
+      res.status,
+      requestId,
+    );
   }
 
   const audio = Buffer.from(await res.arrayBuffer());
-  return { audio, mimeType: 'audio/mpeg' };
+  return { audio, mimeType: res.headers.get('content-type') ?? 'audio/mpeg', requestId };
 }

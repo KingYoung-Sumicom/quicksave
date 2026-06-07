@@ -355,12 +355,15 @@ export async function runDaemon(): Promise<void> {
   });
 
   claudeService.on('card-event', (event: CardEvent) => {
+    voiceIntermediary.recordCardEvent(event);
     bus.publish<SessionCardsUpdate>(
       `/sessions/${event.sessionId}/cards`,
       { kind: 'card', event },
     );
   });
   claudeService.on('card-stream-end', (result: CardStreamEnd) => {
+    voiceIntermediary.recordStreamEnd(result);
+    voiceIntermediary.notifyStreamEnd(result);
     bus.publish<SessionCardsUpdate>(
       `/sessions/${result.sessionId}/cards`,
       { kind: 'stream-end', result },

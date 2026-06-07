@@ -55,8 +55,12 @@ class FakeRTCPeerConnection {
   });
   addIceCandidate = vi.fn(async () => {});
   close = vi.fn();
-  constructor(public config: unknown) {}
+  constructor(public config: unknown) {
+    lastPc = this;
+  }
 }
+
+let lastPc: FakeRTCPeerConnection | null = null;
 
 class FakeAudioContext {
   destination = {};
@@ -86,13 +90,15 @@ const CONFIG: VoiceConfig = {
 
 function makeSession() {
   const states: string[] = [];
+  const speech: boolean[] = [];
   const session = new VoiceStreamSession('agent1', 'sess1', CONFIG, {
     onPartial: () => {},
     onFinal: () => {},
+    onSpeechActivity: (active) => speech.push(active),
     onError: () => {},
     onState: (s) => states.push(s),
   });
-  return { session, states };
+  return { session, states, speech };
 }
 
 beforeEach(() => {
@@ -102,6 +108,7 @@ beforeEach(() => {
   mocks.busCommand.mockClear();
   mocks.busSubscribe.mockClear();
   mocks.getUserMedia.mockClear();
+  lastPc = null;
   mocks.getUserMedia.mockImplementation(async () => {
     mocks.calls.push('gum');
     return { getTracks: () => [{ stop: () => {} }] } as unknown as MediaStream;
@@ -183,5 +190,17 @@ describe('VoiceStreamSession.startUtterance', () => {
     await session.startUtterance();
 
     expect(mocks.getUserMedia).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('VoiceStreamSession DataChannel messages', () => {
+  it('routes speech activity messages to the callback', async () => {
+    const { session, speech } = makeSession();
+    await session.connect();
+
+    lastPc?.dc?.onmessage?.({ data: JSON.stringify({ t: 'speech', active: true }) });
+    lastPc?.dc?.onmessage?.({ data: JSON.stringify({ t: 'speech', active: false }) });
+
+    expect(speech).toEqual([true, false]);
   });
 });

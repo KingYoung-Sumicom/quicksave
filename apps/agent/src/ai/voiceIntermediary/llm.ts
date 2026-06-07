@@ -85,8 +85,6 @@ export async function chatCompletion(
         messages: opts.messages,
         tools: opts.tools,
         tool_choice: 'auto',
-        // Lean toward terse, spoken replies — voice bandwidth is low.
-        temperature: 0.4,
       }),
       signal: opts.signal,
     });

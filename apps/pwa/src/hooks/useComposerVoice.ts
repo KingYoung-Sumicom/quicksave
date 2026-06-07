@@ -18,6 +18,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConnectionStore } from '../stores/connectionStore';
 import { getVoiceConfig } from '../lib/secureStorage';
 import { transcribeViaAgent, isVoiceConfigUsable } from '../lib/voiceTranscription';
+import { logVoiceEvent } from '../lib/voiceAgentClient';
 import { useVoiceRecorder } from './useVoiceRecorder';
 import { useVoiceStream } from './useVoiceStream';
 
@@ -27,6 +28,10 @@ export interface UseComposerVoice {
   showMic: boolean;
   /** Press handler: starts or stops capture for the selected mode. */
   onMicPress: () => Promise<void>;
+  /** Explicitly start capture without toggling an active stream off. */
+  startListening: () => Promise<boolean>;
+  /** Explicitly stop capture. In streaming mode this releases the mic track. */
+  stopListening: () => void;
   /** True while a live utterance is streaming or a batch clip is recording. */
   recording: boolean;
   /** True between press and capture actually starting (setup in progress). */
@@ -46,6 +51,19 @@ export interface UseComposerVoice {
   unavailable: boolean;
 }
 
+export interface UseComposerVoiceOptions {
+  sessionIdForLogs?: string;
+  onGraceStarted?: () => void;
+  onIntentCommitted?: () => void;
+  onIntentCancelled?: () => void;
+  onSpeechStarted?: () => void;
+  onSpeechStopped?: () => void;
+  onTranscriptPartial?: (textChars: number) => void;
+  onTranscriptFinal?: (textChars: number) => void;
+  shouldSuppressTranscript?: () => boolean;
+  getLogContext?: () => { turnId?: string; data?: Record<string, unknown> };
+}
+
 // Browser capabilities required to capture mic audio (both modes use
 // getUserMedia; streaming additionally needs WebRTC + AudioContext).
 const browserCanCapture =
@@ -53,17 +71,24 @@ const browserCanCapture =
 const browserCanStream =
   browserCanCapture && typeof RTCPeerConnection !== 'undefined' && typeof AudioContext !== 'undefined';
 
+// After the realtime API yields a VAD stop/final fragment, hold briefly before
+// submitting to the LLM. This keeps the UI responsive while still giving users
+// a small window to resume after a natural pause.
+const STREAM_INTENT_SILENCE_MS = 1000;
+const STREAM_COMMIT_GRACE_MS = 500;
+
 export function useComposerVoice(
   agentId: string,
   onTranscript: (text: string) => void,
   onError: (message: string) => void,
+  options?: UseComposerVoiceOptions | string,
 ): UseComposerVoice {
+  const resolvedOptions = typeof options === 'string' ? { sessionIdForLogs: options } : options;
   const agentAudio = useConnectionStore((s) => (agentId ? s.agentConnections[agentId]?.audio : undefined));
   const streamingSupported = !!agentAudio?.streaming;
   const batchSupported = !!agentAudio?.transcription;
 
   const recorder = useVoiceRecorder();
-  const voiceStream = useVoiceStream(agentId, onTranscript);
 
   const [mode, setMode] = useState<'streaming' | 'batch'>('streaming');
   const [configured, setConfigured] = useState(false);
@@ -80,6 +105,144 @@ export function useComposerVoice(
   // Latest onError without re-subscribing effects on every parent render.
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const onTranscriptRef = useRef(onTranscript);
+  onTranscriptRef.current = onTranscript;
+  const streamFragmentsRef = useRef<string[]>([]);
+  const streamSilenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const streamGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionIdForLogsRef = useRef(resolvedOptions?.sessionIdForLogs);
+  sessionIdForLogsRef.current = resolvedOptions?.sessionIdForLogs;
+  const cueCallbacksRef = useRef({
+    onGraceStarted: resolvedOptions?.onGraceStarted,
+    onIntentCommitted: resolvedOptions?.onIntentCommitted,
+    onIntentCancelled: resolvedOptions?.onIntentCancelled,
+    onSpeechStarted: resolvedOptions?.onSpeechStarted,
+    onSpeechStopped: resolvedOptions?.onSpeechStopped,
+    onTranscriptPartial: resolvedOptions?.onTranscriptPartial,
+    onTranscriptFinal: resolvedOptions?.onTranscriptFinal,
+    shouldSuppressTranscript: resolvedOptions?.shouldSuppressTranscript,
+    getLogContext: resolvedOptions?.getLogContext,
+  });
+  cueCallbacksRef.current = {
+    onGraceStarted: resolvedOptions?.onGraceStarted,
+    onIntentCommitted: resolvedOptions?.onIntentCommitted,
+    onIntentCancelled: resolvedOptions?.onIntentCancelled,
+    onSpeechStarted: resolvedOptions?.onSpeechStarted,
+    onSpeechStopped: resolvedOptions?.onSpeechStopped,
+    onTranscriptPartial: resolvedOptions?.onTranscriptPartial,
+    onTranscriptFinal: resolvedOptions?.onTranscriptFinal,
+    shouldSuppressTranscript: resolvedOptions?.shouldSuppressTranscript,
+    getLogContext: resolvedOptions?.getLogContext,
+  };
+
+  const logStreamingEvent = useCallback((event: string, data: Record<string, unknown> = {}) => {
+    const ctx = cueCallbacksRef.current.getLogContext?.();
+    logVoiceEvent(agentId, {
+      sessionId: sessionIdForLogsRef.current,
+      event,
+      phase: 'intent',
+      turnId: ctx?.turnId,
+      data: { ...(ctx?.data ?? {}), ...data },
+    });
+  }, [agentId]);
+
+  const clearStreamingEndpointTimers = useCallback(() => {
+    if (streamSilenceTimerRef.current) {
+      clearTimeout(streamSilenceTimerRef.current);
+      streamSilenceTimerRef.current = null;
+    }
+    if (streamGraceTimerRef.current) {
+      clearTimeout(streamGraceTimerRef.current);
+      streamGraceTimerRef.current = null;
+    }
+  }, []);
+
+  const flushStreamingIntent = useCallback(() => {
+    clearStreamingEndpointTimers();
+    const text = streamFragmentsRef.current.join(' ').replace(/\s+/g, ' ').trim();
+    const fragmentCount = streamFragmentsRef.current.length;
+    streamFragmentsRef.current = [];
+    if (text) {
+      logStreamingEvent('intent.endpoint', { reason: 'grace_elapsed', fragmentCount, text, textChars: text.length });
+      onTranscriptRef.current(text);
+      cueCallbacksRef.current.onIntentCommitted?.();
+      logStreamingEvent('voice_agent.utterance.sent', { textChars: text.length });
+    }
+  }, [clearStreamingEndpointTimers, logStreamingEvent]);
+
+  const scheduleStreamingEndpoint = useCallback((delayMs = STREAM_INTENT_SILENCE_MS) => {
+    if (streamFragmentsRef.current.length === 0) return;
+    clearStreamingEndpointTimers();
+    streamSilenceTimerRef.current = setTimeout(() => {
+      streamSilenceTimerRef.current = null;
+      logStreamingEvent('intent.commit_pending', {
+        silenceMs: delayMs,
+        graceMs: STREAM_COMMIT_GRACE_MS,
+        fragmentCount: streamFragmentsRef.current.length,
+      });
+      cueCallbacksRef.current.onGraceStarted?.();
+      streamGraceTimerRef.current = setTimeout(() => {
+        streamGraceTimerRef.current = null;
+        flushStreamingIntent();
+      }, STREAM_COMMIT_GRACE_MS);
+    }, delayMs);
+  }, [clearStreamingEndpointTimers, flushStreamingIntent]);
+
+  const cancelPendingStreamingCommit = useCallback(() => {
+    if (streamSilenceTimerRef.current || streamGraceTimerRef.current) {
+      logStreamingEvent('intent.commit_cancelled', { reason: 'speech_activity' });
+      cueCallbacksRef.current.onIntentCancelled?.();
+    }
+    clearStreamingEndpointTimers();
+  }, [clearStreamingEndpointTimers, logStreamingEvent]);
+
+  const handleStreamingFinalFragment = useCallback((text: string) => {
+    cueCallbacksRef.current.onTranscriptFinal?.(text.length);
+    if (cueCallbacksRef.current.shouldSuppressTranscript?.()) {
+      logStreamingEvent('asr.final_fragment_ignored', { reason: 'transcript_suppressed', textChars: text.length });
+      return;
+    }
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    streamFragmentsRef.current.push(trimmed);
+    logStreamingEvent('asr.final_fragment', {
+      text: trimmed,
+      textChars: trimmed.length,
+      fragmentCount: streamFragmentsRef.current.length,
+    });
+    scheduleStreamingEndpoint();
+  }, [logStreamingEvent, scheduleStreamingEndpoint]);
+
+  const handleStreamingSpeechActivity = useCallback((active: boolean) => {
+    if (active) {
+      cueCallbacksRef.current.onSpeechStarted?.();
+      logStreamingEvent('vad.speech_started');
+      cancelPendingStreamingCommit();
+      return;
+    }
+    cueCallbacksRef.current.onSpeechStopped?.();
+    logStreamingEvent('vad.speech_stopped');
+    scheduleStreamingEndpoint();
+  }, [cancelPendingStreamingCommit, logStreamingEvent, scheduleStreamingEndpoint]);
+
+  const handleStreamingPartial = useCallback((text: string) => {
+    cueCallbacksRef.current.onTranscriptPartial?.(text.length);
+    if (cueCallbacksRef.current.shouldSuppressTranscript?.()) {
+      if (text.trim()) logStreamingEvent('asr.partial_ignored', { reason: 'transcript_suppressed', textChars: text.length });
+      return;
+    }
+    if (text.trim()) {
+      logStreamingEvent('asr.partial', { textChars: text.length });
+      scheduleStreamingEndpoint();
+    }
+  }, [logStreamingEvent, scheduleStreamingEndpoint]);
+
+  const voiceStream = useVoiceStream(
+    agentId,
+    handleStreamingFinalFragment,
+    handleStreamingSpeechActivity,
+    handleStreamingPartial,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -102,7 +265,10 @@ export function useComposerVoice(
     if (voiceStream.error) onErrorRef.current(voiceStream.error);
   }, [voiceStream.error]);
 
-  useEffect(() => () => { if (armTimerRef.current) clearTimeout(armTimerRef.current); }, []);
+  useEffect(() => () => {
+    if (armTimerRef.current) clearTimeout(armTimerRef.current);
+    clearStreamingEndpointTimers();
+  }, [clearStreamingEndpointTimers]);
 
   const stopArming = useCallback(() => {
     if (armTimerRef.current) { clearTimeout(armTimerRef.current); armTimerRef.current = null; }
@@ -130,17 +296,25 @@ export function useComposerVoice(
     }
   }, [recorder, agentId, onTranscript]);
 
-  const onMicPress = useCallback(async () => {
-    if (transcribing || arming) return;
-    // Stop whichever capture is in progress.
-    if (voiceStream.recording) { voiceStream.stop(); return; }
-    if (recorder.state === 'recording') { await batchStopAndTranscribe(); return; }
+  const stopListening = useCallback(() => {
+    if (voiceStream.recording) {
+      voiceStream.stop();
+      scheduleStreamingEndpoint(0);
+      return;
+    }
+    if (recorder.state === 'recording') {
+      void batchStopAndTranscribe();
+    }
+  }, [voiceStream, recorder.state, batchStopAndTranscribe, scheduleStreamingEndpoint]);
 
+  const startListening = useCallback(async (): Promise<boolean> => {
+    if (transcribing || arming) return false;
+    if (voiceStream.recording || recorder.state === 'recording') return true;
     const config = await getVoiceConfig();
     if (!isVoiceConfigUsable(config)) {
       setConfigured(false);
       onErrorRef.current('Voice transcription is not configured. Set it up in Settings.');
-      return;
+      return false;
     }
     setConfigured(true);
     armTimerRef.current = setTimeout(() => setArming(true), 120);
@@ -155,21 +329,36 @@ export function useComposerVoice(
           setLiveUnavailable(true);
           onErrorRef.current('Live voice couldn’t connect on this network.');
         }
+        return ok;
       } else {
         await recorder.start();
+        return true;
       }
     } catch (err) {
       onErrorRef.current(err instanceof Error ? err.message : 'Could not start voice input.');
+      return false;
     } finally {
       stopArming();
     }
-  }, [transcribing, arming, mode, voiceStream, recorder, batchStopAndTranscribe, stopArming]);
+  }, [transcribing, arming, mode, voiceStream, recorder.state, recorder, stopArming]);
+
+  const onMicPress = useCallback(async () => {
+    if (transcribing || arming) return;
+    // Stop whichever capture is in progress.
+    if (voiceStream.recording || recorder.state === 'recording') {
+      stopListening();
+      return;
+    }
+    await startListening();
+  }, [transcribing, arming, voiceStream.recording, recorder.state, stopListening, startListening]);
 
   const modeSupported = mode === 'streaming' ? (browserCanStream && streamingSupported) : (browserCanCapture && batchSupported);
 
   return {
     showMic: modeSupported,
     onMicPress,
+    startListening,
+    stopListening,
     recording: voiceStream.recording || recorder.state === 'recording',
     arming,
     transcribing,

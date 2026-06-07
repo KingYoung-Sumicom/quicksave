@@ -1,15 +1,22 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { describe, it, expect } from 'vitest';
-import { VoiceOutput, type AudioPlayer, type AudioFetcher } from './voiceOutput';
+import {
+  VoiceCues,
+  VoiceOutput,
+  type AudioPlayer,
+  type AudioFetcher,
+  type VoiceCueBackend,
+} from './voiceOutput';
 
 /** A player whose clips finish only when the test says so. */
 class FakePlayer implements AudioPlayer {
   played: number[] = [];
   private resolveCurrent: (() => void) | null = null;
 
-  play(bytes: Uint8Array): Promise<void> {
+  play(bytes: Uint8Array, _mimeType: string, onStart?: () => void): Promise<void> {
     this.played.push(bytes[0]);
+    onStart?.();
     return new Promise<void>((resolve) => {
       this.resolveCurrent = resolve;
     });
@@ -29,6 +36,32 @@ class FakePlayer implements AudioPlayer {
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const fetcher: AudioFetcher = async (id) => ({ bytes: Uint8Array.from([Number(id)]), mimeType: 'audio/mpeg' });
+
+class FakeCueBackend implements VoiceCueBackend {
+  calls: string[] = [];
+  playGraceCue(): void { this.calls.push('grace'); }
+  startProcessingCue(): void { this.calls.push('processing:start'); }
+  stopProcessingCue(): void { this.calls.push('processing:stop'); }
+  dispose(): void { this.calls.push('dispose'); }
+}
+
+describe('VoiceCues', () => {
+  it('plays a short grace cue after stopping any processing cue', () => {
+    const backend = new FakeCueBackend();
+    const cues = new VoiceCues(backend);
+    cues.graceStarted();
+    expect(backend.calls).toEqual(['processing:stop', 'grace']);
+  });
+
+  it('starts and stops the processing cue independently', () => {
+    const backend = new FakeCueBackend();
+    const cues = new VoiceCues(backend);
+    cues.processingStarted();
+    cues.stopProcessing();
+    cues.dispose();
+    expect(backend.calls).toEqual(['processing:start', 'processing:stop', 'dispose']);
+  });
+});
 
 describe('VoiceOutput', () => {
   it('plays queued clips one after another in order', async () => {
@@ -82,5 +115,69 @@ describe('VoiceOutput', () => {
     await tick();
     expect(player.played).toEqual([2]); // expired '1' skipped, moves on
     player.finish();
+  });
+
+  it('reports playback start only when the player starts a fetched clip', async () => {
+    const player = new FakePlayer();
+    const started: string[] = [];
+    const out = new VoiceOutput(fetcher, player, { onPlaybackStart: (audioId) => started.push(`start:${audioId}`) });
+
+    out.enqueue('1');
+    await tick();
+    expect(player.played).toEqual([1]);
+    expect(started).toEqual(['start:1']);
+    player.finish();
+  });
+
+  it('reports playback end when a fetched clip finishes and interrupted when stopped early', async () => {
+    const player = new FakePlayer();
+    const ended: string[] = [];
+    const interrupted: string[] = [];
+    const out = new VoiceOutput(fetcher, player, {
+      onPlaybackEnd: (audioId) => ended.push(`end:${audioId}`),
+      onPlaybackInterrupted: (audioId) => interrupted.push(`interrupted:${audioId}`),
+    });
+
+    out.enqueue('1');
+    await tick();
+    player.finish();
+    await tick();
+    expect(ended).toEqual(['end:1']);
+
+    out.enqueue('2');
+    await tick();
+    out.interrupt();
+    await tick();
+    expect(ended).toEqual(['end:1']);
+    expect(interrupted).toEqual(['interrupted:2']);
+  });
+
+  it('reports unavailable playback when the audio id can no longer be fetched', async () => {
+    const player = new FakePlayer();
+    const unavailable: string[] = [];
+    const out = new VoiceOutput(async () => null, player, {
+      onPlaybackUnavailable: (audioId) => unavailable.push(`missing:${audioId}`),
+    });
+
+    out.enqueue('1');
+    await tick();
+    expect(player.played).toEqual([]);
+    expect(unavailable).toEqual(['missing:1']);
+  });
+
+  it('does not report interrupted when idle or disposed', async () => {
+    const player = new FakePlayer();
+    const interrupted: string[] = [];
+    const out = new VoiceOutput(fetcher, player, {
+      onPlaybackInterrupted: (audioId) => interrupted.push(`interrupted:${audioId}`),
+    });
+
+    out.interrupt();
+    out.enqueue('1');
+    await tick();
+    out.dispose();
+    await tick();
+
+    expect(interrupted).toEqual([]);
   });
 });
