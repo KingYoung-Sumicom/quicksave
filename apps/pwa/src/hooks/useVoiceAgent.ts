@@ -58,6 +58,7 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
   const autoListenPausedRef = useRef(false);
   const autoListenAttemptedRef = useRef(false);
   const interruptionRef = useRef(new VoiceInterruptionController());
+  const voiceRef = useRef<ReturnType<typeof useComposerVoice> | null>(null);
 
   const onTranscript = useCallback(
     (text: string) => {
@@ -119,6 +120,16 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
     runInterruptionActions(interruptionRef.current.handle(event));
   }, [runInterruptionActions]);
 
+  const startAutoListening = useCallback(async () => {
+    const voiceNow = voiceRef.current;
+    if (!voiceNow || autoListenPausedRef.current || voiceNow.recording || voiceNow.busy || !voiceNow.showMic) return;
+    autoListenAttemptedRef.current = true;
+    const ok = await voiceNow.startListening();
+    if (!ok) {
+      setError((prev) => prev ?? '瀏覽器可能需要你按一下麥克風，才能開始聆聽。');
+    }
+  }, []);
+
   const voice = useComposerVoice(agentId, onTranscript, setError, {
     sessionIdForLogs: sessionId,
     onGraceStarted: () => {
@@ -128,6 +139,7 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
     onIntentCommitted: () => {
       handleInterruptionEvent({ type: 'intent_committed' });
       cuesRef.current?.processingStarted();
+      setTimeout(() => { void startAutoListening(); }, 0);
     },
     onIntentCancelled: () => {
       handleInterruptionEvent({ type: 'intent_cancelled', reason: 'speech_activity' });
@@ -139,19 +151,9 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
     onTranscriptFinal: (textChars) => handleInterruptionEvent({ type: 'transcript_final', textChars }),
     shouldSuppressTranscript: () => interruptionRef.current.shouldSuppressTranscript(),
     getLogContext: () => interruptionRef.current.logContext(),
+    keepStreamingMicAlive: true,
   });
-  const voiceRef = useRef(voice);
   voiceRef.current = voice;
-
-  const startAutoListening = useCallback(async () => {
-    const voiceNow = voiceRef.current;
-    if (autoListenPausedRef.current || voiceNow.recording || voiceNow.busy || !voiceNow.showMic) return;
-    autoListenAttemptedRef.current = true;
-    const ok = await voiceNow.startListening();
-    if (!ok) {
-      setError((prev) => prev ?? '瀏覽器可能需要你按一下麥克風，才能開始聆聽。');
-    }
-  }, []);
 
   useEffect(() => {
     if (!enabled || !sessionId) return;
@@ -166,6 +168,7 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
           const ctx = interruptionRef.current.logContext();
           cues.stopProcessing();
           handleInterruptionEvent({ type: 'agent_speech_started', audioId });
+          setTimeout(() => { void startAutoListening(); }, 0);
           sendVoiceAgentPlaybackEvent(agentId, {
             sessionId,
             event: 'started',
@@ -233,7 +236,7 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
         setActive(!!res.active);
         if (!res.active) {
           autoListenPausedRef.current = true;
-          voiceRef.current.stopListening();
+          voiceRef.current?.stopListening();
           setError(res.error ?? '語音 agent 模型未設定，或 session 未啟動。');
         }
       } catch (e) {
@@ -284,11 +287,11 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
       interruptionRef.current.reset();
       autoListenAttemptedRef.current = false;
       autoListenPausedRef.current = false;
-      voiceRef.current.stopListening();
+      voiceRef.current?.stopListening();
       setActive(false);
       void detachVoiceAgent(agentId, sessionId);
     };
-  }, [enabled, sessionId, agentId]);
+  }, [enabled, sessionId, agentId, startAutoListening]);
 
   useEffect(() => {
     if (!enabled || !active || autoListenAttemptedRef.current) return;
@@ -307,14 +310,14 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
       autoListenPausedRef.current = false;
       autoListenAttemptedRef.current = false;
       interruptionRef.current.reset();
-      voiceRef.current.stopListening();
+      voiceRef.current?.stopListening();
     }
   }, [enabled, startAutoListening]);
 
   const onTalkPress = useCallback(() => {
     if (voice.recording) {
       autoListenPausedRef.current = true;
-      voiceRef.current.stopListening();
+      voiceRef.current?.stopListening();
       return;
     }
     autoListenPausedRef.current = false;

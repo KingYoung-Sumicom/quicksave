@@ -104,6 +104,50 @@ describe('VoiceInterruptionController', () => {
     });
   });
 
+  it('confirms barge-in when transcript arrives after speech already stopped', () => {
+    const c = new VoiceInterruptionController({ pendingBargeInTranscriptGraceMs: 1500 });
+    c.handle({ type: 'agent_speech_started', audioId: 'a1' });
+    c.handle({ type: 'user_speech_started', nowMs: 1000 });
+    c.handle({ type: 'user_speech_stopped', nowMs: 1300 });
+
+    const confirmed = c.handle({ type: 'transcript_final', textChars: 4, nowMs: 1800 });
+
+    expect(confirmed).toContainEqual(expect.objectContaining({
+      type: 'interrupt_agent_speech',
+      reason: 'transcript_final',
+      snapshot: expect.objectContaining({
+        phase: 'listening',
+        agentSpeaking: false,
+        suppressTranscript: false,
+      }),
+    }));
+    expect(c.snapshot()).toMatchObject({
+      phase: 'listening',
+      agentSpeaking: false,
+      suppressTranscript: false,
+    });
+  });
+
+  it('expires a stopped barge-in candidate if transcript arrives too late', () => {
+    const c = new VoiceInterruptionController({ pendingBargeInTranscriptGraceMs: 500 });
+    c.handle({ type: 'agent_speech_started', audioId: 'a1' });
+    c.handle({ type: 'user_speech_started', nowMs: 1000 });
+    c.handle({ type: 'user_speech_stopped', nowMs: 1100 });
+
+    const late = c.handle({ type: 'transcript_final', textChars: 4, nowMs: 1701 });
+
+    expect(late.some((a) => a.type === 'interrupt_agent_speech')).toBe(false);
+    expect(late).toContainEqual(expect.objectContaining({
+      type: 'log',
+      event: 'transcript.final_suppressed',
+    }));
+    expect(c.snapshot()).toMatchObject({
+      phase: 'assistant_speaking',
+      agentSpeaking: true,
+      suppressTranscript: true,
+    });
+  });
+
   it('clears suppression when agent speech is interrupted or unavailable', () => {
     const c = new VoiceInterruptionController();
 

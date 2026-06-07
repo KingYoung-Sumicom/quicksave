@@ -26,7 +26,7 @@ export interface UseVoiceStream {
   /** Connect (mic-first) if needed, then begin an utterance. Resolves true once
    *  recording, false if the P2P link couldn't be established. */
   start: () => Promise<boolean>;
-  stop: () => void;
+  stop: (opts?: { releaseMic?: boolean }) => void;
 }
 
 export function useVoiceStream(
@@ -120,8 +120,8 @@ export function useVoiceStream(
     return ok;
   }, [ensure]);
 
-  const stop = useCallback(() => {
-    sessionRef.current?.stopUtterance();
+  const stop = useCallback((opts: { releaseMic?: boolean } = {}) => {
+    sessionRef.current?.stopUtterance(opts);
   }, []);
 
   return {

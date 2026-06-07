@@ -370,10 +370,12 @@ export class VoiceStreamSession {
     this.setState('recording');
   }
 
-  /** End the current utterance: stop capture and ask the agent to finalize. */
-  stopUtterance(): void {
+  /** End the current utterance: stop capture and ask the agent to finalize.
+   *  Voice-agent continuous listening keeps the granted mic stream alive so the
+   *  next utterance can start during assistant speech without a permission gap. */
+  stopUtterance(opts: { releaseMic?: boolean } = {}): void {
     this.dcSend({ t: 'stop' });
-    this.teardownCapture();
+    this.teardownCapture({ releaseMic: opts.releaseMic ?? true });
     if (this.state === 'recording') this.setState('ready');
   }
 
@@ -381,9 +383,11 @@ export class VoiceStreamSession {
     if (this.dc?.readyState === 'open') this.dc.send(JSON.stringify(msg));
   }
 
-  private teardownCapture(): void {
-    this.mediaStream?.getTracks().forEach((t) => t.stop());
-    this.mediaStream = null;
+  private teardownCapture(opts: { releaseMic?: boolean } = {}): void {
+    if (opts.releaseMic !== false) {
+      this.mediaStream?.getTracks().forEach((t) => t.stop());
+      this.mediaStream = null;
+    }
     void this.audioCtx?.close().catch(() => {});
     this.audioCtx = null;
     if (this.workletUrl) {
@@ -393,7 +397,7 @@ export class VoiceStreamSession {
   }
 
   close(): void {
-    this.teardownCapture();
+    this.teardownCapture({ releaseMic: true });
     this.unsubIce?.();
     this.unsubIce = null;
     try {

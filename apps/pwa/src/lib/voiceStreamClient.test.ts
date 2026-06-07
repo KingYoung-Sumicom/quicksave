@@ -8,15 +8,16 @@ import { VoiceStreamSession } from './voiceStreamClient';
 // imports by vitest) can reference them without a TDZ error.
 const mocks = vi.hoisted(() => {
   const calls: string[] = [];
+  const stopTrack = vi.fn();
   const busCommand = vi.fn(async (verb: string) =>
     verb === 'voice:rtc-connect' ? { sdp: 'answer-sdp' } : {},
   );
   const busSubscribe = vi.fn(() => () => {});
   const getUserMedia = vi.fn(async () => {
     calls.push('gum');
-    return { getTracks: () => [{ stop: () => {} }] } as unknown as MediaStream;
+    return { getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream;
   });
-  return { calls, busCommand, busSubscribe, getUserMedia };
+  return { calls, stopTrack, busCommand, busSubscribe, getUserMedia };
 });
 
 vi.mock('./busRegistry', () => ({
@@ -108,10 +109,11 @@ beforeEach(() => {
   mocks.busCommand.mockClear();
   mocks.busSubscribe.mockClear();
   mocks.getUserMedia.mockClear();
+  mocks.stopTrack.mockClear();
   lastPc = null;
   mocks.getUserMedia.mockImplementation(async () => {
     mocks.calls.push('gum');
-    return { getTracks: () => [{ stop: () => {} }] } as unknown as MediaStream;
+    return { getTracks: () => [{ stop: mocks.stopTrack }] } as unknown as MediaStream;
   });
 
   Object.defineProperty(globalThis.navigator, 'mediaDevices', {
@@ -190,6 +192,19 @@ describe('VoiceStreamSession.startUtterance', () => {
     await session.startUtterance();
 
     expect(mocks.getUserMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('can stop an utterance without releasing the mic stream for continuous listening', async () => {
+    const { session } = makeSession();
+    await session.connect({ acquireMic: true });
+    await session.startUtterance();
+
+    session.stopUtterance({ releaseMic: false });
+
+    expect(mocks.stopTrack).not.toHaveBeenCalled();
+
+    session.close();
+    expect(mocks.stopTrack).toHaveBeenCalledTimes(1);
   });
 });
 

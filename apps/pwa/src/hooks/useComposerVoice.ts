@@ -62,6 +62,7 @@ export interface UseComposerVoiceOptions {
   onTranscriptFinal?: (textChars: number) => void;
   shouldSuppressTranscript?: () => boolean;
   getLogContext?: () => { turnId?: string; data?: Record<string, unknown> };
+  keepStreamingMicAlive?: boolean;
 }
 
 // Browser capabilities required to capture mic audio (both modes use
@@ -122,6 +123,7 @@ export function useComposerVoice(
     onTranscriptFinal: resolvedOptions?.onTranscriptFinal,
     shouldSuppressTranscript: resolvedOptions?.shouldSuppressTranscript,
     getLogContext: resolvedOptions?.getLogContext,
+    keepStreamingMicAlive: resolvedOptions?.keepStreamingMicAlive,
   });
   cueCallbacksRef.current = {
     onGraceStarted: resolvedOptions?.onGraceStarted,
@@ -133,6 +135,7 @@ export function useComposerVoice(
     onTranscriptFinal: resolvedOptions?.onTranscriptFinal,
     shouldSuppressTranscript: resolvedOptions?.shouldSuppressTranscript,
     getLogContext: resolvedOptions?.getLogContext,
+    keepStreamingMicAlive: resolvedOptions?.keepStreamingMicAlive,
   };
 
   const logStreamingEvent = useCallback((event: string, data: Record<string, unknown> = {}) => {
@@ -298,7 +301,7 @@ export function useComposerVoice(
 
   const stopListening = useCallback(() => {
     if (voiceStream.recording) {
-      voiceStream.stop();
+      voiceStream.stop({ releaseMic: !cueCallbacksRef.current.keepStreamingMicAlive });
       scheduleStreamingEndpoint(0);
       return;
     }

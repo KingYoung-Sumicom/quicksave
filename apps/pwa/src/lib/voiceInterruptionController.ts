@@ -14,8 +14,8 @@ export type VoiceInterruptionEvent =
   | { type: 'intent_grace_started' }
   | { type: 'intent_committed' }
   | { type: 'intent_cancelled'; reason?: string }
-  | { type: 'transcript_partial'; textChars: number }
-  | { type: 'transcript_final'; textChars: number };
+  | { type: 'transcript_partial'; textChars: number; nowMs?: number }
+  | { type: 'transcript_final'; textChars: number; nowMs?: number };
 
 export type VoiceInterruptionAction =
   | { type: 'log'; event: string; turnId?: string; data?: Record<string, unknown> }
@@ -51,6 +51,7 @@ export interface VoiceInterruptionLogContext {
 export interface VoiceInterruptionControllerOptions {
   idFactory?: () => string;
   minBargeInTranscriptChars?: number;
+  pendingBargeInTranscriptGraceMs?: number;
 }
 
 /**
@@ -70,7 +71,7 @@ export class VoiceInterruptionController {
   private interactionId: string | undefined;
   private utteranceId: string | undefined;
   private pendingBargeIn:
-    | { audioId?: string; wasSpeaking: boolean; wasPending: boolean }
+    | { audioId?: string; wasSpeaking: boolean; wasPending: boolean; expiresAtMs?: number }
     | undefined;
   private nextId = 1;
 
@@ -89,6 +90,7 @@ export class VoiceInterruptionController {
         this.agentSpeaking = false;
         this.agentAudioPending = false;
         this.currentAudioId = undefined;
+        this.pendingBargeIn = undefined;
         this.transition(this.userSpeaking ? 'user_speaking' : 'listening');
         const endedLog = this.logAction('agent_speech.end', this.audioData(event.audioId));
         const endedStateLog = this.stateLog('agent_speech_ended');
@@ -102,6 +104,7 @@ export class VoiceInterruptionController {
         this.agentSpeaking = false;
         this.agentAudioPending = false;
         this.currentAudioId = undefined;
+        this.pendingBargeIn = undefined;
         this.transition(this.userSpeaking ? 'user_speaking' : 'listening');
         const interruptedLog = this.logAction('agent_speech.interrupted', this.audioData(event.audioId));
         const interruptedStateLog = this.stateLog('agent_speech_interrupted');
@@ -115,6 +118,7 @@ export class VoiceInterruptionController {
         this.agentSpeaking = false;
         this.agentAudioPending = false;
         this.currentAudioId = undefined;
+        this.pendingBargeIn = undefined;
         this.transition(this.userSpeaking ? 'user_speaking' : 'listening');
         const unavailableLog = this.logAction('agent_speech.unavailable', this.audioData(event.audioId));
         const unavailableStateLog = this.stateLog('agent_speech_unavailable');
@@ -170,7 +174,7 @@ export class VoiceInterruptionController {
         this.userSpeaking = false;
         if (this.pendingBargeIn) {
           this.transition(this.agentAudioPending ? 'tts_waiting' : this.agentSpeaking ? 'assistant_speaking' : 'listening');
-          this.pendingBargeIn = undefined;
+          this.pendingBargeIn.expiresAtMs = this.now(event) + (this.opts.pendingBargeInTranscriptGraceMs ?? 1500);
         } else {
           this.transition(this.agentSpeaking ? 'assistant_speaking' : 'listening');
         }
@@ -192,6 +196,9 @@ export class VoiceInterruptionController {
         return [this.stateLog(event.reason ?? 'intent_cancelled')];
 
       case 'transcript_partial':
+        if (this.pendingBargeIn && this.pendingBargeInExpired(this.now(event))) {
+          this.pendingBargeIn = undefined;
+        }
         if (this.pendingBargeIn && this.bargeInTranscriptConfirmed(event.textChars)) {
           return this.confirmBargeIn('transcript_partial', event.textChars);
         }
@@ -201,6 +208,9 @@ export class VoiceInterruptionController {
         return [];
 
       case 'transcript_final':
+        if (this.pendingBargeIn && this.pendingBargeInExpired(this.now(event))) {
+          this.pendingBargeIn = undefined;
+        }
         if (this.pendingBargeIn && this.bargeInTranscriptConfirmed(event.textChars)) {
           return this.confirmBargeIn('transcript_final', event.textChars);
         }
@@ -289,6 +299,14 @@ export class VoiceInterruptionController {
     return textChars >= (this.opts.minBargeInTranscriptChars ?? 1);
   }
 
+  private pendingBargeInExpired(nowMs: number): boolean {
+    return this.pendingBargeIn?.expiresAtMs != null && nowMs > this.pendingBargeIn.expiresAtMs;
+  }
+
+  private now(event: { nowMs?: number }): number {
+    return event.nowMs ?? Date.now();
+  }
+
   private confirmBargeIn(reason: string, textChars: number): VoiceInterruptionAction[] {
     const pending = this.pendingBargeIn;
     if (!pending) return [];
@@ -296,7 +314,7 @@ export class VoiceInterruptionController {
     this.agentSpeaking = false;
     this.agentAudioPending = false;
     this.currentAudioId = undefined;
-    this.transition('user_speaking');
+    this.transition(this.userSpeaking ? 'user_speaking' : 'listening');
     return [
       this.logAction('barge_in.confirmed', {
         reason,
