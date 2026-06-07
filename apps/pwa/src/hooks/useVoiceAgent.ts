@@ -35,6 +35,7 @@ export interface UseVoiceAgent {
   /** Brain configured AND session live — i.e. the agent will actually respond. */
   active: boolean;
   state: VoiceAgentState;
+  lastTranscript: string;
   lastSpoken: string;
   actionLog: string[];
   error: string | null;
@@ -50,6 +51,7 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
   const [enabled, setEnabled] = useState(false);
   const [active, setActive] = useState(false);
   const [state, setState] = useState<VoiceAgentState>('idle');
+  const [lastTranscript, setLastTranscript] = useState('');
   const [lastSpoken, setLastSpoken] = useState('');
   const [actionLog, setActionLog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -62,18 +64,29 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
 
   const onTranscript = useCallback(
     (text: string) => {
-      if (!sessionId) return;
+      if (!sessionId) {
+        setTimeout(() => cuesRef.current?.stopProcessing(), 0);
+        setError('目前沒有可用的 session，語音訊息沒有送出。');
+        return;
+      }
       const ctx = interruptionRef.current.logContext();
       outputRef.current?.interrupt(); // barge-in: cut the agent off when the user speaks
       setError(null);
+      setLastTranscript(text);
       void sendVoiceAgentUtterance(agentId, sessionId, text, {
         turnId: ctx.turnId,
         interactionId: ctx.data?.interactionId as string | undefined,
         utteranceId: ctx.data?.utteranceId as string | undefined,
-      }).catch((e) => {
-        cuesRef.current?.stopProcessing();
-        setError(String(e?.message ?? e));
-      });
+      })
+        .then((res) => {
+          if (res.ok) return;
+          cuesRef.current?.stopProcessing();
+          setError(res.error ?? '語音訊息沒有送進 voice agent。');
+        })
+        .catch((e) => {
+          cuesRef.current?.stopProcessing();
+          setError(String(e?.message ?? e));
+        });
     },
     [agentId, sessionId],
   );
@@ -330,6 +343,7 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
     toggle,
     active,
     state,
+    lastTranscript,
     lastSpoken,
     actionLog,
     error,

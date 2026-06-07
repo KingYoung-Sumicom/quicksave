@@ -45,6 +45,16 @@ class FakeCueBackend implements VoiceCueBackend {
   dispose(): void { this.calls.push('dispose'); }
 }
 
+class RejectingPlayer implements AudioPlayer {
+  play(): Promise<void> {
+    return Promise.reject(new Error('blocked'));
+  }
+
+  stop(): void {
+    /* no-op */
+  }
+}
+
 describe('VoiceCues', () => {
   it('plays a short grace cue after stopping any processing cue', () => {
     const backend = new FakeCueBackend();
@@ -163,6 +173,22 @@ describe('VoiceOutput', () => {
     await tick();
     expect(player.played).toEqual([]);
     expect(unavailable).toEqual(['missing:1']);
+  });
+
+  it('reports unavailable playback when browser playback cannot start', async () => {
+    const unavailable: string[] = [];
+    const ended: string[] = [];
+    const out = new VoiceOutput(fetcher, new RejectingPlayer(), {
+      onPlaybackUnavailable: (audioId) => unavailable.push(`missing:${audioId}`),
+      onPlaybackEnd: (audioId) => ended.push(`end:${audioId}`),
+    });
+
+    out.enqueue('1');
+    await tick();
+    await tick();
+
+    expect(unavailable).toEqual(['missing:1']);
+    expect(ended).toEqual([]);
   });
 
   it('does not report interrupted when idle or disposed', async () => {

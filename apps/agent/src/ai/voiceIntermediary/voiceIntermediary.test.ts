@@ -12,7 +12,7 @@ import type {
 } from '@sumicom/quicksave-shared';
 import { upsertBullet, appendMemory, loadMemory, workspaceMemoryPath } from './memory.js';
 import { executeTool, formatCardForBrain, type CodingSessionBridge } from './tools.js';
-import { buildSystemPrompt, VoiceIntermediarySession } from './session.js';
+import { buildSystemPrompt, sanitizeMessagesForChatCompletion, VoiceIntermediarySession } from './session.js';
 import { VoiceIntermediaryManager, type VoiceManagerBridge } from './manager.js';
 import { chatCompletion } from './llm.js';
 import { synthesizeSpeech } from './tts.js';
@@ -141,6 +141,50 @@ describe('voice memory', () => {
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+});
+
+// ── Chat message normalization ─────────────────────────────────────────────
+
+describe('voice chat message normalization', () => {
+  it('drops orphan tool messages before calling chat completions', () => {
+    const messages = sanitizeMessagesForChatCompletion([
+      { role: 'system', content: 's' },
+      { role: 'tool', tool_call_id: 'missing', content: 'orphan' },
+      { role: 'user', content: 'hi' },
+    ]);
+
+    expect(messages.map((m) => m.role)).toEqual(['system', 'user']);
+  });
+
+  it('keeps complete assistant tool-call groups', () => {
+    const messages = sanitizeMessagesForChatCompletion([
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'get_status', arguments: '{}' } }],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: 'running' },
+      { role: 'user', content: 'status?' },
+    ]);
+
+    expect(messages.map((m) => m.role)).toEqual(['assistant', 'tool', 'user']);
+    expect(messages[0]?.tool_calls?.[0]?.id).toBe('call-1');
+  });
+
+  it('removes dangling assistant tool_calls when the result is missing', () => {
+    const messages = sanitizeMessagesForChatCompletion([
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'get_status', arguments: '{}' } }],
+      },
+      { role: 'user', content: 'next' },
+    ]);
+
+    expect(messages.map((m) => m.role)).toEqual(['assistant', 'user']);
+    expect(messages[0]?.tool_calls).toBeUndefined();
+    expect(messages[0]?.content).toContain('工具結果不完整');
   });
 });
 
@@ -403,6 +447,48 @@ describe('VoiceIntermediarySession', () => {
       expect(sent).toContain('第一句');
       expect(sent).toContain('回答一。');
       expect(sent).toContain('第二句');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not send restored orphan tool messages to chat completions', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'qs-voice-orphan-tool-'));
+    try {
+      const { bridge } = makeBridge({ cwd });
+      const sessionId = 's-orphan-tool';
+      const history = new VoiceHistoryStore(sessionId);
+      await history.appendChatMessage({ role: 'tool', tool_call_id: 'missing-call', content: 'old orphan result' });
+      await history.appendChatMessage({
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'dangling-call', type: 'function', function: { name: 'get_status', arguments: '{}' } }],
+      });
+
+      const bodies: Array<{ messages?: Array<{ role: string; tool_call_id?: string; tool_calls?: unknown[] }> }> = [];
+      const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url);
+        if (u.endsWith('/chat/completions')) {
+          bodies.push(JSON.parse(String(init?.body ?? '{}')));
+          return new Response(JSON.stringify({ choices: [{ message: { content: '收到。' } }] }), { status: 200 });
+        }
+        if (u.endsWith('/audio/speech')) return new Response(Buffer.from([1]), { status: 200 });
+        throw new Error(`unexpected url ${u}`);
+      }) as typeof fetch;
+
+      const session = new VoiceIntermediarySession({
+        sessionId,
+        cwd,
+        config: CONFIG,
+        bridge,
+        callbacks: { emit: () => undefined, storeAudio: () => 'audio-orphan' },
+        fetchImpl,
+      });
+      await session.handleUtterance('繼續');
+
+      const messages = bodies[0]?.messages ?? [];
+      expect(messages.some((m) => m.role === 'tool')).toBe(false);
+      expect(messages.some((m) => Array.isArray(m.tool_calls))).toBe(false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

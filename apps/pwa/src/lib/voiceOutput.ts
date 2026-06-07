@@ -13,7 +13,7 @@
 
 export interface AudioPlayer {
   /** Play a clip to completion. Resolves when it ends OR when `stop()` cuts it
-   *  short — never rejects, so the queue never wedges on a playback error. */
+   *  short. Rejects only when playback could not start. */
   play(bytes: Uint8Array, mimeType: string, onStart?: () => void): Promise<void>;
   /** Stop the current clip now (settles the pending `play`). */
   stop(): void;
@@ -63,7 +63,7 @@ export class VoiceOutput {
 
   constructor(
     private readonly fetcher: AudioFetcher,
-    private readonly player: AudioPlayer = new HtmlAudioPlayer(),
+    private readonly player: AudioPlayer = new BrowserAudioPlayer(),
     private readonly opts: {
       onPlaybackStart?: (audioId: string) => void;
       onPlaybackEnd?: (audioId: string) => void;
@@ -107,8 +107,15 @@ export class VoiceOutput {
           if (this.currentAudioId === audioId) this.currentAudioId = undefined;
           continue;
         }
-        await this.player.play(clip.bytes, clip.mimeType, () => this.opts.onPlaybackStart?.(audioId));
+        const played = await this.player.play(clip.bytes, clip.mimeType, () => this.opts.onPlaybackStart?.(audioId))
+          .then(() => true)
+          .catch(() => false);
         if (gen !== this.generation) return; // barged during playback
+        if (!played) {
+          this.opts.onPlaybackUnavailable?.(audioId);
+          if (this.currentAudioId === audioId) this.currentAudioId = undefined;
+          continue;
+        }
         this.opts.onPlaybackEnd?.(audioId);
         if (this.currentAudioId === audioId) this.currentAudioId = undefined;
       }
@@ -121,7 +128,6 @@ export class VoiceOutput {
 }
 
 class WebAudioCueBackend implements VoiceCueBackend {
-  private ctx: AudioContext | null = null;
   private processingTimer: ReturnType<typeof setInterval> | null = null;
 
   playGraceCue(): void {
@@ -182,20 +188,116 @@ class WebAudioCueBackend implements VoiceCueBackend {
   }
 
   private audioContext(): AudioContext | null {
-    if (this.ctx) return this.ctx;
-    if (typeof window === 'undefined') return null;
-    const audioWindow = window as unknown as {
-      AudioContext?: typeof AudioContext;
-      webkitAudioContext?: typeof AudioContext;
-    };
-    const Ctor = audioWindow.AudioContext ?? audioWindow.webkitAudioContext;
-    if (!Ctor) return null;
+    return getSharedAudioContext();
+  }
+}
+
+let sharedAudioContext: AudioContext | null = null;
+
+function getSharedAudioContext(): AudioContext | null {
+  if (sharedAudioContext) return sharedAudioContext;
+  if (typeof window === 'undefined') return null;
+  const audioWindow = window as unknown as {
+    AudioContext?: typeof AudioContext;
+    webkitAudioContext?: typeof AudioContext;
+  };
+  const Ctor = audioWindow.AudioContext ?? audioWindow.webkitAudioContext;
+  if (!Ctor) return null;
+  try {
+    sharedAudioContext = new Ctor();
+    return sharedAudioContext;
+  } catch {
+    return null;
+  }
+}
+
+function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+async function decodeAudioData(ctx: AudioContext, data: ArrayBuffer): Promise<AudioBuffer> {
+  return await ctx.decodeAudioData(data);
+}
+
+/** Browser default: use the same Web Audio context as local cues, then fall
+ * back to HTMLAudioElement for browsers/codecs where Web Audio decode fails. */
+export class BrowserAudioPlayer implements AudioPlayer {
+  private readonly webAudio = new WebAudioSpeechPlayer();
+  private readonly htmlAudio = new HtmlAudioPlayer();
+
+  async play(bytes: Uint8Array, mimeType: string, onStart?: () => void): Promise<void> {
     try {
-      this.ctx = new Ctor();
-      return this.ctx;
-    } catch {
-      return null;
+      await this.webAudio.play(bytes, mimeType, onStart);
+    } catch (webAudioErr) {
+      try {
+        await this.htmlAudio.play(bytes, mimeType, onStart);
+      } catch {
+        throw webAudioErr;
+      }
     }
+  }
+
+  stop(): void {
+    this.webAudio.stop();
+    this.htmlAudio.stop();
+  }
+}
+
+export class WebAudioSpeechPlayer implements AudioPlayer {
+  private source: AudioBufferSourceNode | null = null;
+  private settle: (() => void) | null = null;
+
+  async play(bytes: Uint8Array, _mimeType: string, onStart?: () => void): Promise<void> {
+    this.stop();
+    const ctx = getSharedAudioContext();
+    if (!ctx) throw new Error('Web Audio is unavailable.');
+    if (ctx.state === 'suspended') {
+      await ctx.resume().catch(() => undefined);
+    }
+    if (ctx.state === 'suspended') throw new Error('Audio context is suspended.');
+    const audioBuffer = await decodeAudioData(ctx, bytesToArrayBuffer(bytes));
+    return new Promise<void>((resolve) => {
+      let active = true;
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      const done = () => {
+        if (!active) return;
+        active = false;
+        if (this.settle === done) this.settle = null;
+        if (this.source === source) this.source = null;
+        try {
+          source.disconnect();
+        } catch {
+          /* ignore */
+        }
+        resolve();
+      };
+      this.source = source;
+      this.settle = done;
+      source.onended = done;
+      source.start();
+      onStart?.();
+    });
+  }
+
+  stop(): void {
+    const settle = this.settle;
+    this.settle = null;
+    if (this.source) {
+      try {
+        this.source.stop();
+      } catch {
+        /* ignore */
+      }
+      try {
+        this.source.disconnect();
+      } catch {
+        /* ignore */
+      }
+      this.source = null;
+    }
+    settle?.();
   }
 }
 
@@ -212,7 +314,7 @@ export class HtmlAudioPlayer implements AudioPlayer {
     const el = new Audio(url);
     this.el = el;
     this.url = url;
-    return new Promise<void>((resolve) => {
+    return new Promise<void>((resolve, reject) => {
       let active = true;
       let started = false;
       const markStarted = () => {
@@ -226,11 +328,17 @@ export class HtmlAudioPlayer implements AudioPlayer {
         this.cleanup(el, url);
         resolve();
       };
+      const failed = () => {
+        active = false;
+        if (this.settle === done) this.settle = null;
+        this.cleanup(el, url);
+        reject(new Error('Audio playback did not start.'));
+      };
       this.settle = done;
       el.onplaying = markStarted;
       el.onended = done;
-      el.onerror = done;
-      el.play().then(markStarted).catch(() => done());
+      el.onerror = () => (started ? done() : failed());
+      el.play().then(markStarted).catch(() => failed());
     });
   }
 

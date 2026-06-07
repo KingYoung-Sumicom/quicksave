@@ -122,6 +122,7 @@ export function VoiceCoworkerControl({
 export function VoiceCoworkerStatusPanel({ voiceAgent }: { voiceAgent: UseVoiceAgent }) {
   const va = voiceAgent;
   const latestAction = va.actionLog.length > 0 ? va.actionLog[va.actionLog.length - 1] : undefined;
+  const userTranscript = va.recording && va.interim ? va.interim : va.lastTranscript;
   const statusText = va.recording && va.interim
     ? va.interim
     : va.active
@@ -176,22 +177,40 @@ export function VoiceCoworkerStatusPanel({ voiceAgent }: { voiceAgent: UseVoiceA
         </button>
       </div>
 
-      {(va.lastSpoken || va.actionLog.length > 0 || va.error) && (
-        <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
-          <div className="min-w-0 rounded border border-slate-700 bg-slate-900/70 px-2 py-1.5">
-            <div className="mb-1 text-[10px] font-semibold uppercase text-slate-500">Last spoken</div>
-            <div className={clsx('truncate', va.error ? 'text-red-300' : 'text-slate-200')} title={va.error ?? va.lastSpoken}>
-              {va.error ?? va.lastSpoken ?? '—'}
-            </div>
-          </div>
-          <div className="min-w-0 rounded border border-slate-700 bg-slate-900/70 px-2 py-1.5">
-            <div className="mb-1 text-[10px] font-semibold uppercase text-slate-500">Last action</div>
-            <div className="truncate text-slate-200" title={latestAction}>
-              {latestAction ?? '—'}
-            </div>
+      <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+        <div className="min-w-0 rounded border border-slate-700 bg-slate-900/70 px-2 py-1.5">
+          <div className="mb-1 text-[10px] font-semibold uppercase text-slate-500">你說</div>
+          <div
+            className={clsx(
+              'max-h-20 overflow-y-auto whitespace-pre-wrap break-words',
+              userTranscript ? 'text-slate-100' : 'text-slate-500',
+            )}
+            title={userTranscript}
+          >
+            {userTranscript || '等待語音輸入'}
           </div>
         </div>
-      )}
+        <div className="min-w-0 rounded border border-slate-700 bg-slate-900/70 px-2 py-1.5">
+          <div className="mb-1 text-[10px] font-semibold uppercase text-slate-500">語音同事</div>
+          <div
+            className={clsx(
+              'max-h-20 overflow-y-auto whitespace-pre-wrap break-words',
+              va.error ? 'text-red-300' : va.lastSpoken ? 'text-slate-100' : 'text-slate-500',
+            )}
+            title={va.error ?? va.lastSpoken}
+          >
+            {va.error ?? (va.lastSpoken || '等待回覆')}
+          </div>
+        </div>
+        {latestAction && (
+          <div className="min-w-0 rounded border border-slate-700 bg-slate-900/70 px-2 py-1.5 sm:col-span-2">
+            <div className="mb-1 text-[10px] font-semibold uppercase text-slate-500">動作</div>
+            <div className="whitespace-pre-wrap break-words text-slate-200" title={latestAction}>
+              {latestAction}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

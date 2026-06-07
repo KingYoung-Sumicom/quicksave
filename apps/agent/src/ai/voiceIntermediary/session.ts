@@ -451,9 +451,10 @@ export class VoiceIntermediarySession {
 
   private messagesWithLiveContext(): ChatMessage[] {
     const live = this.liveContextForBrain();
-    if (!live) return this.messages;
+    const messages = sanitizeMessagesForChatCompletion(this.messages);
+    if (!live) return messages;
     return [
-      ...this.messages,
+      ...messages,
       {
         role: 'system',
         content:
@@ -502,6 +503,42 @@ export class VoiceIntermediarySession {
       ...keep,
     ];
   }
+}
+
+export function sanitizeMessagesForChatCompletion(messages: readonly ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]!;
+    if (message.role === 'tool') continue;
+
+    if (message.role === 'assistant' && message.tool_calls?.length) {
+      const expectedIds = new Set(message.tool_calls.map((call) => call.id));
+      const toolMessages: ChatMessage[] = [];
+      let j = i + 1;
+      for (; j < messages.length && messages[j]?.role === 'tool'; j++) {
+        const toolMessage = messages[j]!;
+        if (toolMessage.tool_call_id && expectedIds.has(toolMessage.tool_call_id)) {
+          toolMessages.push(toolMessage);
+        }
+      }
+
+      const seenIds = new Set(toolMessages.map((toolMessage) => toolMessage.tool_call_id));
+      const hasAllResults = message.tool_calls.every((call) => seenIds.has(call.id));
+      if (hasAllResults) {
+        out.push(message, ...toolMessages);
+      } else {
+        out.push({
+          role: 'assistant',
+          content: message.content || '（先前有工具呼叫紀錄，但工具結果不完整，已略過細節。）',
+        });
+      }
+      i = j - 1;
+      continue;
+    }
+
+    out.push(message);
+  }
+  return out;
 }
 
 function isUnsupportedTtsEndpoint(message: string): boolean {
