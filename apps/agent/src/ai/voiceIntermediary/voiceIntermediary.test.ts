@@ -325,6 +325,7 @@ describe('voice system prompt', () => {
     expect(prompt).toContain('我來處理');
     expect(prompt).toContain('預設只講 1 到 3 句');
     expect(prompt).toContain('絕不把長輸出');
+    expect(prompt).toContain('不要唸檔名、hash、路徑');
   });
 });
 
