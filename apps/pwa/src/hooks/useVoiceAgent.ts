@@ -28,6 +28,7 @@ import {
   type VoiceInterruptionEvent,
 } from '../lib/voiceInterruptionController';
 import { useComposerVoice } from './useComposerVoice';
+import { useScreenWakeLock } from './useScreenWakeLock';
 
 export interface UseVoiceAgent {
   enabled: boolean;
@@ -61,6 +62,7 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
   const autoListenAttemptedRef = useRef(false);
   const interruptionRef = useRef(new VoiceInterruptionController());
   const voiceRef = useRef<ReturnType<typeof useComposerVoice> | null>(null);
+  useScreenWakeLock(enabled && active);
 
   const onTranscript = useCallback(
     (text: string) => {
