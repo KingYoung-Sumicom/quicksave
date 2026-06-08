@@ -8,8 +8,29 @@
 #   GITHUB_REPO - GitHub repo (default: KingYoung-Sumicom/quicksave)
 #   DEPLOY_ENV  - Environment to deploy (staging|production, passed by webhook)
 #   RUN_ID      - GitHub Actions run ID (passed by webhook, preferred)
+#   QUICKSAVE_ENV_FILE - Env file with deploy secrets (default: /opt/quicksave/.env)
 #
 set -euo pipefail
+
+INCOMING_GITHUB_REPO="${GITHUB_REPO-}"
+INCOMING_DEPLOY_ENV="${DEPLOY_ENV-}"
+INCOMING_RUN_ID="${RUN_ID-}"
+ENV_FILE="${QUICKSAVE_ENV_FILE:-/opt/quicksave/.env}"
+if [[ -f "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+    set +a
+fi
+if [[ -n "$INCOMING_GITHUB_REPO" ]]; then
+    GITHUB_REPO="$INCOMING_GITHUB_REPO"
+fi
+if [[ -n "$INCOMING_DEPLOY_ENV" ]]; then
+    DEPLOY_ENV="$INCOMING_DEPLOY_ENV"
+fi
+if [[ -n "$INCOMING_RUN_ID" ]]; then
+    RUN_ID="$INCOMING_RUN_ID"
+fi
 
 REPO="${GITHUB_REPO:-KingYoung-Sumicom/quicksave}"
 ENV="${DEPLOY_ENV:-staging}"
