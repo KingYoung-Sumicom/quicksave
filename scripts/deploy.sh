@@ -9,6 +9,7 @@
 #   DEPLOY_ENV  - Environment to deploy (staging|production, passed by webhook)
 #   RUN_ID      - GitHub Actions run ID (passed by webhook, preferred)
 #   QUICKSAVE_ENV_FILE - Env file with deploy secrets (default: /opt/quicksave/.env)
+#   HEALTH_INITIAL_DELAY_SECONDS - Seconds to wait before first health check (default: 3)
 #
 set -euo pipefail
 
@@ -36,6 +37,7 @@ REPO="${GITHUB_REPO:-KingYoung-Sumicom/quicksave}"
 ENV="${DEPLOY_ENV:-staging}"
 RUN_ID="${RUN_ID:-}"
 LOG="/var/log/quicksave-deploy.log"
+HEALTH_INITIAL_DELAY_SECONDS="${HEALTH_INITIAL_DELAY_SECONDS:-3}"
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') [$ENV]: $1" | tee -a "$LOG"
@@ -102,8 +104,11 @@ rollback() {
 
 wait_for_health() {
     local url="$1"
+    if [[ "$HEALTH_INITIAL_DELAY_SECONDS" != "0" ]]; then
+        sleep "$HEALTH_INITIAL_DELAY_SECONDS"
+    fi
     for _ in $(seq 1 20); do
-        if curl -fsS --max-time 2 "$url" >/dev/null; then
+        if curl -fsS --max-time 2 "$url" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
