@@ -121,9 +121,9 @@ resolve_dist_dir() {
             return 0
         fi
     done
-    log "ERROR - ${label} dist not found in artifact"
-    log "Artifact entries:"
-    find "$TMP_DIR" -maxdepth 3 -mindepth 1 -print | sort | sed "s#^$TMP_DIR#  .#" | head -80 | tee -a "$LOG"
+    log "ERROR - ${label} dist not found in artifact" >&2
+    log "Artifact entries:" >&2
+    find "$TMP_DIR" -maxdepth 4 -mindepth 1 -print | sort | sed "s#^$TMP_DIR#  .#" | head -120 | tee -a "$LOG" >&2
     return 1
 }
 
@@ -157,8 +157,8 @@ fi
 log "Downloading dist-${ENV} artifact from run $RUN_ID"
 gh run download "$RUN_ID" --repo "$REPO" --name "dist-${ENV}" --dir "$TMP_DIR"
 
-PWA_DIST="$(resolve_dist_dir "PWA" "${TMP_DIR}/apps/pwa/dist" "${TMP_DIR}/pwa/dist")"
-RELAY_DIST="$(resolve_dist_dir "Relay" "${TMP_DIR}/apps/relay/dist" "${TMP_DIR}/relay/dist")"
+PWA_DIST="$(resolve_dist_dir "PWA" "${TMP_DIR}/apps/pwa/dist" "${TMP_DIR}/pwa/dist" "${TMP_DIR}/dist-${ENV}/apps/pwa/dist" "${TMP_DIR}/dist-${ENV}/pwa/dist")"
+RELAY_DIST="$(resolve_dist_dir "Relay" "${TMP_DIR}/apps/relay/dist" "${TMP_DIR}/relay/dist" "${TMP_DIR}/dist-${ENV}/apps/relay/dist" "${TMP_DIR}/dist-${ENV}/relay/dist")"
 
 mkdir -p "${NEW_RELEASE}/apps/pwa" "${NEW_RELEASE}/apps/relay"
 log "Syncing artifact into release $NEW_RELEASE"
