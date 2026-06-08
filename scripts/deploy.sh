@@ -111,6 +111,22 @@ wait_for_health() {
     return 1
 }
 
+resolve_dist_dir() {
+    local label="$1"
+    shift
+    local candidate
+    for candidate in "$@"; do
+        if [[ -d "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    log "ERROR - ${label} dist not found in artifact"
+    log "Artifact entries:"
+    find "$TMP_DIR" -maxdepth 3 -mindepth 1 -print | sort | sed "s#^$TMP_DIR#  .#" | head -80 | tee -a "$LOG"
+    return 1
+}
+
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
     log "ERROR - Another deploy is already running for $ENV"
@@ -141,20 +157,13 @@ fi
 log "Downloading dist-${ENV} artifact from run $RUN_ID"
 gh run download "$RUN_ID" --repo "$REPO" --name "dist-${ENV}" --dir "$TMP_DIR"
 
-if [[ ! -d "${TMP_DIR}/apps/pwa/dist" ]]; then
-    log "ERROR - PWA dist not found in artifact"
-    exit 1
-fi
-
-if [[ ! -d "${TMP_DIR}/apps/relay/dist" ]]; then
-    log "ERROR - Relay dist not found in artifact"
-    exit 1
-fi
+PWA_DIST="$(resolve_dist_dir "PWA" "${TMP_DIR}/apps/pwa/dist" "${TMP_DIR}/pwa/dist")"
+RELAY_DIST="$(resolve_dist_dir "Relay" "${TMP_DIR}/apps/relay/dist" "${TMP_DIR}/relay/dist")"
 
 mkdir -p "${NEW_RELEASE}/apps/pwa" "${NEW_RELEASE}/apps/relay"
 log "Syncing artifact into release $NEW_RELEASE"
-rsync -a --delete "${TMP_DIR}/apps/pwa/dist/" "${NEW_RELEASE}/apps/pwa/dist/"
-rsync -a --delete "${TMP_DIR}/apps/relay/dist/" "${NEW_RELEASE}/apps/relay/dist/"
+rsync -a --delete "${PWA_DIST}/" "${NEW_RELEASE}/apps/pwa/dist/"
+rsync -a --delete "${RELAY_DIST}/" "${NEW_RELEASE}/apps/relay/dist/"
 
 if [[ ! -f "${NEW_RELEASE}/apps/pwa/dist/index.html" ]]; then
     log "ERROR - Release is missing PWA index.html"
