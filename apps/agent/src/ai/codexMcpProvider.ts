@@ -282,6 +282,7 @@ class CodexMcpSession implements ProviderSession {
 
           this.endTurn(turn, {
             sessionId: this.threadId ?? returnedThreadId ?? '',
+            turnId: this.cardBuilder.getCurrentTurnId() ?? undefined,
             success: true,
           });
           // Clear accumulated cards — memory-mode provider has no JSONL to snapshot
@@ -301,6 +302,7 @@ class CodexMcpSession implements ProviderSession {
           if (!turn.ended && this.closeReason !== 'kill') {
             this.endTurn(turn, {
               sessionId,
+              turnId: this.cardBuilder.getCurrentTurnId() ?? undefined,
               success: false,
               interrupted,
               error: interrupted
@@ -374,6 +376,7 @@ class CodexMcpSession implements ProviderSession {
     if (msg.type === 'turn_aborted') {
       this.endTurn(turn, {
         sessionId: this.threadId ?? '',
+        turnId: this.cardBuilder.getCurrentTurnId() ?? undefined,
         success: false,
         interrupted: msg.reason === 'interrupted',
         error: msg.reason === 'interrupted' ? undefined : `Turn aborted: ${msg.reason ?? 'unknown'}`,
@@ -463,6 +466,9 @@ class CodexMcpSession implements ProviderSession {
   private endTurn(turn: ActiveTurn, result: CardStreamEnd): void {
     if (turn.ended) return;
     turn.ended = true;
+    for (const event of this.cardBuilder.markTurnCompleted(result.turnId ?? this.cardBuilder.getCurrentTurnId() ?? undefined)) {
+      this.callbacks.emitCardEvent(event);
+    }
     this.callbacks.emitStreamEnd(result);
   }
 

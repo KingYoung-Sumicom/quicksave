@@ -38,6 +38,16 @@ export interface PendingInputOption {
 export interface CardBase {
   id: CardId;
   timestamp: number;
+  /** Provider turn that produced this card. Present when the backend can
+   *  identify turns explicitly, e.g. Codex app-server. */
+  turnId?: string;
+  /** True for mid-turn operational cards that the UI may collapse once the
+   *  turn is complete. Final assistant/user messages should leave this unset. */
+  isTurnIntermediate?: boolean;
+  /** True once the provider has emitted turn completion for this card's turn.
+   *  Persisted so reload/history can collapse intermediate cards without
+   *  relying on a live stream-end event. */
+  turnCompleted?: boolean;
   /** Permission prompt or question attached to this card (agent-side attached). */
   pendingInput?: PendingInputAttachment;
 }
@@ -289,6 +299,8 @@ export type SessionCardsUpdate =
 
 export interface CardStreamEnd {
   sessionId: string;
+  /** Provider turn that just ended, when available. */
+  turnId?: string;
   success: boolean;
   error?: string;
   /** True when the turn was stopped by user cancel/interrupt */

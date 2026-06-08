@@ -65,6 +65,50 @@ describe('StreamCardBuilder', () => {
     builder = new StreamCardBuilder(SESSION_ID, CWD);
   });
 
+  describe('turn metadata', () => {
+    it('adds turnId to turn cards and marks operational cards as intermediate', () => {
+      builder.startNewTurn();
+      const turnId = builder.getCurrentTurnId();
+
+      const user = builder.userMessage('hello') as CardAddEvent;
+      const assistant = builder.assistantText('reply') as CardAddEvent;
+      const thinking = builder.thinkingBlock('reasoning') as CardAddEvent;
+      const tool = builder.toolUse('Bash', { command: 'ls' }, 'tu-turn') as CardAddEvent;
+
+      expect(turnId).toBeTruthy();
+      expect(user.card.turnId).toBe(turnId);
+      expect(user.card.isTurnIntermediate).toBeUndefined();
+      expect(assistant.card.turnId).toBe(turnId);
+      expect(assistant.card.isTurnIntermediate).toBeUndefined();
+      expect(thinking.card.turnId).toBe(turnId);
+      expect(thinking.card.isTurnIntermediate).toBe(true);
+      expect(tool.card.turnId).toBe(turnId);
+      expect(tool.card.isTurnIntermediate).toBe(true);
+    });
+
+    it('uses an explicit provider turn id for subsequent cards', () => {
+      builder.startNewTurn();
+      builder.setCurrentTurnId('provider-turn-1');
+
+      const tool = builder.toolUse('Bash', { command: 'ls' }, 'tu-provider-turn') as CardAddEvent;
+
+      expect(tool.card.turnId).toBe('provider-turn-1');
+      expect(tool.card.isTurnIntermediate).toBe(true);
+    });
+
+    it('marks all cards for a turn as completed', () => {
+      builder.startNewTurn('provider-turn-2');
+      const assistant = builder.assistantText('reply') as CardAddEvent;
+      const tool = builder.toolUse('Bash', { command: 'ls' }, 'tu-complete-turn') as CardAddEvent;
+
+      const patches = builder.markTurnCompleted('provider-turn-2');
+
+      expect(patches.map((event) => event.cardId)).toEqual([assistant.card.id, tool.card.id]);
+      expect(patches.every((event) => event.patch.turnCompleted === true)).toBe(true);
+      expect(builder.getCards().every((card) => card.turnCompleted === true)).toBe(true);
+    });
+  });
+
   // ── userMessage ──────────────────────────────────────────────────────────
 
   describe('userMessage()', () => {

@@ -435,6 +435,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       this.overrideStore.commit();
       turnId = response.turn.id;
       this.currentTurnId = turnId;
+      cb.setCurrentTurnId(turnId);
 
       const result = await consumeAppServerStream(
         this.handle.rpc,

@@ -527,6 +527,8 @@ export class StreamCardBuilder {
   private sessionId: string;
   private cwd: string;
   private seq = 0;
+  private turnSeq = 0;
+  private currentTurnId: string | null = null;
   private cards = new Map<CardId, Card>();
   /** tool_use_id → CardId, for pairing tool_result to ToolCallCard */
   private toolUseIdToCardId = new Map<string, CardId>();
@@ -584,10 +586,29 @@ export class StreamCardBuilder {
   }
 
   /** Start a new turn: reset per-turn state, keep accumulated cards. */
-  startNewTurn(): void {
+  startNewTurn(turnId?: string): void {
+    this.currentTurnId = turnId ?? `turn:${Date.now()}:${++this.turnSeq}`;
     this.currentTextCardId = null;
     this.pendingGuardianMessageByToolUseId.clear();
     this.pendingGuardianMessageForNextPermission = null;
+  }
+
+  setCurrentTurnId(turnId: string): void {
+    this.currentTurnId = turnId;
+  }
+
+  getCurrentTurnId(): string | null {
+    return this.currentTurnId;
+  }
+
+  markTurnCompleted(turnId = this.currentTurnId): CardUpdateEvent[] {
+    if (!turnId) return [];
+    const events: CardUpdateEvent[] = [];
+    for (const card of this.cards.values()) {
+      if (card.turnId !== turnId || card.turnCompleted) continue;
+      events.push(this.updateEvent(card.id, { turnCompleted: true }));
+    }
+    return events;
   }
 
   /** Clear all accumulated cards. Call after a turn completes and JSONL is flushed. */
@@ -596,6 +617,7 @@ export class StreamCardBuilder {
     this.toolUseIdToCardId.clear();
     this.pendingGuardianMessageByToolUseId.clear();
     this.pendingGuardianMessageForNextPermission = null;
+    this.currentTurnId = null;
     this.artifactIdToCardId.clear();
     this.agentIdToCardId.clear();
     this.ephemeralCards.clear();
@@ -603,6 +625,7 @@ export class StreamCardBuilder {
     this.activeSubagentCardId = null;
     this.nestedToolUseToSubagentCard.clear();
     this.currentTextCardId = null;
+    this.currentTurnId = null;
   }
 
   /**
@@ -767,10 +790,22 @@ export class StreamCardBuilder {
     return `${this.sessionId}:${++this.seq}`;
   }
 
+  private cardWithTurnMetadata<T extends Card>(card: T): T {
+    if (!this.currentTurnId) return card;
+    return {
+      ...card,
+      turnId: this.currentTurnId,
+      ...(card.type === 'user' || card.type === 'assistant_text'
+        ? {}
+        : { isTurnIntermediate: true }),
+    };
+  }
+
   private addEvent(card: Card, afterCardId?: CardId): CardAddEvent {
-    this.cards.set(card.id, card);
-    this.enqueueCardHistoryEntry({ op: 'upsert', card: cleanPersistedCard(card) });
-    return { type: 'add', sessionId: this.sessionId, card, afterCardId };
+    const cardWithMetadata = this.cardWithTurnMetadata(card);
+    this.cards.set(cardWithMetadata.id, cardWithMetadata);
+    this.enqueueCardHistoryEntry({ op: 'upsert', card: cleanPersistedCard(cardWithMetadata) });
+    return { type: 'add', sessionId: this.sessionId, card: cardWithMetadata, afterCardId };
   }
 
   private updateEvent(cardId: CardId, patch: Record<string, unknown>): CardUpdateEvent {

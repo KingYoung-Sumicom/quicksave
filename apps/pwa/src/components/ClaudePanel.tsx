@@ -232,6 +232,7 @@ export function ClaudePanel({
     historyHasMore,
     isLoadingHistory,
     historyError,
+    completedTurnIds,
     promptInput,
     selectedAgent,
     selectedModel,
@@ -301,24 +302,43 @@ export function ClaudePanel({
     });
   }, []);
 
-  // Build the display sequence: when tool calls are hidden, fold each run of
-  // consecutive tool_call cards into a single placeholder so other message
-  // types stay in their original order. Per-group expansion replaces the
-  // placeholder with a "hide" chip followed by the individual cards.
+  // Build the display sequence: folded runs preserve card order while letting
+  // completed Codex turn internals and optional hidden tool calls be expanded
+  // per group.
   const displayItems = useMemo(() => {
     type Item =
       | { kind: 'card'; card: typeof cards[number] }
-      | { kind: 'tool_group_collapsed'; key: string; groupId: string; count: number }
-      | { kind: 'tool_group_expanded_header'; key: string; groupId: string; count: number };
-    if (!hideToolCalls) {
-      return cards.map<Item>((card) => ({ kind: 'card', card }));
-    }
+      | { kind: 'tool_group_collapsed'; key: string; groupId: string; count: number; noun: string }
+      | { kind: 'tool_group_expanded_header'; key: string; groupId: string; count: number; noun: string };
     const out: Item[] = [];
     let runCards: typeof cards = [];
     let runStartId: string | null = null;
+    const lastTurnId = [...cards].reverse().find((card) => card.isTurnIntermediate && card.turnId)?.turnId ?? null;
+    const finalAssistantCardByTurn = new Map<string, string>();
+    for (const card of cards) {
+      if (card.type === 'assistant_text' && card.turnId) {
+        finalAssistantCardByTurn.set(card.turnId, card.id);
+      }
+    }
+    const isCompletedTurn = (turnId: string): boolean =>
+      completedTurnIds[turnId] === true || cards.some((card) => card.turnId === turnId && card.turnCompleted);
+    const shouldCollapseIntermediate = (card: typeof cards[number]): boolean => {
+      if (!card.turnId) return false;
+      if (isCompletedTurn(card.turnId)) {
+        if (card.type === 'user') return false;
+        if (card.type === 'assistant_text' && finalAssistantCardByTurn.get(card.turnId) === card.id) return false;
+        return true;
+      }
+      if (!card.isTurnIntermediate) return false;
+      if (card.turnCompleted) return true;
+      if (completedTurnIds[card.turnId]) return true;
+      if (!isStreaming) return true;
+      return lastTurnId !== null && card.turnId !== lastTurnId;
+    };
     const flushRun = () => {
       if (!runStartId || runCards.length === 0) return;
       const groupId = runStartId;
+      const noun = runCards.every((c) => c.type === 'tool_call') ? 'tool call' : 'turn item';
       // Force the group open when any tool call inside has a pending
       // permission/question — the user can't make a decision they can't see.
       // No header chip in this mode: collapsing wouldn't take effect until the
@@ -332,6 +352,7 @@ export function ClaudePanel({
           key: `tgh:${groupId}`,
           groupId,
           count: runCards.length,
+          noun,
         });
         for (const c of runCards) out.push({ kind: 'card', card: c });
       } else {
@@ -340,15 +361,19 @@ export function ClaudePanel({
           key: `tgc:${groupId}`,
           groupId,
           count: runCards.length,
+          noun,
         });
       }
       runCards = [];
       runStartId = null;
     };
-    // Tool calls that must always be visible regardless of group collapse state.
+    // Keep interactive planning/question tools visible for the user's
+    // hide-tool preference. Completed-turn collapse can still fold them.
     const ALWAYS_VISIBLE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode', 'TodoWrite']);
     for (const card of cards) {
-      if (card.type === 'tool_call' && !ALWAYS_VISIBLE_TOOLS.has(card.toolName)) {
+      const collapseIntermediate = shouldCollapseIntermediate(card);
+      const collapseToolCall = hideToolCalls && card.type === 'tool_call' && !ALWAYS_VISIBLE_TOOLS.has(card.toolName);
+      if (collapseIntermediate || collapseToolCall) {
         if (runStartId === null) runStartId = card.id;
         runCards.push(card);
       } else {
@@ -358,7 +383,7 @@ export function ClaudePanel({
     }
     flushRun();
     return out;
-  }, [cards, hideToolCalls, expandedGroups]);
+  }, [cards, completedTurnIds, hideToolCalls, isStreaming, expandedGroups]);
 
   const activeSession = activeSessionId ? sessions[activeSessionId] : undefined;
   const viewedSessionId = urlSessionId ?? activeSessionId;
@@ -875,6 +900,7 @@ export function ClaudePanel({
                     <ToolCallGroupPlaceholder
                       key={item.key}
                       count={item.count}
+                      noun={item.noun}
                       expanded={item.kind === 'tool_group_expanded_header'}
                       onToggle={() => toggleGroup(item.groupId)}
                     />

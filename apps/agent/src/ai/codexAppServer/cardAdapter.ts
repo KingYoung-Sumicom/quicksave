@@ -156,7 +156,22 @@ export async function consumeAppServerStream(
   const state = emptyState();
 
   const emit = (event: CardEvent | null | undefined): void => {
-    if (event) callbacks.emitCardEvent(event);
+    if (!event) return;
+    if (event.type === 'add') {
+      const card = event.card;
+      callbacks.emitCardEvent({
+        ...event,
+        card: {
+          ...card,
+          turnId: ctx.turnId,
+          ...(card.type === 'user' || card.type === 'assistant_text'
+            ? {}
+            : { isTurnIntermediate: true }),
+        },
+      });
+      return;
+    }
+    callbacks.emitCardEvent(event);
   };
 
   const flushText = (): void => {
@@ -789,6 +804,9 @@ export async function consumeAppServerStream(
     flushText();
     const fin = cb.finalizeAssistantText();
     if (fin) emit(fin);
+    for (const event of cb.markTurnCompleted(ctx.turnId)) {
+      emit(event);
+    }
 
     let usage: ReturnType<typeof TokenAccounting.toCardStreamEndUsage>;
     if (status === 'completed' || status === 'failed') {
@@ -802,6 +820,7 @@ export async function consumeAppServerStream(
 
     const streamEnd: CardStreamEnd = {
       sessionId: ctx.sessionId,
+      turnId: ctx.turnId,
       success: status === 'completed',
       ...(status === 'interrupted' ? { interrupted: true } : {}),
       ...(status === 'failed' && error

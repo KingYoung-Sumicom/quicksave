@@ -44,6 +44,13 @@ function clearPendingEvent(sessionId: string, cardId: string): SessionCardsUpdat
   return { kind: 'card', event };
 }
 
+function streamEnd(sessionId: string, turnId = 'turn-A'): SessionCardsUpdate {
+  return {
+    kind: 'stream-end',
+    result: { sessionId, turnId, success: true },
+  };
+}
+
 describe('applySessionCards (multi-session permission resolve)', () => {
   beforeEach(() => {
     useClaudeStore.getState().reset();
@@ -160,5 +167,21 @@ describe('applySessionCards (multi-session permission resolve)', () => {
 
     expect(useClaudeStore.getState().cards).toHaveLength(1);
     expect(useClaudeStore.getState().cards[0].id).toBe('cC');
+  });
+
+  it('marks the completed turn on active session stream-end', () => {
+    useClaudeStore.setState({ activeSessionId: 'sess-A', completedTurnIds: {} });
+
+    applySessionCardsUpdate('sess-A', streamEnd('sess-A', 'turn-1'));
+
+    expect(useClaudeStore.getState().completedTurnIds).toEqual({ 'turn-1': true });
+  });
+
+  it('does not mark completed turns for stale session stream-end', () => {
+    useClaudeStore.setState({ activeSessionId: 'sess-B', completedTurnIds: {} });
+
+    applySessionCardsUpdate('sess-A', streamEnd('sess-A', 'turn-1'));
+
+    expect(useClaudeStore.getState().completedTurnIds).toEqual({});
   });
 });

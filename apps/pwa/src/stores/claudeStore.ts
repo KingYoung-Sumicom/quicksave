@@ -228,6 +228,8 @@ interface ClaudeStore {
   historyHasMore: boolean;
   isLoadingHistory: boolean;
   historyError: string | null;
+  /** Turn ids that have emitted stream-end during the current live view. */
+  completedTurnIds: Record<string, true>;
 
 
   // UI
@@ -286,6 +288,7 @@ interface ClaudeStore {
   setHistoryMeta: (total: number, hasMore: boolean) => void;
   setLoadingHistory: (loading: boolean) => void;
   setHistoryError: (error: string | null) => void;
+  markTurnCompleted: (turnId: string) => void;
   clearCards: () => void;
 
   // Actions — pending input
@@ -334,6 +337,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   historyHasMore: false,
   isLoadingHistory: false,
   historyError: null,
+  completedTurnIds: {},
   promptInput: '',
   isVisible: false,
   selectedAgent: savedPrefs.selectedAgent,
@@ -403,6 +407,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         activeSessionId: null,
         streamError: null,
         isStreaming: false,
+        completedTurnIds: {},
         selectedAgent: prefs.selectedAgent,
         agentPrefs: prefs.agentPrefs,
         ...flatViewOf(prefs.agentPrefs[prefs.selectedAgent] ?? defaultPrefsForAgent(prefs.selectedAgent)),
@@ -433,6 +438,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       // startSession / resumeSession call upsertSession({isStreaming: true})
       // immediately before this, so prompt-sending paths still see true.
       isStreaming: session?.isStreaming ?? false,
+      completedTurnIds: {},
       selectedAgent: sessionAgent,
       ...flatViewOf(agentPrefsForSession),
       // Surface the session's permissionMode in the flat view so the chip
@@ -445,7 +451,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   setStreamError: (error) => set({ streamError: error, isStreaming: false }),
 
   // Cards — server returns cards with pendingInput already attached
-  setCards: (cards) => set({ cards: cards ?? [] }),
+  setCards: (cards) => set({ cards: cards ?? [], completedTurnIds: {} }),
   prependCards: (newCards) =>
     set((state) => {
       const existingIds = new Set(state.cards.map((c) => c.id));
@@ -518,7 +524,10 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   setHistoryMeta: (total, hasMore) => set({ historyTotal: total, historyHasMore: hasMore }),
   setLoadingHistory: (loading) => set({ isLoadingHistory: loading }),
   setHistoryError: (error) => set({ historyError: error }),
-  clearCards: () => set({ cards: [], historyTotal: 0, historyHasMore: false, historyError: null }),
+  markTurnCompleted: (turnId) => set((state) => ({
+    completedTurnIds: { ...state.completedTurnIds, [turnId]: true },
+  })),
+  clearCards: () => set({ cards: [], completedTurnIds: {}, historyTotal: 0, historyHasMore: false, historyError: null }),
 
   clearPendingInput: (requestId) =>
     set((state) => {
@@ -729,6 +738,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       historyHasMore: false,
       isLoadingHistory: false,
       historyError: null,
+      completedTurnIds: {},
       promptInput: '',
       isVisible: false,
     }),

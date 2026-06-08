@@ -38,6 +38,9 @@ export function applySessionCardsUpdate(sessionId: string, update: SessionCardsU
   }
   // update.kind === 'stream-end'
   const payload = update.result;
+  if (payload.turnId) {
+    state.markTurnCompleted(payload.turnId);
+  }
   if (!payload.success && !payload.interrupted) {
     state.setStreamError(payload.error || 'Session ended with error');
   }

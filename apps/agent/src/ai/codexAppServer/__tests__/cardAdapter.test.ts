@@ -22,6 +22,7 @@ function harness(opts: { sessionId?: string; turnId?: string } = {}) {
   const cwd = '/tmp/quicksave-test';
 
   const cb = new StreamCardBuilder(sessionId, cwd);
+  cb.startNewTurn(turnId);
   const events: CardEvent[] = [];
   let streamEnd: CardStreamEnd | null = null;
 
@@ -129,6 +130,11 @@ describe('cardAdapter — agentMessage streaming', () => {
       (e) => e.type === 'update' && JSON.stringify(e.patch).includes('"streaming":false'),
     );
     expect(finalize).toBeTruthy();
+    const assistantCard = h.events.find(
+      (e) => e.type === 'add' && (e.card as { type?: string }).type === 'assistant_text',
+    ) as { card: { turnId?: string; isTurnIntermediate?: boolean } } | undefined;
+    expect(assistantCard?.card.turnId).toBe('turn_1');
+    expect(assistantCard?.card.isTurnIntermediate).toBeUndefined();
   });
 
   it('emits the residual text on item/completed when started+deltas were missed', async () => {
@@ -211,6 +217,16 @@ describe('cardAdapter — commandExecution', () => {
     );
     expect(toolCall).toBeTruthy();
     expect((toolCall as { card: { toolName: string } }).card.toolName).toBe('Bash');
+    expect((toolCall as { card: { turnId?: string; isTurnIntermediate?: boolean } }).card.turnId).toBe('turn_1');
+    expect((toolCall as { card: { turnId?: string; isTurnIntermediate?: boolean } }).card.isTurnIntermediate).toBe(true);
+    expect(h.streamEnd?.turnId).toBe('turn_1');
+    const completedPatch = h.events.find(
+      (e) =>
+        e.type === 'update' &&
+        e.cardId === (toolCall as { card: { id: string } }).card.id &&
+        e.patch.turnCompleted === true,
+    );
+    expect(completedPatch).toBeTruthy();
 
     const finalResult = [...h.events]
       .reverse()
@@ -606,6 +622,50 @@ describe('cardAdapter — Guardian auto-review on permission cards', () => {
 
     expect(h.cb.getCards().find((c) => c.pendingInput?.requestId === 'perm_network')?.pendingInput?.guardianMessage)
       .toContain('Network access to example.com was reviewed.');
+  });
+
+  it('falls back to the latest pending permission when targetItemId differs from approvalId', async () => {
+    const h = harness();
+    const evt = h.cb.toolCallFromPermission(
+      'Bash',
+      { command: 'npm install' },
+      'approval_1',
+      {
+        sessionId: h.sessionId,
+        requestId: 'perm_approval',
+        inputType: 'permission',
+        title: 'Allow Bash?',
+        message: '{"command":"npm install"}',
+      },
+    );
+    h.events.push(evt);
+
+    await h.send('item/autoApprovalReview/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      targetItemId: 'cmd_1',
+      decisionSource: 'agent',
+      review: {
+        status: 'denied',
+        riskLevel: 'high',
+        userAuthorization: 'low',
+        rationale: 'Approval callback id differs from command item id.',
+      },
+      action: {
+        type: 'command',
+        source: 'shell',
+        command: 'npm install',
+        cwd: '/tmp/quicksave-test',
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    expect(h.cb.getCards().find((c) => c.pendingInput?.requestId === 'perm_approval')?.pendingInput?.guardianMessage)
+      .toContain('Approval callback id differs from command item id.');
   });
 });
 
