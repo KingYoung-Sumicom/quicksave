@@ -319,6 +319,84 @@ describe('StreamCardBuilder', () => {
       const event = builder.clearPendingInput('req-eph2') as CardRemoveEvent;
       expect(event.type).toBe('remove');
     });
+
+    it('updates Guardian message on an existing pending tool card', () => {
+      const pending = makePendingInput('req-guardian');
+      const addEvent = builder.toolCallFromPermission(
+        'Bash', { command: 'npm install' }, 'tu-guardian', pending,
+      ) as CardAddEvent;
+
+      const event = builder.updatePendingGuardianMessageForToolUseId(
+        'tu-guardian',
+        'Guardian denied\nNetwork access is risky.',
+      ) as CardUpdateEvent;
+
+      expect(event.type).toBe('update');
+      expect(event.cardId).toBe(addEvent.card.id);
+      expect(event.patch).toEqual({
+        guardianMessage: 'Guardian denied\nNetwork access is risky.',
+        pendingInput: {
+          ...pending,
+          guardianMessage: 'Guardian denied\nNetwork access is risky.',
+        },
+      });
+      expect(builder.getCards()[0].pendingInput?.guardianMessage).toBe('Guardian denied\nNetwork access is risky.');
+    });
+
+    it('does not create a Guardian update when the matching pending card is absent', () => {
+      expect(builder.updatePendingGuardianMessageForToolUseId('missing', 'Guardian denied')).toBeNull();
+      builder.toolUse('Bash', { command: 'ls' }, 'tu-no-pending');
+      expect(builder.updatePendingGuardianMessageForToolUseId('tu-no-pending', 'Guardian denied')).toBeNull();
+    });
+
+    it('includes a Guardian message observed before the pending tool card exists', () => {
+      const pending = makePendingInput('req-guardian-early');
+      expect(builder.updatePendingGuardianMessageForToolUseId('tu-guardian-early', 'Guardian reviewing')).toBeNull();
+
+      const event = builder.toolCallFromPermission(
+        'Bash', { command: 'npm install' }, 'tu-guardian-early', pending,
+      ) as CardAddEvent;
+
+      expect((event.card as ToolCallCard).pendingInput).toEqual({
+        ...pending,
+        guardianMessage: 'Guardian reviewing',
+      });
+    });
+
+    it('updates the latest pending permission card when Guardian has no tool id', () => {
+      const first = makePendingInput('req-guardian-first');
+      const second = makePendingInput('req-guardian-second');
+      builder.toolCallFromPermission('Bash', { command: 'first' }, 'tu-guardian-first', first);
+      const secondEvent = builder.toolCallFromPermission(
+        'Bash', { command: 'second' }, 'tu-guardian-second', second,
+      ) as CardAddEvent;
+
+      const event = builder.updateLatestPendingPermissionGuardianMessage('Guardian network review') as CardUpdateEvent;
+
+      expect(event.type).toBe('update');
+      expect(event.cardId).toBe(secondEvent.card.id);
+      expect(event.patch).toEqual({
+        guardianMessage: 'Guardian network review',
+        pendingInput: {
+          ...second,
+          guardianMessage: 'Guardian network review',
+        },
+      });
+    });
+
+    it('attaches an uncorrelated early Guardian message to the next permission card', () => {
+      const pending = makePendingInput('req-guardian-next');
+      expect(builder.updateLatestPendingPermissionGuardianMessage('Guardian network review')).toBeNull();
+
+      const event = builder.toolCallFromPermission(
+        'Bash', { command: 'curl example.com' }, 'tu-guardian-next', pending,
+      ) as CardAddEvent;
+
+      expect((event.card as ToolCallCard).pendingInput).toEqual({
+        ...pending,
+        guardianMessage: 'Guardian network review',
+      });
+    });
   });
 
   // ── clearPendingInput ────────────────────────────────────────────────────

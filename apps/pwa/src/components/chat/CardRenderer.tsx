@@ -26,6 +26,7 @@ function toLegacyPending(
     inputType: p.inputType,
     title: p.title,
     message: p.message,
+    guardianMessage: p.guardianMessage,
     options: p.options,
     toolName,
     toolInput,
@@ -62,6 +63,7 @@ export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId
           toolResultContent={tc.result?.content}
           toolResultIsError={tc.result?.isError}
           toolAnswers={tc.answers}
+          guardianMessage={tc.guardianMessage ?? tc.pendingInput?.guardianMessage}
           pendingInputRequest={tc.pendingInput ? toLegacyPending(tc.pendingInput, tc.toolName, tc.toolInput) : undefined}
           onRespond={tc.pendingInput && onRespondToInput
             ? (action, response, allowPattern, permissionMode) => onRespondToInput(tc.pendingInput!.requestId, action, response, allowPattern, permissionMode)

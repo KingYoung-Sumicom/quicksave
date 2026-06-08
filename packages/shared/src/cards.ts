@@ -22,6 +22,8 @@ export interface PendingInputAttachment {
   inputType: 'permission' | 'question';
   title: string;
   message?: string;
+  /** Codex auto-review / Guardian rationale attached to this pending prompt. */
+  guardianMessage?: string;
   options?: PendingInputOption[];
 }
 
@@ -68,6 +70,8 @@ export interface ToolCallCard extends CardBase {
   toolName: string;
   toolInput: Record<string, unknown>;
   toolUseId: string;
+  /** Codex auto-review / Guardian rationale attached to this tool call. */
+  guardianMessage?: string;
   /** Paired result — populated by the agent when tool_result arrives. */
   result?: ToolCallResult;
   /**

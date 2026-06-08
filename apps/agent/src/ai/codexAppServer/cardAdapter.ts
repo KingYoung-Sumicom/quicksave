@@ -21,6 +21,8 @@ import type { ErrorNotification } from './schema/generated/v2/ErrorNotification.
 import type { ThreadTokenUsageUpdatedNotification } from './schema/generated/v2/ThreadTokenUsageUpdatedNotification.js';
 import type { CodexErrorInfo } from './schema/generated/v2/CodexErrorInfo.js';
 import type { TurnStatus } from './schema/generated/v2/TurnStatus.js';
+import type { GuardianApprovalReview } from './schema/generated/v2/GuardianApprovalReview.js';
+import type { GuardianApprovalReviewAction } from './schema/generated/v2/GuardianApprovalReviewAction.js';
 
 /** Debounce window for assistant text streaming — matches the SDK
  * provider's `FLUSH_INTERVAL_MS` so the user-visible "typing" cadence
@@ -71,6 +73,8 @@ interface AdapterState {
   /** Set of file_change card ids already added — defensive against
    * duplicate item/started events. */
   fileChangeCardsAdded: Set<string>;
+  /** Set of tool ids already forwarded to ProviderCallbacks.onToolUse. */
+  toolUseCallbacksFired: Set<string>;
   /** Latest plan card id (`plan:${turnId}`) we have created. */
   planCardId: string | null;
   /** When `turn/completed` arrives, set so we stop processing further
@@ -87,9 +91,47 @@ function emptyState(): AdapterState {
     commandOutputBuffers: new Map(),
     seenErrors: new Set(),
     fileChangeCardsAdded: new Set(),
+    toolUseCallbacksFired: new Set(),
     planCardId: null,
     turnEnded: false,
   };
+}
+
+function formatGuardianReview(review: GuardianApprovalReview): string | null {
+  const parts: string[] = [];
+  const status = guardianStatusLabel(review.status);
+  const details = [
+    review.riskLevel ? `risk: ${review.riskLevel}` : null,
+    review.userAuthorization ? `user authorization: ${review.userAuthorization}` : null,
+  ].filter(Boolean);
+  if (status || details.length > 0) {
+    parts.push(`Guardian ${[status, ...details].filter(Boolean).join(' | ')}`);
+  }
+  const rationale = review.rationale?.trim();
+  if (rationale) parts.push(rationale);
+  return parts.length > 0 ? parts.join('\n') : null;
+}
+
+function guardianStatusLabel(status: GuardianApprovalReview['status']): string {
+  switch (status) {
+    case 'inProgress':
+      return 'reviewing';
+    case 'approved':
+      return 'approved';
+    case 'denied':
+      return 'denied';
+    case 'timedOut':
+      return 'timed out';
+    case 'aborted':
+      return 'aborted';
+  }
+}
+
+function guardianActionItemId(_action: GuardianApprovalReviewAction): string | null {
+  // The current app-server schema carries item correlation on the notification
+  // as targetItemId, not inside the action union. Keep this helper as the
+  // fallback boundary in case future variants include an item id.
+  return null;
 }
 
 /**
@@ -345,9 +387,20 @@ export async function consumeAppServerStream(
 
       case 'item/autoApprovalReview/started':
       case 'item/autoApprovalReview/completed': {
-        // Phase 2: drop. Phase 5+ may render the auto-review subagent's
-        // decision inline. Schema doesn't carry user-visible text yet,
-        // so a system message would just say "review started" — noise.
+        const params = notification.params as {
+          turnId: string;
+          targetItemId: string | null;
+          review: GuardianApprovalReview;
+          action: GuardianApprovalReviewAction;
+        };
+        if (params.turnId !== ctx.turnId) return;
+        const message = formatGuardianReview(params.review);
+        if (!message) return;
+        const targetItemId = params.targetItemId ?? guardianActionItemId(params.action);
+        const targeted = targetItemId
+          ? cb.updatePendingGuardianMessageForToolUseId(targetItemId, message)
+          : null;
+        emit(targeted ?? cb.updateLatestPendingPermissionGuardianMessage(message));
         return;
       }
 
@@ -445,9 +498,7 @@ export async function consumeAppServerStream(
 
       case 'mcpToolCall': {
         flushText();
-        emit(
-          cb.toolUse(`${item.server}:${item.tool}`, item.arguments as Record<string, unknown>, item.id),
-        );
+        emitMcpToolUse(item);
         return;
       }
 
@@ -584,13 +635,7 @@ export async function consumeAppServerStream(
 
       case 'mcpToolCall': {
         if (!cb.hasToolCard(item.id)) {
-          emit(
-            cb.toolUse(
-              `${item.server}:${item.tool}`,
-              item.arguments as Record<string, unknown>,
-              item.id,
-            ),
-          );
+          emitMcpToolUse(item);
         }
         const failed = item.status === 'failed' || item.error != null;
         const text = mcpResultText(item);
@@ -676,6 +721,16 @@ export async function consumeAppServerStream(
       case 'contextCompaction':
         return;
     }
+  };
+
+  const emitMcpToolUse = (item: Extract<ThreadItem, { type: 'mcpToolCall' }>): void => {
+    const toolName = mcpToolName(item.server, item.tool);
+    const toolInput = jsonObjectOrEmpty(item.arguments);
+    if (!state.toolUseCallbacksFired.has(item.id)) {
+      state.toolUseCallbacksFired.add(item.id);
+      callbacks.onToolUse?.(ctx.sessionId, toolName, toolInput);
+    }
+    emit(cb.toolUse(toolName, toolInput, item.id));
   };
 
   const emitFileChangeCards = (
@@ -886,6 +941,16 @@ function mcpResultText(item: Extract<ThreadItem, { type: 'mcpToolCall' }>): stri
     if (structured !== undefined) return JSON.stringify(structured);
   }
   return JSON.stringify(result);
+}
+
+function mcpToolName(server: string, tool: string): string {
+  return `mcp__${server}__${tool}`;
+}
+
+function jsonObjectOrEmpty(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 function parseMarkdownArtifactRefText(text: string): MarkdownArtifactRef | null {

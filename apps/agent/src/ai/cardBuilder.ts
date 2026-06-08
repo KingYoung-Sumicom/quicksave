@@ -530,6 +530,10 @@ export class StreamCardBuilder {
   private cards = new Map<CardId, Card>();
   /** tool_use_id → CardId, for pairing tool_result to ToolCallCard */
   private toolUseIdToCardId = new Map<string, CardId>();
+  /** tool_use_id → Guardian text observed before the permission card exists. */
+  private pendingGuardianMessageByToolUseId = new Map<string, string>();
+  /** Guardian text observed before app-server provided a correlatable card id. */
+  private pendingGuardianMessageForNextPermission: string | null = null;
   /** artifactId → CardId, for de-duping generated display artifact cards. */
   private artifactIdToCardId = new Map<string, CardId>();
   /** agentId (task_id) → CardId, for matching subagent updates */
@@ -582,12 +586,16 @@ export class StreamCardBuilder {
   /** Start a new turn: reset per-turn state, keep accumulated cards. */
   startNewTurn(): void {
     this.currentTextCardId = null;
+    this.pendingGuardianMessageByToolUseId.clear();
+    this.pendingGuardianMessageForNextPermission = null;
   }
 
   /** Clear all accumulated cards. Call after a turn completes and JSONL is flushed. */
   clearCards(): void {
     this.cards.clear();
     this.toolUseIdToCardId.clear();
+    this.pendingGuardianMessageByToolUseId.clear();
+    this.pendingGuardianMessageForNextPermission = null;
     this.artifactIdToCardId.clear();
     this.agentIdToCardId.clear();
     this.ephemeralCards.clear();
@@ -901,15 +909,16 @@ export class StreamCardBuilder {
     // If the card was already created by the assistant message's tool_use block
     // (which arrives in the stream BEFORE canUseTool fires), update it with pendingInput.
     const existingCardId = this.toolUseIdToCardId.get(toolUseId);
+    const pendingWithGuardian = this.pendingInputWithGuardianMessage(toolUseId, pendingInput);
     if (existingCardId) {
       if (ephemeral) this.ephemeralCards.add(existingCardId);
-      return this.updateEvent(existingCardId, { pendingInput });
+      return this.updateEvent(existingCardId, { pendingInput: pendingWithGuardian });
     }
 
     const id = this.nextId();
     const card: ToolCallCard = {
       type: 'tool_call', id, timestamp: Date.now(),
-      toolName, toolInput, toolUseId, pendingInput,
+      toolName, toolInput, toolUseId, pendingInput: pendingWithGuardian,
     };
     this.toolUseIdToCardId.set(toolUseId, id);
     if (ephemeral) this.ephemeralCards.add(id);
@@ -949,6 +958,58 @@ export class StreamCardBuilder {
       if (card.pendingInput?.requestId === requestId) return card.id;
     }
     return undefined;
+  }
+
+  /** Attach/update Guardian review text on the pending input for a tool card. */
+  updatePendingGuardianMessageForToolUseId(toolUseId: string, guardianMessage: string): CardEvent | null {
+    this.pendingGuardianMessageByToolUseId.set(toolUseId, guardianMessage);
+    const cardId = this.toolUseIdToCardId.get(toolUseId);
+    if (!cardId) return null;
+    const card = this.cards.get(cardId);
+    if (!card?.pendingInput) return null;
+    return this.updateEvent(cardId, {
+      guardianMessage,
+      pendingInput: {
+        ...card.pendingInput,
+        guardianMessage,
+      },
+    });
+  }
+
+  /**
+   * Attach Guardian review text to the newest pending permission card.
+   * Used when Codex app-server sends auto-review notifications with
+   * `targetItemId: null`, such as networkAccess and some execve reviews.
+   */
+  updateLatestPendingPermissionGuardianMessage(guardianMessage: string): CardEvent | null {
+    let latest: Card | null = null;
+    for (const card of this.cards.values()) {
+      if (card.pendingInput?.inputType !== 'permission') continue;
+      if (!latest || card.timestamp >= latest.timestamp) latest = card;
+    }
+    if (!latest?.pendingInput) {
+      this.pendingGuardianMessageForNextPermission = guardianMessage;
+      return null;
+    }
+    return this.updateEvent(latest.id, {
+      guardianMessage,
+      pendingInput: {
+        ...latest.pendingInput,
+        guardianMessage,
+      },
+    });
+  }
+
+  private pendingInputWithGuardianMessage(
+    toolUseId: string,
+    pendingInput: PendingInputAttachment,
+  ): PendingInputAttachment {
+    const guardianMessage = this.pendingGuardianMessageByToolUseId.get(toolUseId);
+    const fallbackGuardianMessage = this.pendingGuardianMessageForNextPermission;
+    if (fallbackGuardianMessage) this.pendingGuardianMessageForNextPermission = null;
+    return guardianMessage || fallbackGuardianMessage
+      ? { ...pendingInput, guardianMessage: guardianMessage ?? fallbackGuardianMessage ?? undefined }
+      : pendingInput;
   }
 
   /** Check if a tool card already exists for the given tool_use_id. */

@@ -2007,6 +2007,8 @@ export interface ClaudeUserInputRequestPayload {
   inputType: ClaudeUserInputType;
   title: string;
   message?: string;
+  /** Codex auto-review / Guardian rationale attached to this pending prompt. */
+  guardianMessage?: string;
   options?: ClaudeUserInputOption[];
   // Permission-specific fields
   toolName?: string;

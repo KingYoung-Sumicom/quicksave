@@ -31,6 +31,7 @@ function harness(opts: { sessionId?: string; turnId?: string } = {}) {
       streamEnd = e;
     },
     handlePermissionRequest: vi.fn().mockResolvedValue({ action: 'allow' as const }),
+    onToolUse: vi.fn(),
     onModelDetected: vi.fn(),
   };
 
@@ -53,6 +54,7 @@ function harness(opts: { sessionId?: string; turnId?: string } = {}) {
     sessionId,
     turnId,
     cb,
+    callbacks,
     rpc,
     tokens,
     events,
@@ -480,6 +482,133 @@ describe('cardAdapter — serverRequest/resolved (R7)', () => {
   });
 });
 
+describe('cardAdapter — Guardian auto-review on permission cards', () => {
+  it('attaches Guardian rationale to the matching pending permission card', async () => {
+    const h = harness();
+    const evt = h.cb.toolCallFromPermission(
+      'Bash',
+      { command: 'npm install' },
+      'cmd_1',
+      {
+        sessionId: h.sessionId,
+        requestId: 'perm_1',
+        inputType: 'permission',
+        title: 'Allow Bash?',
+        message: '{"command":"npm install"}',
+      },
+    );
+    h.events.push(evt);
+
+    await h.send('item/autoApprovalReview/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      targetItemId: 'cmd_1',
+      decisionSource: 'agent',
+      review: {
+        status: 'denied',
+        riskLevel: 'high',
+        userAuthorization: 'low',
+        rationale: 'Network install needs explicit confirmation.',
+      },
+      action: {
+        type: 'command',
+        source: 'shell',
+        command: 'npm install',
+        cwd: '/tmp/quicksave-test',
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const guardianUpdate = h.events.find(
+      (e) => e.type === 'update' && JSON.stringify(e.patch).includes('Network install needs explicit confirmation.'),
+    );
+    expect(guardianUpdate).toBeTruthy();
+    expect(h.cb.getCards().find((c) => c.pendingInput?.requestId === 'perm_1')?.pendingInput?.guardianMessage)
+      .toContain('Guardian denied');
+  });
+
+  it('ignores Guardian reviews without a matching pending permission card', async () => {
+    const h = harness();
+    await h.send('item/autoApprovalReview/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      targetItemId: 'missing_item',
+      decisionSource: 'agent',
+      review: {
+        status: 'denied',
+        riskLevel: 'high',
+        userAuthorization: 'low',
+        rationale: 'No card exists yet.',
+      },
+      action: {
+        type: 'command',
+        source: 'shell',
+        command: 'npm install',
+        cwd: '/tmp/quicksave-test',
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const guardianUpdate = h.events.find(
+      (e) => e.type === 'update' && JSON.stringify(e.patch).includes('No card exists yet.'),
+    );
+    expect(guardianUpdate).toBeFalsy();
+  });
+
+  it('falls back to the pending permission card when Guardian targetItemId is null', async () => {
+    const h = harness();
+    const evt = h.cb.toolCallFromPermission(
+      'Bash',
+      { command: 'curl https://example.com' },
+      'cmd_network',
+      {
+        sessionId: h.sessionId,
+        requestId: 'perm_network',
+        inputType: 'permission',
+        title: 'Allow Bash?',
+        message: '{"command":"curl https://example.com"}',
+      },
+    );
+    h.events.push(evt);
+
+    await h.send('item/autoApprovalReview/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      targetItemId: null,
+      decisionSource: 'agent',
+      review: {
+        status: 'approved',
+        riskLevel: 'medium',
+        userAuthorization: 'low',
+        rationale: 'Network access to example.com was reviewed.',
+      },
+      action: {
+        type: 'networkAccess',
+        target: 'https://example.com',
+        host: 'example.com',
+        protocol: 'https',
+        port: 443,
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    expect(h.cb.getCards().find((c) => c.pendingInput?.requestId === 'perm_network')?.pendingInput?.guardianMessage)
+      .toContain('Network access to example.com was reviewed.');
+  });
+});
+
 describe('cardAdapter — file_change', () => {
   it('emits a per-file Write/Edit tool_use card', async () => {
     const h = harness();
@@ -616,6 +745,101 @@ describe('cardAdapter — file_change', () => {
       .map((e) => (e.card as { toolName?: string }).toolName);
     expect(toolNames).toContain('Write');
     expect(h.streamEnd?.success).toBe(true);
+  });
+});
+
+describe('cardAdapter — mcpToolCall cards', () => {
+  it('renders quicksave session status MCP calls with Claude-compatible tool names', async () => {
+    const h = harness();
+    await h.send('item/started', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: {
+        type: 'mcpToolCall',
+        id: 'mcp_status_1',
+        server: 'quicksave-sandbox',
+        tool: 'UpdateSessionStatus',
+        status: 'inProgress',
+        arguments: { subject: 'Port status cards', stage: 'working', note: 'testing' },
+        result: null,
+        error: null,
+        durationMs: null,
+      },
+    });
+    await h.send('item/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: {
+        type: 'mcpToolCall',
+        id: 'mcp_status_1',
+        server: 'quicksave-sandbox',
+        tool: 'UpdateSessionStatus',
+        status: 'completed',
+        arguments: { subject: 'Port status cards', stage: 'working', note: 'testing' },
+        result: { content: [{ type: 'text', text: 'Session status updated.' }], structuredContent: null, _meta: null },
+        error: null,
+        durationMs: 12,
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const statusCard = h.events.find(
+      (e) =>
+        e.type === 'add' &&
+        (e.card as { type?: string }).type === 'tool_call' &&
+        (e.card as { toolName?: string }).toolName === 'mcp__quicksave-sandbox__UpdateSessionStatus',
+    );
+    expect(statusCard).toBeTruthy();
+    expect(h.callbacks.onToolUse).toHaveBeenCalledTimes(1);
+    expect(h.callbacks.onToolUse).toHaveBeenCalledWith(
+      h.sessionId,
+      'mcp__quicksave-sandbox__UpdateSessionStatus',
+      { subject: 'Port status cards', stage: 'working', note: 'testing' },
+    );
+    const resultUpdate = h.events.find(
+      (e) => e.type === 'update' && JSON.stringify(e.patch).includes('Session status updated.'),
+    );
+    expect(resultUpdate).toBeTruthy();
+  });
+
+  it('creates and forwards completed-only MCP calls', async () => {
+    const h = harness();
+    await h.send('item/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: {
+        type: 'mcpToolCall',
+        id: 'mcp_status_completed_only',
+        server: 'quicksave-sandbox',
+        tool: 'UpdateSessionStatus',
+        status: 'completed',
+        arguments: { stage: 'done', note: 'completed-only' },
+        result: { content: [{ type: 'text', text: 'Done.' }], structuredContent: null, _meta: null },
+        error: null,
+        durationMs: 3,
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    expect(h.events.some(
+      (e) =>
+        e.type === 'add' &&
+        (e.card as { type?: string }).type === 'tool_call' &&
+        (e.card as { toolName?: string }).toolName === 'mcp__quicksave-sandbox__UpdateSessionStatus',
+    )).toBe(true);
+    expect(h.callbacks.onToolUse).toHaveBeenCalledWith(
+      h.sessionId,
+      'mcp__quicksave-sandbox__UpdateSessionStatus',
+      { stage: 'done', note: 'completed-only' },
+    );
   });
 });
 

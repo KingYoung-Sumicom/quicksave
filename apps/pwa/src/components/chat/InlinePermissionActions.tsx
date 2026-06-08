@@ -38,6 +38,11 @@ export function InlinePermissionActions({ request, onRespond }: {
   return (
     <div className="mt-2 pt-2 border-t border-amber-500/20">
       <p className="text-sm text-amber-400/80 mb-2">{request.title}</p>
+      {request.guardianMessage && (
+        <p className="mb-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-1.5 text-xs leading-relaxed text-amber-100 whitespace-pre-wrap">
+          {request.guardianMessage}
+        </p>
+      )}
       <div className="flex gap-2">
         <button
           onClick={handleOpenDenyModal}

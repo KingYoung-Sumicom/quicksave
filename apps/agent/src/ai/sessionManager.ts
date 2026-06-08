@@ -1550,6 +1550,7 @@ export class SessionManager extends EventEmitter {
         inputType: request.inputType,
         title: request.title,
         message: request.message,
+        guardianMessage: request.guardianMessage,
         options: request.options,
       };
       const cardEvt = cb.toolCallFromPermission(toolName, toolInput, toolUseId, pendingAttachment);

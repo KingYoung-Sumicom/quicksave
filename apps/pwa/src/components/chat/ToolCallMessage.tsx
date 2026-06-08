@@ -70,13 +70,14 @@ function InlineToolResult({ content, toolName, suppressContent, expanded }: {
   );
 }
 
-export function ToolCallMessage({ toolName, toolInput, content, toolResultContent, toolResultIsError, toolAnswers, pendingInputRequest, onRespond }: {
+export function ToolCallMessage({ toolName, toolInput, content, toolResultContent, toolResultIsError, toolAnswers, guardianMessage, pendingInputRequest, onRespond }: {
   toolName?: string;
   toolInput?: string;
   content: string;
   toolResultContent?: string;
   toolResultIsError?: boolean;
   toolAnswers?: Record<string, string>;
+  guardianMessage?: string;
   pendingInputRequest?: ClaudeUserInputRequestPayload;
   onRespond?: (action: 'allow' | 'deny', response?: string, allowPattern?: string, permissionMode?: string) => void;
 }) {
@@ -197,6 +198,11 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
                   />
                 : <FallbackToolView toolName={toolName} content={toolInput || content} />}
         </div>
+        {guardianMessage && (
+          <div className="mt-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-1.5 text-xs leading-relaxed text-amber-100 whitespace-pre-wrap">
+            {guardianMessage}
+          </div>
+        )}
         {isInlineResultTool && (
           <InlineToolResult
             content={resultContent}
