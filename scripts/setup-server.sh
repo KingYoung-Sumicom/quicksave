@@ -14,6 +14,7 @@ set -e
 # Configuration - update these
 DOMAIN="quicksave.dev"
 GITHUB_REPO="KingYoung-Sumicom/quicksave"
+DEPLOY_SCRIPT_URL="${DEPLOY_SCRIPT_URL:-https://raw.githubusercontent.com/${GITHUB_REPO}/stable/scripts/deploy.sh}"
 
 # Derived domains
 STAGING_DOMAIN="staging.${DOMAIN}"
@@ -49,7 +50,7 @@ DEPLOY_TOKEN_STAGING="$(extract_token deploy-staging || true)"
 
 echo "==> Installing dependencies..."
 apt update
-apt install -y curl gnupg rsync
+apt install -y curl gnupg rsync util-linux
 
 # Node.js 20
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
@@ -121,13 +122,14 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
-# Create placeholder env file
-cat > /opt/quicksave/.env << 'EOF'
+if [ ! -f /opt/quicksave/.env ]; then
+    cat > /opt/quicksave/.env << 'EOF'
 # GitHub token with repo scope - required for deploy script
 # Get one at: https://github.com/settings/tokens
 GH_TOKEN=your_github_token_here
 EOF
-chmod 600 /opt/quicksave/.env
+    chmod 600 /opt/quicksave/.env
+fi
 
 echo "==> Setting up relay env files..."
 
@@ -200,82 +202,9 @@ Environment=PORT=8081
 WantedBy=multi-user.target
 EOF
 
-echo "==> Creating deploy script..."
-cat > /opt/quicksave/scripts/deploy.sh << 'DEPLOY_SCRIPT'
-#!/bin/bash
-set -e
-
-REPO="${GITHUB_REPO:-KingYoung-Sumicom/quicksave}"
-ENV="${DEPLOY_ENV:-staging}"
-LOG="/var/log/quicksave-deploy.log"
-
-# Validate environment
-if [[ "$ENV" != "staging" && "$ENV" != "production" ]]; then
-    echo "$(date): ERROR - Invalid environment: $ENV" >> "$LOG"
-    exit 1
-fi
-
-DEPLOY_DIR="/opt/quicksave/${ENV}"
-SERVICE_NAME="quicksave-signaling"
-[[ "$ENV" == "staging" ]] && SERVICE_NAME="quicksave-signaling-staging"
-
-# Determine which branch/workflow to pull from
-BRANCH="stable"
-[[ "$ENV" == "staging" ]] && BRANCH="staging"
-
-log() {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [$ENV]: $1" | tee -a "$LOG"
-}
-
-log "Deploy triggered"
-
-# Check gh is authenticated
-if ! gh auth status &>/dev/null; then
-    log "ERROR - GitHub CLI not authenticated. Run: gh auth login"
-    exit 1
-fi
-
-# Get latest successful run for the branch
-RUN_ID=$(gh run list --repo "$REPO" --workflow deploy.yml --branch "$BRANCH" --status success --limit 1 --json databaseId -q '.[0].databaseId')
-
-if [ -z "$RUN_ID" ]; then
-    log "ERROR - No successful workflow runs found for branch $BRANCH"
-    exit 1
-fi
-
-log "Downloading artifacts from run $RUN_ID (branch: $BRANCH)"
-
-# Download artifacts to temp directory
-rm -rf /tmp/quicksave-deploy
-gh run download "$RUN_ID" --repo "$REPO" --name "dist-${ENV}" --dir /tmp/quicksave-deploy
-
-# Verify download
-if [ ! -d "/tmp/quicksave-deploy/pwa/dist" ]; then
-    log "ERROR - PWA dist not found in artifacts"
-    exit 1
-fi
-
-if [ ! -d "/tmp/quicksave-deploy/relay/dist" ]; then
-    log "ERROR - Relay dist not found in artifacts"
-    exit 1
-fi
-
-# Copy to environment directory
-log "Syncing files to $DEPLOY_DIR..."
-rsync -av --delete /tmp/quicksave-deploy/pwa/dist/ "${DEPLOY_DIR}/apps/pwa/dist/"
-rsync -av --delete /tmp/quicksave-deploy/relay/dist/ "${DEPLOY_DIR}/apps/relay/dist/"
-
-# Cleanup
-rm -rf /tmp/quicksave-deploy
-
-# Restart signaling server
-log "Restarting $SERVICE_NAME..."
-systemctl restart "$SERVICE_NAME"
-
-log "Deploy complete (run $RUN_ID)"
-DEPLOY_SCRIPT
-
-chmod +x /opt/quicksave/scripts/deploy.sh
+echo "==> Installing deploy script..."
+curl -fsSL "$DEPLOY_SCRIPT_URL" -o /opt/quicksave/scripts/deploy.sh
+chmod 755 /opt/quicksave/scripts/deploy.sh
 
 echo "==> Enabling services..."
 systemctl daemon-reload
