@@ -1,6 +1,6 @@
 {
   "name": "@sumicom/quicksave-shared",
-  "version": "0.8.14",
+  "version": "0.8.15",
   "description": "Shared types and utilities for Quicksave",
   "license": "MIT",
   "repository": {
