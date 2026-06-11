@@ -14,6 +14,8 @@ import type { ReasoningSummaryTextDeltaNotification } from './schema/generated/v
 import type { ReasoningTextDeltaNotification } from './schema/generated/v2/ReasoningTextDeltaNotification.js';
 import type { TurnCompletedNotification } from './schema/generated/v2/TurnCompletedNotification.js';
 import type { TurnPlanUpdatedNotification } from './schema/generated/v2/TurnPlanUpdatedNotification.js';
+import type { PlanDeltaNotification } from './schema/generated/v2/PlanDeltaNotification.js';
+import type { McpToolCallProgressNotification } from './schema/generated/v2/McpToolCallProgressNotification.js';
 import type { ItemStartedNotification } from './schema/generated/v2/ItemStartedNotification.js';
 import type { ItemCompletedNotification } from './schema/generated/v2/ItemCompletedNotification.js';
 import type { ServerRequestResolvedNotification } from './schema/generated/v2/ServerRequestResolvedNotification.js';
@@ -66,6 +68,8 @@ interface AdapterState {
   reasoningEmittedChars: Map<string, number>;
   /** Accumulated command-execution output per itemId (chunks → final). */
   commandOutputBuffers: Map<string, string>;
+  /** Best-effort streamed text for Codex plan items (`item/plan/delta`). */
+  planDeltaBuffers: Map<string, string>;
   /** Set of error keys we've already surfaced this turn — dedup against
    * mid-turn `error` followed by `turn/completed { status: 'failed' }`
    * carrying the same message. Plan R3. */
@@ -89,6 +93,7 @@ function emptyState(): AdapterState {
     agentMessageEmittedChars: new Map(),
     reasoningEmittedChars: new Map(),
     commandOutputBuffers: new Map(),
+    planDeltaBuffers: new Map(),
     seenErrors: new Set(),
     fileChangeCardsAdded: new Set(),
     toolUseCallbacksFired: new Set(),
@@ -309,6 +314,20 @@ export async function consumeAppServerStream(
         return;
       }
 
+      case 'item/plan/delta': {
+        const params = notification.params as PlanDeltaNotification;
+        if (params.turnId !== ctx.turnId) return;
+        handlePlanDelta(params);
+        return;
+      }
+
+      case 'item/mcpToolCall/progress': {
+        const params = notification.params as McpToolCallProgressNotification;
+        if (params.turnId !== ctx.turnId) return;
+        handleMcpToolCallProgress(params);
+        return;
+      }
+
       case 'serverRequest/resolved': {
         const params = notification.params as ServerRequestResolvedNotification;
         const requestIdStr = String(params.requestId);
@@ -428,8 +447,6 @@ export async function consumeAppServerStream(
       case 'thread/compacted':
       case 'item/fileChange/patchUpdated':
       case 'item/fileChange/outputDelta':
-      case 'item/mcpToolCall/progress':
-      case 'item/plan/delta':
       case 'turn/diff/updated':
       case 'rawResponseItem/completed':
       case 'item/commandExecution/terminalInteraction':
@@ -540,8 +557,14 @@ export async function consumeAppServerStream(
       }
 
       case 'plan': {
-        // Free-text plan item — drop to system info per plan R2 decision.
-        emit(cb.systemMessage(`[plan] ${item.text || '(empty)'}`, 'info'));
+        // Free-text plan item. `item/plan/delta` may have already created a
+        // live plan card; completion refreshes it with the server's final text.
+        const text = item.text || state.planDeltaBuffers.get(item.id) || '';
+        if (text) {
+          emitPlanText(item.id, text);
+        } else {
+          emit(cb.systemMessage('[plan] (empty)', 'info'));
+        }
         return;
       }
 
@@ -685,7 +708,9 @@ export async function consumeAppServerStream(
       }
 
       case 'plan': {
-        // No-op on completed (we already rendered as system info on started).
+        const text = item.text || state.planDeltaBuffers.get(item.id) || '';
+        if (text) emitPlanText(item.id, text);
+        state.planDeltaBuffers.delete(item.id);
         return;
       }
 
@@ -793,6 +818,31 @@ export async function consumeAppServerStream(
     if (params.explanation) {
       emit(cb.systemMessage(params.explanation, 'info'));
     }
+  };
+
+  const handlePlanDelta = (params: PlanDeltaNotification): void => {
+    const next = (state.planDeltaBuffers.get(params.itemId) ?? '') + (params.delta ?? '');
+    state.planDeltaBuffers.set(params.itemId, next);
+    const text = next.trim();
+    if (!text) return;
+    emitPlanText(params.itemId, text);
+  };
+
+  const emitPlanText = (itemId: string, text: string): void => {
+    emit(
+      cb.toolUse(
+        'TodoWrite',
+        { todos: [{ content: text, status: 'in_progress' }] },
+        planDeltaToolUseId(ctx.turnId, itemId),
+      ),
+    );
+  };
+
+  const handleMcpToolCallProgress = (params: McpToolCallProgressNotification): void => {
+    const message = params.message?.trim();
+    if (!message) return;
+    const updated = cb.toolResult(params.itemId, message, false);
+    emit(updated ?? cb.systemMessage(`MCP progress: ${message}`, 'info'));
   };
 
   const finalize = async (
@@ -964,6 +1014,10 @@ function mcpResultText(item: Extract<ThreadItem, { type: 'mcpToolCall' }>): stri
 
 function mcpToolName(server: string, tool: string): string {
   return `mcp__${server}__${tool}`;
+}
+
+function planDeltaToolUseId(turnId: string, itemId: string): string {
+  return `plan:${turnId}:${itemId}`;
 }
 
 function jsonObjectOrEmpty(value: unknown): Record<string, unknown> {

@@ -328,6 +328,51 @@ describe('cardAdapter — turn/plan/updated → TodoWrite card (R2)', () => {
       { content: 'Run tests', status: 'pending' },
     ]);
   });
+
+  it('streams item/plan/delta into a stable TodoWrite card', async () => {
+    const h = harness();
+    await h.send('item/plan/delta', {
+      threadId: 'thr_test',
+      turnId: 'turn_1',
+      itemId: 'plan_item_1',
+      delta: 'Read code',
+    });
+    await h.send('item/plan/delta', {
+      threadId: 'thr_test',
+      turnId: 'turn_1',
+      itemId: 'plan_item_1',
+      delta: ' and patch adapter',
+    });
+    await h.send('item/completed', {
+      threadId: 'thr_test',
+      turnId: 'turn_1',
+      item: { type: 'plan', id: 'plan_item_1', text: 'Read code and patch adapter' },
+    });
+    await h.send('turn/completed', {
+      threadId: 'thr_test',
+      turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const add = h.events.find(
+      (e) =>
+        e.type === 'add' &&
+        (e.card as { type?: string }).type === 'tool_call' &&
+        (e.card as { toolName?: string }).toolName === 'TodoWrite',
+    ) as { card: { toolUseId: string; toolInput: { todos: Array<{ content: string; status: string }> } } } | undefined;
+    expect(add).toBeTruthy();
+    expect(add?.card.toolUseId).toBe('plan:turn_1:plan_item_1');
+
+    const updates = h.events.filter(
+      (e): e is Extract<typeof e, { type: 'update' }> =>
+        e.type === 'update' && (e.patch as Record<string, unknown>).toolInput !== undefined,
+    );
+    expect(updates.length).toBeGreaterThanOrEqual(1);
+    const finalToolInput = updates[updates.length - 1].patch.toolInput as { todos: Array<{ content: string; status: string }> };
+    expect(finalToolInput.todos).toEqual([
+      { content: 'Read code and patch adapter', status: 'in_progress' },
+    ]);
+  });
 });
 
 describe('cardAdapter — error dedup (R3)', () => {
@@ -900,6 +945,59 @@ describe('cardAdapter — mcpToolCall cards', () => {
       'mcp__quicksave-sandbox__UpdateSessionStatus',
       { stage: 'done', note: 'completed-only' },
     );
+  });
+
+  it('surfaces item/mcpToolCall/progress on the existing tool card', async () => {
+    const h = harness();
+    await h.send('item/started', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: {
+        type: 'mcpToolCall',
+        id: 'mcp_progress_1',
+        server: 'example',
+        tool: 'LongTask',
+        status: 'inProgress',
+        arguments: { job: 'sync' },
+        result: null,
+        error: null,
+        durationMs: null,
+      },
+    });
+    await h.send('item/mcpToolCall/progress', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      itemId: 'mcp_progress_1',
+      message: '50% complete',
+    });
+    await h.send('item/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: {
+        type: 'mcpToolCall',
+        id: 'mcp_progress_1',
+        server: 'example',
+        tool: 'LongTask',
+        status: 'completed',
+        arguments: { job: 'sync' },
+        result: { content: [{ type: 'text', text: 'done' }], structuredContent: null, _meta: null },
+        error: null,
+        durationMs: 25,
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    expect(h.events.some(
+      (e) => e.type === 'update' && JSON.stringify(e.patch).includes('50% complete'),
+    )).toBe(true);
+    const finalResult = [...h.events].reverse().find(
+      (e) => e.type === 'update' && JSON.stringify(e.patch).includes('done'),
+    );
+    expect(finalResult).toBeTruthy();
   });
 });
 

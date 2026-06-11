@@ -119,7 +119,7 @@ export class CodexAppServerProvider implements CodingAgentProvider {
     // attaches them to the next turn/start.
     overrideStore.enqueue(perTurnOverridesFromOpts(opts, response));
 
-    void session.runTurn(opts.prompt, opts.attachments);
+    scheduleInitialTurn(session, opts.prompt, opts.attachments);
 
     return { sessionId: response.thread.id, session };
   }
@@ -157,10 +157,24 @@ export class CodexAppServerProvider implements CodingAgentProvider {
     callbacks.onModelDetected(response.model);
 
     overrideStore.enqueue(perTurnOverridesFromOpts(opts, response));
-    void session.runTurn(opts.prompt, opts.attachments);
+    scheduleInitialTurn(session, opts.prompt, opts.attachments);
 
     return { sessionId: response.thread.id, session };
   }
+}
+
+function scheduleInitialTurn(
+  session: CodexAppServerSession,
+  prompt: string,
+  attachments?: readonly Attachment[],
+): void {
+  // Give SessionManager and messageHandler one macrotask to register the
+  // session and persist the mcpCorrId-backed registry entry before the model
+  // can call Quicksave's MCP tools. Without this, the first
+  // UpdateSessionStatus call in a fresh Codex turn can see `source: "unknown"`.
+  setTimeout(() => {
+    if (session.alive) void session.runTurn(prompt, attachments);
+  }, 0);
 }
 
 interface SessionArgs {
