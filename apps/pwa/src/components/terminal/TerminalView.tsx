@@ -19,26 +19,28 @@ interface TerminalViewProps {
   getBus: () => MessageBusClient | null;
   /** Called when the underlying terminal closes so parent can navigate away. */
   onExit?: () => void;
+  /** Fill the host height. Disable for embedded chat drawers that grow from xterm content. */
+  fillHeight?: boolean;
 }
 
 /**
  * Pin the terminal to a fixed 80-column width and scale the font so those
- * 80 cols fill the container horizontally. Rows are derived from available
- * height at the resulting cell height.
+ * 80 cols exactly fill the container WIDTH. Rows are then locked to 24 at
+ * that font: the grid takes its natural height and the host (a vertically
+ * scrollable wrapper) lets the user reach all 24 rows when the available
+ * height is short (mobile portrait + soft keyboard). We deliberately do NOT
+ * shrink the font to make 24 rows fit the height — width is the priority, so
+ * 80 cols always fill the screen and the content expands downward.
  *
- * Iterates a few times because FitAddon reports cols/rows in integers: a
- * naïve `newFont = font * (cols / 80)` may round to the wrong integer, so
- * we apply it, refit, and repeat until cols locks on to 80 (or we run out
- * of budget).
+ * Iterates a few times because FitAddon reports cols in integers: a naïve
+ * `newFont = font * (cols / 80)` may round to the wrong integer, so we apply
+ * it, refit, and repeat until cols locks on to 80 (or we run out of budget).
  */
 const STANDARD_COLS = 80;
 /**
- * Cap rows at 24 (classic VT100) for consistent rendering of TUI tools
- * (vim, top, less, fzf) — they paint to whatever rows the PTY reports
- * and look very different at 50+ rows. On tall screens we leave vertical
- * margin below the terminal rather than show a stretched 50-row view.
- * On short screens (mobile portrait + on-screen keyboard) the natural
- * fit is already < 24, so the cap is a no-op there.
+ * Lock rows to 24 (classic VT100) for consistent rendering of TUI tools
+ * (vim, top, less, fzf) — they paint to whatever rows the PTY reports and
+ * look very different at 50+ rows or at a truncated 15.
  */
 const STANDARD_ROWS = 24;
 const MIN_FONT_SIZE = 6;
@@ -68,18 +70,14 @@ function fitToStandardCols(term: Terminal, fit: FitAddon): void {
     font = next;
     term.options.fontSize = next;
   }
-  // Final fit + cap dims:
-  //   cols: always exactly 80 (clamp wide screens; small screens already
-  //         scaled font down to fit).
-  //   rows: cap at STANDARD_ROWS so tall windows don't blow past 24 rows;
-  //         small screens keep their natural smaller fit.
+  // Lock to exactly 80×24. cols fill the width (clamped on wide screens);
+  // the 24 rows take their natural height at that font and the scrollable
+  // wrapper handles any vertical overflow.
   try {
     fit.fit();
   } catch { /* container not ready */ }
-  const targetCols = STANDARD_COLS;
-  const targetRows = Math.min(term.rows, STANDARD_ROWS);
-  if (term.cols !== targetCols || term.rows !== targetRows) {
-    term.resize(targetCols, targetRows);
+  if (term.cols !== STANDARD_COLS || term.rows !== STANDARD_ROWS) {
+    term.resize(STANDARD_COLS, STANDARD_ROWS);
   }
 }
 
@@ -93,7 +91,7 @@ function fitToStandardCols(term: Terminal, fit: FitAddon): void {
  *   - A ResizeObserver refits whenever the container's size changes.
  *   - Every fit sends `terminal:resize` to the agent.
  */
-export function TerminalView({ terminalId, getBus, onExit }: TerminalViewProps) {
+export function TerminalView({ terminalId, getBus, onExit, fillHeight = true }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -309,12 +307,27 @@ export function TerminalView({ terminalId, getBus, onExit }: TerminalViewProps) 
   // viewport width, so a narrowed desktop window keeps its physical-keyboard
   // experience while a wide tablet still gets the virtual row.
   const isTouch = useMediaQuery('(pointer: coarse)');
+
+  const focusTerminal = useCallback(() => {
+    termRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!isTouch || exitCode !== undefined) return;
+    const raf = requestAnimationFrame(focusTerminal);
+    return () => cancelAnimationFrame(raf);
+  }, [focusTerminal, isTouch, exitCode, terminalId]);
+
+  const handleTerminalPointerDown = useCallback(() => {
+    if (isTouch) focusTerminal();
+  }, [focusTerminal, isTouch]);
+
   const sendKey = useCallback((seq: string) => {
     sendInput(terminalId, seq).catch((err) =>
       console.warn('[terminal] key send failed:', err),
     );
-    termRef.current?.focus();
-  }, [sendInput, terminalId]);
+    focusTerminal();
+  }, [focusTerminal, sendInput, terminalId]);
 
   const [pasteError, setPasteError] = useState<string | null>(null);
   const handlePaste = useCallback(async () => {
@@ -327,13 +340,13 @@ export function TerminalView({ terminalId, getBus, onExit }: TerminalViewProps) 
       const text = await navigator.clipboard.readText();
       if (!text) return;
       await sendInput(terminalId, text);
-      termRef.current?.focus();
+      focusTerminal();
     } catch (err) {
       // Safari / iOS may reject without a user-activation gesture; the error
       // message is the only hint we get.
       setPasteError(err instanceof Error ? err.message : 'Paste failed');
     }
-  }, [sendInput, terminalId]);
+  }, [focusTerminal, sendInput, terminalId]);
 
   // Native paste (iOS/Android long-press menu, desktop Ctrl+V) — bypasses
   // clipboard API permissions because the browser delivers the text directly.
@@ -344,16 +357,38 @@ export function TerminalView({ terminalId, getBus, onExit }: TerminalViewProps) 
     sendInput(terminalId, text).catch((err) =>
       console.warn('[terminal] paste send failed:', err),
     );
-  }, [sendInput, terminalId]);
+    focusTerminal();
+  }, [focusTerminal, sendInput, terminalId]);
+
+  const intrinsicHeight = isTouch || !fillHeight;
 
   return (
-    <div className="flex flex-col h-full bg-slate-900">
-      <div
-        ref={containerRef}
-        className="terminal-center flex-1 min-h-0 w-full overflow-hidden"
-        onClick={() => termRef.current?.focus()}
-        onPaste={onContainerPaste}
-      />
+    // On touch/embedded views the height flows from xterm's 80x24 screen
+    // (+ the key row), so the root must NOT be h-full. Desktop keeps h-full
+    // to fill its full-screen host.
+    <div className={`flex flex-col bg-slate-900${intrinsicHeight ? '' : ' h-full'}`}>
+      {/* Full-screen hosts may need this area to scroll within the fixed app
+          frame. Embedded drawer views grow naturally so the chat list remains
+          the only vertical scroll surface. Width never scrolls. */}
+      <div className={intrinsicHeight
+        ? 'w-full overflow-x-hidden'
+        : 'flex-1 min-h-0 w-full overflow-y-auto overflow-x-hidden'}
+      >
+        {/* On touch/embedded views the xterm mount is width-driven: `w-full`
+            gives it a definite width, and xterm's own 80x24 screen height
+            grows the drawer. Desktop keeps the full-bleed fill. */}
+        <div
+          ref={containerRef}
+          className={
+            intrinsicHeight
+              ? 'terminal-center w-full overflow-hidden'
+              : 'terminal-center h-full w-full overflow-hidden'
+          }
+          onPointerDown={handleTerminalPointerDown}
+          onClick={focusTerminal}
+          onPaste={onContainerPaste}
+        />
+      </div>
       {isTouch && (
         <VirtualKeys
           onKey={sendKey}
@@ -403,11 +438,14 @@ function VirtualKeys({
   };
 
   return (
-    <div className="border-t border-slate-700 bg-slate-900/80 safe-area-bottom">
+    <div className="border-t border-slate-700 bg-slate-900/80">
       {pasteError && (
         <p className="px-3 pt-1 text-[11px] text-red-400 truncate">{pasteError}</p>
       )}
-      <div className="flex flex-wrap gap-2 px-3 py-2">
+      {/* Single non-wrapping row so the key bar can't grow to 2–3 lines and eat
+          the terminal's vertical space on a narrow phone. Overflowing keys
+          scroll horizontally instead of wrapping. */}
+      <div className="flex flex-nowrap gap-2 px-3 py-1.5 overflow-x-auto">
       <KeyBtn
         className={ctrlMode ? 'ring-1 ring-blue-400' : ''}
         onClick={() => setCtrlMode((v) => !v)}
@@ -465,7 +503,7 @@ function KeyBtn({
   children: React.ReactNode;
 }) {
   const base =
-    'shrink-0 min-w-[44px] px-3 py-2 rounded-md text-sm font-mono border border-slate-700 bg-slate-800 text-slate-200 active:bg-slate-700 disabled:opacity-40';
+    'shrink-0 min-w-[44px] px-3 py-1.5 rounded-md text-sm font-mono border border-slate-700 bg-slate-800 text-slate-200 active:bg-slate-700 disabled:opacity-40';
   return (
     <button
       type="button"

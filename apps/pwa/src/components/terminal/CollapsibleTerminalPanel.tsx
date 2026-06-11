@@ -15,9 +15,8 @@ interface CollapsibleTerminalPanelProps {
  * direct keyboard access to the underlying `claude` TUI alongside the
  * structured card list below.
  *
- * The visible area is locked to a 5:3 aspect ratio — the natural pixel
- * ratio of a classic 80×24 VT100 (9×18 px cells = 720×432). Capped at
- * 50vh so a wide desktop window doesn't push the chat off-screen.
+ * The visible terminal fills the drawer width and grows to the intrinsic
+ * height needed for the 80×24 terminal grid.
  *
  * Collapsed state persists per terminal id in localStorage so the user's
  * preference survives page reloads.
@@ -54,9 +53,9 @@ export function CollapsibleTerminalPanel({ terminalId, machineAgentId }: Collaps
 
   return (
     <div className="relative border-b-4 border-slate-700 bg-slate-950/60">
-      {/* Aspect-locked terminal — never grows past 50vh to leave room for cards. */}
-      <div className="mx-auto aspect-[5/3] max-h-[50vh] w-full bg-black">
-        <TerminalView terminalId={terminalId} getBus={getBus} />
+      {/* Embedded TerminalView owns the intrinsic 80×24 height. */}
+      <div className="w-full bg-black">
+        <TerminalView terminalId={terminalId} getBus={getBus} fillHeight={false} />
       </div>
       {/* Bottom half-circle handle straddling the divider; pressing it collapses
           the terminal. Mirrors the half-pill shown in the collapsed state. */}
