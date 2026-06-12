@@ -108,13 +108,29 @@ export interface ProviderSession {
   updateContextWindow?(window: number, decoratedModel?: string): Promise<void>;
 }
 
+export interface ProviderUserInputRequest {
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  toolUseId: string;
+  /** Optional stable id supplied by a provider protocol. When omitted,
+   * SessionManager allocates its legacy `perm-*` id. */
+  requestId?: string;
+  inputType?: 'permission' | 'question';
+  title?: string;
+  message?: string;
+  options?: Array<{ key: string; label: string; description?: string }>;
+  /** Interactive prompts such as Codex request_user_input must always reach
+   * the user even in permissive modes. */
+  skipAutoApprove?: boolean;
+}
+
 /** Callbacks the provider uses to communicate back to SessionManager. */
 export interface ProviderCallbacks {
   emitCardEvent(event: CardEvent): void;
   emitStreamEnd(result: CardStreamEnd): void;
   handlePermissionRequest(
     sessionId: string,
-    req: { toolName: string; toolInput: Record<string, unknown>; toolUseId: string },
+    req: ProviderUserInputRequest,
   ): Promise<{
     action: 'allow' | 'deny';
     response?: string;

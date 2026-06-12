@@ -45,6 +45,17 @@ import type { SkillsListParams } from './schema/generated/v2/SkillsListParams.js
 import type { SkillsListResponse } from './schema/generated/v2/SkillsListResponse.js';
 import type { ReasoningEffort } from './schema/generated/ReasoningEffort.js';
 import type { UserInput } from './schema/generated/v2/UserInput.js';
+import type { ToolRequestUserInputParams } from './schema/generated/v2/ToolRequestUserInputParams.js';
+import type { ToolRequestUserInputQuestion } from './schema/generated/v2/ToolRequestUserInputQuestion.js';
+import type { ToolRequestUserInputResponse } from './schema/generated/v2/ToolRequestUserInputResponse.js';
+import type { McpServerElicitationRequestParams } from './schema/generated/v2/McpServerElicitationRequestParams.js';
+import type { McpServerElicitationRequestResponse } from './schema/generated/v2/McpServerElicitationRequestResponse.js';
+import type { McpElicitationPrimitiveSchema } from './schema/generated/v2/McpElicitationPrimitiveSchema.js';
+import type { DynamicToolCallParams } from './schema/generated/v2/DynamicToolCallParams.js';
+import type { DynamicToolCallResponse } from './schema/generated/v2/DynamicToolCallResponse.js';
+import type { ChatgptAuthTokensRefreshParams } from './schema/generated/v2/ChatgptAuthTokensRefreshParams.js';
+import type { JsonValue } from './schema/generated/serde_json/JsonValue.js';
+import { codexServerRequestInputId } from './serverRequestIds.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
 const __aiDir = dirname(__ownDir);
@@ -490,6 +501,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     params: unknown;
   }): Promise<unknown> {
     const requestIdStr = String(req.id);
+    const pendingRequestId = codexServerRequestInputId(this.threadId, requestIdStr);
     switch (req.method) {
       case 'item/commandExecution/requestApproval':
       case 'item/fileChange/requestApproval':
@@ -498,17 +510,296 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       case 'applyPatchApproval': {
         const method = req.method as CodexApprovalMethod;
         const prompt = codexApprovalToPermissionPrompt(method, requestIdStr, req.params);
-        const decision = await this.callbacks.handlePermissionRequest(this.threadId, prompt);
+        const decision = await this.callbacks.handlePermissionRequest(this.threadId, {
+          ...prompt,
+          requestId: pendingRequestId,
+        });
         return codexApprovalResponse(method, req.params, decision);
       }
+      case 'item/tool/requestUserInput':
+        return this.handleToolRequestUserInput(
+          req.params as ToolRequestUserInputParams,
+          pendingRequestId,
+        );
+      case 'mcpServer/elicitation/request':
+        return this.handleMcpServerElicitation(
+          req.params as McpServerElicitationRequestParams,
+          pendingRequestId,
+        );
+      case 'item/tool/call':
+        return unsupportedDynamicToolCallResponse(req.params as DynamicToolCallParams);
+      case 'account/chatgptAuthTokens/refresh':
+        return unsupportedChatgptAuthTokensRefresh(req.params as ChatgptAuthTokensRefreshParams);
       default:
         // Unknown server request — refuse.
         throw new Error(`unsupported server request method: ${req.method}`);
     }
   }
+
+  private async handleToolRequestUserInput(
+    params: ToolRequestUserInputParams,
+    requestId: string,
+  ): Promise<ToolRequestUserInputResponse> {
+    const questions = params.questions ?? [];
+    const decision = await this.callbacks.handlePermissionRequest(this.threadId, {
+      requestId,
+      inputType: 'question',
+      toolName: 'AskUserQuestion',
+      toolInput: {
+        questions: questions.map(codexToolQuestionToPromptQuestion),
+      },
+      toolUseId: params.itemId,
+      title: questions[0]?.question ?? 'Codex needs input',
+      message: questions.length > 1 ? 'Codex needs answers before it can continue.' : undefined,
+      skipAutoApprove: true,
+    });
+    if (decision.action === 'deny') return { answers: {} };
+    return codexToolAnswersFromResponse(questions, decision.response ?? '');
+  }
+
+  private async handleMcpServerElicitation(
+    params: McpServerElicitationRequestParams,
+    requestId: string,
+  ): Promise<McpServerElicitationRequestResponse> {
+    const toolUseId = `mcp-elicitation:${requestId}`;
+    if (params.mode === 'url') {
+      const decision = await this.callbacks.handlePermissionRequest(this.threadId, {
+        requestId,
+        inputType: 'permission',
+        toolName: 'McpElicitation',
+        toolInput: {
+          serverName: params.serverName,
+          mode: params.mode,
+          url: params.url,
+          elicitationId: params.elicitationId,
+        },
+        toolUseId,
+        title: `Open MCP prompt from ${params.serverName}?`,
+        message: `${params.message}\n\n${params.url}`,
+        skipAutoApprove: true,
+      });
+      return {
+        action: decision.action === 'deny' ? 'decline' : 'accept',
+        content: null,
+        _meta: params._meta ?? null,
+      };
+    }
+
+    const fields = mcpElicitationFields(params.requestedSchema);
+    const decision = await this.callbacks.handlePermissionRequest(this.threadId, {
+      requestId,
+      inputType: 'question',
+      toolName: 'AskUserQuestion',
+      toolInput: {
+        serverName: params.serverName,
+        mode: params.mode,
+        message: params.message,
+        questions: fields.map((field) => field.question),
+      },
+      toolUseId,
+      title: params.message || `MCP prompt from ${params.serverName}`,
+      message: `MCP server: ${params.serverName}`,
+      skipAutoApprove: true,
+    });
+    if (decision.action === 'deny') {
+      return { action: 'decline', content: null, _meta: params._meta ?? null };
+    }
+    return {
+      action: 'accept',
+      content: mcpElicitationContentFromResponse(fields, decision.response ?? ''),
+      _meta: params._meta ?? null,
+    };
+  }
 }
 
 // ── helpers ──
+
+interface PromptQuestion {
+  id?: string;
+  question: string;
+  header?: string;
+  options?: Array<{ label: string; description?: string }>;
+  multiSelect?: boolean;
+  isSecret?: boolean;
+}
+
+interface McpElicitationField {
+  key: string;
+  schema: McpElicitationPrimitiveSchema;
+  question: PromptQuestion;
+  options: Array<{ label: string; value: JsonValue }> | null;
+  multiSelect: boolean;
+}
+
+function codexToolQuestionToPromptQuestion(question: ToolRequestUserInputQuestion): PromptQuestion {
+  return {
+    id: question.id,
+    question: question.question,
+    header: question.header || undefined,
+    options: question.options?.map((option) => ({
+      label: option.label,
+      description: option.description || undefined,
+    })),
+    isSecret: question.isSecret || undefined,
+  };
+}
+
+function codexToolAnswersFromResponse(
+  questions: ToolRequestUserInputQuestion[],
+  responseText: string,
+): ToolRequestUserInputResponse {
+  const parts = questions.length > 1 ? responseText.split('\n') : [responseText];
+  const answers: ToolRequestUserInputResponse['answers'] = {};
+  for (let i = 0; i < questions.length; i++) {
+    const question = questions[i];
+    if (!question?.id) continue;
+    const answer = (parts[i] ?? '').trim();
+    answers[question.id] = { answers: answer ? [answer] : [] };
+  }
+  return { answers };
+}
+
+function mcpElicitationFields(schema: { properties: { [key in string]?: McpElicitationPrimitiveSchema } }): McpElicitationField[] {
+  return Object.entries(schema.properties ?? {}).map(([key, prop]) => {
+    const primitive = prop as McpElicitationPrimitiveSchema;
+    const options = mcpOptionsForSchema(primitive);
+    const multiSelect = primitiveType(primitive) === 'array';
+    return {
+      key,
+      schema: primitive,
+      options,
+      multiSelect,
+      question: {
+        id: key,
+        question: primitiveTitle(primitive) ?? key,
+        header: key,
+        options: options?.map((option) => ({
+          label: option.label,
+          description: typeof option.value === 'string' && option.value !== option.label
+            ? option.value
+            : undefined,
+        })),
+        multiSelect,
+      },
+    };
+  });
+}
+
+function mcpElicitationContentFromResponse(
+  fields: McpElicitationField[],
+  responseText: string,
+): { [key in string]?: JsonValue } {
+  const parts = fields.length > 1 ? responseText.split('\n') : [responseText];
+  const content: { [key in string]?: JsonValue } = {};
+  for (let i = 0; i < fields.length; i++) {
+    const field = fields[i];
+    const raw = (parts[i] ?? '').trim();
+    content[field.key] = parseMcpElicitationValue(field, raw);
+  }
+  return content;
+}
+
+function parseMcpElicitationValue(field: McpElicitationField, raw: string): JsonValue {
+  if (field.multiSelect) {
+    const answers = raw ? raw.split(',').map((part) => part.trim()).filter(Boolean) : [];
+    return answers.map((answer) => mcpOptionValue(field.options, answer));
+  }
+
+  const mapped = mcpOptionValue(field.options, raw);
+  const type = primitiveType(field.schema);
+  if (type === 'boolean') {
+    if (/^(true|yes|y|1)$/i.test(String(mapped))) return true;
+    if (/^(false|no|n|0)$/i.test(String(mapped))) return false;
+    return Boolean(raw);
+  }
+  if (type === 'number' || type === 'integer') {
+    const n = Number(mapped);
+    return Number.isFinite(n) ? n : raw;
+  }
+  return mapped;
+}
+
+function mcpOptionValue(
+  options: Array<{ label: string; value: JsonValue }> | null,
+  answer: string,
+): JsonValue {
+  const match = options?.find((option) => option.label === answer || option.value === answer);
+  return match ? match.value : answer;
+}
+
+function mcpOptionsForSchema(
+  schema: McpElicitationPrimitiveSchema,
+): Array<{ label: string; value: JsonValue }> | null {
+  const record = schema as Record<string, unknown>;
+  if (Array.isArray(record.oneOf)) {
+    return record.oneOf.map((option) => constOption(option)).filter((option): option is { label: string; value: JsonValue } => !!option);
+  }
+  if (Array.isArray(record.enum)) {
+    const names = Array.isArray(record.enumNames) ? record.enumNames : [];
+    return record.enum.map((value, index) => ({
+      label: typeof names[index] === 'string' ? names[index] : String(value),
+      value: jsonPrimitive(value),
+    }));
+  }
+  const items = record.items as Record<string, unknown> | undefined;
+  if (items && Array.isArray(items.anyOf)) {
+    return items.anyOf.map((option) => constOption(option)).filter((option): option is { label: string; value: JsonValue } => !!option);
+  }
+  if (items && Array.isArray(items.enum)) {
+    return items.enum.map((value) => ({ label: String(value), value: jsonPrimitive(value) }));
+  }
+  if (record.type === 'boolean') {
+    return [
+      { label: 'Yes', value: true },
+      { label: 'No', value: false },
+    ];
+  }
+  return null;
+}
+
+function constOption(value: unknown): { label: string; value: JsonValue } | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const option = value as { const?: unknown; title?: unknown };
+  if (option.const === undefined) return null;
+  return {
+    label: typeof option.title === 'string' ? option.title : String(option.const),
+    value: jsonPrimitive(option.const),
+  };
+}
+
+function jsonPrimitive(value: unknown): JsonValue {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value === null) {
+    return value;
+  }
+  return String(value);
+}
+
+function primitiveType(schema: McpElicitationPrimitiveSchema): string | undefined {
+  return (schema as { type?: string }).type;
+}
+
+function primitiveTitle(schema: McpElicitationPrimitiveSchema): string | undefined {
+  const title = (schema as { title?: unknown }).title;
+  return typeof title === 'string' && title.trim() ? title : undefined;
+}
+
+function unsupportedDynamicToolCallResponse(params: DynamicToolCallParams): DynamicToolCallResponse {
+  const toolName = params.namespace ? `${params.namespace}:${params.tool}` : params.tool;
+  return {
+    success: false,
+    contentItems: [{
+      type: 'inputText',
+      text: `Dynamic tool calls are not supported by Quicksave: ${toolName}`,
+    }],
+  };
+}
+
+function unsupportedChatgptAuthTokensRefresh(params: ChatgptAuthTokensRefreshParams): never {
+  throw new Error(
+    `chatgptAuthTokens refresh is not supported by Quicksave (reason=${params.reason}). ` +
+      'Use Codex managed ChatGPT login or API key auth.',
+  );
+}
 
 function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promise<AppServerHandle> {
   return spawnAppServer(

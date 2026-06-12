@@ -46,6 +46,7 @@ import type {
   PermissionLevel,
   ProviderSession,
   ProviderCallbacks,
+  ProviderUserInputRequest,
   CodingAgentProvider,
 } from './provider.js';
 import {
@@ -1432,7 +1433,7 @@ export class SessionManager extends EventEmitter {
       },
       handlePermissionRequest: async (
         sessionId: string,
-        req: { toolName: string; toolInput: Record<string, unknown>; toolUseId: string },
+        req: ProviderUserInputRequest,
       ) => {
         return this.handlePermissionRequest(sessionId, req);
       },
@@ -1498,38 +1499,39 @@ export class SessionManager extends EventEmitter {
 
   private async handlePermissionRequest(
     sessionId: string,
-    req: { toolName: string; toolInput: Record<string, unknown>; toolUseId: string },
+    req: ProviderUserInputRequest,
   ): Promise<{ action: 'allow' | 'deny'; response?: string; updatedInput?: Record<string, unknown> }> {
     const { toolName, toolInput, toolUseId } = req;
 
     // Check auto-approve rules first
-    if (this.shouldAutoApprove(sessionId, toolName, toolInput)) {
+    if (!req.skipAutoApprove && this.shouldAutoApprove(sessionId, toolName, toolInput)) {
       return { action: 'allow' };
     }
 
     // Check runtime allow patterns
-    if (this.runtimeAllowPatterns.some(p => matchAllowPattern(p, toolName, toolInput))) {
+    if (!req.skipAutoApprove && this.runtimeAllowPatterns.some(p => matchAllowPattern(p, toolName, toolInput))) {
       return { action: 'allow' };
     }
 
     // Forward to PWA for user decision
-    const requestId = `perm-${++this.requestCounter}`;
+    const requestId = req.requestId ?? `perm-${++this.requestCounter}`;
 
-    const isQuestion = toolName === 'AskUserQuestion';
+    const isQuestion = req.inputType === 'question' || toolName === 'AskUserQuestion';
     const questions = isQuestion ? (toolInput as any).questions : undefined;
 
     const request: ClaudeUserInputRequestPayload = {
       sessionId,
       requestId,
-      inputType: isQuestion ? 'question' : 'permission',
-      title: isQuestion
+      inputType: req.inputType ?? (isQuestion ? 'question' : 'permission'),
+      title: req.title ?? (isQuestion
         ? questions?.[0]?.question ?? 'Question from Claude'
-        : `Allow ${toolName}?`,
-      message: isQuestion ? undefined : JSON.stringify(toolInput).slice(0, 500),
+        : `Allow ${toolName}?`),
+      message: req.message ?? (isQuestion ? undefined : JSON.stringify(toolInput).slice(0, 500)),
       toolName,
       toolInput,
       toolUseId,
-      ...(isQuestion && questions ? {
+      ...(req.options ? { options: req.options } : {}),
+      ...(!req.options && isQuestion && questions ? {
         options: questions.flatMap((q: any) =>
           (q.options ?? []).map((opt: any) => ({
             key: opt.label,

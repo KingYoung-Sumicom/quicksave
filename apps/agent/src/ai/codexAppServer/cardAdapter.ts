@@ -25,6 +25,7 @@ import type { CodexErrorInfo } from './schema/generated/v2/CodexErrorInfo.js';
 import type { TurnStatus } from './schema/generated/v2/TurnStatus.js';
 import type { GuardianApprovalReview } from './schema/generated/v2/GuardianApprovalReview.js';
 import type { GuardianApprovalReviewAction } from './schema/generated/v2/GuardianApprovalReviewAction.js';
+import { codexServerRequestInputId } from './serverRequestIds.js';
 
 /** Debounce window for assistant text streaming — matches the SDK
  * provider's `FLUSH_INTERVAL_MS` so the user-visible "typing" cadence
@@ -335,7 +336,8 @@ export async function consumeAppServerStream(
       case 'serverRequest/resolved': {
         const params = notification.params as ServerRequestResolvedNotification;
         const requestIdStr = String(params.requestId);
-        emit(cb.clearPendingInput(requestIdStr));
+        emit(cb.clearPendingInput(codexServerRequestInputId(params.threadId, requestIdStr))
+          ?? cb.clearPendingInput(requestIdStr));
         return;
       }
 
@@ -490,7 +492,7 @@ export async function consumeAppServerStream(
         return;
 
       default:
-        // Unknown notification — count, don't crash.
+        emit(cb.systemMessage(`Unsupported Codex notification: ${notification.method}`, 'warning'));
         return;
     }
   };
@@ -621,6 +623,7 @@ export async function consumeAppServerStream(
         emit(cb.systemMessage('Context compacted', 'compacted'));
         return;
     }
+    assertNeverThreadItem(item);
   };
 
   const handleItemCompleted = (item: ThreadItem): void => {
@@ -766,6 +769,7 @@ export async function consumeAppServerStream(
       case 'contextCompaction':
         return;
     }
+    assertNeverThreadItem(item);
   };
 
   const emitMcpToolUse = (item: Extract<ThreadItem, { type: 'mcpToolCall' }>): void => {
@@ -907,6 +911,13 @@ export async function consumeAppServerStream(
 }
 
 // ── helpers ──
+
+function assertNeverThreadItem(item: never): never {
+  const type = typeof item === 'object' && item && 'type' in item
+    ? String((item as { type?: unknown }).type)
+    : typeof item;
+  throw new Error(`Unhandled Codex thread item type: ${type}`);
+}
 
 function capToolOutput(text: string): string {
   if (text.length <= TOOL_RESULT_BUFFER_LIMIT) return text;

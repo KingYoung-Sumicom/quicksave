@@ -9,6 +9,7 @@ import type { ProviderCallbacks } from '../../provider.js';
 import { consumeAppServerStream } from '../cardAdapter.js';
 import { CodexRpcClient, InMemoryTransport } from '../rpcClient.js';
 import { TokenAccounting, makeBreakdown, makeUsage } from '../tokenAccounting.js';
+import { codexServerRequestInputId } from '../serverRequestIds.js';
 
 /**
  * Test harness: spins a real StreamCardBuilder, a real CodexRpcClient
@@ -581,14 +582,21 @@ describe('cardAdapter — turn/completed status mapping', () => {
 });
 
 describe('cardAdapter — serverRequest/resolved (R7)', () => {
-  it('forwards to clearPendingInput and never emits stream-end', async () => {
+  it('clears composite codex request ids and never emits stream-end', async () => {
     const h = harness();
+    const requestId = codexServerRequestInputId('thr_test', 'req_42');
     // Pre-create a tool_call with a pending input via toolCallFromPermission
     const evt = h.cb.toolCallFromPermission(
       'Bash',
       { command: 'ls' },
       'tool_pending_1',
-      { kind: 'toolCall', requestId: 'req_42', toolName: 'Bash', toolInput: { command: 'ls' } },
+      {
+        sessionId: 'thr_test',
+        requestId,
+        inputType: 'permission',
+        title: 'Allow Bash?',
+        message: '{"command":"ls"}',
+      },
     );
     h.events.push(evt);
 
@@ -596,6 +604,36 @@ describe('cardAdapter — serverRequest/resolved (R7)', () => {
     expect(h.streamEnd).toBeNull();
 
     // Now send turn/completed so consume() resolves.
+    await h.send('turn/completed', {
+      threadId: 'thr_test',
+      turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const clearedUpdate = h.events.find(
+      (e) =>
+        e.type === 'update' && JSON.stringify(e.patch).includes('"pendingInput":null'),
+    );
+    expect(clearedUpdate).toBeTruthy();
+  });
+
+  it('falls back to raw request ids for legacy pending cards', async () => {
+    const h = harness();
+    const evt = h.cb.toolCallFromPermission(
+      'Bash',
+      { command: 'ls' },
+      'tool_pending_legacy',
+      {
+        sessionId: 'thr_test',
+        requestId: 'req_legacy',
+        inputType: 'permission',
+        title: 'Allow Bash?',
+      },
+    );
+    h.events.push(evt);
+
+    await h.send('serverRequest/resolved', { threadId: 'thr_test', requestId: 'req_legacy' });
+
     await h.send('turn/completed', {
       threadId: 'thr_test',
       turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
@@ -1529,5 +1567,24 @@ describe('cardAdapter — warning notifications', () => {
     // configWarning has `summary` not `message`, so we expect 2 warnings carrying `message`.
     // The dispatcher reads `params.message` only — so configWarning falls back to the method name.
     expect(warnings.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('unknown notifications surface as warning cards', async () => {
+    const h = harness();
+    await h.send('future/notification', { threadId: 'thr_test' });
+    await h.send('turn/completed', {
+      threadId: 'thr_test',
+      turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const warning = h.events.find(
+      (e) =>
+        e.type === 'add' &&
+        (e.card as { type?: string }).type === 'system' &&
+        (e.card as { subtype?: string }).subtype === 'warning' &&
+        JSON.stringify(e.card).includes('future/notification'),
+    );
+    expect(warning).toBeTruthy();
   });
 });
