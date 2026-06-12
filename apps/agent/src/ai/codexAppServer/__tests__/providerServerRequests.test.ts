@@ -163,6 +163,26 @@ describe('CodexAppServerSession server-initiated requests', () => {
     expect((res as Extract<WireResponse, { error: unknown }>).error.message)
       .toContain('chatgptAuthTokens refresh is not supported');
   });
+
+  it('logs and rejects unknown server request methods', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const h = harness();
+
+    const res = await sendServerRequest(h.serverSide, 'future/request', {
+      threadId: h.threadId,
+      payload: true,
+    }, 'srv-future');
+
+    expect(res).toMatchObject({
+      id: 'srv-future',
+      error: {
+        code: -32000,
+        message: 'unsupported server request method: future/request',
+      },
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('future/request'));
+    warn.mockRestore();
+  });
 });
 
 async function sendServerRequest(

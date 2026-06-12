@@ -25,6 +25,7 @@ import type { CodexErrorInfo } from './schema/generated/v2/CodexErrorInfo.js';
 import type { TurnStatus } from './schema/generated/v2/TurnStatus.js';
 import type { GuardianApprovalReview } from './schema/generated/v2/GuardianApprovalReview.js';
 import type { GuardianApprovalReviewAction } from './schema/generated/v2/GuardianApprovalReviewAction.js';
+import { codexProtocolPreview } from './protocolLog.js';
 import { codexServerRequestInputId } from './serverRequestIds.js';
 
 /** Debounce window for assistant text streaming — matches the SDK
@@ -224,6 +225,9 @@ export async function consumeAppServerStream(
       handleNotification(notification);
     } catch (err) {
       // Adapter must not crash the provider's run loop. Log and continue.
+      console.warn(
+        `[codex-app] adapter error notification=${notification.method} error=${err instanceof Error ? err.message : String(err)} params=${codexProtocolPreview(notification.params)}`,
+      );
       emit(
         cb.systemMessage(
           `Internal adapter error on ${notification.method}: ${err instanceof Error ? err.message : String(err)}`,
@@ -492,6 +496,9 @@ export async function consumeAppServerStream(
         return;
 
       default:
+        console.warn(
+          `[codex-app] unsupported notification method=${notification.method} params=${codexProtocolPreview(notification.params)}`,
+        );
         emit(cb.systemMessage(`Unsupported Codex notification: ${notification.method}`, 'warning'));
         return;
     }

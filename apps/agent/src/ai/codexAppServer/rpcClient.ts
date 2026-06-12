@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import type { RequestId } from './schema/index.js';
+import { codexProtocolPreview } from './protocolLog.js';
 
 /**
  * JSON-RPC 2.0 wire envelopes. The codex app-server uses these on stdio
@@ -192,7 +193,10 @@ export class CodexRpcClient {
   }
 
   private handleMessage(message: WireMessage): void {
-    if (typeof message !== 'object' || message === null) return;
+    if (typeof message !== 'object' || message === null) {
+      console.warn(`[codex-app] ignoring non-object JSON-RPC message: ${codexProtocolPreview(message)}`);
+      return;
+    }
     // Note: codex app-server omits the `jsonrpc: "2.0"` envelope field on
     // responses (verified against CLI 0.125.0 — the standalone shape is
     // `{id, result}` / `{id, error}` / `{method, params}`). We do NOT
@@ -204,6 +208,8 @@ export class CodexRpcClient {
       this.handleResponse(m as unknown as WireResponse);
     } else if ('method' in m && !('id' in m)) {
       this.handleNotification(m as unknown as WireNotification);
+    } else {
+      console.warn(`[codex-app] ignoring unrecognized JSON-RPC message: ${codexProtocolPreview(message)}`);
     }
   }
 

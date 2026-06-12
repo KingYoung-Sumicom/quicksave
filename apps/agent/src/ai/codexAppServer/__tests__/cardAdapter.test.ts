@@ -1570,6 +1570,7 @@ describe('cardAdapter — warning notifications', () => {
   });
 
   it('unknown notifications surface as warning cards', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const h = harness();
     await h.send('future/notification', { threadId: 'thr_test' });
     await h.send('turn/completed', {
@@ -1583,8 +1584,10 @@ describe('cardAdapter — warning notifications', () => {
         e.type === 'add' &&
         (e.card as { type?: string }).type === 'system' &&
         (e.card as { subtype?: string }).subtype === 'warning' &&
-        JSON.stringify(e.card).includes('future/notification'),
+      JSON.stringify(e.card).includes('future/notification'),
     );
     expect(warning).toBeTruthy();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('future/notification'));
+    warn.mockRestore();
   });
 });

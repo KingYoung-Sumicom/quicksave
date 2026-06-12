@@ -230,6 +230,17 @@ describe('CodexRpcClient — server-initiated requests', () => {
 });
 
 describe('CodexRpcClient — wire envelope tolerance (regression)', () => {
+  it('logs unrecognized JSON-RPC envelopes', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { serverSide } = setup();
+
+    await serverSide.send({ jsonrpc: '2.0', unexpected: true } as unknown as WireNotification);
+    await flushMicrotasks();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('unrecognized JSON-RPC message'));
+    warn.mockRestore();
+  });
+
   it('accepts responses without the jsonrpc field (codex 0.125.0 shape)', async () => {
     // Codex app-server 0.125.0 omits `"jsonrpc":"2.0"` on responses.
     // Verified by `echo '{"jsonrpc":"2.0","id":1,"method":"initialize",...}' | codex app-server`

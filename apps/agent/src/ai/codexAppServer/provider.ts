@@ -55,6 +55,7 @@ import type { DynamicToolCallParams } from './schema/generated/v2/DynamicToolCal
 import type { DynamicToolCallResponse } from './schema/generated/v2/DynamicToolCallResponse.js';
 import type { ChatgptAuthTokensRefreshParams } from './schema/generated/v2/ChatgptAuthTokensRefreshParams.js';
 import type { JsonValue } from './schema/generated/serde_json/JsonValue.js';
+import { codexProtocolPreview } from './protocolLog.js';
 import { codexServerRequestInputId } from './serverRequestIds.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
@@ -532,6 +533,9 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
         return unsupportedChatgptAuthTokensRefresh(req.params as ChatgptAuthTokensRefreshParams);
       default:
         // Unknown server request — refuse.
+        console.warn(
+          `[codex-app] unsupported server request method=${req.method} id=${requestIdStr} params=${codexProtocolPreview(req.params)}`,
+        );
         throw new Error(`unsupported server request method: ${req.method}`);
     }
   }
