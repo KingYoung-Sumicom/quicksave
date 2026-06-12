@@ -122,7 +122,9 @@ import {
   SessionControlRequestResponsePayload,
   SessionListSlashCommandsRequestPayload,
   SessionListSlashCommandsResponsePayload,
+  BroadcastSessionEntry,
   SessionRegistryEntry,
+  NativeSessionSummary,
   SessionUpdateHistoryRequestPayload,
   SessionUpdateHistoryResponsePayload,
   SessionDeleteHistoryRequestPayload,
@@ -840,11 +842,11 @@ export class MessageHandler {
         case 'session:list-slash-commands':
           return this.handleListSlashCommands(message as Message<SessionListSlashCommandsRequestPayload>);
         case 'session:update-history':
-          return this.handleUpdateHistory(message as Message<SessionUpdateHistoryRequestPayload>);
+          return await this.handleUpdateHistory(message as Message<SessionUpdateHistoryRequestPayload>);
         case 'session:delete-history':
           return this.handleDeleteHistory(message as Message<SessionDeleteHistoryRequestPayload>);
         case 'session:list-archived':
-          return this.handleListArchived(message as Message<SessionListArchivedRequestPayload>);
+          return await this.handleListArchived(message as Message<SessionListArchivedRequestPayload>);
         case 'session:mark-read':
           return this.handleMarkRead(message as Message<SessionMarkReadRequestPayload>);
         case 'session:dismiss-pending-mission':
@@ -2773,11 +2775,24 @@ export class MessageHandler {
 
   // ── Session Registry (History) ──────────────────────────────────────
 
-  private handleUpdateHistory(
+  private async handleUpdateHistory(
     message: Message<SessionUpdateHistoryRequestPayload>,
-  ): Message<SessionUpdateHistoryResponsePayload> {
+  ): Promise<Message<SessionUpdateHistoryResponsePayload>> {
     const { sessionId, cwd, updates } = message.payload;
-    const entry = getSessionRegistry().updateEntry(cwd, sessionId, updates);
+    const registry = getSessionRegistry();
+    let entry = registry.updateEntry(cwd, sessionId, updates);
+    if (!entry && updates.archived === false) {
+      const native = await this.claudeService.findNativeSession(cwd, sessionId);
+      if (native) {
+        const materialized = {
+          ...this.nativeSessionToRegistryEntry(native, false),
+          ...updates,
+          archived: false,
+        };
+        registry.upsertEntry(materialized);
+        entry = registry.getEntry(cwd, sessionId) ?? materialized;
+      }
+    }
     const response = createMessage<SessionUpdateHistoryResponsePayload>(
       'session:update-history:response',
       entry ? { success: true, entry } : { success: false, error: 'Entry not found' },
@@ -2806,17 +2821,90 @@ export class MessageHandler {
     return response;
   }
 
-  private handleListArchived(
+  private async handleListArchived(
     message: Message<SessionListArchivedRequestPayload>,
-  ): Message<SessionListArchivedResponsePayload> {
+  ): Promise<Message<SessionListArchivedResponsePayload>> {
     const { cwd, offset = 0, limit = 20 } = message.payload;
-    const { entries, total } = getSessionRegistry().listArchivedEntriesPage(cwd, offset, limit);
+    const safeOffset = Math.max(0, offset | 0);
+    const safeLimit = Math.max(0, limit | 0);
+    const registry = getSessionRegistry();
+    const activeKeys = new Set(registry.getEntriesForProject(cwd).map((entry) => this.sessionEntryKey(entry.cwd, entry.sessionId)));
+    const byKey = new Map<string, BroadcastSessionEntry>();
+
+    for (const entry of registry.listArchivedEntries(cwd).map(enrichEntry)) {
+      const enriched = {
+        ...entry,
+        origin: 'quicksave' as const,
+        lastInteractionAt: this.sessionInteractionAt(entry),
+      };
+      byKey.set(this.sessionEntryKey(enriched.cwd, enriched.sessionId), enriched);
+    }
+
+    const nativeSessions = await this.claudeService.listNativeSessions(cwd);
+    for (const native of nativeSessions) {
+      const key = this.sessionEntryKey(native.cwd, native.sessionId);
+      if (activeKeys.has(key)) continue;
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.lastInteractionAt = Math.max(this.sessionInteractionAt(existing), native.lastInteractionAt);
+        if (!existing.gitBranch && native.gitBranch) existing.gitBranch = native.gitBranch;
+        if (!existing.agent) existing.agent = native.agent;
+        continue;
+      }
+      byKey.set(key, this.nativeSessionToBroadcastEntry(native));
+    }
+
+    const entries = Array.from(byKey.values()).sort((a, b) => {
+      const byInteraction = this.sessionInteractionAt(b) - this.sessionInteractionAt(a);
+      if (byInteraction !== 0) return byInteraction;
+      return b.createdAt - a.createdAt;
+    });
+    const total = entries.length;
+    const page = entries.slice(safeOffset, safeOffset + safeLimit);
     const response = createMessage<SessionListArchivedResponsePayload>(
       'session:list-archived:response',
-      { entries: entries.map(enrichEntry), total, offset, limit },
+      { entries: page, total, offset: safeOffset, limit: safeLimit },
     );
     response.id = message.id;
     return response;
+  }
+
+  private nativeSessionToRegistryEntry(native: NativeSessionSummary, archived: boolean): SessionRegistryEntry {
+    const createdAt = native.createdAt > 0 ? native.createdAt : native.lastInteractionAt;
+    return {
+      sessionId: native.sessionId,
+      cwd: native.cwd,
+      agent: native.agent,
+      repoName: basename(native.cwd),
+      gitBranch: native.gitBranch,
+      title: native.title,
+      firstPrompt: native.firstPrompt,
+      createdAt,
+      lastAccessedAt: native.lastInteractionAt,
+      archived,
+    };
+  }
+
+  private nativeSessionToBroadcastEntry(native: NativeSessionSummary): BroadcastSessionEntry {
+    return {
+      ...this.nativeSessionToRegistryEntry(native, true),
+      origin: 'native',
+      lastInteractionAt: native.lastInteractionAt,
+    };
+  }
+
+  private sessionEntryKey(cwd: string, sessionId: string): string {
+    return `${cwd}\0${sessionId}`;
+  }
+
+  private sessionInteractionAt(entry: Pick<BroadcastSessionEntry, 'createdAt' | 'lastAccessedAt' | 'lastPromptAt' | 'lastTurnEndedAt' | 'lastInteractionAt'>): number {
+    return Math.max(
+      entry.lastInteractionAt ?? 0,
+      entry.lastTurnEndedAt ?? 0,
+      entry.lastPromptAt ?? 0,
+      entry.lastAccessedAt ?? 0,
+      entry.createdAt ?? 0,
+    );
   }
 
   /**

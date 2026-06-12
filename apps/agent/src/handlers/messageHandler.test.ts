@@ -8,6 +8,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { simpleGit } from 'simple-git';
 import { getSessionRegistry, resetSessionRegistry } from '../ai/sessionRegistry.js';
+import { getEventStore } from '../storage/eventStore.js';
 import type { SessionRegistryEntry } from '@sumicom/quicksave-shared';
 import { setQuicksaveDir } from '../service/singleton.js';
 
@@ -993,6 +994,107 @@ describe('MessageHandler', () => {
       expect(getSessionRegistry().readArchivedEntry(testRepoPath, sessionId)).toBeUndefined();
       expect(historyEvents).toHaveLength(1);
       expect(historyEvents[0].entry.archived).toBe(false);
+    });
+  });
+
+  describe('handleMessage - session:list-archived', () => {
+    function seedArchived(overrides: Partial<SessionRegistryEntry>): SessionRegistryEntry {
+      const entry: SessionRegistryEntry = {
+        sessionId: overrides.sessionId ?? 'archived-session',
+        cwd: overrides.cwd ?? testRepoPath,
+        agent: overrides.agent ?? 'codex',
+        repoName: 'test-repo',
+        title: overrides.title ?? overrides.sessionId ?? 'Archived session',
+        firstPrompt: overrides.firstPrompt ?? 'old prompt',
+        createdAt: overrides.createdAt ?? 1_000,
+        lastAccessedAt: overrides.lastAccessedAt ?? 2_000,
+        archived: true,
+        ...overrides,
+      };
+      getSessionRegistry().upsertEntry(entry);
+      return entry;
+    }
+
+    it('merges native sessions and sorts by last interaction', async () => {
+      seedArchived({ sessionId: 'registry-turn', lastAccessedAt: 1_000 });
+      seedArchived({ sessionId: 'registry-fallback', lastAccessedAt: 7_000 });
+      getEventStore().record({
+        type: 'turn_ended',
+        sessionId: 'registry-turn',
+        cwd: testRepoPath,
+        time: 9_000,
+      });
+
+      const claudeService = (handler as unknown as {
+        claudeService: {
+          listNativeSessions: (cwd?: string) => Promise<unknown[]>;
+        };
+      }).claudeService;
+      vi.spyOn(claudeService, 'listNativeSessions').mockResolvedValue([
+        {
+          sessionId: 'native-session',
+          cwd: testRepoPath,
+          agent: 'codex',
+          firstPrompt: 'native prompt',
+          createdAt: 3_000,
+          lastInteractionAt: 8_000,
+          archived: false,
+        },
+      ]);
+
+      const response = await handler.handleMessage(
+        createMessage('session:list-archived', { cwd: testRepoPath, offset: 0, limit: 20 }),
+      );
+
+      expect(response.type).toBe('session:list-archived:response');
+      const entries = (response.payload as any).entries as Array<{ sessionId: string; origin?: string; lastInteractionAt?: number }>;
+      expect(entries.map((entry) => entry.sessionId)).toEqual([
+        'registry-turn',
+        'native-session',
+        'registry-fallback',
+      ]);
+      expect(entries[0].lastInteractionAt).toBe(9_000);
+      expect(entries[1].origin).toBe('native');
+      expect((response.payload as any).total).toBe(3);
+    });
+
+    it('materializes a native-only session when restoring it', async () => {
+      const claudeService = (handler as unknown as {
+        claudeService: {
+          findNativeSession: (cwd: string, sessionId: string) => Promise<unknown>;
+        };
+      }).claudeService;
+      vi.spyOn(claudeService, 'findNativeSession').mockResolvedValue({
+        sessionId: 'native-restore',
+        cwd: testRepoPath,
+        agent: 'codex',
+        title: 'Native restore title',
+        firstPrompt: 'native first prompt',
+        createdAt: 1_000,
+        lastInteractionAt: 8_000,
+        gitBranch: defaultBranch,
+        archived: false,
+      });
+
+      const response = await handler.handleMessage(
+        createMessage('session:update-history', {
+          sessionId: 'native-restore',
+          cwd: testRepoPath,
+          updates: { archived: false },
+        }),
+      );
+
+      expect(response.type).toBe('session:update-history:response');
+      expect((response.payload as any).success).toBe(true);
+      expect(getSessionRegistry().getEntry(testRepoPath, 'native-restore')).toMatchObject({
+        sessionId: 'native-restore',
+        cwd: testRepoPath,
+        agent: 'codex',
+        title: 'Native restore title',
+        firstPrompt: 'native first prompt',
+        lastAccessedAt: 8_000,
+        archived: false,
+      });
     });
   });
 

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment, ConfigValue, SlashCommandInfo } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, ConfigValue, NativeSessionSummary, SlashCommandInfo } from '@sumicom/quicksave-shared';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,6 +37,9 @@ import type { AskForApproval } from './schema/generated/v2/AskForApproval.js';
 import type { SandboxMode } from './schema/generated/v2/SandboxMode.js';
 import type { ThreadStartParams } from './schema/generated/v2/ThreadStartParams.js';
 import type { ThreadStartResponse } from './schema/generated/v2/ThreadStartResponse.js';
+import type { Thread } from './schema/generated/v2/Thread.js';
+import type { ThreadListParams } from './schema/generated/v2/ThreadListParams.js';
+import type { ThreadListResponse } from './schema/generated/v2/ThreadListResponse.js';
 import type { ThreadResumeParams } from './schema/generated/v2/ThreadResumeParams.js';
 import type { ThreadResumeResponse } from './schema/generated/v2/ThreadResumeResponse.js';
 import type { TurnStartParams } from './schema/generated/v2/TurnStartParams.js';
@@ -198,6 +201,29 @@ export class CodexAppServerProvider implements CodingAgentProvider {
     scheduleInitialTurn(session, opts.prompt, opts.attachments);
 
     return { sessionId: response.thread.id, session };
+  }
+
+  async listNativeSessions(opts?: { cwd?: string }): Promise<NativeSessionSummary[]> {
+    const handle = await spawnCodexNativeListAppServer();
+    try {
+      const [activeThreads, archivedThreads] = await Promise.all([
+        listCodexThreads(handle, opts?.cwd, false),
+        listCodexThreads(handle, opts?.cwd, true),
+      ]);
+      const byId = new Map<string, NativeSessionSummary>();
+      for (const item of [
+        ...activeThreads.map((thread) => codexThreadToNativeSession(thread, false)),
+        ...archivedThreads.map((thread) => codexThreadToNativeSession(thread, true)),
+      ]) {
+        const existing = byId.get(item.sessionId);
+        if (!existing || item.lastInteractionAt > existing.lastInteractionAt) {
+          byId.set(item.sessionId, item);
+        }
+      }
+      return Array.from(byId.values()).sort((a, b) => b.lastInteractionAt - a.lastInteractionAt);
+    } finally {
+      await handle.shutdown().catch(() => {});
+    }
   }
 }
 
@@ -1253,16 +1279,24 @@ function clearedGoalConfigPatch(): Record<string, ConfigValue> {
   };
 }
 
+function codexAppServerInit() {
+  return {
+    clientInfo: {
+      name: 'quicksave-agent',
+      title: 'Quicksave Agent',
+      version: '0.0.0',
+    },
+    capabilities: { experimentalApi: true, requestAttestation: false, optOutNotificationMethods: null },
+  };
+}
+
+function spawnCodexNativeListAppServer(): Promise<AppServerHandle> {
+  return spawnAppServer(codexAppServerInit());
+}
+
 function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promise<AppServerHandle> {
   return spawnAppServer(
-    {
-      clientInfo: {
-        name: 'quicksave-agent',
-        title: 'Quicksave Agent',
-        version: '0.0.0',
-      },
-      capabilities: { experimentalApi: true, requestAttestation: false, optOutNotificationMethods: null },
-    },
+    codexAppServerInit(),
     {
       extraArgs: buildCodexSandboxMcpConfigArgs({
         cwd: opts.cwd,
@@ -1271,6 +1305,53 @@ function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promis
       }),
     },
   );
+}
+
+async function listCodexThreads(
+  handle: AppServerHandle,
+  cwd: string | undefined,
+  archived: boolean,
+): Promise<Thread[]> {
+  const threads: Thread[] = [];
+  let cursor: string | null = null;
+  do {
+    const params: ThreadListParams = {
+      cursor,
+      limit: 100,
+      sortKey: 'updated_at',
+      sortDirection: 'desc',
+      cwd: cwd ?? null,
+      archived,
+    };
+    const response = await handle.rpc.request<ThreadListResponse>('thread/list', params);
+    threads.push(
+      ...response.data.filter((thread) =>
+        !thread.ephemeral &&
+        thread.parentThreadId === null &&
+        (!cwd || thread.cwd === cwd)
+      ),
+    );
+    cursor = response.nextCursor;
+  } while (cursor);
+  return threads;
+}
+
+function codexThreadToNativeSession(thread: Thread, archived: boolean): NativeSessionSummary {
+  return {
+    sessionId: thread.id,
+    cwd: thread.cwd,
+    agent: 'codex',
+    title: thread.name ?? undefined,
+    firstPrompt: thread.preview || undefined,
+    createdAt: codexSecondsToMs(thread.createdAt),
+    lastInteractionAt: codexSecondsToMs(thread.updatedAt),
+    gitBranch: thread.gitInfo?.branch ?? undefined,
+    archived,
+  };
+}
+
+function codexSecondsToMs(value: number): number {
+  return value < 10_000_000_000 ? value * 1000 : value;
 }
 
 export function buildCodexSandboxMcpConfigArgs(opts: {

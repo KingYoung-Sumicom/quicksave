@@ -781,6 +781,7 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 | `claude:set-preferences` | PWA→Agent | `bus.command('claude:set-preferences', …)` | Write global preferences (reads go through the `/preferences` sub) |
 | `claude:set-session-permission` | PWA→Agent | `bus.command('claude:set-session-permission', …)` | Change a session's permission mode |
 | `session:list-slash-commands` | PWA→Agent | `bus.command('session:list-slash-commands', …)` | Ask the active provider for composer slash suggestions. Returns `SlashCommandInfo[]`; Claude uses `reload_plugins`, Codex maps enabled `skills/list` entries |
+| `session:list-archived` | PWA→Agent | `bus.command('session:list-archived', …)` | Lists restore candidates for a cwd. The agent merges Quicksave archived registry entries with provider-native sessions when a provider supports native discovery, dedupes active registry entries, sorts by `BroadcastSessionEntry.lastInteractionAt`, then paginates |
 | — | Agent→PWA push | `bus.subscribe('/sessions/:id/cards')` → `{kind: 'card', event}` / `{kind: 'stream-end', result}` | The old `claude:card-event` / `claude:card-stream-end` / `claude:user-input-request` have all moved to this path (CardBuilder carries the input request inside the pendingInput overlay) |
 | — | Agent→PWA push | `bus.subscribe('/sessions/active')` | Replaces the removed `claude:active-sessions` command and `claude:session-updated` push |
 | — | Agent→PWA push | `bus.subscribe('/preferences')` | Replaces the removed `claude:get-preferences` command and `claude:preferences-updated` push |
@@ -809,6 +810,11 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 | `AgentId` (`'claude-code' \| 'codex'`) | line 324 |
 | `SessionRegistryEntry` | line 390 |
 | `BroadcastSessionEntry` | line 471 |
+
+`BroadcastSessionEntry` carries optional runtime-only fields for restore lists:
+`origin: 'native'` marks provider-native sessions that are not yet tracked in
+Quicksave's registry, and `lastInteractionAt` is the best available timestamp
+for "last message or interaction" ordering.
 
 ### Card Data Model
 

@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment, CardEvent, CardStreamEnd, ConfigValue, ContextUsageBreakdown, SessionQueueState, SlashCommandInfo } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, CardEvent, CardStreamEnd, ConfigValue, ContextUsageBreakdown, NativeSessionSummary, SessionQueueState, SlashCommandInfo } from '@sumicom/quicksave-shared';
 import type { StreamCardBuilder } from './cardBuilder.js';
 
 export const CLAUDE_PERMISSION_MODES = [
@@ -278,4 +278,7 @@ export interface CodingAgentProvider {
   /** Optional capability probe. Providers that omit it advertise only `id`
    *  and `label` in the `availableProviders` list (with zero capabilities). */
   probeProvider?(): Promise<ProbeResult>;
+
+  /** Optional provider-native session discovery for sessions not yet tracked in Quicksave's registry. */
+  listNativeSessions?(opts?: { cwd?: string }): Promise<NativeSessionSummary[]>;
 }

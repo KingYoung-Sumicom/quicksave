@@ -630,6 +630,10 @@ export interface SessionListArchivedResponsePayload {
  * their context/cache usage without duplicating the blob to disk.
  */
 export interface BroadcastSessionEntry extends SessionRegistryEntry {
+  /** Runtime/source hint for list views. Omitted means a normal Quicksave registry entry. */
+  origin?: 'quicksave' | 'native';
+  /** Best available "last message or interaction" timestamp for ordering archived/native lists. */
+  lastInteractionAt?: number;
   lastPromptAt?: number;
   lastTurnEndedAt?: number;
   turnCount?: number;
@@ -642,6 +646,18 @@ export interface BroadcastSessionEntry extends SessionRegistryEntry {
   /** Most reliable cache-TTL countdown anchor. See `ClaudeSessionSummary.lastCacheTouchAt`.
    * Populated only for sessions live in-memory; inactive sessions fall back to `lastTurnEndedAt`. */
   lastCacheTouchAt?: number;
+}
+
+export interface NativeSessionSummary {
+  sessionId: string;
+  cwd: string;
+  agent: AgentId;
+  title?: string;
+  firstPrompt?: string;
+  createdAt: number;
+  lastInteractionAt: number;
+  gitBranch?: string;
+  archived?: boolean;
 }
 
 export interface SessionHistoryUpdatedPayload {

@@ -21,6 +21,7 @@ import type {
   CardEvent,
   CardHistoryResponse,
   CardStreamEnd,
+  NativeSessionSummary,
   SessionNoteEntry,
   SessionPendingMission,
   SessionRegistryEntry,
@@ -1235,6 +1236,26 @@ export class SessionManager extends EventEmitter {
 
   getCardBuilder(sessionId: string): StreamCardBuilder | null {
     return this.sessions.get(sessionId)?.cardBuilder ?? null;
+  }
+
+  async listNativeSessions(cwd?: string): Promise<NativeSessionSummary[]> {
+    const results: NativeSessionSummary[] = [];
+    for (const provider of this.providers.values()) {
+      if (typeof provider.listNativeSessions !== 'function') continue;
+      try {
+        results.push(...await provider.listNativeSessions({ cwd }));
+      } catch (err) {
+        console.warn(
+          `[session-manager] native session listing failed provider=${provider.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    return results.sort((a, b) => b.lastInteractionAt - a.lastInteractionAt);
+  }
+
+  async findNativeSession(cwd: string, sessionId: string): Promise<NativeSessionSummary | undefined> {
+    const sessions = await this.listNativeSessions(cwd);
+    return sessions.find((session) => session.cwd === cwd && session.sessionId === sessionId);
   }
 
   async listAvailableSessions(cwd: string): Promise<ClaudeSessionSummary[]> {

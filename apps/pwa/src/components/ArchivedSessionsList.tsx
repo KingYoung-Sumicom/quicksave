@@ -113,9 +113,17 @@ export function ArchivedSessionsList({ cwd, onListArchived, onRestore, defaultEx
                       <p className="list-title text-sm line-clamp-2 text-slate-400">
                         {entry.title || entry.firstPrompt?.slice(0, 80) || entry.sessionId.slice(0, 12)}
                       </p>
-                      <div className="list-meta flex items-center gap-2 mt-0.5 text-[11px]">
+                      <div className="list-meta flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5 text-[11px]">
+                        <span className="min-w-0 break-all font-mono text-slate-500" title={entry.sessionId}>
+                          UUID {entry.sessionId}
+                        </span>
+                        {entry.origin === 'native' && (
+                          <span className="rounded bg-slate-500/15 px-1.5 py-px font-medium text-slate-300">
+                            Native
+                          </span>
+                        )}
                         {entry.gitBranch && <span>{entry.gitBranch}</span>}
-                        <span>{formatRelativeTime(entry.lastAccessedAt)}</span>
+                        <span>{formatRelativeTime(entry.lastInteractionAt ?? entry.lastTurnEndedAt ?? entry.lastPromptAt ?? entry.lastAccessedAt)}</span>
                       </div>
                     </div>
                     <button
