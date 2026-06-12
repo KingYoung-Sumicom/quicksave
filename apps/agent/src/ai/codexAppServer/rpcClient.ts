@@ -182,6 +182,15 @@ export class CodexRpcClient {
     return this.closed;
   }
 
+  /** Subscribe to transport closure. Returns an unsubscribe fn. */
+  onClose(listener: (reason: Error | null) => void): () => void {
+    if (this.closed) {
+      queueMicrotask(() => listener(this.closeReason));
+      return () => undefined;
+    }
+    return this.transport.onClose(listener);
+  }
+
   private handleMessage(message: WireMessage): void {
     if (typeof message !== 'object' || message === null) return;
     // Note: codex app-server omits the `jsonrpc: "2.0"` envelope field on

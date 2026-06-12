@@ -31,6 +31,7 @@ import type { GuardianApprovalReviewAction } from './schema/generated/v2/Guardia
  * stays identical between backends. */
 const FLUSH_INTERVAL_MS = 150;
 const TOOL_RESULT_TRUNCATE_LENGTH = 500; // matches cardBuilder.ts
+const TOOL_RESULT_BUFFER_LIMIT = TOOL_RESULT_TRUNCATE_LENGTH + 1;
 
 /** How long to wait at `turn/completed` time for a matching
  * `thread/tokenUsage/updated` notification before giving up and emitting
@@ -298,7 +299,10 @@ export async function consumeAppServerStream(
       case 'item/commandExecution/outputDelta': {
         const params = notification.params as CommandExecutionOutputDeltaNotification;
         if (params.turnId !== ctx.turnId) return;
-        const accumulated = (state.commandOutputBuffers.get(params.itemId) ?? '') + (params.delta ?? '');
+        const accumulated = appendBoundedToolOutput(
+          state.commandOutputBuffers.get(params.itemId) ?? '',
+          params.delta ?? '',
+        );
         state.commandOutputBuffers.set(params.itemId, accumulated);
         // Don't emit on every chunk — that would cause O(N²) work in
         // the cardBuilder's truncation logic for long output. Instead
@@ -657,7 +661,8 @@ export async function consumeAppServerStream(
         if (!cb.hasToolCard(item.id)) {
           emit(cb.toolUse('Bash', { command: item.command }, item.id));
         }
-        const accumulated = state.commandOutputBuffers.get(item.id) ?? item.aggregatedOutput ?? '';
+        const accumulated = state.commandOutputBuffers.get(item.id)
+          ?? capToolOutput(item.aggregatedOutput ?? '');
         const exitCodeSuffix = item.exitCode != null ? `\n[exit code: ${item.exitCode}]` : '';
         emit(
           cb.toolResult(item.id, accumulated + exitCodeSuffix, item.status === 'failed'),
@@ -884,30 +889,35 @@ export async function consumeAppServerStream(
   };
 
   const unsubscribe = rpc.onNotification(dispatch);
-  const unsubClose = rpc.onNotification(() => {
-    /* noop placeholder for symmetry */
-  });
   // Tear-down on transport close — emit a synthetic interrupted end if
   // the run wasn't already finalized.
   const closeFallback = (): void => {
     if (state.turnEnded) return;
     void finalize('interrupted', undefined);
   };
-  // Note: we don't have a dedicated close listener API on RpcClient
-  // for adapter-scoped lifecycle, so the provider drives this via its
-  // own try/finally.
-  void unsubClose; // placeholder; kept for future symmetry.
+  const unsubscribeClose = rpc.onClose(closeFallback);
 
   try {
     return await result;
   } finally {
     unsubscribe();
+    unsubscribeClose();
     if (state.textTimer) clearTimeout(state.textTimer);
-    void closeFallback;
   }
 }
 
 // ── helpers ──
+
+function capToolOutput(text: string): string {
+  if (text.length <= TOOL_RESULT_BUFFER_LIMIT) return text;
+  return text.slice(0, TOOL_RESULT_BUFFER_LIMIT);
+}
+
+function appendBoundedToolOutput(existing: string, delta: string): string {
+  if (!delta || existing.length >= TOOL_RESULT_BUFFER_LIMIT) return existing;
+  const remaining = TOOL_RESULT_BUFFER_LIMIT - existing.length;
+  return existing + delta.slice(0, remaining);
+}
 
 function extractFileChangePath(change: unknown): string | null {
   if (typeof change !== 'object' || change === null) return null;

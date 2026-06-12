@@ -242,6 +242,65 @@ describe('cardAdapter — commandExecution', () => {
     expect(finalResult?.patch.result.isError).toBe(false);
   });
 
+  it('bounds streamed command output before storing it in adapter state', async () => {
+    const h = harness();
+    await h.send('item/started', {
+      threadId: 'thr_test',
+      turnId: 'turn_1',
+      item: {
+        type: 'commandExecution',
+        id: 'cmd_big',
+        command: 'yes',
+        cwd: '/tmp',
+        processId: null,
+        source: 'shell',
+        status: 'running',
+        commandActions: [],
+        aggregatedOutput: null,
+        exitCode: null,
+        durationMs: null,
+      },
+    });
+    await h.send('item/commandExecution/outputDelta', {
+      threadId: 'thr_test',
+      turnId: 'turn_1',
+      itemId: 'cmd_big',
+      delta: 'x'.repeat(10_000),
+    });
+    await h.send('item/completed', {
+      threadId: 'thr_test',
+      turnId: 'turn_1',
+      item: {
+        type: 'commandExecution',
+        id: 'cmd_big',
+        command: 'yes',
+        cwd: '/tmp',
+        processId: null,
+        source: 'shell',
+        status: 'completed',
+        commandActions: [],
+        aggregatedOutput: null,
+        exitCode: 0,
+        durationMs: 1,
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: 'thr_test',
+      turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const finalResult = [...h.events]
+      .reverse()
+      .find(
+        (e) =>
+          e.type === 'update' &&
+          JSON.stringify(e.patch).includes('[truncated]'),
+      ) as { patch: { result: { content: string } } } | undefined;
+    expect(finalResult).toBeTruthy();
+    expect(finalResult?.patch.result.content.length).toBeLessThan(600);
+  });
+
   it('marks a failed command as isError', async () => {
     const h = harness();
     await h.send('item/started', {
@@ -476,6 +535,14 @@ describe('cardAdapter — turn/completed status mapping', () => {
       threadId: 'thr_test',
       turn: { id: 'turn_1', items: [], status: 'interrupted', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
     });
+    await h.consume;
+    expect(h.streamEnd?.interrupted).toBe(true);
+    expect(h.streamEnd?.success).toBe(false);
+  });
+
+  it('transport close settles the stream as interrupted', async () => {
+    const h = harness();
+    await h.serverSide.close();
     await h.consume;
     expect(h.streamEnd?.interrupted).toBe(true);
     expect(h.streamEnd?.success).toBe(false);
