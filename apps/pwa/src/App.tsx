@@ -819,9 +819,7 @@ function AppContent() {
       if (document.visibilityState === 'hidden') return;
       if (hiddenAt === null) return;
 
-      const awayMs = Date.now() - hiddenAt;
       hiddenAt = null;
-      if (awayMs < 2_000) return;
       if (Date.now() - lastRefreshAt < 3_000) return;
 
       lastRefreshAt = Date.now();

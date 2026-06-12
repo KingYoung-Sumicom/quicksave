@@ -972,15 +972,15 @@ export class SessionManager extends EventEmitter {
     return ok;
   }
 
-  /** Send a raw control_request to the active provider session (CLI only). */
+  /** Send a provider-specific control request to the active session. */
   async sendControlRequest(sessionId: string, subtype: string, params?: Record<string, unknown>): Promise<unknown> {
     const ps = this.sessions.get(sessionId);
     if (!ps?.providerSession?.alive) {
       throw new Error('Session is not active');
     }
-    const session = ps.providerSession as any;
+    const session = ps.providerSession;
     if (typeof session.sendControlRequest !== 'function') {
-      throw new Error('Provider does not support raw control_request');
+      throw new Error('Provider does not support control requests');
     }
     return session.sendControlRequest(subtype, params);
   }
@@ -1472,6 +1472,12 @@ export class SessionManager extends EventEmitter {
         if (agentId === 'codex') {
           this.emit('codex-turn-settled', { sessionId });
         }
+      },
+      onSessionConfigPatch: (sessionId: string, patch: Record<string, ConfigValue>) => {
+        const prev = this.sessionConfigs.get(sessionId) ?? {};
+        const next = { ...prev, ...patch };
+        this.sessionConfigs.set(sessionId, next);
+        this.emit('session-config-updated', { sessionId, config: next });
       },
       onModelDetected: (model: string) => {
         console.log(`[session-manager] model detected: ${model} (agent=${agentId})`);

@@ -105,6 +105,8 @@ export class WebSocketClient {
   private isManualDisconnect = false;
   private wasConnected = false;
   private suppressedCloseSocket: WebSocket | null = null;
+  private reconnectGeneration = 0;
+  private reconnectInFlightGeneration: number | null = null;
 
   // Key exchange retry config
   private static readonly MAX_KEY_EXCHANGE_RETRIES = 5;
@@ -160,26 +162,62 @@ export class WebSocketClient {
   /**
    * Connect the single persistent WebSocket to /pwa/key/{identityPublicKey}
    */
-  async connect(): Promise<void> {
+  connect(): Promise<void> {
     // Re-enable auto-reconnect in case it was stopped by stopReconnecting()
     this.autoReconnect = true;
     this.isManualDisconnect = false;
 
+    return this.connectSocket().then(() => undefined).catch((error) => {
+      const message = error instanceof Error ? error.message : '';
+      if (
+        message.includes('Superseded WebSocket connection') ||
+        message.includes('Suppressed WebSocket closed before opening')
+      ) {
+        return;
+      }
+      throw error;
+    });
+  }
+
+  private connectSocket(): Promise<WebSocket> {
     const wsUrl = `${this.signalingServer}/pwa/${encodeURIComponent(this.connectionId)}`;
-    this.ws = new WebSocket(wsUrl);
+    const socket = new WebSocket(wsUrl);
+    this.ws = socket;
 
-    this.connectPromise = new Promise((resolve, reject) => {
-      if (!this.ws) return reject(new Error('WebSocket not initialized'));
-      const currentSocket = this.ws;
-
-      this.ws.onopen = () => {
-        console.log('Connected to signaling server (key-based)');
-        this.wasConnected = true;
-        this.reconnectAttempts = 0;
-        resolve();
+    const socketPromise = new Promise<WebSocket>((resolve, reject) => {
+      const currentSocket = socket;
+      let opened = false;
+      let settled = false;
+      const resolveOnce = () => {
+        if (settled) return;
+        settled = true;
+        resolve(currentSocket);
+      };
+      const rejectOnce = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
       };
 
-      this.ws.onmessage = (event) => {
+      currentSocket.onopen = () => {
+        if (this.ws !== currentSocket) {
+          rejectOnce(new Error('Superseded WebSocket connection'));
+          try {
+            currentSocket.close(4001, 'superseded connection');
+          } catch {
+            // Ignore close failures from a stale socket.
+          }
+          return;
+        }
+        console.log('Connected to signaling server (key-based)');
+        opened = true;
+        this.wasConnected = true;
+        this.reconnectAttempts = 0;
+        resolveOnce();
+      };
+
+      currentSocket.onmessage = (event) => {
+        if (this.ws !== currentSocket) return;
         // Chain onto messageQueue to guarantee in-order processing.
         // Without this, concurrent async decompress can resolve out of order.
         this.messageQueue = this.messageQueue.then(async () => {
@@ -188,12 +226,16 @@ export class WebSocketClient {
         }).catch((err) => console.error('Message processing error:', err));
       };
 
-      this.ws.onerror = (error) => {
+      currentSocket.onerror = (error) => {
+        if (this.ws !== currentSocket) {
+          rejectOnce(new Error('Superseded WebSocket connection'));
+          return;
+        }
         console.error('WebSocket error:', error);
-        reject(new Error('Failed to connect to signaling server'));
+        if (!opened) rejectOnce(new Error('Failed to connect to signaling server'));
       };
 
-      this.ws.onclose = (event) => {
+      currentSocket.onclose = (event) => {
         console.log('WebSocket connection closed', {
           code: event.code,
           reason: event.reason,
@@ -201,13 +243,24 @@ export class WebSocketClient {
         });
         if (this.suppressedCloseSocket === currentSocket) {
           this.suppressedCloseSocket = null;
+          if (!opened) rejectOnce(new Error('Suppressed WebSocket closed before opening'));
+          return;
+        }
+        if (this.ws !== currentSocket) {
+          if (!opened) rejectOnce(new Error('Superseded WebSocket connection'));
+          return;
+        }
+        this.ws = null;
+        if (!opened) {
+          rejectOnce(new Error('WebSocket closed before opening'));
           return;
         }
         this.handleDisconnection();
       };
     });
 
-    return this.connectPromise;
+    this.connectPromise = socketPromise.then(() => undefined);
+    return socketPromise;
   }
 
   /**
@@ -248,7 +301,9 @@ export class WebSocketClient {
     // Send watch-agent to check if agent is online before starting key exchange
     this.eventHandlers.onConnectionStep('signaling');
     const watchAgent = () => {
-      this.sendRaw(JSON.stringify({ type: 'watch-agent', agentId }));
+      if (!this.sendRaw(JSON.stringify({ type: 'watch-agent', agentId }))) {
+        this.forceReconnect('watch-agent send failed', { supersedeInFlight: false });
+      }
       this.eventHandlers.onConnectionStep('waiting-for-agent');
     };
 
@@ -280,6 +335,7 @@ export class WebSocketClient {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;
     }
+    this.reconnectGeneration++;
     this.reconnectAttempts = 0;
     this.autoReconnect = false;
   }
@@ -464,7 +520,9 @@ export class WebSocketClient {
     });
 
     // Wrap in routing envelope
-    this.sendRouted(session.agentId, keyExchangePayload);
+    if (!this.sendRouted(session.agentId, keyExchangePayload)) {
+      this.forceReconnect('key exchange send failed', { supersedeInFlight: false });
+    }
 
     // Schedule retry with exponential backoff
     this.scheduleKeyExchangeRetry(session);
@@ -515,7 +573,9 @@ export class WebSocketClient {
           signature,
         });
 
-        this.sendRouted(session.agentId, keyExchangePayload);
+        if (!this.sendRouted(session.agentId, keyExchangePayload)) {
+          this.forceReconnect('key exchange retry send failed', { supersedeInFlight: false });
+        }
         this.scheduleKeyExchangeRetry(session);
       }
     }, delay);
@@ -650,9 +710,13 @@ export class WebSocketClient {
       // handshake:ack flushes dekPendingMessages.
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         session.dekPendingMessages.push(message);
+        this.forceReconnect('socket not open during send', { supersedeInFlight: false });
         return;
       }
-      this.sendRouted(session.agentId, encrypted);
+      if (!this.sendRouted(session.agentId, encrypted)) {
+        session.dekPendingMessages.push(message);
+        this.forceReconnect('encrypted send failed', { supersedeInFlight: false });
+      }
     }).catch(() => {
       // compress() can fail when iOS revokes blob URL access during pagehide
       // (or other background transitions). Re-queue so the message is retried
@@ -666,19 +730,58 @@ export class WebSocketClient {
   /**
    * Send a raw payload wrapped in a routing envelope.
    */
-  private sendRouted(agentId: string, payload: string): void {
+  private sendRouted(agentId: string, payload: string): boolean {
     const envelope: RoutedEnvelope = {
       from: `pwa:${this.connectionId}`,
       to: `agent:${agentId}`,
       payload,
     };
-    this.sendRaw(JSON.stringify(envelope));
+    return this.sendRaw(JSON.stringify(envelope));
   }
 
-  private sendRaw(data: string): void {
+  private sendRaw(data: string): boolean {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(data);
+      try {
+        this.ws.send(data);
+        return true;
+      } catch (error) {
+        console.warn('WebSocket send failed:', error);
+        return false;
+      }
     }
+    return false;
+  }
+
+  private closeCurrentSocketForReconnect(reason: string): void {
+    if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
+      const staleSocket = this.ws;
+      this.suppressedCloseSocket = staleSocket;
+      try {
+        staleSocket.close(4000, reason);
+      } catch {
+        // Ignore close failures; attemptReconnect replaces this.ws.
+      }
+    }
+  }
+
+  private forceReconnect(
+    reason: string,
+    options: { supersedeInFlight: boolean } = { supersedeInFlight: true },
+  ): void {
+    if (this.isManualDisconnect) return;
+    if (this.sessions.size === 0) return;
+    if (!options.supersedeInFlight && this.reconnectInFlightGeneration !== null) return;
+
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+
+    const generation = ++this.reconnectGeneration;
+    this.reconnectAttempts = 0;
+    this.eventHandlers.onReconnecting(1, this.maxReconnectAttempts);
+    this.closeCurrentSocketForReconnect(reason);
+    void this.attemptReconnect(generation);
   }
 
   // =========================================================================
@@ -703,14 +806,14 @@ export class WebSocketClient {
     // If retries DO exhaust, attemptReconnect()'s catch branch fires
     // onDisconnected at that point — that's when we've truly given up.
     if (this.wasConnected && this.autoReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
-      this.scheduleReconnect();
+      this.scheduleReconnect(this.reconnectGeneration);
     } else {
       this.cleanupAllSessions();
       this.eventHandlers.onDisconnected();
     }
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(generation = this.reconnectGeneration): void {
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
     }
@@ -725,11 +828,16 @@ export class WebSocketClient {
     this.eventHandlers.onReconnecting(this.reconnectAttempts, this.maxReconnectAttempts);
 
     this.reconnectTimeout = setTimeout(() => {
-      this.attemptReconnect();
+      this.reconnectTimeout = null;
+      if (generation !== this.reconnectGeneration) return;
+      void this.attemptReconnect(generation);
     }, delay);
   }
 
-  private async attemptReconnect(): Promise<void> {
+  private async attemptReconnect(generation = this.reconnectGeneration): Promise<void> {
+    if (this.isManualDisconnect) return;
+    this.autoReconnect = true;
+    this.reconnectInFlightGeneration = generation;
     try {
       // Reset session key exchange state — we need to re-exchange after reconnect.
       // dekPendingMessages is intentionally preserved: commands queued while the
@@ -745,23 +853,38 @@ export class WebSocketClient {
         }
       }
 
-      await this.connect();
+      const socket = await this.connectSocket();
+      if (generation !== this.reconnectGeneration || this.ws !== socket) {
+        try {
+          socket.close(4001, 'superseded reconnect');
+        } catch {
+          // Ignore close failures from a stale reconnect attempt.
+        }
+        return;
+      }
 
       // Re-watch agents and let agent-status trigger key exchange
       for (const session of this.sessions.values()) {
-        this.sendRaw(JSON.stringify({ type: 'watch-agent', agentId: session.agentId }));
+        if (!this.sendRaw(JSON.stringify({ type: 'watch-agent', agentId: session.agentId }))) {
+          throw new Error('Failed to re-watch agent after reconnect');
+        }
         this.eventHandlers.onConnectionStep('waiting-for-agent');
       }
 
       this.reconnectAttempts = 0;
     } catch (error) {
+      if (generation !== this.reconnectGeneration || this.isManualDisconnect) return;
       console.error('Reconnection failed:', error);
       if (this.reconnectAttempts < this.maxReconnectAttempts) {
-        this.scheduleReconnect();
+        this.scheduleReconnect(generation);
       } else {
         this.eventHandlers.onError(new Error('Failed to reconnect after multiple attempts'));
         this.cleanupAllSessions();
         this.eventHandlers.onDisconnected();
+      }
+    } finally {
+      if (this.reconnectInFlightGeneration === generation) {
+        this.reconnectInFlightGeneration = null;
       }
     }
   }
@@ -793,6 +916,7 @@ export class WebSocketClient {
   disconnect(): void {
     this.isManualDisconnect = true;
     this.autoReconnect = false;
+    this.reconnectGeneration++;
 
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
@@ -817,9 +941,11 @@ export class WebSocketClient {
   retryReconnect(): void {
     if (this.isManualDisconnect) return;
     if (this.reconnectTimeout) return; // already trying — let it run
+    if (this.reconnectInFlightGeneration !== null) return;
     this.reconnectAttempts = 0;
     this.eventHandlers.onReconnecting(1, this.maxReconnectAttempts);
-    void this.attemptReconnect();
+    const generation = ++this.reconnectGeneration;
+    void this.attemptReconnect(generation);
   }
 
   /**
@@ -829,28 +955,7 @@ export class WebSocketClient {
    * or the next relay heartbeat to notice.
    */
   refreshAfterResume(): void {
-    if (this.isManualDisconnect) return;
-    if (this.sessions.size === 0) return;
-
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-      this.reconnectTimeout = null;
-    }
-
-    this.reconnectAttempts = 0;
-    this.eventHandlers.onReconnecting(1, this.maxReconnectAttempts);
-
-    if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
-      const staleSocket = this.ws;
-      this.suppressedCloseSocket = staleSocket;
-      try {
-        staleSocket.close(4000, 'resume refresh');
-      } catch {
-        // Ignore close failures; attemptReconnect replaces this.ws below.
-      }
-    }
-
-    void this.attemptReconnect();
+    this.forceReconnect('resume refresh', { supersedeInFlight: true });
   }
 
 }

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 import type { ApprovalsReviewer } from './schema/generated/v2/ApprovalsReviewer.js';
 import type { AskForApproval } from './schema/generated/v2/AskForApproval.js';
-import type { PermissionProfile } from './schema/generated/v2/PermissionProfile.js';
 import type { ReasoningEffort } from './schema/generated/ReasoningEffort.js';
 import type { SandboxPolicy } from './schema/generated/v2/SandboxPolicy.js';
 
@@ -19,7 +18,6 @@ export interface RuntimeOverrides {
   effort?: ReasoningEffort | null;
   approvalPolicy?: AskForApproval | null;
   sandboxPolicy?: SandboxPolicy | null;
-  permissionProfile?: PermissionProfile | null;
   approvalsReviewer?: ApprovalsReviewer | null;
 }
 
@@ -28,7 +26,6 @@ const KEYS: readonly (keyof RuntimeOverrides)[] = [
   'effort',
   'approvalPolicy',
   'sandboxPolicy',
-  'permissionProfile',
   'approvalsReviewer',
 ];
 

@@ -136,6 +136,7 @@ export function attachSessionAttention(
   deps.addListener('document', 'visibilitychange', sync);
   deps.addListener('window', 'focus', sync);
   deps.addListener('window', 'blur', sync);
+  deps.addListener('window', 'pageshow', sync);
   // pagehide is the only reliable event on iOS Safari when the PWA is sent
   // to background via Home Screen gesture; visibilitychange can lag.
   const pagehide = () => {
@@ -151,6 +152,7 @@ export function attachSessionAttention(
     deps.removeListener('document', 'visibilitychange', sync);
     deps.removeListener('window', 'focus', sync);
     deps.removeListener('window', 'blur', sync);
+    deps.removeListener('window', 'pageshow', sync);
     deps.removeListener('window', 'pagehide', pagehide);
     detach();
     if (attending) {

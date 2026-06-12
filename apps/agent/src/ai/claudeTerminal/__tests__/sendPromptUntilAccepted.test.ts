@@ -113,4 +113,24 @@ describe('sendPromptUntilAccepted', () => {
     expect(result).toBe('already-there');
     expect(sends).toBe(0);
   });
+
+  it('pauses sending while an interactive TUI prompt is active', async () => {
+    const clock = virtualClock();
+    let sends = 0;
+
+    const result = await sendPromptUntilAccepted({
+      send: () => { sends++; },
+      probe: () => (sends > 0 ? 'sid-after-user-confirmed' : null),
+      pauseWhile: () => (clock.t < 1200 ? 'waiting for user confirmation' : null),
+      maxPauseMs: 2000,
+      timeoutMs: 1000,
+      pollIntervalMs: 100,
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+
+    expect(result).toBe('sid-after-user-confirmed');
+    expect(sends).toBe(1);
+    expect(clock.t).toBeGreaterThanOrEqual(1200);
+  });
 });

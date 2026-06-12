@@ -36,13 +36,11 @@ export function mapCodexPermissionPreset(
   const fullAccess: SandboxPolicy = { type: 'dangerFullAccess' };
   const readOnly: SandboxPolicy = {
     type: 'readOnly',
-    access: { type: 'fullAccess' },
     networkAccess: false,
   };
   const workspaceWrite: SandboxPolicy = {
     type: 'workspaceWrite',
     writableRoots,
-    readOnlyAccess: { type: 'fullAccess' },
     networkAccess: true,
     excludeTmpdirEnvVar: false,
     excludeSlashTmp: false,

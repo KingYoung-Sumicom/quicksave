@@ -442,7 +442,7 @@ export class MessageHandler {
     try {
       handle = await spawnAppServer({
         clientInfo: { name: 'quicksave-agent', title: 'Quicksave Agent', version: '0.0.0' },
-        capabilities: { experimentalApi: true, optOutNotificationMethods: null },
+        capabilities: { experimentalApi: true, requestAttestation: false, optOutNotificationMethods: null },
       });
       const res = await handle.rpc.request<{ data: CodexAppServerModel[]; nextCursor: string | null }>(
         'model/list',

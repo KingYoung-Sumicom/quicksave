@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment, SlashCommandInfo } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, ConfigValue, SlashCommandInfo } from '@sumicom/quicksave-shared';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -54,6 +54,16 @@ import type { McpElicitationPrimitiveSchema } from './schema/generated/v2/McpEli
 import type { DynamicToolCallParams } from './schema/generated/v2/DynamicToolCallParams.js';
 import type { DynamicToolCallResponse } from './schema/generated/v2/DynamicToolCallResponse.js';
 import type { ChatgptAuthTokensRefreshParams } from './schema/generated/v2/ChatgptAuthTokensRefreshParams.js';
+import type { ThreadGoal } from './schema/generated/v2/ThreadGoal.js';
+import type { ThreadGoalClearParams } from './schema/generated/v2/ThreadGoalClearParams.js';
+import type { ThreadGoalClearResponse } from './schema/generated/v2/ThreadGoalClearResponse.js';
+import type { ThreadGoalClearedNotification } from './schema/generated/v2/ThreadGoalClearedNotification.js';
+import type { ThreadGoalGetParams } from './schema/generated/v2/ThreadGoalGetParams.js';
+import type { ThreadGoalGetResponse } from './schema/generated/v2/ThreadGoalGetResponse.js';
+import type { ThreadGoalSetParams } from './schema/generated/v2/ThreadGoalSetParams.js';
+import type { ThreadGoalSetResponse } from './schema/generated/v2/ThreadGoalSetResponse.js';
+import type { ThreadGoalStatus } from './schema/generated/v2/ThreadGoalStatus.js';
+import type { ThreadGoalUpdatedNotification } from './schema/generated/v2/ThreadGoalUpdatedNotification.js';
 import type { JsonValue } from './schema/generated/serde_json/JsonValue.js';
 import { codexProtocolPreview } from './protocolLog.js';
 import { codexServerRequestInputId } from './serverRequestIds.js';
@@ -126,6 +136,11 @@ export class CodexAppServerProvider implements CodingAgentProvider {
       onExitedFire: callbacks.onSessionExited,
     });
     callbacks.onModelDetected(response.model);
+    void session.refreshGoalConfig().catch((err) => {
+      console.warn(
+        `[codex-app] failed to refresh goal session=${response.thread.id.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
 
     // First-turn overrides from opts (effort etc.) get queued so drain()
     // attaches them to the next turn/start.
@@ -167,6 +182,11 @@ export class CodexAppServerProvider implements CodingAgentProvider {
       onExitedFire: callbacks.onSessionExited,
     });
     callbacks.onModelDetected(response.model);
+    void session.refreshGoalConfig().catch((err) => {
+      console.warn(
+        `[codex-app] failed to refresh goal session=${response.thread.id.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
 
     overrideStore.enqueue(perTurnOverridesFromOpts(opts, response));
     scheduleInitialTurn(session, opts.prompt, opts.attachments);
@@ -216,6 +236,11 @@ export interface CodexAppServerProviderSession extends ProviderSession {
   /** True when there are queued overrides not yet sent to the
    * server. UI can use this to surface a "pending" badge. */
   hasPendingOverride(): boolean;
+  /** Provider-specific control bridge used by the PWA's generic
+   * `session:control-request` message. */
+  sendControlRequest(subtype: string, params?: Record<string, unknown>): Promise<unknown>;
+  /** Re-read Codex thread goal state and mirror it into session config. */
+  refreshGoalConfig(): Promise<void>;
 }
 
 export class CodexAppServerSession implements CodexAppServerProviderSession {
@@ -229,6 +254,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   private pendingTurns: QueuedUserPrompt[] = [];
   private running = false;
   private exited = false;
+  private unsubscribeSessionNotifications: (() => void) | null = null;
 
   constructor(args: SessionArgs) {
     this.handle = args.handle;
@@ -242,6 +268,9 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     // Wire approval requests through the standard ProviderCallbacks bridge.
     this.handle.rpc.setServerRequestHandler(async (req) => {
       return this.handleServerRequest(req);
+    });
+    this.unsubscribeSessionNotifications = this.handle.rpc.onNotification((notification) => {
+      this.handleSessionNotification(notification);
     });
 
     // If the child exits unexpectedly, mark us dead and notify SessionManager.
@@ -287,13 +316,66 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     return this.overrideStore.hasPending();
   }
 
+  async sendControlRequest(subtype: string, params?: Record<string, unknown>): Promise<unknown> {
+    switch (subtype) {
+      case 'goal.get':
+      case 'thread/goal/get':
+        return this.refreshGoalConfigAndReturn();
+
+      case 'goal.set':
+      case 'goal.update':
+      case 'thread/goal/set': {
+        const response = await this.handle.rpc.request<ThreadGoalSetResponse>(
+          'thread/goal/set',
+          this.goalSetParams(params),
+        );
+        this.emitGoalConfig(response.goal);
+        return response;
+      }
+
+      case 'goal.pause': {
+        const response = await this.handle.rpc.request<ThreadGoalSetResponse>(
+          'thread/goal/set',
+          { threadId: this.threadId, status: 'paused' } satisfies ThreadGoalSetParams,
+        );
+        this.emitGoalConfig(response.goal);
+        return response;
+      }
+
+      case 'goal.resume': {
+        const response = await this.handle.rpc.request<ThreadGoalSetResponse>(
+          'thread/goal/set',
+          { threadId: this.threadId, status: 'active' } satisfies ThreadGoalSetParams,
+        );
+        this.emitGoalConfig(response.goal);
+        return response;
+      }
+
+      case 'goal.clear':
+      case 'thread/goal/clear': {
+        const response = await this.handle.rpc.request<ThreadGoalClearResponse>(
+          'thread/goal/clear',
+          { threadId: this.threadId } satisfies ThreadGoalClearParams,
+        );
+        this.emitGoalClearedConfig();
+        return response;
+      }
+
+      default:
+        throw new Error(`Unsupported Codex control request subtype: ${subtype}`);
+    }
+  }
+
+  async refreshGoalConfig(): Promise<void> {
+    await this.refreshGoalConfigAndReturn();
+  }
+
   async listSlashCommands(opts?: { cwd?: string; forceReload?: boolean }): Promise<SlashCommandInfo[]> {
     const response = await this.handle.rpc.request<SkillsListResponse>(
       'skills/list',
       {
         cwds: opts?.cwd ? [opts.cwd] : [],
         forceReload: opts?.forceReload === true,
-        perCwdExtraUserRoots: null,
       } satisfies SkillsListParams,
     );
     return codexSkillsToSlashCommands(response, opts?.cwd);
@@ -315,6 +397,8 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     if (this.exited) return;
     this.exited = true;
     this.pendingTurns = [];
+    this.unsubscribeSessionNotifications?.();
+    this.unsubscribeSessionNotifications = null;
     try {
       await this.cardBuilder.persistCards();
     } catch {
@@ -496,6 +580,68 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     }
   }
 
+  private async refreshGoalConfigAndReturn(): Promise<ThreadGoalGetResponse> {
+    const response = await this.handle.rpc.request<ThreadGoalGetResponse>(
+      'thread/goal/get',
+      { threadId: this.threadId } satisfies ThreadGoalGetParams,
+    );
+    if (response.goal) {
+      this.emitGoalConfig(response.goal);
+    } else {
+      this.emitGoalClearedConfig();
+    }
+    return response;
+  }
+
+  private goalSetParams(params?: Record<string, unknown>): ThreadGoalSetParams {
+    const out: ThreadGoalSetParams = { threadId: this.threadId };
+    const input = params ?? {};
+
+    if ('objective' in input) {
+      out.objective = normalizeGoalObjective(input.objective);
+    }
+    if ('status' in input) {
+      out.status = normalizeGoalStatusOrNull(input.status);
+    }
+    if ('tokenBudget' in input) {
+      out.tokenBudget = normalizeGoalTokenBudget(input.tokenBudget);
+    }
+    return out;
+  }
+
+  private handleSessionNotification(notification: { method: string; params: unknown }): void {
+    try {
+      switch (notification.method) {
+        case 'thread/goal/updated': {
+          const params = notification.params as ThreadGoalUpdatedNotification;
+          if (params.threadId !== this.threadId) return;
+          this.emitGoalConfig(params.goal);
+          return;
+        }
+        case 'thread/goal/cleared': {
+          const params = notification.params as ThreadGoalClearedNotification;
+          if (params.threadId !== this.threadId) return;
+          this.emitGoalClearedConfig();
+          return;
+        }
+        default:
+          return;
+      }
+    } catch (err) {
+      console.warn(
+        `[codex-app] failed to handle session notification method=${notification.method} session=${this.threadId.slice(0, 8)} params=${codexProtocolPreview(notification.params)} error=${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  private emitGoalConfig(goal: ThreadGoal): void {
+    this.callbacks.onSessionConfigPatch?.(this.threadId, codexGoalToConfigPatch(goal));
+  }
+
+  private emitGoalClearedConfig(): void {
+    this.callbacks.onSessionConfigPatch?.(this.threadId, clearedGoalConfigPatch());
+  }
+
   private async handleServerRequest(req: {
     id: number | string;
     method: string;
@@ -531,6 +677,8 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
         return unsupportedDynamicToolCallResponse(req.params as DynamicToolCallParams);
       case 'account/chatgptAuthTokens/refresh':
         return unsupportedChatgptAuthTokensRefresh(req.params as ChatgptAuthTokensRefreshParams);
+      case 'attestation/generate':
+        return unsupportedAttestationGenerate(req.params);
       default:
         // Unknown server request — refuse.
         console.warn(
@@ -805,6 +953,81 @@ function unsupportedChatgptAuthTokensRefresh(params: ChatgptAuthTokensRefreshPar
   );
 }
 
+function unsupportedAttestationGenerate(params: unknown): never {
+  console.warn(
+    `[codex-app] unsupported server request method=attestation/generate params=${codexProtocolPreview(params)}`,
+  );
+  throw new Error('attestation/generate is not supported by Quicksave');
+}
+
+function normalizeGoalObjective(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value !== 'string') {
+    throw new Error('goal objective must be a string');
+  }
+  const objective = value.trim();
+  if (!objective) {
+    throw new Error('goal objective must not be empty');
+  }
+  if (objective.length > 4000) {
+    throw new Error('goal objective must be 4000 characters or fewer');
+  }
+  return objective;
+}
+
+function normalizeGoalStatusOrNull(value: unknown): ThreadGoalStatus | null {
+  if (value === null) return null;
+  if (typeof value === 'string' && isThreadGoalStatus(value)) return value;
+  throw new Error(`goal status must be one of: ${THREAD_GOAL_STATUSES.join(', ')}`);
+}
+
+function normalizeGoalTokenBudget(value: unknown): number | null {
+  if (value === null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new Error('goal tokenBudget must be a non-negative number');
+  }
+  return value;
+}
+
+const THREAD_GOAL_STATUSES = [
+  'active',
+  'paused',
+  'blocked',
+  'usageLimited',
+  'budgetLimited',
+  'complete',
+] as const satisfies readonly ThreadGoalStatus[];
+
+function isThreadGoalStatus(value: string): value is ThreadGoalStatus {
+  return (THREAD_GOAL_STATUSES as readonly string[]).includes(value);
+}
+
+function codexGoalToConfigPatch(goal: ThreadGoal): Record<string, ConfigValue> {
+  return {
+    codexGoalPresent: true,
+    codexGoalObjective: goal.objective,
+    codexGoalStatus: goal.status,
+    codexGoalTokenBudget: goal.tokenBudget,
+    codexGoalTokensUsed: goal.tokensUsed,
+    codexGoalTimeUsedSeconds: goal.timeUsedSeconds,
+    codexGoalCreatedAt: goal.createdAt,
+    codexGoalUpdatedAt: goal.updatedAt,
+  };
+}
+
+function clearedGoalConfigPatch(): Record<string, ConfigValue> {
+  return {
+    codexGoalPresent: false,
+    codexGoalObjective: null,
+    codexGoalStatus: null,
+    codexGoalTokenBudget: null,
+    codexGoalTokensUsed: null,
+    codexGoalTimeUsedSeconds: null,
+    codexGoalCreatedAt: null,
+    codexGoalUpdatedAt: null,
+  };
+}
+
 function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promise<AppServerHandle> {
   return spawnAppServer(
     {
@@ -813,7 +1036,7 @@ function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promis
         title: 'Quicksave Agent',
         version: '0.0.0',
       },
-      capabilities: { experimentalApi: true, optOutNotificationMethods: null },
+      capabilities: { experimentalApi: true, requestAttestation: false, optOutNotificationMethods: null },
     },
     {
       extraArgs: buildCodexSandboxMcpConfigArgs({
@@ -880,7 +1103,6 @@ function seedOverrideStoreFromResponse(
     effort: resp.reasoningEffort ?? null,
     approvalPolicy: resp.approvalPolicy,
     sandboxPolicy: resp.sandbox,
-    permissionProfile: resp.permissionProfile,
     approvalsReviewer: resp.approvalsReviewer,
   });
 }
@@ -945,7 +1167,6 @@ export function buildThreadStartParams(opts: StartSessionOpts): ThreadStartParam
     approvalPolicy: perm.approvalPolicy,
     approvalsReviewer: perm.approvalsReviewer,
     sandbox: perm.sandbox,
-    permissionProfile: null,
     config: null,
     serviceName: null,
     baseInstructions: null,
@@ -953,8 +1174,7 @@ export function buildThreadStartParams(opts: StartSessionOpts): ThreadStartParam
     personality: null,
     ephemeral: null,
     sessionStartSource: null,
-    experimentalRawEvents: false,
-    persistExtendedHistory: true,
+    threadSource: null,
   };
 }
 
@@ -963,8 +1183,6 @@ export function buildThreadResumeParams(opts: ResumeSessionOpts): ThreadResumePa
   const perm = mapCodexPresetToInitialThreadOpts(preset, opts.sandboxed);
   return {
     threadId: opts.sessionId,
-    history: null,
-    path: null,
     model: opts.model ?? null,
     modelProvider: null,
     serviceTier: null,
@@ -972,13 +1190,10 @@ export function buildThreadResumeParams(opts: ResumeSessionOpts): ThreadResumePa
     approvalPolicy: perm.approvalPolicy,
     approvalsReviewer: perm.approvalsReviewer,
     sandbox: perm.sandbox,
-    permissionProfile: null,
     config: null,
     baseInstructions: null,
     developerInstructions: opts.systemPrompt ?? null,
     personality: null,
-    excludeTurns: true,
-    persistExtendedHistory: true,
   };
 }
 

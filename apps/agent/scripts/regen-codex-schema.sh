@@ -35,11 +35,11 @@ TOP_LEVEL=(
   "ServerRequest.ts"
   "AbsolutePathBuf.ts"
   "Personality.ts"
-  "ServiceTier.ts"
   "ReasoningEffort.ts"
   "ReasoningSummary.ts"
   "MessagePhase.ts"
   "ResponseItem.ts"
+  "AgentMessageInputContent.ts"
   "AgentPath.ts"
   "ApplyPatchApprovalParams.ts"
   "ApplyPatchApprovalResponse.ts"
@@ -58,7 +58,6 @@ TOP_LEVEL=(
   "GitDiffToRemoteParams.ts"
   "GitDiffToRemoteResponse.ts"
   "GitSha.ts"
-  "GhostCommit.ts"
   "ConversationGitInfo.ts"
   "ConversationSummary.ts"
   "AuthMode.ts"
@@ -84,6 +83,7 @@ TOP_LEVEL=(
   "ResourceTemplate.ts"
   "ReviewDecision.ts"
   "SessionSource.ts"
+  "InternalSessionSource.ts"
   "Settings.ts"
   "SubAgentSource.ts"
   "ThreadId.ts"
@@ -98,13 +98,15 @@ TOP_LEVEL=(
   "FileChange.ts"
   "ExecPolicyAmendment.ts"
   "NetworkPolicyAmendment.ts"
+  "AutoCompactTokenLimitScope.ts"
   "CollaborationMode.ts"
+  "McpServerInfo.ts"
   "ModeKind.ts"
   "NetworkPolicyRuleAction.ts"
 )
 
 if ! command -v codex >/dev/null; then
-  echo "error: 'codex' CLI not found on PATH. Install codex 0.125.0+ first." >&2
+  echo "error: 'codex' CLI not found on PATH. Install codex 0.139.0+ first." >&2
   exit 1
 fi
 

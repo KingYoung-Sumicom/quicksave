@@ -15,14 +15,16 @@
  * rationale and probe results that justify per-message flush timing.
  */
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Attachment, AgentId, CardStreamEnd } from '@sumicom/quicksave-shared';
 import type { StreamCardBuilder } from '../cardBuilder.js';
-import { claudeProjectDir, jsonlPath } from '../cardBuilder.js';
+import { claudeProjectDir, jsonlPath, localCommandDisplayText } from '../cardBuilder.js';
 import type {
   CodingAgentProvider,
+  ProbeResult,
   ProviderCallbacks,
   ProviderHistoryMode,
   ProviderSession,
@@ -46,19 +48,29 @@ const __ownDir = dirname(fileURLToPath(import.meta.url));
  *                       the assistant message JSONL flush.
  *   - PostToolUse:      fires immediately after the tool returns — same
  *                       latency win for tool_result cards.
+ *   - PostToolUseFailure: companion failure event on newer Claude Code builds;
+ *                       avoids losing failed tool_result cards if failures no
+ *                       longer arrive as PostToolUse + is_error.
  *   - PermissionRequest: fires before tool execution when the tool needs
  *                       user confirmation. We bridge it to
  *                       `ProviderCallbacks.handlePermissionRequest` so the
  *                       PWA dialog (not the TUI's y/n) decides.
+ *   - SessionStart:     carries the authoritative session id / transcript
+ *                       path. New terminal sessions require this instead of
+ *                       typing the start payload into the TUI.
  *   - Stop:             fires when the assistant turn completes — anchors
  *                       the stream-end CardEvent that stops the spinner.
+ *   - StopFailure:      failed-turn companion for Stop.
  */
 const ACTIVE_HOOKS: HookEventName[] = [
+  'SessionStart',
   'UserPromptSubmit',
   'PreToolUse',
   'PostToolUse',
+  'PostToolUseFailure',
   'PermissionRequest',
   'Stop',
+  'StopFailure',
 ];
 
 /**
@@ -79,6 +91,14 @@ const PROMPT_RETRY_INTERVAL_MS = 2500;
 const PROMPT_SUBMIT_GAP_MS = 150;
 /** Overall ceiling for discovering / starting the session JSONL. */
 const SESSION_DISCOVER_TIMEOUT_MS = 30_000;
+/** New terminal sessions rely on SessionStart for the authoritative session id.
+ * We intentionally do not type the initial prompt to create a JSONL fallback:
+ * Claude may be sitting at a workspace trust prompt, and that prompt must stay
+ * visible in the terminal for the user to confirm manually. */
+const SESSION_START_TIMEOUT_MS = 30_000;
+/** Extra time we will wait while a workspace trust prompt is visibly blocking
+ * the TUI. We intentionally do not auto-confirm trust. */
+const TRUST_PROMPT_MAX_PAUSE_MS = 120_000;
 
 /**
  * Pick the right interpreter + handler path so the hook command works whether
@@ -104,6 +124,184 @@ export function resolveHookCommand(): { interpreter: string; handlerPath: string
   const tsHandler = join(__ownDir, 'hookHandler.ts');
   const tsxBin = join(__ownDir, '..', '..', '..', 'node_modules', '.bin', 'tsx');
   return { interpreter: tsxBin, handlerPath: tsHandler };
+}
+
+interface SessionStartInfo {
+  sessionId: string;
+  transcriptPath?: string;
+  model?: string;
+}
+
+class SessionStartLatch {
+  private info: SessionStartInfo | null = null;
+  private waiters: Array<(info: SessionStartInfo) => void> = [];
+
+  record(payload: Record<string, unknown>): SessionStartInfo | null {
+    const info = parseSessionStartInfo(payload);
+    if (!info) return null;
+    this.info = info;
+    for (const waiter of this.waiters.splice(0)) waiter(info);
+    return info;
+  }
+
+  get(): SessionStartInfo | null {
+    return this.info;
+  }
+
+  wait(timeoutMs: number): Promise<SessionStartInfo | null> {
+    if (this.info) return Promise.resolve(this.info);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.waiters = this.waiters.filter((w) => w !== done);
+        resolve(null);
+      }, timeoutMs);
+      const done = (info: SessionStartInfo) => {
+        clearTimeout(timer);
+        resolve(info);
+      };
+      this.waiters.push(done);
+    });
+  }
+}
+
+function parseSessionStartInfo(payload: Record<string, unknown>): SessionStartInfo | null {
+  const directSessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
+  const transcriptPath = typeof payload.transcript_path === 'string' ? payload.transcript_path : undefined;
+  const derivedSessionId = transcriptPath ? sessionIdFromTranscriptPath(transcriptPath) : '';
+  const sessionId = directSessionId || derivedSessionId;
+  if (!sessionId) return null;
+  const model = typeof payload.model === 'string' ? payload.model : undefined;
+  return {
+    sessionId,
+    ...(transcriptPath ? { transcriptPath } : {}),
+    ...(model ? { model } : {}),
+  };
+}
+
+function sessionIdFromTranscriptPath(path: string): string {
+  const file = basename(path);
+  return file.endsWith('.jsonl') ? file.slice(0, -'.jsonl'.length) : file;
+}
+
+interface TrustPromptMonitor {
+  readonly seen: boolean;
+  shouldPause(): boolean;
+  stop(): void;
+}
+
+function createTrustPromptMonitor(terminalId: string): TrustPromptMonitor {
+  const tm = getTerminalManager();
+  let seen = false;
+  let active = false;
+  const onOutput = (chunk: { terminalId?: string; chunk?: string }) => {
+    if (chunk.terminalId !== terminalId || typeof chunk.chunk !== 'string') return;
+    const text = normalizeTerminalText(chunk.chunk);
+    if (!text.trim()) return;
+    if (looksLikeWorkspaceTrustPrompt(text)) {
+      seen = true;
+      active = true;
+      return;
+    }
+    // Once trust was shown, any subsequent visible output means the user has
+    // interacted with the TUI. Do not auto-confirm; just resume prompt typing.
+    if (active) active = false;
+  };
+  tm.on('output', onOutput);
+  return {
+    get seen() { return seen; },
+    shouldPause: () => active,
+    stop: () => tm.off('output', onOutput),
+  };
+}
+
+function normalizeTerminalText(value: string): string {
+  return value
+    // ANSI CSI/control sequences.
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    // OSC sequences.
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+    .toLowerCase();
+}
+
+function looksLikeWorkspaceTrustPrompt(text: string): boolean {
+  return (
+    text.includes('trust this folder')
+    || text.includes('do you trust')
+    || (text.includes('workspace') && text.includes('trust'))
+    || (text.includes('folder') && text.includes('trust') && text.includes('yes'))
+  );
+}
+
+interface ClaudeTerminalPreflight {
+  bin: string;
+  hasCli: boolean;
+  version?: string;
+  help?: string;
+  supportsSettings: boolean;
+  supportsPermissionMode: boolean;
+  supportsResume: boolean;
+  supportsModel: boolean;
+}
+
+function probeClaudeTerminalPreflight(): ClaudeTerminalPreflight {
+  const bin = getClaudeBin();
+  let version: string | undefined;
+  let help: string | undefined;
+  try {
+    version = execFileSync(bin, ['--version'], {
+      encoding: 'utf8',
+      timeout: 3_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim() || undefined;
+  } catch {
+    return {
+      bin,
+      hasCli: false,
+      supportsSettings: false,
+      supportsPermissionMode: false,
+      supportsResume: false,
+      supportsModel: false,
+    };
+  }
+  try {
+    help = execFileSync(bin, ['--help'], {
+      encoding: 'utf8',
+      timeout: 3_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch {
+    help = '';
+  }
+  const hasFlag = (flag: string) => !!help && help.includes(flag);
+  return {
+    bin,
+    hasCli: true,
+    version,
+    help,
+    supportsSettings: hasFlag('--settings'),
+    supportsPermissionMode: hasFlag('--permission-mode'),
+    supportsResume: hasFlag('--resume'),
+    supportsModel: hasFlag('--model'),
+  };
+}
+
+function assertClaudeTerminalPreflight(
+  preflight: ClaudeTerminalPreflight,
+  opts: { needsResume: boolean; needsModel: boolean; needsPermissionMode: boolean },
+): void {
+  if (!preflight.hasCli) {
+    throw new Error('claude-terminal: Claude CLI was not found or `claude --version` failed');
+  }
+  const missing: string[] = [];
+  if (!preflight.supportsSettings) missing.push('--settings');
+  if (opts.needsResume && !preflight.supportsResume) missing.push('--resume');
+  if (opts.needsModel && !preflight.supportsModel) missing.push('--model');
+  if (opts.needsPermissionMode && !preflight.supportsPermissionMode) missing.push('--permission-mode');
+  if (missing.length > 0) {
+    throw new Error(
+      `claude-terminal: Claude CLI ${preflight.version ?? ''} is missing required flag(s): ${missing.join(', ')}`,
+    );
+  }
 }
 
 // ============================================================================
@@ -177,6 +375,21 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
   readonly historyMode: ProviderHistoryMode = 'claude-jsonl';
   readonly label = 'Claude (Terminal)';
 
+  async probeProvider(): Promise<ProbeResult> {
+    const preflight = probeClaudeTerminalPreflight();
+    return {
+      version: preflight.version,
+      capabilities: {
+        hasApiKey: !!process.env.ANTHROPIC_API_KEY,
+        hasCli: preflight.hasCli,
+        hasPlugin: false,
+        supportsResume: preflight.supportsResume,
+        supportsSandbox: false,
+        supportsStreaming: true,
+      },
+    };
+  }
+
   async startSession(
     opts: StartSessionOpts,
     cardBuilder: StreamCardBuilder,
@@ -199,9 +412,32 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
     callbacks: ProviderCallbacks,
     resumeSessionId: string | undefined,
   ): Promise<{ sessionId: string; session: ProviderSession }> {
+    const preflight = probeClaudeTerminalPreflight();
+    assertClaudeTerminalPreflight(preflight, {
+      needsResume: !!resumeSessionId,
+      needsModel: !!opts.model,
+      needsPermissionMode: !!opts.permissionLevel && opts.permissionLevel !== 'default',
+    });
+
     // 1. Hook bridge — start before we spawn claude so the socket exists.
     const bridge = new HookBridge();
     await bridge.start();
+    const sessionStart = new SessionStartLatch();
+    const earlyHookQueue: HookRequest[] = [];
+    let liveSession: TerminalProviderSession | null = null;
+    const unbindBridge = bridge.onRequest((req) => {
+      if (req.event === 'SessionStart') {
+        const info = sessionStart.record(req.payload);
+        if (info?.model) callbacks.onModelDetected(info.model);
+        req.respond(null);
+        return;
+      }
+      if (liveSession) {
+        this.handleHookRequest(req, liveSession, cardBuilder, callbacks);
+      } else {
+        earlyHookQueue.push(req);
+      }
+    });
 
     // 2. Settings JSON with our hooks.
     const { interpreter, handlerPath } = resolveHookCommand();
@@ -214,17 +450,17 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
 
     // 3. Build claude argv. TUI mode = no -p, no --input-format.
     const args: string[] = [];
-    if (opts.model) args.push('--model', opts.model);
+    if (opts.model && preflight.supportsModel) args.push('--model', opts.model);
     args.push('--settings', JSON.stringify(settings));
     // Forward the user's permission preset. `bypassPermissions` skips the TUI
     // y/n prompt AND our PermissionRequest hook — exactly what the user
     // wants when they pick it. For `acceptEdits` / `plan` / `auto` we pass
     // through directly; claude TUI honors them. For `default` we omit the
     // flag and let claude use its built-in default.
-    if (opts.permissionLevel && opts.permissionLevel !== 'default') {
+    if (opts.permissionLevel && opts.permissionLevel !== 'default' && preflight.supportsPermissionMode) {
       args.push('--permission-mode', opts.permissionLevel);
     }
-    if (resumeSessionId) args.push('--resume', resumeSessionId);
+    if (resumeSessionId && preflight.supportsResume) args.push('--resume', resumeSessionId);
 
     // 4. Snapshot existing JSONLs so we can detect the new one.
     const projectDir = claudeProjectDir(opts.cwd);
@@ -240,41 +476,33 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
     // 5. Spawn claude inside a terminalManager terminal.
     const term = await getTerminalManager().create({
       cwd: opts.cwd,
-      shell: getClaudeBin(),
+      shell: preflight.bin,
       args,
+      env: {
+        CLAUDE_CODE_NO_FLICKER: '1',
+      },
       cols: 120,
       rows: 30,
       title: `Claude ${resumeSessionId ? '↻' : '✨'} ${opts.cwd.split('/').pop() ?? ''}`,
     });
+    const trustPrompt = createTrustPromptMonitor(term.terminalId);
 
-    // 6. CRITICAL ordering note: claude TUI does NOT create the session
-    //    JSONL at startup — it lazily writes it when the FIRST user message
-    //    is submitted. For new sessions we must type the prompt into the PTY
-    //    BEFORE polling for the JSONL, otherwise discoverSessionId() will
-    //    hit its 30s timeout waiting on a file that will never appear.
-    //
-    //    For resume, the file already exists and `--resume <sid>` makes
-    //    claude touch it on startup, so we can poll immediately.
+    // 6. Obtain the session id. New terminal sessions require the SessionStart
+    //    hook; we deliberately do NOT inject the user's initial prompt to force
+    //    JSONL creation, because that can be swallowed by Claude's workspace
+    //    trust prompt. For resume, the JSONL already exists and `--resume <sid>`
+    //    makes claude touch it on startup, so we can poll immediately.
     // 7. Obtain the session JSONL / sessionId.
     let sessionId: string;
     try {
-      if (!resumeSessionId && opts.prompt) {
-        // New session: claude TUI lazily creates the session JSONL only when
-        // the FIRST user message is accepted. We can't reliably guess when the
-        // TUI is ready for keystrokes — cold boxes paint the welcome screen
-        // slowly and silently eat early input, which used to leave
-        // discoverSessionId() waiting on a JSONL that never appeared (the 30s
-        // timeout seen in the field). So drive on the RESULT instead of a fixed
-        // delay: type the prompt, wait briefly for the JSONL to appear, and
-        // re-type if it didn't — the new JSONL is proof the prompt landed.
-        const prompt = opts.prompt;
-        sessionId = await sendPromptUntilAccepted({
-          send: () => this.typePrompt(term.terminalId, prompt),
-          probe: () => this.scanForNewJsonl(projectDir, beforeJsonls, undefined),
-          timeoutMs: SESSION_DISCOVER_TIMEOUT_MS,
-          initialDelayMs: TUI_INITIAL_DELAY_MS,
-          retryIntervalMs: PROMPT_RETRY_INTERVAL_MS,
-        });
+      if (!resumeSessionId) {
+        const startInfo = await sessionStart.wait(SESSION_START_TIMEOUT_MS);
+        if (!startInfo?.sessionId) {
+          throw new Error(
+            'claude-terminal: SessionStart hook did not fire; update Claude Code or use the non-terminal provider',
+          );
+        }
+        sessionId = startInfo.sessionId;
       } else {
         // Resume: the JSONL already exists (claude touches it on `--resume`),
         // so just poll for it. The follow-up prompt is injected in the
@@ -283,15 +511,21 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
       }
     } catch (err) {
       // Don't leak the spawned PTY + socket if we never got a sessionId.
+      for (const req of earlyHookQueue.splice(0)) req.respond(null);
       try { getTerminalManager().close(term.terminalId, true); } catch { /* */ }
       try { await bridge.stop(); } catch { /* */ }
+      trustPrompt.stop();
+      unbindBridge();
       throw err;
     }
 
     cardBuilder.updateSessionId(sessionId);
 
     // 8. Start tailing the JSONL.
-    const tail = new JsonlTail(jsonlPath(sessionId, opts.cwd));
+    const transcriptPath = sessionStart.get()?.sessionId === sessionId && sessionStart.get()?.transcriptPath
+      ? sessionStart.get()!.transcriptPath!
+      : jsonlPath(sessionId, opts.cwd);
+    const tail = new JsonlTail(transcriptPath);
     tail.start(50);
 
     const synth = new CardSynth({
@@ -306,15 +540,20 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
       tail,
       synth,
     });
+    liveSession = session;
 
-    // 9. Wire hook events → callbacks.
-    bridge.onRequest((req) => this.handleHookRequest(req, session, cardBuilder, callbacks));
+    // 9. Flush hook events that arrived before the session object existed.
+    for (const req of earlyHookQueue.splice(0)) {
+      this.handleHookRequest(req, session, cardBuilder, callbacks);
+    }
 
     // 10. Wire JSONL messages → cardBuilder.
     tail.on('message', (msg) => this.handleJsonlMessage(msg, session, cardBuilder, callbacks));
 
     // 11. Resume path: inject the follow-up prompt now that the session is
-    //     wired. (New-session prompt was already accepted before step 7.)
+    //     wired. New sessions intentionally ignore the start payload's prompt;
+    //     the user drives the first input directly in the TUI after clearing
+    //     any Claude trust/login prompt.
     //
     //     Unlike the new-session path, discoverSessionId returns almost
     //     immediately on resume — `--resume <sid>` makes claude touch the
@@ -324,7 +563,15 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
     //     and re-type if needed. Runs in the background: we already have the
     //     sessionId, so callers must not block on acceptance.
     if (resumeSessionId && opts.prompt) {
-      void this.injectResumePrompt(session, tail.path, opts.prompt);
+      void this.injectResumePrompt(session, tail.path, opts.prompt, trustPrompt);
+    } else {
+      trustPrompt.stop();
+      // SessionManager marks a newly-created session as streaming after the
+      // provider returns. Since terminal start no longer sends a prompt, flip
+      // it back to idle on the next macrotask after registration completes.
+      setTimeout(() => {
+        if (session.alive) callbacks.emitStreamEnd({ sessionId: session.sessionId, success: true });
+      }, 0);
     }
 
     return { sessionId, session };
@@ -384,29 +631,53 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
     session: TerminalProviderSession,
     jsonlFilePath: string,
     prompt: string,
+    trustPrompt?: TrustPromptMonitor,
   ): Promise<void> {
-    let baseline: number | null = null;
     try {
-      await sendPromptUntilAccepted({
-        send: () => this.typePrompt(session.terminalId, prompt),
-        probe: () => {
-          let size: number;
-          try { size = statSync(jsonlFilePath).size; } catch { return null; }
-          // First probe (after initialDelay) anchors the baseline so claude's
-          // own resume-startup writes aren't mistaken for our prompt landing.
-          if (baseline === null) { baseline = size; return null; }
-          return size > baseline ? String(size) : null;
-        },
-        abort: () => !session.alive,
-        timeoutMs: SESSION_DISCOVER_TIMEOUT_MS,
-        initialDelayMs: TUI_INITIAL_DELAY_MS,
-        retryIntervalMs: PROMPT_RETRY_INTERVAL_MS,
-      });
+      await this.injectPromptUntilTranscriptChanges(session, jsonlFilePath, prompt, trustPrompt);
     } catch (err) {
       if (session.alive) {
         console.error('[claude-terminal] resume prompt injection failed:', err);
       }
+    } finally {
+      trustPrompt?.stop();
     }
+  }
+
+  /**
+   * Type a prompt into an already-known session and keep re-typing until the
+   * transcript exists / grows. Used for resume and for new sessions where the
+   * SessionStart hook gave us the session id before any JSONL line existed.
+   */
+  private async injectPromptUntilTranscriptChanges(
+    session: TerminalProviderSession,
+    jsonlFilePath: string,
+    prompt: string,
+    trustPrompt?: TrustPromptMonitor,
+  ): Promise<void> {
+    let baseline: number | null = null;
+    await sendPromptUntilAccepted({
+      send: () => this.typePrompt(session.terminalId, prompt),
+      probe: () => {
+        let size: number;
+        try { size = statSync(jsonlFilePath).size; } catch {
+          if (baseline === null) baseline = 0;
+          return null;
+        }
+        // First probe (after initialDelay) anchors the baseline so claude's
+        // own resume/startup writes aren't mistaken for our prompt landing.
+        if (baseline === null) { baseline = size; return null; }
+        return size > baseline ? String(size) : null;
+      },
+      abort: () => !session.alive,
+      pauseWhile: () => trustPrompt?.shouldPause()
+        ? 'claude-terminal: workspace trust prompt is waiting for user confirmation in the terminal'
+        : null,
+      maxPauseMs: TRUST_PROMPT_MAX_PAUSE_MS,
+      timeoutMs: SESSION_DISCOVER_TIMEOUT_MS,
+      initialDelayMs: TUI_INITIAL_DELAY_MS,
+      retryIntervalMs: PROMPT_RETRY_INTERVAL_MS,
+    });
   }
 
   /**
@@ -470,6 +741,21 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
         return;
       }
 
+      case 'PostToolUseFailure': {
+        const p = req.payload as {
+          tool_use_id?: string;
+          error?: unknown;
+          tool_response?: unknown;
+        };
+        const tool_use_id = typeof p.tool_use_id === 'string' ? p.tool_use_id : '';
+        if (tool_use_id) {
+          const content = CardSynth.stringifyHookToolResponse(p.error ?? p.tool_response);
+          session.synth.emitToolResult(tool_use_id, content, true);
+        }
+        req.respond(null);
+        return;
+      }
+
       case 'PermissionRequest': {
         // ASYNC — listener returns immediately; respond is called from the
         // PWA dialog promise resolution. HookBridge has a fallback timer
@@ -518,6 +804,31 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
         return;
       }
 
+      case 'StopFailure': {
+        const p = req.payload as { error_message?: string; error_type?: string; error?: unknown };
+        const message = typeof p.error_message === 'string'
+          ? p.error_message
+          : typeof p.error === 'string'
+            ? p.error
+            : typeof p.error_type === 'string'
+              ? p.error_type
+              : 'Claude turn failed';
+        const streamEnd: CardStreamEnd = {
+          sessionId: session.sessionId,
+          success: false,
+          error: message,
+        };
+        callbacks.emitStreamEnd(streamEnd);
+        void cardBuilder.scheduleDeferredClear();
+        req.respond(null);
+        return;
+      }
+
+      case 'SessionStart': {
+        req.respond(null);
+        return;
+      }
+
       default:
         req.respond(null);
     }
@@ -555,7 +866,10 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
     if (msg.type === 'user' && msg.message?.content) {
       const content = msg.message.content;
       if (typeof content === 'string' && content) {
-        callbacks.emitCardEvent(cardBuilder.userMessage(content));
+        const localCommandText = localCommandDisplayText(content);
+        callbacks.emitCardEvent(localCommandText
+          ? cardBuilder.systemMessage(localCommandText, 'info')
+          : cardBuilder.userMessage(content));
       } else if (Array.isArray(content)) {
         for (const block of content as Array<{
           type?: string;
@@ -565,7 +879,10 @@ export class ClaudeTerminalProvider implements CodingAgentProvider {
           is_error?: boolean;
         }>) {
           if (block.type === 'text' && typeof block.text === 'string' && block.text) {
-            callbacks.emitCardEvent(cardBuilder.userMessage(block.text));
+            const localCommandText = localCommandDisplayText(block.text);
+            callbacks.emitCardEvent(localCommandText
+              ? cardBuilder.systemMessage(localCommandText, 'info')
+              : cardBuilder.userMessage(block.text));
           } else if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
             const text = CardSynth.stringifyHookToolResponse(block.content);
             session.synth.emitToolResult(block.tool_use_id, text, !!block.is_error);
@@ -609,6 +926,12 @@ export interface SendPromptUntilAcceptedOpts {
   pollIntervalMs?: number;
   /** Optional cancel hook checked between waits — throws if it returns true. */
   abort?: () => boolean;
+  /** Optional pause hook for interactive TUI prompts that the user must answer
+   * manually (for example Claude's workspace trust prompt). When this returns
+   * a string, prompt typing is paused and the deadline is extended up to
+   * `maxPauseMs`. */
+  pauseWhile?: () => string | null;
+  maxPauseMs?: number;
   /** Injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -632,6 +955,8 @@ export async function sendPromptUntilAccepted(opts: SendPromptUntilAcceptedOpts)
   const initialDelayMs = opts.initialDelayMs ?? 0;
   const retryIntervalMs = opts.retryIntervalMs ?? 2500;
   const pollIntervalMs = opts.pollIntervalMs ?? 100;
+  const maxPauseMs = opts.maxPauseMs ?? 0;
+  let pausedMs = 0;
   const napMs = opts.sleep ?? sleep;
   const clock = opts.now ?? Date.now;
   const checkAbort = () => {
@@ -641,8 +966,21 @@ export async function sendPromptUntilAccepted(opts: SendPromptUntilAcceptedOpts)
   const deadline = clock() + opts.timeoutMs;
   if (initialDelayMs > 0) await napMs(initialDelayMs);
 
-  while (clock() < deadline) {
+  const pauseIfNeeded = async (): Promise<boolean> => {
+    const pauseReason = opts.pauseWhile?.();
+    if (!pauseReason) return false;
+    if (pausedMs >= maxPauseMs) {
+      throw new Error(pauseReason);
+    }
+    const pauseStep = Math.min(pollIntervalMs, maxPauseMs - pausedMs);
+    pausedMs += pauseStep;
+    await napMs(pauseStep);
+    return true;
+  };
+
+  while (clock() < deadline + pausedMs) {
     checkAbort();
+    if (await pauseIfNeeded()) continue;
     // Pre-check: on resume the prompt may already have landed from a prior
     // attempt; avoid an unnecessary duplicate send.
     const already = opts.probe();
@@ -650,9 +988,10 @@ export async function sendPromptUntilAccepted(opts: SendPromptUntilAcceptedOpts)
 
     await opts.send();
 
-    const windowEnd = Math.min(deadline, clock() + retryIntervalMs);
+    const windowEnd = Math.min(deadline + pausedMs, clock() + retryIntervalMs);
     while (clock() < windowEnd) {
       checkAbort();
+      if (await pauseIfNeeded()) continue;
       const token = opts.probe();
       if (token !== null) return token;
       await napMs(pollIntervalMs);

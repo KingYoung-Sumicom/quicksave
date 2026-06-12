@@ -98,7 +98,6 @@ describe('RuntimeOverrideStore — sandboxPolicy structural diff', () => {
       sandboxPolicy: {
         type: 'workspaceWrite',
         writableRoots: ['/tmp'],
-        readOnlyAccess: { type: 'fullAccess' },
         networkAccess: true,
         excludeTmpdirEnvVar: false,
         excludeSlashTmp: false,

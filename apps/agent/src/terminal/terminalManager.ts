@@ -114,6 +114,7 @@ interface CreateOptions {
   cwd: string;
   shell?: string;
   args?: string[];
+  env?: NodeJS.ProcessEnv;
   cols?: number;
   rows?: number;
   title?: string;
@@ -166,6 +167,9 @@ export class TerminalManager extends EventEmitter {
       // heavy interactive features if they want.
       QUICKSAVE_TERMINAL: '1',
     };
+    for (const [key, value] of Object.entries(opts.env ?? {})) {
+      if (value !== undefined) env[key] = String(value);
+    }
 
     const child = pty.spawn(shell, args, {
       name: 'xterm-256color',

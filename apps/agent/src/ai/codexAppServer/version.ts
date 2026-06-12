@@ -5,4 +5,4 @@
  * regenerated (see `apps/agent/scripts/regen-codex-schema.sh`)
  * whenever this is bumped. ProcessManager warns if the running CLI
  * differs by minor or major. */
-export const CODEX_SCHEMA_PINNED_VERSION = '0.125.0';
+export const CODEX_SCHEMA_PINNED_VERSION = '0.139.0';

@@ -7,7 +7,7 @@ import { buildThreadResumeParams, buildThreadStartParams, codexSkillsToSlashComm
 import type { SkillsListResponse } from '../schema/generated/v2/SkillsListResponse.js';
 
 describe('CodexAppServerProvider history persistence', () => {
-  it('enables extended history when starting a thread', () => {
+  it('does not send removed legacy history flags when starting a thread', () => {
     const opts: StartSessionOpts = {
       prompt: 'start',
       cwd: '/tmp/quicksave-codex-history',
@@ -15,10 +15,11 @@ describe('CodexAppServerProvider history persistence', () => {
       sandboxed: true,
     };
 
-    expect(buildThreadStartParams(opts).persistExtendedHistory).toBe(true);
+    expect(buildThreadStartParams(opts)).not.toHaveProperty('persistExtendedHistory');
+    expect(buildThreadStartParams(opts)).not.toHaveProperty('experimentalRawEvents');
   });
 
-  it('enables extended history when resuming a thread', () => {
+  it('does not send removed legacy history flags when resuming a thread', () => {
     const opts: ResumeSessionOpts = {
       sessionId: 'thr_history',
       prompt: 'continue',
@@ -27,7 +28,8 @@ describe('CodexAppServerProvider history persistence', () => {
       sandboxed: true,
     };
 
-    expect(buildThreadResumeParams(opts).persistExtendedHistory).toBe(true);
+    expect(buildThreadResumeParams(opts)).not.toHaveProperty('persistExtendedHistory');
+    expect(buildThreadResumeParams(opts)).not.toHaveProperty('excludeTurns');
   });
 
   it('maps enabled Codex skills to slash command suggestions', () => {

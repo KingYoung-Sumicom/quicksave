@@ -27,16 +27,19 @@ import { randomBytes } from 'node:crypto';
 /**
  * Hook event names accepted by claude --settings. Subset matches what we
  * observed in the bundled cli.js v2.1.111+:
- *   PreToolUse, PostToolUse, PermissionRequest, UserPromptSubmit,
- *   SessionStart, Stop, SubagentStop, Notification
+ *   PreToolUse, PostToolUse, PostToolUseFailure, PermissionRequest,
+ *   UserPromptSubmit, SessionStart, Stop, StopFailure, SubagentStop,
+ *   Notification
  */
 export type HookEventName =
   | 'PreToolUse'
   | 'PostToolUse'
+  | 'PostToolUseFailure'
   | 'PermissionRequest'
   | 'UserPromptSubmit'
   | 'SessionStart'
   | 'Stop'
+  | 'StopFailure'
   | 'SubagentStop'
   | 'Notification';
 

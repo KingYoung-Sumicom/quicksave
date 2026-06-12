@@ -6,7 +6,7 @@ import { join, dirname } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import type { Attachment, CardEvent, CardStreamEnd, ContextUsageBreakdown, SlashCommandInfo } from '@sumicom/quicksave-shared';
-import { StreamCardBuilder } from './cardBuilder.js';
+import { StreamCardBuilder, localCommandDisplayText } from './cardBuilder.js';
 import { SANDBOX_MCP_NAME, SANDBOX_BASH_TOOL, buildSandboxMcpServerConfig } from './sandboxMcp.js';
 import { DebugLogger } from './debugLogger.js';
 import { attachmentsToContentBlocks } from './contentBlocks.js';
@@ -1005,13 +1005,19 @@ export class ClaudeCliProvider implements CodingAgentProvider {
       const content = msg.message?.content;
       if (typeof content === 'string' && content) {
         flushText();
-        emitCard(cb.userMessage(content));
+        const localCommandText = localCommandDisplayText(content);
+        emitCard(localCommandText
+          ? cb.systemMessage(localCommandText, 'info')
+          : cb.userMessage(content));
       }
       if (Array.isArray(content)) {
         for (const block of content) {
           if (block.type === 'text' && block.text) {
             flushText();
-            emitCard(cb.userMessage(block.text));
+            const localCommandText = localCommandDisplayText(block.text);
+            emitCard(localCommandText
+              ? cb.systemMessage(localCommandText, 'info')
+              : cb.userMessage(block.text));
           }
           if (block.type === 'tool_result') {
             const resultContent = extractToolResultText(block.content);

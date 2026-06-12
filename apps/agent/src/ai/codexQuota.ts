@@ -97,7 +97,7 @@ export async function fetchCodexQuotaFromAppServer(ttlMs = CODEX_QUOTA_TTL_MS): 
   try {
     handle = await spawnAppServer({
       clientInfo: { name: 'quicksave-agent', title: 'Quicksave Agent', version: '0.0.0' },
-      capabilities: { experimentalApi: true, optOutNotificationMethods: null },
+      capabilities: { experimentalApi: true, requestAttestation: false, optOutNotificationMethods: null },
     });
     const response = await handle.rpc.request<GetAccountRateLimitsResponse>(
       'account/rateLimits/read',

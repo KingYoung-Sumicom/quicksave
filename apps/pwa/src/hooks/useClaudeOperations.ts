@@ -216,18 +216,22 @@ export function useClaudeOperations(
       clearCards();
       setStreaming(true);
       setStreamError(null);
-      // Add user card immediately (optimistic). Attachments carry metadata
-      // only — the local upload manager still has the bytes; we'll prime the
-      // attachment cache with them once the agent assigns a sessionId.
-      appendCard({
-        type: 'user',
-        id: `local-user-${Date.now()}`,
-        timestamp: Date.now(),
-        text: prompt,
-        ...(opts?.attachmentMetadata && opts.attachmentMetadata.length > 0
-          ? { attachments: opts.attachmentMetadata }
-          : {}),
-      });
+      const hasOptimisticUserCard = prompt.trim().length > 0
+        || (opts?.attachmentMetadata?.length ?? 0) > 0;
+      if (hasOptimisticUserCard) {
+        // Add user card immediately (optimistic). Attachments carry metadata
+        // only — the local upload manager still has the bytes; we'll prime the
+        // attachment cache with them once the agent assigns a sessionId.
+        appendCard({
+          type: 'user',
+          id: `local-user-${Date.now()}`,
+          timestamp: Date.now(),
+          text: prompt,
+          ...(opts?.attachmentMetadata && opts.attachmentMetadata.length > 0
+            ? { attachments: opts.attachmentMetadata }
+            : {}),
+        });
+      }
       try {
         console.log(`[sub] start → implicit subscribe (new session)`);
         const response = await sendCommand<ClaudeStartResponsePayload>(

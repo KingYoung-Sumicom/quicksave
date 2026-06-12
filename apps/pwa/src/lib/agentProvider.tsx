@@ -844,6 +844,14 @@ class ClaudeTerminalAgentProvider extends ClaudeCodeAgentProvider {
   readonly id: AgentId = 'claude-terminal';
   readonly label: string = 'Claude (Terminal)';
   readonly description: string = 'Live terminal + structured cards — uses your Claude subscription as interactive use';
+  readonly capabilities: AgentCapabilities = {
+    hasApiKey: true,
+    hasCli: true,
+    hasPlugin: false,
+    supportsResume: true,
+    supportsSandbox: false,
+    supportsStreaming: true,
+  };
 }
 
 // ── Registry ──────────────────────────────────────────────────────────────────

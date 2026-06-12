@@ -451,6 +451,9 @@ export async function consumeAppServerStream(
       case 'thread/closed':
       case 'thread/status/changed':
       case 'thread/name/updated':
+      case 'thread/goal/updated':
+      case 'thread/goal/cleared':
+      case 'thread/settings/updated':
       case 'thread/started':
       case 'thread/archived':
       case 'thread/unarchived':
@@ -482,6 +485,9 @@ export async function consumeAppServerStream(
       case 'hook/started':
       case 'hook/completed':
       case 'mcpServer/oauthLogin/completed':
+      case 'process/outputDelta':
+      case 'process/exited':
+      case 'remoteControl/status/changed':
       case 'skills/changed':
       case 'thread/realtime/closed':
       case 'thread/realtime/error':
@@ -491,6 +497,7 @@ export async function consumeAppServerStream(
       case 'thread/realtime/started':
       case 'thread/realtime/transcript/delta':
       case 'thread/realtime/transcript/done':
+      case 'turn/moderationMetadata':
       case 'windows/worldWritableWarning':
       case 'windowsSandbox/setupCompleted':
         return;

@@ -132,6 +132,19 @@ describe('attachSessionAttention', () => {
     expect(unsub).toHaveBeenCalledTimes(1);
   });
 
+  it('re-subscribes on pageshow after an iOS-style pagehide', () => {
+    const env = makeEnv(true);
+    const { bus, subscribe, unsub } = makeBus();
+    attachSessionAttention('s1', () => bus, env.deps);
+
+    env.fire('window', 'pagehide');
+    expect(unsub).toHaveBeenCalledTimes(1);
+
+    env.setAttending(true);
+    env.fire('window', 'pageshow');
+    expect(subscribe).toHaveBeenCalledTimes(2);
+  });
+
   it('disposer removes every listener and releases the subscription', () => {
     const env = makeEnv(true);
     const { bus, unsub } = makeBus();
@@ -235,6 +248,21 @@ describe('attachSessionAttention', () => {
       env.fire('window', 'pagehide');
       expect(onAttendChange).toHaveBeenCalledTimes(2);
       expect(onAttendChange).toHaveBeenLastCalledWith('s1', false);
+    });
+
+    it('fires (sessionId, true) on pageshow after pagehide detached attention', () => {
+      const onAttendChange = vi.fn();
+      const env = makeEnv(true, onAttendChange);
+      const { bus } = makeBus();
+      attachSessionAttention('s1', () => bus, env.deps);
+      env.fire('window', 'pagehide');
+      onAttendChange.mockClear();
+
+      env.setAttending(true);
+      env.fire('window', 'pageshow');
+
+      expect(onAttendChange).toHaveBeenCalledTimes(1);
+      expect(onAttendChange).toHaveBeenCalledWith('s1', true);
     });
 
     it('does not fire pagehide when already detached (no transition)', () => {

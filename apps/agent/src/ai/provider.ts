@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment, CardEvent, CardStreamEnd, ContextUsageBreakdown, SessionQueueState, SlashCommandInfo } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, CardEvent, CardStreamEnd, ConfigValue, ContextUsageBreakdown, SessionQueueState, SlashCommandInfo } from '@sumicom/quicksave-shared';
 import type { StreamCardBuilder } from './cardBuilder.js';
 
 export const CLAUDE_PERMISSION_MODES = [
@@ -97,6 +97,14 @@ export interface ProviderSession {
    * usage. Only supported by the Claude Code CLI (via `get_context_usage`
    * control_request). Returns null on providers that don't support it. */
   getContextUsage?(): Promise<ContextUsageBreakdown | null>;
+  /** Optional provider control channel. Claude uses CLI control_request
+   * frames; Codex app-server maps supported subtypes onto JSON-RPC methods. */
+  sendControlRequest?(
+    subtype: string,
+    params?: Record<string, unknown>,
+    idleTimeoutMs?: number,
+    wallClockTimeoutMs?: number,
+  ): Promise<unknown>;
   /** Optional — provider-specific slash-command suggestions for the composer. */
   listSlashCommands?(opts?: { cwd?: string; forceReload?: boolean }): Promise<SlashCommandInfo[]>;
   /** Optional — live-switch the auto-compact ceiling without respawning.
@@ -154,6 +162,8 @@ export interface ProviderCallbacks {
   /** Fired when one provider turn has fully settled, after stream-end emission
    *  and local card persistence. */
   onTurnSettled?(sessionId: string): void;
+  /** Merge provider-observed state into the session config broadcast stream. */
+  onSessionConfigPatch?(sessionId: string, patch: Record<string, ConfigValue>): void;
   onModelDetected(model: string): void;
   /** Fired when the underlying provider process has fully exited. SessionManager
    * uses this to remove the session from its in-memory map and emit

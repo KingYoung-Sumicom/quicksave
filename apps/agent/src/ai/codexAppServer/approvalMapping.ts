@@ -39,7 +39,9 @@ export function codexApprovalToPermissionPrompt(
           command: p.command ?? '',
           cwd: p.cwd ?? '',
           ...(p.reason ? { reason: p.reason } : {}),
-          ...(p.additionalPermissions ? { additionalPermissions: p.additionalPermissions } : {}),
+          ...(p.networkApprovalContext ? { networkApprovalContext: p.networkApprovalContext } : {}),
+          ...(p.proposedExecpolicyAmendment ? { proposedExecpolicyAmendment: p.proposedExecpolicyAmendment } : {}),
+          ...(p.proposedNetworkPolicyAmendments ? { proposedNetworkPolicyAmendments: p.proposedNetworkPolicyAmendments } : {}),
         },
         toolUseId: approvalToolUseId(requestId, p.itemId, p.approvalId),
       };

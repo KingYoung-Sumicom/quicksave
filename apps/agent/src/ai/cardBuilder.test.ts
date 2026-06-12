@@ -47,6 +47,7 @@ const {
   StreamCardBuilder,
   loadPersistedCards,
   buildCardsFromHistory,
+  localCommandDisplayText,
   formatDurationMs,
   turnDurationCard,
   stopHookSummaryCard,
@@ -934,6 +935,24 @@ describe('loadPersistedCards', () => {
   });
 });
 
+describe('localCommandDisplayText()', () => {
+  it('formats Claude local command envelopes without the caveat tags', () => {
+    const raw = [
+      '<local-command-caveat>Caveat: ignore this</local-command-caveat>',
+      '<command-name>/model</command-name>',
+      '<command-message>model</command-message>',
+      '<command-args></command-args>',
+      '<local-command-stdout>Set model to Fable 5</local-command-stdout>',
+    ].join('\n');
+
+    expect(localCommandDisplayText(raw)).toBe('Local command /model\nSet model to Fable 5');
+  });
+
+  it('does not treat ordinary text as a local command', () => {
+    expect(localCommandDisplayText('please run /model')).toBeNull();
+  });
+});
+
 // ============================================================================
 // persistCards (via StreamCardBuilder)
 // ============================================================================
@@ -1066,6 +1085,29 @@ describe('buildCardsFromHistory', () => {
     expect((result.cards[0] as any).text).toBe('hello world');
     expect(result.total).toBe(1);
     expect(result.hasMore).toBe(false);
+  });
+
+  it('converts Claude local command envelopes to info system cards', async () => {
+    const localCommand = [
+      '<local-command-caveat>Caveat: ignore this</local-command-caveat>',
+      '<command-name>/model</command-name>',
+      '<command-message>model</command-message>',
+      '<command-args></command-args>',
+      '<local-command-stdout>Set model to Fable 5</local-command-stdout>',
+    ].join('\n');
+    const jsonl = [
+      JSON.stringify({ type: 'user', message: { content: localCommand } }),
+    ].join('\n');
+
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(stat).mockResolvedValue({ size: jsonl.length } as any);
+    vi.mocked(readFile).mockResolvedValue(jsonl);
+
+    const result = await buildCardsFromHistory('sess-local-command', '/test/cwd');
+    expect(result.cards).toHaveLength(1);
+    expect(result.cards[0].type).toBe('system');
+    expect((result.cards[0] as any).subtype).toBe('info');
+    expect((result.cards[0] as any).text).toBe('Local command /model\nSet model to Fable 5');
   });
 
   it('converts assistant text blocks to assistant_text cards', async () => {

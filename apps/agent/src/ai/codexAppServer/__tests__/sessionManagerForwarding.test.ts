@@ -180,6 +180,30 @@ describe('SessionManager → CodexAppServer override forwarding', () => {
     expect(session.enqueued[1]).toMatchObject({ effort: 'low' });
     expect(session.enqueued[2]).toMatchObject({ approvalPolicy: 'on-request' });
   });
+
+  it('provider config patches merge into /sessions/config state', async () => {
+    const { sm, sessionId, codex } = await setupActiveCodexSession();
+    const events: Array<{ sessionId: string; config: Record<string, unknown> }> = [];
+    sm.on('session-config-updated', (event) => events.push(event as { sessionId: string; config: Record<string, unknown> }));
+    const callbacks = codex.callbacksBySession.get(sessionId);
+    if (!callbacks?.onSessionConfigPatch) throw new Error('callbacks missing config patch hook');
+
+    callbacks.onSessionConfigPatch(sessionId, {
+      codexGoalPresent: true,
+      codexGoalObjective: 'Ship goal mode',
+    });
+
+    expect(sm.getSessionConfig(sessionId)).toMatchObject({
+      codexGoalPresent: true,
+      codexGoalObjective: 'Ship goal mode',
+    });
+    expect(events.at(-1)).toMatchObject({
+      sessionId,
+      config: {
+        codexGoalObjective: 'Ship goal mode',
+      },
+    });
+  });
 });
 
 describe('SessionManager → CodexAppServer hot-resume forwarding', () => {

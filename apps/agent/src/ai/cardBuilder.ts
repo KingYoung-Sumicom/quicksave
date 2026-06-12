@@ -63,6 +63,32 @@ function makeAttachmentResolver(metas: readonly PersistedMeta[]) {
 
 const TOOL_RESULT_TRUNCATE_LENGTH = 500;
 
+export function localCommandDisplayText(raw: string): string | null {
+  if (!raw.includes('<local-command-caveat>')) return null;
+  if (!raw.includes('<command-name>') && !raw.includes('<local-command-stdout>')) return null;
+
+  const tag = (name: string): string => {
+    const match = raw.match(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`));
+    return match ? decodeXmlText(match[1]).trim() : '';
+  };
+  const commandName = tag('command-name');
+  const args = tag('command-args');
+  const stdout = tag('local-command-stdout');
+  const stderr = tag('local-command-stderr');
+  const title = commandName ? `Local command ${commandName}${args ? ` ${args}` : ''}` : 'Local command';
+  const body = [stdout, stderr ? `stderr: ${stderr}` : ''].filter(Boolean).join('\n');
+  return body ? `${title}\n${body}` : title;
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
 // ── Card history persistence (for memory-mode providers like Codex) ──
 
 function cardHistoryPath(sessionId: string): string {
@@ -1576,7 +1602,10 @@ export async function buildCardsFromHistory(
     // ── User messages ──
     if (msg.type === 'user') {
       if (typeof rawMessage.content === 'string') {
-        cards.push({ type: 'user', id: nextId(), timestamp: Date.now(), text: rawMessage.content });
+        const localCommandText = localCommandDisplayText(rawMessage.content);
+        cards.push(localCommandText
+          ? { type: 'system', id: nextId(), timestamp: Date.now(), text: localCommandText, subtype: 'info' }
+          : { type: 'user', id: nextId(), timestamp: Date.now(), text: rawMessage.content });
         continue;
       }
       if (Array.isArray(rawMessage.content)) {
@@ -1656,7 +1685,10 @@ export async function buildCardsFromHistory(
           // the text block makes a user card).
           for (const block of rawMessage.content) {
             if (block?.type === 'text' && typeof block.text === 'string') {
-              cards.push({ type: 'user', id: nextId(), timestamp: Date.now(), text: block.text });
+              const localCommandText = localCommandDisplayText(block.text);
+              cards.push(localCommandText
+                ? { type: 'system', id: nextId(), timestamp: Date.now(), text: localCommandText, subtype: 'info' }
+                : { type: 'user', id: nextId(), timestamp: Date.now(), text: block.text });
             }
           }
         }

@@ -572,9 +572,10 @@ export function ClaudePanel({
   }, [activeSessionId, setActiveSession, clearCards, onNewSession, onUnsubscribeSession]);
 
   const handleSend = useCallback(async (interruptCurrentTurn = false) => {
-    const prompt = promptInput.trim();
+    const isTerminalNewSession = !activeSessionId && selectedAgent === 'claude-terminal';
+    const prompt = isTerminalNewSession ? '' : promptInput.trim();
     // A turn is sendable if there's prompt text OR at least one ready attachment.
-    const hasContent = prompt.length > 0 || attach.pendingAttachments.length > 0;
+    const hasContent = prompt.length > 0 || attach.pendingAttachments.length > 0 || isTerminalNewSession;
     if (!hasContent) return;
     if (!attach.allUploadsReady) return;
 
@@ -586,13 +587,17 @@ export function ClaudePanel({
     // Snapshot the chip set for this turn, then clear composer state. The
     // upload manager is forgotten *after* the send fires so primeUploaded
     // (called inside useClaudeOperations) can still read local bytes.
-    const { attachmentIds, attachmentMetadata } = attach.buildPayload();
+    const { attachmentIds, attachmentMetadata } = isTerminalNewSession
+      ? { attachmentIds: [] as string[], attachmentMetadata: [] }
+      : attach.buildPayload();
 
-    setPromptInput('');
-    if (inputRef.current) inputRef.current.style.height = 'auto';
-    attach.clear();
-    if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
-    if (draftKey) localStorage.removeItem(draftKey);
+    if (!isTerminalNewSession) {
+      setPromptInput('');
+      if (inputRef.current) inputRef.current.style.height = 'auto';
+      attach.clear();
+      if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+      if (draftKey) localStorage.removeItem(draftKey);
+    }
 
     try {
       if (activeSessionId) {
@@ -602,7 +607,7 @@ export function ClaudePanel({
           ...(interruptCurrentTurn ? { interruptCurrentTurn: true } : {}),
         });
       } else {
-        await onStartSession(prompt, {
+        await onStartSession(isTerminalNewSession ? '' : prompt, {
           agent: selectedAgent,
           model: selectedModel,
           permissionMode: selectedPermissionMode,
@@ -622,7 +627,7 @@ export function ClaudePanel({
       }
     } finally {
       // Clean up the upload manager state for the chips that just shipped.
-      attach.forgetSent(attachmentIds);
+      if (!isTerminalNewSession) attach.forgetSent(attachmentIds);
     }
   }, [promptInput, attach, activeSessionId, isInactive, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedReasoningEffort, selectedContextWindow, selectedAgentType, setPromptInput, onResumeSession, onStartSession, draftKey]);
 
@@ -845,8 +850,11 @@ export function ClaudePanel({
   // While capturing/transcribing, lock the rest of the composer (textarea,
   // attach, send) so a stray tap can't edit or submit mid-utterance.
   const voiceActive = voice.recording || voice.busy;
+  const isTerminalNewSession = !activeSessionId && selectedAgent === 'claude-terminal';
   const composerHasContent = promptInput.trim().length > 0 || attach.pendingAttachments.length > 0;
-  const canSubmitComposer = !voiceActive && composerHasContent && !attach.anyUploadInFlight;
+  const canSubmitComposer = !voiceActive
+    && (composerHasContent || isTerminalNewSession)
+    && !attach.anyUploadInFlight;
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -1038,7 +1046,7 @@ export function ClaudePanel({
               onDragLeave={attach.dragHandlers.onDragLeave}
               onDrop={attach.dragHandlers.onDrop}
             >
-              {!voiceCoworker.enabled && slashOpen && filteredSlashCommands.length > 0 && (
+              {!isTerminalNewSession && !voiceCoworker.enabled && slashOpen && filteredSlashCommands.length > 0 && (
                 <div ref={slashListRef} className="absolute left-0 right-0 bottom-full mb-2 max-h-56 overflow-y-auto rounded-lg border border-slate-700 bg-slate-800 shadow-lg z-10">
                   {filteredSlashCommands.map((cmd, i) => (
                     <button
@@ -1064,14 +1072,35 @@ export function ClaudePanel({
               )}
               {voiceCoworker.enabled ? (
                 <VoiceCoworkerStatusPanel voiceAgent={voiceCoworker} />
-              ) : voice.streaming && (
+              ) : !isTerminalNewSession && voice.streaming && (
                 <div className="flex items-center gap-1.5 px-1 text-xs text-slate-400">
                   <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shrink-0" />
                   <span className="truncate">{voice.interim || 'Listening…'}</span>
                 </div>
               )}
               {!voiceCoworker.enabled && (
-                <>
+                isTerminalNewSession ? (
+                  <div className="flex items-center justify-end">
+                    <button
+                      type="button"
+                      onPointerDown={(e) => { e.preventDefault(); handleSend(false); }}
+                      disabled={!canSubmitComposer}
+                      className={clsx(
+                        'p-2 rounded-lg transition-colors flex-shrink-0',
+                        canSubmitComposer
+                          ? 'bg-blue-600 hover:bg-blue-500'
+                          : 'bg-slate-600 text-slate-400',
+                      )}
+                      title="Open terminal"
+                      aria-label="Open terminal"
+                    >
+                      <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <path d="M8 5v14l11-7z" />
+                      </svg>
+                    </button>
+                  </div>
+                ) : (
+                  <>
                   <textarea
                     ref={inputRef}
                     value={promptInput}
@@ -1167,7 +1196,7 @@ export function ClaudePanel({
                             ? 'bg-blue-600 hover:bg-blue-500'
                             : 'bg-slate-600 text-slate-400'
                         )}
-                        title={attach.anyUploadInFlight ? 'Waiting for uploads…' : 'Send'}
+                        title={attach.anyUploadInFlight ? 'Waiting for uploads…' : isTerminalNewSession ? 'Open terminal' : 'Send'}
                       >
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19V5m0 0l-7 7m7-7l7 7" />
@@ -1175,7 +1204,8 @@ export function ClaudePanel({
                       </button>
                     </div>
                   </div>
-                </>
+                  </>
+                )
               )}
             </div>
           </div>
