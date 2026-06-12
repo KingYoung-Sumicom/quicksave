@@ -9,7 +9,7 @@ import type { ProviderCallbacks } from '../../provider.js';
 import { CodexAppServerSession } from '../provider.js';
 import { CodexRpcClient, InMemoryTransport, type WireRequest, type WireResponse } from '../rpcClient.js';
 import { RuntimeOverrideStore } from '../overrideStore.js';
-import { TokenAccounting } from '../tokenAccounting.js';
+import { TokenAccounting, makeBreakdown, makeUsage } from '../tokenAccounting.js';
 import { codexServerRequestInputId } from '../serverRequestIds.js';
 import type { AppServerHandle } from '../processManager.js';
 
@@ -20,6 +20,7 @@ function harness(response: { action: 'allow' | 'deny'; response?: string } = { a
     emitCardEvent: vi.fn(),
     emitStreamEnd: vi.fn(),
     handlePermissionRequest: vi.fn().mockResolvedValue(response),
+    onQueueStateChange: vi.fn(),
     onSessionConfigPatch: vi.fn(),
     onModelDetected: vi.fn(),
   };
@@ -299,6 +300,164 @@ describe('CodexAppServerSession goal control requests', () => {
   });
 });
 
+describe('CodexAppServerSession active-turn follow-up routing', () => {
+  it('steers a normal follow-up into the current active turn', async () => {
+    const h = harness();
+    const startReqPromise = receiveClientRequest(h.serverSide);
+    const run = h.session.runTurn('initial prompt');
+
+    const startReq = await startReqPromise;
+    expect(startReq.method).toBe('turn/start');
+    await h.serverSide.send({ jsonrpc: '2.0', id: startReq.id, result: { turn: makeTurn('turn_1', 'inProgress') } });
+    await flushMicrotasks();
+
+    const steerReqPromise = receiveClientRequest(h.serverSide);
+    h.session.sendUserMessage('adjust course');
+
+    const steerReq = await steerReqPromise;
+    expect(steerReq.method).toBe('turn/steer');
+    expect(steerReq.params).toEqual({
+      threadId: h.threadId,
+      input: [{ type: 'text', text: 'adjust course', text_elements: [] }],
+      expectedTurnId: 'turn_1',
+    });
+    await h.serverSide.send({ jsonrpc: '2.0', id: steerReq.id, result: { turnId: 'turn_1' } });
+
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: { threadId: h.threadId, turn: makeTurn('turn_1', 'completed') },
+    });
+    await run;
+
+    expect(h.callbacks.emitStreamEnd).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: h.threadId,
+      turnId: 'turn_1',
+      success: true,
+    }));
+    expect(h.callbacks.onQueueStateChange).not.toHaveBeenCalled();
+  });
+
+  it('queues the follow-up for the next turn when active-turn steering fails', async () => {
+    const h = harness();
+    const firstStartReqPromise = receiveClientRequest(h.serverSide);
+    const run = h.session.runTurn('initial prompt');
+
+    const firstStartReq = await firstStartReqPromise;
+    expect(firstStartReq.method).toBe('turn/start');
+    await h.serverSide.send({ jsonrpc: '2.0', id: firstStartReq.id, result: { turn: makeTurn('turn_1', 'inProgress') } });
+    await flushMicrotasks();
+
+    const steerReqPromise = receiveClientRequest(h.serverSide);
+    h.session.sendUserMessage('next turn fallback');
+
+    const steerReq = await steerReqPromise;
+    expect(steerReq.method).toBe('turn/steer');
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      id: steerReq.id,
+      error: { code: -32602, message: 'no active steerable turn' },
+    });
+
+    await flushMicrotasks();
+    expect(h.callbacks.onQueueStateChange).toHaveBeenCalled();
+    expect(h.session.getQueueState()).toMatchObject({
+      pendingUserMessages: 1,
+      latestPromptPreview: 'next turn fallback',
+    });
+
+    const secondStartReqPromise = receiveClientRequest(h.serverSide);
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: { threadId: h.threadId, turn: makeTurn('turn_1', 'completed') },
+    });
+
+    const secondStartReq = await secondStartReqPromise;
+    expect(secondStartReq.method).toBe('turn/start');
+    expect(secondStartReq.params).toMatchObject({
+      threadId: h.threadId,
+      input: [{ type: 'text', text: 'next turn fallback', text_elements: [] }],
+    });
+    await h.serverSide.send({ jsonrpc: '2.0', id: secondStartReq.id, result: { turn: makeTurn('turn_2', 'inProgress') } });
+    await flushMicrotasks();
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: { threadId: h.threadId, turn: makeTurn('turn_2', 'completed') },
+    });
+    await run;
+
+    expect(h.callbacks.emitStreamEnd).toHaveBeenCalledTimes(2);
+    expect(h.session.getQueueState()).toBeNull();
+  });
+});
+
+describe('CodexAppServerSession session-scoped notification routing', () => {
+  it('keeps observing Codex turns after a regular turn completed', async () => {
+    const h = harness();
+    const firstStartReqPromise = receiveClientRequest(h.serverSide);
+    const run = h.session.runTurn('initial prompt');
+
+    const firstStartReq = await firstStartReqPromise;
+    await h.serverSide.send({ jsonrpc: '2.0', id: firstStartReq.id, result: { turn: makeTurn('turn_1', 'inProgress') } });
+    await flushMicrotasks();
+    await sendTokenUsage(h, 'turn_1');
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: { threadId: h.threadId, turn: makeTurn('turn_1', 'completed') },
+    });
+    await run;
+
+    expect(h.callbacks.emitStreamEnd).toHaveBeenCalledTimes(1);
+    vi.mocked(h.callbacks.onQueueStateChange).mockClear();
+
+    await sendTokenUsage(h, 'turn_1');
+    await flushMicrotasks();
+    expect(h.callbacks.emitStreamEnd).toHaveBeenCalledTimes(1);
+    expect(h.callbacks.onQueueStateChange).not.toHaveBeenCalled();
+
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      method: 'turn/started',
+      params: { threadId: h.threadId, turn: makeTurn('turn_2', 'inProgress') },
+    });
+    await flushMicrotasks();
+    expect(h.callbacks.onQueueStateChange).toHaveBeenCalledWith(h.threadId);
+
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      method: 'item/completed',
+      params: {
+        threadId: h.threadId,
+        turnId: 'turn_2',
+        item: { type: 'agentMessage', id: 'msg_2', text: 'background update', phase: null, memoryCitation: null },
+      },
+    });
+    await sendTokenUsage(h, 'turn_2');
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: { threadId: h.threadId, turn: makeTurn('turn_2', 'completed') },
+    });
+    await flushMicrotasks();
+
+    expect(h.callbacks.emitStreamEnd).toHaveBeenCalledTimes(2);
+    expect(h.callbacks.emitStreamEnd).toHaveBeenLastCalledWith(expect.objectContaining({
+      sessionId: h.threadId,
+      turnId: 'turn_2',
+      success: true,
+    }));
+    const cardEvents = vi.mocked(h.callbacks.emitCardEvent).mock.calls.map(([event]) => event);
+    expect(cardEvents.some((event) =>
+      event.type === 'add'
+      && event.card.type === 'assistant_text'
+      && event.card.text === 'background update',
+    )).toBe(true);
+  });
+});
+
 async function sendServerRequest(
   serverSide: InMemoryTransport,
   method: string,
@@ -336,6 +495,19 @@ async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 }
 
+async function sendTokenUsage(h: ReturnType<typeof harness>, turnId: string): Promise<void> {
+  await h.serverSide.send({
+    jsonrpc: '2.0',
+    method: 'thread/tokenUsage/updated',
+    params: {
+      threadId: h.threadId,
+      turnId,
+      tokenUsage: makeUsage(makeBreakdown(1, 1), makeBreakdown(1, 1)),
+    },
+  });
+  await flushMicrotasks();
+}
+
 function makeGoal(overrides: Partial<{
   objective: string;
   status: 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete';
@@ -350,5 +522,21 @@ function makeGoal(overrides: Partial<{
     timeUsedSeconds: 3,
     createdAt: 1000,
     updatedAt: 2000,
+  };
+}
+
+function makeTurn(
+  id: string,
+  status: 'completed' | 'interrupted' | 'failed' | 'inProgress',
+) {
+  return {
+    id,
+    items: [],
+    itemsView: { type: 'full' },
+    status,
+    error: null,
+    startedAt: 0,
+    completedAt: status === 'inProgress' ? null : 1,
+    durationMs: status === 'inProgress' ? null : 1,
   };
 }

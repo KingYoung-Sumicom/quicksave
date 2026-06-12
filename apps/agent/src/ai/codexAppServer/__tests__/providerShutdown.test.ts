@@ -29,6 +29,7 @@ describe('CodexAppServerSession shutdown durability', () => {
       rpc: {
         setServerRequestHandler: vi.fn(),
         onNotification: vi.fn(() => vi.fn()),
+        onClose: vi.fn(() => vi.fn()),
       },
       shutdown: vi.fn(async () => {
         order.push('shutdown');

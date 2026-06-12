@@ -142,25 +142,33 @@ function guardianActionItemId(_action: GuardianApprovalReviewAction): string | n
   return null;
 }
 
+export interface CodexTurnStreamConsumer {
+  readonly turnId: string;
+  readonly result: Promise<{ status: TurnStatus; error?: ErrorNotification['error'] }>;
+  dispatch(notification: { method: string; params: unknown }): void;
+  closeAsInterrupted(): void;
+  dispose(): void;
+}
+
 /**
- * Subscribe to the RPC client's notification stream and translate v2
- * notifications into `StreamCardBuilder` mutator calls.
+ * Translate v2 notifications for a single Codex turn into
+ * `StreamCardBuilder` mutator calls.
  *
- * Returns once `turn/completed` arrives for `ctx.turnId`. The caller
- * (provider's `runTurn`) handles user-cancel via `turn/interrupt`.
+ * The provider owns the app-server subscription at session scope and feeds
+ * notifications into this consumer. The legacy `consumeAppServerStream`
+ * wrapper below still subscribes directly for adapter-focused tests.
  *
- * IMPORTANT: this function is provider-only. It MUST NOT change the
+ * IMPORTANT: this factory is provider-only. It MUST NOT change the
  * `Card` / `CardEvent` shapes the cardBuilder emits — those are the
  * red-line contract. The dispatch table here matches plan §11's
  * resolved mapping; if a v2 notification needs a new card variant,
  * stop and add it to the cardBuilder API additively, then come back.
  */
-export async function consumeAppServerStream(
-  rpc: CodexRpcClient,
+export function createCodexTurnStreamConsumer(
   cb: StreamCardBuilder,
   ctx: CardAdapterContext,
   callbacks: ProviderCallbacks,
-): Promise<{ status: TurnStatus; error?: ErrorNotification['error'] }> {
+): CodexTurnStreamConsumer {
   const state = emptyState();
 
   const emit = (event: CardEvent | null | undefined): void => {
@@ -906,21 +914,48 @@ export async function consumeAppServerStream(
     resolveResult({ status, error });
   };
 
-  const unsubscribe = rpc.onNotification(dispatch);
-  // Tear-down on transport close — emit a synthetic interrupted end if
-  // the run wasn't already finalized.
-  const closeFallback = (): void => {
+  const closeAsInterrupted = (): void => {
     if (state.turnEnded) return;
     void finalize('interrupted', undefined);
   };
-  const unsubscribeClose = rpc.onClose(closeFallback);
 
+  const dispose = (): void => {
+    if (state.textTimer) clearTimeout(state.textTimer);
+  };
+
+  return {
+    turnId: ctx.turnId,
+    result,
+    dispatch,
+    closeAsInterrupted,
+    dispose,
+  };
+}
+
+/**
+ * Subscribe to the RPC client's notification stream and translate v2
+ * notifications into `StreamCardBuilder` mutator calls for one turn.
+ *
+ * Kept as a thin wrapper for tests and any legacy call sites. Provider
+ * production flow should use `createCodexTurnStreamConsumer` with a
+ * session-scoped subscription so goal/autonomous-turn notifications are not
+ * lost after a regular `turn/completed`.
+ */
+export async function consumeAppServerStream(
+  rpc: CodexRpcClient,
+  cb: StreamCardBuilder,
+  ctx: CardAdapterContext,
+  callbacks: ProviderCallbacks,
+): Promise<{ status: TurnStatus; error?: ErrorNotification['error'] }> {
+  const consumer = createCodexTurnStreamConsumer(cb, ctx, callbacks);
+  const unsubscribe = rpc.onNotification(consumer.dispatch);
+  const unsubscribeClose = rpc.onClose(() => consumer.closeAsInterrupted());
   try {
-    return await result;
+    return await consumer.result;
   } finally {
     unsubscribe();
     unsubscribeClose();
-    if (state.textTimer) clearTimeout(state.textTimer);
+    consumer.dispose();
   }
 }
 

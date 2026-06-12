@@ -182,15 +182,28 @@ claude:start → MessageHandler.handleClaudeStart()
               (also fires `callbacks.onCacheTouch` on SDK cache hit/write tokens)
               result → callbacks.emitStreamEnd
        For CodexAppServerProvider:
-         processManager.ensureRunning() (initialize handshake first time)
-         conversation = await rpc.request('newConversation', {…})
-         await rpc.request('sendUserTurn', {…}); cardAdapter translates v2 notifications → CardBuilder
+         spawn('codex', ['app-server', ...sandboxMcpConfig])
+         → initialize / initialized JSON-RPC handshake
+         → rpc.request('thread/start' or 'thread/resume', {…}) to load the Codex thread
+         → rpc.request('turn/start', { threadId, input, ...runtimeOverrides })
+         → keep one session-scoped app-server notification subscription while
+           the provider session is alive; `turn/completed` settles only that
+           turn's card/stream consumer, not the thread subscription
+         → cardAdapter translates `turn/started`, `item/*`, `turn/completed`,
+           autonomous turns started by goal mode, and related v2 notifications into
+           CardBuilder events
     → SessionManager registers ManagedSession + permission table + bypass-flag sentinel
   ← sessionId
 
 claude:resume → SessionManager.resumeSession(opts)
    → 1. Hot resume (active turn): existing.streaming && providerSession.alive
-        → providerSession.sendUserMessage(prompt, opts.attachments); providers with in-memory turn queues keep the prompt until the current turn ends
+        → providerSession.sendUserMessage(prompt, opts.attachments)
+        → Codex app-server sends ordinary follow-up prompts via `turn/steer`
+          against the current `turnId`; if steering is rejected because the
+          active turn changed or is not steerable, the prompt falls back to the
+          provider FIFO queue for the next `turn/start`.
+        → Providers without a same-turn steering primitive keep the prompt in
+          their in-memory queue until the current turn ends.
         → If opts.interruptCurrentTurn is true, SessionManager calls providerSession.interruptThenSendUserMessage(...) when available; otherwise it interrupts then sends.
    → 2. Hot resume (idle): !existing.streaming && providerSession.alive && !modelChanged && !contextWindowChanged
         → Reuse the same process: providerSession.sendUserMessage(prompt, opts.attachments). Avoids the latency and "ghost inactive" flicker of kill+spawn.
@@ -207,11 +220,11 @@ claude:resume → SessionManager.resumeSession(opts)
        → Cold resumes are guarded by `coldResumeInFlight`; concurrent prompts are queued and drained on the new session.
 
 claude:cancel → SessionManager.cancelSession(sessionId)
-  → providerSession.interrupt()                       // CLI: stdin control_request {subtype:'interrupt'}; Codex: rpc 'interrupt'
+  → providerSession.interrupt()                       // CLI: stdin control_request {subtype:'interrupt'}; Codex: `turn/interrupt`
   → cancelPendingInputsForSession(sessionId)          // resolve outstanding permission promises with deny
 
 claude:close → SessionManager.closeSession(sessionId)
-  → providerSession.kill()                            // CLI: SIGTERM the child; Codex: closeConversation rpc
+  → providerSession.kill()                            // CLI: SIGTERM the child; Codex: close app-server transport/process
   → applyBypassFlag(token, false) + sessions.delete + cancelPendingInputsForSession + emitSessionUpdate(isActive=false)
   (Used by Advanced > Terminate Coding Agent Process; the registry entry is left as-is in the active subtree)
 

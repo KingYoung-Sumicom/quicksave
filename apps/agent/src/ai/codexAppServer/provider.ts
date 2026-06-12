@@ -21,7 +21,10 @@ import { normalizePermissionLevelForAgent } from '../provider.js';
 import { makeQueuedUserPrompt, queueStateFor, type QueuedUserPrompt } from '../queuedUserPrompts.js';
 import { getEventStore } from '../../storage/eventStore.js';
 
-import { consumeAppServerStream } from './cardAdapter.js';
+import {
+  createCodexTurnStreamConsumer,
+  type CodexTurnStreamConsumer,
+} from './cardAdapter.js';
 import {
   codexApprovalResponse,
   codexApprovalToPermissionPrompt,
@@ -40,6 +43,9 @@ import type { TurnStartParams } from './schema/generated/v2/TurnStartParams.js';
 import type { TurnStartResponse } from './schema/generated/v2/TurnStartResponse.js';
 import type { TurnInterruptParams } from './schema/generated/v2/TurnInterruptParams.js';
 import type { TurnSteerParams } from './schema/generated/v2/TurnSteerParams.js';
+import type { TurnStartedNotification } from './schema/generated/v2/TurnStartedNotification.js';
+import type { TurnCompletedNotification } from './schema/generated/v2/TurnCompletedNotification.js';
+import type { ThreadTokenUsageUpdatedNotification } from './schema/generated/v2/ThreadTokenUsageUpdatedNotification.js';
 import type { ApprovalsReviewer } from './schema/generated/v2/ApprovalsReviewer.js';
 import type { SkillsListParams } from './schema/generated/v2/SkillsListParams.js';
 import type { SkillsListResponse } from './schema/generated/v2/SkillsListResponse.js';
@@ -253,8 +259,13 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   private currentTurnId: string | null = null;
   private pendingTurns: QueuedUserPrompt[] = [];
   private running = false;
+  private startingRunTurn = false;
+  private prestartedRunTurnId: string | null = null;
   private exited = false;
+  private readonly turnConsumers = new Map<string, CodexTurnStreamConsumer>();
+  private readonly settledTurnIds = new Set<string>();
   private unsubscribeSessionNotifications: (() => void) | null = null;
+  private unsubscribeTransportClose: (() => void) | null = null;
 
   constructor(args: SessionArgs) {
     this.handle = args.handle;
@@ -272,6 +283,9 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     this.unsubscribeSessionNotifications = this.handle.rpc.onNotification((notification) => {
       this.handleSessionNotification(notification);
     });
+    this.unsubscribeTransportClose = this.handle.rpc.onClose(() => {
+      this.handleTransportClosed();
+    });
 
     // If the child exits unexpectedly, mark us dead and notify SessionManager.
     this.handle.child.once('exit', () => {
@@ -286,9 +300,9 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   }
 
   sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
-    if (this.currentTurnId) {
-      this.pendingTurns.push(makeQueuedUserPrompt(prompt, attachments));
-      this.callbacks.onQueueStateChange?.(this.threadId);
+    const activeTurnId = this.currentTurnId;
+    if (activeTurnId) {
+      void this.steerOrQueue(prompt, attachments, activeTurnId);
       return;
     }
     void this.runTurn(prompt, attachments);
@@ -296,12 +310,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
 
   interruptThenSendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
     if (this.currentTurnId) this.interrupt();
-    if (this.running) {
-      this.pendingTurns.push(makeQueuedUserPrompt(prompt, attachments));
-      this.callbacks.onQueueStateChange?.(this.threadId);
-      return;
-    }
-    void this.runTurn(prompt, attachments);
+    this.enqueueOrRunTurn(prompt, attachments);
   }
 
   getQueueState() {
@@ -399,6 +408,9 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     this.pendingTurns = [];
     this.unsubscribeSessionNotifications?.();
     this.unsubscribeSessionNotifications = null;
+    this.unsubscribeTransportClose?.();
+    this.unsubscribeTransportClose = null;
+    this.closeTurnConsumersAsInterrupted();
     try {
       await this.cardBuilder.persistCards();
     } catch {
@@ -416,8 +428,8 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     }
   }
 
-  /** Run a single turn end-to-end: cb.startNewTurn → cb.userMessage →
-   * turn/start → consume notifications → emit stream-end. */
+  /** Run a single explicit turn end-to-end: cb.startNewTurn → cb.userMessage
+   * → turn/start → wait for the session-routed turn consumer to settle. */
   async runTurn(prompt: string, attachments?: readonly Attachment[]): Promise<void> {
     if (this.exited) return;
     if (this.running) {
@@ -469,6 +481,26 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     this.pendingTurns.splice(index, 1);
     this.callbacks.onQueueStateChange?.(this.threadId);
     return true;
+  }
+
+  private async steerOrQueue(
+    prompt: string,
+    attachments: readonly Attachment[] | undefined,
+    expectedTurnId: string,
+  ): Promise<void> {
+    const steered = await this.steerCurrentTurn(prompt, attachments, expectedTurnId);
+    if (steered) return;
+    this.enqueueOrRunTurn(prompt, attachments);
+  }
+
+  private enqueueOrRunTurn(prompt: string, attachments?: readonly Attachment[]): void {
+    if (this.exited) return;
+    if (this.running || this.currentTurnId) {
+      this.pendingTurns.push(makeQueuedUserPrompt(prompt, attachments));
+      this.callbacks.onQueueStateChange?.(this.threadId);
+      return;
+    }
+    void this.runTurn(prompt, attachments);
   }
 
   private async steerCurrentTurn(
@@ -541,23 +573,27 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
         input: attachmentsToCodexUserInput(prompt, attachments),
         ...drained,
       };
-      const response = await this.handle.rpc.request<TurnStartResponse>('turn/start', params);
+      this.startingRunTurn = true;
+      this.prestartedRunTurnId = null;
+      let response: TurnStartResponse;
+      try {
+        response = await this.handle.rpc.request<TurnStartResponse>('turn/start', params);
+      } finally {
+        this.startingRunTurn = false;
+      }
       this.overrideStore.commit();
       turnId = response.turn.id;
       this.currentTurnId = turnId;
       cb.setCurrentTurnId(turnId);
 
-      const result = await consumeAppServerStream(
-        this.handle.rpc,
-        cb,
-        {
-          sessionId: this.threadId,
-          threadId: this.threadId,
-          turnId,
-          tokens: this.tokens,
-        },
-        this.callbacks,
-      );
+      const prestartedTurnId = this.prestartedRunTurnId as string | null;
+      if (prestartedTurnId && prestartedTurnId !== turnId) {
+        console.warn(
+          `[codex-app] turn/start response mismatch session=${this.threadId.slice(0, 8)} response=${turnId.slice(0, 8)} notification=${prestartedTurnId.slice(0, 8)}`,
+        );
+      }
+
+      const result = await this.beginTurnConsumer(turnId, { managedByRunTurn: true }).result;
       void result; // settled; stream-end already emitted by adapter
     } catch (err) {
       // Adapter wasn't able to settle (e.g., turn/start itself failed).
@@ -569,14 +605,10 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
         error: message,
       });
     } finally {
-      this.currentTurnId = null;
-      try {
-        await cb.persistCards();
-      } catch {
-        // best-effort
-      }
-      cb.clearCards();
-      this.callbacks.onTurnSettled?.(this.threadId);
+      this.startingRunTurn = false;
+      const lifecycleTurnId = turnId ?? this.prestartedRunTurnId;
+      this.prestartedRunTurnId = null;
+      await this.finishTurnLifecycle(lifecycleTurnId);
     }
   }
 
@@ -609,8 +641,100 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     return out;
   }
 
+  private beginTurnConsumer(
+    turnId: string,
+    opts: { managedByRunTurn: boolean },
+  ): CodexTurnStreamConsumer {
+    const existing = this.turnConsumers.get(turnId);
+    if (existing) return existing;
+
+    this.settledTurnIds.delete(turnId);
+    const consumer = createCodexTurnStreamConsumer(
+      this.cardBuilder,
+      {
+        sessionId: this.threadId,
+        threadId: this.threadId,
+        turnId,
+        tokens: this.tokens,
+      },
+      this.callbacks,
+    );
+    this.turnConsumers.set(turnId, consumer);
+    void consumer.result.then(() => {
+      void this.handleTurnConsumerSettled(turnId, consumer, opts.managedByRunTurn).catch((err) => {
+        console.warn(
+          `[codex-app] failed to settle turn consumer session=${this.threadId.slice(0, 8)} turn=${turnId.slice(0, 8)} error=${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    });
+    return consumer;
+  }
+
+  private async handleTurnConsumerSettled(
+    turnId: string,
+    consumer: CodexTurnStreamConsumer,
+    managedByRunTurn: boolean,
+  ): Promise<void> {
+    if (this.turnConsumers.get(turnId) === consumer) {
+      this.turnConsumers.delete(turnId);
+    }
+    this.rememberSettledTurn(turnId);
+    consumer.dispose();
+    if (managedByRunTurn) return;
+
+    await this.finishTurnLifecycle(turnId);
+    this.drainPendingTurnsAfterObservedTurn();
+  }
+
+  private async finishTurnLifecycle(turnId: string | null): Promise<void> {
+    const builderTurnId = this.cardBuilder.getCurrentTurnId();
+    const shouldClearCards = !turnId || !builderTurnId || builderTurnId === turnId;
+    if (!turnId || this.currentTurnId === turnId) {
+      this.currentTurnId = null;
+    }
+    try {
+      await this.cardBuilder.persistCards();
+    } catch {
+      // best-effort
+    }
+    if (shouldClearCards) {
+      this.cardBuilder.clearCards();
+    }
+    this.callbacks.onTurnSettled?.(this.threadId);
+  }
+
+  private drainPendingTurnsAfterObservedTurn(): void {
+    if (this.exited || this.running || this.currentTurnId || this.pendingTurns.length === 0) {
+      return;
+    }
+    const next = this.pendingTurns.shift()!;
+    this.callbacks.onQueueStateChange?.(this.threadId);
+    void this.runTurn(next.prompt, next.attachments);
+  }
+
+  private closeTurnConsumersAsInterrupted(): void {
+    for (const consumer of this.turnConsumers.values()) {
+      consumer.closeAsInterrupted();
+    }
+  }
+
+  private handleTransportClosed(): void {
+    this.closeTurnConsumersAsInterrupted();
+  }
+
+  private rememberSettledTurn(turnId: string): void {
+    this.settledTurnIds.add(turnId);
+    if (this.settledTurnIds.size <= 100) return;
+    const oldest = this.settledTurnIds.values().next().value;
+    if (oldest) this.settledTurnIds.delete(oldest);
+  }
+
   private handleSessionNotification(notification: { method: string; params: unknown }): void {
     try {
+      this.observeTokenUsageNotification(notification);
+      const turnId = this.ensureTurnConsumerForNotification(notification);
+      this.dispatchTurnNotification(notification, turnId);
+
       switch (notification.method) {
         case 'thread/goal/updated': {
           const params = notification.params as ThreadGoalUpdatedNotification;
@@ -631,6 +755,56 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       console.warn(
         `[codex-app] failed to handle session notification method=${notification.method} session=${this.threadId.slice(0, 8)} params=${codexProtocolPreview(notification.params)} error=${err instanceof Error ? err.message : String(err)}`,
       );
+    }
+  }
+
+  private observeTokenUsageNotification(notification: { method: string; params: unknown }): void {
+    if (notification.method !== 'thread/tokenUsage/updated') return;
+    if (!notificationBelongsToThread(notification.params, this.threadId)) return;
+    this.tokens.observe(notification.params as ThreadTokenUsageUpdatedNotification);
+  }
+
+  private ensureTurnConsumerForNotification(
+    notification: { method: string; params: unknown },
+  ): string | null {
+    if (!notificationBelongsToThread(notification.params, this.threadId)) return null;
+    const turnId = notificationTurnId(notification);
+    if (!turnId) return null;
+    if (this.settledTurnIds.has(turnId)) return turnId;
+
+    const existing = this.turnConsumers.get(turnId);
+    if (existing) return turnId;
+    if (!shouldCreateTurnConsumerForNotification(notification.method)) return turnId;
+
+    const managedByRunTurn = this.startingRunTurn || this.currentTurnId === turnId;
+    if (this.startingRunTurn) {
+      this.prestartedRunTurnId = turnId;
+    }
+
+    if (managedByRunTurn) {
+      this.currentTurnId = turnId;
+      this.cardBuilder.setCurrentTurnId(turnId);
+    } else {
+      this.cardBuilder.startNewTurn(turnId);
+      this.currentTurnId = turnId;
+      this.callbacks.onQueueStateChange?.(this.threadId);
+    }
+
+    this.beginTurnConsumer(turnId, { managedByRunTurn });
+    return turnId;
+  }
+
+  private dispatchTurnNotification(
+    notification: { method: string; params: unknown },
+    turnId: string | null,
+  ): void {
+    if (!notificationBelongsToThread(notification.params, this.threadId)) return;
+    if (turnId) {
+      this.turnConsumers.get(turnId)?.dispatch(notification);
+      return;
+    }
+    for (const consumer of this.turnConsumers.values()) {
+      consumer.dispatch(notification);
     }
   }
 
@@ -765,6 +939,57 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
 }
 
 // ── helpers ──
+
+function notificationBelongsToThread(params: unknown, threadId: string): boolean {
+  if (typeof params !== 'object' || params === null) return true;
+  const candidate = (params as { threadId?: unknown }).threadId;
+  return typeof candidate !== 'string' || candidate === threadId;
+}
+
+function notificationTurnId(notification: { method: string; params: unknown }): string | null {
+  switch (notification.method) {
+    case 'turn/started': {
+      const params = notification.params as TurnStartedNotification;
+      return params.turn?.id ?? null;
+    }
+    case 'turn/completed': {
+      const params = notification.params as TurnCompletedNotification;
+      return params.turn?.id ?? null;
+    }
+    default: {
+      if (typeof notification.params !== 'object' || notification.params === null) return null;
+      const candidate = (notification.params as { turnId?: unknown }).turnId;
+      return typeof candidate === 'string' && candidate.length > 0 ? candidate : null;
+    }
+  }
+}
+
+function shouldCreateTurnConsumerForNotification(method: string): boolean {
+  switch (method) {
+    case 'turn/started':
+    case 'turn/completed':
+    case 'turn/plan/updated':
+    case 'item/started':
+    case 'item/autoApprovalReview/started':
+    case 'item/autoApprovalReview/completed':
+    case 'item/completed':
+    case 'item/agentMessage/delta':
+    case 'item/plan/delta':
+    case 'item/commandExecution/outputDelta':
+    case 'item/fileChange/outputDelta':
+    case 'item/fileChange/patchUpdated':
+    case 'item/mcpToolCall/progress':
+    case 'item/reasoning/summaryTextDelta':
+    case 'item/reasoning/summaryPartAdded':
+    case 'item/reasoning/textDelta':
+    case 'model/rerouted':
+    case 'model/verification':
+    case 'error':
+      return true;
+    default:
+      return false;
+  }
+}
 
 interface PromptQuestion {
   id?: string;
