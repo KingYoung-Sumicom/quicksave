@@ -300,6 +300,58 @@ describe('CodexAppServerSession goal control requests', () => {
   });
 });
 
+describe('CodexAppServerSession slash command listing', () => {
+  it('includes Codex goal mode as a built-in command before skills', async () => {
+    const h = harness();
+    const promise = h.session.listSlashCommands({ cwd: '/repo' });
+    const req = await receiveClientRequest(h.serverSide);
+    expect(req.method).toBe('skills/list');
+    expect(req.params).toEqual({ cwds: ['/repo'], forceReload: false });
+
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      id: req.id,
+      result: {
+        data: [
+          {
+            cwd: '/repo',
+            errors: [],
+            skills: [
+              {
+                name: 'goal',
+                description: 'skill duplicate',
+                path: '/skills/goal/SKILL.md',
+                scope: 'project',
+                enabled: true,
+              },
+              {
+                name: 'imagegen',
+                description: 'Create visual assets',
+                path: '/skills/imagegen/SKILL.md',
+                scope: 'system',
+                enabled: true,
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    await expect(promise).resolves.toEqual([
+      {
+        name: 'goal',
+        description: 'Manage Codex goal mode',
+        argumentHint: 'pause | resume | clear | set <objective>',
+      },
+      {
+        name: 'imagegen',
+        description: 'Create visual assets',
+        source: 'codex-skill',
+      },
+    ]);
+  });
+});
+
 describe('CodexAppServerSession active-turn follow-up routing', () => {
   it('steers a normal follow-up into the current active turn', async () => {
     const h = harness();
@@ -381,6 +433,7 @@ describe('CodexAppServerSession active-turn follow-up routing', () => {
     });
     await h.serverSide.send({ jsonrpc: '2.0', id: secondStartReq.id, result: { turn: makeTurn('turn_2', 'inProgress') } });
     await flushMicrotasks();
+    await sendTokenUsage(h, 'turn_2');
     await h.serverSide.send({
       jsonrpc: '2.0',
       method: 'turn/completed',
@@ -390,6 +443,57 @@ describe('CodexAppServerSession active-turn follow-up routing', () => {
 
     expect(h.callbacks.emitStreamEnd).toHaveBeenCalledTimes(2);
     expect(h.session.getQueueState()).toBeNull();
+  });
+
+  it('unblocks a later prompt when interrupt has no turn/completed notification', async () => {
+    const h = harness();
+    const firstStartReqPromise = receiveClientRequest(h.serverSide);
+    const run = h.session.runTurn('initial prompt');
+
+    const firstStartReq = await firstStartReqPromise;
+    expect(firstStartReq.method).toBe('turn/start');
+    await h.serverSide.send({ jsonrpc: '2.0', id: firstStartReq.id, result: { turn: makeTurn('turn_1', 'inProgress') } });
+    await flushMicrotasks();
+
+    const interruptReqPromise = receiveClientRequest(h.serverSide);
+    h.session.interrupt();
+    const interruptReq = await interruptReqPromise;
+    expect(interruptReq.method).toBe('turn/interrupt');
+    expect(interruptReq.params).toEqual({ threadId: h.threadId, turnId: 'turn_1' });
+    await h.serverSide.send({ jsonrpc: '2.0', id: interruptReq.id, result: {} });
+
+    await resolvesWithin(run);
+    expect(h.callbacks.emitStreamEnd).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: h.threadId,
+      turnId: 'turn_1',
+      success: false,
+      interrupted: true,
+    }));
+
+    const secondStartReqPromise = receiveClientRequest(h.serverSide);
+    h.session.sendUserMessage('after stop');
+    const secondStartReq = await secondStartReqPromise;
+    expect(secondStartReq.method).toBe('turn/start');
+    expect(secondStartReq.params).toMatchObject({
+      threadId: h.threadId,
+      input: [{ type: 'text', text: 'after stop', text_elements: [] }],
+    });
+    await h.serverSide.send({ jsonrpc: '2.0', id: secondStartReq.id, result: { turn: makeTurn('turn_2', 'inProgress') } });
+    await flushMicrotasks();
+    await sendTokenUsage(h, 'turn_2');
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: { threadId: h.threadId, turn: makeTurn('turn_2', 'completed') },
+    });
+    await flushMicrotasks();
+
+    expect(h.callbacks.emitStreamEnd).toHaveBeenCalledTimes(2);
+    expect(h.callbacks.emitStreamEnd).toHaveBeenLastCalledWith(expect.objectContaining({
+      sessionId: h.threadId,
+      turnId: 'turn_2',
+      success: true,
+    }));
   });
 });
 
@@ -493,6 +597,15 @@ async function receiveClientRequest(serverSide: InMemoryTransport): Promise<Wire
 
 async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve();
+}
+
+async function resolvesWithin<T>(promise: Promise<T>, ms = 100): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`promise did not resolve within ${ms}ms`)), ms);
+    }),
+  ]);
 }
 
 async function sendTokenUsage(h: ReturnType<typeof harness>, turnId: string): Promise<void> {

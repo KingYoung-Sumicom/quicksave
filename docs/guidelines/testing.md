@@ -46,6 +46,9 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
    - Race conditions (e.g., clearCards before snapshotCutoff)
    - State after reconnect (e.g., pubsub subscriptions lost)
    - Missing or out-of-order events
+   - Provider interrupt/cancel paths where the control request is sent or
+     acknowledged but no terminal `completed`/`interrupted` notification arrives;
+     assert the session still settles locally and the next prompt can start
    - Memory-mode provider cold resume: persisted card ids must not collide
      with new turn card ids, and history snapshots should remain chronological
    - Put these in a dedicated `edgeCases.test.ts` or alongside the relevant module

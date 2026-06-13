@@ -1479,6 +1479,7 @@ function ProjectRouteSession({
         onGetSessionCards={boundGetCards}
         onSetSessionConfig={(sid, key, value) => setSessionConfig(sid, key, value)}
         onListSlashCommands={listSlashCommands}
+        onSendControlRequest={sendControlRequest}
         onUnsubscribeSession={unsubscribeSession}
         onStartSession={boundStartSession}
         onResumeSession={boundResumeSession}

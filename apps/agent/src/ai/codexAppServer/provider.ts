@@ -79,6 +79,13 @@ import { codexServerRequestInputId } from './serverRequestIds.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
 const __aiDir = dirname(__ownDir);
+const CODEX_BUILT_IN_SLASH_COMMANDS: SlashCommandInfo[] = [
+  {
+    name: 'goal',
+    description: 'Manage Codex goal mode',
+    argumentHint: 'pause | resume | clear | set <objective>',
+  },
+];
 
 /**
  * Codex provider driving the JSON-RPC v2 `app-server` protocol.
@@ -413,19 +420,23 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
         forceReload: opts?.forceReload === true,
       } satisfies SkillsListParams,
     );
-    return codexSkillsToSlashCommands(response, opts?.cwd);
+    const skills = codexSkillsToSlashCommands(response, opts?.cwd)
+      .filter((command) => !CODEX_BUILT_IN_SLASH_COMMANDS.some((builtin) => builtin.name === command.name));
+    return [...CODEX_BUILT_IN_SLASH_COMMANDS, ...skills];
   }
 
   interrupt(): void {
-    if (!this.currentTurnId) return;
+    const turnId = this.currentTurnId;
+    if (!turnId) return;
     void this.handle.rpc
       .request<unknown>(
         'turn/interrupt',
-        { threadId: this.threadId, turnId: this.currentTurnId } satisfies TurnInterruptParams,
+        { threadId: this.threadId, turnId } satisfies TurnInterruptParams,
       )
       .catch(() => {
         /* best-effort */
       });
+    this.closeTurnAsInterrupted(turnId);
   }
 
   async kill(): Promise<void> {
@@ -742,6 +753,22 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     for (const consumer of this.turnConsumers.values()) {
       consumer.closeAsInterrupted();
     }
+  }
+
+  private closeTurnAsInterrupted(turnId: string): void {
+    const consumer = this.turnConsumers.get(turnId);
+    if (consumer) {
+      consumer.closeAsInterrupted();
+      return;
+    }
+
+    this.callbacks.emitStreamEnd({
+      sessionId: this.threadId,
+      turnId,
+      success: false,
+      interrupted: true,
+    });
+    void this.finishTurnLifecycle(turnId);
   }
 
   private handleTransportClosed(): void {

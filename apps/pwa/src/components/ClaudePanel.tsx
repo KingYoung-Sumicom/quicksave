@@ -8,6 +8,7 @@ import type {
   ClaudeSessionSummary,
   ClaudeUserInputResponsePayload,
   ConfigValue,
+  SessionControlRequestResponsePayload,
   SessionListSlashCommandsResponsePayload,
   SlashCommandInfo,
   AttachmentKind,
@@ -26,6 +27,7 @@ import { ToolCallVisibilityChip } from './chat/ToolCallVisibilityChip';
 import { AttachmentTray } from './AttachmentTray';
 import { useUiPrefsStore } from '../stores/uiPrefsStore';
 import { getAgentProvider } from '../lib/agentProvider';
+import { parseControlSlash, type ControlSlashSubtype } from '../lib/controlSlash';
 import type { AttachmentMetadata, AgentId } from '@sumicom/quicksave-shared';
 import { useComposerVoice } from '../hooks/useComposerVoice';
 import { useComposerAttachments } from '../hooks/useComposerAttachments';
@@ -50,6 +52,11 @@ interface ClaudePanelProps {
     sessionId: string,
     opts?: { cwd?: string; forceReload?: boolean },
   ) => Promise<SessionListSlashCommandsResponsePayload>;
+  onSendControlRequest?: (
+    sessionId: string,
+    subtype: string,
+    params?: Record<string, unknown>,
+  ) => Promise<SessionControlRequestResponsePayload>;
   onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
   onResumeSession: (sessionId: string, prompt: string, opts?: ResumeSessionOpts) => Promise<void>;
   onSteerQueuedSession?: (sessionId: string) => Promise<void> | void;
@@ -67,6 +74,52 @@ function formatMissionTime(ts: number): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(ts));
+}
+
+function formatCodexGoalToast(
+  subtype: ControlSlashSubtype,
+  response: unknown,
+): string {
+  if (subtype === 'goal.clear') return 'Goal cleared.';
+  const goal = extractCodexGoal(response);
+  if (!goal) return 'No active goal.';
+
+  const status = typeof goal.status === 'string' ? goal.status : 'active';
+  const objective = typeof goal.objective === 'string' ? goal.objective.trim() : '';
+  return objective ? `Goal ${status}: ${objective}` : `Goal ${status}.`;
+}
+
+function extractCodexGoal(response: unknown): Record<string, unknown> | null {
+  if (typeof response !== 'object' || response === null) return null;
+  const goal = (response as { goal?: unknown }).goal;
+  return typeof goal === 'object' && goal !== null ? goal as Record<string, unknown> : null;
+}
+
+function formatControlSlashToast(
+  subtype: ControlSlashSubtype,
+  response: unknown,
+): string {
+  if (subtype.startsWith('goal.')) return formatCodexGoalToast(subtype, response);
+  switch (subtype) {
+    case 'get_context_usage':
+      return 'Context usage request completed.';
+    case 'get_settings':
+      return 'Settings request completed.';
+    case 'set_model':
+      return 'Model updated.';
+    case 'set_permission_mode':
+      return 'Permission mode updated.';
+    case 'set_max_thinking_tokens':
+      return 'Thinking token budget updated.';
+    case 'interrupt':
+      return 'Interrupted current turn.';
+    case 'mcp_status':
+      return 'MCP status request completed.';
+    case 'reload_plugins':
+      return 'Plugins reloaded.';
+    default:
+      return 'Control request completed.';
+  }
 }
 
 function PendingMissionBanner({
@@ -213,6 +266,7 @@ export function ClaudePanel({
   onGetSessionCards,
   onSetSessionConfig,
   onListSlashCommands,
+  onSendControlRequest,
   onStartSession,
   onResumeSession,
   onSteerQueuedSession,
@@ -242,6 +296,7 @@ export function ClaudePanel({
     sandboxEnabled,
     setPromptInput,
     setActiveSession,
+    setStreamError,
     clearCards,
   } = useClaudeStore();
 
@@ -277,12 +332,16 @@ export function ClaudePanel({
   // manager (Zustand store) tracks per-id progress separately. Send is
   // gated until every chip's status is `ready`.
   const [attachmentToast, setAttachmentToast] = useState<string | null>(null);
+  const showComposerToast = useCallback((message: string) => {
+    setAttachmentToast(message);
+    window.setTimeout(() => setAttachmentToast(null), 4000);
+  }, []);
   const attach = useComposerAttachments({
     agentId,
     supportsAttachments,
     supportedAttachmentKinds,
     agentLabel: selectedAgentType.label,
-    onReject: (m) => { setAttachmentToast(m); window.setTimeout(() => setAttachmentToast(null), 4000); },
+    onReject: showComposerToast,
   });
 
   // Per-group override: when global hide is on, individual groups can be
@@ -577,6 +636,38 @@ export function ClaudePanel({
     // A turn is sendable if there's prompt text OR at least one ready attachment.
     const hasContent = prompt.length > 0 || attach.pendingAttachments.length > 0 || isTerminalNewSession;
     if (!hasContent) return;
+
+    const controlSlash = parseControlSlash(prompt, selectedAgent);
+    if (controlSlash) {
+      if (!activeSessionId || !onSendControlRequest) {
+        showComposerToast('Control commands require an active session.');
+        return;
+      }
+      if (attach.pendingAttachments.length > 0) {
+        showComposerToast('Control commands cannot include attachments.');
+        return;
+      }
+      if (controlSlash.kind === 'invalid') {
+        showComposerToast(controlSlash.error);
+        return;
+      }
+
+      setPromptInput('');
+      if (inputRef.current) inputRef.current.style.height = 'auto';
+      if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+      if (draftKey) localStorage.removeItem(draftKey);
+      setStreamError(null);
+
+      try {
+        const response = await onSendControlRequest(activeSessionId, controlSlash.subtype, controlSlash.params);
+        if (!response.success) throw new Error(response.error || 'Control command failed');
+        showComposerToast(formatControlSlashToast(controlSlash.subtype, response.response));
+      } catch (error) {
+        setStreamError(error instanceof Error ? error.message : 'Control command failed');
+      }
+      return;
+    }
+
     if (!attach.allUploadsReady) return;
 
     isAtBottomRef.current = true;
@@ -629,7 +720,7 @@ export function ClaudePanel({
       // Clean up the upload manager state for the chips that just shipped.
       if (!isTerminalNewSession) attach.forgetSent(attachmentIds);
     }
-  }, [promptInput, attach, activeSessionId, isInactive, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedReasoningEffort, selectedContextWindow, selectedAgentType, setPromptInput, onResumeSession, onStartSession, draftKey]);
+  }, [promptInput, attach, activeSessionId, isInactive, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedReasoningEffort, selectedContextWindow, selectedAgentType, setPromptInput, setStreamError, onSendControlRequest, onResumeSession, onStartSession, draftKey, showComposerToast]);
 
   /**
    * Send a fixed prompt without using the composer input. Used by inline
@@ -991,6 +1082,7 @@ export function ClaudePanel({
               <SessionStatusBar
                 sessionId={activeSessionId}
                 onSetSessionConfig={onSetSessionConfig}
+                onSendControlRequest={onSendControlRequest}
               >
                 <ToolCallVisibilityChip onChange={handleToggleVisibility} />
                 <CodexQuotaBadges sessionId={activeSessionId} agentId={agentId} />

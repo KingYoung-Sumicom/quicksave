@@ -2,16 +2,23 @@
 // SPDX-License-Identifier: MIT
 import { useState, useRef, useEffect, type ReactNode } from 'react';
 import type { ConfigValue } from '@sumicom/quicksave-shared';
+import type { SessionControlRequestResponsePayload } from '@sumicom/quicksave-shared';
 import { DEFAULT_CONTEXT_WINDOW } from '@sumicom/quicksave-shared';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
 import { getAgentProvider } from '../../lib/agentProvider';
 import { normalizeAgentId } from '../../lib/claudePresets';
 import { useClaudeStore } from '../../stores/claudeStore';
 import { useConnectionStore } from '../../stores/connectionStore';
+import { CodexGoalBadge } from './CodexGoalBadge';
 
 interface SessionStatusBarProps {
   sessionId: string;
   onSetSessionConfig?: (sessionId: string, key: string, value: ConfigValue) => void;
+  onSendControlRequest?: (
+    sessionId: string,
+    subtype: string,
+    params?: Record<string, unknown>,
+  ) => Promise<SessionControlRequestResponsePayload>;
   /** Extra chips rendered at the end of the row (e.g. context % / cache countdown). */
   children?: ReactNode;
 }
@@ -23,7 +30,12 @@ const AGENT_LABEL: Record<string, string> = {
   pi: 'Pi',
 };
 
-export function SessionStatusBar({ sessionId, onSetSessionConfig, children }: SessionStatusBarProps) {
+export function SessionStatusBar({
+  sessionId,
+  onSetSessionConfig,
+  onSendControlRequest,
+  children,
+}: SessionStatusBarProps) {
   const config = useSessionConfig(sessionId);
   const [openPopover, setOpenPopover] = useState<string | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
@@ -75,6 +87,8 @@ export function SessionStatusBar({ sessionId, onSetSessionConfig, children }: Se
         onOpenPopover: setOpenPopover,
         allow1mForBilledModels,
       })}
+
+      <CodexGoalBadge sessionId={sessionId} onSendControlRequest={onSendControlRequest} />
 
       {children}
     </div>
