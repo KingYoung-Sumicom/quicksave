@@ -13,7 +13,7 @@ export default defineConfig({
   reporter: 'html',
 
   use: {
-    baseURL: 'http://localhost:5174',
+    baseURL: 'http://localhost:5175',
     trace: 'on-first-retry',
   },
 
@@ -25,9 +25,9 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: 'QUICKSAVE_SIGNALING_URL=ws://localhost:4999 npx vite --port 5174',
-    url: 'http://localhost:5174',
-    reuseExistingServer: !process.env.CI,
+    command: 'QUICKSAVE_SIGNALING_URL=ws://localhost:4999 npx vite --port 5175',
+    url: 'http://localhost:5175',
+    reuseExistingServer: false,
     timeout: 30_000,
   },
 });

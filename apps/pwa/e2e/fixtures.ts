@@ -8,6 +8,18 @@
 import { test as base, type Page } from '@playwright/test';
 import { MockRelay, type MockRelayOptions } from './mock-relay';
 
+function pathToHash(path: string): string {
+  let hash = 5381;
+  for (let i = 0; i < path.length; i++) {
+    hash = ((hash << 5) + hash + path.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+export const MOCK_AGENT_ID = 'mock-agent-001';
+export const MOCK_REPO_PATH = '/home/user/project';
+export const MOCK_PROJECT_ID = `${MOCK_AGENT_ID}:${pathToHash(MOCK_REPO_PATH)}`;
+
 export type TestFixtures = {
   mockRelay: MockRelay;
   /** Navigate to the PWA and connect through the mock relay. Returns after handshake completes. */
@@ -28,9 +40,10 @@ export const test = base.extend<TestFixtures>({
       // The Vite dev server is started with QUICKSAVE_SIGNALING_URL=ws://localhost:4999
       // so the connectionStore already points to the mock relay.
       await page.addInitScript(
-        ({ agentId, publicKey }) => {
-          // Seed machine store (zustand persist, version 2)
+        ({ agentId, publicKey, repoPath }) => {
+          // Seed machine store (zustand persist, version 6)
           const machineStoreKey = 'quicksave-machines';
+          const now = Date.now();
           const machineData = {
             state: {
               machines: [
@@ -39,34 +52,42 @@ export const test = base.extend<TestFixtures>({
                   publicKey,
                   nickname: 'Mock Agent',
                   icon: 'computer',
-                  addedAt: Date.now(),
+                  addedAt: now,
+                  updatedAt: now,
                   lastConnectedAt: null,
-                  lastRepoPath: null,
+                  lastRepoPath: repoPath,
                   knownRepos: [],
-                  knownCodingPaths: [],
+                  knownCodingPaths: [repoPath],
                   isPro: false,
+                  cachedProjects: {
+                    [repoPath]: {
+                      lastActivityAt: now,
+                      sessionCount: 0,
+                      repos: [{ path: repoPath, name: 'project' }],
+                    },
+                  },
                 },
               ],
+              machineTombstones: {},
             },
-            version: 2,
+            version: 6,
           };
           localStorage.setItem(machineStoreKey, JSON.stringify(machineData));
         },
         {
-          agentId: 'mock-agent-001',
+          agentId: MOCK_AGENT_ID,
           publicKey: mockRelay.publicKey,
+          repoPath: MOCK_REPO_PATH,
         }
       );
 
-      // Navigate to the app root — the fleet dashboard should appear with our mock agent
-      await page.goto('/');
+      // Navigate directly to the current project route. The project route
+      // resolves the seeded machine/path and initiates the agent connection.
+      await page.goto(`/#/p/${MOCK_PROJECT_ID}`);
 
-      // Click on the mock agent card to initiate connection.
-      // Desktop layout shows ProjectList both in sidebar and content pane — use .first().
-      await page.getByText('Mock Agent').first().click();
-
-      // Wait for the app to complete the handshake and navigate to the project page.
+      // Wait for the app to complete the handshake and render the project page.
       await page.waitForURL(/#\/p\//, { timeout: 15_000 });
+      await page.getByRole('heading', { name: 'Tasks', exact: true }).waitFor({ timeout: 15_000 });
     };
 
     await use(connect);

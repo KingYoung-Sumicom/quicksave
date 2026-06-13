@@ -26,6 +26,7 @@ import type {
   HandshakeAckPayload,
   ClaudeSessionSummary,
   KeyPair,
+  BroadcastSessionEntry,
 } from '@sumicom/quicksave-shared';
 import type {
   Card,
@@ -233,6 +234,11 @@ export class MockRelay {
   // ── Application-level message handling ──────────────────────────────────
 
   private async handleAppMessage(peer: PeerState, message: Message): Promise<void> {
+    if (message.type === 'bus:frame') {
+      await this.handleBusFrame(peer, message.payload as { kind: string; id?: string; verb?: string; payload?: unknown; path?: string });
+      return;
+    }
+
     switch (message.type) {
       case 'handshake': {
         const ackPayload: HandshakeAckPayload = {
@@ -359,6 +365,152 @@ export class MockRelay {
     }
   }
 
+  private async handleBusFrame(
+    peer: PeerState,
+    frame: { kind: string; id?: string; verb?: string; payload?: unknown; path?: string },
+  ): Promise<void> {
+    if (frame.kind === 'sub' && frame.path) {
+      await this.sendBusFrame(peer, {
+        kind: 'snap',
+        path: frame.path,
+        data: this.snapshotForPath(frame.path),
+        seq: 1,
+      });
+      return;
+    }
+
+    if (frame.kind === 'unsub') return;
+
+    if (frame.kind !== 'cmd' || !frame.id || !frame.verb) return;
+
+    try {
+      const data = await this.handleBusCommand(frame.verb, frame.payload);
+      await this.sendBusFrame(peer, { kind: 'result', id: frame.id, ok: true, data });
+    } catch (err) {
+      await this.sendBusFrame(peer, {
+        kind: 'result',
+        id: frame.id,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private snapshotForPath(path: string): unknown {
+    if (path === '/sessions/active') return [];
+    if (path === '/sessions/history') return this.sessions.map((session) => this.toHistoryEntry(session));
+    if (path === '/preferences') return { model: 'claude-sonnet-4-6' };
+    if (path === '/repos/commit-summary') return [];
+    if (path === '/sessions/config') return {};
+    if (path === '/codex/login') return { status: 'unknown' };
+    if (path === '/codex/models') return [];
+
+    const cardsMatch = path.match(/^\/sessions\/([^/]+)\/cards$/);
+    if (cardsMatch) {
+      return {
+        cards: this.cards,
+        total: this.cards.length,
+        hasMore: false,
+      } satisfies CardHistoryResponse;
+    }
+
+    return [];
+  }
+
+  private async handleBusCommand(verb: string, payload: unknown): Promise<unknown> {
+    switch (verb) {
+      case 'project:list-summaries':
+        return {
+          projects: [
+            {
+              cwd: this.repoPath,
+              sessionCount: this.sessions.filter((s) => s.cwd === this.repoPath && !s.archived).length,
+              lastActivityAt: Math.max(Date.now(), ...this.sessions.map((s) => s.lastModified || 0)),
+              lastSessionTitle: this.sessions[0]?.summary,
+              isGitRepo: true,
+            },
+          ],
+        };
+
+      case 'project:list-repos':
+        return { repos: [{ path: this.repoPath, name: 'project', currentBranch: 'main' }] };
+
+      case 'claude:get-cards':
+        return {
+          cards: this.cards,
+          total: this.cards.length,
+          hasMore: false,
+        } satisfies CardHistoryResponse;
+
+      case 'claude:start': {
+        const sessionId = `mock-session-${Date.now()}`;
+        this.sessions = [
+          {
+            sessionId,
+            summary: 'New session',
+            lastModified: Date.now(),
+            cwd: this.repoPath,
+            agent: 'claude-code',
+            isActive: true,
+            isStreaming: false,
+          },
+          ...this.sessions,
+        ];
+        for (const event of this.cardEventsOnStart) {
+          if (event.type === 'add') {
+            this.cards = [...this.cards, { ...event.card, id: `${sessionId}:${event.card.id}` }];
+          }
+        }
+        return { success: true, sessionId };
+      }
+
+      case 'claude:resume': {
+        const resumePayload = payload as { sessionId?: string };
+        return { success: true, sessionId: resumePayload.sessionId };
+      }
+
+      case 'session:list-archived':
+        return { entries: [], total: 0, offset: 0, limit: 20 };
+
+      case 'session:list-slash-commands':
+        return { commands: [] };
+
+      case 'ai:get-api-key-status':
+        return { configured: false };
+
+      case 'git:status':
+        return {
+          branch: 'main',
+          ahead: 0,
+          behind: 0,
+          staged: [],
+          unstaged: [],
+          untracked: [],
+        };
+
+      default:
+        return {};
+    }
+  }
+
+  private toHistoryEntry(session: ClaudeSessionSummary): BroadcastSessionEntry {
+    return {
+      sessionId: session.sessionId,
+      cwd: session.cwd ?? this.repoPath,
+      agent: session.agent,
+      title: session.summary,
+      firstPrompt: session.summary,
+      createdAt: session.createdAt ?? session.lastModified,
+      lastAccessedAt: session.lastModified,
+      messageCount: session.messageCount,
+      archived: session.archived,
+      permissionMode: session.permissionMode,
+      lastPromptAt: session.lastPromptAt,
+      lastTurnEndedAt: session.lastTurnEndedAt,
+      totalCostUsd: session.totalCostUsd,
+    };
+  }
+
   // ── Sending helpers ─────────────────────────────────────────────────────
 
   private sendRouted(peer: PeerState, payload: string): void {
@@ -380,6 +532,15 @@ export class MockRelay {
     const compressed = compress(serialized);
     const encrypted = encryptWithSharedSecret(compressed, peer.sessionDEK);
     this.sendRouted(peer, encrypted);
+  }
+
+  private async sendBusFrame(peer: PeerState, frame: unknown): Promise<void> {
+    await this.sendEncrypted(peer, {
+      id: `bus-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      type: 'bus:frame',
+      payload: frame,
+      timestamp: Date.now(),
+    });
   }
 
   // ── Public helpers for tests ────────────────────────────────────────────

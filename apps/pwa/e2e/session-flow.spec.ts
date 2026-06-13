@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { test, expect } from './fixtures';
+import { MOCK_PROJECT_ID, MOCK_REPO_PATH, test, expect } from './fixtures';
 import type { Card, CardEvent } from '@sumicom/quicksave-shared';
 
 const MOCK_SESSION_ID = 'session-existing-001';
-const MOCK_REPO_PATH = '/home/user/project';
 
 const mockCards: Card[] = [
   {
@@ -38,8 +37,8 @@ test.describe('Session Flow', () => {
   test('connects to agent and sees the dashboard', async ({ page, mockRelay, connectToAgent }) => {
     await connectToAgent(page);
 
-    // Agent dashboard should show the coding section with the project path
-    await expect(page.locator('h2', { hasText: 'Coding' })).toBeVisible();
+    // Agent dashboard should show the task section with the project path
+    await expect(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible();
     await expect(page.getByText('project').first()).toBeVisible();
   });
 
@@ -57,11 +56,8 @@ test.describe('Session Flow', () => {
 
     await connectToAgent(page);
 
-    // Click on the coding path entry (the project name)
-    await page.getByText('project').last().click();
-
     // Should navigate to the coding panel and show the session list
-    await page.waitForURL(/#\/agent\/mock-agent-001\/coding\//);
+    await page.waitForURL(new RegExp(`#/p/${MOCK_PROJECT_ID.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
 
     // The session summary should appear in the list
     await expect(page.getByText('Test session about coding').first()).toBeVisible({ timeout: 10_000 });
@@ -81,10 +77,6 @@ test.describe('Session Flow', () => {
 
     await connectToAgent(page);
 
-    // Navigate to the coding path
-    await page.getByText('project').last().click();
-    await page.waitForURL(/#\/agent\/mock-agent-001\/coding\//);
-
     // Click on the existing session
     await page.getByText('Test session').first().click();
 
@@ -99,15 +91,11 @@ test.describe('Session Flow', () => {
 
     await connectToAgent(page);
 
-    // Navigate to the coding path
-    await page.getByText('project').last().click();
-    await page.waitForURL(/#\/agent\/mock-agent-001\/coding\//);
-
-    // Click "New Session" button
-    await page.getByText('New Session').click();
+    // Click "New Task" button
+    await page.getByText('New Task').click();
 
     // Should show the new session empty state with config options
-    await expect(page.getByText('Type a message below to start the session')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('Type a message below to start the task')).toBeVisible({ timeout: 10_000 });
   });
 
   test('new-session flow renders streamed assistant card after first prompt', async ({ page, mockRelay, connectToAgent }) => {
@@ -131,22 +119,23 @@ test.describe('Session Flow', () => {
 
     await connectToAgent(page);
 
-    await page.getByText('project').last().click();
-    await page.waitForURL(/#\/p\/[^/]+$/);
-
-    await page.getByText('New Session').click();
-    await page.waitForURL(/#\/p\/[^/]+\/s\/new/, { timeout: 10_000 });
-    await expect(page.getByText('Type a message below to start the session')).toBeVisible({ timeout: 10_000 });
+    await page.getByText('New Task').click();
+    await page.waitForURL(/#\/add\?tab=session/, { timeout: 10_000 });
+    await expect(page.getByText('Type a message below to start the task')).toBeVisible({ timeout: 10_000 });
 
     await page.locator('textarea').fill('Hello agent');
-    await page.locator('button[title="Send"]').click();
+    await page.getByRole('button', { name: 'Start task' }).click();
 
     // Wait for the URL to settle on the real session id and for the streamed
     // assistant card to render — this guarantees the full transition has run.
     await page.waitForURL(/#\/p\/[^/]+\/s\/mock-session-/, { timeout: 10_000 });
     await expect(page.getByText('I will help you with that.')).toBeVisible({ timeout: 10_000 });
 
-    const startResponse = mockRelay.receivedMessages.find((m) => m.type === 'claude:start');
+    const startResponse = mockRelay.receivedMessages.find((m) =>
+      m.type === 'bus:frame'
+      && (m.payload as { kind?: string; verb?: string }).kind === 'cmd'
+      && (m.payload as { kind?: string; verb?: string }).verb === 'claude:start'
+    );
     expect(startResponse, 'PWA should have sent a claude:start request').toBeTruthy();
   });
 
@@ -164,20 +153,18 @@ test.describe('Session Flow', () => {
 
     await connectToAgent(page);
 
-    // Navigate to coding path and select the session
-    await page.getByText('project').last().click();
-    await page.waitForURL(/#\/agent\/mock-agent-001\/coding\//);
+    // Select the session
     await page.getByText('Test session').first().click();
 
     // Verify cards are loaded
     await expect(page.getByText('Hello, can you help me?')).toBeVisible({ timeout: 10_000 });
 
-    // Click the "+" button in the nav drawer to start a new session
-    await page.locator('button[title="New session"]').click();
+    // Click the top-level Add button to start a new task
+    await page.getByRole('button', { name: 'Add' }).click();
 
     // Previous cards should be gone, new session state should show
     await expect(page.getByText('Hello, can you help me?')).not.toBeVisible();
-    await expect(page.getByText('Type a message below to start the session')).toBeVisible();
+    await expect(page.getByText('Type a message below to start the task')).toBeVisible();
 
     // Go back in browser history — cards should reload
     await page.goBack();
