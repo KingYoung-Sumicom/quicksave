@@ -11,7 +11,7 @@ interface ConfirmModalProps {
   onCancel: () => void;
   /** If provided, user must type this exact string before confirm enables. */
   confirmText?: string;
-  variant?: 'default' | 'danger';
+  variant?: 'default' | 'danger' | 'primary';
   busy?: boolean;
 }
 
@@ -37,11 +37,17 @@ export function ConfirmModal({
             ? 'text-slate-500 cursor-not-allowed'
             : 'text-red-300 bg-red-600/10 hover:bg-red-600/20'
         }`
-      : `flex-1 px-4 py-3 text-sm font-medium border-l border-slate-700 transition-colors ${
-          disabled
-            ? 'text-slate-500 cursor-not-allowed'
-            : 'text-red-400 hover:bg-slate-700'
-        }`;
+      : variant === 'primary'
+        ? `flex-1 px-4 py-3 text-sm font-medium border-l border-slate-700 transition-colors ${
+            disabled
+              ? 'text-slate-500 cursor-not-allowed'
+              : 'text-blue-200 bg-blue-600/15 hover:bg-blue-600/25'
+          }`
+        : `flex-1 px-4 py-3 text-sm font-medium border-l border-slate-700 transition-colors ${
+            disabled
+              ? 'text-slate-500 cursor-not-allowed'
+              : 'text-red-400 hover:bg-slate-700'
+          }`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

@@ -3,7 +3,16 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { goalSnapshotFromConfig, goalStatusLabel, goalTone } from './CodexGoalBadge';
+import {
+  goalConfirmMessage,
+  goalPauseResumeAction,
+  goalSnapshotFromConfig,
+  goalStatusLabel,
+  goalStopAction,
+  goalTone,
+  parseTokenBudget,
+  type GoalSnapshot,
+} from './codexGoalModel';
 
 describe('CodexGoalBadge helpers', () => {
   it('maps session config into a goal snapshot', () => {
@@ -50,5 +59,30 @@ describe('CodexGoalBadge helpers', () => {
     expect(goalStatusLabel('usageLimited')).toBe('usage limited');
     expect(goalStatusLabel('budgetLimited')).toBe('budget limited');
     expect(goalStatusLabel(null)).toBe('unknown');
+  });
+
+  it('chooses goal control actions for pause, resume, and stop', () => {
+    const activeGoal: GoalSnapshot = {
+      present: true,
+      objective: 'Ship goal UI',
+      status: 'active',
+      tokenBudget: null,
+      tokensUsed: null,
+      timeUsedSeconds: null,
+      updatedAt: null,
+    };
+    const pausedGoal = { ...activeGoal, status: 'paused' };
+
+    expect(goalPauseResumeAction(activeGoal)).toMatchObject({ label: 'Pause', subtype: 'goal.pause' });
+    expect(goalPauseResumeAction(pausedGoal)).toMatchObject({ label: 'Resume', subtype: 'goal.resume' });
+    expect(goalStopAction).toMatchObject({ label: 'Stop', subtype: 'goal.clear', variant: 'danger' });
+    expect(goalConfirmMessage(goalStopAction, activeGoal)).toContain('Ship goal UI');
+  });
+
+  it('parses token budget form values', () => {
+    expect(parseTokenBudget('')).toBe('');
+    expect(parseTokenBudget(' 123 ')).toBe(123);
+    expect(parseTokenBudget('-1')).toBe('invalid');
+    expect(parseTokenBudget('1.5')).toBe('invalid');
   });
 });
