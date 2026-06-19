@@ -575,6 +575,7 @@ All request-response, state subscribe, and server push between PWA and Agent go 
 - **Client transport** (`apps/pwa/src/lib/busClientTransport.ts`) is driven externally (`notifyMessage` / `notifyConnected` / `notifyDisconnected`) because `WebSocketClient` only has a single `onMessage` callback.
 - **Snapshot-on-subscribe**: a `sub` frame's snapshot is delivered atomically; after a disconnect-reconnect, `MessageBusClient` automatically resends `sub`, the server sends the current snapshot again, and the "stale-after-reconnect" window is eliminated.
 - **Command queueing**: the PWA's `bus.command(verb, payload, { queueWhileDisconnected: true })` holds requests while disconnected and auto-flushes on reconnect, avoiding lost requests due to reconnect races.
+- **Per-agent routing**: the PWA creates one `MessageBusClient` per connected agent and registers it through `busRegistry.getBusForAgent(agentId)`. Route/page code must resolve the owner agent from the URL, session metadata, terminal row, or selected machine and pass that bus into command hooks. Do not route commands through a mutable "active agent" fallback; in multi-machine sessions it can send a valid cwd to the wrong machine and surface as "repo not found" or "session not found".
 
 **Current subscribe paths:**
 | Path | Snapshot Type | Update Type | Source |
@@ -673,7 +674,8 @@ For full design details see `docs/guidelines/sync-security.en.md`.
 
 ```typescript
 // PWA side (useClaudeOperations.ts / useGitOperations.ts)
-const result = await busRef.current.command<ResponseType, RequestPayload>(
+const bus = getBusForAgent(ownerAgentId);
+const result = await bus.command<ResponseType, RequestPayload>(
   'claude:start',
   payload,
   { timeoutMs: 30_000, queueWhileDisconnected: true },
@@ -895,6 +897,11 @@ identityStore.ts
 For the detailed threat model and key derivation see `docs/guidelines/sync-security.en.md`.
 
 ### Hook API (`useClaudeOperations.ts`)
+
+`useClaudeOperations(getBus)` and `useGitOperations(clientRef, getBus, getAgentId?)`
+expect a bus getter that is already scoped to the intended agent. `getAgentId`
+lets git operations compare in-flight responses against the same owner agent
+even if `WebSocketClient.activeAgentId` changes while the command is pending.
 
 ```typescript
 // Session operations

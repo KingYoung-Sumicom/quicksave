@@ -21,8 +21,6 @@ import { NewSessionAppBar } from './components/NewSessionAppBar';
 import { RepoView } from './components/RepoView';
 import { BaseStatusBar, BackButton } from './components/BaseStatusBar';
 import { Spinner } from './components/ui/Spinner';
-import { PathBrowser } from './components/PathBrowser';
-import { GitignoreEditor } from './components/GitignoreEditor';
 import { ClaudePanel } from './components/ClaudePanel';
 import {
   type ClaudePreferences,
@@ -37,6 +35,9 @@ import {
   type SessionHistoryUpdatedPayload,
   type BroadcastSessionEntry,
   type SessionUpdatePayload,
+  type SetApiKeyResponsePayload,
+  type ProjectDeleteResponsePayload,
+  type ProjectListSummariesResponsePayload,
   type TerminalSummary,
   type TerminalsUpdate,
 } from '@sumicom/quicksave-shared';
@@ -196,6 +197,25 @@ interface AgentBus {
   bus: MessageBusClient;
 }
 
+function requireAgentBus(agentId: string | null | undefined): MessageBusClient {
+  if (!agentId) throw new Error('No agent selected');
+  const bus = getBusForAgent(agentId);
+  if (!bus) throw new Error('Not connected');
+  return bus;
+}
+
+function commandForAgent<R, P = unknown>(
+  agentId: string | null | undefined,
+  verb: string,
+  payload: P,
+  timeoutMs = 30000,
+): Promise<R> {
+  return requireAgentBus(agentId).command<R, P>(verb, payload, {
+    timeoutMs,
+    queueWhileDisconnected: true,
+  });
+}
+
 function AppContent() {
   const clientRef = useRef<WebSocketClient | null>(null);
   // One MessageBus per connected agent. Each bus owns its own subscriptions
@@ -223,6 +243,7 @@ function AppContent() {
     setAgentOnline,
     reset,
   } = useConnectionStore();
+  const agentConnections = useConnectionStore((s) => s.agentConnections);
 
   const { reset: resetGit, setCurrentRepoPath } = useGitStore();
   const { machines, recordConnection } = useMachineStore();
@@ -230,16 +251,6 @@ function AppContent() {
   const applySyncedState = useMachineStore((s) => s.applySyncedState);
   const { initialize: initIdentity, publicKey: identityPublicKey, getSecretKey, getSigningSecretKey, getSigningPublicKey, clearAll: clearIdentity, initialized: identityInitialized } = useIdentityStore();
   const agentIdRef = useRef<string | null>(null);
-
-  // Resolve the MessageBus for whichever agent the client currently treats
-  // as active. Commands flow through the active agent's bus; sends inside
-  // BusClientTransport target that agent explicitly, so re-activating during
-  // a multi-agent session won't misroute an in-flight command.
-  const getActiveBus = useCallback((): MessageBusClient | null => {
-    const aid = clientRef.current?.getActiveAgentId();
-    if (!aid) return null;
-    return busesRef.current.get(aid)?.bus ?? null;
-  }, []);
 
   useEffect(() => {
     registerAgentBusGetter((agentId) => busesRef.current.get(agentId)?.bus ?? null);
@@ -265,54 +276,15 @@ function AppContent() {
     return entry;
   }, []);
 
-  const {
-    cancelPendingGit,
-    fetchStatus,
-    fetchDiff,
-    stageFiles,
-    unstageFiles,
-    stagePatch,
-    unstagePatch,
-    commit,
-    discardChanges,
-    untrackFiles,
-    addToGitignore,
-    readGitignore,
-    writeGitignore,
-    generateCommitSummary,
-    dismissAiSummary,
-    applyAiSuggestion,
-    setApiKey,
-    checkApiKeyStatus,
-    switchRepo,
-    browseDirectory,
-    addRepo,
-    cloneRepo,
-    addCodingPath,
-    getGitIdentity,
-    setGitIdentity,
-    checkAgentUpdate,
-    updateAgent,
-    restartAgent,
-    getSystemdStatus,
-    installSystemdUnit,
-    uninstallSystemdUnit,
-  } = useGitOperations(clientRef, getActiveBus);
-
   /**
-   * Switch the active agent and drop any in-flight git:* responses for the
-   * previous agent. Without the cancel, a late status/diff response from the
-   * old agent would overwrite the gitStore right after the user navigates
-   * to a different workspace.
-   *
-   * Also rehydrate the single-agent mirror (`useConnectionStore.repoPath` /
+   * Switch the active agent and rehydrate the single-agent mirror
+   * (`useConnectionStore.repoPath` /
    * `availableRepos`) from the newly active agent's per-agent state. Without
    * this, the mirror keeps showing whichever agent last handshaked — after
    * a multi-agent reconnect on resume that can be a different machine than
    * the one the user is viewing.
    */
   const setActiveAgent = useCallback((agentId: string) => {
-    cancelPendingGit();
     clientRef.current?.setActiveAgent(agentId);
     const connState = useConnectionStore.getState();
     const perAgent = connState.agentConnections[agentId];
@@ -327,26 +299,15 @@ function AppContent() {
       );
       useGitStore.getState().setCurrentRepoPath(perAgent.repoPath);
     }
-  }, [cancelPendingGit]);
+  }, []);
 
-  const {
-    startSession,
-    restoreSession,
-    listArchivedSessions,
-    listProjectSummaries,
-    listProjectRepos,
-    deleteProject,
-  } = useClaudeOperations(getActiveBus);
-
-  const [showPathBrowser, setShowPathBrowser] = useState(false);
-  const [showGitignoreEditor, setShowGitignoreEditor] = useState(false);
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const filePreviewOpen = useFilePreviewStore((s) => s.current != null);
   const filePreviewPanelWidth = useFilePreviewStore((s) => s.panelWidth);
   const sessionPanelMode = useSessionRightPanelStore(selectPanelMode);
   const sessionPanelWidth = useSessionRightPanelStore((s) => s.panelWidth);
   const [showAgentSettings, setShowAgentSettings] = useState(false);
-  const [showGitIdentityModal, setShowGitIdentityModal] = useState(false);
+  const [gitIdentityAgentId, setGitIdentityAgentId] = useState<string | null>(null);
 
 
   // Prevent body bounce scroll
@@ -768,29 +729,59 @@ function AppContent() {
     }
   }, [navigate, handleConnect]);
 
-  // Fetch status and sync API key when connected
-  useEffect(() => {
-    if (state === 'connected') {
-      fetchStatus();
-      // Send locally stored API key to agent if available
-      getApiKey().then((storedKey) => {
-        if (storedKey) {
-          setApiKey(storedKey);
-        }
-      });
-      checkApiKeyStatus();
+  const sendApiKeyToAgent = useCallback(async (agentId: string, apiKey: string) => {
+    const response = await commandForAgent<SetApiKeyResponsePayload>(
+      agentId,
+      'ai:set-api-key',
+      { apiKey },
+    );
+    if (!response.success) {
+      throw new Error(response.error || 'Failed to save API key');
     }
-  }, [state, fetchStatus, checkApiKeyStatus, setApiKey]);
+    useGitStore.getState().setApiKeyConfigured(true);
+    return true;
+  }, []);
+
+  const sendApiKeyToConnectedAgents = useCallback(async (apiKey: string) => {
+    const ids = Object.entries(useConnectionStore.getState().agentConnections)
+      .filter(([, conn]) => conn.state === 'connected')
+      .map(([agentId]) => agentId);
+    await Promise.all(ids.map((agentId) => sendApiKeyToAgent(agentId, apiKey)));
+    return true;
+  }, [sendApiKeyToAgent]);
+
+  // Send the locally stored API key to each agent as it connects. This is
+  // deliberately per-agent; no command is routed through a mutable active bus.
+  const apiKeySyncedAgentsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const [agentId, conn] of Object.entries(agentConnections)) {
+      if (conn.state !== 'connected' || apiKeySyncedAgentsRef.current.has(agentId)) continue;
+      apiKeySyncedAgentsRef.current.add(agentId);
+      getApiKey().then((storedKey) => {
+        if (storedKey) return sendApiKeyToAgent(agentId, storedKey);
+        return true;
+      }).catch((err) => {
+        apiKeySyncedAgentsRef.current.delete(agentId);
+        console.warn(`[api-key] failed to sync to ${agentId}:`, err);
+      });
+    }
+  }, [agentConnections, sendApiKeyToAgent]);
 
   // Switch to pending repo after connection if different from current
   useEffect(() => {
     if (state === 'connected' && pendingRepoPath && pendingRepoPath !== repoPath) {
       // Clear pending first to prevent re-triggering
       setPendingRepoPath(null);
-      // Switch to the requested repo
-      switchRepo(pendingRepoPath);
+      const targetAgentId = Object.entries(useConnectionStore.getState().agentConnections)
+        .find(([, conn]) => conn.state === 'connected'
+          && conn.availableRepos.some((repo) => repo.path === pendingRepoPath))?.[0]
+        ?? useConnectionStore.getState().agentId;
+      if (targetAgentId) {
+        commandForAgent(targetAgentId, 'agent:switch-repo', { path: pendingRepoPath }, 10000)
+          .catch((err) => console.warn('[pending-repo] switch failed:', err));
+      }
     }
-  }, [state, pendingRepoPath, repoPath, setPendingRepoPath, switchRepo]);
+  }, [state, pendingRepoPath, repoPath, setPendingRepoPath]);
 
   // Clean up on unmount (but not during HMR — the main effect handles that)
   useEffect(() => {
@@ -806,6 +797,7 @@ function AppContent() {
   }, []);
 
   const isConnected = state === 'connected';
+  const hasConnectedAgent = Object.values(agentConnections).some((conn) => conn.state === 'connected');
 
   useEffect(() => {
     let hiddenAt: number | null = null;
@@ -861,103 +853,63 @@ function AppContent() {
 
   // Fetch project summaries + session lists from each agent as they connect
   const fetchedSummariesRef = useRef<Set<string>>(new Set());
-  const agentConnections = useConnectionStore((s) => s.agentConnections);
   useEffect(() => {
     for (const [agentId, conn] of Object.entries(agentConnections)) {
       if (conn.state === 'connected' && !fetchedSummariesRef.current.has(agentId)) {
         fetchedSummariesRef.current.add(agentId);
-        // Set active agent to route requests to this agent
-        setActiveAgent(agentId);
-        listProjectSummaries().then((projects) => {
-          if (!projects) return;
+        commandForAgent<ProjectListSummariesResponsePayload>(
+          agentId,
+          'project:list-summaries',
+          {},
+        ).then((response) => {
+          if (response.error) {
+            console.warn(`[projects] failed to list summaries for ${agentId}:`, response.error);
+            return;
+          }
           // Cache project summaries and prune stale knownCodingPaths
           const agentConn = useConnectionStore.getState().agentConnections[agentId];
           const managedPaths = agentConn?.availableCodingPaths?.map((p) => p.path);
-          useMachineStore.getState().cacheAllProjects(agentId, projects, managedPaths);
+          useMachineStore.getState().cacheAllProjects(agentId, response.projects, managedPaths);
+        }).catch((err) => {
+          fetchedSummariesRef.current.delete(agentId);
+          console.warn(`[projects] failed to list summaries for ${agentId}:`, err);
         });
       }
     }
-  }, [agentConnections, listProjectSummaries, setActiveAgent]);
+  }, [agentConnections]);
 
   // Show connecting overlay only for /connect routes (QR/deep link) — not for project routes
   const showOverlay = !location.pathname.startsWith('/p/') && (
     state === 'connecting' || state === 'reconnecting' || (state === 'error' && !!useConnectionStore.getState().error)
   );
 
-  // Delete project: archive all sessions under cwd + remove coding path on
-  // agent, then refresh local summaries/managed paths so the home screen
-  // drops the project immediately.
-  const handleDeleteProject = useCallback(async (cwd: string) => {
-    const result = await deleteProject(cwd);
-    if (result?.success) {
-      const connState = useConnectionStore.getState();
-      connState.setAvailableCodingPaths(
-        connState.availableCodingPaths.filter((cp) => cp.path !== cwd),
-      );
-      const projects = await listProjectSummaries();
-      const agentId = clientRef.current?.getActiveAgentId() ?? null;
-      if (projects && agentId) {
-        const agentConn = useConnectionStore.getState().agentConnections[agentId];
-        const managedPaths = (agentConn?.availableCodingPaths ?? [])
-          .map((p) => p.path)
-          .filter((p) => p !== cwd);
-        useMachineStore.getState().cacheAllProjects(agentId, projects, managedPaths);
-      }
-    }
-    return result;
-  }, [deleteProject, listProjectSummaries]);
-
   const projectRepoElement = (
     <ProjectRouteRepo
+      clientRef={clientRef}
       onConnect={handleConnect}
       onSwitchMachine={handleSwitchMachine}
       onSetActiveAgent={setActiveAgent}
-      onSwitchRepo={switchRepo}
-      onRefresh={fetchStatus}
-      onFetchDiff={fetchDiff}
-      onStage={stageFiles}
-      onUnstage={unstageFiles}
-      onStagePatch={stagePatch}
-      onUnstagePatch={unstagePatch}
-      onDiscard={discardChanges}
-      onUntrack={untrackFiles}
-      onAddToGitignore={addToGitignore}
-      onCommit={async (msg, desc) => {
-        try {
-          await commit(msg, desc);
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : '';
-          if (errMsg.includes('empty ident') || errMsg.includes('Please tell me who you are')) {
-            setShowGitIdentityModal(true);
-          }
-        }
-      }}
-      onGenerateAiSummary={generateCommitSummary}
-      onApplyAiSuggestion={applyAiSuggestion}
-      onDismissAiSummary={dismissAiSummary}
-      onSetApiKey={setApiKey}
+      onGitIdentityRequired={setGitIdentityAgentId}
     />
   );
 
   const projectDetailElement = (
     <ProjectRouteDetail
+      clientRef={clientRef}
       onConnect={handleConnect}
       onSwitchMachine={handleSwitchMachine}
-      onListProjectRepos={listProjectRepos}
-      onDeleteProject={handleDeleteProject}
-      onRestartAgent={restartAgent}
-      onListArchivedSessions={listArchivedSessions}
-      onRestoreSession={restoreSession}
     />
   );
 
   const projectSessionElement = (
     <ProjectRouteSession
+      clientRef={clientRef}
       onConnect={handleConnect}
       onSwitchMachine={handleSwitchMachine}
       showSettings={showAgentSettings}
       onOpenSettings={() => setShowAgentSettings(true)}
       onCloseSettings={() => setShowAgentSettings(false)}
+      onGitIdentityRequired={setGitIdentityAgentId}
     />
   );
 
@@ -990,35 +942,7 @@ function AppContent() {
         : 0
     : 0;
 
-  const gitOpsBundle = useMemo(() => ({
-    onRefresh: fetchStatus,
-    onFetchDiff: fetchDiff,
-    onStage: stageFiles,
-    onUnstage: unstageFiles,
-    onStagePatch: stagePatch,
-    onUnstagePatch: unstagePatch,
-    onDiscard: discardChanges,
-    onUntrack: untrackFiles,
-    onAddToGitignore: addToGitignore,
-    onCommit: async (msg: string, desc?: string) => {
-      try {
-        await commit(msg, desc);
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : '';
-        if (errMsg.includes('empty ident') || errMsg.includes('Please tell me who you are')) {
-          setShowGitIdentityModal(true);
-        }
-      }
-    },
-    onGenerateAiSummary: generateCommitSummary,
-    onApplyAiSuggestion: applyAiSuggestion,
-    onDismissAiSummary: dismissAiSummary,
-    onSetApiKey: setApiKey,
-    switchRepo,
-  }), [fetchStatus, fetchDiff, stageFiles, unstageFiles, stagePatch, unstagePatch, discardChanges, untrackFiles, addToGitignore, commit, generateCommitSummary, applyAiSuggestion, dismissAiSummary, setApiKey, switchRepo]);
-
   return (
-    <GitOpsContext.Provider value={gitOpsBundle}>
     <div
       className="flex flex-col bg-slate-900 text-slate-100 overflow-hidden h-full transition-[padding] duration-200"
       style={rightPad ? { paddingRight: rightPad } : undefined}
@@ -1031,7 +955,7 @@ function AppContent() {
           <Routes>
             <Route
               path="/settings"
-              element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />}
+              element={<SettingsPage onSendApiKeyToAgent={hasConnectedAgent ? sendApiKeyToConnectedAgents : undefined} onPushOffer={handlePushOffer} />}
             />
             <Route path="/pair" element={<JoinGroupPage />} />
             <Route
@@ -1053,10 +977,10 @@ function AppContent() {
                 <Route path="/p/:projectId/t/:terminalId" element={<TerminalPage />} />
                 <Route path="/p/:projectId/files" element={<FileBrowserPage />} />
                 <Route path="/p/:projectId/files/*" element={<FileBrowserPage />} />
-                <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} onConnect={handleConnect} onStartSession={startSession} />} />
-                <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />} />
-                <Route path="/settings/m/:agentId" element={<MachineInfoPage onSetActiveAgent={setActiveAgent} onCheckAgentUpdate={checkAgentUpdate} onUpdateAgent={updateAgent} onRestartAgent={restartAgent} onDeleteProject={handleDeleteProject} onGetSystemdStatus={getSystemdStatus} onInstallSystemdUnit={installSystemdUnit} onUninstallSystemdUnit={uninstallSystemdUnit} />} />
-                <Route path="/settings/m/:agentId/p/:projectId/archived" element={<ArchivedSessionsPage onSetActiveAgent={setActiveAgent} onListArchivedSessions={listArchivedSessions} onRestoreSession={restoreSession} />} />
+                <Route path="/add" element={<AddNewPage clientRef={clientRef} onConnect={handleConnect} />} />
+                <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={hasConnectedAgent ? sendApiKeyToConnectedAgents : undefined} onPushOffer={handlePushOffer} />} />
+                <Route path="/settings/m/:agentId" element={<MachineInfoRoute clientRef={clientRef} />} />
+                <Route path="/settings/m/:agentId/p/:projectId/archived" element={<ArchivedSessionsPage />} />
                 <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
                 <Route path="/pair" element={<JoinGroupPage />} />
                 <Route path="*" element={null} />
@@ -1074,41 +998,24 @@ function AppContent() {
           <Route path="/p/:projectId/t/:terminalId" element={<TerminalPage />} />
           <Route path="/p/:projectId/files" element={<FileBrowserPage />} />
           <Route path="/p/:projectId/files/*" element={<FileBrowserPage />} />
-          <Route path="/add" element={<AddNewPage onSetActiveAgent={setActiveAgent} onBrowseDirectory={browseDirectory} onCloneRepo={cloneRepo} onAddCodingPath={addCodingPath} onConnect={handleConnect} onStartSession={startSession} />} />
-          <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={isConnected ? setApiKey : undefined} onPushOffer={handlePushOffer} />} />
-          <Route path="/settings/m/:agentId" element={<MachineInfoPage onSetActiveAgent={setActiveAgent} onCheckAgentUpdate={checkAgentUpdate} onUpdateAgent={updateAgent} onRestartAgent={restartAgent} onDeleteProject={handleDeleteProject} onGetSystemdStatus={getSystemdStatus} onInstallSystemdUnit={installSystemdUnit} onUninstallSystemdUnit={uninstallSystemdUnit} />} />
-          <Route path="/settings/m/:agentId/p/:projectId/archived" element={<ArchivedSessionsPage onSetActiveAgent={setActiveAgent} onListArchivedSessions={listArchivedSessions} onRestoreSession={restoreSession} />} />
+          <Route path="/add" element={<AddNewPage clientRef={clientRef} onConnect={handleConnect} />} />
+          <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={hasConnectedAgent ? sendApiKeyToConnectedAgents : undefined} onPushOffer={handlePushOffer} />} />
+          <Route path="/settings/m/:agentId" element={<MachineInfoRoute clientRef={clientRef} />} />
+          <Route path="/settings/m/:agentId/p/:projectId/archived" element={<ArchivedSessionsPage />} />
           <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
           <Route path="/pair" element={<JoinGroupPage />} />
         </Routes>
       )}
       {showOverlay && <ConnectingOverlay onAbort={handleAbortConnection} onRetry={handleRetryConnection} />}
       <FilePreviewModal />
-      <PathBrowser
-        isOpen={showPathBrowser}
-        mode="repo"
-        onClose={() => setShowPathBrowser(false)}
-        onSwitchRepo={switchRepo}
-        onBrowseDirectory={browseDirectory}
-        onAddRepo={addRepo}
-        onCloneRepo={cloneRepo}
-        onAddCodingPath={addCodingPath}
-      />
-      <GitignoreEditor
-        isOpen={showGitignoreEditor}
-        onClose={() => setShowGitignoreEditor(false)}
-        onRead={readGitignore}
-        onWrite={writeGitignore}
-      />
-      {showGitIdentityModal && (
-        <GitIdentityModal
-          onClose={() => setShowGitIdentityModal(false)}
-          onSave={setGitIdentity}
-          onGetIdentity={getGitIdentity}
+      {gitIdentityAgentId && (
+        <GitIdentityModalForAgent
+          agentId={gitIdentityAgentId}
+          clientRef={clientRef}
+          onClose={() => setGitIdentityAgentId(null)}
         />
       )}
     </div>
-    </GitOpsContext.Provider>
   );
 }
 
@@ -1116,36 +1023,48 @@ function AppContent() {
 
 /** Project repo view — git status/staging/commit within a project */
 function ProjectRouteRepo({
+  clientRef,
   onConnect,
   onSwitchMachine,
   onSetActiveAgent,
-  onSwitchRepo,
-  onRefresh,
-  onFetchDiff,
-  onStage,
-  onUnstage,
-  onStagePatch,
-  onUnstagePatch,
-  onDiscard,
-  onUntrack,
-  onAddToGitignore,
-  onCommit,
-  onGenerateAiSummary,
-  onApplyAiSuggestion,
-  onDismissAiSummary,
-  onSetApiKey,
+  onGitIdentityRequired,
 }: {
+  clientRef: React.RefObject<WebSocketClient | null>;
   onConnect: (agentId: string, publicKey: string) => void;
   onSwitchMachine: (agentId: string) => void;
   onSetActiveAgent: (agentId: string) => void;
-  onSwitchRepo: (path: string) => void;
-} & Omit<React.ComponentProps<typeof RepoView>, 'onSwitchRepo'> & {
-  onSwitchRepo: (path: string) => void;
+  onGitIdentityRequired: (agentId: string) => void;
 }) {
   const { projectId, repoId } = useParams<{ projectId: string; repoId: string }>();
   const navigate = useNavigate();
   const { isReady, isConnecting, agentId, connectedAt } = useProjectConnection(projectId, onConnect, onSwitchMachine);
   const status = useGitStore((s) => s.status);
+  const agentBus = useCallback(
+    (): MessageBusClient | null => (agentId ? getBusForAgent(agentId) : null),
+    [agentId],
+  );
+  const getTargetAgentId = useCallback(
+    () => agentId ?? null,
+    [agentId],
+  );
+
+  const {
+    fetchStatus,
+    fetchDiff,
+    stageFiles,
+    unstageFiles,
+    stagePatch,
+    unstagePatch,
+    commit,
+    discardChanges,
+    untrackFiles,
+    addToGitignore,
+    generateCommitSummary,
+    dismissAiSummary,
+    applyAiSuggestion,
+    setApiKey,
+    switchRepo,
+  } = useGitOperations(clientRef, agentBus, getTargetAgentId);
 
   // Resolve repoId hash → full repo path. Recompute on connect since
   // getAllKnownPaths can grow when project repos load.
@@ -1173,8 +1092,8 @@ function ProjectRouteRepo({
     if (!isReady || !agentId || !targetRepoPath) return;
     onSetActiveAgent(agentId);
     useGitStore.getState().setCurrentRepoPath(targetRepoPath);
-    onSwitchRepo(targetRepoPath);
-  }, [isReady, agentId, targetRepoPath, connectedAt, onSetActiveAgent, onSwitchRepo]);
+    switchRepo(targetRepoPath);
+  }, [isReady, agentId, targetRepoPath, connectedAt, onSetActiveAgent, switchRepo]);
 
   // On visibility return, force a status refresh. Covers the case where
   // the app was backgrounded but WebRTC stayed up (no new handshake, so
@@ -1184,7 +1103,7 @@ function ProjectRouteRepo({
     if (!isReady || !targetRepoPath) return;
     const resync = () => {
       if (document.visibilityState !== 'visible') return;
-      onRefresh();
+      fetchStatus();
     };
     document.addEventListener('visibilitychange', resync);
     window.addEventListener('pageshow', resync);
@@ -1192,7 +1111,7 @@ function ProjectRouteRepo({
       document.removeEventListener('visibilitychange', resync);
       window.removeEventListener('pageshow', resync);
     };
-  }, [isReady, targetRepoPath, onRefresh]);
+  }, [isReady, targetRepoPath, fetchStatus]);
 
   if (!isReady || !targetRepoPath) {
     return (
@@ -1242,20 +1161,29 @@ function ProjectRouteRepo({
         }
       />
       <RepoView
-        onRefresh={onRefresh}
-        onFetchDiff={onFetchDiff}
-        onStage={onStage}
-        onUnstage={onUnstage}
-        onStagePatch={onStagePatch}
-        onUnstagePatch={onUnstagePatch}
-        onDiscard={onDiscard}
-        onUntrack={onUntrack}
-        onAddToGitignore={onAddToGitignore}
-        onCommit={onCommit}
-        onGenerateAiSummary={onGenerateAiSummary}
-        onApplyAiSuggestion={onApplyAiSuggestion}
-        onDismissAiSummary={onDismissAiSummary}
-        onSetApiKey={onSetApiKey}
+        onRefresh={fetchStatus}
+        onFetchDiff={fetchDiff}
+        onStage={stageFiles}
+        onUnstage={unstageFiles}
+        onStagePatch={stagePatch}
+        onUnstagePatch={unstagePatch}
+        onDiscard={discardChanges}
+        onUntrack={untrackFiles}
+        onAddToGitignore={addToGitignore}
+        onCommit={async (msg, desc) => {
+          try {
+            await commit(msg, desc);
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : '';
+            if (agentId && (errMsg.includes('empty ident') || errMsg.includes('Please tell me who you are'))) {
+              onGitIdentityRequired(agentId);
+            }
+          }
+        }}
+        onGenerateAiSummary={generateCommitSummary}
+        onApplyAiSuggestion={applyAiSuggestion}
+        onDismissAiSummary={dismissAiSummary}
+        onSetApiKey={setApiKey}
       />
     </>
   );
@@ -1263,24 +1191,47 @@ function ProjectRouteRepo({
 
 /** Project detail page — shows session list for a project */
 function ProjectRouteDetail({
+  clientRef,
   onConnect,
   onSwitchMachine,
-  onListProjectRepos,
-  onDeleteProject,
-  onRestartAgent,
-  onListArchivedSessions,
-  onRestoreSession,
 }: {
+  clientRef: React.RefObject<WebSocketClient | null>;
   onConnect: (agentId: string, publicKey: string) => void;
   onSwitchMachine: (agentId: string) => void;
-  onListProjectRepos?: (cwd: string) => Promise<import('@sumicom/quicksave-shared').ProjectRepo[] | null>;
-  onDeleteProject?: (cwd: string) => Promise<import('@sumicom/quicksave-shared').ProjectDeleteResponsePayload | null>;
-  onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
-  onListArchivedSessions?: (cwd: string, offset?: number, limit?: number) => Promise<import('@sumicom/quicksave-shared').SessionListArchivedResponsePayload | null>;
-  onRestoreSession?: (sessionId: string, cwd: string) => Promise<void>;
 }) {
   const { projectId } = useParams<{ projectId: string }>();
   const { isReady, isConnecting, isError, cwd, agentId } = useProjectConnection(projectId, onConnect, onSwitchMachine);
+  const agentBus = useCallback(
+    (): MessageBusClient | null => (agentId ? getBusForAgent(agentId) : null),
+    [agentId],
+  );
+  const getTargetAgentId = useCallback(
+    () => agentId ?? null,
+    [agentId],
+  );
+  const {
+    listProjectRepos,
+    listProjectSummaries,
+    deleteProject,
+    listArchivedSessions,
+    restoreSession,
+  } = useClaudeOperations(agentBus);
+  const { restartAgent } = useGitOperations(clientRef, agentBus, getTargetAgentId);
+
+  const handleDeleteProject = useCallback(async (deleteCwd: string): Promise<ProjectDeleteResponsePayload | null> => {
+    const result = await deleteProject(deleteCwd);
+    if (result?.success && agentId) {
+      const projects = await listProjectSummaries();
+      if (projects) {
+        const agentConn = useConnectionStore.getState().agentConnections[agentId];
+        const managedPaths = (agentConn?.availableCodingPaths ?? [])
+          .map((p) => p.path)
+          .filter((p) => p !== deleteCwd);
+        useMachineStore.getState().cacheAllProjects(agentId, projects, managedPaths);
+      }
+    }
+    return result;
+  }, [agentId, deleteProject, listProjectSummaries]);
 
   return (
     <ProjectDetail
@@ -1289,28 +1240,116 @@ function ProjectRouteDetail({
       isError={isError}
       cwd={cwd}
       agentId={agentId}
-      onListProjectRepos={onListProjectRepos}
-      onDeleteProject={onDeleteProject}
-      onRestartAgent={onRestartAgent}
-      onListArchivedSessions={onListArchivedSessions}
-      onRestoreSession={onRestoreSession}
+      onListProjectRepos={listProjectRepos}
+      onDeleteProject={handleDeleteProject}
+      onRestartAgent={restartAgent}
+      onListArchivedSessions={listArchivedSessions}
+      onRestoreSession={restoreSession}
+    />
+  );
+}
+
+function MachineInfoRoute({
+  clientRef,
+}: {
+  clientRef: React.RefObject<WebSocketClient | null>;
+}) {
+  const { agentId } = useParams<{ agentId: string }>();
+  const agentBus = useCallback(
+    (): MessageBusClient | null => (agentId ? getBusForAgent(agentId) : null),
+    [agentId],
+  );
+  const getTargetAgentId = useCallback(
+    () => agentId ?? null,
+    [agentId],
+  );
+  const {
+    checkAgentUpdate,
+    updateAgent,
+    restartAgent,
+    getSystemdStatus,
+    installSystemdUnit,
+    uninstallSystemdUnit,
+  } = useGitOperations(clientRef, agentBus, getTargetAgentId);
+  const { deleteProject, listProjectSummaries } = useClaudeOperations(agentBus);
+
+  const handleDeleteProject = useCallback(async (cwd: string): Promise<ProjectDeleteResponsePayload | null> => {
+    const result = await deleteProject(cwd);
+    if (result?.success && agentId) {
+      const projects = await listProjectSummaries();
+      if (projects) {
+        const agentConn = useConnectionStore.getState().agentConnections[agentId];
+        const managedPaths = (agentConn?.availableCodingPaths ?? [])
+          .map((p) => p.path)
+          .filter((p) => p !== cwd);
+        useMachineStore.getState().cacheAllProjects(agentId, projects, managedPaths);
+      }
+    }
+    return result;
+  }, [agentId, deleteProject, listProjectSummaries]);
+
+  return (
+    <MachineInfoPage
+      onCheckAgentUpdate={checkAgentUpdate}
+      onUpdateAgent={updateAgent}
+      onRestartAgent={restartAgent}
+      onDeleteProject={handleDeleteProject}
+      onGetSystemdStatus={getSystemdStatus}
+      onInstallSystemdUnit={installSystemdUnit}
+      onUninstallSystemdUnit={uninstallSystemdUnit}
+    />
+  );
+}
+
+function GitIdentityModalForAgent({
+  agentId,
+  clientRef,
+  onClose,
+}: {
+  agentId: string;
+  clientRef: React.RefObject<WebSocketClient | null>;
+  onClose: () => void;
+}) {
+  const agentBus = useCallback(
+    (): MessageBusClient | null => getBusForAgent(agentId),
+    [agentId],
+  );
+  const getTargetAgentId = useCallback(
+    () => agentId,
+    [agentId],
+  );
+  const { getGitIdentity, setGitIdentity } = useGitOperations(
+    clientRef,
+    agentBus,
+    getTargetAgentId,
+  );
+
+  return (
+    <GitIdentityModal
+      onClose={onClose}
+      onSave={setGitIdentity}
+      onGetIdentity={getGitIdentity}
     />
   );
 }
 
 /** Project session page — shows chat session within a project */
 function ProjectRouteSession({
+  clientRef,
   onConnect,
   onSwitchMachine,
   showSettings,
   onOpenSettings,
   onCloseSettings,
+  onGitIdentityRequired,
 }: {
+  clientRef: React.RefObject<WebSocketClient | null>;
   onConnect: (agentId: string, publicKey: string) => void;
   onSwitchMachine: (agentId: string) => void;
   showSettings: boolean;
   onOpenSettings: () => void;
   onCloseSettings: () => void;
+  onGitIdentityRequired: (agentId: string) => void;
 }) {
   const { projectId, sessionId: urlSessionId } = useParams<{ projectId: string; sessionId: string }>();
   const [searchParams] = useSearchParams();
@@ -1332,11 +1371,15 @@ function ProjectRouteSession({
 
   const { isReady, isConnecting, cwd, agentId: targetAgentId } = useProjectConnection(projectId, onConnect, onSwitchMachine);
 
-  // Route all bus operations through this agent's dedicated bus, not the
-  // global active bus. After a reconnect in multi-agent mode, getActiveBus()
-  // may point at a different agent; targeting by id avoids misrouting.
+  // Route all bus operations through this agent's dedicated bus. The URL's
+  // projectId is the routing source of truth, so reconnects or other tabs
+  // changing the active agent cannot misroute session commands.
   const agentBus = useCallback(
     (): MessageBusClient | null => getBusForAgent(targetAgentId ?? '') ?? null,
+    [targetAgentId],
+  );
+  const getTargetAgentId = useCallback(
+    () => targetAgentId ?? null,
     [targetAgentId],
   );
 
@@ -1358,6 +1401,68 @@ function ProjectRouteSession({
     unsubscribeSession,
     listProjectRepos,
   } = useClaudeOperations(agentBus);
+
+  const {
+    fetchStatus,
+    fetchDiff,
+    stageFiles,
+    unstageFiles,
+    stagePatch,
+    unstagePatch,
+    commit,
+    discardChanges,
+    untrackFiles,
+    addToGitignore,
+    generateCommitSummary,
+    dismissAiSummary,
+    applyAiSuggestion,
+    setApiKey,
+    switchRepo,
+  } = useGitOperations(clientRef, agentBus, getTargetAgentId);
+
+  const sessionGitOpsBundle = useMemo(() => ({
+    onRefresh: fetchStatus,
+    onFetchDiff: fetchDiff,
+    onStage: stageFiles,
+    onUnstage: unstageFiles,
+    onStagePatch: stagePatch,
+    onUnstagePatch: unstagePatch,
+    onDiscard: discardChanges,
+    onUntrack: untrackFiles,
+    onAddToGitignore: addToGitignore,
+    onCommit: async (msg: string, desc?: string) => {
+      try {
+        await commit(msg, desc);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : '';
+        if (targetAgentId && (errMsg.includes('empty ident') || errMsg.includes('Please tell me who you are'))) {
+          onGitIdentityRequired(targetAgentId);
+        }
+      }
+    },
+    onGenerateAiSummary: generateCommitSummary,
+    onApplyAiSuggestion: applyAiSuggestion,
+    onDismissAiSummary: dismissAiSummary,
+    onSetApiKey: setApiKey,
+    switchRepo,
+  }), [
+    fetchStatus,
+    fetchDiff,
+    stageFiles,
+    unstageFiles,
+    stagePatch,
+    unstagePatch,
+    discardChanges,
+    untrackFiles,
+    addToGitignore,
+    commit,
+    onGitIdentityRequired,
+    generateCommitSummary,
+    applyAiSuggestion,
+    dismissAiSummary,
+    setApiKey,
+    switchRepo,
+  ]);
 
   // Hold the attention topic only while this tab is visible+focused so the
   // agent's push gate fires for the *other* devices the user isn't holding.
@@ -1489,35 +1594,37 @@ function ProjectRouteSession({
         onDismissPendingMission={dismissPendingMission}
       />
       {isDesktop && targetAgentId && cwd && (
-        <SessionRightPanel
-          sessionId={urlSessionId ?? ''}
-          agentId={targetAgentId}
-          cwd={cwd}
-          sessionOps={{
-            sessionId: urlSessionId,
-            projectId,
-            agentId: targetAgentId,
-            cwd,
-            onListProjectRepos: listProjectRepos,
-            onSetSessionConfig: (key, value) => {
-              const sid = getSessionId();
-              if (sid) setSessionConfig(sid, key, value);
-            },
-            onSendControlRequest: sendControlRequest,
-            onCancelSession: () => {
-              const sid = getSessionId();
-              if (sid) cancelSession(sid);
-            },
-            onCloseSession: () => {
-              const sid = getSessionId();
-              if (sid) closeSession(sid);
-            },
-            onEndSession: () => {
-              const sid = getSessionId();
-              if (sid) endSession(sid);
-            },
-          }}
-        />
+        <GitOpsContext.Provider value={sessionGitOpsBundle}>
+          <SessionRightPanel
+            sessionId={urlSessionId ?? ''}
+            agentId={targetAgentId}
+            cwd={cwd}
+            sessionOps={{
+              sessionId: urlSessionId,
+              projectId,
+              agentId: targetAgentId,
+              cwd,
+              onListProjectRepos: listProjectRepos,
+              onSetSessionConfig: (key, value) => {
+                const sid = getSessionId();
+                if (sid) setSessionConfig(sid, key, value);
+              },
+              onSendControlRequest: sendControlRequest,
+              onCancelSession: () => {
+                const sid = getSessionId();
+                if (sid) cancelSession(sid);
+              },
+              onCloseSession: () => {
+                const sid = getSessionId();
+                if (sid) closeSession(sid);
+              },
+              onEndSession: () => {
+                const sid = getSessionId();
+                if (sid) endSession(sid);
+              },
+            }}
+          />
+        </GitOpsContext.Provider>
       )}
     </>
   );

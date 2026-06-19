@@ -13,8 +13,7 @@ import { useMediaQuery } from '../../hooks/useMediaQuery';
 interface TerminalViewProps {
   terminalId: string;
   /**
-   * Resolves the bus for the agent that owns this terminal. Must NOT be
-   * `getActiveBus` — see TerminalPage for why.
+   * Resolves the bus for the agent that owns this terminal.
    */
   getBus: () => MessageBusClient | null;
   /** Called when the underlying terminal closes so parent can navigate away. */

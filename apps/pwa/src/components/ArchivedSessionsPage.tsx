@@ -1,38 +1,31 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { FormattedMessage } from 'react-intl';
-import type { SessionListArchivedResponsePayload } from '@sumicom/quicksave-shared';
+import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { ArchivedSessionsList } from './ArchivedSessionsList';
 import { useMachineStore } from '../stores/machineStore';
 import { resolveProjectCwd } from '../lib/projectId';
+import { getBusForAgent } from '../lib/busRegistry';
+import { useClaudeOperations } from '../hooks/useClaudeOperations';
 
-interface ArchivedSessionsPageProps {
-  onSetActiveAgent: (agentId: string) => void;
-  onListArchivedSessions: (cwd: string, offset?: number, limit?: number) => Promise<SessionListArchivedResponsePayload | null>;
-  onRestoreSession: (sessionId: string, cwd: string) => Promise<void>;
-}
-
-export function ArchivedSessionsPage({
-  onSetActiveAgent,
-  onListArchivedSessions,
-  onRestoreSession,
-}: ArchivedSessionsPageProps) {
+export function ArchivedSessionsPage() {
   const { agentId, projectId } = useParams<{ agentId: string; projectId: string }>();
   const navigate = useNavigate();
 
   const machine = useMachineStore((s) => s.machines.find((m) => m.agentId === agentId));
+  const agentBus = useCallback(
+    (): MessageBusClient | null => (agentId ? getBusForAgent(agentId) : null),
+    [agentId],
+  );
+  const { listArchivedSessions, restoreSession } = useClaudeOperations(agentBus);
 
   const cwd = useMemo(() => {
     if (!projectId) return undefined;
     return resolveProjectCwd(projectId).cwd;
   }, [projectId]);
-
-  useEffect(() => {
-    if (agentId) onSetActiveAgent(agentId);
-  }, [agentId, onSetActiveAgent]);
 
   // After the first successful restore, reshape history so iOS edge-swipe
   // (browser back) lands on the home page directly rather than walking back
@@ -44,14 +37,14 @@ export function ArchivedSessionsPage({
   const reshapedRef = useRef(false);
   const handleRestore = useCallback(
     async (sessionId: string, sessionCwd: string) => {
-      await onRestoreSession(sessionId, sessionCwd);
+      await restoreSession(sessionId, sessionCwd);
       if (reshapedRef.current) return;
       reshapedRef.current = true;
       const currentUrl = window.location.pathname + window.location.search;
       window.history.replaceState(null, '', '/');
       window.history.pushState(null, '', currentUrl);
     },
-    [onRestoreSession],
+    [restoreSession],
   );
 
   const displayName = cwd ? cwd.split('/').filter(Boolean).pop() || cwd : '';
@@ -88,7 +81,7 @@ export function ArchivedSessionsPage({
             <div className="bg-slate-800/40 rounded-lg overflow-hidden">
               <ArchivedSessionsList
                 cwd={cwd}
-                onListArchived={onListArchivedSessions}
+                onListArchived={listArchivedSessions}
                 onRestore={handleRestore}
                 defaultExpanded
               />

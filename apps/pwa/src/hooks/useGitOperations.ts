@@ -76,6 +76,7 @@ type InFlightGit = { superseded: boolean };
 export function useGitOperations(
   clientRef: React.RefObject<WebSocketClient | null>,
   getBus: () => MessageBusClient | null,
+  getAgentId?: () => string | null,
 ) {
   const inFlightGit = useRef<Set<InFlightGit>>(new Set());
   const {
@@ -99,6 +100,11 @@ export function useGitOperations(
   } = useGitStore();
   const { setRepoPath, setAvailableRepos, setAvailableCodingPaths, availableCodingPaths } = useConnectionStore();
 
+  const resolveCommandAgentId = useCallback(
+    () => getAgentId?.() ?? clientRef.current?.getActiveAgentId() ?? null,
+    [getAgentId, clientRef],
+  );
+
   /**
    * Issue a bus command. For `git:*` verbs:
    *  - Stamps the current repoPath into the payload via the reserved
@@ -117,7 +123,7 @@ export function useGitOperations(
       if (!bus) return Promise.reject(new Error('Not connected'));
 
       const isGit = verb.startsWith('git:');
-      const snapshotAgentId = clientRef.current?.getActiveAgentId() ?? null;
+      const snapshotAgentId = resolveCommandAgentId();
       const snapshotRepoPath = useGitStore.getState().currentRepoPath;
       const entry: InFlightGit = { superseded: false };
       if (isGit) inFlightGit.current.add(entry);
@@ -132,7 +138,7 @@ export function useGitOperations(
         .then((result) => {
           if (!isGit) return result as T;
           inFlightGit.current.delete(entry);
-          const currentAgent = clientRef.current?.getActiveAgentId() ?? null;
+          const currentAgent = resolveCommandAgentId();
           const currentRepo = useGitStore.getState().currentRepoPath;
           const responseRepo =
             result && typeof result === 'object' && '__repoPath' in result
@@ -160,7 +166,7 @@ export function useGitOperations(
           throw err;
         });
     },
-    [getBus, clientRef],
+    [getBus, resolveCommandAgentId],
   );
 
   /**

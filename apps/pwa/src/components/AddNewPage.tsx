@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, type RefObject } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { clsx } from 'clsx';
 import { FormattedMessage, useIntl } from 'react-intl';
@@ -9,7 +9,6 @@ import type {
   CodingPath,
   BrowseDirectoryResponsePayload,
   DirectoryEntry,
-  AgentId,
   AttachmentKind,
 } from '@sumicom/quicksave-shared';
 import { useConnectionStore } from '../stores/connectionStore';
@@ -28,37 +27,22 @@ import { getAgentProvider } from '../lib/agentProvider';
 import { useComposerVoice } from '../hooks/useComposerVoice';
 import { useComposerAttachments } from '../hooks/useComposerAttachments';
 import { toProjectId } from '../lib/projectId';
-
-type StartSessionOpts = {
-  agent?: AgentId;
-  allowedTools?: string[];
-  systemPrompt?: string;
-  model?: string;
-  permissionMode?: string;
-  cwd?: string;
-  sandboxed?: boolean;
-  reasoningEffort?: string;
-  contextWindow?: number;
-};
+import { getBusForAgent } from '../lib/busRegistry';
+import { useClaudeOperations } from '../hooks/useClaudeOperations';
+import { useGitOperations } from '../hooks/useGitOperations';
+import type { WebSocketClient } from '../lib/websocket';
+import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 
 type TabKey = 'project' | 'session' | 'machine';
 
 interface AddNewPageProps {
-  onSetActiveAgent: (agentId: string) => void;
-  onBrowseDirectory: (path?: string) => Promise<BrowseDirectoryResponsePayload | null>;
-  onCloneRepo: (url: string, targetDir: string) => Promise<Repository | null>;
-  onAddCodingPath: (path: string) => Promise<CodingPath | null>;
+  clientRef: RefObject<WebSocketClient | null>;
   onConnect: (agentId: string, publicKey: string) => void;
-  onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
 }
 
 export function AddNewPage({
-  onSetActiveAgent,
-  onBrowseDirectory,
-  onCloneRepo,
-  onAddCodingPath,
+  clientRef,
   onConnect,
-  onStartSession,
 }: AddNewPageProps) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -92,39 +76,33 @@ export function AddNewPage({
     setSelectedAgentId(connectedMachines[0]?.agentId ?? null);
   }, [connectedMachines, selectedAgentId]);
 
-  // Bind agent routing into each request. A useEffect won't work here: child
-  // effects (the browse request fired by useDirectoryBrowser on resetKey change)
-  // flush before the parent's, so setActiveAgent would race the send. Instead,
-  // call setActiveAgent synchronously before each agent-bound call.
-  const withAgent = useCallback(
-    (agentId: string | null) => {
-      if (agentId) onSetActiveAgent(agentId);
-    },
-    [onSetActiveAgent]
+  const selectedAgentBus = useCallback(
+    (): MessageBusClient | null => (selectedAgentId ? getBusForAgent(selectedAgentId) : null),
+    [selectedAgentId],
+  );
+  const getSelectedAgentId = useCallback(
+    () => selectedAgentId,
+    [selectedAgentId],
+  );
+  const { browseDirectory, cloneRepo, addCodingPath } = useGitOperations(
+    clientRef,
+    selectedAgentBus,
+    getSelectedAgentId,
   );
 
   const boundBrowseDirectory = useCallback(
-    (path?: string) => {
-      withAgent(selectedAgentId);
-      return onBrowseDirectory(path);
-    },
-    [withAgent, selectedAgentId, onBrowseDirectory]
+    (path?: string) => browseDirectory(path),
+    [browseDirectory],
   );
 
   const boundCloneRepo = useCallback(
-    (url: string, targetDir: string) => {
-      withAgent(selectedAgentId);
-      return onCloneRepo(url, targetDir);
-    },
-    [withAgent, selectedAgentId, onCloneRepo]
+    (url: string, targetDir: string) => cloneRepo(url, targetDir),
+    [cloneRepo],
   );
 
   const boundAddCodingPath = useCallback(
-    (path: string) => {
-      withAgent(selectedAgentId);
-      return onAddCodingPath(path);
-    },
-    [withAgent, selectedAgentId, onAddCodingPath]
+    (path: string) => addCodingPath(path),
+    [addCodingPath],
   );
 
   const goBack = useCallback(() => {
@@ -199,8 +177,6 @@ export function AddNewPage({
         {tab === 'session' && (
           <SessionTab
             initialProjectId={sessionSeedProjectId}
-            onSetActiveAgent={onSetActiveAgent}
-            onStartSession={onStartSession}
           />
         )}
         {tab === 'machine' && (
@@ -601,12 +577,8 @@ function MachineTab({
 
 function SessionTab({
   initialProjectId,
-  onSetActiveAgent,
-  onStartSession,
 }: {
   initialProjectId: string | null;
-  onSetActiveAgent: (agentId: string) => void;
-  onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
 }) {
   const intl = useIntl();
   const projects = useProjects();
@@ -642,6 +614,11 @@ function SessionTab({
   }, [projects, selectedProjectId]);
 
   const project = projects.find((p) => p.projectId === selectedProjectId) ?? null;
+  const sessionAgentBus = useCallback(
+    (): MessageBusClient | null => (project?.agentId ? getBusForAgent(project.agentId) : null),
+    [project?.agentId],
+  );
+  const { startSession } = useClaudeOperations(sessionAgentBus);
 
   const selectedAgent = useClaudeStore((s) => s.selectedAgent);
   const selectedModel = useClaudeStore((s) => s.selectedModel);
@@ -709,9 +686,8 @@ function SessionTab({
       : attach.buildPayload();
     setStarting(true);
     setError(null);
-    onSetActiveAgent(project.agentId);
     try {
-      await onStartSession(isTerminalNewSession ? '' : text, {
+      await startSession(isTerminalNewSession ? '' : text, {
         agent: selectedAgent,
         model: selectedModel,
         permissionMode: selectedPermissionMode,

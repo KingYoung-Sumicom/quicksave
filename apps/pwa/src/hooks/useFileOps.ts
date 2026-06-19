@@ -17,8 +17,8 @@ interface UseFileOpsOptions {
 /**
  * One-shot file browser commands. Pure request/response — no
  * subscriptions, no streaming — so this is just a thin wrapper around
- * `bus.command`. Mirrors `useTerminalOps` so callers can pass
- * `getActiveBus` in single-agent mode or a multi-agent bus getter.
+ * `bus.command`. Callers pass a bus getter that is already scoped to the
+ * owning agent.
  */
 export function useFileOps(
   getBus: () => MessageBusClient | null,

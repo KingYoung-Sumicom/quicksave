@@ -29,10 +29,10 @@ export function TerminalPage() {
     if (terminal?.machineAgentId) return terminal.machineAgentId;
     return projectId ? fromProjectId(projectId).agentId : null;
   }, [projectId, terminal?.machineAgentId]);
-  // Bind ops to the owner agent's bus, NOT getActiveBus. The active agent
-  // can change between visits (user switches workspaces), and querying the
-  // wrong agent's bus for a terminal subscription returns null → renders
-  // "[terminal not found]" even though the terminal is alive elsewhere.
+  // Bind ops to the owner agent's bus. The active agent can change between
+  // visits (user switches workspaces), and querying the wrong agent's bus for
+  // a terminal subscription returns null -> renders "[terminal not found]"
+  // even though the terminal is alive elsewhere.
   const getBus = useCallback(
     () => (ownerAgentId ? getBusForAgent(ownerAgentId) : null),
     [ownerAgentId],

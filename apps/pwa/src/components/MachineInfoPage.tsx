@@ -18,7 +18,6 @@ import type {
 } from '@sumicom/quicksave-shared';
 
 interface MachineInfoPageProps {
-  onSetActiveAgent: (agentId: string) => void;
   onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
   onUpdateAgent?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; restarting: boolean; error?: string }>;
   onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
@@ -30,13 +29,10 @@ interface MachineInfoPageProps {
 
 /**
  * Per-machine info page. Surfaces the CLI agent version (and update/restart
- * controls) that used to live in the in-session settings drawer. We bind the
- * client to this machine's agent on mount so the shared `onCheckAgentUpdate`
- * etc. handlers route to the correct peer — the same `setActiveAgent`
- * convention the project routes use.
+ * controls) that used to live in the in-session settings drawer. Callers pass
+ * handlers that are already bound to this machine's agent.
  */
 export function MachineInfoPage({
-  onSetActiveAgent,
   onCheckAgentUpdate,
   onUpdateAgent,
   onRestartAgent,
@@ -71,10 +67,6 @@ export function MachineInfoPage({
   const devBuild = conn?.devBuild ?? false;
   const latestVersion = useConnectionStore((s) => s.latestVersion);
   const setLatestVersion = useConnectionStore((s) => s.setLatestVersion);
-
-  useEffect(() => {
-    if (agentId) onSetActiveAgent(agentId);
-  }, [agentId, onSetActiveAgent]);
 
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);

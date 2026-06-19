@@ -136,7 +136,7 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps }: Sessi
       {/* Content */}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {mode === 'files' && <FilesPanel agentId={agentId} cwd={cwd} />}
-        {mode === 'git' && <GitPanel cwd={cwd} />}
+        {mode === 'git' && <GitPanel agentId={agentId} cwd={cwd} />}
         {mode === 'settings' && <SettingsPanel sessionOps={sessionOps} />}
       </div>
     </div>
@@ -395,9 +395,11 @@ function SettingsPanel({ sessionOps }: { sessionOps: SessionOps }) {
 
 // ── Git panel ────────────────────────────────────────────────────────────────
 
-function GitPanel({ cwd }: { cwd: string }) {
+function GitPanel({ agentId, cwd }: { agentId: string; cwd: string }) {
   const gitOps = useGitOps();
   const setCurrentRepoPath = useGitStore((s) => s.setCurrentRepoPath);
+  const switchRepo = gitOps?.switchRepo;
+  const onRefresh = gitOps?.onRefresh;
   // Honor a per-session override set when the user picks a specific repo
   // from the Settings tab's "Git repository" list. Falls back to the
   // session's own cwd when no override is set.
@@ -405,11 +407,11 @@ function GitPanel({ cwd }: { cwd: string }) {
   const effectiveCwd = repoOverride ?? cwd;
 
   useEffect(() => {
-    if (!gitOps) return;
+    if (!switchRepo || !onRefresh) return;
     setCurrentRepoPath(effectiveCwd);
-    gitOps.switchRepo(effectiveCwd);
-    gitOps.onRefresh();
-  }, [effectiveCwd]); // eslint-disable-line react-hooks/exhaustive-deps
+    switchRepo(effectiveCwd);
+    onRefresh();
+  }, [agentId, effectiveCwd, setCurrentRepoPath, switchRepo, onRefresh]);
 
   if (!gitOps) {
     return (
