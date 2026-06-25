@@ -560,6 +560,8 @@ export class StreamCardBuilder {
   private toolUseIdToCardId = new Map<string, CardId>();
   /** tool_use_id → Guardian text observed before the permission card exists. */
   private pendingGuardianMessageByToolUseId = new Map<string, string>();
+  /** tool name → Guardian text observed before a matching tool card exists. */
+  private pendingGuardianMessageByToolName = new Map<string, string>();
   /** Guardian text observed before app-server provided a correlatable card id. */
   private pendingGuardianMessageForNextPermission: string | null = null;
   /** artifactId → CardId, for de-duping generated display artifact cards. */
@@ -616,6 +618,7 @@ export class StreamCardBuilder {
     this.currentTurnId = turnId ?? `turn:${Date.now()}:${++this.turnSeq}`;
     this.currentTextCardId = null;
     this.pendingGuardianMessageByToolUseId.clear();
+    this.pendingGuardianMessageByToolName.clear();
     this.pendingGuardianMessageForNextPermission = null;
   }
 
@@ -642,6 +645,7 @@ export class StreamCardBuilder {
     this.cards.clear();
     this.toolUseIdToCardId.clear();
     this.pendingGuardianMessageByToolUseId.clear();
+    this.pendingGuardianMessageByToolName.clear();
     this.pendingGuardianMessageForNextPermission = null;
     this.currentTurnId = null;
     this.artifactIdToCardId.clear();
@@ -926,6 +930,9 @@ export class StreamCardBuilder {
    */
   toolUse(toolName: string, toolInput: Record<string, unknown>, toolUseId: string): CardEvent {
     this.currentTextCardId = null;
+    const guardianMessageForToolName = this.pendingGuardianMessageByToolName.get(toolName);
+    const guardianMessage = this.pendingGuardianMessageByToolUseId.get(toolUseId) ?? guardianMessageForToolName;
+    if (guardianMessageForToolName) this.pendingGuardianMessageByToolName.delete(toolName);
 
     // Route to active subagent: nest this tool call inside the SubagentCard
     if (this.activeSubagentCardId) {
@@ -941,13 +948,17 @@ export class StreamCardBuilder {
     const existingCardId = this.toolUseIdToCardId.get(toolUseId);
     if (existingCardId) {
       // Confirm with real data (input may differ if updatedInput was returned)
-      return this.updateEvent(existingCardId, { toolInput });
+      return this.updateEvent(existingCardId, {
+        toolInput,
+        ...(guardianMessage ? { guardianMessage } : {}),
+      });
     }
 
     const id = this.nextId();
     const card: ToolCallCard = {
       type: 'tool_call', id, timestamp: Date.now(),
       toolName, toolInput, toolUseId,
+      ...(guardianMessage ? { guardianMessage } : {}),
     };
     this.toolUseIdToCardId.set(toolUseId, id);
     return this.addEvent(card);
@@ -1021,19 +1032,54 @@ export class StreamCardBuilder {
     return undefined;
   }
 
-  /** Attach/update Guardian review text on the pending input for a tool card. */
+  /** Return whether the tool card for a tool_use_id currently carries pending input. */
+  toolCardHasPendingInput(toolUseId: string): boolean {
+    const cardId = this.toolUseIdToCardId.get(toolUseId);
+    const card = cardId ? this.cards.get(cardId) : undefined;
+    return !!card?.pendingInput;
+  }
+
+  /** Attach/update Guardian review text on a tool card and its pending input, when present. */
   updatePendingGuardianMessageForToolUseId(toolUseId: string, guardianMessage: string): CardEvent | null {
     this.pendingGuardianMessageByToolUseId.set(toolUseId, guardianMessage);
     const cardId = this.toolUseIdToCardId.get(toolUseId);
     if (!cardId) return null;
     const card = this.cards.get(cardId);
-    if (!card?.pendingInput) return null;
+    if (!card) return null;
     return this.updateEvent(cardId, {
       guardianMessage,
-      pendingInput: {
-        ...card.pendingInput,
-        guardianMessage,
-      },
+      ...(card.pendingInput
+        ? {
+            pendingInput: {
+              ...card.pendingInput,
+              guardianMessage,
+            },
+          }
+        : {}),
+    });
+  }
+
+  /** Attach/update Guardian review text on the newest matching tool card. */
+  updateLatestGuardianMessageForToolName(toolName: string, guardianMessage: string): CardEvent | null {
+    let latest: ToolCallCard | null = null;
+    for (const card of this.cards.values()) {
+      if (card.type !== 'tool_call' || card.toolName !== toolName) continue;
+      if (!latest || card.timestamp >= latest.timestamp) latest = card;
+    }
+    if (!latest) {
+      this.pendingGuardianMessageByToolName.set(toolName, guardianMessage);
+      return null;
+    }
+    return this.updateEvent(latest.id, {
+      guardianMessage,
+      ...(latest.pendingInput
+        ? {
+            pendingInput: {
+              ...latest.pendingInput,
+              guardianMessage,
+            },
+          }
+        : {}),
     });
   }
 
@@ -1043,13 +1089,25 @@ export class StreamCardBuilder {
    * `targetItemId: null`, such as networkAccess and some execve reviews.
    */
   updateLatestPendingPermissionGuardianMessage(guardianMessage: string): CardEvent | null {
+    return this.updateLatestPendingPermissionGuardianMessageInternal(guardianMessage, true);
+  }
+
+  /** Attach Guardian review text to the newest pending permission card without storing a fallback. */
+  updateLatestPendingPermissionGuardianMessageIfPresent(guardianMessage: string): CardEvent | null {
+    return this.updateLatestPendingPermissionGuardianMessageInternal(guardianMessage, false);
+  }
+
+  private updateLatestPendingPermissionGuardianMessageInternal(
+    guardianMessage: string,
+    storeForNextPermission: boolean,
+  ): CardEvent | null {
     let latest: Card | null = null;
     for (const card of this.cards.values()) {
       if (card.pendingInput?.inputType !== 'permission') continue;
       if (!latest || card.timestamp >= latest.timestamp) latest = card;
     }
     if (!latest?.pendingInput) {
-      this.pendingGuardianMessageForNextPermission = guardianMessage;
+      if (storeForNextPermission) this.pendingGuardianMessageForNextPermission = guardianMessage;
       return null;
     }
     return this.updateEvent(latest.id, {

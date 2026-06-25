@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CardEvent, CardStreamEnd } from '@sumicom/quicksave-shared';
+import type { CardEvent, CardStreamEnd, ToolCallCard } from '@sumicom/quicksave-shared';
 
 import { StreamCardBuilder } from '../../cardBuilder.js';
 import type { ProviderCallbacks } from '../../provider.js';
@@ -816,6 +816,223 @@ describe('cardAdapter — Guardian auto-review on permission cards', () => {
 
     expect(h.cb.getCards().find((c) => c.pendingInput?.requestId === 'perm_approval')?.pendingInput?.guardianMessage)
       .toContain('Approval callback id differs from command item id.');
+  });
+
+  it('also updates the pending permission when Guardian targets a separate command card', async () => {
+    const h = harness();
+    await h.send('item/started', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: {
+        type: 'commandExecution',
+        id: 'cmd_with_separate_approval',
+        command: 'npm install',
+        status: 'in_progress',
+        aggregatedOutput: '',
+        exitCode: null,
+        durationMs: null,
+      },
+    });
+    h.events.push(h.cb.toolCallFromPermission(
+      'Bash',
+      { command: 'npm install' },
+      'approval_for_cmd',
+      {
+        sessionId: h.sessionId,
+        requestId: 'perm_separate_approval',
+        inputType: 'permission',
+        title: 'Allow Bash?',
+        message: '{"command":"npm install"}',
+      },
+    ));
+
+    await h.send('item/autoApprovalReview/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      targetItemId: 'cmd_with_separate_approval',
+      decisionSource: 'agent',
+      review: {
+        status: 'denied',
+        riskLevel: 'high',
+        userAuthorization: 'low',
+        rationale: 'Command item id differs from approval prompt id.',
+      },
+      action: {
+        type: 'command',
+        source: 'shell',
+        command: 'npm install',
+        cwd: '/tmp/quicksave-test',
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const commandCard = h.cb.getCards().find(
+      (c): c is ToolCallCard => c.type === 'tool_call' && c.toolUseId === 'cmd_with_separate_approval',
+    );
+    const promptCard = h.cb.getCards().find(
+      (c): c is ToolCallCard => c.type === 'tool_call' && c.pendingInput?.requestId === 'perm_separate_approval',
+    );
+    expect(commandCard?.guardianMessage).toContain('Command item id differs');
+    expect(promptCard?.pendingInput?.guardianMessage).toContain('Command item id differs');
+  });
+
+  it('attaches Guardian rationale to a targeted MCP tool card without pendingInput', async () => {
+    const h = harness();
+    await h.send('item/started', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: {
+        type: 'mcpToolCall',
+        id: 'mcp_search_1',
+        server: 'demo',
+        tool: 'Search',
+        status: 'inProgress',
+        arguments: { query: 'quicksave' },
+        pluginId: null,
+        result: null,
+        error: null,
+        durationMs: null,
+      },
+    });
+
+    await h.send('item/autoApprovalReview/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      targetItemId: 'mcp_search_1',
+      decisionSource: 'agent',
+      review: {
+        status: 'approved',
+        riskLevel: 'medium',
+        userAuthorization: 'low',
+        rationale: 'MCP tool call was reviewed.',
+      },
+      action: {
+        type: 'mcpToolCall',
+        server: 'demo',
+        toolName: 'Search',
+        connectorId: null,
+        connectorName: null,
+        toolTitle: null,
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const card = h.cb.getCards().find(
+      (c): c is ToolCallCard => c.type === 'tool_call' && c.toolUseId === 'mcp_search_1',
+    );
+    expect(card?.guardianMessage).toContain('MCP tool call was reviewed.');
+    expect(h.events.some(
+      (e) => e.type === 'update' && e.cardId === card?.id && JSON.stringify(e.patch).includes('MCP tool call was reviewed.'),
+    )).toBe(true);
+  });
+
+  it('falls back to the matching MCP tool card when Guardian targetItemId is null', async () => {
+    const h = harness();
+    await h.send('item/started', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: {
+        type: 'mcpToolCall',
+        id: 'mcp_search_null_target',
+        server: 'demo',
+        tool: 'Search',
+        status: 'inProgress',
+        arguments: { query: 'quicksave' },
+        pluginId: null,
+        result: null,
+        error: null,
+        durationMs: null,
+      },
+    });
+
+    await h.send('item/autoApprovalReview/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      targetItemId: null,
+      decisionSource: 'agent',
+      review: {
+        status: 'denied',
+        riskLevel: 'high',
+        userAuthorization: 'low',
+        rationale: 'MCP tool call needs confirmation.',
+      },
+      action: {
+        type: 'mcpToolCall',
+        server: 'demo',
+        toolName: 'Search',
+        connectorId: null,
+        connectorName: null,
+        toolTitle: null,
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const card = h.cb.getCards().find(
+      (c): c is ToolCallCard => c.type === 'tool_call' && c.toolUseId === 'mcp_search_null_target',
+    );
+    expect(card?.guardianMessage).toContain('MCP tool call needs confirmation.');
+  });
+
+  it('attaches early untargeted MCP Guardian rationale when the MCP card arrives later', async () => {
+    const h = harness();
+    await h.send('item/autoApprovalReview/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      targetItemId: null,
+      decisionSource: 'agent',
+      review: {
+        status: 'approved',
+        riskLevel: 'medium',
+        userAuthorization: 'low',
+        rationale: 'MCP tool call was reviewed before the card existed.',
+      },
+      action: {
+        type: 'mcpToolCall',
+        server: 'demo',
+        toolName: 'Search',
+        connectorId: null,
+        connectorName: null,
+        toolTitle: null,
+      },
+    });
+    await h.send('item/started', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: {
+        type: 'mcpToolCall',
+        id: 'mcp_search_late',
+        server: 'demo',
+        tool: 'Search',
+        status: 'inProgress',
+        arguments: { query: 'quicksave' },
+        pluginId: null,
+        result: null,
+        error: null,
+        durationMs: null,
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const card = h.cb.getCards().find(
+      (c): c is ToolCallCard => c.type === 'tool_call' && c.toolUseId === 'mcp_search_late',
+    );
+    expect(card?.guardianMessage).toContain('reviewed before the card existed');
   });
 });
 

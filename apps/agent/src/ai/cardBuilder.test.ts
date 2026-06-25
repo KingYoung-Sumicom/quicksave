@@ -388,10 +388,25 @@ describe('StreamCardBuilder', () => {
       expect(builder.getCards()[0].pendingInput?.guardianMessage).toBe('Guardian denied\nNetwork access is risky.');
     });
 
-    it('does not create a Guardian update when the matching pending card is absent', () => {
+    it('updates Guardian message on an existing non-pending tool card', () => {
       expect(builder.updatePendingGuardianMessageForToolUseId('missing', 'Guardian denied')).toBeNull();
+      const addEvent = builder.toolUse('Bash', { command: 'ls' }, 'tu-no-pending') as CardAddEvent;
+
+      const event = builder.updatePendingGuardianMessageForToolUseId('tu-no-pending', 'Guardian denied') as CardUpdateEvent;
+
+      expect(event.type).toBe('update');
+      expect(event.cardId).toBe(addEvent.card.id);
+      expect(event.patch).toEqual({ guardianMessage: 'Guardian denied' });
+      expect((builder.getCards()[0] as ToolCallCard).guardianMessage).toBe('Guardian denied');
+    });
+
+    it('reports whether a tool card has pending input', () => {
       builder.toolUse('Bash', { command: 'ls' }, 'tu-no-pending');
-      expect(builder.updatePendingGuardianMessageForToolUseId('tu-no-pending', 'Guardian denied')).toBeNull();
+      expect(builder.toolCardHasPendingInput('tu-no-pending')).toBe(false);
+
+      builder.toolCallFromPermission('Bash', { command: 'npm install' }, 'tu-pending', makePendingInput('req-pending'));
+      expect(builder.toolCardHasPendingInput('tu-pending')).toBe(true);
+      expect(builder.toolCardHasPendingInput('missing')).toBe(false);
     });
 
     it('includes a Guardian message observed before the pending tool card exists', () => {
@@ -406,6 +421,42 @@ describe('StreamCardBuilder', () => {
         ...pending,
         guardianMessage: 'Guardian reviewing',
       });
+    });
+
+    it('includes a Guardian message observed before a non-pending tool card exists', () => {
+      expect(builder.updatePendingGuardianMessageForToolUseId('tu-guardian-early-tool', 'Guardian reviewing')).toBeNull();
+
+      const event = builder.toolUse(
+        'mcp__demo__Search',
+        { query: 'quicksave' },
+        'tu-guardian-early-tool',
+      ) as CardAddEvent;
+
+      expect((event.card as ToolCallCard).guardianMessage).toBe('Guardian reviewing');
+    });
+
+    it('updates Guardian message on the latest matching tool-name card', () => {
+      builder.toolUse('mcp__demo__Search', { query: 'first' }, 'tu-mcp-first');
+      const latest = builder.toolUse('mcp__demo__Search', { query: 'second' }, 'tu-mcp-second') as CardAddEvent;
+      builder.toolUse('mcp__demo__Other', { query: 'third' }, 'tu-mcp-other');
+
+      const event = builder.updateLatestGuardianMessageForToolName('mcp__demo__Search', 'Guardian mcp review') as CardUpdateEvent;
+
+      expect(event.type).toBe('update');
+      expect(event.cardId).toBe(latest.card.id);
+      expect(event.patch).toEqual({ guardianMessage: 'Guardian mcp review' });
+    });
+
+    it('includes a Guardian message observed before a matching tool-name card exists', () => {
+      expect(builder.updateLatestGuardianMessageForToolName('mcp__demo__Search', 'Guardian mcp review')).toBeNull();
+
+      const event = builder.toolUse(
+        'mcp__demo__Search',
+        { query: 'quicksave' },
+        'tu-mcp-late',
+      ) as CardAddEvent;
+
+      expect((event.card as ToolCallCard).guardianMessage).toBe('Guardian mcp review');
     });
 
     it('updates the latest pending permission card when Guardian has no tool id', () => {
@@ -441,6 +492,20 @@ describe('StreamCardBuilder', () => {
         ...pending,
         guardianMessage: 'Guardian network review',
       });
+    });
+
+    it('does not store a next-permission fallback when updating only if present', () => {
+      const pending = makePendingInput('req-guardian-if-present');
+      expect(builder.updateLatestPendingPermissionGuardianMessageIfPresent('Guardian mcp review')).toBeNull();
+
+      const event = builder.toolCallFromPermission(
+        'Bash',
+        { command: 'ls' },
+        'tu-guardian-if-present',
+        pending,
+      ) as CardAddEvent;
+
+      expect((event.card as ToolCallCard).pendingInput).toEqual(pending);
     });
   });
 

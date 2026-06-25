@@ -142,6 +142,10 @@ function guardianActionItemId(_action: GuardianApprovalReviewAction): string | n
   return null;
 }
 
+function guardianMcpToolName(action: GuardianApprovalReviewAction): string | null {
+  return action.type === 'mcpToolCall' ? mcpToolName(action.server, action.toolName) : null;
+}
+
 export interface CodexTurnStreamConsumer {
   readonly turnId: string;
   readonly result: Promise<{ status: TurnStatus; error?: ErrorNotification['error'] }>;
@@ -449,10 +453,22 @@ export function createCodexTurnStreamConsumer(
         const message = formatGuardianReview(params.review);
         if (!message) return;
         const targetItemId = params.targetItemId ?? guardianActionItemId(params.action);
+        const targetHadPendingInput = targetItemId ? cb.toolCardHasPendingInput(targetItemId) : false;
         const targeted = targetItemId
           ? cb.updatePendingGuardianMessageForToolUseId(targetItemId, message)
           : null;
-        emit(targeted ?? cb.updateLatestPendingPermissionGuardianMessage(message));
+        const mcpToolNameForGuardian = guardianMcpToolName(params.action);
+        const mcpTargeted = targeted ?? (mcpToolNameForGuardian
+          ? cb.updateLatestGuardianMessageForToolName(mcpToolNameForGuardian, message)
+          : null);
+        if (mcpToolNameForGuardian) {
+          emit(mcpTargeted ?? cb.updateLatestPendingPermissionGuardianMessageIfPresent(message));
+          return;
+        }
+        emit(targeted);
+        if (!targeted || !targetHadPendingInput) {
+          emit(cb.updateLatestPendingPermissionGuardianMessage(message));
+        }
         return;
       }
 
