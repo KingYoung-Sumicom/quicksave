@@ -49,7 +49,6 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   'ai:get-api-key-status',
   // agent
   'agent:list-repos',
-  'agent:switch-repo',
   'agent:browse-directory',
   'agent:add-repo',
   'agent:remove-repo',
@@ -124,6 +123,11 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   'voice-agent:fetch-audio',
 ];
 
+function isRepoScopedVerb(verb: MessageType): boolean {
+  if (verb.startsWith('git:') && !verb.endsWith(':response')) return true;
+  return verb === 'ai:generate-commit-summary' || verb === 'ai:commit-summary:clear';
+}
+
 /**
  * Bridge legacy `MessageHandler` request/response verbs onto a
  * `MessageBusServer`. Each verb in `verbs` is registered as a bus command
@@ -131,11 +135,11 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
  *
  * Two adapter rules of the wire protocol live here:
  * - **`__repoPath` smuggling**: the bus protocol has no envelope-level
- *   metadata, so `git:*` callers tuck `__repoPath` into the payload. The
+ *   metadata, so repo-scoped callers tuck `__repoPath` into the payload. The
  *   adapter lifts it onto `msg.repoPath` before dispatch and strips it
  *   from the payload, then mirrors the server's stamped `repoPath` back
- *   into `git:*` responses so the PWA can scope-check.
- * - **Error encoding**: structured errors (e.g. `REPO_MISMATCH`) are
+ *   into repo-scoped responses so the PWA can scope-check.
+ * - **Error encoding**: structured errors (e.g. `REPO_NOT_AVAILABLE`) are
  *   returned as `"CODE: message"` strings on the rejected promise so
  *   callers can `String#startsWith` to detect specific codes.
  */
@@ -165,7 +169,7 @@ export function wireLegacyBusVerbs(
         const text = err.message ?? 'Handler error';
         throw new Error(code ? `${code}: ${text}` : text);
       }
-      if (verb.startsWith('git:') && typeof response.repoPath === 'string') {
+      if (isRepoScopedVerb(verb) && typeof response.repoPath === 'string') {
         return { ...(response.payload as object), __repoPath: response.repoPath };
       }
       return response.payload;

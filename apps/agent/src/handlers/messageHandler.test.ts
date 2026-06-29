@@ -11,6 +11,7 @@ import { getSessionRegistry, resetSessionRegistry } from '../ai/sessionRegistry.
 import { getEventStore } from '../storage/eventStore.js';
 import type { SessionRegistryEntry } from '@sumicom/quicksave-shared';
 import { setQuicksaveDir } from '../service/singleton.js';
+import { addManagedRepo } from '../config.js';
 
 // Prevent tests from reading/writing the real ~/.quicksave/agent.json
 vi.mock('../config.js', async (importOriginal) => {
@@ -26,6 +27,11 @@ vi.mock('../config.js', async (importOriginal) => {
     hasAnthropicApiKey: vi.fn(() => false),
   };
 });
+
+function withRepo<T extends { repoPath?: string }>(message: T, repoPath: string): T {
+  message.repoPath = repoPath;
+  return message;
+}
 
 describe('MessageHandler', () => {
   let testRepoPath: string;
@@ -101,7 +107,7 @@ describe('MessageHandler', () => {
 
   describe('handleMessage - git:status', () => {
     it('should return git status', async () => {
-      const message = createMessage('git:status', {});
+      const message = withRepo(createMessage('git:status', {}), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:status:response');
@@ -117,7 +123,7 @@ describe('MessageHandler', () => {
     it('should detect changes in status', async () => {
       await writeFile(join(testRepoPath, 'newfile.txt'), 'content');
 
-      const message = createMessage('git:status', {});
+      const message = withRepo(createMessage('git:status', {}), testRepoPath);
       const response = await handler.handleMessage(message);
 
       const payload = response.payload as any;
@@ -129,7 +135,7 @@ describe('MessageHandler', () => {
     it('should return diff for modified file', async () => {
       await writeFile(join(testRepoPath, 'README.md'), '# Modified\n');
 
-      const message = createMessage('git:diff', { path: 'README.md', staged: false });
+      const message = withRepo(createMessage('git:diff', { path: 'README.md', staged: false }), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:diff:response');
@@ -145,21 +151,21 @@ describe('MessageHandler', () => {
     it('should stage files successfully', async () => {
       await writeFile(join(testRepoPath, 'newfile.txt'), 'content');
 
-      const message = createMessage('git:stage', { paths: ['newfile.txt'] });
+      const message = withRepo(createMessage('git:stage', { paths: ['newfile.txt'] }), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:stage:response');
       expect((response.payload as any).success).toBe(true);
 
       // Verify file was staged
-      const statusMsg = createMessage('git:status', {});
+      const statusMsg = withRepo(createMessage('git:status', {}), testRepoPath);
       const statusResp = await handler.handleMessage(statusMsg);
       const status = statusResp.payload as any;
       expect(status.staged.some((f: any) => f.path === 'newfile.txt')).toBe(true);
     });
 
     it('should return error for invalid path', async () => {
-      const message = createMessage('git:stage', { paths: ['nonexistent.txt'] });
+      const message = withRepo(createMessage('git:stage', { paths: ['nonexistent.txt'] }), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:stage:response');
@@ -173,7 +179,7 @@ describe('MessageHandler', () => {
       await writeFile(join(testRepoPath, 'newfile.txt'), 'content');
       await simpleGit(testRepoPath).add('newfile.txt');
 
-      const message = createMessage('git:unstage', { paths: ['newfile.txt'] });
+      const message = withRepo(createMessage('git:unstage', { paths: ['newfile.txt'] }), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:unstage:response');
@@ -186,7 +192,7 @@ describe('MessageHandler', () => {
       await writeFile(join(testRepoPath, 'newfile.txt'), 'content');
       await simpleGit(testRepoPath).add('newfile.txt');
 
-      const message = createMessage('git:commit', { message: 'Test commit' });
+      const message = withRepo(createMessage('git:commit', { message: 'Test commit' }), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:commit:response');
@@ -198,10 +204,10 @@ describe('MessageHandler', () => {
       await writeFile(join(testRepoPath, 'newfile.txt'), 'content');
       await simpleGit(testRepoPath).add('newfile.txt');
 
-      const message = createMessage('git:commit', {
+      const message = withRepo(createMessage('git:commit', {
         message: 'Title',
         description: 'Extended description',
-      });
+      }), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:commit:response');
@@ -209,7 +215,7 @@ describe('MessageHandler', () => {
     });
 
     it('should handle empty commit gracefully', async () => {
-      const message = createMessage('git:commit', { message: 'Empty commit' });
+      const message = withRepo(createMessage('git:commit', { message: 'Empty commit' }), testRepoPath);
       const response = await handler.handleMessage(message);
 
       // The behavior depends on git - it might succeed with empty commit or fail
@@ -220,7 +226,7 @@ describe('MessageHandler', () => {
 
   describe('handleMessage - git:log', () => {
     it('should return commit log', async () => {
-      const message = createMessage('git:log', { limit: 10 });
+      const message = withRepo(createMessage('git:log', { limit: 10 }), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:log:response');
@@ -233,7 +239,7 @@ describe('MessageHandler', () => {
     });
 
     it('should use default limit when not specified', async () => {
-      const message = createMessage('git:log', {});
+      const message = withRepo(createMessage('git:log', {}), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:log:response');
@@ -242,7 +248,7 @@ describe('MessageHandler', () => {
 
   describe('handleMessage - git:branches', () => {
     it('should return branches', async () => {
-      const message = createMessage('git:branches', {});
+      const message = withRepo(createMessage('git:branches', {}), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:branches:response');
@@ -257,7 +263,7 @@ describe('MessageHandler', () => {
     it('should checkout existing branch', async () => {
       await simpleGit(testRepoPath).checkoutLocalBranch('feature');
 
-      const message = createMessage('git:checkout', { branch: defaultBranch });
+      const message = withRepo(createMessage('git:checkout', { branch: defaultBranch }), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:checkout:response');
@@ -265,20 +271,20 @@ describe('MessageHandler', () => {
     });
 
     it('should create and checkout new branch', async () => {
-      const message = createMessage('git:checkout', { branch: 'new-feature', create: true });
+      const message = withRepo(createMessage('git:checkout', { branch: 'new-feature', create: true }), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:checkout:response');
       expect((response.payload as any).success).toBe(true);
 
       // Verify branch was created
-      const branchMsg = createMessage('git:branches', {});
+      const branchMsg = withRepo(createMessage('git:branches', {}), testRepoPath);
       const branchResp = await handler.handleMessage(branchMsg);
       expect((branchResp.payload as any).current).toBe('new-feature');
     });
 
     it('should fail for non-existent branch', async () => {
-      const message = createMessage('git:checkout', { branch: 'nonexistent' });
+      const message = withRepo(createMessage('git:checkout', { branch: 'nonexistent' }), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:checkout:response');
@@ -290,14 +296,14 @@ describe('MessageHandler', () => {
     it('should discard changes', async () => {
       await writeFile(join(testRepoPath, 'README.md'), '# Modified\n');
 
-      const message = createMessage('git:discard', { paths: ['README.md'] });
+      const message = withRepo(createMessage('git:discard', { paths: ['README.md'] }), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:discard:response');
       expect((response.payload as any).success).toBe(true);
 
       // Verify changes were discarded
-      const statusMsg = createMessage('git:status', {});
+      const statusMsg = withRepo(createMessage('git:status', {}), testRepoPath);
       const statusResp = await handler.handleMessage(statusMsg);
       expect((statusResp.payload as any).unstaged).toHaveLength(0);
     });
@@ -305,7 +311,7 @@ describe('MessageHandler', () => {
 
   describe('handleMessage - git:untrack', () => {
     it('should untrack a tracked file', async () => {
-      const message = createMessage('git:untrack', { paths: ['README.md'] });
+      const message = withRepo(createMessage('git:untrack', { paths: ['README.md'] }), testRepoPath);
       const response = await handler.handleMessage(message);
       expect(response.type).toBe('git:untrack:response');
       expect(response.id).toBe(message.id);
@@ -315,7 +321,7 @@ describe('MessageHandler', () => {
 
   describe('handleMessage - git:gitignore-add', () => {
     it('should add a pattern to .gitignore', async () => {
-      const message = createMessage('git:gitignore-add', { pattern: 'node_modules/' });
+      const message = withRepo(createMessage('git:gitignore-add', { pattern: 'node_modules/' }), testRepoPath);
       const response = await handler.handleMessage(message);
       expect(response.type).toBe('git:gitignore-add:response');
       expect((response.payload as any).success).toBe(true);
@@ -327,7 +333,7 @@ describe('MessageHandler', () => {
   describe('handleMessage - git:gitignore-read', () => {
     it('should read .gitignore content', async () => {
       await writeFile(join(testRepoPath, '.gitignore'), '*.log\n');
-      const message = createMessage('git:gitignore-read', {});
+      const message = withRepo(createMessage('git:gitignore-read', {}), testRepoPath);
       const response = await handler.handleMessage(message);
       expect(response.type).toBe('git:gitignore-read:response');
       expect((response.payload as any).content).toBe('*.log\n');
@@ -335,7 +341,7 @@ describe('MessageHandler', () => {
     });
 
     it('should return empty when .gitignore does not exist', async () => {
-      const message = createMessage('git:gitignore-read', {});
+      const message = withRepo(createMessage('git:gitignore-read', {}), testRepoPath);
       const response = await handler.handleMessage(message);
       expect((response.payload as any).content).toBe('');
       expect((response.payload as any).exists).toBe(false);
@@ -344,7 +350,7 @@ describe('MessageHandler', () => {
 
   describe('handleMessage - git:gitignore-write', () => {
     it('should write .gitignore content', async () => {
-      const message = createMessage('git:gitignore-write', { content: 'dist/\n*.log\n' });
+      const message = withRepo(createMessage('git:gitignore-write', { content: 'dist/\n*.log\n' }), testRepoPath);
       const response = await handler.handleMessage(message);
       expect(response.type).toBe('git:gitignore-write:response');
       expect((response.payload as any).success).toBe(true);
@@ -376,7 +382,7 @@ describe('MessageHandler', () => {
     });
   });
 
-  describe('multi-client support', () => {
+  describe('stateless repo scope', () => {
     const clientA = 'pwa:clientA';
     const clientB = 'pwa:clientB';
 
@@ -409,133 +415,106 @@ describe('MessageHandler', () => {
       }
     });
 
-    it('should isolate repo context per client', async () => {
-      // Client A switches to second repo
-      const switchMsg = createMessage('agent:switch-repo', { path: secondRepoPath });
-      const switchResp = await handler.handleMessage(switchMsg, clientA);
-      expect((switchResp.payload as any).success).toBe(true);
+    it('uses the explicit repoPath independently per request', async () => {
+      await writeFile(join(testRepoPath, 'main.txt'), 'main');
+      await writeFile(join(secondRepoPath, 'second.txt'), 'second');
 
-      // Client B should still be on default repo
-      const listMsgB = createMessage('agent:list-repos', {});
-      const listRespB = await handler.handleMessage(listMsgB, clientB);
-      expect((listRespB.payload as any).current).toBe(testRepoPath);
+      const mainStage = withRepo(createMessage('git:stage', { paths: ['main.txt'] }), testRepoPath);
+      const mainResp = await handler.handleMessage(mainStage, clientA);
+      expect((mainResp.payload as any).success).toBe(true);
+
+      const secondStage = withRepo(createMessage('git:stage', { paths: ['second.txt'] }), secondRepoPath);
+      const secondResp = await handler.handleMessage(secondStage, clientB);
+      expect((secondResp.payload as any).success).toBe(true);
+
+      const mainStatus = await handler.handleMessage(withRepo(createMessage('git:status', {}), testRepoPath), clientA);
+      expect((mainStatus.payload as any).staged.some((f: any) => f.path === 'main.txt')).toBe(true);
+
+      const secondStatus = await handler.handleMessage(withRepo(createMessage('git:status', {}), secondRepoPath), clientB);
+      expect((secondStatus.payload as any).staged.some((f: any) => f.path === 'second.txt')).toBe(true);
     });
 
-    it('should return per-client current repo in list-repos', async () => {
-      // Client A switches to second repo
-      const switchMsg = createMessage('agent:switch-repo', { path: secondRepoPath });
-      await handler.handleMessage(switchMsg, clientA);
-
-      // Client A's list-repos should show second repo as current
+    it('keeps list-repos current at the default repo because selection is client-side', async () => {
       const listMsgA = createMessage('agent:list-repos', {});
       const listRespA = await handler.handleMessage(listMsgA, clientA);
-      expect((listRespA.payload as any).current).toBe(secondRepoPath);
+      expect((listRespA.payload as any).current).toBe(testRepoPath);
 
-      // Client B's list-repos should show first repo as current
       const listMsgB = createMessage('agent:list-repos', {});
       const listRespB = await handler.handleMessage(listMsgB, clientB);
       expect((listRespB.payload as any).current).toBe(testRepoPath);
     });
 
-    it('should return per-client repo path in handshake', async () => {
-      // Client A switches repo
-      const switchMsg = createMessage('agent:switch-repo', { path: secondRepoPath });
-      await handler.handleMessage(switchMsg, clientA);
-
-      // Client B handshake should return default repo
-      const handshakeMsg = createMessage('handshake', { publicKey: 'test-key' });
-      const handshakeResp = await handler.handleMessage(handshakeMsg, clientB);
-      expect((handshakeResp.payload as any).repoPath).toBe(testRepoPath);
-    });
-
-    it('should preserve client repo pin across removeClient (reconnect flow)', async () => {
-      // Client A switches repo
-      const switchMsg = createMessage('agent:switch-repo', { path: secondRepoPath });
-      await handler.handleMessage(switchMsg, clientA);
-
-      // Simulate disconnect
-      handler.removeClient(clientA);
-
-      // Client A reconnecting should still see its previously selected repo
-      // as the current one. Clearing it would force the PWA to race
-      // switch-repo against git:status on resume.
-      const listMsg = createMessage('agent:list-repos', {});
-      const listResp = await handler.handleMessage(listMsg, clientA);
-      expect((listResp.payload as any).current).toBe(secondRepoPath);
-    });
-
-    it('should allow sequential mutating ops from different clients', async () => {
+    it('should allow sequential mutating ops from different clients on the same repo', async () => {
       await writeFile(join(testRepoPath, 'file1.txt'), 'content1');
       await writeFile(join(testRepoPath, 'file2.txt'), 'content2');
 
-      const stageMsg1 = createMessage('git:stage', { paths: ['file1.txt'] });
+      const stageMsg1 = withRepo(createMessage('git:stage', { paths: ['file1.txt'] }), testRepoPath);
       const resp1 = await handler.handleMessage(stageMsg1, clientA);
       expect((resp1.payload as any).success).toBe(true);
 
-      const stageMsg2 = createMessage('git:stage', { paths: ['file2.txt'] });
+      const stageMsg2 = withRepo(createMessage('git:stage', { paths: ['file2.txt'] }), testRepoPath);
       const resp2 = await handler.handleMessage(stageMsg2, clientB);
       expect((resp2.payload as any).success).toBe(true);
     });
-  });
 
-  describe('repo-scoped envelope (REPO_MISMATCH)', () => {
-    let secondRepoPath: string;
-
-    beforeEach(async () => {
-      secondRepoPath = join(tmpdir(), `quicksave-handler-test-rmm-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-      await mkdir(secondRepoPath, { recursive: true });
-      const git2 = simpleGit(secondRepoPath);
-      await git2.init();
-      await git2.addConfig('user.email', 'test@test.com');
-      await git2.addConfig('user.name', 'Test User');
-      await writeFile(join(secondRepoPath, 'README.md'), '# Second Repo\n');
-      await git2.add('README.md');
-      await git2.commit('Initial commit');
-
-      handler = new MessageHandler([
-        { path: testRepoPath, name: 'test-repo' },
-        { path: secondRepoPath, name: 'second-repo' },
-      ]);
-    });
-
-    afterEach(async () => {
-      try { await rm(secondRepoPath, { recursive: true, force: true }); } catch { /* ignore */ }
-    });
-
-    it('stamps git: response envelope with the peer\'s current repoPath', async () => {
-      const message = createMessage('git:status', {});
+    it('stamps repo-scoped responses with the explicit repoPath', async () => {
+      const message = withRepo(createMessage('git:status', {}), secondRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:status:response');
-      expect(response.repoPath).toBe(testRepoPath);
+      expect(response.repoPath).toBe(secondRepoPath);
     });
 
-    it('rejects git: request when envelope repoPath does not match peer repo', async () => {
-      // Peer is on testRepoPath but stamps the request for secondRepoPath
+    it('rejects repo-scoped requests when repoPath is missing', async () => {
       const message = createMessage('git:status', {});
-      message.repoPath = secondRepoPath;
-
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('error');
-      expect((response.payload as any).code).toBe('REPO_MISMATCH');
-      // Error envelope reports the agent's actual current repo for this peer
-      expect(response.repoPath).toBe(testRepoPath);
+      expect((response.payload as any).code).toBe('MISSING_REPO_PATH');
     });
 
-    it('accepts git: request when envelope repoPath matches peer repo', async () => {
-      const message = createMessage('git:status', {});
-      message.repoPath = testRepoPath;
-
+    it('rejects repo-scoped requests when repoPath is not a valid repo', async () => {
+      const message = withRepo(createMessage('git:status', {}), '/does/not/exist');
       const response = await handler.handleMessage(message);
 
-      expect(response.type).toBe('git:status:response');
-      expect(response.repoPath).toBe(testRepoPath);
+      expect(response.type).toBe('error');
+      expect((response.payload as any).code).toBe('REPO_NOT_AVAILABLE');
     });
 
-    it('accepts git: request when envelope omits repoPath (back-compat)', async () => {
-      const message = createMessage('git:status', {});
-      // No envelope repoPath set — older clients still work.
+    it('accepts a valid git repo that was not preconfigured', async () => {
+      const unconfiguredRepoPath = join(
+        tmpdir(),
+        `quicksave-handler-unconfigured-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      );
+      await mkdir(unconfiguredRepoPath, { recursive: true });
+      const git = simpleGit(unconfiguredRepoPath);
+      await git.init();
+      await git.addConfig('user.email', 'test@test.com');
+      await git.addConfig('user.name', 'Test User');
+      await writeFile(join(unconfiguredRepoPath, 'README.md'), '# Unconfigured Repo\n');
+      await git.add('README.md');
+      await git.commit('Initial commit');
+
+      try {
+        vi.mocked(addManagedRepo).mockClear();
+
+        const message = withRepo(createMessage('git:status', {}), unconfiguredRepoPath);
+        const response = await handler.handleMessage(message);
+
+        expect(response.type).toBe('git:status:response');
+        expect(response.repoPath).toBe(unconfiguredRepoPath);
+        expect(addManagedRepo).toHaveBeenCalledWith(unconfiguredRepoPath);
+
+        const listMsg = createMessage('agent:list-repos', {});
+        const listResp = await handler.handleMessage(listMsg);
+        expect((listResp.payload as any).repos.some((r: any) => r.path === unconfiguredRepoPath)).toBe(true);
+      } finally {
+        await rm(unconfiguredRepoPath, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+
+    it('accepts git: request when envelope repoPath matches an available repo', async () => {
+      const message = withRepo(createMessage('git:status', {}), testRepoPath);
       const response = await handler.handleMessage(message);
 
       expect(response.type).toBe('git:status:response');
@@ -548,29 +527,6 @@ describe('MessageHandler', () => {
 
       expect(response.type).toBe('pong');
       expect(response.repoPath).toBeUndefined();
-    });
-
-    it('validates per-peer state: same envelope path may pass for one peer and fail for another', async () => {
-      const peerA = 'pwa:peerA';
-      const peerB = 'pwa:peerB';
-
-      // peerA switches to secondRepoPath; peerB stays on default
-      const switchMsg = createMessage('agent:switch-repo', { path: secondRepoPath });
-      await handler.handleMessage(switchMsg, peerA);
-
-      // Same envelope (secondRepoPath) — accepted for peerA, rejected for peerB
-      const reqA = createMessage('git:status', {});
-      reqA.repoPath = secondRepoPath;
-      const respA = await handler.handleMessage(reqA, peerA);
-      expect(respA.type).toBe('git:status:response');
-      expect(respA.repoPath).toBe(secondRepoPath);
-
-      const reqB = createMessage('git:status', {});
-      reqB.repoPath = secondRepoPath;
-      const respB = await handler.handleMessage(reqB, peerB);
-      expect(respB.type).toBe('error');
-      expect((respB.payload as any).code).toBe('REPO_MISMATCH');
-      expect(respB.repoPath).toBe(testRepoPath);
     });
   });
 
@@ -764,6 +720,19 @@ describe('MessageHandler', () => {
     it('returns no entries when cwd has no .git', async () => {
       const nonRepo = join(tmpdir(), `qs-list-repos-norepo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
       await mkdir(nonRepo, { recursive: true });
+      try {
+        const msg = createMessage('project:list-repos', { cwd: nonRepo });
+        const response = await handler.handleMessage(msg);
+        const repos = (response.payload as any).repos as unknown[];
+        expect(repos).toEqual([]);
+      } finally {
+        await rm(nonRepo, { recursive: true, force: true });
+      }
+    });
+
+    it('does not treat an empty .git directory as an openable repo', async () => {
+      const nonRepo = join(tmpdir(), `qs-list-repos-emptygit-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      await mkdir(join(nonRepo, '.git'), { recursive: true });
       try {
         const msg = createMessage('project:list-repos', { cwd: nonRepo });
         const response = await handler.handleMessage(msg);

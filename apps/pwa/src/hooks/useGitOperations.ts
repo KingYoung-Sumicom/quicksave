@@ -20,7 +20,6 @@ import {
   type SetApiKeyResponsePayload,
   type GetApiKeyStatusResponsePayload,
   type ListReposResponsePayload,
-  type SwitchRepoResponsePayload,
   type BrowseDirectoryResponsePayload,
   type AddRepoResponsePayload,
   type AddCodingPathResponsePayload,
@@ -53,6 +52,9 @@ import { WebSocketClient } from '../lib/websocket';
 export const SUPERSEDED_ERROR = 'SUPERSEDED';
 const isSuperseded = (error: unknown): boolean =>
   error instanceof Error && error.message === SUPERSEDED_ERROR;
+
+const isRepoScopedVerb = (verb: string): boolean =>
+  verb.startsWith('git:') || verb === 'ai:generate-commit-summary' || verb === 'ai:commit-summary:clear';
 
 /** Translate raw OS/git errors into user-readable messages. */
 function humanizeGitError(error: unknown, fallback: string): string {
@@ -106,15 +108,13 @@ export function useGitOperations(
   );
 
   /**
-   * Issue a bus command. For `git:*` verbs:
+   * Issue a bus command. For repo-scoped verbs:
    *  - Stamps the current repoPath into the payload via the reserved
-   *    `__repoPath` field so the agent's REPO_MISMATCH guard can compare.
+   *    `__repoPath` field so the agent can run the command statelessly.
    *  - Snapshots active agent + repo at send time and re-checks them at
    *    resolve time — if the user switched workspace while the command was in
    *    flight, rejects with `SUPERSEDED_ERROR` so the caller can silently drop
    *    the result instead of overwriting the new workspace's store.
-   *  - Translates the agent's `REPO_MISMATCH: ...` error into `SUPERSEDED`
-   *    for the same reason.
    *  - Strips the server-echoed `__repoPath` from the data before returning.
    */
   const sendCommand = useCallback(
@@ -122,21 +122,21 @@ export function useGitOperations(
       const bus = getBus();
       if (!bus) return Promise.reject(new Error('Not connected'));
 
-      const isGit = verb.startsWith('git:');
+      const repoScoped = isRepoScopedVerb(verb);
       const snapshotAgentId = resolveCommandAgentId();
       const snapshotRepoPath = useGitStore.getState().currentRepoPath;
       const entry: InFlightGit = { superseded: false };
-      if (isGit) inFlightGit.current.add(entry);
+      if (repoScoped) inFlightGit.current.add(entry);
 
       let wirePayload: unknown = payload;
-      if (isGit && snapshotRepoPath) {
+      if (repoScoped && snapshotRepoPath) {
         wirePayload = { ...(payload as object), __repoPath: snapshotRepoPath };
       }
 
       return bus
         .command<unknown>(verb, wirePayload, { timeoutMs, queueWhileDisconnected: true })
         .then((result) => {
-          if (!isGit) return result as T;
+          if (!repoScoped) return result as T;
           inFlightGit.current.delete(entry);
           const currentAgent = resolveCommandAgentId();
           const currentRepo = useGitStore.getState().currentRepoPath;
@@ -158,10 +158,9 @@ export function useGitOperations(
           return result as T;
         })
         .catch((err) => {
-          if (isGit) inFlightGit.current.delete(entry);
+          if (repoScoped) inFlightGit.current.delete(entry);
           if (err instanceof Error) {
-            if (err.message.startsWith('REPO_MISMATCH')) throw new Error(SUPERSEDED_ERROR);
-            if (isGit && entry.superseded) throw new Error(SUPERSEDED_ERROR);
+            if (repoScoped && entry.superseded) throw new Error(SUPERSEDED_ERROR);
           }
           throw err;
         });
@@ -558,12 +557,8 @@ export function useGitOperations(
       cancelPendingGit();
       setLoading(true);
       try {
-        const response = await sendCommand<SwitchRepoResponsePayload>('agent:switch-repo', { path }, 10000);
-        if (!response.success) {
-          throw new Error(response.error || 'Failed to switch repository');
-        }
-        setRepoPath(response.newPath);
-        setCurrentRepoPath(response.newPath);
+        setRepoPath(path);
+        setCurrentRepoPath(path);
         clearSelection();
         await fetchStatus();
         return true;

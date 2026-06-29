@@ -260,7 +260,7 @@ export function RepoView({
 
   const totalChanges = staged.length + unstaged.length + untracked.length;
   // `status === null` means we haven't received a response for the current
-  // repo yet (initial mount or post-switch-repo). Hold off the "No Changes"
+  // repo yet (initial mount or after selecting a different repo). Hold off the "No Changes"
   // empty state until real data arrives so the user doesn't see a clean-tree
   // flash while the fetch is still in flight.
   const hasStatus = status !== null;

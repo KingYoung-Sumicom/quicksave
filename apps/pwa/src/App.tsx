@@ -535,7 +535,7 @@ function AppContent() {
         // Without this gate, two machines reconnecting in parallel after a
         // PWA resume race to overwrite repoPath/availableRepos with
         // whichever handshake lands last, leaving UI bound to the wrong
-        // machine and subsequent switch-repo hitting the wrong agent.
+        // machine and subsequent stateless repo commands sent to the wrong agent.
         const currentActive = clientRef.current?.getActiveAgentId() ?? null;
         if (!currentActive || currentActive === agentId) {
           handlersRef.current.setConnected(path, pro, availableRepos, availableCodingPaths, agentVersion, latestVersion);
@@ -767,19 +767,13 @@ function AppContent() {
     }
   }, [agentConnections, sendApiKeyToAgent]);
 
-  // Switch to pending repo after connection if different from current
+  // Select pending repo after connection if different from current. Repo
+  // operations are stateless: later git:* commands carry this repoPath.
   useEffect(() => {
     if (state === 'connected' && pendingRepoPath && pendingRepoPath !== repoPath) {
-      // Clear pending first to prevent re-triggering
       setPendingRepoPath(null);
-      const targetAgentId = Object.entries(useConnectionStore.getState().agentConnections)
-        .find(([, conn]) => conn.state === 'connected'
-          && conn.availableRepos.some((repo) => repo.path === pendingRepoPath))?.[0]
-        ?? useConnectionStore.getState().agentId;
-      if (targetAgentId) {
-        commandForAgent(targetAgentId, 'agent:switch-repo', { path: pendingRepoPath }, 10000)
-          .catch((err) => console.warn('[pending-repo] switch failed:', err));
-      }
+      useConnectionStore.getState().setRepoPath(pendingRepoPath);
+      useGitStore.getState().setCurrentRepoPath(pendingRepoPath);
     }
   }, [state, pendingRepoPath, repoPath, setPendingRepoPath]);
 
@@ -1075,17 +1069,15 @@ function ProjectRouteRepo({
 
   // Bind the git UI to the URL-specified repo on every new handshake.
   // Keying this effect on `connectedAt` (bumped by every handshake)
-  // re-issues switch-repo whenever the agent comes back, even if the
-  // single-agent mirror happens to still match the URL target from
-  // before the suspend.
+  // refreshes whenever the agent comes back, even if the single-agent mirror
+  // happens to still match the URL target from before the suspend.
   //
   // We also point `gitStore.currentRepoPath` at the target eagerly so
   // any racing `git:status` (from RepoView's mount effect or
   // AppContent's state-based fetch) gets stamped with the target path.
-  // The agent rejects mismatched stamps with REPO_MISMATCH — the PWA
-  // converts that to SUPERSEDED — which prevents the pre-switch repo's
-  // (often clean) status from flashing on screen before our switch-repo
-  // lands. Without this, `onSetActiveAgent` rehydrates the store to the
+  // The agent requires the stamped repoPath, so this prevents the default
+  // repo's (often clean) status from flashing on screen before the URL target
+  // is selected. Without this, `onSetActiveAgent` rehydrates the store to the
   // handshake-ack's repoPath, which on first connect is the agent's
   // default repo, not the URL target.
   useEffect(() => {

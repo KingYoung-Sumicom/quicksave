@@ -4,7 +4,7 @@ import { createContext, useContext } from 'react';
 import type { RepoViewProps } from '../components/RepoView';
 
 export interface GitOps extends RepoViewProps {
-  /** Switch the active git repo on the agent (used when the git panel opens). */
+  /** Switch the local git scope used to stamp later repo-scoped commands. */
   switchRepo: (path: string) => void;
 }
 

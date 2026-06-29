@@ -124,7 +124,7 @@ export function useClaudeOperations(
   /**
    * Issue a one-shot bus command. Rejects if the bus isn't ready, on timeout,
    * or on a server-side error (encoded as "CODE: message" by the agent's bus
-   * adapter so callers can parse specific codes like REPO_MISMATCH).
+   * adapter so callers can parse specific structured error codes).
    */
   const sendCommand = useCallback(
     <R, P = unknown>(verb: string, payload: P, timeoutMs = 30000): Promise<R> => {

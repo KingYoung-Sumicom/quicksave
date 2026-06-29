@@ -173,10 +173,10 @@ describe('MessageHandler over the bus via FakeRelayHub', () => {
       expect(result.__repoPath).toBe(repoPath);
     });
 
-    it('git:status with a __repoPath the agent does not own rejects with REPO_MISMATCH', async () => {
+    it('git:status with an unavailable __repoPath rejects with REPO_NOT_AVAILABLE', async () => {
       await expect(
         pwa.bus().command('git:status', { __repoPath: '/nope/does/not/exist' }),
-      ).rejects.toThrow(/REPO_MISMATCH/);
+      ).rejects.toThrow(/REPO_NOT_AVAILABLE/);
     });
   });
 

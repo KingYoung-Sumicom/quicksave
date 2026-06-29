@@ -48,8 +48,6 @@ import {
   GetApiKeyStatusResponsePayload,
   Repository,
   ListReposResponsePayload,
-  SwitchRepoRequestPayload,
-  SwitchRepoResponsePayload,
   BrowseDirectoryRequestPayload,
   BrowseDirectoryResponsePayload,
   DirectoryEntry,
@@ -264,11 +262,33 @@ function projectAppServerModel(m: CodexAppServerModel): CodexModelInfo {
   };
 }
 
+function isRepoScopedRequest(message: Message): boolean {
+  if (message.type.startsWith('git:') && !message.type.endsWith(':response')) return true;
+  return message.type === 'ai:generate-commit-summary' || message.type === 'ai:commit-summary:clear';
+}
+
+function payloadRepoPath(payload: unknown): string | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const value = (payload as { repoPath?: unknown }).repoPath;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+async function hasPlausibleGitMarker(path: string): Promise<boolean> {
+  try {
+    const gitPath = join(path, '.git');
+    const marker = await stat(gitPath);
+    if (marker.isFile()) return true;
+    if (!marker.isDirectory()) return false;
+    return (await readdir(gitPath)).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export class MessageHandler {
   private repos: Map<string, GitOperations>;
   private agentVersion = '0.8.18';
   private defaultRepoPath: string;
-  private clientRepos: Map<string, string> = new Map(); // peerAddress -> repoPath
   private repoLocks: Map<string, string> = new Map(); // repoPath -> peerAddress holding lock
   private availableRepos: Repository[];
   private codingPaths: Map<string, CodingPath> = new Map(); // path -> CodingPath
@@ -560,24 +580,25 @@ export class MessageHandler {
     if (this.defaultRepoPath === path) {
       this.defaultRepoPath = this.availableRepos.length > 0 ? this.availableRepos[0].path : '';
     }
-    // Drop stale per-peer pins to this path so the next handshake-ack
-    // doesn't return a deleted repo.
-    for (const [peer, repo] of this.clientRepos) {
-      if (repo === path) this.clientRepos.delete(peer);
+  }
+
+  private getRequiredRepoPath(message: Message): string {
+    if (!message.repoPath) {
+      throw new Error('Missing repoPath for repo-scoped request');
     }
+    return message.repoPath;
   }
 
-  private getClientRepoPath(peerAddress: string): string {
-    return this.clientRepos.get(peerAddress) || this.defaultRepoPath;
-  }
-
-  private getGit(peerAddress: string): GitOperations {
-    const repoPath = this.getClientRepoPath(peerAddress);
+  private getGitForRepoPath(repoPath: string): GitOperations {
     const git = this.repos.get(repoPath);
     if (!git) {
-      throw new Error('No repository selected. Please add a repository first.');
+      throw new Error(`Repository not available: ${repoPath}`);
     }
     return git;
+  }
+
+  private getGit(message: Message): GitOperations {
+    return this.getGitForRepoPath(this.getRequiredRepoPath(message));
   }
 
   private acquireRepoLock(repoPath: string, peerAddress: string): boolean {
@@ -596,14 +617,6 @@ export class MessageHandler {
   }
 
   removeClient(peerAddress: string): void {
-    // Intentionally keep `clientRepos[peer]`: peer identity is a stable
-    // public key, and the PWA keeps its selected repo across reconnects
-    // (e.g., background → resume). Clearing would force the next
-    // handshake-ack to return `defaultRepoPath`, which the PWA would then
-    // hydrate into gitStore before its post-reconnect `agent:switch-repo`
-    // can land — racing `git:status` requests stamped with the default
-    // path would pass the REPO_MISMATCH guard and paint the default
-    // repo's (typically clean) status over the user's real repo view.
     for (const [repoPath, holder] of this.repoLocks) {
       if (holder === peerAddress) {
         this.repoLocks.delete(repoPath);
@@ -678,34 +691,33 @@ export class MessageHandler {
       console.log(`[msg] ${message.type} from ${peerAddress.slice(0, 12)}`);
     }
 
-    // Repo-scoped guard for git:* requests. The PWA stamps `repoPath` on
-    // each request so a response can't be misapplied if the user has since
-    // switched repos. If the envelope's repoPath differs from the peer's
-    // current repo, reject with REPO_MISMATCH so the client can discard
-    // rather than render stale data.
-    if (
-      message.type.startsWith('git:') &&
-      !message.type.endsWith(':response') &&
-      typeof message.repoPath === 'string'
-    ) {
-      const currentRepo = this.getClientRepoPath(peerAddress);
-      if (message.repoPath !== currentRepo) {
-        const err = this.createErrorResponse(
+    const repoScoped = isRepoScopedRequest(message);
+    if (repoScoped) {
+      const requestedRepoPath = message.repoPath ?? payloadRepoPath(message.payload);
+      if (!requestedRepoPath) {
+        return this.createErrorResponse(
           message.id,
-          'REPO_MISMATCH',
-          `Repo mismatch: request expected ${message.repoPath}, peer is on ${currentRepo}`,
+          'MISSING_REPO_PATH',
+          `${message.type} requires repoPath`,
         );
-        err.repoPath = currentRepo;
-        return err;
       }
+      const repo = await this.ensureRepoAvailableForPath(requestedRepoPath);
+      if (!repo || !this.repos.has(repo.path)) {
+        return this.createErrorResponse(
+          message.id,
+          'REPO_NOT_AVAILABLE',
+          `Repository not available: ${requestedRepoPath}`,
+        );
+      }
+      message.repoPath = repo.path;
     }
 
     const response = await this.dispatch(message, peerAddress);
 
-    // Stamp git:* responses with the repo the agent actually used so the
-    // PWA can validate before applying to the store.
-    if (response.type.startsWith('git:') && response.type.endsWith(':response')) {
-      response.repoPath = this.getClientRepoPath(peerAddress);
+    // Stamp repo-scoped responses with the repo the agent actually used so
+    // clients can validate before applying the result to local UI state.
+    if (repoScoped && response.type !== 'error') {
+      response.repoPath = message.repoPath;
     }
     return response;
   }
@@ -713,13 +725,13 @@ export class MessageHandler {
   private async dispatch(message: Message, peerAddress: string): Promise<Message> {
     switch (message.type) {
         case 'handshake':
-          return this.handleHandshake(message as Message<HandshakePayload>, peerAddress);
+          return this.handleHandshake(message as Message<HandshakePayload>);
         case 'ping':
           return createMessage('pong', { timestamp: Date.now() });
         case 'git:status':
-          return this.handleStatus(message as Message<StatusRequestPayload>, peerAddress);
+          return this.handleStatus(message as Message<StatusRequestPayload>);
         case 'git:diff':
-          return this.handleDiff(message as Message<DiffRequestPayload>, peerAddress);
+          return this.handleDiff(message as Message<DiffRequestPayload>);
         case 'git:stage':
           return this.handleStage(message as Message<StageRequestPayload>, peerAddress);
         case 'git:unstage':
@@ -731,9 +743,9 @@ export class MessageHandler {
         case 'git:commit':
           return this.handleCommit(message as Message<CommitRequestPayload>, peerAddress);
         case 'git:log':
-          return this.handleLog(message as Message<LogRequestPayload>, peerAddress);
+          return this.handleLog(message as Message<LogRequestPayload>);
         case 'git:branches':
-          return this.handleBranches(peerAddress);
+          return this.handleBranches(message);
         case 'git:checkout':
           return this.handleCheckout(message as Message<CheckoutRequestPayload>, peerAddress);
         case 'git:discard':
@@ -741,29 +753,27 @@ export class MessageHandler {
         case 'git:untrack':
           return this.handleUntrack(message as Message<UntrackRequestPayload>, peerAddress);
         case 'git:submodules':
-          return this.handleSubmodules(message, peerAddress);
+          return this.handleSubmodules(message);
         case 'git:config-get':
-          return this.handleGitConfigGet(message, peerAddress);
+          return this.handleGitConfigGet(message);
         case 'git:config-set':
-          return this.handleGitConfigSet(message as Message<GitConfigSetRequestPayload>, peerAddress);
+          return this.handleGitConfigSet(message as Message<GitConfigSetRequestPayload>);
         case 'git:gitignore-add':
           return this.handleGitignoreAdd(message as Message<GitignoreAddRequestPayload>, peerAddress);
         case 'git:gitignore-read':
-          return this.handleGitignoreRead(message, peerAddress);
+          return this.handleGitignoreRead(message);
         case 'git:gitignore-write':
           return this.handleGitignoreWrite(message as Message<GitignoreWriteRequestPayload>, peerAddress);
         case 'ai:generate-commit-summary':
-          return this.handleGenerateCommitSummary(message as Message<GenerateCommitSummaryRequestPayload>, peerAddress);
+          return this.handleGenerateCommitSummary(message as Message<GenerateCommitSummaryRequestPayload>);
         case 'ai:commit-summary:clear':
-          return this.handleClearCommitSummary(message as Message<ClearCommitSummaryRequestPayload>, peerAddress);
+          return this.handleClearCommitSummary(message as Message<ClearCommitSummaryRequestPayload>);
         case 'ai:set-api-key':
           return this.handleSetApiKey(message as Message<SetApiKeyRequestPayload>);
         case 'ai:get-api-key-status':
           return this.handleGetApiKeyStatus(message);
         case 'agent:list-repos':
-          return this.handleListRepos(message, peerAddress);
-        case 'agent:switch-repo':
-          return this.handleSwitchRepo(message as Message<SwitchRepoRequestPayload>, peerAddress);
+          return this.handleListRepos(message);
         case 'agent:browse-directory':
           return this.handleBrowseDirectory(message as Message<BrowseDirectoryRequestPayload>);
         case 'agent:add-repo':
@@ -824,7 +834,7 @@ export class MessageHandler {
         case 'claude:set-session-permission':
           return this.handleSetSessionPermission(message as Message<ClaudeSetSessionPermissionRequestPayload>);
         case 'claude:get-cards':
-          return this.handleClaudeGetCards(message as Message<ClaudeGetMessagesRequestPayload>, peerAddress);
+          return this.handleClaudeGetCards(message as Message<ClaudeGetMessagesRequestPayload>);
         case 'voice-agent:attach':
           return this.handleVoiceAgentAttach(message as Message<VoiceAgentAttachRequestPayload>);
         case 'voice-agent:detach':
@@ -894,7 +904,6 @@ export class MessageHandler {
 
   private async handleHandshake(
     message: Message<HandshakePayload>,
-    peerAddress: string,
   ): Promise<Message<HandshakeAckPayload>> {
     // Fire-and-forget: check npm registry + OpenAI models (12h dedup each)
     this.checkLatestVersion().catch(() => {});
@@ -904,7 +913,7 @@ export class MessageHandler {
     const response = createMessage<HandshakeAckPayload>('handshake:ack', {
       success: true,
       agentVersion: this.agentVersion,
-      repoPath: this.getClientRepoPath(peerAddress),
+      repoPath: this.defaultRepoPath,
       availableRepos: this.availableRepos,
       availableCodingPaths: [...this.codingPaths.values()],
       preferences: this.claudeService.getPreferences(),
@@ -920,23 +929,23 @@ export class MessageHandler {
     return response;
   }
 
-  private async handleStatus(message: Message<StatusRequestPayload>, peerAddress: string): Promise<Message<StatusResponsePayload>> {
-    const status = await this.getGit(peerAddress).getStatus();
+  private async handleStatus(message: Message<StatusRequestPayload>): Promise<Message<StatusResponsePayload>> {
+    const status = await this.getGit(message).getStatus();
     const response = createMessage<StatusResponsePayload>('git:status:response', status);
     response.id = message.id;
     return response;
   }
 
-  private async handleDiff(message: Message<DiffRequestPayload>, peerAddress: string): Promise<Message<DiffResponsePayload>> {
+  private async handleDiff(message: Message<DiffRequestPayload>): Promise<Message<DiffResponsePayload>> {
     const { path, staged } = message.payload;
-    const diff = await this.getGit(peerAddress).getDiff(path, staged);
+    const diff = await this.getGit(message).getDiff(path, staged);
     const response = createMessage<DiffResponsePayload>('git:diff:response', diff);
     response.id = message.id;
     return response;
   }
 
   private async handleStage(message: Message<StageRequestPayload>, peerAddress: string): Promise<Message<StageResponsePayload>> {
-    const repoPath = this.getClientRepoPath(peerAddress);
+    const repoPath = this.getRequiredRepoPath(message);
     if (!this.acquireRepoLock(repoPath, peerAddress)) {
       const response = createMessage<StageResponsePayload>('git:stage:response', {
         success: false,
@@ -946,7 +955,7 @@ export class MessageHandler {
       return response;
     }
     try {
-      await this.getGit(peerAddress).stage(message.payload.paths);
+      await this.getGit(message).stage(message.payload.paths);
       const response = createMessage<StageResponsePayload>('git:stage:response', { success: true });
       response.id = message.id;
       return response;
@@ -963,7 +972,7 @@ export class MessageHandler {
   }
 
   private async handleUnstage(message: Message<UnstageRequestPayload>, peerAddress: string): Promise<Message<UnstageResponsePayload>> {
-    const repoPath = this.getClientRepoPath(peerAddress);
+    const repoPath = this.getRequiredRepoPath(message);
     if (!this.acquireRepoLock(repoPath, peerAddress)) {
       const response = createMessage<UnstageResponsePayload>('git:unstage:response', {
         success: false,
@@ -973,7 +982,7 @@ export class MessageHandler {
       return response;
     }
     try {
-      await this.getGit(peerAddress).unstage(message.payload.paths);
+      await this.getGit(message).unstage(message.payload.paths);
       const response = createMessage<UnstageResponsePayload>('git:unstage:response', { success: true });
       response.id = message.id;
       return response;
@@ -990,7 +999,7 @@ export class MessageHandler {
   }
 
   private async handleStagePatch(message: Message<StagePatchRequestPayload>, peerAddress: string): Promise<Message<StagePatchResponsePayload>> {
-    const repoPath = this.getClientRepoPath(peerAddress);
+    const repoPath = this.getRequiredRepoPath(message);
     if (!this.acquireRepoLock(repoPath, peerAddress)) {
       const response = createMessage<StagePatchResponsePayload>('git:stage-patch:response', {
         success: false,
@@ -1000,7 +1009,7 @@ export class MessageHandler {
       return response;
     }
     try {
-      await this.getGit(peerAddress).stagePatch(message.payload.patch);
+      await this.getGit(message).stagePatch(message.payload.patch);
       const response = createMessage<StagePatchResponsePayload>('git:stage-patch:response', { success: true });
       response.id = message.id;
       return response;
@@ -1017,7 +1026,7 @@ export class MessageHandler {
   }
 
   private async handleUnstagePatch(message: Message<UnstagePatchRequestPayload>, peerAddress: string): Promise<Message<UnstagePatchResponsePayload>> {
-    const repoPath = this.getClientRepoPath(peerAddress);
+    const repoPath = this.getRequiredRepoPath(message);
     if (!this.acquireRepoLock(repoPath, peerAddress)) {
       const response = createMessage<UnstagePatchResponsePayload>('git:unstage-patch:response', {
         success: false,
@@ -1027,7 +1036,7 @@ export class MessageHandler {
       return response;
     }
     try {
-      await this.getGit(peerAddress).unstagePatch(message.payload.patch);
+      await this.getGit(message).unstagePatch(message.payload.patch);
       const response = createMessage<UnstagePatchResponsePayload>('git:unstage-patch:response', { success: true });
       response.id = message.id;
       return response;
@@ -1044,7 +1053,7 @@ export class MessageHandler {
   }
 
   private async handleCommit(message: Message<CommitRequestPayload>, peerAddress: string): Promise<Message<CommitResponsePayload>> {
-    const repoPath = this.getClientRepoPath(peerAddress);
+    const repoPath = this.getRequiredRepoPath(message);
     if (!this.acquireRepoLock(repoPath, peerAddress)) {
       const response = createMessage<CommitResponsePayload>('git:commit:response', {
         success: false,
@@ -1055,7 +1064,7 @@ export class MessageHandler {
     }
     try {
       const { message: commitMessage, description, attribution } = message.payload;
-      const hash = await this.getGit(peerAddress).commit(commitMessage, description, attribution ?? true);
+      const hash = await this.getGit(message).commit(commitMessage, description, attribution ?? true);
       // The pending AI suggestion describes the diff we just committed, so
       // it's stale now — clear it (also broadcasts state → idle to all peers).
       this.commitSummaryStore.clear(repoPath);
@@ -1077,16 +1086,16 @@ export class MessageHandler {
     }
   }
 
-  private async handleLog(message: Message<LogRequestPayload>, peerAddress: string): Promise<Message<LogResponsePayload>> {
+  private async handleLog(message: Message<LogRequestPayload>): Promise<Message<LogResponsePayload>> {
     const limit = message.payload.limit || 50;
-    const commits = await this.getGit(peerAddress).getLog(limit);
+    const commits = await this.getGit(message).getLog(limit);
     const response = createMessage<LogResponsePayload>('git:log:response', { commits });
     response.id = message.id;
     return response;
   }
 
-  private async handleBranches(peerAddress: string): Promise<Message<BranchesResponsePayload>> {
-    const { branches, current } = await this.getGit(peerAddress).getBranches();
+  private async handleBranches(message: Message): Promise<Message<BranchesResponsePayload>> {
+    const { branches, current } = await this.getGit(message).getBranches();
     return createMessage<BranchesResponsePayload>('git:branches:response', {
       branches,
       current,
@@ -1094,7 +1103,7 @@ export class MessageHandler {
   }
 
   private async handleCheckout(message: Message<CheckoutRequestPayload>, peerAddress: string): Promise<Message<CheckoutResponsePayload>> {
-    const repoPath = this.getClientRepoPath(peerAddress);
+    const repoPath = this.getRequiredRepoPath(message);
     if (!this.acquireRepoLock(repoPath, peerAddress)) {
       const response = createMessage<CheckoutResponsePayload>('git:checkout:response', {
         success: false,
@@ -1105,7 +1114,7 @@ export class MessageHandler {
     }
     try {
       const { branch, create } = message.payload;
-      await this.getGit(peerAddress).checkout(branch, create);
+      await this.getGit(message).checkout(branch, create);
       const response = createMessage<CheckoutResponsePayload>('git:checkout:response', { success: true });
       response.id = message.id;
       return response;
@@ -1122,7 +1131,7 @@ export class MessageHandler {
   }
 
   private async handleDiscard(message: Message<DiscardRequestPayload>, peerAddress: string): Promise<Message<DiscardResponsePayload>> {
-    const repoPath = this.getClientRepoPath(peerAddress);
+    const repoPath = this.getRequiredRepoPath(message);
     if (!this.acquireRepoLock(repoPath, peerAddress)) {
       const response = createMessage<DiscardResponsePayload>('git:discard:response', {
         success: false,
@@ -1132,7 +1141,7 @@ export class MessageHandler {
       return response;
     }
     try {
-      await this.getGit(peerAddress).discard(message.payload.paths);
+      await this.getGit(message).discard(message.payload.paths);
       const response = createMessage<DiscardResponsePayload>('git:discard:response', { success: true });
       response.id = message.id;
       return response;
@@ -1149,7 +1158,7 @@ export class MessageHandler {
   }
 
   private async handleUntrack(message: Message<UntrackRequestPayload>, peerAddress: string): Promise<Message<UntrackResponsePayload>> {
-    const repoPath = this.getClientRepoPath(peerAddress);
+    const repoPath = this.getRequiredRepoPath(message);
     if (!this.acquireRepoLock(repoPath, peerAddress)) {
       const response = createMessage<UntrackResponsePayload>('git:untrack:response', {
         success: false,
@@ -1159,7 +1168,7 @@ export class MessageHandler {
       return response;
     }
     try {
-      await this.getGit(peerAddress).untrack(message.payload.paths);
+      await this.getGit(message).untrack(message.payload.paths);
       const response = createMessage<UntrackResponsePayload>('git:untrack:response', { success: true });
       response.id = message.id;
       return response;
@@ -1175,10 +1184,10 @@ export class MessageHandler {
     }
   }
 
-  private async handleSubmodules(message: Message, peerAddress: string): Promise<Message<SubmodulesResponsePayload>> {
-    const git = this.getGit(peerAddress);
+  private async handleSubmodules(message: Message): Promise<Message<SubmodulesResponsePayload>> {
+    const git = this.getGit(message);
     const subs = await git.getSubmodules();
-    // Auto-register submodule paths so switch-repo works
+    // Auto-register submodule paths so later explicit repoPath requests work.
     for (const sub of subs) {
       if (!this.repos.has(sub.path)) {
         this.repos.set(sub.path, new GitOperations(sub.path));
@@ -1192,17 +1201,17 @@ export class MessageHandler {
     return response;
   }
 
-  private async handleGitConfigGet(message: Message, peerAddress: string): Promise<Message<GitConfigGetResponsePayload>> {
-    const identity = await this.getGit(peerAddress).getIdentity();
+  private async handleGitConfigGet(message: Message): Promise<Message<GitConfigGetResponsePayload>> {
+    const identity = await this.getGit(message).getIdentity();
     const response = createMessage<GitConfigGetResponsePayload>('git:config-get:response', identity);
     response.id = message.id;
     return response;
   }
 
-  private async handleGitConfigSet(message: Message<GitConfigSetRequestPayload>, peerAddress: string): Promise<Message<GitConfigSetResponsePayload>> {
+  private async handleGitConfigSet(message: Message<GitConfigSetRequestPayload>): Promise<Message<GitConfigSetResponsePayload>> {
     try {
       const { name, email } = message.payload;
-      await this.getGit(peerAddress).setIdentity(name, email);
+      await this.getGit(message).setIdentity(name, email);
       const response = createMessage<GitConfigSetResponsePayload>('git:config-set:response', { success: true });
       response.id = message.id;
       return response;
@@ -1217,7 +1226,7 @@ export class MessageHandler {
   }
 
   private async handleGitignoreAdd(message: Message<GitignoreAddRequestPayload>, peerAddress: string): Promise<Message<GitignoreAddResponsePayload>> {
-    const repoPath = this.getClientRepoPath(peerAddress);
+    const repoPath = this.getRequiredRepoPath(message);
     if (!this.acquireRepoLock(repoPath, peerAddress)) {
       const response = createMessage<GitignoreAddResponsePayload>('git:gitignore-add:response', {
         success: false,
@@ -1227,7 +1236,7 @@ export class MessageHandler {
       return response;
     }
     try {
-      await this.getGit(peerAddress).addToGitignore(message.payload.pattern);
+      await this.getGit(message).addToGitignore(message.payload.pattern);
       const response = createMessage<GitignoreAddResponsePayload>('git:gitignore-add:response', { success: true });
       response.id = message.id;
       return response;
@@ -1243,15 +1252,15 @@ export class MessageHandler {
     }
   }
 
-  private async handleGitignoreRead(message: Message, peerAddress: string): Promise<Message<GitignoreReadResponsePayload>> {
-    const { content, exists } = await this.getGit(peerAddress).readGitignore();
+  private async handleGitignoreRead(message: Message): Promise<Message<GitignoreReadResponsePayload>> {
+    const { content, exists } = await this.getGit(message).readGitignore();
     const response = createMessage<GitignoreReadResponsePayload>('git:gitignore-read:response', { content, exists });
     response.id = message.id;
     return response;
   }
 
   private async handleGitignoreWrite(message: Message<GitignoreWriteRequestPayload>, peerAddress: string): Promise<Message<GitignoreWriteResponsePayload>> {
-    const repoPath = this.getClientRepoPath(peerAddress);
+    const repoPath = this.getRequiredRepoPath(message);
     if (!this.acquireRepoLock(repoPath, peerAddress)) {
       const response = createMessage<GitignoreWriteResponsePayload>('git:gitignore-write:response', {
         success: false,
@@ -1261,7 +1270,7 @@ export class MessageHandler {
       return response;
     }
     try {
-      await this.getGit(peerAddress).writeGitignore(message.payload.content);
+      await this.getGit(message).writeGitignore(message.payload.content);
       const response = createMessage<GitignoreWriteResponsePayload>('git:gitignore-write:response', { success: true });
       response.id = message.id;
       return response;
@@ -1285,10 +1294,9 @@ export class MessageHandler {
    */
   private async handleGenerateCommitSummary(
     message: Message<GenerateCommitSummaryRequestPayload>,
-    peerAddress: string
   ): Promise<Message<GenerateCommitSummaryResponsePayload>> {
     const source = message.payload.source ?? 'api';
-    const repoPath = this.getClientRepoPath(peerAddress);
+    const repoPath = this.getRequiredRepoPath(message);
 
     const respond = (payload: GenerateCommitSummaryResponsePayload) => {
       const r = createMessage<GenerateCommitSummaryResponsePayload>(
@@ -1316,7 +1324,7 @@ export class MessageHandler {
     // `generating` — we don't want to show "generating…" just to immediately
     // error out on the same tick.
     try {
-      const status = await this.getGit(peerAddress).getStatus();
+      const status = await this.getGit(message).getStatus();
       if (status.staged.length === 0) {
         return respond({
           success: false,
@@ -1344,7 +1352,7 @@ export class MessageHandler {
 
     // Run generation asynchronously. Errors flow through the state store,
     // NOT through the kickoff response — the response has already been sent.
-    void this.runCommitSummary(peerAddress, repoPath, token, source, message.payload, aiService, (child) => {
+    void this.runCommitSummary(repoPath, token, source, message.payload, aiService, (child) => {
       cliChild = child;
       if (aborted) {
         try { child.kill('SIGTERM'); } catch { /* ignore */ }
@@ -1360,7 +1368,6 @@ export class MessageHandler {
    * broadcasts `ai:commit-summary:updated` to all peers).
    */
   private async runCommitSummary(
-    peerAddress: string,
     repoPath: string,
     token: symbol,
     source: 'api' | 'claude-cli',
@@ -1369,7 +1376,7 @@ export class MessageHandler {
     onSpawn: (child: { kill: (sig?: NodeJS.Signals) => void }) => void,
   ): Promise<void> {
     try {
-      const git = this.getGit(peerAddress);
+      const git = this.getGitForRepoPath(repoPath);
       const [recentLog, branchInfo, conventions] = await Promise.all([
         git.getLog(10).catch(() => []),
         git.getBranches().catch(() => ({ current: '' })),
@@ -1444,9 +1451,8 @@ export class MessageHandler {
 
   private handleClearCommitSummary(
     message: Message<ClearCommitSummaryRequestPayload>,
-    peerAddress: string,
   ): Message<ClearCommitSummaryResponsePayload> {
-    const repoPath = message.payload.repoPath || this.getClientRepoPath(peerAddress);
+    const repoPath = this.getRequiredRepoPath(message);
     const state = this.commitSummaryStore.clear(repoPath);
     const response = createMessage<ClearCommitSummaryResponsePayload>('ai:commit-summary:clear:response', {
       success: true,
@@ -1553,7 +1559,7 @@ export class MessageHandler {
     return response;
   }
 
-  private async handleListRepos(message: Message, peerAddress: string): Promise<Message<ListReposResponsePayload>> {
+  private async handleListRepos(message: Message): Promise<Message<ListReposResponsePayload>> {
     // Refresh branch info for all repos
     const repos: Repository[] = [];
     for (const repo of this.availableRepos) {
@@ -1567,33 +1573,46 @@ export class MessageHandler {
     }
     const response = createMessage<ListReposResponsePayload>('agent:list-repos:response', {
       repos,
-      current: this.getClientRepoPath(peerAddress),
+      current: this.defaultRepoPath,
     });
     response.id = message.id;
     return response;
   }
 
-  private handleSwitchRepo(message: Message<SwitchRepoRequestPayload>, peerAddress: string): Message<SwitchRepoResponsePayload> {
-    const { path } = message.payload;
+  private async ensureRepoAvailableForPath(path: string): Promise<Repository | null> {
+    const configured = this.availableRepos.find((repo) => repo.path === path);
+    if (configured && this.repos.has(path)) return configured;
 
-    // Check if the requested repo is in our available repos
-    if (!this.repos.has(path)) {
-      const response = createMessage<SwitchRepoResponsePayload>('agent:switch-repo:response', {
-        success: false,
-        newPath: this.getClientRepoPath(peerAddress),
-        error: `Repository not available: ${path}`,
-      });
-      response.id = message.id;
-      return response;
+    try {
+      const requestedGit = new GitOperations(path);
+      if (!(await requestedGit.isValidRepo())) return null;
+      const rootPath = await requestedGit.getGitRoot();
+
+      const existing = this.availableRepos.find((repo) => repo.path === rootPath);
+      if (existing) {
+        if (!this.repos.has(rootPath)) {
+          this.repos.set(rootPath, new GitOperations(rootPath));
+        }
+        return existing;
+      }
+
+      const git = new GitOperations(rootPath);
+      const { current } = await git.getBranches();
+      const repo: Repository = {
+        path: rootPath,
+        name: basename(rootPath),
+        currentBranch: current,
+      };
+      this.repos.set(rootPath, git);
+      this.availableRepos.push(repo);
+      if (!this.defaultRepoPath) {
+        this.defaultRepoPath = rootPath;
+      }
+      addManagedRepo(rootPath);
+      return repo;
+    } catch {
+      return null;
     }
-
-    this.clientRepos.set(peerAddress, path);
-    const response = createMessage<SwitchRepoResponsePayload>('agent:switch-repo:response', {
-      success: true,
-      newPath: path,
-    });
-    response.id = message.id;
-    return response;
   }
 
   private async handleBrowseDirectory(
@@ -2210,7 +2229,7 @@ export class MessageHandler {
   ): Promise<Message<ClaudeStartResponsePayload>> {
     const { prompt, cwd: payloadCwd, agent, allowedTools, systemPrompt, model, permissionMode, sandboxed, reasoningEffort, contextWindow, attachmentIds } = message.payload;
     const legacyProvider = (message.payload as { provider?: 'claude-cli' | 'claude-sdk' | 'codex-mcp' }).provider;
-    const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
+    const cwd = payloadCwd || this.defaultRepoPath;
     const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
     // Coerce a Codex model the user's account doesn't actually support
     // (e.g. they kept `claude-opus-4-7` selected before switching to a
@@ -2305,7 +2324,7 @@ export class MessageHandler {
   ): Promise<Message<ClaudeResumeResponsePayload>> {
     const { sessionId: requestedId, prompt, cwd: payloadCwd, agent, attachmentIds, interruptCurrentTurn } = message.payload;
     const legacyProvider = (message.payload as { provider?: 'claude-cli' | 'claude-sdk' | 'codex-mcp' }).provider;
-    const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
+    const cwd = payloadCwd || this.defaultRepoPath;
     const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
     const activeCfg = this.claudeService.getSessionConfig(requestedId);
     console.log(`[agent:resume] session=${requestedId} agent=${resolvedAgent ?? 'stored'} model=${(activeCfg.model as string | undefined) ?? 'default'} cwd=${cwd} prompt=${prompt.slice(0, 80)}${attachmentIds && attachmentIds.length > 0 ? ` [+${attachmentIds.length} attachments]` : ''}`);
@@ -2521,11 +2540,10 @@ export class MessageHandler {
   }
 
   private async handleClaudeGetCards(
-    message: Message<ClaudeGetMessagesRequestPayload>,
-    peerAddress: string
+    message: Message<ClaudeGetMessagesRequestPayload>
   ): Promise<Message<CardHistoryResponse>> {
     const { sessionId, cwd: payloadCwd, offset = 0, limit = 50 } = message.payload;
-    const cwd = payloadCwd || this.getClientRepoPath(peerAddress);
+    const cwd = payloadCwd || this.defaultRepoPath;
 
     try {
       const result = await this.claudeService.getCards(sessionId, cwd, offset, limit);
@@ -3059,7 +3077,7 @@ export class MessageHandler {
       // detached HEAD returning empty `current`) doesn't drop the root
       // and make the PWA's Git section flash empty. Branch + dirty are
       // filled in best-effort below; undefined just means "unknown".
-      const isRootRepo = existsSync(join(cwd, '.git'));
+      const isRootRepo = await hasPlausibleGitMarker(cwd);
       if (isRootRepo) {
         repos.push({
           path: cwd,
@@ -3109,7 +3127,7 @@ export class MessageHandler {
             const s = await stat(full);
             if (!s.isDirectory()) continue;
           } catch { continue; }
-          if (existsSync(join(full, '.git')) && !seen.has(full)) {
+          if ((await hasPlausibleGitMarker(full)) && !seen.has(full)) {
             seen.add(full);
             const branch = await this.getGitBranchQuiet(full);
             repos.push({

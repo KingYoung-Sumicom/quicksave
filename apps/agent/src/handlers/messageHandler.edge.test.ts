@@ -88,6 +88,11 @@ async function createTestRepo(suffix = ''): Promise<string> {
   return repoPath;
 }
 
+function withRepo<T extends { repoPath?: string }>(message: T, repoPath: string): T {
+  message.repoPath = repoPath;
+  return message;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -207,30 +212,24 @@ describe('MessageHandler — edge cases', () => {
   // =========================================================================
 
   describe('error propagation', () => {
-    it('should return HANDLER_ERROR for throws in async handlers', async () => {
-      // BUG: handleMessage's try/catch does NOT await async handler calls like
-      // handleStatus. The `return this.handleStatus(...)` returns a Promise,
-      // and the outer try/catch only catches synchronous throws. When getGit()
-      // throws inside the async handleStatus, the rejection propagates as the
-      // returned promise's rejection — the catch block never runs.
-      //
-      // As a result, callers see the raw Error instead of a wrapped HANDLER_ERROR.
-      // We assert the buggy behavior here: the promise rejects with the raw error.
+    it('should reject repo-scoped requests that omit repoPath', async () => {
       const emptyHandler = new MessageHandler([]);
       const msg = createMessage('git:status', {});
 
-      await expect(emptyHandler.handleMessage(msg, peerA))
-        .rejects.toThrow('No repository selected');
+      const resp = await emptyHandler.handleMessage(msg, peerA);
+      expect(resp.type).toBe('error');
+      expect((resp.payload as any).code).toBe('MISSING_REPO_PATH');
     });
 
-    it('should propagate raw error (not HANDLER_ERROR) when no repos configured', async () => {
-      // BUG: Same issue as above — the error is not caught and wrapped.
+    it('should preserve message id on repoPath guard errors', async () => {
       const msg = createMessage('git:status', {});
       msg.id = 'custom-error-id-999';
       const emptyHandler = new MessageHandler([]);
 
-      await expect(emptyHandler.handleMessage(msg, peerA))
-        .rejects.toThrow('No repository selected');
+      const resp = await emptyHandler.handleMessage(msg, peerA);
+      expect(resp.type).toBe('error');
+      expect(resp.id).toBe('custom-error-id-999');
+      expect((resp.payload as any).code).toBe('MISSING_REPO_PATH');
     });
 
     it('should return proper error when claude:start fails at provider level', async () => {
@@ -487,8 +486,8 @@ describe('MessageHandler — edge cases', () => {
       await git.add('file1.txt');
 
       // Try concurrent commits from different peers
-      const commitMsg1 = createMessage('git:commit', { message: 'Commit from A' } as any);
-      const commitMsg2 = createMessage('git:commit', { message: 'Commit from B' } as any);
+      const commitMsg1 = withRepo(createMessage('git:commit', { message: 'Commit from A' } as any), repoPath);
+      const commitMsg2 = withRepo(createMessage('git:commit', { message: 'Commit from B' } as any), repoPath);
 
       // The lock is per-repo, so if peerA holds it, peerB gets "Repository is busy"
       // In practice, the first one to acquireRepoLock wins.
@@ -513,13 +512,13 @@ describe('MessageHandler — edge cases', () => {
 
     it('should release lock after operation completes (even on error)', async () => {
       // Force an error: commit with nothing staged
-      const commitMsg = createMessage('git:commit', { message: 'Empty' } as any);
+      const commitMsg = withRepo(createMessage('git:commit', { message: 'Empty' } as any), repoPath);
       const resp = await handler.handleMessage(commitMsg, peerA);
       expect(resp.type).toBe('git:commit:response');
 
       // Lock should be released — peerB should be able to operate
       await writeFile(join(repoPath, 'newfile.txt'), 'content');
-      const stageMsg = createMessage('git:stage', { paths: ['newfile.txt'] } as any);
+      const stageMsg = withRepo(createMessage('git:stage', { paths: ['newfile.txt'] } as any), repoPath);
       const stageResp = await handler.handleMessage(stageMsg, peerB);
       expect((stageResp.payload as any).success).toBe(true);
     });
@@ -528,11 +527,11 @@ describe('MessageHandler — edge cases', () => {
       await writeFile(join(repoPath, 'seq1.txt'), 'a');
       await writeFile(join(repoPath, 'seq2.txt'), 'b');
 
-      const stage1 = createMessage('git:stage', { paths: ['seq1.txt'] } as any);
+      const stage1 = withRepo(createMessage('git:stage', { paths: ['seq1.txt'] } as any), repoPath);
       const resp1 = await handler.handleMessage(stage1, peerA);
       expect((resp1.payload as any).success).toBe(true);
 
-      const stage2 = createMessage('git:stage', { paths: ['seq2.txt'] } as any);
+      const stage2 = withRepo(createMessage('git:stage', { paths: ['seq2.txt'] } as any), repoPath);
       const resp2 = await handler.handleMessage(stage2, peerA);
       expect((resp2.payload as any).success).toBe(true);
     });
@@ -551,7 +550,7 @@ describe('MessageHandler — edge cases', () => {
     });
 
     it('should handle message with empty payload', async () => {
-      const msg = createMessage('git:log', {} as any);
+      const msg = withRepo(createMessage('git:log', {} as any), repoPath);
       const resp = await handler.handleMessage(msg, peerA);
       expect(resp.type).toBe('git:log:response');
       // Should use default limit
@@ -605,15 +604,11 @@ describe('MessageHandler — edge cases', () => {
     });
 
     it('should handle removeClient called twice for the same client', async () => {
-      const switchMsg = createMessage('agent:switch-repo', { path: repoPath } as any);
-      await handler.handleMessage(switchMsg, peerA);
-
       handler.removeClient(peerA);
       expect(() => handler.removeClient(peerA)).not.toThrow();
     });
 
-    it('should preserve client repo pin after removeClient (survives disconnect)', async () => {
-      // Create a second repo for switching
+    it('should keep explicit repoPath operations working after removeClient', async () => {
       const secondRepo = await createTestRepo('second');
       try {
         const multiHandler = new MessageHandler([
@@ -621,30 +616,20 @@ describe('MessageHandler — edge cases', () => {
           { path: secondRepo, name: 'second' },
         ]);
 
-        // Switch peerA to second repo
-        const switchMsg = createMessage('agent:switch-repo', { path: secondRepo } as any);
-        await multiHandler.handleMessage(switchMsg, peerA);
-
-        // Verify switched
-        const listMsg1 = createMessage('agent:list-repos', {} as any);
-        const list1 = await multiHandler.handleMessage(listMsg1, peerA);
-        expect((list1.payload as any).current).toBe(secondRepo);
-
-        // Remove client (simulates WebRTC disconnect)
         multiHandler.removeClient(peerA);
 
-        // On reconnect the peer must still see its pinned repo. If this
-        // reset to default, the PWA would race switch-repo against
-        // git:status after resume and paint the default repo's status.
-        const listMsg2 = createMessage('agent:list-repos', {} as any);
-        const list2 = await multiHandler.handleMessage(listMsg2, peerA);
-        expect((list2.payload as any).current).toBe(secondRepo);
+        const status = await multiHandler.handleMessage(
+          withRepo(createMessage('git:status', {}), secondRepo),
+          peerA,
+        );
+        expect(status.type).toBe('git:status:response');
+        expect(status.repoPath).toBe(secondRepo);
       } finally {
         await rm(secondRepo, { recursive: true, force: true }).catch(() => {});
       }
     });
 
-    it('should drop pinned repo when that repo is removed', async () => {
+    it('should auto-add an explicit valid repoPath after that repo is removed from the managed list', async () => {
       const secondRepo = await createTestRepo('second');
       try {
         const multiHandler = new MessageHandler([
@@ -652,16 +637,13 @@ describe('MessageHandler — edge cases', () => {
           { path: secondRepo, name: 'second' },
         ]);
 
-        const switchMsg = createMessage('agent:switch-repo', { path: secondRepo } as any);
-        await multiHandler.handleMessage(switchMsg, peerA);
-
-        // User removes the repo peerA is pinned to
         multiHandler.removeRepo(secondRepo);
 
-        // Next list should fall back to default, not return a dangling path
-        const listMsg = createMessage('agent:list-repos', {} as any);
-        const list = await multiHandler.handleMessage(listMsg, peerA);
-        expect((list.payload as any).current).toBe(repoPath);
+        const resp = await multiHandler.handleMessage(
+          withRepo(createMessage('git:status', {}), secondRepo),
+          peerA,
+        );
+        expect(resp.type).toBe('git:status:response');
       } finally {
         await rm(secondRepo, { recursive: true, force: true }).catch(() => {});
       }
@@ -818,33 +800,6 @@ describe('MessageHandler — edge cases', () => {
   });
 
   // =========================================================================
-  // 15. Switch to non-available repo
-  // =========================================================================
-
-  describe('switch repo edge cases', () => {
-    it('should fail when switching to a non-available repo path', async () => {
-      const msg = createMessage('agent:switch-repo', {
-        path: '/does/not/exist',
-      } as any);
-      const resp = await handler.handleMessage(msg, peerA);
-      expect(resp.type).toBe('agent:switch-repo:response');
-      expect((resp.payload as any).success).toBe(false);
-      expect((resp.payload as any).error).toContain('not available');
-    });
-
-    it('should keep current repo after failed switch', async () => {
-      const failSwitch = createMessage('agent:switch-repo', {
-        path: '/nonexistent',
-      } as any);
-      await handler.handleMessage(failSwitch, peerA);
-
-      const listMsg = createMessage('agent:list-repos', {} as any);
-      const listResp = await handler.handleMessage(listMsg, peerA);
-      expect((listResp.payload as any).current).toBe(repoPath);
-    });
-  });
-
-  // =========================================================================
   // 16. Preferences edge cases
   // =========================================================================
 
@@ -864,10 +819,7 @@ describe('MessageHandler — edge cases', () => {
   // =========================================================================
 
   describe('handler with zero repos', () => {
-    it('should reject git operations with raw error (unhandled by try/catch)', async () => {
-      // BUG: The try/catch in handleMessage doesn't await async handler returns,
-      // so getGit() throws propagate as unhandled promise rejections instead of
-      // being wrapped in a HANDLER_ERROR response.
+    it('should reject git operations without repoPath', async () => {
       const emptyHandler = new MessageHandler([]);
 
       const msgs = [
@@ -878,8 +830,9 @@ describe('MessageHandler — edge cases', () => {
       ] as any[];
 
       for (const msg of msgs) {
-        await expect(emptyHandler.handleMessage(msg, peerA))
-          .rejects.toThrow('No repository selected');
+        const resp = await emptyHandler.handleMessage(msg, peerA);
+        expect(resp.type).toBe('error');
+        expect((resp.payload as any).code).toBe('MISSING_REPO_PATH');
       }
     });
 
@@ -902,7 +855,7 @@ describe('MessageHandler — edge cases', () => {
   // =========================================================================
   describe('git config identity', () => {
     it('git:config-get returns current identity', async () => {
-      const msg = createMessage('git:config-get', {});
+      const msg = withRepo(createMessage('git:config-get', {}), repoPath);
       const resp = await handler.handleMessage(msg, peerA);
       expect(resp.type).toBe('git:config-get:response');
       const payload = resp.payload as { name?: string; email?: string };
@@ -911,12 +864,12 @@ describe('MessageHandler — edge cases', () => {
     });
 
     it('git:config-set updates identity and subsequent get reflects it', async () => {
-      const setMsg = createMessage('git:config-set', { name: 'New User', email: 'new@test.com' });
+      const setMsg = withRepo(createMessage('git:config-set', { name: 'New User', email: 'new@test.com' }), repoPath);
       const setResp = await handler.handleMessage(setMsg, peerA);
       expect(setResp.type).toBe('git:config-set:response');
       expect((setResp.payload as any).success).toBe(true);
 
-      const getMsg = createMessage('git:config-get', {});
+      const getMsg = withRepo(createMessage('git:config-get', {}), repoPath);
       const getResp = await handler.handleMessage(getMsg, peerA);
       const payload = getResp.payload as { name?: string; email?: string };
       expect(payload.name).toBe('New User');

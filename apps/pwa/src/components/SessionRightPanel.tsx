@@ -12,6 +12,7 @@ import {
   SESSION_PANEL_MAX,
 } from '../stores/sessionRightPanelStore';
 import { useGitStore } from '../stores/gitStore';
+import { useConnectionStore } from '../stores/connectionStore';
 import { useGitOps } from '../contexts/gitOpsContext';
 import { useFileOps } from '../hooks/useFileOps';
 import { getBusForAgent } from '../lib/busRegistry';
@@ -27,6 +28,30 @@ interface SessionRightPanelProps {
   agentId: string;
   cwd: string;
   sessionOps: SessionOps;
+}
+
+type RepoPathLike = { path: string };
+
+function normalizePath(path: string): string {
+  return path.length > 1 ? path.replace(/\/+$/, '') : path;
+}
+
+export function resolveGitRepoScope(
+  cwd: string,
+  repoOverride: string | null,
+  availableRepos: RepoPathLike[],
+): string | null {
+  if (repoOverride) return normalizePath(repoOverride);
+  const normalizedCwd = normalizePath(cwd);
+  let best: string | null = null;
+  for (const repo of availableRepos) {
+    const repoPath = normalizePath(repo.path);
+    const matches = normalizedCwd === repoPath || normalizedCwd.startsWith(`${repoPath}/`);
+    if (matches && (!best || repoPath.length > best.length)) {
+      best = repoPath;
+    }
+  }
+  return best;
 }
 
 export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps }: SessionRightPanelProps) {
@@ -400,18 +425,25 @@ function GitPanel({ agentId, cwd }: { agentId: string; cwd: string }) {
   const setCurrentRepoPath = useGitStore((s) => s.setCurrentRepoPath);
   const switchRepo = gitOps?.switchRepo;
   const onRefresh = gitOps?.onRefresh;
+  const availableRepos = useConnectionStore((s) => (
+    agentId ? s.agentConnections[agentId]?.availableRepos ?? [] : s.availableRepos
+  ));
   // Honor a per-session override set when the user picks a specific repo
-  // from the Settings tab's "Git repository" list. Falls back to the
-  // session's own cwd when no override is set.
+  // from the Settings tab's "Git repository" list. Otherwise only auto-bind
+  // to a repo root the agent already advertises in the handshake.
   const repoOverride = useSessionRightPanelStore(selectGitRepoOverride);
-  const effectiveCwd = repoOverride ?? cwd;
+  const effectiveRepoPath = resolveGitRepoScope(cwd, repoOverride, availableRepos);
 
   useEffect(() => {
+    if (!effectiveRepoPath) {
+      setCurrentRepoPath(null);
+      return;
+    }
     if (!switchRepo || !onRefresh) return;
-    setCurrentRepoPath(effectiveCwd);
-    switchRepo(effectiveCwd);
+    setCurrentRepoPath(effectiveRepoPath);
+    switchRepo(effectiveRepoPath);
     onRefresh();
-  }, [agentId, effectiveCwd, setCurrentRepoPath, switchRepo, onRefresh]);
+  }, [agentId, effectiveRepoPath, setCurrentRepoPath, switchRepo, onRefresh]);
 
   if (!gitOps) {
     return (
@@ -419,6 +451,10 @@ function GitPanel({ agentId, cwd }: { agentId: string; cwd: string }) {
         Git operations unavailable.
       </div>
     );
+  }
+
+  if (!effectiveRepoPath) {
+    return <GitUnavailable cwd={cwd} />;
   }
 
   return (
@@ -439,6 +475,27 @@ function GitPanel({ agentId, cwd }: { agentId: string; cwd: string }) {
         onDismissAiSummary={gitOps.onDismissAiSummary}
         onSetApiKey={gitOps.onSetApiKey}
       />
+    </div>
+  );
+}
+
+function GitUnavailable({ cwd }: { cwd: string }) {
+  const name = cwd.split('/').filter(Boolean).pop() || cwd || 'workspace';
+  return (
+    <div className="flex flex-col items-center justify-center flex-1 px-5 py-12 text-center">
+      <svg className="w-8 h-8 text-slate-500 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <circle cx="18" cy="18" r="3" strokeWidth={1.5} />
+        <circle cx="6" cy="6" r="3" strokeWidth={1.5} />
+        <circle cx="6" cy="18" r="3" strokeWidth={1.5} />
+        <path strokeLinecap="round" strokeWidth={1.5} d="M6 9v6M9 6h3a3 3 0 013 3v6" />
+      </svg>
+      <div className="text-sm font-medium text-slate-300">No Git repository</div>
+      <div className="mt-1 max-w-full truncate text-xs text-slate-500" title={cwd}>
+        {name}
+      </div>
+      <div className="mt-3 text-xs text-slate-500">
+        Open a repository from Settings.
+      </div>
     </div>
   );
 }

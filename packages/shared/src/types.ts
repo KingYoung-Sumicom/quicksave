@@ -10,12 +10,11 @@ export interface Message<T = unknown> {
   payload: T;
   timestamp: number;
   /**
-   * Repo scope for git:* messages.
-   * - Request: repo the client expects to operate on. Agent rejects with
-   *   `error` (code `REPO_MISMATCH`) if its current repo for the requesting
-   *   peer does not match.
-   * - Response: repo the agent actually used. Client validates against its
-   *   active repo before applying the result to the store.
+   * Repo scope for repo-scoped messages (`git:*`, commit summary requests).
+   * Request: the repo the agent must operate on. It is required for
+   * repo-scoped commands; the agent rejects missing or unavailable paths.
+   * Response: the repo the agent actually used. Clients validate this before
+   * applying the result to local UI state.
    * Other message types ignore this field.
    */
   repoPath?: string;
@@ -73,8 +72,6 @@ export type MessageType =
   | 'ai:get-api-key-status:response'
   | 'agent:list-repos'
   | 'agent:list-repos:response'
-  | 'agent:switch-repo'
-  | 'agent:switch-repo:response'
   | 'agent:browse-directory'
   | 'agent:browse-directory:response'
   | 'agent:add-repo'
@@ -1043,17 +1040,6 @@ export interface ListReposResponsePayload {
   current: string;
 }
 
-// Switch Repo
-export interface SwitchRepoRequestPayload {
-  path: string;
-}
-
-export interface SwitchRepoResponsePayload {
-  success: boolean;
-  newPath: string;
-  error?: string;
-}
-
 // Browse Directory
 export interface BrowseDirectoryRequestPayload {
   path: string;
@@ -1356,6 +1342,7 @@ export const CLAUDE_MODELS: { id: ClaudeModel; name: string; label: string; desc
 export type CommitSummarySource = 'api' | 'claude-cli';
 
 export interface GenerateCommitSummaryRequestPayload {
+  repoPath?: string;
   context?: string;
   model?: ClaudeModel;
   attribution?: boolean;
