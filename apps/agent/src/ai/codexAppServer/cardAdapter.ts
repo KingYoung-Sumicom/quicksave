@@ -142,8 +142,23 @@ function guardianActionItemId(_action: GuardianApprovalReviewAction): string | n
   return null;
 }
 
-function guardianMcpToolName(action: GuardianApprovalReviewAction): string | null {
-  return action.type === 'mcpToolCall' ? mcpToolName(action.server, action.toolName) : null;
+function guardianActionToolName(action: GuardianApprovalReviewAction): string | null {
+  switch (action.type) {
+    case 'command':
+    case 'execve':
+    case 'networkAccess':
+      return 'Bash';
+    case 'applyPatch':
+      return 'Edit';
+    case 'mcpToolCall':
+      return mcpToolName(action.server, action.toolName);
+    case 'requestPermissions':
+      return 'Permissions';
+  }
+}
+
+function isAutomaticApprovalGuardianWarning(message: string): boolean {
+  return message.startsWith('Automatic approval review ');
 }
 
 export interface CodexTurnStreamConsumer {
@@ -375,11 +390,16 @@ export function createCodexTurnStreamConsumer(
       }
 
       case 'guardianWarning': {
-        // Guardian flagged the turn (safety / policy). Surface as a
-        // warning system card so the user sees why an action was rejected.
         const params = notification.params as { threadId: string; message?: string };
         if (params.threadId !== ctx.threadId) return;
-        emit(cb.systemMessage(`Guardian: ${params.message ?? '(no message)'}`, 'warning'));
+        const message = params.message ?? '(no message)';
+        if (isAutomaticApprovalGuardianWarning(message)) {
+          emit(cb.updateLatestGuardianMessageForToolCard(message) ?? cb.systemMessage(`Guardian: ${message}`, 'warning'));
+          return;
+        }
+        // Other Guardian warnings are safety/policy messages without a clear
+        // tool target, so keep surfacing them as standalone warnings.
+        emit(cb.systemMessage(`Guardian: ${message}`, 'warning'));
         return;
       }
 
@@ -457,17 +477,19 @@ export function createCodexTurnStreamConsumer(
         const targeted = targetItemId
           ? cb.updatePendingGuardianMessageForToolUseId(targetItemId, message)
           : null;
-        const mcpToolNameForGuardian = guardianMcpToolName(params.action);
-        const mcpTargeted = targeted ?? (mcpToolNameForGuardian
-          ? cb.updateLatestGuardianMessageForToolName(mcpToolNameForGuardian, message)
+        const toolNameForGuardian = guardianActionToolName(params.action);
+        const toolTargeted = targeted ?? (toolNameForGuardian
+          ? cb.updateLatestGuardianMessageForToolName(toolNameForGuardian, message)
           : null);
-        if (mcpToolNameForGuardian) {
-          emit(mcpTargeted ?? cb.updateLatestPendingPermissionGuardianMessageIfPresent(message));
+        if (params.action.type === 'mcpToolCall') {
+          emit(toolTargeted ?? cb.updateLatestPendingPermissionGuardianMessageIfPresent(message));
           return;
         }
-        emit(targeted);
+        emit(toolTargeted ?? targeted);
         if (!targeted || !targetHadPendingInput) {
-          emit(cb.updateLatestPendingPermissionGuardianMessage(message));
+          emit(toolTargeted
+            ? cb.updateLatestPendingPermissionGuardianMessageIfPresent(message)
+            : cb.updateLatestPendingPermissionGuardianMessage(message));
         }
         return;
       }

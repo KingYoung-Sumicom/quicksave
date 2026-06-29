@@ -774,6 +774,57 @@ describe('cardAdapter — Guardian auto-review on permission cards', () => {
       .toContain('Network access to example.com was reviewed.');
   });
 
+  it('falls back to the Bash tool card when untargeted network review has no pending permission', async () => {
+    const h = harness();
+    await h.send('item/started', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: {
+        type: 'commandExecution',
+        id: 'cmd_network_without_pending',
+        command: 'curl https://example.com',
+        cwd: '/tmp',
+        processId: null,
+        source: 'shell',
+        status: 'running',
+        commandActions: [],
+        aggregatedOutput: null,
+        exitCode: null,
+        durationMs: null,
+      },
+    });
+
+    await h.send('item/autoApprovalReview/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      targetItemId: null,
+      decisionSource: 'agent',
+      review: {
+        status: 'approved',
+        riskLevel: 'medium',
+        userAuthorization: 'low',
+        rationale: 'Network review completed after the prompt was gone.',
+      },
+      action: {
+        type: 'networkAccess',
+        target: 'https://example.com',
+        host: 'example.com',
+        protocol: 'https',
+        port: 443,
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const bashCard = h.cb.getCards().find(
+      (c): c is ToolCallCard => c.type === 'tool_call' && c.toolUseId === 'cmd_network_without_pending',
+    );
+    expect(bashCard?.guardianMessage).toContain('Network review completed after the prompt was gone.');
+  });
+
   it('falls back to the latest pending permission when targetItemId differs from approvalId', async () => {
     const h = harness();
     const evt = h.cb.toolCallFromPermission(
@@ -1522,6 +1573,49 @@ describe('cardAdapter — surfaced control notifications', () => {
         e.type === 'add' && (e.card as { subtype?: string }).subtype === 'warning',
     );
     expect((warn?.card as { text?: string } | undefined)?.text).toMatch(/risky operation flagged/);
+  });
+
+  it('guardianWarning for automatic approval review merges into the latest tool card', async () => {
+    const h = harness();
+    await h.send('item/started', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: {
+        type: 'commandExecution',
+        id: 'cmd_guardian_warning',
+        command: 'curl https://example.com',
+        cwd: '/tmp',
+        processId: null,
+        source: 'shell',
+        status: 'running',
+        commandActions: [],
+        aggregatedOutput: null,
+        exitCode: null,
+        durationMs: null,
+      },
+    });
+
+    await h.send('guardianWarning', {
+      threadId: h.sessionId,
+      message: 'Automatic approval review approved (risk: low, authorization: unknown): Auto-review returned a low-risk allow decision.',
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const bashCard = h.cb.getCards().find(
+      (c): c is ToolCallCard => c.type === 'tool_call' && c.toolUseId === 'cmd_guardian_warning',
+    );
+    expect(bashCard?.guardianMessage).toContain('Automatic approval review approved');
+    const warn = h.events.find(
+      (e): e is Extract<typeof e, { type: 'add' }> =>
+        e.type === 'add'
+        && (e.card as { subtype?: string }).subtype === 'warning'
+        && ((e.card as { text?: string }).text ?? '').includes('Automatic approval review approved'),
+    );
+    expect(warn).toBeFalsy();
   });
 
   it('guardianWarning for a different thread is ignored', async () => {

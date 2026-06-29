@@ -447,6 +447,17 @@ describe('StreamCardBuilder', () => {
       expect(event.patch).toEqual({ guardianMessage: 'Guardian mcp review' });
     });
 
+    it('updates Guardian message on the latest tool card', () => {
+      builder.toolUse('Bash', { command: 'first' }, 'tu-tool-first');
+      const latest = builder.toolUse('Edit', { file_path: '/tmp/a' }, 'tu-tool-second') as CardAddEvent;
+
+      const event = builder.updateLatestGuardianMessageForToolCard('Guardian latest tool review') as CardUpdateEvent;
+
+      expect(event.type).toBe('update');
+      expect(event.cardId).toBe(latest.card.id);
+      expect(event.patch).toEqual({ guardianMessage: 'Guardian latest tool review' });
+    });
+
     it('includes a Guardian message observed before a matching tool-name card exists', () => {
       expect(builder.updateLatestGuardianMessageForToolName('mcp__demo__Search', 'Guardian mcp review')).toBeNull();
 

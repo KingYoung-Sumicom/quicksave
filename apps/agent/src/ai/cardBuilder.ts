@@ -1083,6 +1083,27 @@ export class StreamCardBuilder {
     });
   }
 
+  /** Attach/update Guardian review text on the newest tool card. */
+  updateLatestGuardianMessageForToolCard(guardianMessage: string): CardEvent | null {
+    let latest: ToolCallCard | null = null;
+    for (const card of this.cards.values()) {
+      if (card.type !== 'tool_call') continue;
+      if (!latest || card.timestamp >= latest.timestamp) latest = card;
+    }
+    if (!latest) return null;
+    return this.updateEvent(latest.id, {
+      guardianMessage,
+      ...(latest.pendingInput
+        ? {
+            pendingInput: {
+              ...latest.pendingInput,
+              guardianMessage,
+            },
+          }
+        : {}),
+    });
+  }
+
   /**
    * Attach Guardian review text to the newest pending permission card.
    * Used when Codex app-server sends auto-review notifications with
