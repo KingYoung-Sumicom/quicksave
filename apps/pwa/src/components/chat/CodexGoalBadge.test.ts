@@ -47,6 +47,26 @@ describe('CodexGoalBadge helpers', () => {
     });
   });
 
+  it('treats completed goal config as off', () => {
+    expect(goalSnapshotFromConfig({
+      codexGoalPresent: true,
+      codexGoalObjective: 'Already shipped',
+      codexGoalStatus: 'complete',
+      codexGoalTokenBudget: 1000,
+      codexGoalTokensUsed: 1000,
+      codexGoalTimeUsedSeconds: 3600,
+      codexGoalUpdatedAt: 12345,
+    })).toEqual({
+      present: false,
+      objective: '',
+      status: null,
+      tokenBudget: null,
+      tokensUsed: null,
+      timeUsedSeconds: null,
+      updatedAt: null,
+    });
+  });
+
   it('maps goal statuses to badge tones and labels', () => {
     expect(goalTone('active', true)).toBe('active');
     expect(goalTone('paused', true)).toBe('paused');

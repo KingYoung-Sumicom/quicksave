@@ -28,10 +28,25 @@ export interface GoalConfirmAction {
 }
 
 export function goalSnapshotFromConfig(config: Record<string, ConfigValue>): GoalSnapshot {
+  const status = typeof config.codexGoalStatus === 'string' ? config.codexGoalStatus : null;
+  const present = config.codexGoalPresent === true && status !== 'complete';
+
+  if (!present) {
+    return {
+      present: false,
+      objective: '',
+      status: null,
+      tokenBudget: null,
+      tokensUsed: null,
+      timeUsedSeconds: null,
+      updatedAt: null,
+    };
+  }
+
   return {
-    present: config.codexGoalPresent === true,
+    present,
     objective: typeof config.codexGoalObjective === 'string' ? config.codexGoalObjective : '',
-    status: typeof config.codexGoalStatus === 'string' ? config.codexGoalStatus : null,
+    status,
     tokenBudget: numberOrNull(config.codexGoalTokenBudget),
     tokensUsed: numberOrNull(config.codexGoalTokensUsed),
     timeUsedSeconds: numberOrNull(config.codexGoalTimeUsedSeconds),

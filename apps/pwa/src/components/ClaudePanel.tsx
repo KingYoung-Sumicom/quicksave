@@ -20,7 +20,6 @@ import { SessionList } from './chat/SessionList';
 import { NewSessionEmptyState } from './chat/NewSessionEmptyState';
 import { SessionStatusBar } from './chat/SessionStatusBar';
 import { SessionStatsBar } from './chat/SessionStatsBar';
-import { CodexGoalBanner } from './chat/CodexGoalBanner';
 import { CodexQuotaBadges } from './chat/CodexQuotaBadges';
 import { StreamingReconnectIndicator } from './chat/StreamingReconnectIndicator';
 import { ToolCallGroupPlaceholder } from './chat/ToolCallGroupPlaceholder';
@@ -953,12 +952,6 @@ export function ClaudePanel({
       {isChat ? (
         <>
           <PendingMissionBanner session={activeSession} onDismiss={onDismissPendingMission} />
-          {viewedSessionId && (
-            <CodexGoalBanner
-              sessionId={viewedSessionId}
-              onSendControlRequest={onSendControlRequest}
-            />
-          )}
           {viewedSession?.terminalId && viewedSession?.machineAgentId && (
             <CollapsibleTerminalPanel
               terminalId={viewedSession.terminalId}
