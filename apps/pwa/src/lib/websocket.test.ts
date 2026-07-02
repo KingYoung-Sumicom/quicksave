@@ -3,8 +3,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createMessage,
+  encryptWithSharedSecret,
   generateKeyPair,
   generateSessionDEK,
+  serializeMessage,
   type Message,
 } from '@sumicom/quicksave-shared';
 import { WebSocketClient, type ConnectionEventHandler } from './websocket';
@@ -89,6 +91,15 @@ function addSession(client: WebSocketClient, agentId = 'agent-1'): void {
   });
 }
 
+function completeSession(client: WebSocketClient, agentId = 'agent-1') {
+  addSession(client, agentId);
+  const session = (client as any).sessions.get(agentId);
+  session.sessionDEK = generateSessionDEK();
+  session.keyExchangeComplete = true;
+  (client as any).activeAgentId = agentId;
+  return session;
+}
+
 async function flushMicrotasks(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -106,11 +117,12 @@ describe('WebSocketClient reconnect lifecycle', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     globalThis.WebSocket = originalWebSocket;
     globalThis.BroadcastChannel = originalBroadcastChannel;
   });
 
-  it('suppresses the stale socket close produced by refreshAfterResume', async () => {
+  it('reconnects on resume when no encrypted session can be probed', async () => {
     const h = handlers();
     const client = new WebSocketClient('ws://relay.test', 'pwa-key', h, async () => null);
 
@@ -132,6 +144,59 @@ describe('WebSocketClient reconnect lifecycle', () => {
     expect(sockets[1].sent).toEqual([
       JSON.stringify({ type: 'watch-agent', agentId: 'agent-1' }),
     ]);
+  });
+
+  it('keeps a healthy socket when resume probe receives pong', async () => {
+    vi.useFakeTimers();
+    const h = handlers();
+    const client = new WebSocketClient('ws://relay.test', 'pwa-key', h, async () => null);
+
+    const connect = client.connect();
+    sockets[0].open();
+    await connect;
+    const session = completeSession(client);
+    (client as any).compress = async () => 'compressed-ping';
+    (client as any).decompress = async () => serializeMessage(createMessage('pong', { timestamp: Date.now() }));
+
+    client.refreshAfterResume();
+    await flushMicrotasks();
+
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].sent).toHaveLength(1);
+    expect(h.onReconnecting).not.toHaveBeenCalled();
+
+    const encryptedPong = encryptWithSharedSecret('compressed-pong', session.sessionDEK);
+    await (client as any).handleDataMessage(encryptedPong, session);
+    await vi.advanceTimersByTimeAsync(2500);
+
+    expect(sockets).toHaveLength(1);
+    expect(h.onReconnecting).not.toHaveBeenCalled();
+    expect(h.onMessage).not.toHaveBeenCalled();
+  });
+
+  it('reconnects on resume probe timeout', async () => {
+    vi.useFakeTimers();
+    const h = handlers();
+    const client = new WebSocketClient('ws://relay.test', 'pwa-key', h, async () => null);
+
+    const connect = client.connect();
+    sockets[0].open();
+    await connect;
+    completeSession(client);
+    (client as any).compress = async () => 'compressed-ping';
+
+    client.refreshAfterResume();
+    await flushMicrotasks();
+
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].sent).toHaveLength(1);
+    expect(h.onReconnecting).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(2500);
+
+    expect(h.onReconnecting).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(2);
+    expect(sockets[0].readyState).toBe(FakeWebSocket.CLOSING);
   });
 
   it('queues an encrypted message and reconnects when WebSocket.send throws', async () => {

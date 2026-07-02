@@ -9,6 +9,7 @@ import {
   encodeBase64,
   parseMessage,
   serializeMessage,
+  createMessage,
   signKeyExchangeV2,
   verifyLicense,
   generateKeyPair,
@@ -107,10 +108,12 @@ export class WebSocketClient {
   private suppressedCloseSocket: WebSocket | null = null;
   private reconnectGeneration = 0;
   private reconnectInFlightGeneration: number | null = null;
+  private resumeProbe: { agentId: string; timeout: ReturnType<typeof setTimeout> } | null = null;
 
   // Key exchange retry config
   private static readonly MAX_KEY_EXCHANGE_RETRIES = 5;
   private static readonly KEY_EXCHANGE_BASE_DELAY = 2000;
+  private static readonly RESUME_PROBE_TIMEOUT_MS = 2500;
 
   private getSigningKeyPair: SigningKeyPairProvider;
 
@@ -637,6 +640,11 @@ export class WebSocketClient {
         return;
       }
 
+      if (message.type === 'pong' && this.resumeProbe?.agentId === session.agentId) {
+        this.clearResumeProbe();
+        return;
+      }
+
       this.eventHandlers.onMessage(message, session.agentId);
       // Relay broadcast events to other tabs so their session list indicators stay current.
       // BroadcastChannel doesn't deliver to the sender, so there's no loop risk.
@@ -772,6 +780,8 @@ export class WebSocketClient {
     if (this.sessions.size === 0) return;
     if (!options.supersedeInFlight && this.reconnectInFlightGeneration !== null) return;
 
+    this.clearResumeProbe();
+
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;
@@ -789,6 +799,8 @@ export class WebSocketClient {
   // =========================================================================
 
   private handleDisconnection(): void {
+    this.clearResumeProbe();
+
     // Don't reconnect if this was a manual disconnect
     if (this.isManualDisconnect) {
       this.cleanupAllSessions();
@@ -890,6 +902,10 @@ export class WebSocketClient {
   }
 
   private cleanupAgentSession(agentId: string): void {
+    if (this.resumeProbe?.agentId === agentId) {
+      this.clearResumeProbe();
+    }
+
     const session = this.sessions.get(agentId);
     if (session) {
       if (session.keyExchangeTimeout) {
@@ -917,6 +933,7 @@ export class WebSocketClient {
     this.isManualDisconnect = true;
     this.autoReconnect = false;
     this.reconnectGeneration++;
+    this.clearResumeProbe();
 
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
@@ -950,12 +967,58 @@ export class WebSocketClient {
 
   /**
    * iOS PWAs can return from the background with a WebSocket that still looks
-   * OPEN in JavaScript even though the carrier/NAT path is dead. Rebuild the
-   * socket immediately on foreground resume instead of waiting for the browser
-   * or the next relay heartbeat to notice.
+   * OPEN in JavaScript even though the carrier/NAT path is dead. Probe the
+   * existing encrypted agent path first so ordinary desktop tab switches don't
+   * rebuild a healthy socket; fall back to a reconnect if the probe cannot be
+   * sent or no pong arrives quickly.
    */
   refreshAfterResume(): void {
-    this.forceReconnect('resume refresh', { supersedeInFlight: true });
+    if (this.isManualDisconnect) return;
+    if (this.resumeProbe) return;
+    if (this.reconnectTimeout || this.reconnectInFlightGeneration !== null) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.forceReconnect('resume refresh: socket not open', { supersedeInFlight: true });
+      return;
+    }
+
+    const session = this.getResumeProbeSession();
+    if (!session) {
+      this.forceReconnect('resume refresh: no probe session', { supersedeInFlight: true });
+      return;
+    }
+
+    this.resumeProbe = {
+      agentId: session.agentId,
+      timeout: setTimeout(() => {
+        if (this.resumeProbe?.agentId !== session.agentId) return;
+        this.clearResumeProbe();
+        this.forceReconnect('resume refresh: probe timeout', { supersedeInFlight: true });
+      }, WebSocketClient.RESUME_PROBE_TIMEOUT_MS),
+    };
+
+    try {
+      this.sendToAgent(session.agentId, createMessage('ping', { timestamp: Date.now() }));
+    } catch {
+      this.clearResumeProbe();
+      this.forceReconnect('resume refresh: probe send failed', { supersedeInFlight: true });
+    }
+  }
+
+  private getResumeProbeSession(): AgentSession | null {
+    if (this.activeAgentId) {
+      const active = this.sessions.get(this.activeAgentId);
+      if (active?.keyExchangeComplete && active.sessionDEK) return active;
+    }
+    for (const session of this.sessions.values()) {
+      if (session.keyExchangeComplete && session.sessionDEK) return session;
+    }
+    return null;
+  }
+
+  private clearResumeProbe(): void {
+    if (!this.resumeProbe) return;
+    clearTimeout(this.resumeProbe.timeout);
+    this.resumeProbe = null;
   }
 
 }
