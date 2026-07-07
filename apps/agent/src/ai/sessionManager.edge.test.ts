@@ -24,6 +24,7 @@ vi.mock('./cardBuilder.js', () => {
     updateSessionId: vi.fn(),
     snapshotCutoff: vi.fn().mockResolvedValue(undefined),
     seedSequenceFromCards: vi.fn(),
+    seedSequenceFromMax: vi.fn(),
     enableMemoryPersistence: vi.fn(),
     getCards: vi.fn().mockReturnValue([]),
     userMessage: vi.fn().mockReturnValue({ type: 'add', card: { type: 'user', id: 'u1', text: 'hi' } }),
@@ -40,6 +41,11 @@ vi.mock('./cardBuilder.js', () => {
     loadPersistedCards: vi.fn().mockResolvedValue([]),
   };
 });
+
+vi.mock('./cardHistoryIndex.js', () => ({
+  loadPersistedCardMaxSequence: vi.fn().mockResolvedValue(0),
+  loadPersistedCardPage: vi.fn().mockResolvedValue({ cards: [], total: 0, hasMore: false }),
+}));
 
 vi.mock('./sessionRegistry.js', () => ({
   getSessionRegistry: vi.fn().mockReturnValue({
@@ -405,6 +411,7 @@ describe('SessionManager — adversarial edge cases', () => {
         updateSessionId: vi.fn(),
         snapshotCutoff: vi.fn().mockResolvedValue(undefined),
         seedSequenceFromCards: vi.fn(),
+        seedSequenceFromMax: vi.fn(),
         getCards: vi.fn().mockReturnValue([{ type: 'assistant_text', id: 'sc1', text: 'streaming' }]),
         userMessage: vi.fn(),
         clearPendingInput: vi.fn(),

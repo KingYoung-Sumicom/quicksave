@@ -17,9 +17,10 @@ Three primitives over a single transport:
 
 Key properties:
 
-- **Snapshot-on-subscribe**: the first frame after `sub` is always a full
-  snapshot. On reconnect the client auto-resends `sub` frames and gets a
-  fresh snapshot, eliminating the "stale-after-reconnect" window.
+- **Snapshot-on-subscribe**: every successful `sub` gets a full snapshot. If an
+  update races an async snapshot, sequence numbers prevent stale snapshots from
+  rolling back newer state. On reconnect the client auto-resends `sub` frames
+  and gets a fresh snapshot.
 - **Command queueing**: `command(..., { queueWhileDisconnected: true })`
   holds the request until the transport reconnects, then flushes.
 - **Typed path params**: `PathParams<'/sessions/:id/cards'>` → `{ id: string }`.
@@ -81,6 +82,11 @@ const unsub = bus.subscribe<CardHistory, CardUpdate>(
 // later:
 unsub();
 ```
+
+For incremental update streams where an update cannot stand alone without the
+initial snapshot, pass `acceptStaleSnapshots: true` and buffer updates until
+`onSnapshot` fires. This opts that subscriber into receiving a raced snapshot
+even when its seq is older than an already-delivered update.
 
 ## Wire protocol
 

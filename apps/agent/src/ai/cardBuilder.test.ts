@@ -1009,6 +1009,7 @@ describe('loadPersistedCards', () => {
     const result = await loadPersistedCards('sess-obj');
     expect(result).toEqual([]);
   });
+
 });
 
 describe('localCommandDisplayText()', () => {

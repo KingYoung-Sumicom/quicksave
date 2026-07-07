@@ -99,14 +99,14 @@ function cardHistoryLogPath(sessionId: string): string {
   return join(getCardHistoryDir(), `${sessionId}.jsonl`);
 }
 
-type CardHistoryLogEntry =
+export type CardHistoryLogEntry =
   | { op: 'seed'; cards: Card[] }
   | { op: 'upsert'; card: Card }
   | { op: 'patch'; cardId: CardId; patch: Record<string, unknown> }
   | { op: 'append_text'; cardId: CardId; text: string }
   | { op: 'remove'; cardId: CardId };
 
-function cleanPersistedCard(card: Card): Card {
+export function cleanPersistedCard(card: Card): Card {
   const { pendingInput, ...rest } = card;
   void pendingInput;
   if (rest.type === 'assistant_text') {
@@ -611,6 +611,12 @@ export class StreamCardBuilder {
    * and overwriting or reordering older history. */
   seedSequenceFromCards(cards: readonly Card[]): void {
     this.seq = Math.max(this.seq, maxCardSequenceForSession(cards, this.sessionId));
+  }
+
+  seedSequenceFromMax(maxSequence: number): void {
+    if (Number.isSafeInteger(maxSequence) && maxSequence > this.seq) {
+      this.seq = maxSequence;
+    }
   }
 
   /** Start a new turn: reset per-turn state, keep accumulated cards. */

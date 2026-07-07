@@ -273,6 +273,16 @@ describe('MessageBusClient - seq ordering', () => {
     expect(onSnapshot).not.toHaveBeenCalled();
   });
 
+  it('delivers a raced stale snapshot to subscribers that opt in', () => {
+    const onSnapshot = vi.fn();
+    const onUpdate = vi.fn();
+    client.subscribe('/x/1', { onSnapshot, onUpdate, acceptStaleSnapshots: true });
+    transport.emit({ kind: 'upd', path: '/x/1', data: 'new', seq: 5 });
+    transport.emit({ kind: 'snap', path: '/x/1', data: 'old', seq: 4 });
+    expect(onUpdate).toHaveBeenCalledWith('new');
+    expect(onSnapshot).toHaveBeenCalledWith('old');
+  });
+
   it('applies a snapshot whose seq equals the already-applied update (boundary case)', () => {
     // Natural server traffic won't produce this — snapshot seq is captured
     // before the handler, so a raced publish always has a strictly greater

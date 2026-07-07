@@ -13,6 +13,12 @@ export type SubscribeCallbacks<S = unknown, U = unknown> = {
   onSnapshot: (data: S) => void;
   onUpdate: (data: U) => void;
   onError?: (error: string) => void;
+  /**
+   * Deliver snapshots even when their seq is older than an update already
+   * applied on this path. Use only for incremental update streams whose
+   * subscriber buffers updates until the initial snapshot arrives.
+   */
+  acceptStaleSnapshots?: boolean;
 };
 
 type PendingCommand = {
@@ -213,11 +219,14 @@ export class MessageBusClient {
     // onSnapshot fires once per wire subscription; at equal seq the data
     // is equivalent to what the raced upd delivered, so applying is a
     // no-op-plus-callback rather than a rollback.
-    if (
+    const stale =
       frame.seq !== undefined &&
       state.lastSeq !== undefined &&
-      frame.seq < state.lastSeq
-    ) {
+      frame.seq < state.lastSeq;
+    if (stale) {
+      for (const cb of state.subscribers) {
+        if (cb.acceptStaleSnapshots) cb.onSnapshot(frame.data);
+      }
       return;
     }
     if (frame.seq !== undefined) state.lastSeq = frame.seq;

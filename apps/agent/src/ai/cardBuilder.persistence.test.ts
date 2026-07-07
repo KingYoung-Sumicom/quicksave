@@ -1,13 +1,15 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import Database from 'better-sqlite3';
 
 import type { Card } from '@sumicom/quicksave-shared';
 import { setQuicksaveDir } from '../service/singleton.js';
 import { loadPersistedCards, StreamCardBuilder } from './cardBuilder.js';
+import { closeCardHistoryIndexForTests, loadPersistedCardPage } from './cardHistoryIndex.js';
 
 let tempDir: string;
 
@@ -17,6 +19,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  closeCardHistoryIndexForTests();
   rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -102,5 +105,69 @@ describe('memory-mode card history persistence', () => {
     await loadPersistedCards('already-migrated');
 
     expect(Math.abs(statSync(logPath).mtimeMs - legacyTime.getTime())).toBeLessThan(1000);
+  });
+
+  it('serves card pages from a durable JSONL offset index', async () => {
+    mkdirSync(cardHistoryDir(), { recursive: true });
+    const logPath = join(cardHistoryDir(), 'indexed.jsonl');
+    const lines: string[] = [];
+    for (let i = 0; i < 80; i++) {
+      const card: Card = { type: 'user', id: `indexed:${i + 1}`, timestamp: i + 1, text: `msg-${i}` };
+      lines.push(JSON.stringify({ op: 'upsert', card }) + '\n');
+    }
+    writeFileSync(logPath, lines.join(''));
+
+    const first = await loadPersistedCardPage('indexed', 0, 10);
+    expect(first.total).toBe(80);
+    expect(first.cards.map((card) => (card as { text?: string }).text)).toEqual([
+      'msg-70',
+      'msg-71',
+      'msg-72',
+      'msg-73',
+      'msg-74',
+      'msg-75',
+      'msg-76',
+      'msg-77',
+      'msg-78',
+      'msg-79',
+    ]);
+
+    const db = new Database(join(tempDir, 'state', 'quicksave.db'), { readonly: true });
+    const firstMeta = db.prepare('SELECT processed_bytes FROM card_history_meta WHERE session_id = ?').get('indexed') as { processed_bytes: number };
+    db.close();
+    expect(firstMeta.processed_bytes).toBe(statSync(logPath).size);
+
+    appendFileSync(logPath, JSON.stringify({
+      op: 'upsert',
+      card: { type: 'user', id: 'indexed:81', timestamp: 81, text: 'msg-80' },
+    }) + '\n');
+
+    const second = await loadPersistedCardPage('indexed', 0, 10);
+    expect(second.total).toBe(81);
+    expect(second.cards.at(-1)).toMatchObject({ id: 'indexed:81', text: 'msg-80' });
+  });
+
+  it('rebuilds the durable index when the JSONL is truncated or replaced', async () => {
+    mkdirSync(cardHistoryDir(), { recursive: true });
+    const logPath = join(cardHistoryDir(), 'truncated.jsonl');
+    writeFileSync(logPath, [
+      JSON.stringify({ op: 'upsert', card: { type: 'user', id: 'truncated:1', timestamp: 1, text: 'old-1' } }),
+      JSON.stringify({ op: 'upsert', card: { type: 'user', id: 'truncated:2', timestamp: 2, text: 'old-2' } }),
+      '',
+    ].join('\n'));
+
+    const first = await loadPersistedCardPage('truncated', 0, 50);
+    expect(first.total).toBe(2);
+
+    writeFileSync(logPath, JSON.stringify({
+      op: 'upsert',
+      card: { type: 'user', id: 'truncated:1', timestamp: 10, text: 'new-only' },
+    }) + '\n');
+
+    const second = await loadPersistedCardPage('truncated', 0, 50);
+    expect(second.total).toBe(1);
+    expect(second.cards).toEqual([
+      expect.objectContaining({ id: 'truncated:1', text: 'new-only' }),
+    ]);
   });
 });

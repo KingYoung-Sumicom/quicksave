@@ -35,7 +35,8 @@ import {
   SESSION_NOTE_HISTORY_CAP,
   matchAllowPattern,
 } from '@sumicom/quicksave-shared';
-import { StreamCardBuilder, buildCardsFromHistory, loadPersistedCards } from './cardBuilder.js';
+import { StreamCardBuilder, buildCardsFromHistory } from './cardBuilder.js';
+import { loadPersistedCardMaxSequence, loadPersistedCardPage } from './cardHistoryIndex.js';
 import { persistAttachments } from './attachmentStore.js';
 import { SANDBOX_BASH_TOOL, UPDATE_SESSION_STATUS_TOOL } from './sandboxMcp.js';
 import { getSessionRegistry } from './sessionRegistry.js';
@@ -773,7 +774,7 @@ export class SessionManager extends EventEmitter {
       const cardBuilder = existing?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.cwd);
       cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory');
       if (provider.historyMode === 'memory') {
-        cardBuilder.seedSequenceFromCards(await loadPersistedCards(opts.sessionId));
+        cardBuilder.seedSequenceFromMax(await loadPersistedCardMaxSequence(opts.sessionId));
       }
       await cardBuilder.snapshotCutoff();
       const callbacks = this.makeCallbacks(provider.id);
@@ -1321,19 +1322,23 @@ export class SessionManager extends EventEmitter {
     } else {
       // Memory-mode: use in-memory cards from active turn, falling back to persisted history
       const streamCards = ps?.cardBuilder?.getCards() ?? [];
-      const persisted = await loadPersistedCards(sessionId);
-      const cardsById = new Map<string, Card>();
-      for (const card of persisted) cardsById.set(card.id, card);
-      for (const card of streamCards) cardsById.set(card.id, card);
-      const cards = Array.from(cardsById.values());
-      const total = cards.length;
-      const start = Math.max(0, total - offset - limit);
-      const end = Math.max(0, total - offset);
-      result = {
-        cards: cards.slice(start, end),
-        total,
-        hasMore: start > 0,
-      };
+      const persisted = await loadPersistedCardPage(sessionId, offset, limit);
+      if (offset === 0 && streamCards.length > 0) {
+        const cardsById = new Map<string, Card>();
+        for (const card of persisted.cards) cardsById.set(card.id, card);
+        let extraLiveCards = 0;
+        for (const card of streamCards) {
+          if (!cardsById.has(card.id)) extraLiveCards++;
+          cardsById.set(card.id, card);
+        }
+        result = {
+          cards: Array.from(cardsById.values()),
+          total: persisted.total + extraLiveCards,
+          hasMore: persisted.hasMore,
+        };
+      } else {
+        result = persisted;
+      }
     }
 
     // Append in-memory cards for the active turn (initial load only — pagination
@@ -1362,14 +1367,15 @@ export class SessionManager extends EventEmitter {
     }
 
     if (pendingByToolUseId.size > 0) {
-      for (const card of result.cards) {
+      result.cards = result.cards.map((card) => {
         if (card.type === 'tool_call' && (card as any).toolUseId) {
           const pending = pendingByToolUseId.get((card as any).toolUseId);
           if (pending && !(card as any).pendingInput) {
-            (card as any).pendingInput = pending;
+            return { ...card, pendingInput: pending } as Card;
           }
         }
-      }
+        return card;
+      });
     }
 
     // Attach session title from config or registry

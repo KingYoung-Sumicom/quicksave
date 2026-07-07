@@ -79,6 +79,7 @@ export function useClaudeOperations(
 ) {
   // Per-session unsubscribe fns for /sessions/:id/cards bus subscriptions.
   const cardsUnsubsRef = useRef<Map<string, () => void>>(new Map());
+  const cardsSnapshotBuffersRef = useRef<Map<string, SessionCardsUpdate[]>>(new Map());
 
   // Release every live /sessions/:id/cards subscription when the hook
   // unmounts. Without this, navigating away from a ProjectDetail leaks the
@@ -93,6 +94,7 @@ export function useClaudeOperations(
         try { unsub(); } catch { /* swallow */ }
       }
       unsubs.clear();
+      cardsSnapshotBuffersRef.current.clear();
     };
   }, []);
   const {
@@ -150,6 +152,7 @@ export function useClaudeOperations(
       if (offset === 0) {
         const bus = getBus();
         if (!bus) return;
+        if (cardsSnapshotBuffersRef.current.has(sessionId)) return;
         // Release any stale subscription for this session before re-subscribing.
         // ClaudePanel only unsubs through its nav effect / handleNewSession,
         // so the ProjectList "+" button (which navigates straight to /add)
@@ -169,24 +172,44 @@ export function useClaudeOperations(
           setLoadingHistory(true);
           setHistoryError(null);
         }
-        const unsub = bus.subscribe<CardHistoryResponse, SessionCardsUpdate>(
-          `/sessions/${sessionId}/cards`,
-          {
-            onSnapshot: (snap) => {
-              if (!subscribeOnly) setLoadingHistory(false);
-              applySessionCardsSnapshot(sessionId, snap);
+        cardsSnapshotBuffersRef.current.set(sessionId, []);
+        try {
+          const unsub = bus.subscribe<CardHistoryResponse, SessionCardsUpdate>(
+            `/sessions/${sessionId}/cards`,
+            {
+              onSnapshot: (snap) => {
+                const bufferedUpdates = cardsSnapshotBuffersRef.current.get(sessionId) ?? [];
+                cardsSnapshotBuffersRef.current.delete(sessionId);
+                if (!subscribeOnly) setLoadingHistory(false);
+                applySessionCardsSnapshot(sessionId, snap);
+                for (const update of bufferedUpdates) {
+                  applySessionCardsUpdate(sessionId, update);
+                }
+              },
+              onUpdate: (update) => {
+                const buffer = cardsSnapshotBuffersRef.current.get(sessionId);
+                if (buffer) {
+                  buffer.push(update);
+                  return;
+                }
+                applySessionCardsUpdate(sessionId, update);
+              },
+              onError: (err) => {
+                cardsSnapshotBuffersRef.current.delete(sessionId);
+                console.warn(`[bus] /sessions/${sessionId}/cards error:`, err);
+                if (!subscribeOnly) {
+                  setHistoryError(err);
+                  setLoadingHistory(false);
+                }
+              },
+              acceptStaleSnapshots: true,
             },
-            onUpdate: (update) => applySessionCardsUpdate(sessionId, update),
-            onError: (err) => {
-              console.warn(`[bus] /sessions/${sessionId}/cards error:`, err);
-              if (!subscribeOnly) {
-                setHistoryError(err);
-                setLoadingHistory(false);
-              }
-            },
-          },
-        );
-        cardsUnsubsRef.current.set(sessionId, unsub);
+          );
+          cardsUnsubsRef.current.set(sessionId, unsub);
+        } catch (err) {
+          cardsSnapshotBuffersRef.current.delete(sessionId);
+          throw err;
+        }
         return;
       }
 
