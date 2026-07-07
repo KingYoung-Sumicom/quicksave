@@ -12,6 +12,7 @@ import { getEventStore } from '../storage/eventStore.js';
 import type { SessionRegistryEntry } from '@sumicom/quicksave-shared';
 import { setQuicksaveDir } from '../service/singleton.js';
 import { addManagedRepo } from '../config.js';
+import { PACKAGE_VERSION } from '../version.js';
 
 // Prevent tests from reading/writing the real ~/.quicksave/agent.json
 vi.mock('../config.js', async (importOriginal) => {
@@ -100,7 +101,7 @@ describe('MessageHandler', () => {
       expect(response.type).toBe('handshake:ack');
       expect(response.id).toBe(message.id);
       expect((response.payload as any).success).toBe(true);
-      expect((response.payload as any).agentVersion).toBe('0.8.18');
+      expect((response.payload as any).agentVersion).toBe(PACKAGE_VERSION);
       expect((response.payload as any).repoPath).toBe(testRepoPath);
     });
   });

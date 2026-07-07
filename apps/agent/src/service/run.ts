@@ -41,6 +41,7 @@ import { writeServiceState, removeServiceState } from './stateStore.js';
 import { wasLaunchedBySystemd } from './systemdUnit.js';
 import { buildCodexContextUsage } from './contextUsage.js';
 import { IPC_VERSION, BUILD_ID, isDebugEnabled, isDev } from './types.js';
+import { PACKAGE_VERSION } from '../version.js';
 import type {
   ServiceState,
   StatusResult,
@@ -80,7 +81,6 @@ import { getTerminalManager } from '../terminal/terminalManager.js';
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const REGISTRY_WATCH_INTERVAL_MS = 1_000;
-const PACKAGE_VERSION = '0.8.18';
 
 function startSessionRegistryWatcher(
   bus: MessageBusServer,

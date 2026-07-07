@@ -193,6 +193,7 @@ import { voiceEventLogger } from '../ai/voiceLog.js';
 import { CodexAppServerProvider } from '../ai/codexAppServer/index.js';
 import { CodexLoginManager } from '../ai/codexLogin.js';
 import { CodexQuotaService } from '../ai/codexQuota.js';
+import { PACKAGE_VERSION } from '../version.js';
 import { getTerminalManager } from '../terminal/terminalManager.js';
 import { getFileBrowser } from '../files/fileBrowser.js';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
@@ -287,7 +288,7 @@ async function hasPlausibleGitMarker(path: string): Promise<boolean> {
 
 export class MessageHandler {
   private repos: Map<string, GitOperations>;
-  private agentVersion = '0.8.18';
+  private agentVersion = PACKAGE_VERSION;
   private defaultRepoPath: string;
   private repoLocks: Map<string, string> = new Map(); // repoPath -> peerAddress holding lock
   private availableRepos: Repository[];

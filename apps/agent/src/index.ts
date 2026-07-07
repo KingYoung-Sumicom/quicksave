@@ -14,6 +14,7 @@ import { IpcClient as IpcClientClass } from './service/ipcClient.js';
 import { readServiceState } from './service/stateStore.js';
 import { isProcessAlive } from './service/singleton.js';
 import { isDebugEnabled } from './service/types.js';
+import { PACKAGE_VERSION } from './version.js';
 import type { StatusResult, PairingInfoResult, DebugResult, AgentStateResult, UnlockPairingResult } from './service/types.js';
 import type { CardHistoryResponse } from '@sumicom/quicksave-shared';
 
@@ -26,7 +27,7 @@ function collectValues(value: string, previous: string[]): string[] {
 program
   .name('quicksave-agent')
   .description('Quicksave desktop agent for remote git control')
-  .version('0.8.19')
+  .version(PACKAGE_VERSION)
   .allowExcessArguments(false)
   .option('-r, --repo <path>', 'Path to git repository (can specify multiple)', collectValues, [])
   .option('-c, --coding-path <path>', 'Path for Claude Code sessions (can specify multiple, non-git dirs OK)', collectValues, [])
@@ -79,7 +80,7 @@ program
     try {
       const result = await ensureDaemon();
       client = result.client;
-      console.log(`Quicksave Agent v0.8.19 (daemon pid: ${result.hello.daemonPid})`);
+      console.log(`Quicksave Agent v${PACKAGE_VERSION} (daemon pid: ${result.hello.daemonPid})`);
       console.log('='.repeat(50));
     } catch (err) {
       console.error('Failed to connect to daemon:', (err as Error).message);
