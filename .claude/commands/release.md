@@ -12,6 +12,7 @@ the agent also has runtime version constants and tests. Search the whole repo
 excluding generated/dependency directories:
 
 ```bash
+OLD_VERSION="$(node -p "require('./package.json').version")"
 rg -n --hidden --glob '!node_modules/**' --glob '!.git/**' --glob '!dist/**' '0\.[0-9]+\.[0-9]+'
 ```
 
@@ -34,8 +35,17 @@ $ARGUMENTS. Files that typically contain version strings:
 IMPORTANT: Use `rg` to find all old versions first, then replace ALL relevant
 occurrences. Do NOT publish while any previous Quicksave release version
 remains in tracked source/config files. Verify with a second search after
-replacing. For example, when releasing `0.8.14` after a bad `0.8.13`, both
-`0.8.12` and `0.8.13` must be gone:
+replacing. The exact previous version guard is mandatory and must produce no
+output:
+
+```bash
+rg -n --hidden --fixed-strings \
+  --glob '!node_modules/**' --glob '!.git/**' --glob '!dist/**' \
+  "$OLD_VERSION"
+```
+
+For example, when releasing `0.8.14` after a bad `0.8.13`, both `0.8.12` and
+`0.8.13` must be gone:
 
 ```bash
 rg -n --hidden --glob '!node_modules/**' --glob '!.git/**' --glob '!dist/**' '0\.8\.(12|13)'
@@ -109,5 +119,5 @@ npm view @sumicom/quicksave-message-bus version
 ```
 
 All three `npm view` commands must print `$ARGUMENTS`. Also repeat the old
-version search one last time on the pushed commit before calling the release
-done.
+version search one last time with the exact `rg --fixed-strings
+"$OLD_VERSION"` guard on the pushed commit before calling the release done.
