@@ -79,6 +79,9 @@ export function clampContextWindowForModel(
 
 /** Fallback when dynamic model list isn't available */
 export const CODEX_MODELS_FALLBACK = [
+  { value: 'gpt-5.6-sol', label: 'GPT-5.6-Sol' },
+  { value: 'gpt-5.6-terra', label: 'GPT-5.6-Terra' },
+  { value: 'gpt-5.6-luna', label: 'GPT-5.6-Luna' },
   { value: 'gpt-5.5', label: 'GPT-5.5' },
   { value: 'gpt-5.4', label: 'GPT-5.4' },
   { value: 'gpt-5.4-mini', label: 'GPT-5.4-Mini' },
@@ -87,6 +90,9 @@ export const CODEX_MODELS_FALLBACK = [
 ];
 
 const CODEX_MODEL_LABEL_OVERRIDES: Record<string, string> = {
+  'gpt-5.6-sol': 'GPT-5.6-Sol',
+  'gpt-5.6-terra': 'GPT-5.6-Terra',
+  'gpt-5.6-luna': 'GPT-5.6-Luna',
   'gpt-5.5': 'GPT-5.5',
   'gpt-5.4': 'GPT-5.4',
   'gpt-5.4-mini': 'GPT-5.4-Mini',

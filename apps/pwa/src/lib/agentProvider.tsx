@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { FormattedMessage } from 'react-intl';
 import type { AgentId, AgentCapabilities, CodexModelInfo } from '@sumicom/quicksave-shared';
-import { DEFAULT_CONTEXT_WINDOW } from '@sumicom/quicksave-shared';
+import { DEFAULT_CODEX_MODEL, DEFAULT_CONTEXT_WINDOW } from '@sumicom/quicksave-shared';
 import {
   CLAUDE_MODELS,
   CLAUDE_CONTEXT_WINDOWS,
@@ -675,7 +675,7 @@ class CodexAgentProvider extends BaseAgentProvider {
     supportedAttachmentKinds: ['image', 'text'],
   };
   readonly features = ['git'] as const;
-  readonly defaultModel = 'gpt-5.5';
+  readonly defaultModel = DEFAULT_CODEX_MODEL;
   readonly defaultPermissionMode = 'default';
   readonly defaultReasoningEffort = 'medium';
 

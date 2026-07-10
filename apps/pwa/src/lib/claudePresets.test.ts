@@ -6,6 +6,7 @@ import {
   codexModelsToOptions,
   formatCodexModelLabel,
   CLAUDE_MODELS,
+  CODEX_MODELS_FALLBACK,
   modelSupports1m,
   getContextWindowOptionsForModel,
   clampContextWindowForModel,
@@ -36,6 +37,14 @@ describe('claudePresets', () => {
   });
 
   describe('codexModelsToOptions', () => {
+    it('includes GPT-5.6 variants in the static Codex fallback list', () => {
+      expect(CODEX_MODELS_FALLBACK).toEqual(expect.arrayContaining([
+        { value: 'gpt-5.6-sol', label: 'GPT-5.6-Sol' },
+        { value: 'gpt-5.6-terra', label: 'GPT-5.6-Terra' },
+        { value: 'gpt-5.6-luna', label: 'GPT-5.6-Luna' },
+      ]));
+    });
+
     it('converts CodexModelInfo to options format', () => {
       const result = codexModelsToOptions([
         { id: 'o4-mini', name: 'o4-mini' },
@@ -49,10 +58,16 @@ describe('claudePresets', () => {
 
     it('formats known Codex ids when app-server returns the raw id as name', () => {
       const result = codexModelsToOptions([
+        { id: 'gpt-5.6-sol', name: 'gpt-5.6-sol' },
+        { id: 'gpt-5.6-terra', name: 'gpt-5.6-terra' },
+        { id: 'gpt-5.6-luna', name: 'gpt-5.6-luna' },
         { id: 'gpt-5.3-codex', name: 'gpt-5.3-codex' },
         { id: 'gpt-5.2', name: 'gpt-5.2' },
       ]);
       expect(result).toEqual([
+        { value: 'gpt-5.6-sol', label: 'GPT-5.6-Sol' },
+        { value: 'gpt-5.6-terra', label: 'GPT-5.6-Terra' },
+        { value: 'gpt-5.6-luna', label: 'GPT-5.6-Luna' },
         { value: 'gpt-5.3-codex', label: 'GPT-5.3-Codex' },
         { value: 'gpt-5.2', label: 'GPT-5.2' },
       ]);
