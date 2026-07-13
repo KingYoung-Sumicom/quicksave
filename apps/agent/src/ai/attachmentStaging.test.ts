@@ -234,6 +234,20 @@ describe('AttachmentStaging — idempotent re-send', () => {
 // ── Validation errors ──────────────────────────────────────────────────────
 
 describe('AttachmentStaging — validation errors', () => {
+  it('unsafe attachmentId path segment throws attachment_bad_request', () => {
+    const s = new AttachmentStaging();
+    expectThrowsCode(
+      () =>
+        s.acceptChunk(PEER_A, {
+          attachmentId: '../escape',
+          chunkIndex: 0,
+          chunk: b64('hi'),
+          meta: TEXT_META(2, 1),
+        }),
+      'attachment_bad_request',
+    );
+  });
+
   it('first chunk without meta throws attachment_bad_request', () => {
     const s = new AttachmentStaging();
     expectThrowsCode(

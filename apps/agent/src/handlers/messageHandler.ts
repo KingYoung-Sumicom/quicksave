@@ -2280,7 +2280,7 @@ export class MessageHandler {
         sessionId,
         cwd,
         time: now,
-        data: { kind: 'start', promptLength: prompt.length, model, agent: resolvedAgent },
+        data: { kind: 'start', promptLength: prompt.length, model: validatedModel, agent: resolvedAgent },
       });
       const registry = getSessionRegistry();
       const gitBranch = await this.getGitBranchQuiet(cwd);
@@ -2295,7 +2295,7 @@ export class MessageHandler {
         lastAccessedAt: now,
         permissionMode,
         sandboxed: sandboxed || undefined,
-        model,
+        model: validatedModel,
         reasoningEffort,
         contextWindow,
         mcpCorrId: this.claudeService.getSessionMcpCorrId(sessionId),

@@ -676,7 +676,7 @@ class CodexAgentProvider extends BaseAgentProvider {
   };
   readonly features = ['git'] as const;
   readonly defaultModel = DEFAULT_CODEX_MODEL;
-  readonly defaultPermissionMode = 'default';
+  readonly defaultPermissionMode = 'auto-review';
   readonly defaultReasoningEffort = 'medium';
 
   getModels(dynamic?: AgentDynamicData): ReadonlyArray<Option> {
@@ -704,7 +704,7 @@ class CodexAgentProvider extends BaseAgentProvider {
         key: 'permissionMode',
         label: 'Permission',
         setting: { kind: 'preset', options: CODEX_PERMISSION_MODES },
-        default: 'default',
+        default: 'auto-review',
       },
       {
         key: 'reasoningEffort',

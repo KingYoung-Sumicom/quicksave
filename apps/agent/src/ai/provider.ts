@@ -31,7 +31,7 @@ export function isCodexPermissionPreset(value: unknown): value is CodexPermissio
 }
 
 export function defaultPermissionLevelForAgent(agentId: AgentId): PermissionLevel {
-  return agentId === 'codex' ? 'default' : 'acceptEdits';
+  return agentId === 'codex' ? 'auto-review' : 'acceptEdits';
 }
 
 export function isPermissionLevelAcceptedForAgent(agentId: AgentId, value: unknown): boolean {

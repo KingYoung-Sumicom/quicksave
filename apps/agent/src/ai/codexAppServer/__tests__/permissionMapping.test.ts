@@ -2,9 +2,14 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
 
+import { defaultPermissionLevelForAgent } from '../../provider.js';
 import { mapPermissionLevelToCodex, permissionLevelToOverrides } from '../permissionMapping.js';
 
 describe('mapPermissionLevelToCodex', () => {
+  it('Codex daemon fallback default is auto-review', () => {
+    expect(defaultPermissionLevelForAgent('codex')).toBe('auto-review');
+  });
+
   it('bypassPermissions → never approval, dangerFullAccess sandbox, user reviewer', () => {
     const m = mapPermissionLevelToCodex('bypassPermissions', { sandboxed: true, cwd: '/tmp/x' });
     expect(m.approvalPolicy).toBe('never');

@@ -22,7 +22,7 @@ import { mkdir, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { simpleGit } from 'simple-git';
-import { resetSessionRegistry } from '../ai/sessionRegistry.js';
+import { getSessionRegistry, resetSessionRegistry } from '../ai/sessionRegistry.js';
 import { setQuicksaveDir } from '../service/singleton.js';
 
 // Stub the CLI-spawning providers so these tests don't fork real CLIs.
@@ -417,5 +417,21 @@ describe('MessageHandler.validateCodexModel — coercion', () => {
     expect(handler.getCachedCodexModels()).toEqual([]);
     // Without a cache we'd rather try the user's choice than swallow it.
     expect(handler.validateCodexModel('claude-opus-4-7', 'codex')).toBe('claude-opus-4-7');
+  });
+
+  it('records the coerced Codex model in the session registry', async () => {
+    const msg = createMessage('claude:start', {
+      prompt: 'hello',
+      cwd: repoPath,
+      agent: 'codex',
+      model: 'claude-opus-4-7',
+    } as never);
+
+    const resp = await handler.handleMessage(msg);
+    expect(resp.type).toBe('claude:start:response');
+    const sessionId = (resp.payload as { sessionId?: string }).sessionId;
+    expect(sessionId).toBeTruthy();
+    const entry = getSessionRegistry().findBySessionId(sessionId!);
+    expect(entry?.model).toBe('gpt-5.5');
   });
 });

@@ -27,6 +27,14 @@ flow.
   auto-approved. It does not change how the agent process or any other
   tool runs.
 
+Codex is the exception to the `SandboxBash` model. Codex sessions use
+Codex app-server's own `sandbox` / `approvalPolicy` fields instead of
+Quicksave's `SandboxBash` MCP tool. The product default for new Codex
+sessions is `permissionMode=auto-review` with `sandboxed=false`, which
+maps to Codex `sandbox=danger-full-access` plus
+`approvalsReviewer=auto_review`. Use Codex `read-only` when a constrained
+Codex run is required.
+
 ## What `SandboxBash` actually does
 
 When the agent calls `SandboxBash`:

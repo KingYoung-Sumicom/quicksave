@@ -52,6 +52,26 @@ export interface NotifyResult extends PushCallResult {
   pruned?: number;
 }
 
+interface PushNotifyCanonicalFields {
+  sessionId: string;
+  title?: string;
+  body?: string;
+  agentId?: string;
+  url?: string;
+  tag?: string;
+}
+
+function canonicalPushNotifyPayload(fields: PushNotifyCanonicalFields): string {
+  return JSON.stringify([
+    fields.sessionId,
+    fields.title ?? 'Quicksave',
+    fields.body ?? '',
+    fields.agentId ?? '',
+    fields.url ?? '',
+    fields.tag ?? '',
+  ]);
+}
+
 function bytesToB64Url(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64url');
 }
@@ -111,7 +131,19 @@ export class PushClient {
     if (opts.url !== undefined) body.url = opts.url;
     if (opts.tag !== undefined) body.tag = opts.tag;
 
-    const result = await this.post('notify', [sessionId], opts.relayHttpUrl, body);
+    const result = await this.post(
+      'notify',
+      [canonicalPushNotifyPayload({
+        sessionId,
+        title: opts.title,
+        body: opts.body,
+        agentId: opts.agentId,
+        url: opts.url,
+        tag: opts.tag,
+      })],
+      opts.relayHttpUrl,
+      body,
+    );
     if (result.ok && result.body && typeof result.body === 'object') {
       const parsed = result.body as { sent?: number; pruned?: number };
       return { ...result, sent: parsed.sent, pruned: parsed.pruned };

@@ -71,6 +71,16 @@ describe('attachmentStore', () => {
     expect(await loadAttachment('s1', 'two')).toBeNull();
   });
 
+  it('rejects unsafe sessionId and attachmentId path segments', async () => {
+    await expect(persistAttachments('../escape', [makeAttachment('a', 'x')]))
+      .rejects.toThrow(/sessionId must be a safe path segment/);
+    await expect(persistAttachments('s1', [makeAttachment('../escape', 'x')]))
+      .rejects.toThrow(/attachmentId must be a safe path segment/);
+
+    expect(await loadAttachment('../escape', 'a')).toBeNull();
+    expect(await loadAttachment('s1', '../escape')).toBeNull();
+  });
+
   it('removeSessionAttachments wipes the directory', async () => {
     await persistAttachments('s1', [makeAttachment('a', 'x'), makeAttachment('b', 'y')]);
     expect((await listSessionAttachments('s1')).length).toBe(2);

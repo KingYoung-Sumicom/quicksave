@@ -17,6 +17,7 @@ import {
   type AttachmentUploadRequestPayload,
   type AttachmentUploadResponsePayload,
 } from '@sumicom/quicksave-shared';
+import { isSafeAttachmentPathSegment } from './attachmentIds.js';
 import { countPdfPages } from './pdfMeta.js';
 
 interface StagedAttachment {
@@ -114,7 +115,7 @@ export class AttachmentStaging {
    */
   acceptChunk(peerAddress: string, payload: AttachmentUploadRequestPayload): AttachmentUploadResponsePayload {
     const { attachmentId, chunkIndex, chunk, meta } = payload;
-    if (!attachmentId || typeof attachmentId !== 'string') {
+    if (!isSafeAttachmentPathSegment(attachmentId)) {
       throw makeError('attachment_bad_request', 'attachmentId required', { attachmentId: String(attachmentId) });
     }
     if (typeof chunkIndex !== 'number' || chunkIndex < 0 || !Number.isInteger(chunkIndex)) {
@@ -226,6 +227,11 @@ export class AttachmentStaging {
    */
   consume(peerAddress: string, attachmentIds: readonly string[]): Attachment[] {
     if (attachmentIds.length === 0) return [];
+    for (const id of attachmentIds) {
+      if (!isSafeAttachmentPathSegment(id)) {
+        throw makeError('attachment_bad_request', 'invalid attachmentId', { attachmentId: String(id) });
+      }
+    }
     const peerMap = this.byPeer.get(peerAddress);
     if (!peerMap) {
       throw makeError('attachment_not_found', `no staged attachments for peer`, { attachmentId: attachmentIds[0] });
@@ -255,6 +261,7 @@ export class AttachmentStaging {
 
   /** Drop a staged attachment if present. Returns true if anything was removed. */
   cancel(peerAddress: string, attachmentId: string): boolean {
+    if (!isSafeAttachmentPathSegment(attachmentId)) return false;
     return this.dropEntry(peerAddress, attachmentId);
   }
 

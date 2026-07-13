@@ -1597,7 +1597,7 @@ export class SessionManager extends EventEmitter {
     // Wait for user response
     const response = await this.waitForUserInput(requestId, request);
 
-    if (response.action === 'deny') {
+    if (response.action === 'deny' || (!isQuestion && response.action !== 'allow')) {
       return { action: 'deny', response: response.response || 'User denied permission' };
     }
 
@@ -1657,11 +1657,10 @@ export class SessionManager extends EventEmitter {
     if (FILE_WRITE_TOOLS.has(toolName)) {
       const cwd = this.sessions.get(sessionId)?.cwd;
       const filePath = (input.file_path ?? input.path) as string | undefined;
-      if (filePath && cwd) {
-        const resolvedFile = resolve(filePath);
-        const resolvedCwd = resolve(cwd);
-        return resolvedFile === resolvedCwd || resolvedFile.startsWith(resolvedCwd + '/');
-      }
+      if (!filePath || !cwd) return false;
+      const resolvedCwd = resolve(cwd);
+      const resolvedFile = resolve(resolvedCwd, filePath);
+      return resolvedFile === resolvedCwd || resolvedFile.startsWith(resolvedCwd + '/');
     }
 
     return true;

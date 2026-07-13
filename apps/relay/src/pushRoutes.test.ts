@@ -40,6 +40,24 @@ function b64url(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64url');
 }
 
+function canonicalNotifyExtra(fields: {
+  sessionId: string;
+  title?: string;
+  body?: string;
+  agentId?: string;
+  url?: string;
+  tag?: string;
+}): string {
+  return JSON.stringify([
+    fields.sessionId,
+    fields.title ?? 'Quicksave',
+    fields.body ?? '',
+    fields.agentId ?? '',
+    fields.url ?? '',
+    fields.tag ?? '',
+  ]);
+}
+
 function signBody(
   secretKey: Uint8Array,
   action: string,
@@ -129,7 +147,9 @@ describe('pushRoutes', () => {
     });
 
     const sessionId = 'session-42';
-    const { ts, nonce, sig } = signBody(keyPair.secretKey, 'push:notify', signPubKey, [sessionId]);
+    const { ts, nonce, sig } = signBody(keyPair.secretKey, 'push:notify', signPubKey, [
+      canonicalNotifyExtra({ sessionId, title: 'T', body: 'B' }),
+    ]);
     const res = await invoke(routes, signPubKey, 'notify', { ts, nonce, sig, sessionId, title: 'T', body: 'B' });
 
     expect(res.statusCode).toBe(200);
@@ -141,12 +161,36 @@ describe('pushRoutes', () => {
   it('notify rejects replayed signatures', async () => {
     store.add(signPubKey, { endpoint: 'https://e/1', keys: { p256dh: 'p', auth: 'a' }, registeredAt: 1, lastUsedAt: 1 });
     const sessionId = 'session-42';
-    const { ts, nonce, sig } = signBody(keyPair.secretKey, 'push:notify', signPubKey, [sessionId]);
+    const { ts, nonce, sig } = signBody(keyPair.secretKey, 'push:notify', signPubKey, [
+      canonicalNotifyExtra({ sessionId }),
+    ]);
     const first = await invoke(routes, signPubKey, 'notify', { ts, nonce, sig, sessionId });
     const second = await invoke(routes, signPubKey, 'notify', { ts, nonce, sig, sessionId });
     expect(first.statusCode).toBe(200);
     expect(second.statusCode).toBe(401);
     expect(second.json().error).toBe('replay');
     expect(routes.stats().verifyFailures.byReason.replay).toBe(1);
+  });
+
+  it('notify rejects tampered user-visible payload fields', async () => {
+    store.add(signPubKey, { endpoint: 'https://e/1', keys: { p256dh: 'p', auth: 'a' }, registeredAt: 1, lastUsedAt: 1 });
+    const sessionId = 'session-42';
+    const { ts, nonce, sig } = signBody(keyPair.secretKey, 'push:notify', signPubKey, [
+      canonicalNotifyExtra({ sessionId, title: 'Original', body: 'B', tag: sessionId }),
+    ]);
+
+    const res = await invoke(routes, signPubKey, 'notify', {
+      ts,
+      nonce,
+      sig,
+      sessionId,
+      title: 'Tampered',
+      body: 'B',
+      tag: sessionId,
+    });
+
+    expect(res.statusCode).toBe(401);
+    expect(res.json().error).toBe('bad-signature');
+    expect(serviceSend).not.toHaveBeenCalled();
   });
 });

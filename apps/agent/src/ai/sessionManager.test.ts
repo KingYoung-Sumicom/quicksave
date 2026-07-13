@@ -1028,6 +1028,15 @@ describe('SessionManager', () => {
       expect(result.action).toBe('allow');
     });
 
+    it('should auto-approve relative Edit paths inside cwd in acceptEdits mode', async () => {
+      const result = await callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'Edit',
+        toolInput: { file_path: 'src/file.ts' },
+        toolUseId: 'tu-edit-relative',
+      });
+      expect(result.action).toBe('allow');
+    });
+
     it('should NOT auto-approve Edit for files outside cwd in acceptEdits mode', async () => {
       const permPromise = callbacks.handlePermissionRequest(sessionId, {
         toolName: 'Edit',
@@ -1046,6 +1055,26 @@ describe('SessionManager', () => {
         action: 'allow',
       });
       await permPromise;
+    });
+
+    it('should NOT auto-approve file writes with no file path', async () => {
+      const permPromise = callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'Edit',
+        toolInput: {},
+        toolUseId: 'tu-edit-missing-path',
+      });
+
+      const pending = manager.getPendingInputRequests();
+      const req = pending.find(p => p.toolUseId === 'tu-edit-missing-path');
+      expect(req).toBeDefined();
+
+      manager.resolveUserInput({
+        sessionId,
+        requestId: req!.requestId,
+        action: 'deny',
+      });
+      const result = await permPromise;
+      expect(result.action).toBe('deny');
     });
 
     it('should NOT auto-approve Bash in default acceptEdits mode', async () => {
@@ -1358,6 +1387,25 @@ describe('SessionManager', () => {
       const result = await permPromise;
       expect(result.action).toBe('deny');
       expect(result.response).toBe('No way');
+    });
+
+    it('should deny permission prompts resolved with respond instead of explicit allow', async () => {
+      const permPromise = callbacks.handlePermissionRequest(sessionId, {
+        toolName: 'Bash',
+        toolInput: { command: 'danger' },
+        toolUseId: 'tu-respond-is-not-allow',
+      });
+
+      const pending = manager.getPendingInputRequests();
+      manager.resolveUserInput({
+        sessionId,
+        requestId: pending[0].requestId,
+        action: 'respond',
+        response: 'looks fine',
+      });
+
+      const result = await permPromise;
+      expect(result.action).toBe('deny');
     });
 
     it('should emit user-input-resolved when resolved', async () => {

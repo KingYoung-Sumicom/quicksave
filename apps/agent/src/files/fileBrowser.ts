@@ -30,10 +30,10 @@ import type {
   FilesReadResponsePayload,
 } from '@sumicom/quicksave-shared';
 
-/** Default preview cap — keeps frames small on mobile. */
-const DEFAULT_PREVIEW_BYTES = 100 * 1024;
+/** Default text preview cap — large enough for real source/docs, still bounded for mobile. */
+const DEFAULT_PREVIEW_BYTES = 1024 * 1024;
 /** Absolute ceiling on `maxBytes` regardless of what the PWA asks for. */
-const HARD_PREVIEW_BYTES = 512 * 1024;
+const HARD_PREVIEW_BYTES = 4 * 1024 * 1024;
 /** Larger ceiling when the caller opts in to image inlining (`allowImage`).
  *  Base64 inflates by ~33%, so 16 MiB of source pixels is ~21 MiB before
  *  transport compression. */
@@ -133,7 +133,7 @@ export class FileBrowser {
       }
 
       // Image branch — opt-in via `allowImage`. We use a separate, larger
-      // cap because images legitimately exceed the 100 KiB text preview
+      // cap because images legitimately exceed the text preview
       // budget, but we still bound it so a stray multi-MB asset can't
       // saturate the channel.
       const imageMime = payload.allowImage ? imageMimeFor(targetAbs) : undefined;

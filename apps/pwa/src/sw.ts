@@ -28,6 +28,17 @@ interface PushPayload {
   tag?: string;
 }
 
+function safeNotificationUrl(raw: string | undefined): string {
+  if (!raw) return '/';
+  try {
+    const url = new URL(raw, self.location.origin);
+    if (url.origin !== self.location.origin) return '/';
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return '/';
+  }
+}
+
 self.addEventListener('push', (event: PushEvent) => {
   let payload: PushPayload = {};
   if (event.data) {
@@ -38,7 +49,7 @@ self.addEventListener('push', (event: PushEvent) => {
   const title = payload.title ?? 'Quicksave';
   const body = payload.body ?? '';
   const tag = payload.tag ?? payload.sessionId ?? 'quicksave-generic';
-  const url = payload.url ?? '/';
+  const url = safeNotificationUrl(payload.url);
 
   // `renotify` is widely supported by browsers but still missing from TS DOM lib.
   const options: NotificationOptions & { renotify?: boolean } = {
@@ -55,7 +66,7 @@ self.addEventListener('push', (event: PushEvent) => {
 self.addEventListener('notificationclick', (event: NotificationEvent) => {
   event.notification.close();
   const data = event.notification.data as { url?: string } | undefined;
-  const target = data?.url ?? '/';
+  const target = safeNotificationUrl(data?.url);
 
   event.waitUntil((async () => {
     const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });

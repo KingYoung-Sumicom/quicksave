@@ -156,8 +156,8 @@ describe('FileBrowser', () => {
       expect(typeof file.mtime).toBe('number');
     });
 
-    it('marks files larger than the 100 KiB cap as oversized: true', async () => {
-      const big = Buffer.alloc(150 * 1024, 0x41); // 150 KiB of 'A'
+    it('marks files larger than the 1 MiB default text cap as oversized: true', async () => {
+      const big = Buffer.alloc(2 * 1024 * 1024, 0x41);
       writeFileSync(join(root, 'big.txt'), big);
 
       const res = await fb.list({ cwd: root, path: '' });
@@ -167,11 +167,11 @@ describe('FileBrowser', () => {
       expect(entry.oversized).toBe(true);
     });
 
-    it('files at/below the 100 KiB cap are not oversized', async () => {
+    it('files at/below the default text cap are not oversized', async () => {
       writeFileSync(join(root, 'small.txt'), 'tiny');
       const res = await fb.list({ cwd: root, path: '' });
       const entry = res.entries!.find((e) => e.name === 'small.txt')!;
-      // spec: oversized = size > 100*1024. So `false` or `undefined`.
+      // spec: oversized = size > default text cap. So `false` or `undefined`.
       expect(entry.oversized === false || entry.oversized === undefined).toBe(true);
     });
 
@@ -259,8 +259,8 @@ describe('FileBrowser', () => {
       expect(typeof res.mtime).toBe('number');
     });
 
-    it('returns kind "oversized" with no content for files exceeding the default 100 KiB cap', async () => {
-      const big = Buffer.alloc(150 * 1024, 0x41);
+    it('returns kind "oversized" with no content for files exceeding the default 1 MiB cap', async () => {
+      const big = Buffer.alloc(2 * 1024 * 1024, 0x41);
       writeFileSync(join(root, 'big.txt'), big);
       const stat = statSync(join(root, 'big.txt'));
 
@@ -292,9 +292,9 @@ describe('FileBrowser', () => {
       expect(res.content).toBe(body);
     });
 
-    it('maxBytes is clamped to a 512 KiB ceiling — 100M does not bypass the safety cap; a 200 KiB file still succeeds', async () => {
-      // 200 KiB file with no NULs → text, well within the 512 KiB ceiling.
-      const buf = Buffer.alloc(200 * 1024, 0x41);
+    it('maxBytes is clamped to a 4 MiB ceiling — 100M does not bypass the safety cap; a 3 MiB file still succeeds', async () => {
+      // 3 MiB file with no NULs -> text, within the 4 MiB ceiling.
+      const buf = Buffer.alloc(3 * 1024 * 1024, 0x41);
       writeFileSync(join(root, 'big.txt'), buf);
 
       const res = await fb.read({
@@ -303,7 +303,7 @@ describe('FileBrowser', () => {
         maxBytes: 100_000_000,
       });
       expect(res.success).toBe(true);
-      // 200 KiB ≤ 512 KiB ceiling → readable as text.
+      // 3 MiB <= 4 MiB ceiling -> readable as text.
       expect(res.kind).toBe('text');
       expect(res.content!.length).toBe(buf.length);
     });
@@ -477,10 +477,10 @@ describe('FileBrowser', () => {
       expect(res.content).toBeUndefined();
     });
 
-    it('image branch uses its own larger cap — files above the 512 KiB text cap still load', async () => {
-      // 600 KiB of "PNG" — bytes don't matter, the image branch trusts the
+    it('image branch uses its own larger cap — files above the default text cap still load', async () => {
+      // 2 MiB of "PNG" — bytes don't matter, the image branch trusts the
       // extension and skips NUL sniffing.
-      const big = Buffer.alloc(600 * 1024, 0x42);
+      const big = Buffer.alloc(2 * 1024 * 1024, 0x42);
       writeFileSync(join(root, 'big.png'), big);
       const res = await fb.read({ cwd: root, path: 'big.png', allowImage: true });
       expect(res.success).toBe(true);

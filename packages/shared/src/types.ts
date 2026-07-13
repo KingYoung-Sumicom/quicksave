@@ -184,7 +184,7 @@ export type MessageType =
   | 'terminal:rename'        // pwa-request: rename a terminal tab
   | 'terminal:rename:response'
   // File browser — read-only directory listing + text file previews
-  | 'files:list'             // pwa-request: list a directory under a project root
+  | 'files:list'             // pwa-request: list a paired host directory
   | 'files:list:response'
   | 'files:read'             // pwa-request: read a text file (binary / oversized return a placeholder)
   | 'files:read:response'
@@ -2156,11 +2156,12 @@ export interface TerminalRenameResponsePayload {
 // File Browser Types
 // ============================================================================
 //
-// Read-only surface for browsing files under a project root. The agent
-// resolves `cwd + path` and rejects anything that escapes the root, so the
-// PWA can navigate with user-supplied relative paths without exfiltration
-// risk. Binary files and files above a size cap return metadata only — the
-// PWA renders a placeholder instead of loading megabytes over the wire.
+// Read-only surface for browsing files from a paired agent host. This is
+// intentionally not root-confined: absolute paths are read as-is and relative
+// paths resolve against `cwd`, matching clickable paths emitted by tools and
+// arbitrary workspaces. The trust boundary is the pinned PWA/agent pairing;
+// binary files and files above a size cap return metadata only so the PWA
+// renders a placeholder instead of loading large buffers over the wire.
 
 export type FileEntryKind = 'file' | 'directory' | 'symlink' | 'other';
 
@@ -2182,9 +2183,9 @@ export interface FileEntry {
 }
 
 export interface FilesListRequestPayload {
-  /** Project root — every resolved path must stay inside this directory. */
+  /** Base directory for relative paths. Absolute `path` values ignore this. */
   cwd: string;
-  /** Path relative to `cwd`. Empty or '.' lists the root itself. */
+  /** Path to list. Absolute paths are allowed; relative paths resolve against `cwd`. */
   path: string;
 }
 
@@ -2203,7 +2204,7 @@ export interface FilesListResponsePayload {
 export interface FilesReadRequestPayload {
   cwd: string;
   path: string;
-  /** Override the default 100 KiB preview cap. The agent clamps this to an
+  /** Override the default 1 MiB text preview cap. The agent clamps this to an
    *  internal hard cap so payloads stay bounded. */
   maxBytes?: number;
   /** When true, image files (png/jpg/gif/webp/avif/ico/bmp) are returned as

@@ -28,6 +28,26 @@ export interface PushRoutes {
 
 const MAX_BODY_BYTES = 16 * 1024;
 
+interface PushNotifyCanonicalFields {
+  sessionId: string;
+  title?: string;
+  body?: string;
+  agentId?: string;
+  url?: string;
+  tag?: string;
+}
+
+function canonicalPushNotifyPayload(fields: PushNotifyCanonicalFields): string {
+  return JSON.stringify([
+    fields.sessionId,
+    fields.title ?? 'Quicksave',
+    fields.body ?? '',
+    fields.agentId ?? '',
+    fields.url ?? '',
+    fields.tag ?? '',
+  ]);
+}
+
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -184,7 +204,14 @@ export function createPushRoutes(deps: PushRoutesDeps): PushRoutes {
       ts,
       nonce,
       sig,
-      extra: [sessionId],
+      extra: [canonicalPushNotifyPayload({
+        sessionId,
+        title,
+        body: message,
+        agentId,
+        url,
+        tag,
+      })],
       cache: nonceCache,
     });
     if (!verify.ok) {

@@ -96,14 +96,14 @@ apps/agent/src/
 ├── terminal/
 │   └── terminalManager.ts    # PTY pool + scrollback buffer per terminal
 ├── files/
-│   └── fileBrowser.ts        # Read-only file browser (list / read, with path sandboxing)
+│   └── fileBrowser.ts        # Read-only file browser (list / read, arbitrary host paths after pairing)
 └── git/
     └── operations.ts         # Git command execution
 ```
 
 > **Terminal subsystem**: `TerminalManager` (above) is a standalone EventEmitter that does not share state with AI sessions. It uses `node-pty` to open a shell (default `$SHELL -l`) and retains the raw output of each PTY (including ANSI codes) in a ring buffer capped at 256 KiB. The PWA reconstructs the terminal screen by subscribing to two buses, `/terminals` and `/terminals/:id/output`; on offline reconnect the snapshot brings back the entire scrollback so the screen returns to its pre-disconnect state immediately.
 
-> **File browser subsystem**: `FileBrowser` (`apps/agent/src/files/fileBrowser.ts`) is a pure request-response, stateless, read-only module — no EventEmitter, no bus subscription, because file content is fetched on-demand rather than streamed. Each request carries `cwd` (project root) + `path` (relative path); `resolveWithinRoot()` resolves the target to an absolute path and asserts it is still inside `realpath(cwd)`, rejecting anything outside. Binary detection uses a NUL-byte sniff over the first 8 KiB; the default preview cap is 100 KiB (`maxBytes` can override but is hard-clamped at 512 KiB).
+> **File browser subsystem**: `FileBrowser` (`apps/agent/src/files/fileBrowser.ts`) is a pure request-response, stateless, read-only module — no EventEmitter, no bus subscription, because file content is fetched on-demand rather than streamed. It is intentionally not root-confined after PWA/agent pairing: absolute `path` values are read as-is, and relative paths resolve against `realpath(cwd)` without an inside-root assertion. Binary detection uses a NUL-byte sniff over the first 8 KiB; the default text preview cap is 1 MiB (`maxBytes` can override but is hard-clamped at 4 MiB). Inline image reads use a separate 16 MiB cap.
 
 ### Startup Sequence (`service/run.ts → runDaemon()`)
 
@@ -437,7 +437,7 @@ Claude Code (`ClaudePermissionMode` in `ai/provider.ts`):
 | `auto` | Same allowlist as `default`; PWA default for new sessions | TodoWrite, EnterWorktree/ExitWorktree, Agent, EnterPlanMode |
 | `plan` | Planning only | EnterPlanMode |
 
-Codex (`CodexPermissionPreset`): `read-only`, `default`, `auto-review`, `full-access` — see `CODEX_AUTO_APPROVE` in `sessionManager.ts`. Compatibility shims in `normalizePermissionLevelForAgent` map legacy Claude-only values (`bypassPermissions` → `full-access`, `plan` → `read-only`, `auto` → `auto-review`, `acceptEdits` → `default`).
+Codex (`CodexPermissionPreset`): `read-only`, `default`, `auto-review`, `full-access`. The new-session default is intentionally `auto-review` with `sandboxed=false`: Codex runs with `danger-full-access` while auto-review handles approval prompts. `read-only` remains the constrained preset; `full-access` maps to `approvalPolicy=never`. Compatibility shims in `normalizePermissionLevelForAgent` map legacy Claude-only values (`bypassPermissions` → `full-access`, `plan` → `read-only`, `auto` → `auto-review`, `acceptEdits` → `default`).
 
 **Sandbox MCP tool permissions:**
 - `UpdateSessionStatus` — always auto-approved; handled in `sessionManager.shouldAutoApprove`, which writes
@@ -618,6 +618,7 @@ When the PWA is offline (tab closed or backgrounded) but a session needs attenti
 
 **Signing protocol** (`apps/relay/src/sigVerify.ts`):
 - Canonical body: `${action}|${signPubKey}|${ts}|${nonce}|${extra.join('|')}`
+- For `push:notify`, `extra` contains a stable JSON array covering `sessionId`, `title`, `body`, `agentId`, `url`, and `tag`; tampering with any user-visible notification field breaks the signature.
 - Ed25519 self-signed (no server-issued challenge) → avoids pending-channel DoS
 - Replay protection: 60s `ts` window + 120s `nonce` TTL cache; `NONCE_TTL_MS >= TS_WINDOW_MS` is an invariant
 
@@ -636,7 +637,7 @@ Agent ──[POST /push/{signPubKey}/notify,   signed]──▶ Relay → web-pu
 - `user-input-request`, when `bus.subscriberCount('/sessions/:id/attention') === 0` (no peer is watching this session) → notify
 - `card-stream-end`, when `bus.subscriberCount('/sessions/:id/attention') === 0`, not interrupted, and `hasPendingInputForSession` is false → notify
 
-Both triggers produce the same `{title, body, sessionId, tag, agentId}` shape; `tag: sessionId` makes follow-up messages collapse into a single notification on the browser side.
+Both triggers produce the same `{title, body, sessionId, tag, agentId}` shape; `tag: sessionId` makes follow-up messages collapse into a single notification on the browser side. OS-level notification text is intentionally generic (`Quicksave`, "permission/input required", "session ready") and must not include prompts, transcript text, command strings, or tool inputs. The service worker only opens same-origin app URLs from notification payloads; external URLs fall back to `/`.
 
 **Why `attention` rather than `cards`**: with multiple devices on the same account, a backgrounded tab on another device would still keep the cards subscription, swallowing the notification entirely. `/sessions/:id/attention` is only subscribed when `document.visibilityState === 'visible' && document.hasFocus()`, and listens to `visibilitychange` / `focus` / `blur` / `pagehide` to unsubscribe immediately; leaving the session page or closing the tab also releases it. This way the push gate only reflects "is any device currently being held in hand to view this session", and other backgrounded devices do not affect the decision.
 
@@ -844,6 +845,15 @@ type CardType =
                           // only in in-memory cards so it disappears after
                           // the session unsticks
 ```
+
+**PWA XSS threat model**: normal agent/model output reaching a card is not
+trusted HTML. An exploitable UI XSS through this path would require a model or
+tool output payload plus a renderer/sanitizer/URL-policy bug that turns that
+payload into executable browser content. Treat this as high impact but lower
+likelihood than agent permission, pairing, filesystem, notification, and relay
+signature boundaries. Keep raw HTML disabled and treat future markdown,
+syntax-highlighting, preview, or `dangerouslySetInnerHTML` changes as security
+review points.
 
 ---
 

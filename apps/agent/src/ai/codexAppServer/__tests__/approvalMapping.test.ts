@@ -56,6 +56,9 @@ describe('Codex app-server approval mapping', () => {
     expect(codexApprovalResponse('execCommandApproval', {}, { action: 'deny' })).toEqual({
       decision: 'denied',
     });
+    expect(codexApprovalResponse('execCommandApproval', {}, { action: 'respond' })).toEqual({
+      decision: 'denied',
+    });
   });
 
   it('grants the requested subset for permissions approval', () => {
@@ -82,6 +85,10 @@ describe('Codex app-server approval mapping', () => {
           write: ['/repo/.git'],
         },
       },
+    });
+    expect(codexApprovalResponse('item/permissions/requestApproval', params, { action: 'respond' })).toEqual({
+      scope: 'session',
+      permissions: {},
     });
   });
 });

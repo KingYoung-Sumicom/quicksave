@@ -2,8 +2,29 @@
 // SPDX-License-Identifier: MIT
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import nacl from 'tweetnacl';
-import { encodeBase64, decodeBase64, encodeKeyPair } from '@sumicom/quicksave-shared';
+import {
+  encodeBase64,
+  encodeKeyPair,
+} from '@sumicom/quicksave-shared';
 import { PushClient, httpBaseFromSignalingUrl } from './pushClient.js';
+
+function canonicalNotifyExtra(fields: {
+  sessionId: string;
+  title?: string;
+  body?: string;
+  agentId?: string;
+  url?: string;
+  tag?: string;
+}): string {
+  return JSON.stringify([
+    fields.sessionId,
+    fields.title ?? 'Quicksave',
+    fields.body ?? '',
+    fields.agentId ?? '',
+    fields.url ?? '',
+    fields.tag ?? '',
+  ]);
+}
 
 function b64urlFromB64(b64: string): string {
   return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -93,7 +114,7 @@ describe('PushClient', () => {
     expect(verifyCanonicalSig(canonical, body.sig, keyPair.publicKey)).toBe(true);
   });
 
-  it('notify signs over sessionId and forwards title/body/tag', async () => {
+  it('notify signs over all user-visible payload fields and forwards title/body/tag', async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, sent: 2, pruned: 1 }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -108,7 +129,13 @@ describe('PushClient', () => {
     expect(body.title).toBe('T');
     expect(body.body).toBe('B');
     expect(body.tag).toBe('session-42');
-    const canonical = ['push:notify', signPubKeyUrl, body.ts, body.nonce, 'session-42'].join('|');
+    const canonical = [
+      'push:notify',
+      signPubKeyUrl,
+      body.ts,
+      body.nonce,
+      canonicalNotifyExtra({ sessionId: 'session-42', title: 'T', body: 'B', tag: 'session-42' }),
+    ].join('|');
     expect(verifyCanonicalSig(canonical, body.sig, keyPair.publicKey)).toBe(true);
   });
 

@@ -336,6 +336,15 @@ describe('claudeStore', () => {
   // ── per-agent pref isolation ───────────────────────────────────────────
 
   describe('per-agent prefs', () => {
+    it('uses auto-review with no sandbox as the default Codex new-session preset', () => {
+      useClaudeStore.getState().setSelectedAgent('codex');
+
+      const state = useClaudeStore.getState();
+      expect(state.selectedPermissionMode).toBe('auto-review');
+      expect(state.sandboxEnabled).toBe(false);
+      expect(state.agentPrefs.codex.settings.permissionMode).toBe('auto-review');
+    });
+
     it('keeps each agent\'s prefs independent across switches', () => {
       const { setSelectedAgent, setSelectedModel, setSelectedPermissionMode } = useClaudeStore.getState();
 

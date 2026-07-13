@@ -22,6 +22,7 @@ import { mkdir, readFile, writeFile, appendFile, rm, readdir, stat } from 'fs/pr
 import { join } from 'path';
 import type { Attachment, AttachmentMetadata } from '@sumicom/quicksave-shared';
 import { getAttachmentsDir } from '../service/singleton.js';
+import { assertSafeAttachmentPathSegment } from './attachmentIds.js';
 
 export interface PersistedMeta {
   id: string;
@@ -33,14 +34,17 @@ export interface PersistedMeta {
 }
 
 function dirFor(sessionId: string): string {
+  assertSafeAttachmentPathSegment('sessionId', sessionId);
   return join(getAttachmentsDir(), sessionId);
 }
 
 function binPathFor(sessionId: string, attachmentId: string): string {
+  assertSafeAttachmentPathSegment('attachmentId', attachmentId);
   return join(dirFor(sessionId), `${attachmentId}.bin`);
 }
 
 function metaPathFor(sessionId: string, attachmentId: string): string {
+  assertSafeAttachmentPathSegment('attachmentId', attachmentId);
   return join(dirFor(sessionId), `${attachmentId}.meta.json`);
 }
 

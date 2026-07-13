@@ -476,7 +476,7 @@ export async function runDaemon(): Promise<void> {
         ? 'Permission required to continue'
         : 'Input required to continue';
       pushClient.notify(request.sessionId, {
-        title: request.title || 'Quicksave',
+        title: 'Quicksave',
         body,
         tag: request.sessionId,
         agentId: config.agentId,

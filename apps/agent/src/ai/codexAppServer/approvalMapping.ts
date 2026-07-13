@@ -107,7 +107,7 @@ export function codexApprovalResponse(
   | PermissionsRequestApprovalResponse
   | ExecCommandApprovalResponse
   | ApplyPatchApprovalResponse {
-  const allowed = decision.action !== 'deny';
+  const allowed = decision.action === 'allow';
   switch (method) {
     case 'item/commandExecution/requestApproval':
       return { decision: allowed ? 'accept' : 'decline' };
