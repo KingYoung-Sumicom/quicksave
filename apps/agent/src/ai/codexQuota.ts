@@ -173,12 +173,14 @@ function projectRateLimitWindow(
   fallbackId: Exclude<CodexQuotaWindowId, 'unknown'>,
 ): CodexQuotaWindow | null {
   if (!window) return null;
+  const rawUsedPercent = (window as { usedPercent?: unknown }).usedPercent;
+  if (typeof rawUsedPercent !== 'number' || !Number.isFinite(rawUsedPercent)) return null;
   const duration = window.windowDurationMins;
   const id = idForDuration(duration, fallbackId);
   return {
     id,
     label: labelForDuration(duration, id),
-    usedPercent: normalizePercent(window.usedPercent),
+    usedPercent: normalizePercent(rawUsedPercent),
     resetAt: normalizeEpochMs(window.resetsAt),
     windowDurationMins: duration,
   };

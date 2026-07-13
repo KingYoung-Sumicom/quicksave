@@ -66,31 +66,29 @@ export function CodexQuotaBadges({ sessionId, agentId }: { sessionId: string; ag
   }, [isCodexSession]);
 
   const windows = useMemo(() => orderQuotaWindows(snapshot?.windows ?? []), [snapshot?.windows]);
-  if (!isCodexSession) return null;
+  if (!isCodexSession || windows.length === 0) return null;
 
   const stale = isSnapshotStale(snapshot, now);
   const error = Boolean(snapshot?.error);
 
   return (
     <>
-      {ORDERED_WINDOWS.map((id) => {
-        const window = windows.find((w) => w.id === id) ?? null;
-        const label = window?.label ?? (id === 'five_hour' ? '5h' : '7d');
+      {windows.map((window) => {
         const tone = quotaTone(window, { now, stale, error });
         return (
           <button
-            key={id}
+            key={window.id}
             type="button"
             onClick={() => setOpen(true)}
             className={clsx(
               'flex items-center gap-1 px-2 py-1 rounded-md tabular-nums transition-colors',
               BADGE_TONE[tone],
             )}
-            title={badgeTitle(label, window, snapshot, stale)}
+            title={badgeTitle(window.label, window, snapshot, stale)}
           >
             <span className={clsx('h-1.5 w-1.5 rounded-full', dotClass(tone))} />
-            <span className="font-mono">{label}</span>
-            <span>{window ? formatPercent(window.usedPercent) : '--'}</span>
+            <span className="font-mono">{window.label}</span>
+            <span>{formatPercent(window.usedPercent)}</span>
           </button>
         );
       })}
@@ -160,10 +158,9 @@ function CodexQuotaModal({
         )}
 
         <div className="space-y-3">
-          {ORDERED_WINDOWS.map((id) => {
-            const window = windows.find((w) => w.id === id) ?? null;
-            return <QuotaWindowDetail key={id} window={window} fallbackLabel={id === 'five_hour' ? '5h' : '7d'} now={now} stale={stale} error={Boolean(snapshot?.error)} />;
-          })}
+          {windows.map((window) => (
+            <QuotaWindowDetail key={window.id} window={window} now={now} stale={stale} error={Boolean(snapshot?.error)} />
+          ))}
         </div>
       </div>
     </div>
@@ -172,13 +169,11 @@ function CodexQuotaModal({
 
 function QuotaWindowDetail({
   window,
-  fallbackLabel,
   now,
   stale,
   error,
 }: {
-  window: CodexQuotaWindow | null;
-  fallbackLabel: string;
+  window: CodexQuotaWindow;
   now: number;
   stale: boolean;
   error: boolean;
@@ -190,16 +185,16 @@ function QuotaWindowDetail({
   return (
     <section className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
       <div className="mb-2 flex items-center justify-between">
-        <span className="font-mono text-sm text-slate-200">{window?.label ?? fallbackLabel}</span>
+        <span className="font-mono text-sm text-slate-200">{window.label}</span>
         <span className={clsx('font-mono text-xs tabular-nums', detailToneClass(tone))}>
-          {window ? formatPercent(window.usedPercent) : '--'}
+          {formatPercent(window.usedPercent)}
         </span>
       </div>
 
       <div className="relative mb-3 h-2 overflow-hidden rounded-full bg-slate-700">
         <div
           className={clsx('h-full transition-all', barTone)}
-          style={{ width: `${clamp(window?.usedPercent ?? 0, 0, 100)}%` }}
+          style={{ width: `${clamp(window.usedPercent, 0, 100)}%` }}
         />
         {expected !== null && (
           <span
@@ -210,10 +205,10 @@ function QuotaWindowDetail({
       </div>
 
       <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
-        <Detail label="Used" value={window ? formatPercent(window.usedPercent) : '--'} />
+        <Detail label="Used" value={formatPercent(window.usedPercent)} />
         <Detail label="Expected" value={expected !== null ? formatPercent(expected) : '--'} />
-        <Detail label="Reset" value={window?.resetAt ? formatDateTime(window.resetAt) : '--'} />
-        <Detail label="Remaining" value={window?.resetAt ? formatRemaining(window.resetAt - now) : '--'} />
+        <Detail label="Reset" value={window.resetAt ? formatDateTime(window.resetAt) : '--'} />
+        <Detail label="Remaining" value={window.resetAt ? formatRemaining(window.resetAt - now) : '--'} />
       </div>
     </section>
   );
@@ -229,7 +224,8 @@ function Detail({ label, value }: { label: string; value: string }) {
 }
 
 function orderQuotaWindows(windows: CodexQuotaWindow[]): CodexQuotaWindow[] {
-  const ordered = [...windows].sort((a, b) => {
+  const visible = windows.filter((w) => ORDERED_WINDOWS.includes(w.id));
+  const ordered = [...visible].sort((a, b) => {
     const ai = ORDERED_WINDOWS.indexOf(a.id);
     const bi = ORDERED_WINDOWS.indexOf(b.id);
     const as = ai === -1 ? ORDERED_WINDOWS.length : ai;

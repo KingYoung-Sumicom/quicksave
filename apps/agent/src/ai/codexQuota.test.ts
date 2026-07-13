@@ -89,6 +89,25 @@ describe('projectCodexQuotaResponse', () => {
       ['seven_day', '7d', 34],
     ]);
   });
+
+  it('omits quota windows whose usage percentage is not reported', () => {
+    const snapshot = projectCodexQuotaResponse({
+      rateLimits: {
+        limitId: 'codex',
+        limitName: 'Codex',
+        primary: { usedPercent: null, windowDurationMins: 300, resetsAt: null } as any,
+        secondary: { usedPercent: 34, windowDurationMins: 10_080, resetsAt: null },
+        credits: null,
+        planType: null,
+        rateLimitReachedType: null,
+      },
+      rateLimitsByLimitId: null,
+    });
+
+    expect(snapshot.windows.map((w) => [w.id, w.label, w.usedPercent])).toEqual([
+      ['seven_day', '7d', 34],
+    ]);
+  });
 });
 
 describe('CodexQuotaService', () => {

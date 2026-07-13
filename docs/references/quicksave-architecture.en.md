@@ -892,8 +892,11 @@ claudeStore.ts
 codexQuotaStore.ts
   byAgent: Record<agentId, CodexQuotaSnapshot | null>
   // Mirrors `/codex/quota` snapshots per connected machine. The PWA composer
-  // renders only sanitized windows (`5h`, `7d`, usedPercent, resetAt,
-  // windowDurationMins); credentials and account identity never enter this store.
+  // renders only sanitized, actually reported windows (`5h`, `7d`,
+  // usedPercent, resetAt, windowDurationMins). If Codex does not report a
+  // window because usage accounting is disabled/unavailable, the badge is
+  // hidden instead of showing a fake 0%/unknown value. Credentials and account
+  // identity never enter this store.
 
 identityStore.ts
   publicKey: string | null             // base64 X25519 group pubkey (same across all PWAs)

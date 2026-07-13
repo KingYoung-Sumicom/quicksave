@@ -74,6 +74,17 @@ function appendOptimisticQueueState(
   };
 }
 
+export function shouldAdoptResumeResult(opts: {
+  requestedSessionId: string;
+  actualSessionId: string;
+  activeSessionIdAtRequest: string | null;
+  currentActiveSessionId: string | null;
+}): boolean {
+  if (opts.currentActiveSessionId === opts.requestedSessionId) return true;
+  if (opts.currentActiveSessionId === opts.actualSessionId) return true;
+  return opts.activeSessionIdAtRequest === null && opts.currentActiveSessionId === null;
+}
+
 export function useClaudeOperations(
   getBus: () => MessageBusClient | null,
 ) {
@@ -327,6 +338,7 @@ export function useClaudeOperations(
     async (sessionId: string, prompt: string, cwd?: string, opts?: { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean }) => {
       const state = useClaudeStore.getState();
       const session = state.sessions[sessionId];
+      const activeSessionIdAtRequest = state.activeSessionId;
       const wasAlreadyStreaming = state.isStreaming || session?.isStreaming === true;
       const queueInsteadOfAppend = wasAlreadyStreaming && !opts?.interruptCurrentTurn;
       setStreaming(true);
@@ -406,23 +418,31 @@ export function useClaudeOperations(
           }
         }
         if (!wasAlreadyStreaming) {
-          // Cold resume: bind the active session to whatever id the daemon
-          // returned. Hot resume keeps the existing binding (the active id
-          // hasn't changed; the new turn just pipes into the same session).
-          setActiveSession(actualSessionId);
-          // Cold resume can fork the session_id (CLI emits a new id when
-          // resuming an existing transcript). The PWA's card subscription is
-          // keyed by sessionId, so bus updates for the new id would never
-          // reach the store. Rebind: drop the old subscription, attach to
-          // the new one. ClaudePanel's nav effect early-returns when
-          // urlSessionId still matches the old id, so it can't do this for us.
-          if (actualSessionId !== sessionId) {
-            const oldUnsub = cardsUnsubsRef.current.get(sessionId);
-            if (oldUnsub) {
-              cardsUnsubsRef.current.delete(sessionId);
-              oldUnsub();
+          const shouldAdopt = shouldAdoptResumeResult({
+            requestedSessionId: sessionId,
+            actualSessionId,
+            activeSessionIdAtRequest,
+            currentActiveSessionId: useClaudeStore.getState().activeSessionId,
+          });
+          if (shouldAdopt) {
+            // Cold resume: bind the active session to whatever id the daemon
+            // returned. If the user navigated to another session while the
+            // process was spawning, keep their current focus and only update
+            // the session list state above.
+            setActiveSession(actualSessionId);
+            // Cold resume can fork the session_id (CLI emits a new id when
+            // resuming an existing transcript). The PWA's card subscription is
+            // keyed by sessionId, so bus updates for the new id would never
+            // reach the store. Rebind only while this resume still owns the
+            // visible session; otherwise it would steal the active card stream.
+            if (actualSessionId !== sessionId) {
+              const oldUnsub = cardsUnsubsRef.current.get(sessionId);
+              if (oldUnsub) {
+                cardsUnsubsRef.current.delete(sessionId);
+                oldUnsub();
+              }
+              getSessionCards(actualSessionId, 0, 50, cwd, /* subscribeOnly */ true);
             }
-            getSessionCards(actualSessionId, 0, 50, cwd, /* subscribeOnly */ true);
           }
         }
       } catch (error) {

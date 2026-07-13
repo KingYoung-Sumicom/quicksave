@@ -561,6 +561,14 @@ claudeStore.ts
   selectedModel: string
   selectedPermissionMode: string
 
+codexQuotaStore.ts
+  byAgent: Record<agentId, CodexQuotaSnapshot | null>
+  // Mirror 每台 connected machine 的 `/codex/quota` snapshot。PWA composer
+  // 只顯示實際回報的 sanitized windows（`5h`、`7d`、usedPercent、resetAt、
+  // windowDurationMins）；如果 Codex 因 usage accounting 關閉或不可用而沒
+  // 回報某個 window，badge 會隱藏，不顯示假的 0%/unknown。credentials 與
+  // account identity 不會進這個 store。
+
 identityStore.ts
   publicKey: string | null             // base64 X25519 group pubkey（所有 PWA 相同）
   initialized: boolean
