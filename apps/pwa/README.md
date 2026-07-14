@@ -51,12 +51,18 @@ QUICKSAVE_SIGNALING_URL=wss://your-relay.example.com pnpm build:pwa
 Output is in `dist/`, deployable to any static host (Cloudflare Pages,
 Netlify, S3, nginx).
 
+The production PWA precaches the app shell and the main JavaScript bundle so
+launching an installed PWA can survive a short network interruption. Production
+deployments must retain previously published files under `dist/assets/` for
+older Service Workers that may still serve a cached `index.html`; the server
+deployment script carries those fingerprinted assets into the new release.
+
 ## Source layout
 
 ```
 src/
 ├── App.tsx               # top-level router + auth / pairing gate
-├── main.tsx              # entry; mounts React + registers service worker
+├── main.tsx              # entry; mounts React (Vite PWA injects SW registration)
 ├── sw.ts                 # service worker (push + offline cache)
 ├── components/           # UI components (ClaudePanel, CommitForm, DiffViewer, ...)
 │   ├── chat/             # chat cards (UserCard, AssistantTextCard, ToolCallCard, ...)

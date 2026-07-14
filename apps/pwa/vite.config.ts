@@ -23,6 +23,10 @@ export default defineConfig({
       filename: 'sw.ts',
       injectManifest: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // The production entry bundle is currently just under 3 MB. Keep it
+        // in the app-shell cache so a PWA launch does not depend on a live
+        // network request for the main module.
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
       },
       // Register the SW in `vite dev` too; otherwise navigator.serviceWorker.ready
       // hangs forever and the notification "Re-register" button looks stuck.

@@ -8,6 +8,16 @@ declare const self: ServiceWorkerGlobalScope & {
   __WB_DISABLE_DEV_LOGS?: boolean;
 };
 
+// `registerType: 'autoUpdate'` cannot activate a custom injectManifest worker
+// by itself. Activate the new worker immediately and claim existing PWA
+// windows so iOS does not keep serving an old app shell after a deploy.
+if (import.meta.env.PROD) {
+  void self.skipWaiting();
+}
+self.addEventListener('activate', (event: ExtendableEvent) => {
+  event.waitUntil(self.clients.claim());
+});
+
 // In Vite dev, __WB_MANIFEST is populated with un-hashed /src/* and Vite-dep
 // URLs that will never be requested as-is (the browser hits them with ?v=
 // query strings or via HMR), so precacheAndRoute floods the console with

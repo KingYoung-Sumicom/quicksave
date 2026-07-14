@@ -154,6 +154,20 @@ mkdir -p "$RELEASES_DIR"
 TMP_DIR="$(mktemp -d "/tmp/quicksave-deploy-${ENV}-${RUN_ID}.XXXXXX")"
 NEW_RELEASE="${RELEASES_DIR}/${RUN_ID}"
 
+# Resolve the current live release before preparing the new one. Installed
+# PWAs can retain an older precached index.html while its replacement worker
+# is updating, so the previous release's hashed JS must remain reachable.
+PREVIOUS_TARGET=""
+if [[ -L "$APPS_LINK" ]]; then
+    PREVIOUS_TARGET="$(readlink -f "$APPS_LINK")"
+elif [[ -d "$APPS_LINK" ]]; then
+    LEGACY_RELEASE="${RELEASES_DIR}/legacy-$(date +%Y%m%d%H%M%S)"
+    log "Converting existing apps directory into legacy release $LEGACY_RELEASE"
+    mkdir -p "$LEGACY_RELEASE"
+    mv "$APPS_LINK" "${LEGACY_RELEASE}/apps"
+    PREVIOUS_TARGET="${LEGACY_RELEASE}/apps"
+fi
+
 if [[ -e "$NEW_RELEASE" ]]; then
     log "Removing existing incomplete release $NEW_RELEASE"
     rm -rf "$NEW_RELEASE"
@@ -170,6 +184,15 @@ log "Syncing artifact into release $NEW_RELEASE"
 rsync -a --delete "${PWA_DIST}/" "${NEW_RELEASE}/apps/pwa/dist/"
 rsync -a --delete "${RELAY_DIST}/" "${NEW_RELEASE}/apps/relay/dist/"
 
+# Keep old fingerprinted PWA assets in the new live release. The old service
+# worker may still serve its cached index.html during an iOS update, and that
+# HTML must not reference a hash that disappeared when the symlink switched.
+PREVIOUS_PWA_ASSETS="${PREVIOUS_TARGET}/pwa/dist/assets"
+if [[ -d "$PREVIOUS_PWA_ASSETS" ]]; then
+    log "Carrying forward previous PWA hashed assets"
+    rsync -a --ignore-existing "${PREVIOUS_PWA_ASSETS}/" "${NEW_RELEASE}/apps/pwa/dist/assets/"
+fi
+
 if [[ ! -f "${NEW_RELEASE}/apps/pwa/dist/index.html" ]]; then
     log "ERROR - Release is missing PWA index.html"
     exit 1
@@ -178,18 +201,6 @@ fi
 if [[ ! -f "${NEW_RELEASE}/apps/relay/dist/bundle.cjs" ]]; then
     log "ERROR - Release is missing relay bundle.cjs"
     exit 1
-fi
-
-if [[ -L "$APPS_LINK" ]]; then
-    PREVIOUS_TARGET="$(readlink -f "$APPS_LINK")"
-elif [[ -d "$APPS_LINK" ]]; then
-    LEGACY_RELEASE="${RELEASES_DIR}/legacy-$(date +%Y%m%d%H%M%S)"
-    log "Converting existing apps directory into legacy release $LEGACY_RELEASE"
-    mkdir -p "$LEGACY_RELEASE"
-    mv "$APPS_LINK" "${LEGACY_RELEASE}/apps"
-    PREVIOUS_TARGET="${LEGACY_RELEASE}/apps"
-else
-    PREVIOUS_TARGET=""
 fi
 
 log "Switching live apps symlink to $NEW_RELEASE"
