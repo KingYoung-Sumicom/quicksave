@@ -40,8 +40,10 @@ import {
 } from '@sumicom/quicksave-shared';
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { useClaudeStore } from '../stores/claudeStore';
+import { useConnectionStore } from '../stores/connectionStore';
 import { applySessionCardsSnapshot, applySessionCardsUpdate } from '../lib/applySessionCards';
 import { primeUploadedAttachment } from '../lib/attachmentUploader';
+import { getCodexFastServiceTierId } from '../lib/claudePresets';
 
 const QUEUE_PREVIEW_MAX = 80;
 const OPTIMISTIC_QUEUE_MIN_MS = 1500;
@@ -246,10 +248,15 @@ export function useClaudeOperations(
   );
 
   const startSession = useCallback(
-    async (prompt: string, opts?: { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] }) => {
+    async (prompt: string, opts?: { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string; sandboxed?: boolean; reasoningEffort?: string; fastMode?: boolean; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] }) => {
       clearCards();
       setStreaming(true);
       setStreamError(null);
+      const fastServiceTier = opts?.fastMode
+        ? getCodexFastServiceTierId(
+          useConnectionStore.getState().codexModels.find((model) => model.id === opts.model),
+        ) ?? 'fast'
+        : undefined;
       const hasOptimisticUserCard = prompt.trim().length > 0
         || (opts?.attachmentMetadata?.length ?? 0) > 0;
       if (hasOptimisticUserCard) {
@@ -279,6 +286,7 @@ export function useClaudeOperations(
             permissionMode: opts?.permissionMode,
             sandboxed: opts?.sandboxed,
             reasoningEffort: opts?.reasoningEffort,
+            ...(fastServiceTier ? { serviceTier: fastServiceTier } : {}),
             // contextWindow drives CLAUDE_CODE_AUTO_COMPACT_WINDOW on the
             // spawned CLI; without it the model defaults to its full window
             // (1M for opus-4-8) and auto-compact never fires at the user's pick.

@@ -59,6 +59,16 @@ describe('RuntimeOverrideStore.enqueue + drain', () => {
     expect(s.drain()).toEqual({ effort: 'high' });
   });
 
+  it('tracks service-tier changes as sticky turn overrides', () => {
+    const s = new RuntimeOverrideStore();
+    s.reseedFromServer({ serviceTier: null });
+    s.enqueue({ serviceTier: 'fast' });
+    expect(s.drain()).toEqual({ serviceTier: 'fast' });
+    s.commit();
+    s.enqueue({ serviceTier: null });
+    expect(s.drain()).toEqual({ serviceTier: null });
+  });
+
   it('reseedFromServer wipes pending — server is the new truth', () => {
     const s = new RuntimeOverrideStore();
     s.enqueue({ model: 'gpt-5.5' });

@@ -477,6 +477,12 @@ export class SessionManager extends EventEmitter {
       const effort = value === null ? null : (value as 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'none');
       this.enqueueCodexOverrideIfApplicable(sessionId, { effort });
       this.persistRegistryField(sessionId, 'reasoningEffort', value ?? undefined);
+    } else if (key === 'serviceTier' && (typeof value === 'string' || value === null)) {
+      // Codex app-server applies this sticky override on the next turn. Keep
+      // the wire value as a service-tier id so new catalog tiers can pass
+      // through without another daemon release.
+      this.enqueueCodexOverrideIfApplicable(sessionId, { serviceTier: value });
+      this.persistRegistryField(sessionId, 'serviceTier', value ?? undefined);
     } else if (key === 'permissionMode' && typeof value === 'string') {
       try {
         await this.setPermissionLevel(sessionId, value);
@@ -563,6 +569,8 @@ export class SessionManager extends EventEmitter {
     permissionMode?: string;
     sandboxed?: boolean;
     reasoningEffort?: string;
+    /** Codex service tier, currently `fast`. Other providers ignore it. */
+    serviceTier?: string | null;
     /** Auto-compact ceiling for Claude Code (200k / 500k / 1M). Codex ignores. */
     contextWindow?: number;
     /** Attachments resolved from staging by the messageHandler. */
@@ -599,6 +607,7 @@ export class SessionManager extends EventEmitter {
         sandboxed,
         systemPrompt,
         reasoningEffort: opts.reasoningEffort,
+        serviceTier: opts.serviceTier,
         contextWindow: opts.contextWindow,
         bypassFlagPath: bypassFlagPath(bypassToken),
         mcpCorrId,
@@ -634,6 +643,7 @@ export class SessionManager extends EventEmitter {
       agent: provider.id,
       ...(recordedModel !== undefined ? { model: recordedModel } : {}),
       ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
+      ...(opts.serviceTier ? { serviceTier: opts.serviceTier } : {}),
       ...(opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {}),
       ...(providerSession?.terminalId !== undefined ? { terminalId: providerSession.terminalId } : {}),
       permissionMode: level,
@@ -789,6 +799,8 @@ export class SessionManager extends EventEmitter {
       const resumeReasoningEffort = (sessionConfig?.reasoningEffort as string | undefined)
         ?? registryEntry?.reasoningEffort
         ?? this.preferences.reasoningEffort;
+      const resumeServiceTier = (sessionConfig?.serviceTier as string | undefined)
+        ?? registryEntry?.serviceTier;
       const resumeContextWindow = (sessionConfig?.contextWindow as number | undefined)
         ?? registryEntry?.contextWindow
         ?? this.preferences.contextWindow;
@@ -814,6 +826,7 @@ export class SessionManager extends EventEmitter {
           sandboxed,
           systemPrompt: buildSystemPrompt(provider.id),
           reasoningEffort: resumeReasoningEffort,
+          serviceTier: resumeServiceTier,
           contextWindow: resumeContextWindow,
           bypassFlagPath: bypassFlagPath(bypassToken),
           mcpCorrId,
@@ -834,6 +847,7 @@ export class SessionManager extends EventEmitter {
         sandboxed,
         ...(resumeModel !== undefined ? { model: resumeModel } : {}),
         ...(resumeReasoningEffort !== undefined ? { reasoningEffort: resumeReasoningEffort } : {}),
+        ...(resumeServiceTier !== undefined ? { serviceTier: resumeServiceTier } : {}),
         ...(resumeContextWindow !== undefined ? { contextWindow: resumeContextWindow } : {}),
       };
       this.sessionConfigs.set(sessionId, resumedConfig);

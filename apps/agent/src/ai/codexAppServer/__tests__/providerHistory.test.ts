@@ -19,6 +19,17 @@ describe('CodexAppServerProvider history persistence', () => {
     expect(buildThreadStartParams(opts)).not.toHaveProperty('experimentalRawEvents');
   });
 
+  it('passes Fast mode to thread/start', () => {
+    const params = buildThreadStartParams({
+      prompt: 'start',
+      cwd: '/tmp/quicksave-codex-fast',
+      permissionLevel: 'default',
+      sandboxed: true,
+      serviceTier: 'fast',
+    });
+    expect(params.serviceTier).toBe('fast');
+  });
+
   it('does not send removed legacy history flags when resuming a thread', () => {
     const opts: ResumeSessionOpts = {
       sessionId: 'thr_history',
@@ -30,6 +41,18 @@ describe('CodexAppServerProvider history persistence', () => {
 
     expect(buildThreadResumeParams(opts)).not.toHaveProperty('persistExtendedHistory');
     expect(buildThreadResumeParams(opts)).not.toHaveProperty('excludeTurns');
+  });
+
+  it('passes Fast mode to thread/resume', () => {
+    const params = buildThreadResumeParams({
+      sessionId: 'thr_fast',
+      prompt: 'continue',
+      cwd: '/tmp/quicksave-codex-fast',
+      permissionLevel: 'default',
+      sandboxed: true,
+      serviceTier: 'fast',
+    });
+    expect(params.serviceTier).toBe('fast');
   });
 
   it('maps enabled Codex skills to slash command suggestions', () => {

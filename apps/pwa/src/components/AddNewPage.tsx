@@ -625,6 +625,7 @@ function SessionTab({
   const selectedPermissionMode = useClaudeStore((s) => s.selectedPermissionMode);
   const selectedContextWindow = useClaudeStore((s) => s.selectedContextWindow);
   const selectedReasoningEffort = useClaudeStore((s) => s.selectedReasoningEffort);
+  const selectedFastMode = useClaudeStore((s) => s.selectedFastMode);
   const sandboxEnabled = useClaudeStore((s) => s.sandboxEnabled);
   const setGlobalPromptInput = useClaudeStore((s) => s.setPromptInput);
 
@@ -699,6 +700,7 @@ function SessionTab({
         // Both providers honor reasoningEffort (Codex SDK option vs Claude
         // CLI `--effort`); the agent layer narrows by provider.
         ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}),
+        ...(selectedFastMode ? { fastMode: true } : {}),
         ...(agentType.allowedTools !== undefined ? { allowedTools: agentType.allowedTools } : {}),
         ...(agentType.systemPrompt ? { systemPrompt: agentType.systemPrompt } : {}),
         ...(attachmentIds.length > 0 ? { attachmentIds, attachmentMetadata } : {}),

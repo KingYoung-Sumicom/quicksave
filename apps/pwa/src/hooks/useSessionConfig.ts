@@ -20,6 +20,7 @@ export function useSessionConfig(sessionId: string | null): Record<string, Confi
   const selectedAgent = useClaudeStore((s) => s.selectedAgent);
   const selectedPermissionMode = useClaudeStore((s) => s.selectedPermissionMode);
   const selectedReasoningEffort = useClaudeStore((s) => s.selectedReasoningEffort);
+  const selectedFastMode = useClaudeStore((s) => s.selectedFastMode);
   const sandboxEnabled = useClaudeStore((s) => s.sandboxEnabled);
   const selectedContextWindow = useClaudeStore((s) => s.selectedContextWindow);
 
@@ -30,6 +31,7 @@ export function useSessionConfig(sessionId: string | null): Record<string, Confi
       model: selectedModel ?? DEFAULT_MODEL,
       permissionMode: selectedPermissionMode ?? DEFAULT_PERMISSION_MODE,
       reasoningEffort: selectedReasoningEffort ?? DEFAULT_REASONING_EFFORT,
+      fastMode: selectedFastMode,
       sandboxed: sandboxEnabled,
       contextWindow: selectedContextWindow ?? DEFAULT_CONTEXT_WINDOW,
     };
@@ -48,6 +50,7 @@ export function useSessionConfig(sessionId: string | null): Record<string, Confi
     model: selectedModel,
     permissionMode: selectedPermissionMode,
     reasoningEffort: selectedReasoningEffort,
+    fastMode: selectedFastMode,
     sandboxed: sandboxEnabled,
     contextWindow: selectedContextWindow,
     ...sessionConfig,

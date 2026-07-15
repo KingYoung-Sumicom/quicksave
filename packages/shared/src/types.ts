@@ -542,6 +542,8 @@ export interface SessionRegistryEntry {
   reasoningEffort?: string;
   /** Auto-compact ceiling the session was last started/resumed with (Claude only). */
   contextWindow?: number;
+  /** Codex service tier the session was last started/resumed with (e.g. `fast`). */
+  serviceTier?: string;
   /**
    * Epoch ms of when this session was last viewed by ANY of the user's PWA
    * clients. Drives the email-style "unread" indicator in the session list:
@@ -806,6 +808,10 @@ export interface CodexModelInfo {
    *  agent uses this to coerce unsupported user-selected models back to a
    *  valid choice instead of letting the request fail with `BadRequest`. */
   isDefault?: boolean;
+  /** Service tiers advertised by the current Codex account for this model. */
+  serviceTiers?: Array<{ id: string; name: string; description: string }>;
+  /** Catalog-selected default service tier, when one is configured. */
+  defaultServiceTier?: string;
 }
 
 export interface CodexListModelsResponsePayload {
@@ -829,6 +835,24 @@ export interface CodexQuotaWindow {
   windowDurationMins?: number | null;
 }
 
+export interface CodexQuotaResetCredit {
+  id: string;
+  resetType: string;
+  status: string;
+  /** Unix ms when the credit was granted. */
+  grantedAt: number;
+  /** Unix ms when the credit expires, or null when it does not expire. */
+  expiresAt: number | null;
+  title: string | null;
+  description: string | null;
+}
+
+export interface CodexQuotaResetCredits {
+  availableCount: number;
+  /** Null means the backend only exposed the count. */
+  credits: CodexQuotaResetCredit[] | null;
+}
+
 export interface CodexQuotaSnapshot {
   source: 'app-server';
   /** Unix ms when the agent last attempted a quota read. */
@@ -838,6 +862,8 @@ export interface CodexQuotaSnapshot {
   /** True when this snapshot is older than the agent-side TTL. */
   stale: boolean;
   windows: CodexQuotaWindow[];
+  /** Optional account reset credits returned by newer app-server versions. */
+  resetCredits?: CodexQuotaResetCredits | null;
   error?: string;
 }
 
@@ -1853,6 +1879,8 @@ export interface ClaudeStartRequestPayload {
   reasoningEffort?: string;
   /** Auto-compact ceiling for Claude Code (200k / 500k / 1M). Codex ignores. */
   contextWindow?: number;
+  /** Codex service tier, currently `fast`; ignored by other agents. */
+  serviceTier?: string | null;
   /** Ids of attachments previously staged via `attachment:upload`. The agent
    *  resolves them from staging and forwards as content blocks to Claude. */
   attachmentIds?: string[];

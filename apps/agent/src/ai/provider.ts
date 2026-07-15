@@ -196,6 +196,8 @@ export interface StartSessionOpts {
    *  on the spawn env and appends the `[1m]` model suffix when the value
    *  exceeds 200k (which enables the API's 1M context beta). Codex ignores. */
   contextWindow?: number;
+  /** Codex service tier, e.g. `fast`. Other providers ignore this. */
+  serviceTier?: string | null;
   /** Absolute path to the daemon-owned sentinel file the CLI's PermissionRequest
    *  hook consults to auto-approve every tool. Presence of the file means bypass
    *  is active. Only ClaudeCliProvider uses it; other providers ignore it. */
@@ -218,6 +220,8 @@ export interface ResumeSessionOpts {
   systemPrompt?: string;
   reasoningEffort?: string;
   contextWindow?: number;
+  /** Codex service tier, e.g. `fast`. Other providers ignore this. */
+  serviceTier?: string | null;
   bypassFlagPath?: string;
   /** See {@link StartSessionOpts.mcpCorrId}. On resume the stdio server also
    *  gets `--session-id`, so this is belt-and-suspenders for cold re-spawns. */

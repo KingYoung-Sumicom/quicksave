@@ -9,12 +9,13 @@ import type { SandboxPolicy } from './schema/generated/v2/SandboxPolicy.js';
  * The set of TurnStartParams fields that we treat as runtime-mutable.
  * This is a strict subset of the full TurnStartParams override surface
  * — we only expose the dimensions Quicksave's UI surfaces today
- * (model / effort / permission). Other sticky fields (cwd,
- * personality, serviceTier, summary, collaborationMode) can be added
- * incrementally as the UI grows.
+ * (model / effort / permission / service tier). Other sticky fields (cwd,
+ * personality, summary, collaborationMode) can be added incrementally as
+ * the UI grows.
  */
 export interface RuntimeOverrides {
   model?: string | null;
+  serviceTier?: string | null;
   effort?: ReasoningEffort | null;
   approvalPolicy?: AskForApproval | null;
   sandboxPolicy?: SandboxPolicy | null;
@@ -23,6 +24,7 @@ export interface RuntimeOverrides {
 
 const KEYS: readonly (keyof RuntimeOverrides)[] = [
   'model',
+  'serviceTier',
   'effort',
   'approvalPolicy',
   'sandboxPolicy',

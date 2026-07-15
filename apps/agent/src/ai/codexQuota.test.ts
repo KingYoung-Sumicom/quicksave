@@ -41,6 +41,7 @@ describe('projectCodexQuotaResponse', () => {
       fetchedAt: 1_785_000_000_000,
       ttlMs: CODEX_QUOTA_TTL_MS,
       stale: false,
+      resetCredits: null,
       windows: [
         {
           id: 'five_hour',
@@ -57,6 +58,46 @@ describe('projectCodexQuotaResponse', () => {
           windowDurationMins: 10_080,
         },
       ],
+    });
+  });
+
+  it('projects reset-credit summaries without leaking bigint over the bus', () => {
+    const snapshot = projectCodexQuotaResponse({
+      rateLimits: {
+        limitId: 'codex',
+        limitName: 'Codex',
+        primary: null,
+        secondary: null,
+        credits: null,
+        planType: null,
+        rateLimitReachedType: null,
+      },
+      rateLimitsByLimitId: null,
+      rateLimitResetCredits: {
+        availableCount: 2n,
+        credits: [{
+          id: 'credit-1',
+          resetType: 'codexRateLimits',
+          status: 'available',
+          grantedAt: 1_786_000_000,
+          expiresAt: null,
+          title: 'Reset quota',
+          description: 'One reset',
+        }],
+      },
+    });
+
+    expect(snapshot.resetCredits).toEqual({
+      availableCount: 2,
+      credits: [{
+        id: 'credit-1',
+        resetType: 'codexRateLimits',
+        status: 'available',
+        grantedAt: 1_786_000_000_000,
+        expiresAt: null,
+        title: 'Reset quota',
+        description: 'One reset',
+      }],
     });
   });
 

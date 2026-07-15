@@ -21,6 +21,7 @@ import type { ItemCompletedNotification } from './schema/generated/v2/ItemComple
 import type { ServerRequestResolvedNotification } from './schema/generated/v2/ServerRequestResolvedNotification.js';
 import type { ErrorNotification } from './schema/generated/v2/ErrorNotification.js';
 import type { ThreadTokenUsageUpdatedNotification } from './schema/generated/v2/ThreadTokenUsageUpdatedNotification.js';
+import type { ModelSafetyBufferingUpdatedNotification } from './schema/generated/v2/ModelSafetyBufferingUpdatedNotification.js';
 import type { CodexErrorInfo } from './schema/generated/v2/CodexErrorInfo.js';
 import type { TurnStatus } from './schema/generated/v2/TurnStatus.js';
 import type { GuardianApprovalReview } from './schema/generated/v2/GuardianApprovalReview.js';
@@ -84,6 +85,8 @@ interface AdapterState {
   toolUseCallbacksFired: Set<string>;
   /** Latest plan card id (`plan:${turnId}`) we have created. */
   planCardId: string | null;
+  /** Canonical sub-agent activity item ids already surfaced as system cards. */
+  handledSubAgentActivityIds: Set<string>;
   /** When `turn/completed` arrives, set so we stop processing further
    * notifications for this adapter. */
   turnEnded: boolean;
@@ -101,6 +104,7 @@ function emptyState(): AdapterState {
     fileChangeCardsAdded: new Set(),
     toolUseCallbacksFired: new Set(),
     planCardId: null,
+    handledSubAgentActivityIds: new Set(),
     turnEnded: false,
   };
 }
@@ -441,19 +445,33 @@ export function createCodexTurnStreamConsumer(
         return;
       }
 
+      case 'model/safetyBuffering/updated': {
+        // Safety buffering is a backend execution detail. Keep the method
+        // handled so newer Codex releases do not surface a false warning;
+        // the actual buffering UX remains owned by the host UI.
+        const params = notification.params as ModelSafetyBufferingUpdatedNotification;
+        if (params.turnId !== ctx.turnId) return;
+        return;
+      }
+
       case 'mcpServer/startupStatus/updated': {
         // The user configured an MCP server that fails to start — they
         // need to know so they can fix it. `ready` and `starting` are
         // routine; we only surface the bad terminal states.
         const params = notification.params as {
+          threadId?: string | null;
           name: string;
           status: 'starting' | 'ready' | 'failed' | 'cancelled';
           error: string | null;
+          failureReason?: 'reauthenticationRequired' | null;
         };
         if (params.status === 'failed') {
+          const reauthHint = params.failureReason === 'reauthenticationRequired'
+            ? ' (re-authentication required; reconnect this MCP server)'
+            : '';
           emit(
             cb.systemMessage(
-              `MCP server "${params.name}" failed to start${params.error ? `: ${params.error}` : ''}`,
+              `MCP server "${params.name}" failed to start${reauthHint}${params.error ? `: ${params.error}` : ''}`,
               'error',
             ),
           );
@@ -496,6 +514,7 @@ export function createCodexTurnStreamConsumer(
 
       case 'thread/closed':
       case 'thread/status/changed':
+      case 'thread/deleted':
       case 'thread/name/updated':
       case 'thread/goal/updated':
       case 'thread/goal/cleared':
@@ -525,6 +544,7 @@ export function createCodexTurnStreamConsumer(
       case 'app/list/updated':
       case 'command/exec/outputDelta':
       case 'externalAgentConfig/import/completed':
+      case 'externalAgentConfig/import/progress':
       case 'fs/changed':
       case 'fuzzyFileSearch/sessionCompleted':
       case 'fuzzyFileSearch/sessionUpdated':
@@ -679,6 +699,15 @@ export function createCodexTurnStreamConsumer(
         return;
       }
 
+      case 'subAgentActivity':
+        emitSubAgentActivity(item);
+        return;
+
+      case 'sleep':
+        // Sleep items represent an internal wait and have no user-facing
+        // result to render.
+        return;
+
       case 'contextCompaction':
         emit(cb.systemMessage('Context compacted', 'compacted'));
         return;
@@ -821,6 +850,16 @@ export function createCodexTurnStreamConsumer(
         return;
       }
 
+      case 'subAgentActivity':
+        // The activity item is surfaced once at item/started. A completed
+        // notification carries the same activity record and must not create
+        // a duplicate system card.
+        emitSubAgentActivity(item);
+        return;
+
+      case 'sleep':
+        return;
+
       case 'userMessage':
       case 'hookPrompt':
       case 'imageView':
@@ -834,12 +873,24 @@ export function createCodexTurnStreamConsumer(
 
   const emitMcpToolUse = (item: Extract<ThreadItem, { type: 'mcpToolCall' }>): void => {
     const toolName = mcpToolName(item.server, item.tool);
-    const toolInput = jsonObjectOrEmpty(item.arguments);
+    const toolInput = mcpToolInput(item);
     if (!state.toolUseCallbacksFired.has(item.id)) {
       state.toolUseCallbacksFired.add(item.id);
       callbacks.onToolUse?.(ctx.sessionId, toolName, toolInput);
     }
     emit(cb.toolUse(toolName, toolInput, item.id));
+  };
+
+  const emitSubAgentActivity = (item: Extract<ThreadItem, { type: 'subAgentActivity' }>): void => {
+    if (state.handledSubAgentActivityIds.has(item.id)) return;
+    state.handledSubAgentActivityIds.add(item.id);
+    const label = item.agentPath || item.agentThreadId;
+    const verb = item.kind === 'started'
+      ? 'started'
+      : item.kind === 'interacted'
+        ? 'active'
+        : 'interrupted';
+    emit(cb.systemMessage(`Sub-agent ${verb}: ${label}`, item.kind === 'interrupted' ? 'warning' : 'info'));
   };
 
   const emitFileChangeCards = (
@@ -1132,6 +1183,20 @@ function jsonObjectOrEmpty(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+/** Keep connector/app metadata attached to MCP tool cards without mixing it
+ * into the server-provided arguments. The `_codex` namespace is additive and
+ * only appears for the newer app-context fields, preserving old card payloads. */
+function mcpToolInput(item: Extract<ThreadItem, { type: 'mcpToolCall' }>): Record<string, unknown> {
+  const input = jsonObjectOrEmpty(item.arguments);
+  const metadata: Record<string, unknown> = {};
+  if (item.appContext) metadata.appContext = item.appContext;
+  if (item.pluginId) metadata.pluginId = item.pluginId;
+  if (item.mcpAppResourceUri) metadata.mcpAppResourceUri = item.mcpAppResourceUri;
+  return Object.keys(metadata).length > 0
+    ? { ...input, _codex: metadata }
+    : input;
 }
 
 function parseMarkdownArtifactRefText(text: string): MarkdownArtifactRef | null {

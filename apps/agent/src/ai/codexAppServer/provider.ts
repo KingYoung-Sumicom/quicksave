@@ -59,6 +59,7 @@ import type { ToolRequestUserInputQuestion } from './schema/generated/v2/ToolReq
 import type { ToolRequestUserInputResponse } from './schema/generated/v2/ToolRequestUserInputResponse.js';
 import type { McpServerElicitationRequestParams } from './schema/generated/v2/McpServerElicitationRequestParams.js';
 import type { McpServerElicitationRequestResponse } from './schema/generated/v2/McpServerElicitationRequestResponse.js';
+import type { McpElicitationSchema } from './schema/generated/v2/McpElicitationSchema.js';
 import type { McpElicitationPrimitiveSchema } from './schema/generated/v2/McpElicitationPrimitiveSchema.js';
 import type { DynamicToolCallParams } from './schema/generated/v2/DynamicToolCallParams.js';
 import type { DynamicToolCallResponse } from './schema/generated/v2/DynamicToolCallResponse.js';
@@ -964,7 +965,9 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       };
     }
 
-    const fields = mcpElicitationFields(params.requestedSchema);
+    const fields = isMcpElicitationFormSchema(params.requestedSchema)
+      ? mcpElicitationFields(params.requestedSchema)
+      : [];
     const decision = await this.callbacks.handlePermissionRequest(this.threadId, {
       requestId,
       inputType: 'question',
@@ -1113,6 +1116,12 @@ function mcpElicitationFields(schema: { properties: { [key in string]?: McpElici
       },
     };
   });
+}
+
+function isMcpElicitationFormSchema(value: JsonValue | McpElicitationSchema): value is McpElicitationSchema {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const properties = (value as { properties?: unknown }).properties;
+  return typeof properties === 'object' && properties !== null && !Array.isArray(properties);
 }
 
 function mcpElicitationContentFromResponse(
@@ -1313,7 +1322,12 @@ function codexAppServerInit() {
       title: 'Quicksave Agent',
       version: '0.0.0',
     },
-    capabilities: { experimentalApi: true, requestAttestation: false, optOutNotificationMethods: null },
+    capabilities: {
+      experimentalApi: true,
+      requestAttestation: false,
+      mcpServerOpenaiFormElicitation: true,
+      optOutNotificationMethods: null,
+    },
   };
 }
 
@@ -1433,6 +1447,7 @@ function seedOverrideStoreFromResponse(
 ): void {
   store.reseedFromServer({
     model: resp.model,
+    serviceTier: resp.serviceTier,
     effort: resp.reasoningEffort ?? null,
     approvalPolicy: resp.approvalPolicy,
     sandboxPolicy: resp.sandbox,
@@ -1495,7 +1510,7 @@ export function buildThreadStartParams(opts: StartSessionOpts): ThreadStartParam
   return {
     model: opts.model ?? null,
     modelProvider: null,
-    serviceTier: null,
+    serviceTier: opts.serviceTier ?? null,
     cwd: opts.cwd,
     approvalPolicy: perm.approvalPolicy,
     approvalsReviewer: perm.approvalsReviewer,
@@ -1518,7 +1533,7 @@ export function buildThreadResumeParams(opts: ResumeSessionOpts): ThreadResumePa
     threadId: opts.sessionId,
     model: opts.model ?? null,
     modelProvider: null,
-    serviceTier: null,
+    serviceTier: opts.serviceTier ?? null,
     cwd: opts.cwd,
     approvalPolicy: perm.approvalPolicy,
     approvalsReviewer: perm.approvalsReviewer,
@@ -1540,6 +1555,9 @@ function perTurnOverridesFromOpts(
   const overrides: RuntimeOverrides = {};
   if (opts.reasoningEffort && opts.reasoningEffort !== resolved.reasoningEffort) {
     overrides.effort = normalizeEffort(opts.reasoningEffort);
+  }
+  if (opts.serviceTier !== undefined && opts.serviceTier !== resolved.serviceTier) {
+    overrides.serviceTier = opts.serviceTier;
   }
   return overrides;
 }

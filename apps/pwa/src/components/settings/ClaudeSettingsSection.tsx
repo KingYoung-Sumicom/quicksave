@@ -12,7 +12,11 @@ import { useSessionConfig } from '../../hooks/useSessionConfig';
 import { useClaudeStore } from '../../stores/claudeStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { AGENT_TYPES, getAgentProvider } from '../../lib/agentProvider';
-import { normalizeAgentId } from '../../lib/claudePresets';
+import {
+  getCodexFastServiceTierId,
+  isCodexFastServiceTier,
+  normalizeAgentId,
+} from '../../lib/claudePresets';
 import { ButtonGroup } from '../ui/ButtonGroup';
 
 interface ClaudeSettingsSectionProps {
@@ -37,20 +41,24 @@ export function ClaudeSettingsSection({ sessionId, onSetConfig, agentLocked, hid
   const provider = getAgentProvider(selectedAgent);
   const opencodeModels = useConnectionStore((s) => s.opencodeModels);
   const dynamic = { codexModels, opencodeModels };
+  const selectedCodexModel = codexModels.find((model) => model.id === config['model']);
+  const fastServiceTierId = getCodexFastServiceTierId(selectedCodexModel);
 
   // Build values map from session config with sensible defaults
   const values: Record<string, unknown> = {
     model: (config['model'] as string | undefined) ?? DEFAULT_MODEL,
     permissionMode: (config['permissionMode'] as string | undefined) ?? DEFAULT_PERMISSION_MODE,
     reasoningEffort: (config['reasoningEffort'] as string | undefined) ?? DEFAULT_REASONING_EFFORT,
+    fastMode: isCodexFastServiceTier(selectedCodexModel, config['serviceTier']) || config['fastMode'] === true,
     sandbox: (config['sandboxed'] as boolean | undefined) ?? false,
     contextWindow: (config['contextWindow'] as number | undefined) ?? DEFAULT_CONTEXT_WINDOW,
   };
 
   // Map setting keys to session config keys (sandbox → sandboxed on the wire)
   const onChange = (key: string, value: unknown) => {
-    const wireKey = key === 'sandbox' ? 'sandboxed' : key;
-    onSetConfig?.(wireKey, value as ConfigValue);
+    const wireKey = key === 'sandbox' ? 'sandboxed' : key === 'fastMode' ? 'serviceTier' : key;
+    const wireValue = key === 'fastMode' ? (value ? fastServiceTierId ?? 'fast' : null) : value;
+    onSetConfig?.(wireKey, wireValue as ConfigValue);
   };
 
   // Build hideKeys from hideFields mapping

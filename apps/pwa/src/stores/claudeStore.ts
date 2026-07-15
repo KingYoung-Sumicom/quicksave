@@ -154,6 +154,7 @@ function flatViewOf(prefs: AgentPrefs) {
     selectedModel: prefs.model,
     selectedPermissionMode: (s['permissionMode'] as string) ?? '',
     selectedReasoningEffort: (s['reasoningEffort'] as string) ?? '',
+    selectedFastMode: (s['fastMode'] as boolean) ?? false,
     sandboxEnabled: (s['sandbox'] as boolean) ?? false,
     selectedContextWindow: (s['contextWindow'] as number) ?? DEFAULT_CONTEXT_WINDOW,
   };
@@ -245,6 +246,7 @@ interface ClaudeStore {
   selectedModel: string;
   selectedPermissionMode: string;
   selectedReasoningEffort: string;
+  selectedFastMode: boolean;
   sandboxEnabled: boolean;
   selectedContextWindow: number;
   /** User-level opt-in to billed 1M context (Sonnet today). Persisted to
@@ -301,6 +303,7 @@ interface ClaudeStore {
   setSelectedAgent: (agent: AgentId) => void;
   setSelectedPermissionMode: (mode: string) => void;
   setSelectedReasoningEffort: (effort: string) => void;
+  setSelectedFastMode: (enabled: boolean) => void;
   setSandboxEnabled: (enabled: boolean) => void;
   setSelectedContextWindow: (contextWindow: number) => void;
   /** Toggle the billed-1M opt-in. Flipping off re-clamps every Claude-code
@@ -603,6 +606,15 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     set({ agentPrefs: updated, selectedContextWindow: clamped });
     savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
   },
+  setSelectedFastMode: (enabled) => {
+    const { selectedAgent, agentPrefs } = get();
+    const updated: AgentPrefsMap = {
+      ...agentPrefs,
+      [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, fastMode: enabled } },
+    };
+    set({ agentPrefs: updated, selectedFastMode: enabled });
+    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
+  },
   setAgentSetting: (key, value) => {
     if (key === 'model') { get().setSelectedModel(value as string); return; }
     const { selectedAgent, agentPrefs } = get();
@@ -613,6 +625,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     const flatPatch: Record<string, unknown> = {};
     if (key === 'permissionMode') flatPatch.selectedPermissionMode = value;
     else if (key === 'reasoningEffort') flatPatch.selectedReasoningEffort = value;
+    else if (key === 'fastMode') flatPatch.selectedFastMode = value;
     else if (key === 'sandbox') flatPatch.sandboxEnabled = value;
     else if (key === 'contextWindow') flatPatch.selectedContextWindow = value;
     set({ agentPrefs: updated, ...flatPatch });

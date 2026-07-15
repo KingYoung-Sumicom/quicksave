@@ -33,7 +33,7 @@ import { useComposerVoice } from '../hooks/useComposerVoice';
 import { useComposerAttachments } from '../hooks/useComposerAttachments';
 import { useVoiceAgent } from '../hooks/useVoiceAgent';
 
-type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
+type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; fastMode?: boolean; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
 type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean };
 
 interface ClaudePanelProps {
@@ -292,6 +292,7 @@ export function ClaudePanel({
     selectedModel,
     selectedPermissionMode,
     selectedReasoningEffort,
+    selectedFastMode,
     selectedContextWindow,
     sandboxEnabled,
     setPromptInput,
@@ -711,6 +712,7 @@ export function ClaudePanel({
           // `Options.effort`. Enums differ (Codex: minimal/low/medium/high/xhigh;
           // Claude: low/medium/high/xhigh/max) — agent validates per provider.
           ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}),
+          ...(selectedFastMode ? { fastMode: true } : {}),
           ...(selectedAgentType.allowedTools !== undefined ? { allowedTools: selectedAgentType.allowedTools } : {}),
           ...(selectedAgentType.systemPrompt ? { systemPrompt: selectedAgentType.systemPrompt } : {}),
           ...(attachmentIds.length > 0 ? { attachmentIds, attachmentMetadata } : {}),
@@ -720,7 +722,7 @@ export function ClaudePanel({
       // Clean up the upload manager state for the chips that just shipped.
       if (!isTerminalNewSession) attach.forgetSent(attachmentIds);
     }
-  }, [promptInput, attach, activeSessionId, isInactive, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedReasoningEffort, selectedContextWindow, selectedAgentType, setPromptInput, setStreamError, onSendControlRequest, onResumeSession, onStartSession, draftKey, showComposerToast]);
+  }, [promptInput, attach, activeSessionId, isInactive, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedReasoningEffort, selectedFastMode, selectedContextWindow, selectedAgentType, setPromptInput, setStreamError, onSendControlRequest, onResumeSession, onStartSession, draftKey, showComposerToast]);
 
   /**
    * Send a fixed prompt without using the composer input. Used by inline

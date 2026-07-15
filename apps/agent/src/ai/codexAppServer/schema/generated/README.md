@@ -6,7 +6,7 @@ These TypeScript files are a hand-curated subset of the output of:
 codex app-server generate-ts --out DIR
 ```
 
-Pinned codex CLI version: **0.139.0** (see `../version.ts`).
+Pinned codex CLI version: **0.144.1** (see `../version.ts`).
 
 **Do not edit by hand.** To resync after a codex CLI bump, run:
 

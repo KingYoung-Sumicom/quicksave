@@ -1320,6 +1320,53 @@ describe('cardAdapter — mcpToolCall cards', () => {
     );
   });
 
+  it('preserves connector app context in the namespaced MCP tool input', async () => {
+    const h = harness();
+    await h.send('item/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: {
+        type: 'mcpToolCall',
+        id: 'mcp_app_context',
+        server: 'connector-server',
+        tool: 'Search',
+        status: 'completed',
+        arguments: { query: 'quicksave' },
+        appContext: {
+          connectorId: 'connector-1',
+          linkId: 'link-1',
+          resourceUri: 'app://resource/1',
+          appName: 'Example App',
+          templateId: 'template-1',
+          actionName: 'search',
+        },
+        mcpAppResourceUri: 'app://resource/legacy',
+        pluginId: 'plugin-1',
+        result: { content: [{ type: 'text', text: 'ok' }], structuredContent: null, _meta: null },
+        error: null,
+        durationMs: 3,
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    expect(h.callbacks.onToolUse).toHaveBeenCalledWith(
+      h.sessionId,
+      'mcp__connector-server__Search',
+      expect.objectContaining({
+        query: 'quicksave',
+        _codex: {
+          appContext: expect.objectContaining({ connectorId: 'connector-1' }),
+          mcpAppResourceUri: 'app://resource/legacy',
+          pluginId: 'plugin-1',
+        },
+      }),
+    );
+  });
+
   it('surfaces item/mcpToolCall/progress on the existing tool card', async () => {
     const h = harness();
     await h.send('item/started', {
@@ -1671,6 +1718,50 @@ describe('cardAdapter — surfaced control notifications', () => {
     expect((errors[0].card as { text?: string }).text).toMatch(/MCP server "bar" failed/);
     expect((errors[0].card as { text?: string }).text).toMatch(/spawn ENOENT/);
   });
+
+  it('explains when an MCP startup failure requires re-authentication', async () => {
+    const h = harness();
+    await h.send('mcpServer/startupStatus/updated', {
+      name: 'calendar',
+      status: 'failed',
+      error: 'OAuth expired',
+      failureReason: 'reauthenticationRequired',
+    });
+    await h.send('turn/completed', {
+      threadId: 'thr_test',
+      turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+    const error = h.events.find(
+      (e): e is Extract<typeof e, { type: 'add' }> =>
+        e.type === 'add' && (e.card as { subtype?: string }).subtype === 'error',
+    );
+    expect((error?.card as { text?: string }).text).toMatch(/re-authentication required/);
+  });
+
+  it('handles new out-of-band notifications without an unsupported warning', async () => {
+    const h = harness();
+    await h.send('thread/deleted', { threadId: h.sessionId });
+    await h.send('externalAgentConfig/import/progress', { importId: 'import_1', itemTypeResults: [] });
+    await h.send('model/safetyBuffering/updated', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      model: 'gpt-5.4',
+      useCases: [],
+      reasons: [],
+      showBufferingUi: false,
+      fasterModel: null,
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    expect(h.events.some(
+      (e) => e.type === 'add' && (e.card as { text?: string }).text?.includes('Unsupported Codex notification'),
+    )).toBe(false);
+  });
 });
 
 describe('cardAdapter — surfaced ThreadItem variants', () => {
@@ -1833,6 +1924,49 @@ describe('cardAdapter — surfaced ThreadItem variants', () => {
     );
     expect(toolAdds.length).toBeGreaterThanOrEqual(1);
     expect((toolAdds[0].card as { toolName?: string }).toolName).toMatch(/^collab:/);
+  });
+
+  it('subAgentActivity emits one info card across the item lifecycle', async () => {
+    const h = harness();
+    const item = {
+      type: 'subAgentActivity',
+      id: 'activity_1',
+      kind: 'started',
+      agentThreadId: 'agent_thread_1',
+      agentPath: 'agents/reviewer',
+    };
+    await h.send('item/started', { threadId: h.sessionId, turnId: h.turnId, item });
+    await h.send('item/completed', { threadId: h.sessionId, turnId: h.turnId, item });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const activityCards = h.events.filter(
+      (e): e is Extract<typeof e, { type: 'add' }> =>
+        e.type === 'add' && (e.card as { text?: string }).text?.includes('Sub-agent started: agents/reviewer') === true,
+    );
+    expect(activityCards).toHaveLength(1);
+    expect(h.events.some(
+      (e) => e.type === 'add' && (e.card as { text?: string }).text?.includes('Internal adapter error'),
+    )).toBe(false);
+  });
+
+  it('handles sleep items without surfacing an adapter warning', async () => {
+    const h = harness();
+    const item = { type: 'sleep', id: 'sleep_1', durationMs: 250 };
+    await h.send('item/started', { threadId: h.sessionId, turnId: h.turnId, item });
+    await h.send('item/completed', { threadId: h.sessionId, turnId: h.turnId, item });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    expect(h.events.some(
+      (e) => e.type === 'add' && (e.card as { text?: string }).text?.includes('Internal adapter error'),
+    )).toBe(false);
   });
 });
 

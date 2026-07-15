@@ -96,6 +96,8 @@ type ModelListResponse = {
     inputModalities: string[];
     supportsPersonality: boolean;
     additionalSpeedTiers: string[];
+    serviceTiers?: Array<{ id: string; name: string; description: string }>;
+    defaultServiceTier?: string | null;
     isDefault: boolean;
     upgrade: string | null;
     upgradeInfo: null;
@@ -113,6 +115,7 @@ function modelEntry(opts: {
   isDefault?: boolean;
   defaultReasoningEffort?: string;
   supportedReasoningEfforts?: string[];
+  serviceTiers?: Array<{ id: string; name: string; description: string }>;
 }) {
   return {
     id: opts.id,
@@ -128,6 +131,8 @@ function modelEntry(opts: {
     inputModalities: [],
     supportsPersonality: false,
     additionalSpeedTiers: [],
+    serviceTiers: opts.serviceTiers ?? [],
+    defaultServiceTier: null,
     isDefault: opts.isDefault ?? false,
     upgrade: null,
     upgradeInfo: null,
@@ -386,6 +391,31 @@ describe('MessageHandler.validateCodexModel — coercion', () => {
 
   it('passes through a model that exists in the cache', () => {
     expect(handler.validateCodexModel('gpt-5.4', 'codex')).toBe('gpt-5.4');
+  });
+
+  it('validates Fast mode against the selected model service-tier catalog', () => {
+    nextModelListResponse = {
+      data: [
+        modelEntry({
+          id: 'gpt-5.5',
+          isDefault: true,
+          serviceTiers: [{ id: 'fast', name: 'Fast', description: 'Faster responses' }],
+        }),
+        modelEntry({ id: 'gpt-5.4' }),
+      ],
+      nextCursor: null,
+    };
+    // The cache is intentionally refreshed synchronously through the private
+    // test seam used by the surrounding model-cache tests.
+    (handler as unknown as { codexModelsCache: { models: unknown[] } }).codexModelsCache.models = [
+      { id: 'gpt-5.5', serviceTiers: [{ id: 'fast', name: 'Fast', description: 'Faster responses' }] },
+      { id: 'gpt-5.6-sol', serviceTiers: [{ id: 'priority', name: 'Fast', description: '1.5x speed' }] },
+      { id: 'gpt-5.4', serviceTiers: [] },
+    ];
+    expect(handler.validateCodexServiceTier('fast', 'gpt-5.5', 'codex')).toBe('fast');
+    expect(handler.validateCodexServiceTier('fast', 'gpt-5.6-sol', 'codex')).toBe('priority');
+    expect(handler.validateCodexServiceTier('priority', 'gpt-5.6-sol', 'codex')).toBe('priority');
+    expect(handler.validateCodexServiceTier('fast', 'gpt-5.4', 'codex')).toBeNull();
   });
 
   it('coerces an unsupported model to the cache default', () => {

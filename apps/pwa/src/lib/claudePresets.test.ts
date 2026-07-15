@@ -10,6 +10,8 @@ import {
   modelSupports1m,
   getContextWindowOptionsForModel,
   clampContextWindowForModel,
+  getCodexFastServiceTierId,
+  isCodexFastServiceTier,
   getModelContextLimit,
 } from './claudePresets';
 
@@ -79,6 +81,27 @@ describe('claudePresets', () => {
 
     it('handles empty array', () => {
       expect(codexModelsToOptions([])).toEqual([]);
+    });
+  });
+
+  describe('Codex Fast service tier', () => {
+    const sol = {
+      id: 'gpt-5.6-sol',
+      name: 'GPT-5.6-Sol',
+      serviceTiers: [{ id: 'priority', name: 'Fast', description: '1.5x speed' }],
+    };
+
+    it('uses the catalog id when Fast is advertised as priority', () => {
+      expect(getCodexFastServiceTierId(sol)).toBe('priority');
+      expect(isCodexFastServiceTier(sol, 'priority')).toBe(true);
+    });
+
+    it('keeps the legacy fast alias enabled', () => {
+      expect(isCodexFastServiceTier(sol, 'fast')).toBe(true);
+    });
+
+    it('returns undefined when the model has no Fast tier', () => {
+      expect(getCodexFastServiceTierId({ id: 'standard', name: 'Standard' })).toBeUndefined();
     });
   });
 

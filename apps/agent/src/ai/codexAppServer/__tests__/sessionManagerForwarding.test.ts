@@ -130,6 +130,13 @@ describe('SessionManager → CodexAppServer override forwarding', () => {
     expect(session.enqueued).toEqual([{ model: 'gpt-5.5' }]);
   });
 
+  it('setSessionConfig(serviceTier) forwards Fast mode to the next turn', async () => {
+    const { sm, sessionId, session } = await setupActiveCodexSession();
+    await sm.setSessionConfig(sessionId, 'serviceTier', 'fast');
+    expect(session.enqueued).toEqual([{ serviceTier: 'fast' }]);
+    expect(sm.getSessionConfig(sessionId).serviceTier).toBe('fast');
+  });
+
   it('setSessionConfig(reasoningEffort) forwards as effort', async () => {
     const { sm, sessionId, session } = await setupActiveCodexSession();
     await sm.setSessionConfig(sessionId, 'reasoningEffort', 'high');

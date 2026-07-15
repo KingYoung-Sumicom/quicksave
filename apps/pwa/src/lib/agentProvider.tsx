@@ -17,6 +17,7 @@ import {
   clampContextWindowForModel,
   getModelContextLimit as getPresetModelContextLimit,
   codexModelsToOptions,
+  getCodexFastServiceTierId,
   type AgentType,
 } from './claudePresets';
 import { ButtonGroup } from '../components/ui/ButtonGroup';
@@ -712,7 +713,41 @@ class CodexAgentProvider extends BaseAgentProvider {
         setting: { kind: 'preset', options: reasoningOptions },
         default: 'medium',
       },
+      {
+        key: 'fastMode',
+        label: 'Fast mode',
+        setting: { kind: 'boolean' },
+        default: false,
+      },
     ];
+  }
+
+  private supportsFastMode(values: Record<string, unknown>, dynamic?: AgentDynamicData): boolean {
+    const modelId = values['model'] as string | undefined;
+    const model = dynamic?.codexModels?.find((entry) => entry.id === modelId);
+    return getCodexFastServiceTierId(model) !== undefined;
+  }
+
+  renderSettings(
+    values: Record<string, unknown>,
+    onChange: (key: string, value: unknown) => void,
+    opts: RenderSettingsOpts,
+  ): React.ReactNode[] {
+    const nodes = super.renderSettings(values, onChange, opts);
+    if (!this.supportsFastMode(values, opts.dynamic)) {
+      return nodes.filter((node) => !(React.isValidElement(node) && (node as React.ReactElement).key === 'fastMode'));
+    }
+    return nodes;
+  }
+
+  renderStatusChips(
+    values: Record<string, unknown>,
+    onChange: (key: string, value: unknown) => void,
+    opts: RenderChipsOpts,
+  ): React.ReactNode[] {
+    const nodes = super.renderStatusChips(values, onChange, opts);
+    // Fast mode has a dedicated badge directly above the composer.
+    return nodes.filter((node) => !(React.isValidElement(node) && (node as React.ReactElement).key === 'fastMode'));
   }
 
   getModelContextLimit(model?: string, dynamic?: AgentDynamicData, _sessionCtxWindow?: number): number {

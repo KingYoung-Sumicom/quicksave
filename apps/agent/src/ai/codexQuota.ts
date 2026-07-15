@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import type {
+  CodexQuotaResetCredit,
   CodexQuotaSnapshot,
   CodexQuotaWindow,
   CodexQuotaWindowId,
@@ -97,7 +98,12 @@ export async function fetchCodexQuotaFromAppServer(ttlMs = CODEX_QUOTA_TTL_MS): 
   try {
     handle = await spawnAppServer({
       clientInfo: { name: 'quicksave-agent', title: 'Quicksave Agent', version: '0.0.0' },
-      capabilities: { experimentalApi: true, requestAttestation: false, optOutNotificationMethods: null },
+      capabilities: {
+        experimentalApi: true,
+        requestAttestation: false,
+        mcpServerOpenaiFormElicitation: true,
+        optOutNotificationMethods: null,
+      },
     });
     const response = await handle.rpc.request<GetAccountRateLimitsResponse>(
       'account/rateLimits/read',
@@ -126,6 +132,37 @@ export function projectCodexQuotaResponse(
       projectRateLimitWindow(limits.primary, 'five_hour'),
       projectRateLimitWindow(limits.secondary, 'seven_day'),
     ].filter((w): w is CodexQuotaWindow => Boolean(w)),
+    resetCredits: response.rateLimitResetCredits
+      ? {
+          availableCount: numberFromBigInt(response.rateLimitResetCredits.availableCount),
+          credits: response.rateLimitResetCredits.credits?.map(projectResetCredit) ?? null,
+        }
+      : null,
+  };
+}
+
+function numberFromBigInt(value: bigint): number {
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? number : Number.MAX_SAFE_INTEGER;
+}
+
+function projectResetCredit(credit: {
+  id: string;
+  resetType: string;
+  status: string;
+  grantedAt: number;
+  expiresAt: number | null;
+  title: string | null;
+  description: string | null;
+}): CodexQuotaResetCredit {
+  return {
+    id: credit.id,
+    resetType: credit.resetType,
+    status: credit.status,
+    grantedAt: normalizeEpochMs(credit.grantedAt) ?? 0,
+    expiresAt: normalizeEpochMs(credit.expiresAt),
+    title: credit.title,
+    description: credit.description,
   };
 }
 

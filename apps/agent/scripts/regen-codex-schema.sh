@@ -103,10 +103,15 @@ TOP_LEVEL=(
   "McpServerInfo.ts"
   "ModeKind.ts"
   "NetworkPolicyRuleAction.ts"
+  "AmazonBedrockCredentialSource.ts"
+  "ImageGenerationItem.ts"
+  "InternalChatMessageMetadataPassthrough.ts"
+  "LegacyAppPathString.ts"
+  "WebSearchItem.ts"
 )
 
 if ! command -v codex >/dev/null; then
-  echo "error: 'codex' CLI not found on PATH. Install codex 0.139.0+ first." >&2
+  echo "error: 'codex' CLI not found on PATH. Install the pinned Codex CLI first." >&2
   exit 1
 fi
 

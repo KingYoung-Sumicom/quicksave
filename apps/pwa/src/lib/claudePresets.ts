@@ -120,6 +120,27 @@ export function codexModelsToOptions(models: CodexModelInfo[]): { value: string;
   return models.map((m) => ({ value: m.id, label: formatCodexModelLabel(m.id, m.name) }));
 }
 
+/** Resolve the app-server service-tier id that represents user-facing Fast
+ * mode. The wire id is catalog-defined: current GPT-5.6 models advertise
+ * `{ id: 'priority', name: 'Fast' }`, while older catalogs used `fast` as the
+ * id directly. */
+export function getCodexFastServiceTierId(model: CodexModelInfo | undefined): string | undefined {
+  const tiers = model?.serviceTiers;
+  if (!tiers?.length) return undefined;
+  return tiers.find((tier) => tier.id.toLowerCase() === 'fast')?.id
+    ?? tiers.find((tier) => tier.name.trim().toLowerCase() === 'fast')?.id;
+}
+
+/** Accept the old `fast` alias as enabled so persisted sessions from clients
+ * predating catalog-driven tier ids still render correctly. */
+export function isCodexFastServiceTier(
+  model: CodexModelInfo | undefined,
+  serviceTier: unknown,
+): boolean {
+  if (typeof serviceTier !== 'string' || serviceTier.length === 0) return false;
+  return serviceTier === 'fast' || serviceTier === getCodexFastServiceTierId(model);
+}
+
 const CODEX_CONTEXT_WINDOW_FALLBACKS: Record<string, number> = {
   // Codex app-server `model/list` does not currently expose context-window
   // metadata. GPT-5.5 has a larger API window, but Codex advertises 400k.

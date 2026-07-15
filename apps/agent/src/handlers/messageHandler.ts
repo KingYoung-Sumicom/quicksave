@@ -236,11 +236,19 @@ function codexModelListsEqual(
     if (ai.id !== bi.id || ai.name !== bi.name) return false;
     if (ai.defaultReasoningEffort !== bi.defaultReasoningEffort) return false;
     if (ai.isDefault !== bi.isDefault) return false;
+    if (ai.defaultServiceTier !== bi.defaultServiceTier) return false;
     const aE = ai.reasoningEfforts, bE = bi.reasoningEfforts;
     if (aE !== bE) {
       if (!aE || !bE) return false;
       if (aE.length !== bE.length) return false;
       for (let j = 0; j < aE.length; j++) if (aE[j] !== bE[j]) return false;
+    }
+    const aT = ai.serviceTiers, bT = bi.serviceTiers;
+    if (aT !== bT) {
+      if (!aT || !bT || aT.length !== bT.length) return false;
+      for (let j = 0; j < aT.length; j++) {
+        if (aT[j].id !== bT[j].id || aT[j].name !== bT[j].name || aT[j].description !== bT[j].description) return false;
+      }
     }
   }
   return true;
@@ -260,6 +268,8 @@ function projectAppServerModel(m: CodexAppServerModel): CodexModelInfo {
     reasoningEfforts: reasoningEfforts.length > 0 ? reasoningEfforts : undefined,
     defaultReasoningEffort: m.defaultReasoningEffort,
     isDefault: m.isDefault || undefined,
+    serviceTiers: Array.isArray(m.serviceTiers) && m.serviceTiers.length > 0 ? m.serviceTiers : undefined,
+    defaultServiceTier: m.defaultServiceTier ?? undefined,
   };
 }
 
@@ -465,7 +475,12 @@ export class MessageHandler {
     try {
       handle = await spawnAppServer({
         clientInfo: { name: 'quicksave-agent', title: 'Quicksave Agent', version: '0.0.0' },
-        capabilities: { experimentalApi: true, requestAttestation: false, optOutNotificationMethods: null },
+        capabilities: {
+          experimentalApi: true,
+          requestAttestation: false,
+          mcpServerOpenaiFormElicitation: true,
+          optOutNotificationMethods: null,
+        },
       });
       const res = await handle.rpc.request<{ data: CodexAppServerModel[]; nextCursor: string | null }>(
         'model/list',
@@ -503,6 +518,29 @@ export class MessageHandler {
       console.warn(`[codex-models] requested model "${requested}" not in account list; coercing to "${fallback?.id}"`);
     }
     return fallback?.id ?? requested;
+  }
+
+  /** Keep service-tier selection catalog-driven. Unknown/unsupported tiers are
+   * cleared when model/list has a current answer; before that cache is ready,
+   * pass the value through so app-server remains the source of truth. */
+  validateCodexServiceTier(
+    requested: string | null | undefined,
+    model: string | undefined,
+    agentId: AgentId,
+  ): string | null | undefined {
+    if (agentId !== 'codex' || !requested) return requested;
+    const catalogModel = this.codexModelsCache?.models.find((entry) => entry.id === model);
+    if (!catalogModel?.serviceTiers) return requested;
+    const exactTier = catalogModel.serviceTiers.find((tier) => tier.id === requested);
+    if (exactTier) return exactTier.id;
+    if (requested.toLowerCase() === 'fast') {
+      const fastTier = catalogModel.serviceTiers.find(
+        (tier) => tier.id.toLowerCase() === 'fast' || tier.name.trim().toLowerCase() === 'fast',
+      );
+      if (fastTier) return fastTier.id;
+    }
+    console.warn(`[codex-models] service tier "${requested}" is not advertised for model "${model}"; clearing it`);
+    return null;
   }
 
   /** Snapshot accessor for the bus `/codex/models` subscription. */
@@ -2228,7 +2266,7 @@ export class MessageHandler {
     message: Message<ClaudeStartRequestPayload>,
     peerAddress: string,
   ): Promise<Message<ClaudeStartResponsePayload>> {
-    const { prompt, cwd: payloadCwd, agent, allowedTools, systemPrompt, model, permissionMode, sandboxed, reasoningEffort, contextWindow, attachmentIds } = message.payload;
+    const { prompt, cwd: payloadCwd, agent, allowedTools, systemPrompt, model, permissionMode, sandboxed, reasoningEffort, contextWindow, serviceTier, attachmentIds } = message.payload;
     const legacyProvider = (message.payload as { provider?: 'claude-cli' | 'claude-sdk' | 'codex-mcp' }).provider;
     const cwd = payloadCwd || this.defaultRepoPath;
     const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
@@ -2238,7 +2276,8 @@ export class MessageHandler {
     // turn/start with `BadRequest`. Pass-through for non-codex agents and
     // when the cache hasn't loaded yet.
     const validatedModel = this.validateCodexModel(model, resolvedAgent ?? 'claude-code');
-    console.log(`[agent:start] agent=${resolvedAgent ?? 'default'} model=${validatedModel ?? 'default'}${validatedModel !== model ? ` (coerced from ${model})` : ''} cwd=${cwd} prompt=${prompt.slice(0, 80)}${sandboxed ? ' [sandboxed]' : ''}${attachmentIds && attachmentIds.length > 0 ? ` [+${attachmentIds.length} attachments]` : ''}`);
+    const validatedServiceTier = this.validateCodexServiceTier(serviceTier, validatedModel, resolvedAgent ?? 'claude-code');
+    console.log(`[agent:start] agent=${resolvedAgent ?? 'default'} model=${validatedModel ?? 'default'}${validatedModel !== model ? ` (coerced from ${model})` : ''} cwd=${cwd} prompt=${prompt.slice(0, 80)}${sandboxed ? ' [sandboxed]' : ''}${validatedServiceTier ? ` [tier=${validatedServiceTier}]` : ''}${attachmentIds && attachmentIds.length > 0 ? ` [+${attachmentIds.length} attachments]` : ''}`);
 
     let attachments: ReturnType<AttachmentStaging['consume']> | undefined;
     if (attachmentIds && attachmentIds.length > 0) {
@@ -2267,6 +2306,7 @@ export class MessageHandler {
         permissionMode,
         sandboxed,
         reasoningEffort,
+        serviceTier: validatedServiceTier,
         contextWindow,
         attachments,
       });
@@ -2297,6 +2337,7 @@ export class MessageHandler {
         sandboxed: sandboxed || undefined,
         model: validatedModel,
         reasoningEffort,
+        serviceTier: validatedServiceTier ?? undefined,
         contextWindow,
         mcpCorrId: this.claudeService.getSessionMcpCorrId(sessionId),
       });
@@ -2718,6 +2759,11 @@ export class MessageHandler {
         console.log(`[agent:set-config] coerced model "${value}" → "${coerced}" for session=${sessionId.slice(0, 8)}`);
         value = coerced ?? value;
       }
+    }
+    if (key === 'serviceTier' && (typeof value === 'string' || value === null)) {
+      const sessionConfig = this.claudeService.getSessionConfig(sessionId);
+      const agentId = this.claudeService.getSessionAgent(sessionId);
+      value = this.validateCodexServiceTier(value, sessionConfig.model as string | undefined, agentId) ?? null;
     }
     console.log(`[agent:set-config] session=${sessionId.slice(0, 8)} ${key}=${String(value)}`);
     try {

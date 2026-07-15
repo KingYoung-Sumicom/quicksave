@@ -74,7 +74,7 @@ apps/agent/src/
 │   │   ├── stdioTransport.ts   #   JSONL framing on the spawned child's stdio
 │   │   ├── cardAdapter.ts      #   v2 notifications → StreamCardBuilder method calls
 │   │   ├── tokenAccounting.ts  #   Per-turn delta + cumulative usage tracking
-│   │   ├── overrideStore.ts    #   Pending/effective per-turn overrides (model/effort/permission)
+│   │   ├── overrideStore.ts    #   Pending/effective per-turn overrides (model/effort/permission/service tier)
 │   │   ├── approvalMapping.ts  #   tool-name + sandbox toggle → AskForApproval matrix
 │   │   ├── permissionMapping.ts# PermissionLevel → AskForApproval / SandboxPolicy / ApprovalsReviewer matrix
 │   │   ├── version.ts          #   Pinned `codex` minimum-version check
@@ -373,8 +373,17 @@ fields, and Codex cumulative counters. For Codex app-server sessions,
 `tokenUsage.modelContextWindow`; `service/run.ts` uses that to synthesize
 `lastTurnContextUsage` when the provider does not implement `getContextUsage()`.
 The PWA context badge therefore treats Codex runtime usage as authoritative for
-the denominator, while `/codex/models` remains only a model/reasoning picker
-source because app-server `model/list` does not expose context-window size.
+the denominator, while `/codex/models` remains the account-authoritative
+model/reasoning/service-tier picker source because app-server `model/list` does
+not expose context-window size.
+
+Codex Fast mode is carried end-to-end through app-server `serviceTier`. The
+wire id is catalog-defined: current GPT-5.6 models advertise Fast as
+`{ id: "priority", name: "Fast" }`, while older clients may send the `fast`
+alias. The PWA resolves the selected model's Fast tier from `serviceTiers`, and
+the daemon normalizes the legacy alias and validates the catalog id before
+`thread/start` and before a runtime `turn/start` override. The setting is
+persisted in `SessionRegistryEntry.serviceTier` so cold resumes retain it.
 
 **CodingAgentProvider interface** (`ai/provider.ts`):
 ```typescript
@@ -411,6 +420,7 @@ interface CodingAgentProvider {
 - `systemPrompt?` — custom system prompt (fixed contents are always prepended)
 - `reasoningEffort?` — per-session reasoning depth; Codex maps to SDK `modelReasoningEffort` (`minimal/low/medium/high/xhigh`), Claude to CLI `--effort` (`low/medium/high/xhigh/max`)
 - `contextWindow?` — auto-compact ceiling for Claude Code (200k / 500k / 1M); Claude CLI sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` on spawn and appends `[1m]` model suffix when >200k; Codex ignores
+- `serviceTier?` — catalog-defined Codex service tier id (for example `priority` for Fast); ignored by other providers and persisted per session
 - `bypassFlagPath?` — sentinel file path for CLI PermissionRequest hook (only `ClaudeCliProvider` uses it)
 
 **ResumeSessionOpts** — same fields as `StartSessionOpts` minus `cwd` resolution differences; SessionManager handles hot vs cold resume based on `providerSession.alive`, model change, and context window change.
@@ -587,7 +597,7 @@ All request-response, state subscribe, and server push between PWA and Agent go 
 | `/sessions/config` | `Record<sessionId, Record<key, ConfigValue>>` | `SessionConfigUpdatedPayload` | `claudeService.getAllSessionConfigs()` + `session-config-updated` event |
 | `/sessions/:sessionId/cards` | `CardHistoryResponse` (offset=0, with pendingInput overlay + title) | `SessionCardsUpdate` (`{ kind: 'card', event }` or `{ kind: 'stream-end', result }`) | `claudeService.getCards()` + `card-event` / `card-stream-end` events |
 | `/sessions/:sessionId/attention` | `null` (presence-only) | — | The PWA only subscribes when on the session page and the tab is visible+focused; `subscriberCount === 0` acts as the push gate |
-| `/codex/quota` | `CodexQuotaSnapshot \| null` | `CodexQuotaSnapshot` | Agent-wide `CodexQuotaService`; stale-on-subscribe refreshes after 5 minutes, and `codex-turn-settled` force-refreshes after each Codex prompt |
+| `/codex/quota` | `CodexQuotaSnapshot \| null` | `CodexQuotaSnapshot` | Agent-wide `CodexQuotaService`; includes reset-credit summaries when app-server provides them; stale-on-subscribe refreshes after 5 minutes, and `codex-turn-settled` force-refreshes after each Codex prompt |
 | `/terminals` | `TerminalSummary[]` | `TerminalsUpdate` (`{ kind: 'upsert', terminal }` or `{ kind: 'remove', terminalId }`) | `terminalManager.listSummaries()` + `terminals-updated` / `terminal-updated` events |
 | `/terminals/:terminalId/output` | `TerminalOutputSnapshot \| null` (scrollback + seq + size + exit status) | `TerminalOutputChunk` (next chunk of output, monotonic `seq`) | `terminalManager.outputSnapshot()` + PTY `'data'` event |
 
