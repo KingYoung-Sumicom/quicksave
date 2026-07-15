@@ -3,8 +3,12 @@
 import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
+import rehypeKatex from 'rehype-katex';
 import 'highlight.js/styles/github-dark-dimmed.css';
+import 'katex/dist/katex.min.css';
+import { normalizeLatexDelimiters } from '../../lib/markdownMath';
 import { FilePathLink } from './FilePathLink';
 import { CodeBlock } from '../ui/CodeBlock';
 
@@ -96,8 +100,8 @@ function stripQueryAndHash(url: string): string {
 export function ChatMarkdown({ children }: { children: string }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeHighlight]}
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[[rehypeKatex, { strict: false }], rehypeHighlight]}
       components={{
         table: ({ children }: { children?: ReactNode }) => (
           <div className="overflow-x-auto my-2">
@@ -161,7 +165,7 @@ export function ChatMarkdown({ children }: { children: string }) {
         },
       }}
     >
-      {children}
+      {normalizeLatexDelimiters(children)}
     </ReactMarkdown>
   );
 }

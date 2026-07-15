@@ -3,11 +3,15 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
+import rehypeKatex from 'rehype-katex';
 import 'highlight.js/styles/github-dark-dimmed.css';
+import 'katex/dist/katex.min.css';
 import type { FilesReadResponsePayload } from '@sumicom/quicksave-shared';
 import { useFileOps } from '../../hooks/useFileOps';
 import { getBusForAgent } from '../../lib/busRegistry';
+import { normalizeLatexDelimiters } from '../../lib/markdownMath';
 import { useFilePreviewStore } from '../../stores/filePreviewStore';
 import { Spinner } from '../ui/Spinner';
 import { CodeBlock } from '../ui/CodeBlock';
@@ -42,8 +46,8 @@ export function MarkdownPreview({
   return (
     <div className="px-4 py-3 text-sm text-slate-200 leading-relaxed break-words markdown-preview">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[[rehypeKatex, { strict: false }], rehypeHighlight]}
         components={{
           h1: ({ children }) => <h1 className="text-2xl font-semibold mt-4 mb-3 text-slate-100 border-b border-slate-700 pb-1">{children}</h1>,
           h2: ({ children }) => <h2 className="text-xl font-semibold mt-4 mb-2 text-slate-100 border-b border-slate-700 pb-1">{children}</h2>,
@@ -130,7 +134,7 @@ export function MarkdownPreview({
           },
         }}
       >
-        {source}
+        {normalizeLatexDelimiters(source)}
       </ReactMarkdown>
     </div>
   );

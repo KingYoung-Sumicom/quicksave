@@ -296,6 +296,26 @@ html, body {
   @apply border-slate-600 my-3;
 }
 
+.chat-markdown .katex,
+.markdown-preview .katex {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.chat-markdown .katex-display,
+.markdown-preview .katex-display {
+  max-width: 100%;
+  margin: 0.75rem 0;
+  padding: 0.25rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.chat-markdown .katex-display::-webkit-scrollbar,
+.markdown-preview .katex-display::-webkit-scrollbar {
+  display: none;
+}
+
 .markdown-preview {
   overflow-wrap: anywhere;
   word-break: break-word;

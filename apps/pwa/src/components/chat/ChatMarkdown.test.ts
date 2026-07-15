@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { previewPathFromMarkdownHref } from './ChatMarkdown';
+import { ChatMarkdown, previewPathFromMarkdownHref } from './ChatMarkdown';
 
 describe('previewPathFromMarkdownHref', () => {
   it('routes relative markdown file links to file preview paths', () => {
@@ -32,5 +34,26 @@ describe('previewPathFromMarkdownHref', () => {
     expect(previewPathFromMarkdownHref('/p/project/s/session')).toBeNull();
     expect(previewPathFromMarkdownHref(`${window.location.origin}/p/project/s/session`)).toBeNull();
     expect(previewPathFromMarkdownHref('#readme')).toBeNull();
+  });
+});
+
+describe('ChatMarkdown math rendering', () => {
+  it('renders Codex display-math delimiters with KaTeX', () => {
+    const markdown = String.raw`\[
+L_{\text{until-change}} = -\operatorname{mean}_{t\in\text{有效換倉}}(A_t)
+\]`;
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, { children: markdown }));
+
+    expect(html).toContain('class="katex-display"');
+    expect(html).toContain('until-change');
+    expect(html).not.toContain('\\[');
+  });
+
+  it('renders both Codex and dollar inline-math delimiters', () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      children: String.raw`Codex \(A_t\) and Markdown $B_t$.`,
+    }));
+
+    expect(html.match(/class="katex"/g)).toHaveLength(2);
   });
 });

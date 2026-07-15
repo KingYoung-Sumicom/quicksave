@@ -10,6 +10,7 @@ is the source for that deployment.
 ## Stack
 
 - React 18 + TypeScript, Vite 5, Tailwind 3
+- `react-markdown` with GFM, syntax highlighting, and KaTeX math rendering
 - [Zustand](https://zustand-demo.pmnd.rs/) for state (`claudeStore`, `gitStore`, `connectionStore`, `identityStore`)
 - [`@sumicom/quicksave-message-bus`](../../packages/message-bus/README.md) for RPC + subscriptions over the encrypted WebSocket channel
 - [`vite-plugin-pwa`](https://vite-pwa-org.netlify.app/) + custom `sw.ts` (Workbox injectManifest) for offline support and Web Push
