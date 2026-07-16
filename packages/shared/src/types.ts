@@ -1990,6 +1990,8 @@ export interface ClaudeGetMessagesRequestPayload {
   cwd?: string;
   offset?: number;  // defaults to 0
   limit?: number;   // defaults to 50
+  /** Opaque cursor returned by the previous CardHistoryResponse. */
+  cursor?: string;
 }
 
 export interface ClaudeHistoryMessage {

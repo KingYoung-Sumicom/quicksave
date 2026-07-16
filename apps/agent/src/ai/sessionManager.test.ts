@@ -47,6 +47,9 @@ vi.mock('./cardBuilder.js', () => {
 });
 
 vi.mock('./cardHistoryIndex.js', () => ({
+  loadPersistedCardCursorPage: vi.fn().mockResolvedValue({
+    cards: [], total: 0, hasMore: false, persistedLiveCount: 0,
+  }),
   loadPersistedCardMaxSequence: vi.fn().mockResolvedValue(0),
   loadPersistedCardPage: vi.fn().mockResolvedValue({ cards: [], total: 0, hasMore: false }),
 }));
@@ -2000,16 +2003,91 @@ describe('SessionManager', () => {
       const codexProvider = createMockProvider('codex', 'memory');
       const mgr = new SessionManager([codexProvider], 'codex' as any);
 
-      const { loadPersistedCardPage } = await import('./cardHistoryIndex.js');
-      (loadPersistedCardPage as Mock).mockResolvedValue({
+      const { loadPersistedCardCursorPage } = await import('./cardHistoryIndex.js');
+      (loadPersistedCardCursorPage as Mock).mockResolvedValue({
         cards: [{ type: 'user', id: 'p1', text: 'persisted' }],
         total: 1,
         hasMore: false,
+        persistedLiveCount: 0,
       });
 
       const result = await mgr.getCards('some-session', '/tmp/test');
-      expect(loadPersistedCardPage).toHaveBeenCalledWith('some-session', 0, 50);
+      expect(loadPersistedCardCursorPage).toHaveBeenCalledWith('some-session', {
+        limit: 50,
+        liveCardIds: [],
+      });
       expect(result.cards).toHaveLength(1);
+    });
+
+    it('keeps persisted history before a partially-persisted active turn and returns its cursor', async () => {
+      const sessionId = 'codex-active-cursor';
+      const codexProvider = createMockProvider('codex', 'memory');
+      (codexProvider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+
+      const { StreamCardBuilder } = await import('./cardBuilder.js');
+      const { loadPersistedCardCursorPage } = await import('./cardHistoryIndex.js');
+      (loadPersistedCardCursorPage as Mock).mockResolvedValueOnce({
+        cards: [
+          { type: 'user', id: 'old-1', text: 'older' },
+          { type: 'assistant_text', id: 'old-2', text: 'history' },
+        ],
+        total: 100,
+        hasMore: true,
+        nextCursor: 'memory-ordinal:98',
+        persistedLiveCount: 2,
+      });
+
+      await mgr.startSession({ prompt: 'start', cwd: '/tmp/test', agent: 'codex' as any });
+      const builder = (StreamCardBuilder as Mock).mock.results.at(-1)?.value;
+      const liveCards = [
+        { type: 'user', id: `${sessionId}:101`, text: 'live prompt' },
+        { type: 'tool_call', id: `${sessionId}:102`, toolName: 'Bash' },
+        { type: 'assistant_text', id: `${sessionId}:103`, text: 'live reply' },
+      ];
+      builder.getCards.mockReturnValueOnce(liveCards);
+
+      const result = await mgr.getCards(sessionId, '/tmp/test');
+
+      expect(result.cards.map((card) => card.id)).toEqual([
+        'old-1',
+        'old-2',
+        `${sessionId}:101`,
+        `${sessionId}:102`,
+        `${sessionId}:103`,
+      ]);
+      expect(result.total).toBe(101);
+      expect(result.nextCursor).toBe('memory-ordinal:98');
+      expect(loadPersistedCardCursorPage).toHaveBeenCalledWith(sessionId, {
+        limit: 47,
+        liveCardIds: liveCards.map((card) => card.id),
+      });
+
+      builder.getCards.mockReturnValueOnce(liveCards);
+      (loadPersistedCardCursorPage as Mock).mockResolvedValueOnce({
+        cards: [{ type: 'user', id: 'old-0', text: 'even older' }],
+        total: 100,
+        hasMore: true,
+        nextCursor: 'memory-ordinal:97',
+        persistedLiveCount: 2,
+      });
+      const older = await mgr.getCards(
+        sessionId,
+        '/tmp/test',
+        result.cards.length,
+        50,
+        result.nextCursor,
+      );
+      expect(older.cards.map((card) => card.id)).toEqual(['old-0']);
+      expect(older.total).toBe(101);
+      expect(loadPersistedCardCursorPage).toHaveBeenLastCalledWith(sessionId, {
+        cursor: 'memory-ordinal:98',
+        limit: 50,
+        liveCardIds: liveCards.map((card) => card.id),
+      });
     });
 
     it('uses memory history for archived codex registry entries', async () => {
@@ -2024,16 +2102,20 @@ describe('SessionManager', () => {
       });
 
       const { buildCardsFromHistory } = await import('./cardBuilder.js');
-      const { loadPersistedCardPage } = await import('./cardHistoryIndex.js');
-      (loadPersistedCardPage as Mock).mockResolvedValue({
+      const { loadPersistedCardCursorPage } = await import('./cardHistoryIndex.js');
+      (loadPersistedCardCursorPage as Mock).mockResolvedValue({
         cards: [{ type: 'user', id: 'p1', text: 'persisted codex' }],
         total: 1,
         hasMore: false,
+        persistedLiveCount: 0,
       });
 
       const result = await mgr.getCards('archived-codex', '/tmp/codex');
 
-      expect(loadPersistedCardPage).toHaveBeenCalledWith('archived-codex', 0, 50);
+      expect(loadPersistedCardCursorPage).toHaveBeenCalledWith('archived-codex', {
+        limit: 50,
+        liveCardIds: [],
+      });
       expect(buildCardsFromHistory).not.toHaveBeenCalledWith(
         'archived-codex',
         '/tmp/codex',
@@ -2437,14 +2519,15 @@ describe('SessionManager', () => {
         session: createMockProviderSession(),
       });
 
-      const { loadPersistedCardPage } = await import('./cardHistoryIndex.js');
-      (loadPersistedCardPage as Mock).mockResolvedValue({
+      const { loadPersistedCardCursorPage } = await import('./cardHistoryIndex.js');
+      (loadPersistedCardCursorPage as Mock).mockResolvedValue({
         cards: [
           { type: 'user', id: 'p1', text: 'hello from codex' },
           { type: 'assistant_text', id: 'p2', text: 'response', streaming: false },
         ],
         total: 2,
         hasMore: false,
+        persistedLiveCount: 0,
       });
 
       // Start session to set agent
@@ -2455,7 +2538,10 @@ describe('SessionManager', () => {
       });
 
       const result = await multiManager.getCards(sessionId, '/tmp/test');
-      expect(loadPersistedCardPage).toHaveBeenCalledWith(sessionId, 0, 50);
+      expect(loadPersistedCardCursorPage).toHaveBeenCalledWith(sessionId, {
+        limit: 49,
+        liveCardIds: ['sc1'],
+      });
       expect(result.cards.length).toBeGreaterThanOrEqual(2);
     });
   });

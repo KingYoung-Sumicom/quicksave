@@ -2584,11 +2584,11 @@ export class MessageHandler {
   private async handleClaudeGetCards(
     message: Message<ClaudeGetMessagesRequestPayload>
   ): Promise<Message<CardHistoryResponse>> {
-    const { sessionId, cwd: payloadCwd, offset = 0, limit = 50 } = message.payload;
+    const { sessionId, cwd: payloadCwd, offset = 0, limit = 50, cursor } = message.payload;
     const cwd = payloadCwd || this.defaultRepoPath;
 
     try {
-      const result = await this.claudeService.getCards(sessionId, cwd, offset, limit);
+      const result = await this.claudeService.getCards(sessionId, cwd, offset, limit, cursor);
       const response = createMessage<CardHistoryResponse>('claude:get-cards:response', result);
       response.id = message.id;
       return response;

@@ -276,6 +276,13 @@ export interface CardHistoryResponse {
   cards: Card[];
   total: number;
   hasMore: boolean;
+  /**
+   * Opaque cursor for the next older history page. Consumers must return this
+   * value unchanged instead of deriving an offset from `cards.length`: one
+   * persisted source item may expand into multiple cards, and snapshots may
+   * also contain live or client-only cards.
+   */
+  nextCursor?: string;
   error?: string;
   /** Pending permission/question requests for this session (agent-authoritative). */
   pendingInputs?: PendingInputWithContext[];

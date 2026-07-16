@@ -761,6 +761,8 @@ export function ClaudePanel({
     if (!activeSessionId || useClaudeStore.getState().isLoadingHistory || !historyHasMore) return;
     const container = chatContainerRef.current;
     const prevScrollHeight = container?.scrollHeight ?? 0;
+    // cards.length is only the compatibility offset. The operation hook sends
+    // the agent-issued history cursor when the current server supports it.
     await onGetSessionCards(activeSessionId, cards.length);
     // Restore scroll position so the viewport doesn't jump to top
     if (container) {

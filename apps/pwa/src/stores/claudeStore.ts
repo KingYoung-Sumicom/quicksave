@@ -227,6 +227,8 @@ interface ClaudeStore {
   cards: Card[];
   historyTotal: number;
   historyHasMore: boolean;
+  /** Opaque agent-issued cursor for the next older persisted history page. */
+  historyCursor: string | null;
   isLoadingHistory: boolean;
   historyError: string | null;
   /** Turn ids that have emitted stream-end during the current live view. */
@@ -287,7 +289,7 @@ interface ClaudeStore {
   prependCards: (cards: Card[]) => void;
   appendCard: (card: Card) => void;
   handleCardEvent: (event: CardEvent) => void;
-  setHistoryMeta: (total: number, hasMore: boolean) => void;
+  setHistoryMeta: (total: number, hasMore: boolean, nextCursor?: string | null) => void;
   setLoadingHistory: (loading: boolean) => void;
   setHistoryError: (error: string | null) => void;
   markTurnCompleted: (turnId: string) => void;
@@ -338,6 +340,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   cards: [],
   historyTotal: 0,
   historyHasMore: false,
+  historyCursor: null,
   isLoadingHistory: false,
   historyError: null,
   completedTurnIds: {},
@@ -524,13 +527,24 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     });
   },
 
-  setHistoryMeta: (total, hasMore) => set({ historyTotal: total, historyHasMore: hasMore }),
+  setHistoryMeta: (total, hasMore, nextCursor = null) => set({
+    historyTotal: total,
+    historyHasMore: hasMore,
+    historyCursor: nextCursor,
+  }),
   setLoadingHistory: (loading) => set({ isLoadingHistory: loading }),
   setHistoryError: (error) => set({ historyError: error }),
   markTurnCompleted: (turnId) => set((state) => ({
     completedTurnIds: { ...state.completedTurnIds, [turnId]: true },
   })),
-  clearCards: () => set({ cards: [], completedTurnIds: {}, historyTotal: 0, historyHasMore: false, historyError: null }),
+  clearCards: () => set({
+    cards: [],
+    completedTurnIds: {},
+    historyTotal: 0,
+    historyHasMore: false,
+    historyCursor: null,
+    historyError: null,
+  }),
 
   clearPendingInput: (requestId) =>
     set((state) => {
@@ -749,6 +763,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       cards: [],
       historyTotal: 0,
       historyHasMore: false,
+      historyCursor: null,
       isLoadingHistory: false,
       historyError: null,
       completedTurnIds: {},

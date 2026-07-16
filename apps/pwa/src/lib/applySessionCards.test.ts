@@ -60,8 +60,21 @@ describe('applySessionCards (multi-session permission resolve)', () => {
       isStreaming: false,
       historyTotal: 0,
       historyHasMore: false,
+      historyCursor: null,
       historyError: null,
     });
+  });
+
+  it('stores the agent-issued history cursor from a snapshot', () => {
+    useClaudeStore.setState({ activeSessionId: 'sess-cursor' });
+    applySessionCardsSnapshot('sess-cursor', {
+      cards: [],
+      total: 75,
+      hasMore: true,
+      nextCursor: 'memory-ordinal:25',
+    });
+
+    expect(useClaudeStore.getState().historyCursor).toBe('memory-ordinal:25');
   });
 
   it('clears pending input when the update sessionId matches activeSessionId', () => {

@@ -751,6 +751,7 @@ describe('buildCardsFromHistory pagination edge cases', () => {
     expect((result.cards[0] as any).text).toBe('msg-99');
     expect(result.total).toBe(100);
     expect(result.hasMore).toBe(true);
+    expect(result.nextCursor).toBe('claude-offset:1');
   });
 
   it('offset=99 limit=50 with 100 messages returns first message', async () => {
@@ -819,6 +820,27 @@ describe('buildCardsFromHistory pagination edge cases', () => {
     expect(result.cards).toHaveLength(1);
     expect(result.total).toBe(1);
     expect(result.hasMore).toBe(false);
+  });
+
+  it('advances the cursor by source messages rather than expanded card count', async () => {
+    mockJSONL([
+      JSON.stringify({ type: 'user', message: { content: 'older' } }),
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'reply' },
+            { type: 'tool_use', id: 'tool-1', name: 'Read', input: { file_path: '/tmp/a' } },
+          ],
+        },
+      }),
+    ].join('\n'));
+
+    const result = await buildCardsFromHistory('sess-expanded-cursor', '/test/cwd', 0, 1);
+
+    expect(result.cards).toHaveLength(2);
+    expect(result.hasMore).toBe(true);
+    expect(result.nextCursor).toBe('claude-offset:1');
   });
 });
 

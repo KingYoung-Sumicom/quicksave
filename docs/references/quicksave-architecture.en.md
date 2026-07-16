@@ -155,7 +155,10 @@ The architecture uses a layered design: `SessionManager` provides unified coordi
    - Card assembly and history (StreamCardBuilder, buildCardsFromHistory,
      loadPersistedCards). Memory-mode providers store card history in
      `~/.quicksave/state/card-history`; cold resume seeds the card id
-     sequence from that persisted history before a new turn starts.
+     sequence from that persisted history before a new turn starts. History
+     pages carry an agent-issued opaque cursor: memory-mode pages use stable
+     SQLite insertion ordinals, while active-turn cards remain a separate
+     in-memory suffix and never contribute to the persisted-history cursor.
    - Permission flow (auto-approve table, runtime allow patterns, PWA forwarding via `handlePermissionRequest` callback)
    - Preferences and per-session config
    - Event emission (`card-event`, `card-stream-end`, `user-input-request`, `user-input-resolved`, `session-updated`, `preferences-updated`, `session-config-updated`, `codex-turn-settled`)
@@ -595,7 +598,7 @@ All request-response, state subscribe, and server push between PWA and Agent go 
 | `/sessions/history` | `BroadcastSessionEntry[]` | `SessionHistoryUpdatedPayload` | `sessionRegistry.getEntriesForProject().map(enrichEntry)` (active only; archived not in this snapshot) + `messageHandler.onHistoryUpdated` |
 | `/repos/commit-summary` | `CommitSummaryState[]` | `CommitSummaryState` | `commitSummaryStore.snapshot()` + `state-updated` event |
 | `/sessions/config` | `Record<sessionId, Record<key, ConfigValue>>` | `SessionConfigUpdatedPayload` | `claudeService.getAllSessionConfigs()` + `session-config-updated` event |
-| `/sessions/:sessionId/cards` | `CardHistoryResponse` (offset=0, with pendingInput overlay + title) | `SessionCardsUpdate` (`{ kind: 'card', event }` or `{ kind: 'stream-end', result }`) | `claudeService.getCards()` + `card-event` / `card-stream-end` events |
+| `/sessions/:sessionId/cards` | `CardHistoryResponse` (initial page, opaque `nextCursor`, pendingInput overlay + title) | `SessionCardsUpdate` (`{ kind: 'card', event }` or `{ kind: 'stream-end', result }`) | `claudeService.getCards()` + `card-event` / `card-stream-end` events |
 | `/sessions/:sessionId/attention` | `null` (presence-only) | — | The PWA only subscribes when on the session page and the tab is visible+focused; `subscriberCount === 0` acts as the push gate |
 | `/codex/quota` | `CodexQuotaSnapshot \| null` | `CodexQuotaSnapshot` | Agent-wide `CodexQuotaService`; includes reset-credit summaries when app-server provides them; stale-on-subscribe refreshes after 5 minutes, and `codex-turn-settled` force-refreshes after each Codex prompt |
 | `/terminals` | `TerminalSummary[]` | `TerminalsUpdate` (`{ kind: 'upsert', terminal }` or `{ kind: 'remove', terminalId }`) | `terminalManager.listSummaries()` + `terminals-updated` / `terminal-updated` events |
@@ -789,7 +792,7 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 | `claude:cancel` | PWA→Agent | `bus.command('claude:cancel', …)` | Cancel streaming |
 | `claude:close` | PWA→Agent | `bus.command('claude:close', …)` | Kill the underlying CLI process only; registry untouched (used by Advanced > Terminate) |
 | `claude:end-task` | PWA→Agent | `bus.command('claude:end-task', …)` | Kill process **and** archive registry entry (the End Task button) |
-| `claude:get-cards` | PWA→Agent | `bus.command('claude:get-cards', …)` | Page through historical cards (offset>0) |
+| `claude:get-cards` | PWA→Agent | `bus.command('claude:get-cards', …)` | Page through historical cards by returning the prior response's opaque cursor; numeric offset remains a compatibility fallback |
 | `claude:user-input-response` | PWA→Agent | `bus.command('claude:user-input-response', …)` | Reply to a tool approval/permission prompt |
 | `claude:set-preferences` | PWA→Agent | `bus.command('claude:set-preferences', …)` | Write global preferences (reads go through the `/preferences` sub) |
 | `claude:set-session-permission` | PWA→Agent | `bus.command('claude:set-session-permission', …)` | Change a session's permission mode |
@@ -878,7 +881,7 @@ claudeStore.ts
   isStreaming: boolean
   streamError: string | null
   cards: Card[]
-  historyTotal / historyHasMore / isLoadingHistory / historyError
+  historyTotal / historyHasMore / historyCursor / isLoadingHistory / historyError
   // Email-style unread state lives on the wire as `lastReadAt` on
   // ClaudeSessionSummary / SessionUpdatePayload (set server-side by the
   // `session:mark-read` handler and broadcast on /sessions/history +

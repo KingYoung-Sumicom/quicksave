@@ -9,7 +9,11 @@ import Database from 'better-sqlite3';
 import type { Card } from '@sumicom/quicksave-shared';
 import { setQuicksaveDir } from '../service/singleton.js';
 import { loadPersistedCards, StreamCardBuilder } from './cardBuilder.js';
-import { closeCardHistoryIndexForTests, loadPersistedCardPage } from './cardHistoryIndex.js';
+import {
+  closeCardHistoryIndexForTests,
+  loadPersistedCardCursorPage,
+  loadPersistedCardPage,
+} from './cardHistoryIndex.js';
 
 let tempDir: string;
 
@@ -69,6 +73,34 @@ describe('memory-mode card history persistence', () => {
     const secondRead = await loadPersistedCards('legacy');
     expect(secondRead).toHaveLength(2);
     expect(secondRead.map((card) => card.id)).toEqual(['legacy:1', 'legacy:2']);
+  });
+
+  it('issues an ordinal cursor immediately after migrating legacy JSON history', async () => {
+    mkdirSync(cardHistoryDir(), { recursive: true });
+    const legacyCards: Card[] = Array.from({ length: 60 }, (_, i) => ({
+      type: 'user',
+      id: `legacy-cursor:${i + 1}`,
+      timestamp: i + 1,
+      text: `old-${i + 1}`,
+    }));
+    writeFileSync(
+      join(cardHistoryDir(), 'legacy-cursor.json'),
+      JSON.stringify(legacyCards) + '\n',
+    );
+
+    const first = await loadPersistedCardCursorPage('legacy-cursor', { limit: 10 });
+    expect(first.cards.map((card) => card.id)).toEqual(
+      Array.from({ length: 10 }, (_, i) => `legacy-cursor:${i + 51}`),
+    );
+    expect(first.nextCursor).toBe('memory-ordinal:50');
+
+    const second = await loadPersistedCardCursorPage('legacy-cursor', {
+      cursor: first.nextCursor,
+      limit: 10,
+    });
+    expect(second.cards.map((card) => card.id)).toEqual(
+      Array.from({ length: 10 }, (_, i) => `legacy-cursor:${i + 41}`),
+    );
   });
 
   it('keeps the legacy snapshot mtime when migrating to JSONL', async () => {
@@ -145,6 +177,81 @@ describe('memory-mode card history persistence', () => {
     const second = await loadPersistedCardPage('indexed', 0, 10);
     expect(second.total).toBe(81);
     expect(second.cards.at(-1)).toMatchObject({ id: 'indexed:81', text: 'msg-80' });
+  });
+
+  it('places cursor history before the persisted prefix of an active turn', async () => {
+    mkdirSync(cardHistoryDir(), { recursive: true });
+    const logPath = join(cardHistoryDir(), 'cursor-active.jsonl');
+    const lines: string[] = [];
+    for (let i = 0; i < 80; i++) {
+      const card: Card = {
+        type: 'user',
+        id: `cursor-active:${i + 1}`,
+        timestamp: i + 1,
+        text: `msg-${i}`,
+      };
+      lines.push(JSON.stringify({ op: 'upsert', card }) + '\n');
+    }
+    writeFileSync(logPath, lines.join(''));
+
+    const page = await loadPersistedCardCursorPage('cursor-active', {
+      limit: 3,
+      liveCardIds: [
+        'cursor-active:79',
+        'cursor-active:80',
+        'cursor-active:81', // still only in daemon memory
+      ],
+    });
+
+    expect(page.persistedLiveCount).toBe(2);
+    expect(page.cards.map((card) => card.id)).toEqual([
+      'cursor-active:76',
+      'cursor-active:77',
+      'cursor-active:78',
+    ]);
+    expect(page.nextCursor).toBe('memory-ordinal:75');
+    expect(page.hasMore).toBe(true);
+  });
+
+  it('keeps an ordinal cursor stable when newer active cards are removed or appended', async () => {
+    mkdirSync(cardHistoryDir(), { recursive: true });
+    const logPath = join(cardHistoryDir(), 'cursor-stable.jsonl');
+    const lines: string[] = [];
+    for (let i = 0; i < 80; i++) {
+      const card: Card = {
+        type: 'user',
+        id: `cursor-stable:${i + 1}`,
+        timestamp: i + 1,
+        text: `msg-${i}`,
+      };
+      lines.push(JSON.stringify({ op: 'upsert', card }) + '\n');
+    }
+    writeFileSync(logPath, lines.join(''));
+
+    const first = await loadPersistedCardCursorPage('cursor-stable', {
+      limit: 3,
+      liveCardIds: ['cursor-stable:79', 'cursor-stable:80'],
+    });
+    expect(first.nextCursor).toBe('memory-ordinal:75');
+
+    appendFileSync(logPath, [
+      JSON.stringify({ op: 'remove', cardId: 'cursor-stable:79' }),
+      JSON.stringify({
+        op: 'upsert',
+        card: { type: 'user', id: 'cursor-stable:81', timestamp: 81, text: 'new-live' },
+      }),
+      '',
+    ].join('\n'));
+
+    const second = await loadPersistedCardCursorPage('cursor-stable', {
+      cursor: first.nextCursor,
+      limit: 3,
+    });
+    expect(second.cards.map((card) => card.id)).toEqual([
+      'cursor-stable:73',
+      'cursor-stable:74',
+      'cursor-stable:75',
+    ]);
   });
 
   it('rebuilds the durable index when the JSONL is truncated or replaced', async () => {

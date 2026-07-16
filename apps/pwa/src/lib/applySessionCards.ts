@@ -11,7 +11,7 @@ export function applySessionCardsSnapshot(sessionId: string, snap: CardHistoryRe
   const { activeSessionId, setCards, setHistoryMeta, applySessionConfig } = useClaudeStore.getState();
   if (sessionId !== activeSessionId) return;
   setCards(snap.cards);
-  setHistoryMeta(snap.total, snap.hasMore);
+  setHistoryMeta(snap.total, snap.hasMore, snap.nextCursor);
   if (snap.title) applySessionConfig(sessionId, { title: snap.title });
 }
 

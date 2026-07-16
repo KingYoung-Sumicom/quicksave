@@ -82,4 +82,36 @@ describe('useClaudeOperations', () => {
     expect(useClaudeStore.getState().activeSessionId).toBe('session-B');
     expect(useClaudeStore.getState().sessions['session-A'].isStreaming).toBe(true);
   });
+
+  it('returns the agent-issued cursor when loading older card history', async () => {
+    let latestOps: ClaudeOps | null = null;
+    const command = vi.fn().mockResolvedValue({
+      cards: [],
+      total: 100,
+      hasMore: true,
+      nextCursor: 'memory-ordinal:25',
+    });
+    const bus = { command } as unknown as MessageBusClient;
+    useClaudeStore.setState({ historyCursor: 'memory-ordinal:50' });
+
+    await act(async () => {
+      root.render(<Harness getBus={() => bus} onRender={(ops) => { latestOps = ops; }} />);
+    });
+    await act(async () => {
+      await latestOps!.getSessionCards('session-A', 123, 50, '/repo');
+    });
+
+    expect(command).toHaveBeenCalledWith(
+      'claude:get-cards',
+      {
+        sessionId: 'session-A',
+        offset: 123,
+        limit: 50,
+        cursor: 'memory-ordinal:50',
+        cwd: '/repo',
+      },
+      expect.objectContaining({ timeoutMs: 30000, queueWhileDisconnected: true }),
+    );
+    expect(useClaudeStore.getState().historyCursor).toBe('memory-ordinal:25');
+  });
 });

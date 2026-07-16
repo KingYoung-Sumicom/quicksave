@@ -36,6 +36,9 @@ vi.mock('./cardBuilder.js', () => {
 });
 
 vi.mock('./cardHistoryIndex.js', () => ({
+  loadPersistedCardCursorPage: vi.fn().mockResolvedValue({
+    cards: [], total: 0, hasMore: false, persistedLiveCount: 0,
+  }),
   loadPersistedCardMaxSequence: vi.fn().mockResolvedValue(0),
   loadPersistedCardPage: vi.fn().mockResolvedValue({ cards: [], total: 0, hasMore: false }),
 }));

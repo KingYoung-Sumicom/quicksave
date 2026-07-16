@@ -51,6 +51,10 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
      assert the session still settles locally and the next prompt can start
    - Memory-mode provider cold resume: persisted card ids must not collide
      with new turn card ids, and history snapshots should remain chronological
+   - Paginated card history that mixes persisted and active cards: assert the
+     next page uses an agent-issued source cursor, not rendered `cards.length`.
+     Include one-source-to-many-card expansion, partially persisted active
+     turns, and append/remove activity above an existing cursor.
    - Put these in a dedicated `edgeCases.test.ts` or alongside the relevant module
 
 3. **Integration tests** — Cross-module flows with real filesystem.

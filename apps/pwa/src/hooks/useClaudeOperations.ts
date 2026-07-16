@@ -158,7 +158,9 @@ export function useClaudeOperations(
    * client dedups wire frames and the per-session unsub handle is preserved).
    *
    * For offset > 0 (pagination): issues the `claude:get-cards` command and
-   * prepends the returned page to the store.
+   * prepends the returned page to the store. `offset` remains a legacy-server
+   * fallback; current agents receive the opaque cursor saved from the prior
+   * response so rendered/live card counts cannot shift the history boundary.
    */
   const getSessionCards = useCallback(
     async (sessionId: string, offset = 0, limit = 50, cwd?: string, subscribeOnly = false) => {
@@ -230,13 +232,14 @@ export function useClaudeOperations(
       setLoadingHistory(true);
       setHistoryError(null);
       try {
+        const cursor = useClaudeStore.getState().historyCursor;
         const response = await sendCommand<CardHistoryResponse, ClaudeGetMessagesRequestPayload>(
           'claude:get-cards',
-          { sessionId, offset, limit, ...(cwd ? { cwd } : {}) },
+          { sessionId, offset, limit, ...(cursor ? { cursor } : {}), ...(cwd ? { cwd } : {}) },
         );
         if (response.error) throw new Error(response.error);
         prependCards(response.cards);
-        setHistoryMeta(response.total, response.hasMore);
+        setHistoryMeta(response.total, response.hasMore, response.nextCursor);
       } catch (error) {
         console.error('Failed to get session cards:', error);
         setHistoryError(error instanceof Error ? error.message : 'Failed to load history');

@@ -27,7 +27,13 @@ function makeCard(overrides: Partial<Card> & { type: Card['type'] }): Card {
 describe('claudeStore', () => {
   beforeEach(() => {
     useClaudeStore.getState().reset();
-    useClaudeStore.setState({ cards: [], historyTotal: 0, historyHasMore: false, historyError: null });
+    useClaudeStore.setState({
+      cards: [],
+      historyTotal: 0,
+      historyHasMore: false,
+      historyCursor: null,
+      historyError: null,
+    });
   });
 
   // ── handleCardEvent ────────────────────────────────────────────────────
@@ -430,6 +436,7 @@ describe('claudeStore', () => {
         cards: [makeCard({ type: 'user', text: 'test' })],
         historyTotal: 42,
         historyHasMore: true,
+        historyCursor: 'memory-ordinal:42',
         historyError: 'some error',
       });
       useClaudeStore.getState().clearCards();
@@ -437,6 +444,7 @@ describe('claudeStore', () => {
       expect(state.cards).toEqual([]);
       expect(state.historyTotal).toBe(0);
       expect(state.historyHasMore).toBe(false);
+      expect(state.historyCursor).toBeNull();
       expect(state.historyError).toBeNull();
     });
   });

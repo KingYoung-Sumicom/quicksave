@@ -36,7 +36,11 @@ import {
   matchAllowPattern,
 } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder, buildCardsFromHistory } from './cardBuilder.js';
-import { loadPersistedCardMaxSequence, loadPersistedCardPage } from './cardHistoryIndex.js';
+import {
+  loadPersistedCardCursorPage,
+  loadPersistedCardMaxSequence,
+  loadPersistedCardPage,
+} from './cardHistoryIndex.js';
 import { persistAttachments } from './attachmentStore.js';
 import { SANDBOX_BASH_TOOL, UPDATE_SESSION_STATUS_TOOL } from './sandboxMcp.js';
 import { getSessionRegistry } from './sessionRegistry.js';
@@ -1324,43 +1328,67 @@ export class SessionManager extends EventEmitter {
     });
   }
 
-  async getCards(sessionId: string, cwd: string, offset = 0, limit = 50): Promise<CardHistoryResponse> {
+  async getCards(
+    sessionId: string,
+    cwd: string,
+    offset = 0,
+    limit = 50,
+    cursor?: string,
+  ): Promise<CardHistoryResponse> {
     const ps = this.sessions.get(sessionId);
     const provider = this.getProvider(this.resolveAgentId(sessionId, cwd));
     const cutoff = ps?.cardBuilder?.jsonlCutoff ?? undefined;
     let result: CardHistoryResponse;
 
     if (provider.historyMode === 'claude-jsonl') {
+      const cursorOffset = cursor?.startsWith('claude-offset:')
+        ? Number(cursor.slice('claude-offset:'.length))
+        : NaN;
+      const historyOffset = Number.isSafeInteger(cursorOffset) && cursorOffset >= 0
+        ? cursorOffset
+        : offset;
       // Read JSONL history up to the cutoff (excludes the active turn's messages).
-      result = await buildCardsFromHistory(sessionId, cwd, offset, limit, cutoff);
+      result = await buildCardsFromHistory(sessionId, cwd, historyOffset, limit, cutoff);
     } else {
-      // Memory-mode: use in-memory cards from active turn, falling back to persisted history
+      // Memory-mode snapshots keep persisted history and the active turn as
+      // separate ordered segments. The opaque cursor is based on immutable
+      // SQLite ordinals, never on the number of rendered/live cards.
       const streamCards = ps?.cardBuilder?.getCards() ?? [];
-      const persisted = await loadPersistedCardPage(sessionId, offset, limit);
-      if (offset === 0 && streamCards.length > 0) {
-        const cardsById = new Map<string, Card>();
-        for (const card of persisted.cards) cardsById.set(card.id, card);
-        let extraLiveCards = 0;
-        for (const card of streamCards) {
-          if (!cardsById.has(card.id)) extraLiveCards++;
-          cardsById.set(card.id, card);
-        }
+      if (cursor?.startsWith('memory-')) {
+        const persisted = await loadPersistedCardCursorPage(sessionId, {
+          cursor,
+          limit,
+          liveCardIds: streamCards.map((card) => card.id),
+        });
         result = {
-          cards: Array.from(cardsById.values()),
-          total: persisted.total + extraLiveCards,
+          cards: persisted.cards,
+          total: persisted.total + streamCards.length - persisted.persistedLiveCount,
           hasMore: persisted.hasMore,
+          ...(persisted.nextCursor ? { nextCursor: persisted.nextCursor } : {}),
         };
+      } else if (offset > 0) {
+        // Compatibility for older clients that only know numeric offsets.
+        result = await loadPersistedCardPage(sessionId, offset, limit);
       } else {
-        result = persisted;
+        const persisted = await loadPersistedCardCursorPage(sessionId, {
+          limit: Math.max(0, limit - streamCards.length),
+          liveCardIds: streamCards.map((card) => card.id),
+        });
+        result = {
+          cards: [...persisted.cards, ...streamCards],
+          total: persisted.total + streamCards.length - persisted.persistedLiveCount,
+          hasMore: persisted.hasMore,
+          ...(persisted.nextCursor ? { nextCursor: persisted.nextCursor } : {}),
+        };
       }
     }
 
     // Append in-memory cards for the active turn (initial load only — pagination
     // already has these cards in the PWA's array, so appending them again would duplicate).
-    if (offset === 0 && provider.historyMode === 'claude-jsonl' && ps?.cardBuilder) {
+    if (provider.historyMode === 'claude-jsonl' && ps?.cardBuilder) {
       const streamingCards = ps.cardBuilder.getCards();
       if (streamingCards.length > 0) {
-        result.cards.push(...streamingCards);
+        if (offset === 0 && !cursor) result.cards.push(...streamingCards);
         result.total += streamingCards.length;
       }
     }

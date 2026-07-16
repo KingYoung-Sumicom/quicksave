@@ -37,6 +37,8 @@ interface DbHandle {
   deleteCards: Database.Statement;
   countCards: Database.Statement;
   pageCards: Database.Statement;
+  pageCardsBeforeOrdinal: Database.Statement;
+  hasCardsBeforeOrdinal: Database.Statement;
   allCardIds: Database.Statement;
   getCard: Database.Statement;
   insertCard: Database.Statement;
@@ -111,6 +113,19 @@ function getDb(): DbHandle {
       ORDER BY timestamp ASC, ordinal ASC, card_id ASC
       LIMIT ? OFFSET ?
     `) as DbHandle['pageCards'],
+    pageCardsBeforeOrdinal: db.prepare(`
+      SELECT card_id, timestamp, ordinal, card_json
+      FROM card_history_cards
+      WHERE session_id = ? AND ordinal < ?
+      ORDER BY ordinal DESC
+      LIMIT ?
+    `) as DbHandle['pageCardsBeforeOrdinal'],
+    hasCardsBeforeOrdinal: db.prepare(`
+      SELECT 1 AS present
+      FROM card_history_cards
+      WHERE session_id = ? AND ordinal < ?
+      LIMIT 1
+    `) as DbHandle['hasCardsBeforeOrdinal'],
     allCardIds: db.prepare('SELECT card_id FROM card_history_cards WHERE session_id = ?') as DbHandle['allCardIds'],
     getCard: db.prepare(`
       SELECT card_id, timestamp, ordinal, card_json
@@ -339,6 +354,116 @@ export async function loadPersistedCardPage(
     cards: rows.map((row) => JSON.parse(row.card_json) as Card),
     total,
     hasMore: start > 0,
+  };
+}
+
+const MEMORY_ORDINAL_CURSOR_PREFIX = 'memory-ordinal:';
+const MEMORY_OFFSET_CURSOR_PREFIX = 'memory-offset:';
+
+export interface PersistedCardCursorPage extends CardHistoryResponse {
+  /** Number of supplied live card ids already represented on disk. */
+  persistedLiveCount: number;
+}
+
+function parseCursorNumber(cursor: string | undefined, prefix: string): number | null {
+  if (!cursor?.startsWith(prefix)) return null;
+  const value = Number(cursor.slice(prefix.length));
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Load a stable page from memory-mode history.
+ *
+ * SQLite ordinals are immutable insertion positions, so the returned cursor
+ * remains valid if newer live cards are appended or removed after the
+ * snapshot. On the initial active-turn snapshot, `liveCardIds` moves the
+ * boundary before the earliest persisted live card; the caller can append
+ * the complete in-memory turn without duplicating or skipping history.
+ */
+export async function loadPersistedCardCursorPage(
+  sessionId: string,
+  opts: {
+    cursor?: string;
+    limit?: number;
+    liveCardIds?: readonly string[];
+  } = {},
+): Promise<PersistedCardCursorPage> {
+  const limit = Math.max(0, Math.floor(opts.limit ?? 50));
+  const liveIds = opts.liveCardIds ?? [];
+
+  if (!syncIndex(sessionId)) {
+    const cards = await loadPersistedCards(sessionId);
+    // Reading a legacy `.json` snapshot migrates it to JSONL. Build the
+    // ordinal index immediately so the first response never hands out an
+    // offset cursor that changes meaning on the next request.
+    if (syncIndex(sessionId)) {
+      return loadPersistedCardCursorPage(sessionId, opts);
+    }
+    const cursorOffset = parseCursorNumber(opts.cursor, MEMORY_OFFSET_CURSOR_PREFIX);
+    const liveIdSet = new Set(liveIds);
+    let persistedLiveCount = 0;
+    let firstLiveIndex = cards.length;
+    if (liveIdSet.size > 0) {
+      for (let i = 0; i < cards.length; i++) {
+        if (!liveIdSet.has(cards[i].id)) continue;
+        persistedLiveCount++;
+        if (cursorOffset == null) firstLiveIndex = Math.min(firstLiveIndex, i);
+      }
+    }
+    const boundary = Math.min(cards.length, cursorOffset ?? firstLiveIndex);
+    const start = Math.max(0, boundary - limit);
+    const hasMore = start > 0;
+    return {
+      cards: cards.slice(start, boundary),
+      total: cards.length,
+      hasMore,
+      ...(hasMore ? { nextCursor: `${MEMORY_OFFSET_CURSOR_PREFIX}${start}` } : {}),
+      persistedLiveCount,
+    };
+  }
+
+  const db = getDb();
+  const legacyOffsetCursor = parseCursorNumber(opts.cursor, MEMORY_OFFSET_CURSOR_PREFIX);
+  if (legacyOffsetCursor != null) {
+    const page = await loadPersistedCardPage(sessionId, legacyOffsetCursor, limit);
+    return {
+      ...page,
+      ...(page.hasMore
+        ? { nextCursor: `${MEMORY_OFFSET_CURSOR_PREFIX}${legacyOffsetCursor + page.cards.length}` }
+        : {}),
+      persistedLiveCount: 0,
+    };
+  }
+  const ordinalCursor = parseCursorNumber(opts.cursor, MEMORY_ORDINAL_CURSOR_PREFIX);
+  const meta = db.getMeta.get(sessionId) as MetaRow | undefined;
+  let boundary = ordinalCursor ?? meta?.next_ordinal ?? Number.MAX_SAFE_INTEGER;
+  let persistedLiveCount = 0;
+
+  if (liveIds.length > 0) {
+    for (const cardId of new Set(liveIds)) {
+      const row = db.getCard.get(sessionId, cardId) as CardRow | undefined;
+      if (!row) continue;
+      persistedLiveCount++;
+      if (ordinalCursor == null) boundary = Math.min(boundary, row.ordinal);
+    }
+  }
+
+  const descendingRows = db.pageCardsBeforeOrdinal.all(
+    sessionId,
+    boundary,
+    limit,
+  ) as CardRow[];
+  const rows = descendingRows.reverse();
+  const nextBoundary = rows[0]?.ordinal ?? boundary;
+  const hasMore = Boolean(db.hasCardsBeforeOrdinal.get(sessionId, nextBoundary));
+  const total = (db.countCards.get(sessionId) as { total: number } | undefined)?.total ?? 0;
+
+  return {
+    cards: rows.map((row) => JSON.parse(row.card_json) as Card),
+    total,
+    hasMore,
+    ...(hasMore ? { nextCursor: `${MEMORY_ORDINAL_CURSOR_PREFIX}${nextBoundary}` } : {}),
+    persistedLiveCount,
   };
 }
 

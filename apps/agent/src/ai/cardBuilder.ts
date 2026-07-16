@@ -1956,9 +1956,13 @@ export async function buildCardsFromHistory(
     }
   }
 
+  const hasMore = total - offset - sliced.length > 0;
   return {
     cards,
     total,
-    hasMore: total - offset - limit > 0,
+    hasMore,
+    ...(hasMore && sliced.length > 0
+      ? { nextCursor: `claude-offset:${offset + sliced.length}` }
+      : {}),
   };
 }
