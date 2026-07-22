@@ -139,7 +139,7 @@ export function ComposerChip({
   onRemove,
 }: {
   pending: PendingAttachment;
-  onRemove: () => void;
+  onRemove?: () => void;
 }) {
   const upload = useAttachmentUpload(pending.id);
   const thumbnailUrl = useObjectUrl(pending);
@@ -181,14 +181,16 @@ export function ComposerChip({
           {isError ? upload?.error ?? 'Upload failed' : statusLabel(status, pending.bytes.byteLength, progress)}
         </div>
       </div>
-      <button
-        type="button"
-        onPointerDown={(e) => { e.preventDefault(); onRemove(); }}
-        className="ml-1 shrink-0 w-5 h-5 rounded-full text-slate-400 hover:text-slate-200 hover:bg-slate-600/60 flex items-center justify-center"
-        aria-label={`Remove ${pending.name}`}
-      >
-        ×
-      </button>
+      {onRemove && (
+        <button
+          type="button"
+          onPointerDown={(e) => { e.preventDefault(); onRemove(); }}
+          className="ml-1 shrink-0 w-5 h-5 rounded-full text-slate-400 hover:text-slate-200 hover:bg-slate-600/60 flex items-center justify-center"
+          aria-label={`Remove ${pending.name}`}
+        >
+          ×
+        </button>
+      )}
     </div>
   );
 }

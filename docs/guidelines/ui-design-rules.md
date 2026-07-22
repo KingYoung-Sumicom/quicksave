@@ -49,6 +49,18 @@ Inside the chat view (`apps/pwa/src/components/ClaudePanel.tsx`), only the top-l
 
 ## Input / Form Elements
 
+### Keep submitted drafts until the agent acknowledges them
+
+Message composers must retain and synchronously persist submitted text while
+the send command is awaiting its agent acknowledgement. Disable editing and
+duplicate submission during that window. Clear the text and persisted draft
+only after a successful acknowledgement; on timeout or rejection, unlock the
+composer with the original text intact so the user can retry.
+
+**Why:** Transport failures can happen after the user presses send but before
+the agent accepts the command. Clearing optimistically loses the only copy of
+the message and makes retry impossible.
+
 ### Textarea must expand to fit content, no max-height cap
 
 Auto-resizing textareas must expand freely (`el.style.height = el.scrollHeight + 'px'`). Do not cap with `Math.min(..., maxPx)`.

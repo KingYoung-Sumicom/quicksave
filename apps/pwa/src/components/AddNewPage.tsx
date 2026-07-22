@@ -688,7 +688,7 @@ function SessionTab({
     setStarting(true);
     setError(null);
     try {
-      await startSession(isTerminalNewSession ? '' : text, {
+      const acknowledged = await startSession(isTerminalNewSession ? '' : text, {
         agent: selectedAgent,
         model: selectedModel,
         permissionMode: selectedPermissionMode,
@@ -705,9 +705,8 @@ function SessionTab({
         ...(agentType.systemPrompt ? { systemPrompt: agentType.systemPrompt } : {}),
         ...(attachmentIds.length > 0 ? { attachmentIds, attachmentMetadata } : {}),
       });
-      const streamErr = useClaudeStore.getState().streamError;
-      if (streamErr) {
-        setError(streamErr);
+      if (!acknowledged) {
+        setError(useClaudeStore.getState().streamError ?? intl.formatMessage({ id: 'addNew.session.failed' }));
         return;
       }
       const sid = useClaudeStore.getState().activeSessionId;

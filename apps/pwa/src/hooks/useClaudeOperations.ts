@@ -340,7 +340,9 @@ export function useClaudeOperations(
       } catch (error) {
         setStreaming(false);
         setStreamError(error instanceof Error ? error.message : 'Failed to start session');
+        return false;
       }
+      return true;
     },
     [sendCommand, clearCards, setStreaming, setStreamError, setActiveSession, appendCard, upsertSession]
   );
@@ -459,7 +461,9 @@ export function useClaudeOperations(
       } catch (error) {
         setStreaming(false);
         setStreamError(error instanceof Error ? error.message : 'Failed to resume session');
+        return false;
       }
+      return true;
     },
     [sendCommand, setStreaming, setStreamError, setActiveSession, appendCard, upsertSession, getSessionCards]
   );

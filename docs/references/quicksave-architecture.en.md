@@ -931,8 +931,8 @@ even if `WebSocketClient.activeAgentId` changes while the command is pending.
 
 ```typescript
 // Session operations
-startSession(prompt, opts?)
-resumeSession(sessionId, prompt, cwd?)
+startSession(prompt, opts?)             // Promise<boolean>: true only after agent ack
+resumeSession(sessionId, prompt, cwd?)  // Promise<boolean>: true only after agent ack
 cancelSession(sessionId)
 closeSession(sessionId)        // claude:close — kill process, keep registry entry
 endSession(sessionId)          // claude:end-task — kill + archive
@@ -949,6 +949,11 @@ respondToUserInput(response)
 setSessionPermission(sessionId, permissionMode)
 unsubscribeSession(sessionId)
 ```
+
+The composer uses the boolean acknowledgement from `startSession` and
+`resumeSession` as its commit boundary: submitted text and attachments remain
+locked and persisted until `true`; a rejection or timeout returns `false` and
+leaves the composer payload available for retry.
 
 ### Component Hierarchy
 

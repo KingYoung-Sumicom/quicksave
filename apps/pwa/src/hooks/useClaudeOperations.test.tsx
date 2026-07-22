@@ -59,7 +59,7 @@ describe('useClaudeOperations', () => {
       root.render(<Harness getBus={() => bus} onRender={(ops) => { latestOps = ops; }} />);
     });
 
-    let resumePromise: Promise<void> = Promise.resolve();
+    let resumePromise: Promise<boolean> = Promise.resolve(false);
     await act(async () => {
       resumePromise = latestOps!.resumeSession('session-A', 'continue', '/repo');
       await Promise.resolve();
@@ -81,6 +81,29 @@ describe('useClaudeOperations', () => {
     );
     expect(useClaudeStore.getState().activeSessionId).toBe('session-B');
     expect(useClaudeStore.getState().sessions['session-A'].isStreaming).toBe(true);
+    expect(await resumePromise).toBe(true);
+  });
+
+  it('returns false when the agent does not acknowledge a resume command', async () => {
+    let latestOps: ClaudeOps | null = null;
+    const command = vi.fn().mockResolvedValue({ success: false, error: 'agent rejected prompt' });
+    const bus = { command } as unknown as MessageBusClient;
+    useClaudeStore.getState().setSessions([
+      { sessionId: 'session-A', summary: 'A', lastModified: 1, isActive: true, isStreaming: false } as any,
+    ]);
+    useClaudeStore.getState().setActiveSession('session-A');
+
+    await act(async () => {
+      root.render(<Harness getBus={() => bus} onRender={(ops) => { latestOps = ops; }} />);
+    });
+
+    let acknowledged = true;
+    await act(async () => {
+      acknowledged = await latestOps!.resumeSession('session-A', 'keep this', '/repo');
+    });
+
+    expect(acknowledged).toBe(false);
+    expect(useClaudeStore.getState().streamError).toBe('agent rejected prompt');
   });
 
   it('returns the agent-issued cursor when loading older card history', async () => {

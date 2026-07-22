@@ -57,8 +57,8 @@ interface ClaudePanelProps {
     subtype: string,
     params?: Record<string, unknown>,
   ) => Promise<SessionControlRequestResponsePayload>;
-  onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<void>;
-  onResumeSession: (sessionId: string, prompt: string, opts?: ResumeSessionOpts) => Promise<void>;
+  onStartSession: (prompt: string, opts?: StartSessionOpts) => Promise<boolean>;
+  onResumeSession: (sessionId: string, prompt: string, opts?: ResumeSessionOpts) => Promise<boolean>;
   onSteerQueuedSession?: (sessionId: string) => Promise<void> | void;
   onDeleteQueuedSession?: (sessionId: string, queuedId: string) => Promise<void> | void;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
@@ -460,6 +460,11 @@ export function ClaudePanel({
   const isStartingNewSession = isStreaming && !activeSessionId;
   // True during cold resume: set when resuming an inactive session, cleared on first card event.
   const [isResuming, setIsResuming] = useState(false);
+  // Keep submitted text visible and immutable until the agent confirms it
+  // accepted the command. The ref closes the same-tick double-submit window
+  // before React has committed the disabled state.
+  const [isAwaitingSendAck, setIsAwaitingSendAck] = useState(false);
+  const sendInFlightRef = useRef(false);
 
   // Clear isResuming when first non-user card arrives (Claude started responding)
   useEffect(() => {
@@ -632,6 +637,7 @@ export function ClaudePanel({
   }, [activeSessionId, setActiveSession, clearCards, onNewSession, onUnsubscribeSession]);
 
   const handleSend = useCallback(async (interruptCurrentTurn = false) => {
+    if (sendInFlightRef.current) return;
     const isTerminalNewSession = !activeSessionId && selectedAgent === 'claude-terminal';
     const prompt = isTerminalNewSession ? '' : promptInput.trim();
     // A turn is sendable if there's prompt text OR at least one ready attachment.
@@ -653,18 +659,27 @@ export function ClaudePanel({
         return;
       }
 
-      setPromptInput('');
-      if (inputRef.current) inputRef.current.style.height = 'auto';
       if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
-      if (draftKey) localStorage.removeItem(draftKey);
+      if (draftKey) {
+        if (promptInput) localStorage.setItem(draftKey, promptInput);
+        else localStorage.removeItem(draftKey);
+      }
       setStreamError(null);
+      sendInFlightRef.current = true;
+      setIsAwaitingSendAck(true);
 
       try {
         const response = await onSendControlRequest(activeSessionId, controlSlash.subtype, controlSlash.params);
         if (!response.success) throw new Error(response.error || 'Control command failed');
+        setPromptInput('');
+        if (inputRef.current) inputRef.current.style.height = 'auto';
+        if (draftKey) localStorage.removeItem(draftKey);
         showComposerToast(formatControlSlashToast(controlSlash.subtype, response.response));
       } catch (error) {
         setStreamError(error instanceof Error ? error.message : 'Control command failed');
+      } finally {
+        sendInFlightRef.current = false;
+        setIsAwaitingSendAck(false);
       }
       return;
     }
@@ -676,30 +691,33 @@ export function ClaudePanel({
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
 
-    // Snapshot the chip set for this turn, then clear composer state. The
-    // upload manager is forgotten *after* the send fires so primeUploaded
-    // (called inside useClaudeOperations) can still read local bytes.
+    // Snapshot the chip set for this turn, but leave the composer untouched
+    // until the agent acknowledges the command. Persist synchronously so a
+    // reload during the request restores the submitted text.
     const { attachmentIds, attachmentMetadata } = isTerminalNewSession
       ? { attachmentIds: [] as string[], attachmentMetadata: [] }
       : attach.buildPayload();
 
     if (!isTerminalNewSession) {
-      setPromptInput('');
-      if (inputRef.current) inputRef.current.style.height = 'auto';
-      attach.clear();
       if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
-      if (draftKey) localStorage.removeItem(draftKey);
+      if (draftKey) {
+        if (promptInput) localStorage.setItem(draftKey, promptInput);
+        else localStorage.removeItem(draftKey);
+      }
     }
 
+    sendInFlightRef.current = true;
+    setIsAwaitingSendAck(true);
+    let acknowledged = false;
     try {
       if (activeSessionId) {
         if (isInactive) setIsResuming(true);
-        await onResumeSession(activeSessionId, prompt, {
+        acknowledged = await onResumeSession(activeSessionId, prompt, {
           ...(attachmentIds.length > 0 ? { attachmentIds, attachmentMetadata } : {}),
           ...(interruptCurrentTurn ? { interruptCurrentTurn: true } : {}),
         });
       } else {
-        await onStartSession(isTerminalNewSession ? '' : prompt, {
+        acknowledged = await onStartSession(isTerminalNewSession ? '' : prompt, {
           agent: selectedAgent,
           model: selectedModel,
           permissionMode: selectedPermissionMode,
@@ -718,9 +736,23 @@ export function ClaudePanel({
           ...(attachmentIds.length > 0 ? { attachmentIds, attachmentMetadata } : {}),
         });
       }
+
+      if (acknowledged && !isTerminalNewSession) {
+        setPromptInput('');
+        if (inputRef.current) inputRef.current.style.height = 'auto';
+        attach.clear();
+        if (draftKey) localStorage.removeItem(draftKey);
+      } else if (!acknowledged) {
+        setIsResuming(false);
+      }
+    } catch (error) {
+      setIsResuming(false);
+      setStreamError(error instanceof Error ? error.message : 'Failed to send message');
     } finally {
-      // Clean up the upload manager state for the chips that just shipped.
-      if (!isTerminalNewSession) attach.forgetSent(attachmentIds);
+      // Failed sends remain fully retryable, including their uploaded chips.
+      if (acknowledged && !isTerminalNewSession) attach.forgetSent(attachmentIds);
+      sendInFlightRef.current = false;
+      setIsAwaitingSendAck(false);
     }
   }, [promptInput, attach, activeSessionId, isInactive, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedReasoningEffort, selectedFastMode, selectedContextWindow, selectedAgentType, setPromptInput, setStreamError, onSendControlRequest, onResumeSession, onStartSession, draftKey, showComposerToast]);
 
@@ -948,6 +980,7 @@ export function ClaudePanel({
   const isTerminalNewSession = !activeSessionId && selectedAgent === 'claude-terminal';
   const composerHasContent = promptInput.trim().length > 0 || attach.pendingAttachments.length > 0;
   const canSubmitComposer = !voiceActive
+    && !isAwaitingSendAck
     && (composerHasContent || isTerminalNewSession)
     && !attach.anyUploadInFlight;
 
@@ -1098,7 +1131,11 @@ export function ClaudePanel({
               </SessionStatusBar>
             )}
             {!voiceCoworker.enabled && (
-              <AttachmentTray pending={attach.pendingAttachments} onRemove={attach.removePendingAttachment} />
+              <AttachmentTray
+                pending={attach.pendingAttachments}
+                onRemove={attach.removePendingAttachment}
+                disabled={isAwaitingSendAck}
+              />
             )}
             {attachmentToast && (
               <div className="mb-1.5 flex items-start gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1">
@@ -1125,6 +1162,7 @@ export function ClaudePanel({
                 ref={attach.fileInputRef}
                 type="file"
                 multiple
+                disabled={isAwaitingSendAck}
                 accept={fileAccept}
                 className="sr-only"
                 onChange={(e) => {
@@ -1138,11 +1176,11 @@ export function ClaudePanel({
                 'relative flex flex-col gap-2 rounded-lg transition-colors',
                 attach.isDraggingFile && 'ring-2 ring-blue-400/60 bg-blue-500/5',
               )}
-              onDragOver={attach.dragHandlers.onDragOver}
-              onDragLeave={attach.dragHandlers.onDragLeave}
-              onDrop={attach.dragHandlers.onDrop}
+              onDragOver={isAwaitingSendAck ? undefined : attach.dragHandlers.onDragOver}
+              onDragLeave={isAwaitingSendAck ? undefined : attach.dragHandlers.onDragLeave}
+              onDrop={isAwaitingSendAck ? undefined : attach.dragHandlers.onDrop}
             >
-              {!isTerminalNewSession && !voiceCoworker.enabled && slashOpen && filteredSlashCommands.length > 0 && (
+              {!isAwaitingSendAck && !isTerminalNewSession && !voiceCoworker.enabled && slashOpen && filteredSlashCommands.length > 0 && (
                 <div ref={slashListRef} className="absolute left-0 right-0 bottom-full mb-2 max-h-56 overflow-y-auto rounded-lg border border-slate-700 bg-slate-800 shadow-lg z-10">
                   {filteredSlashCommands.map((cmd, i) => (
                     <button
@@ -1208,7 +1246,7 @@ export function ClaudePanel({
                       if (attach.tryConsumePaste(e.nativeEvent.clipboardData)) e.preventDefault();
                     }}
                     placeholder=""
-                    disabled={voiceActive}
+                    disabled={voiceActive || isAwaitingSendAck}
                     className="w-full bg-slate-700 rounded-lg px-3 py-2 text-sm resize-none overflow-y-auto border border-slate-600 focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                     rows={1}
                   />
@@ -1222,7 +1260,7 @@ export function ClaudePanel({
                           htmlFor="qs-attach-input"
                           className={clsx(
                             'p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-700/60 flex-shrink-0 flex items-center justify-center',
-                            voiceActive ? 'opacity-40 pointer-events-none' : 'cursor-pointer',
+                            (voiceActive || isAwaitingSendAck) ? 'opacity-40 pointer-events-none' : 'cursor-pointer',
                           )}
                           title="Attach files"
                           aria-label="Attach files"
@@ -1240,7 +1278,7 @@ export function ClaudePanel({
                       <button
                         type="button"
                         onPointerDown={(e) => { e.preventDefault(); void voice.onMicPress(); }}
-                        disabled={voice.busy || voice.unavailable}
+                        disabled={voice.busy || voice.unavailable || isAwaitingSendAck}
                         className={clsx(
                           'p-2 rounded-lg transition-colors flex-shrink-0 flex items-center justify-center disabled:opacity-60',
                           voice.recording
