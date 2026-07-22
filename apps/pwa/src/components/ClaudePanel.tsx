@@ -344,6 +344,16 @@ export function ClaudePanel({
     agentLabel: selectedAgentType.label,
     onReject: showComposerToast,
   });
+  // Keep the submitted payload in the composer until ack. A provider can
+  // broadcast its user-card event before the command response reaches this
+  // tab, so temporarily hide that matching card from the message list too.
+  const [isAwaitingSendAck, setIsAwaitingSendAck] = useState(false);
+  const [pendingSubmission, setPendingSubmission] = useState<{
+    prompt: string;
+    attachmentIds: string[];
+    submittedAt: number;
+  } | null>(null);
+  const sendInFlightRef = useRef(false);
 
   // Per-group override: when global hide is on, individual groups can be
   // expanded by clicking their placeholder; the entry is keyed by the group's
@@ -431,6 +441,13 @@ export function ClaudePanel({
     // hide-tool preference. Completed-turn collapse can still fold them.
     const ALWAYS_VISIBLE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode', 'TodoWrite']);
     for (const card of cards) {
+      if (pendingSubmission && card.type === 'user' && card.timestamp >= pendingSubmission.submittedAt - 1000) {
+        const cardAttachmentIds = (card.attachments ?? []).map((attachment) => attachment.id).sort();
+        const pendingAttachmentIds = [...pendingSubmission.attachmentIds].sort();
+        const isPendingCard = card.text === pendingSubmission.prompt
+          && cardAttachmentIds.join(',') === pendingAttachmentIds.join(',');
+        if (isPendingCard) continue;
+      }
       const collapseIntermediate = shouldCollapseIntermediate(card);
       const collapseToolCall = hideToolCalls && card.type === 'tool_call' && !ALWAYS_VISIBLE_TOOLS.has(card.toolName);
       if (collapseIntermediate || collapseToolCall) {
@@ -443,7 +460,7 @@ export function ClaudePanel({
     }
     flushRun();
     return out;
-  }, [cards, completedTurnIds, hideToolCalls, isStreaming, expandedGroups]);
+  }, [cards, completedTurnIds, hideToolCalls, isStreaming, expandedGroups, pendingSubmission]);
 
   const activeSession = activeSessionId ? sessions[activeSessionId] : undefined;
   const viewedSessionId = urlSessionId ?? activeSessionId;
@@ -460,12 +477,6 @@ export function ClaudePanel({
   const isStartingNewSession = isStreaming && !activeSessionId;
   // True during cold resume: set when resuming an inactive session, cleared on first card event.
   const [isResuming, setIsResuming] = useState(false);
-  // Keep submitted text visible and immutable until the agent confirms it
-  // accepted the command. The ref closes the same-tick double-submit window
-  // before React has committed the disabled state.
-  const [isAwaitingSendAck, setIsAwaitingSendAck] = useState(false);
-  const sendInFlightRef = useRef(false);
-
   // Clear isResuming when first non-user card arrives (Claude started responding)
   useEffect(() => {
     if (isResuming && cards.length > 0) {
@@ -707,6 +718,7 @@ export function ClaudePanel({
     }
 
     sendInFlightRef.current = true;
+    setPendingSubmission({ prompt, attachmentIds, submittedAt: Date.now() });
     setIsAwaitingSendAck(true);
     let acknowledged = false;
     try {
@@ -752,6 +764,7 @@ export function ClaudePanel({
       // Failed sends remain fully retryable, including their uploaded chips.
       if (acknowledged && !isTerminalNewSession) attach.forgetSent(attachmentIds);
       sendInFlightRef.current = false;
+      setPendingSubmission(null);
       setIsAwaitingSendAck(false);
     }
   }, [promptInput, attach, activeSessionId, isInactive, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedReasoningEffort, selectedFastMode, selectedContextWindow, selectedAgentType, setPromptInput, setStreamError, onSendControlRequest, onResumeSession, onStartSession, draftKey, showComposerToast]);

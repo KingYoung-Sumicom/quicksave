@@ -53,9 +53,11 @@ Inside the chat view (`apps/pwa/src/components/ClaudePanel.tsx`), only the top-l
 
 Message composers must retain and synchronously persist submitted text while
 the send command is awaiting its agent acknowledgement. Disable editing and
-duplicate submission during that window. Clear the text and persisted draft
-only after a successful acknowledgement; on timeout or rejection, unlock the
-composer with the original text intact so the user can retry.
+duplicate submission during that window, and do not show the matching user
+message in the conversation list yet—even if its provider card event arrives
+before the command response. Clear the text and persisted draft and reveal the
+user message only after a successful acknowledgement; on timeout or rejection,
+unlock the composer with the original text intact so the user can retry.
 
 **Why:** Transport failures can happen after the user presses send but before
 the agent accepts the command. Clearing optimistically loses the only copy of

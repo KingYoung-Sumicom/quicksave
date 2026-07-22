@@ -87,11 +87,24 @@ describe('ClaudePanel composer acknowledgement', () => {
     expect(textarea.value).toBe('message awaiting ack');
     expect(localStorage.getItem('qs_draft_new')).toBe('message awaiting ack');
 
+    // Providers can publish their user-card event before the command response
+    // reaches this tab. It must remain hidden until that response is acked.
+    await act(async () => {
+      useClaudeStore.getState().appendCard({
+        type: 'user',
+        id: 'agent-user-card',
+        timestamp: Date.now(),
+        text: 'message awaiting ack',
+      });
+    });
+    expect(container.querySelector('[data-card-id="agent-user-card"]')).toBeNull();
+
     await act(async () => { ack.resolve(true); await ack.promise; });
 
     expect(textarea.disabled).toBe(false);
     expect(textarea.value).toBe('');
     expect(localStorage.getItem('qs_draft_new')).toBeNull();
+    expect(container.querySelector('[data-card-id="agent-user-card"]')).not.toBeNull();
   });
 
   it('unlocks but retains the persisted message when the agent rejects it', async () => {

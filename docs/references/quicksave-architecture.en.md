@@ -952,8 +952,11 @@ unsubscribeSession(sessionId)
 
 The composer uses the boolean acknowledgement from `startSession` and
 `resumeSession` as its commit boundary: submitted text and attachments remain
-locked and persisted until `true`; a rejection or timeout returns `false` and
-leaves the composer payload available for retry.
+locked and persisted until `true`. Provider user-card events that arrive before
+the response are temporarily hidden from the sending tab's conversation list;
+the card and composer clear become visible atomically after acknowledgement. A
+rejection or timeout returns `false` and leaves the composer payload available
+for retry.
 
 ### Component Hierarchy
 

@@ -76,6 +76,35 @@ function appendOptimisticQueueState(
   };
 }
 
+function appendAcknowledgedUserCard(
+  prompt: string,
+  attachments: AttachmentMetadata[] | undefined,
+  appendCard: ReturnType<typeof useClaudeStore.getState>['appendCard'],
+): void {
+  const hasContent = prompt.trim().length > 0 || (attachments?.length ?? 0) > 0;
+  if (!hasContent) return;
+
+  // Providers may broadcast the authoritative user card before the command
+  // response reaches this tab. Reuse it when present; otherwise add a local
+  // card at the acknowledgement boundary so the message never appears early.
+  const attachmentSig = (attachments ?? []).map((a) => a.id).sort().join(',');
+  const alreadyHas = useClaudeStore.getState().cards.some((card) => {
+    if (card.type !== 'user' || card.text !== prompt) return false;
+    if (Date.now() - card.timestamp >= 5000) return false;
+    const cardSig = (card.attachments ?? []).map((a) => a.id).sort().join(',');
+    return cardSig === attachmentSig;
+  });
+  if (alreadyHas) return;
+
+  appendCard({
+    type: 'user',
+    id: `local-user-${Date.now()}`,
+    timestamp: Date.now(),
+    text: prompt,
+    ...(attachments && attachments.length > 0 ? { attachments } : {}),
+  });
+}
+
 export function shouldAdoptResumeResult(opts: {
   requestedSessionId: string;
   actualSessionId: string;
@@ -260,22 +289,6 @@ export function useClaudeOperations(
           useConnectionStore.getState().codexModels.find((model) => model.id === opts.model),
         ) ?? 'fast'
         : undefined;
-      const hasOptimisticUserCard = prompt.trim().length > 0
-        || (opts?.attachmentMetadata?.length ?? 0) > 0;
-      if (hasOptimisticUserCard) {
-        // Add user card immediately (optimistic). Attachments carry metadata
-        // only — the local upload manager still has the bytes; we'll prime the
-        // attachment cache with them once the agent assigns a sessionId.
-        appendCard({
-          type: 'user',
-          id: `local-user-${Date.now()}`,
-          timestamp: Date.now(),
-          text: prompt,
-          ...(opts?.attachmentMetadata && opts.attachmentMetadata.length > 0
-            ? { attachments: opts.attachmentMetadata }
-            : {}),
-        });
-      }
       try {
         console.log(`[sub] start → implicit subscribe (new session)`);
         const response = await sendCommand<ClaudeStartResponsePayload>(
@@ -304,6 +317,7 @@ export function useClaudeOperations(
         if (!response.success) {
           throw new Error(response.error || 'Failed to start session');
         }
+        appendAcknowledgedUserCard(prompt, opts?.attachmentMetadata, appendCard);
         // Pre-populate session state so the indicator flips to "thinking"
         // immediately, without waiting for the async session-updated broadcast.
         // Missing the broadcast (e.g. transient subscribe races) would otherwise
@@ -371,7 +385,7 @@ export function useClaudeOperations(
           }
         }, OPTIMISTIC_QUEUE_MIN_MS);
       }
-      // Prime the attachment cache BEFORE appending the optimistic card so
+      // Prime the attachment cache before the acknowledged card can render so
       // the chip's first render reads bytes from L1 instead of firing
       // `attachment:fetch` against the agent's disk store, which may not
       // have persisted the bytes yet (the agent only writes after `claude:
@@ -382,17 +396,6 @@ export function useClaudeOperations(
         for (const id of opts.attachmentIds) {
           primeUploadedAttachment(sessionId, id);
         }
-      }
-      if (!queueInsteadOfAppend) {
-        appendCard({
-          type: 'user',
-          id: `local-user-${Date.now()}`,
-          timestamp: Date.now(),
-          text: prompt,
-          ...(opts?.attachmentMetadata && opts.attachmentMetadata.length > 0
-            ? { attachments: opts.attachmentMetadata }
-            : {}),
-        });
       }
       try {
         console.log(`[sub] resume → implicit subscribe session=${sessionId.slice(0, 8)}`);
@@ -413,6 +416,15 @@ export function useClaudeOperations(
           throw new Error(response.error || 'Failed to resume session');
         }
         const actualSessionId = response.sessionId ?? sessionId;
+        const shouldAppendCard = shouldAdoptResumeResult({
+          requestedSessionId: sessionId,
+          actualSessionId,
+          activeSessionIdAtRequest,
+          currentActiveSessionId: useClaudeStore.getState().activeSessionId,
+        });
+        if (!queueInsteadOfAppend && shouldAppendCard) {
+          appendAcknowledgedUserCard(prompt, opts?.attachmentMetadata, appendCard);
+        }
         // Flip the indicator to "thinking" immediately so we don't rely on the
         // session-updated broadcast being delivered before the user looks at
         // the session list.
@@ -431,13 +443,7 @@ export function useClaudeOperations(
           }
         }
         if (!wasAlreadyStreaming) {
-          const shouldAdopt = shouldAdoptResumeResult({
-            requestedSessionId: sessionId,
-            actualSessionId,
-            activeSessionIdAtRequest,
-            currentActiveSessionId: useClaudeStore.getState().activeSessionId,
-          });
-          if (shouldAdopt) {
+          if (shouldAppendCard) {
             // Cold resume: bind the active session to whatever id the daemon
             // returned. If the user navigated to another session while the
             // process was spawning, keep their current focus and only update

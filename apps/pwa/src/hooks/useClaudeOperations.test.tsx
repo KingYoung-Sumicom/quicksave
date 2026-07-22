@@ -65,6 +65,8 @@ describe('useClaudeOperations', () => {
       await Promise.resolve();
     });
 
+    expect(useClaudeStore.getState().cards).toHaveLength(0);
+
     act(() => {
       useClaudeStore.getState().setActiveSession('session-B');
     });
@@ -82,6 +84,37 @@ describe('useClaudeOperations', () => {
     expect(useClaudeStore.getState().activeSessionId).toBe('session-B');
     expect(useClaudeStore.getState().sessions['session-A'].isStreaming).toBe(true);
     expect(await resumePromise).toBe(true);
+    expect(useClaudeStore.getState().cards).toHaveLength(0);
+  });
+
+  it('adds the user card only after an acknowledged resume', async () => {
+    let latestOps: ClaudeOps | null = null;
+    let resolveCommand: (value: unknown) => void = () => {};
+    const command = vi.fn(() => new Promise((resolve) => { resolveCommand = resolve; }));
+    const bus = { command } as unknown as MessageBusClient;
+    useClaudeStore.getState().setSessions([
+      { sessionId: 'session-A', summary: 'A', lastModified: 1, isActive: true, isStreaming: false } as any,
+    ]);
+    useClaudeStore.getState().setActiveSession('session-A');
+
+    await act(async () => {
+      root.render(<Harness getBus={() => bus} onRender={(ops) => { latestOps = ops; }} />);
+    });
+
+    let resumePromise: Promise<boolean> = Promise.resolve(false);
+    await act(async () => {
+      resumePromise = latestOps!.resumeSession('session-A', 'show after ack', '/repo');
+      await Promise.resolve();
+    });
+    expect(useClaudeStore.getState().cards).toHaveLength(0);
+
+    await act(async () => {
+      resolveCommand({ success: true, sessionId: 'session-A' });
+      await resumePromise;
+    });
+    expect(useClaudeStore.getState().cards).toEqual([
+      expect.objectContaining({ type: 'user', text: 'show after ack' }),
+    ]);
   });
 
   it('returns false when the agent does not acknowledge a resume command', async () => {
@@ -104,6 +137,7 @@ describe('useClaudeOperations', () => {
 
     expect(acknowledged).toBe(false);
     expect(useClaudeStore.getState().streamError).toBe('agent rejected prompt');
+    expect(useClaudeStore.getState().cards).toHaveLength(0);
   });
 
   it('returns the agent-issued cursor when loading older card history', async () => {
