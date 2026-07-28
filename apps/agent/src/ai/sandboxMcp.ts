@@ -53,6 +53,9 @@ export function buildSandboxMcpServerConfig(opts: {
   ownDir: string;
   /** Project directory the MCP server operates in — becomes `--cwd`. */
   cwd: string;
+  /** Let the MCP process inherit its spawn cwd instead of passing `--cwd`.
+   * OpenCode creates one MCP process per workspace and already sets that cwd. */
+  inheritCwd?: boolean;
   /** When resuming, lets the server's UpdateSessionStatus dry-run read the registry file. */
   sessionId?: string;
   /** Correlation id for fresh sessions, where `sessionId` isn't known yet at
@@ -75,7 +78,8 @@ export function buildSandboxMcpServerConfig(opts: {
     ? join(opts.ownDir, '..', '..', 'node_modules', '.bin', 'tsx')
     : 'node';
 
-  const args = [scriptPath, '--cwd', opts.cwd];
+  const args = [scriptPath];
+  if (!opts.inheritCwd) args.push('--cwd', opts.cwd);
   if (opts.sessionId) args.push('--session-id', opts.sessionId);
   if (opts.corrId) args.push('--corr', opts.corrId);
   if (opts.includeSandboxBash === false) args.push('--no-sandbox-bash');

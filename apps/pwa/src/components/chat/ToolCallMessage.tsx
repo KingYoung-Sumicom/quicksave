@@ -4,7 +4,13 @@ import { useState, type ReactNode } from 'react';
 import { parseToolUseError } from './ToolResultMessage';
 import type { ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';
 import { ChevronIcon } from '../ui/ChevronIcon';
-import { TOOL_VIEWS, TOOL_COLORS, SANDBOX_BASH_TOOL, UPDATE_SESSION_STATUS_TOOL } from './toolViews/registry';
+import {
+  TOOL_VIEWS,
+  TOOL_COLORS,
+  MCP_RESOURCE_TOOLS,
+  SANDBOX_BASH_TOOL,
+  UPDATE_SESSION_STATUS_TOOL,
+} from './toolViews/registry';
 import { AskUserQuestionToolView } from './toolViews/AskUserQuestionToolView';
 import { ExitPlanModeToolView, ExitPlanModeInteractiveView } from './toolViews/PlanModeToolView';
 import { FallbackToolView } from './toolViews/FallbackToolView';
@@ -14,11 +20,20 @@ import { InteractiveQuestionView } from './InteractiveQuestionView';
 import { linkifyPaths } from './linkifyPaths';
 import { ArtifactMessage } from './ArtifactMessage';
 import { parseMarkdownArtifactRef } from './cardCollapse';
+import { parseReadToolResult, parseShellToolResult } from './toolViews/openCodeToolResult';
 
 /** Tools whose stdout typically contains paths worth linkifying. */
 const LINKIFY_RESULT_TOOLS = new Set(['Bash', 'Glob', 'Grep', SANDBOX_BASH_TOOL]);
 
-const INLINE_RESULT_TOOLS = new Set(['Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep']);
+const INLINE_RESULT_TOOLS = new Set([
+  'Read',
+  'Write',
+  'Edit',
+  'Bash',
+  'Glob',
+  'Grep',
+  ...MCP_RESOURCE_TOOLS,
+]);
 const INLINE_RESULT_BORDER: Record<string, string> = {
   Read:  'border-blue-500/20',
   Write: 'border-green-500/20',
@@ -93,6 +108,19 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
   if (toolResultContent) {
     try { parsedResult = JSON.parse(toolResultContent); } catch { /* ignore */ }
   }
+  const parsedReadResult = toolName === 'Read' && toolResultContent
+    ? parseReadToolResult(toolResultContent)
+    : null;
+  const parsedShellResult = toolName === 'Bash' && toolResultContent
+    ? parseShellToolResult(toolResultContent)
+    : null;
+  if (
+    parsedReadResult
+    && typeof parsedInput.file_path !== 'string'
+    && typeof parsedInput.filePath !== 'string'
+  ) {
+    parsedInput.file_path = parsedReadResult.path;
+  }
   // Prefer the agent-attached answers (set the moment the user responds);
   // fall back to anything embedded in the CLI tool_result.
   const askAnswers = toolAnswers ?? (parsedResult as { answers?: Record<string, string> } | undefined)?.answers;
@@ -139,7 +167,10 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
   // Inline result expand state (lifted so chevron can live in header row)
   const isMcpTool = !!toolName?.startsWith('mcp__');
   const isInlineResultTool = !!(toolName && toolResultContent && (INLINE_RESULT_TOOLS.has(toolName) || isMcpTool));
-  const resultContent = toolResultContent || '';
+  const resultContent = parsedReadResult?.content
+    ?? parsedShellResult?.content
+    ?? toolResultContent
+    ?? '';
   const resultLineCount = resultContent.trimEnd().split('\n').length;
   const resultAutoExpand = !resultContent.trim() || resultLineCount <= 2;
   const resultSuppressed = toolName ? TOOLS_SUPPRESS_RESULT_CONTENT.has(toolName) : false;

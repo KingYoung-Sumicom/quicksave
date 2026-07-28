@@ -16,8 +16,152 @@
 // and let the next caller re-spawn. We don't attempt mid-turn recovery —
 // the affected session just sees a streamEnd with success=false.
 import { spawn, type ChildProcess } from 'child_process';
+import { existsSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath, pathToFileURL } from 'url';
 import type { Attachment } from '@sumicom/quicksave-shared';
 import { getOpenCodeBin } from './openCodeProvider.js';
+import {
+  DISPLAY_MARKDOWN_REPORT_TOOL,
+  SANDBOX_BASH_TOOL,
+  SANDBOX_MCP_PREFIX,
+  UPDATE_SESSION_STATUS_TOOL,
+  buildSandboxMcpServerConfig,
+} from './sandboxMcp.js';
+
+const __aiDir = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * OpenCode exposes MCP tools as `<server>_<tool>`. This deliberately ends in
+ * one underscore so its separator produces the canonical Quicksave tool name:
+ * `mcp__quicksave-sandbox__UpdateSessionStatus`.
+ */
+export const OPENCODE_SANDBOX_MCP_NAME = SANDBOX_MCP_PREFIX.slice(0, -1);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Parse the JSONC accepted by OPENCODE_CONFIG_CONTENT without executing it. */
+function parseOpenCodeConfigContent(content: string): Record<string, unknown> {
+  let stripped = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i]!;
+    const next = content[i + 1];
+    if (inString) {
+      stripped += ch;
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      stripped += ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      while (i < content.length && content[i] !== '\n') i++;
+      stripped += '\n';
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      i += 2;
+      while (i < content.length && !(content[i] === '*' && content[i + 1] === '/')) i++;
+      i++;
+      stripped += ' ';
+      continue;
+    }
+    stripped += ch;
+  }
+
+  let withoutTrailingCommas = '';
+  inString = false;
+  escaped = false;
+  for (let i = 0; i < stripped.length; i++) {
+    const ch = stripped[i]!;
+    if (inString) {
+      withoutTrailingCommas += ch;
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      withoutTrailingCommas += ch;
+      continue;
+    }
+    if (ch === ',') {
+      let nextIndex = i + 1;
+      while (/\s/.test(stripped[nextIndex] ?? '')) nextIndex++;
+      if (stripped[nextIndex] === '}' || stripped[nextIndex] === ']') continue;
+    }
+    withoutTrailingCommas += ch;
+  }
+
+  const parsed = JSON.parse(withoutTrailingCommas) as unknown;
+  if (!isRecord(parsed)) throw new Error('OPENCODE_CONFIG_CONTENT must contain an object');
+  return parsed;
+}
+
+export function buildOpenCodeQuicksaveConfig(
+  existingContent: string | undefined,
+  ownDir = __aiDir,
+): Record<string, unknown> {
+  const existing = existingContent?.trim()
+    ? parseOpenCodeConfigContent(existingContent)
+    : {};
+  const mcp = buildSandboxMcpServerConfig({
+    ownDir,
+    cwd: '.',
+    inheritCwd: true,
+  });
+  const tsPluginPath = join(ownDir, 'openCodeMcpPlugin.ts');
+  const pluginPath = existsSync(tsPluginPath)
+    ? tsPluginPath
+    : join(ownDir, 'openCodeMcpPlugin.js');
+  const existingPlugins = Array.isArray(existing.plugin) ? existing.plugin : [];
+  const pluginUrl = pathToFileURL(pluginPath).href;
+  const existingMcp = isRecord(existing.mcp) ? existing.mcp : {};
+  const existingPermission = typeof existing.permission === 'string'
+    ? { '*': existing.permission }
+    : isRecord(existing.permission) ? existing.permission : {};
+
+  return {
+    ...existing,
+    plugin: Array.from(new Set([...existingPlugins, pluginUrl])),
+    mcp: {
+      ...existingMcp,
+      [OPENCODE_SANDBOX_MCP_NAME]: {
+        type: 'local',
+        command: [mcp.command, ...mcp.args],
+        enabled: true,
+        timeout: 130_000,
+      },
+    },
+    permission: {
+      ...existingPermission,
+      [SANDBOX_BASH_TOOL]: 'allow',
+      [UPDATE_SESSION_STATUS_TOOL]: 'allow',
+      [DISPLAY_MARKDOWN_REPORT_TOOL]: 'allow',
+    },
+  };
+}
+
+export function buildOpenCodeServerEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  ownDir = __aiDir,
+): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(
+      buildOpenCodeQuicksaveConfig(env.OPENCODE_CONFIG_CONTENT, ownDir),
+    ),
+  };
+}
 
 /** Shape of one OpenCode event (the payload inside `/global/event`). */
 export interface OpenCodeEvent {
@@ -148,11 +292,7 @@ class OpenCodeServer {
       // files and we'd have to poll.
       const proc = spawn(bin, ['serve', '--port', '0', '--print-logs'], {
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          ...(process.env.OPENCODE_API_KEY ? { OPENCODE_API_KEY: process.env.OPENCODE_API_KEY } : {}),
-          ...(process.env.OPENAI_API_KEY ? { OPENAI_API_KEY: process.env.OPENAI_API_KEY } : {}),
-        },
+        env: buildOpenCodeServerEnv(),
       });
       this.proc = proc;
 

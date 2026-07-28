@@ -20,11 +20,27 @@ import { SessionStatusToolView } from './SessionStatusToolView';
 import { ExternalDirectoryToolView } from './ExternalDirectoryToolView';
 import { LspToolView } from './LspToolView';
 import { ApplyPatchToolView } from './ApplyPatchToolView';
+import {
+  ListMcpResourcesToolView,
+  ListMcpResourceTemplatesToolView,
+  ReadMcpResourceToolView,
+} from './McpResourceToolView';
 
 /** Canonical tool names exposed by Quicksave's own MCP server.
  *  Mirrors the constants in apps/agent/src/ai/sandboxMcp.ts. */
 export const SANDBOX_BASH_TOOL = 'mcp__quicksave-sandbox__SandboxBash';
 export const UPDATE_SESSION_STATUS_TOOL = 'mcp__quicksave-sandbox__UpdateSessionStatus';
+export const LIST_MCP_RESOURCES_TOOL = 'list_mcp_resources';
+export const LIST_MCP_RESOURCE_TEMPLATES_TOOL = 'list_mcp_resource_templates';
+export const READ_MCP_RESOURCE_TOOL = 'read_mcp_resource';
+export const CODEX_LIST_MCP_RESOURCES_TOOL = 'mcp__codex__list_mcp_resources';
+export const CODEX_LIST_MCP_RESOURCE_TEMPLATES_TOOL = 'mcp__codex__list_mcp_resource_templates';
+export const CODEX_READ_MCP_RESOURCE_TOOL = 'mcp__codex__read_mcp_resource';
+export const MCP_RESOURCE_TOOLS = [
+  LIST_MCP_RESOURCES_TOOL,
+  LIST_MCP_RESOURCE_TEMPLATES_TOOL,
+  READ_MCP_RESOURCE_TOOL,
+] as const;
 
 export type ToolViewProps = {
   input: Record<string, unknown>;
@@ -68,6 +84,12 @@ export const TOOL_VIEWS: Record<string, ComponentType<ToolViewProps>> = {
   ExternalDirectory: ExternalDirectoryToolView,
   LSP: LspToolView,
   ApplyPatch: ApplyPatchToolView,
+  [LIST_MCP_RESOURCES_TOOL]: ListMcpResourcesToolView,
+  [LIST_MCP_RESOURCE_TEMPLATES_TOOL]: ListMcpResourceTemplatesToolView,
+  [READ_MCP_RESOURCE_TOOL]: ReadMcpResourceToolView,
+  [CODEX_LIST_MCP_RESOURCES_TOOL]: ListMcpResourcesToolView,
+  [CODEX_LIST_MCP_RESOURCE_TEMPLATES_TOOL]: ListMcpResourceTemplatesToolView,
+  [CODEX_READ_MCP_RESOURCE_TOOL]: ReadMcpResourceToolView,
   [SANDBOX_BASH_TOOL]: SandboxBashToolView,
   [UPDATE_SESSION_STATUS_TOOL]: SessionStatusToolView,
 };
@@ -93,6 +115,12 @@ export const TOOL_COLORS: Record<string, string> = {
   ExternalDirectory: 'border-amber-500/60',
   LSP: 'border-sky-500/60',
   ApplyPatch: 'border-yellow-500/60',
+  [LIST_MCP_RESOURCES_TOOL]: 'border-cyan-500/60',
+  [LIST_MCP_RESOURCE_TEMPLATES_TOOL]: 'border-cyan-500/60',
+  [READ_MCP_RESOURCE_TOOL]: 'border-cyan-500/60',
+  [CODEX_LIST_MCP_RESOURCES_TOOL]: 'border-cyan-500/60',
+  [CODEX_LIST_MCP_RESOURCE_TEMPLATES_TOOL]: 'border-cyan-500/60',
+  [CODEX_READ_MCP_RESOURCE_TOOL]: 'border-cyan-500/60',
   [SANDBOX_BASH_TOOL]: 'border-cyan-500/60',
   [UPDATE_SESSION_STATUS_TOOL]: 'border-teal-500/60',
 };

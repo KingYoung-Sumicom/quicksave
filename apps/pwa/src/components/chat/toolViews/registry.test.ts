@@ -22,6 +22,12 @@ describe('OpenCode built-in tool card registry', () => {
       'ApplyPatch',
       'ExitPlanMode',
       'ExternalDirectory',
+      'list_mcp_resources',
+      'list_mcp_resource_templates',
+      'read_mcp_resource',
+      'mcp__codex__list_mcp_resources',
+      'mcp__codex__list_mcp_resource_templates',
+      'mcp__codex__read_mcp_resource',
     ];
     for (const name of names) {
       expect(TOOL_VIEWS[name], `${name} view`).toBeDefined();

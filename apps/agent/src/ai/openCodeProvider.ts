@@ -42,6 +42,7 @@ import type {
   PermissionLevel,
 } from './provider.js';
 import { getOpenCodeServer, type OpenCodeEvent, type OpenCodeServer } from './openCodeServer.js';
+import { QUICKSAVE_SESSION_ID_ARG } from './openCodeMcpPlugin.js';
 
 // ── Part types we translate (verified from opencode 1.14 OpenAPI Part union) ──
 
@@ -136,6 +137,9 @@ export function normalizeOpenCodeToolInput(
   input: Record<string, unknown>,
 ): Record<string, unknown> {
   const normalized = { ...input };
+  // OpenCode's host hook adds this only to route workspace-scoped MCP calls
+  // to the correct Quicksave session. It is transport metadata, not card data.
+  delete normalized[QUICKSAVE_SESSION_ID_ARG];
   const aliases: Array<[string, string]> = [
     ['filePath', 'file_path'],
     ['oldString', 'old_string'],
@@ -370,15 +374,20 @@ export class OpenCodeProvider implements CodingAgentProvider {
     const unsub = server.subscribe(opencodeSessionId, (ev) => router.handle(ev));
     session._setTurnWiring(cardBuilder, callbacks, router, unsub);
 
-    server.sendPromptAsync(opencodeSessionId, opts.cwd, {
-      text: opts.prompt,
-      attachments: opts.attachments,
-      model: turnConfig.model,
-      ...(turnConfig.variant ? { variant: turnConfig.variant } : {}),
-      ...(turnConfig.system ? { system: turnConfig.system } : {}),
-    }).catch((err: Error) => {
-      console.error('[openCode] prompt_async failed:', err);
-      router.finalize(false, err.message);
+    // Give SessionManager one macrotask to persist the new registry entry.
+    // The first UpdateSessionStatus MCP call can otherwise beat registration.
+    setImmediate(() => {
+      if (!session.alive) return;
+      server.sendPromptAsync(opencodeSessionId, opts.cwd, {
+        text: opts.prompt,
+        attachments: opts.attachments,
+        model: turnConfig.model,
+        ...(turnConfig.variant ? { variant: turnConfig.variant } : {}),
+        ...(turnConfig.system ? { system: turnConfig.system } : {}),
+      }).catch((err: Error) => {
+        console.error('[openCode] prompt_async failed:', err);
+        router.finalize(false, err.message);
+      });
     });
 
     return { sessionId: opencodeSessionId, session };

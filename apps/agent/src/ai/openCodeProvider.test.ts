@@ -11,6 +11,10 @@
 //   • Verify OpencodeSession's hot-resume path (sendUserMessage triggers a
 //     prompt POST against a mocked server).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+const __testDir = dirname(fileURLToPath(import.meta.url));
 
 // ── Mock child_process for binary lookup ─────────────────────────────────────
 
@@ -38,10 +42,13 @@ import { StreamCardBuilder } from './cardBuilder.js';
 import type { ProviderCallbacks } from './provider.js';
 import type { OpenCodeServer, OpenCodeEvent } from './openCodeServer.js';
 import {
+  buildOpenCodeQuicksaveConfig,
   buildOpenCodePromptParts,
   buildOpenCodeRequestHeaders,
+  buildOpenCodeServerEnv,
   buildOpenCodeUrl,
   getOpenCodeEventSessionId,
+  OPENCODE_SANDBOX_MCP_NAME,
 } from './openCodeServer.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -120,6 +127,60 @@ beforeEach(() => {
   delete process.env.OPENCODE_API_KEY;
   delete process.env.OPENAI_API_KEY;
   _resetOpenCodeBinCache();
+});
+
+describe('OpenCode Quicksave MCP injection', () => {
+  it('adds the Quicksave MCP, host plugin, and permission rules', () => {
+    const config = buildOpenCodeQuicksaveConfig(undefined);
+    const mcp = config.mcp as Record<string, {
+      type: string;
+      command: string[];
+      enabled: boolean;
+      timeout: number;
+    }>;
+    const command = mcp[OPENCODE_SANDBOX_MCP_NAME]?.command ?? [];
+
+    expect(OPENCODE_SANDBOX_MCP_NAME).toBe('mcp__quicksave-sandbox_');
+    expect(command[0]).toBe(join(
+      __testDir,
+      '..',
+      '..',
+      'node_modules',
+      '.bin',
+      'tsx',
+    ));
+    expect(command[1]).toBe(join(__testDir, 'sandboxMcpStdio.ts'));
+    expect(command).not.toContain('--cwd');
+    expect(config.plugin).toEqual([
+      expect.stringMatching(/openCodeMcpPlugin\.ts$/),
+    ]);
+    expect(config.permission).toMatchObject({
+      'mcp__quicksave-sandbox__SandboxBash': 'allow',
+      'mcp__quicksave-sandbox__UpdateSessionStatus': 'allow',
+      'mcp__quicksave-sandbox__DisplayMarkdownReport': 'allow',
+    });
+  });
+
+  it('preserves JSONC config content while overriding only Quicksave keys', () => {
+    const env = buildOpenCodeServerEnv({
+      OPENCODE_CONFIG_CONTENT: `{
+        // keep the user's config
+        "model": "vllm/test",
+        "plugin": ["existing-plugin",],
+        "permission": "ask",
+        "mcp": {
+          "existing": { "type": "remote", "url": "https://example.com/mcp", },
+        },
+      }`,
+    });
+    const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT!) as Record<string, any>;
+
+    expect(config.model).toBe('vllm/test');
+    expect(config.plugin[0]).toBe('existing-plugin');
+    expect(config.mcp.existing.url).toBe('https://example.com/mcp');
+    expect(config.permission['*']).toBe('ask');
+    expect(config.permission['mcp__quicksave-sandbox__UpdateSessionStatus']).toBe('allow');
+  });
 });
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -918,6 +979,13 @@ describe('OpenCode tool normalization', () => {
     expect(normalizeOpenCodeToolInput('skill', { name: 'demo' })).toMatchObject({ skill: 'demo' });
     expect(normalizeOpenCodeToolInput('apply_patch', { patchText: '*** Begin Patch' }))
       .toMatchObject({ patch_text: '*** Begin Patch' });
+  });
+
+  it('hides the host-injected MCP session id from tool cards', () => {
+    expect(normalizeOpenCodeToolInput(
+      'mcp__quicksave-sandbox__UpdateSessionStatus',
+      { stage: 'working', _quicksaveSessionId: 'ses_123' },
+    )).toEqual({ stage: 'working' });
   });
 });
 

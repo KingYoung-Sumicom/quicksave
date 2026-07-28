@@ -75,6 +75,15 @@ describe('buildSandboxMcpServerConfig', () => {
     ]);
   });
 
+  it('can inherit the MCP process cwd for workspace-scoped hosts', () => {
+    const cfg = buildSandboxMcpServerConfig({
+      ownDir: __thisDir,
+      cwd: '/ignored',
+      inheritCwd: true,
+    });
+    expect(cfg.args).toEqual([join(__thisDir, 'sandboxMcpStdio.ts')]);
+  });
+
   it('falls back to node + .js when only the compiled file exists (prod)', () => {
     // Point at a directory that has no sandboxMcpStdio.{ts,js} — simulates prod
     // where only dist/ai/sandboxMcpStdio.js is shipped. We can't easily exercise
