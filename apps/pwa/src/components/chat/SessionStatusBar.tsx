@@ -6,6 +6,7 @@ import type { SessionControlRequestResponsePayload } from '@sumicom/quicksave-sh
 import { DEFAULT_CONTEXT_WINDOW } from '@sumicom/quicksave-shared';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
 import { getAgentProvider } from '../../lib/agentProvider';
+import { AGENT_LABEL } from '../../lib/agentLabel';
 import {
   getCodexFastServiceTierId,
   isCodexFastServiceTier,
@@ -26,13 +27,6 @@ interface SessionStatusBarProps {
   /** Extra chips rendered at the end of the row (e.g. context % / cache countdown). */
   children?: ReactNode;
 }
-
-const AGENT_LABEL: Record<string, string> = {
-  'claude-code': 'Claude',
-  codex: 'Codex',
-  opencode: 'OpenCode',
-  pi: 'Pi',
-};
 
 function FastModeBadge({ enabled, onToggle }: { enabled: boolean; onToggle: () => void }) {
   return (

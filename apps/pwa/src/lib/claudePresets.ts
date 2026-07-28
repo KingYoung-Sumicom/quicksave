@@ -213,7 +213,7 @@ export type AgentType = {
   systemPrompt?: string;
 };
 
-const VALID_AGENT_IDS = new Set<AgentId>(['claude-code', 'codex', 'opencode', 'pi']);
+const VALID_AGENT_IDS = new Set<AgentId>(['claude-code', 'claude-terminal', 'codex', 'opencode', 'pi']);
 
 export function normalizeAgentId(agentId?: string): AgentId {
   if (agentId === 'codex-mcp') return 'codex';
