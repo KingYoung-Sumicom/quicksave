@@ -24,6 +24,7 @@ import { CodexQuotaBadges } from './chat/CodexQuotaBadges';
 import { StreamingReconnectIndicator } from './chat/StreamingReconnectIndicator';
 import { ToolCallGroupPlaceholder } from './chat/ToolCallGroupPlaceholder';
 import { ToolCallVisibilityChip } from './chat/ToolCallVisibilityChip';
+import { shouldCollapseCard } from './chat/cardCollapse';
 import { AttachmentTray } from './AttachmentTray';
 import { useUiPrefsStore } from '../stores/uiPrefsStore';
 import { getAgentProvider } from '../lib/agentProvider';
@@ -427,13 +428,9 @@ export function ClaudePanel({
       runCards = [];
       runStartId = null;
     };
-    // Keep interactive planning/question tools visible for the user's
-    // hide-tool preference. Completed-turn collapse can still fold them.
-    const ALWAYS_VISIBLE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode', 'TodoWrite']);
     for (const card of cards) {
       const collapseIntermediate = shouldCollapseIntermediate(card);
-      const collapseToolCall = hideToolCalls && card.type === 'tool_call' && !ALWAYS_VISIBLE_TOOLS.has(card.toolName);
-      if (collapseIntermediate || collapseToolCall) {
+      if (shouldCollapseCard(card, collapseIntermediate, hideToolCalls)) {
         if (runStartId === null) runStartId = card.id;
         runCards.push(card);
       } else {

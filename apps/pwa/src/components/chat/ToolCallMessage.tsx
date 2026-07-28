@@ -13,7 +13,7 @@ import { InlinePermissionActions } from './InlinePermissionActions';
 import { InteractiveQuestionView } from './InteractiveQuestionView';
 import { linkifyPaths } from './linkifyPaths';
 import { ArtifactMessage } from './ArtifactMessage';
-import type { MarkdownArtifactRef } from '@sumicom/quicksave-shared';
+import { parseMarkdownArtifactRef } from './cardCollapse';
 
 /** Tools whose stdout typically contains paths worth linkifying. */
 const LINKIFY_RESULT_TOOLS = new Set(['Bash', 'Glob', 'Grep', SANDBOX_BASH_TOOL]);
@@ -218,21 +218,4 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
       </div>
     </div>
   );
-}
-
-function parseMarkdownArtifactRef(value: Record<string, unknown> | undefined): MarkdownArtifactRef | null {
-  if (!value) return null;
-  if (value.refKind !== 'artifact' || value.kind !== 'markdown') return null;
-  if (
-    typeof value.artifactId !== 'string' ||
-    typeof value.sessionId !== 'string' ||
-    typeof value.cwd !== 'string' ||
-    typeof value.title !== 'string' ||
-    value.mimeType !== 'text/markdown' ||
-    typeof value.size !== 'number' ||
-    typeof value.createdAt !== 'number'
-  ) {
-    return null;
-  }
-  return value as unknown as MarkdownArtifactRef;
 }

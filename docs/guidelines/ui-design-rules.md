@@ -88,3 +88,19 @@ No element inside the chat view may render a visible scrollbar. This means avoid
 **How to apply:** When expanding content inline (e.g. a thinking block, tool result, or subagent event list), use `whitespace-pre-wrap break-words` and let height grow naturally. Remove `max-h-*` and `overflow-y-auto` whenever you add expandable content to a chat component.
 
 ---
+
+### User-facing deliverables must not be hidden by tool-call folding
+
+Artifact cards are boundaries in folded tool-call or completed-turn runs and
+must remain visible. This includes artifact references transported inside a
+tool-call result when a provider does not emit a standalone artifact card.
+Keep the chat representation compact (title, format, and size); fetch and render
+the artifact only after the user opens it in the desktop session panel or the
+mobile full-screen preview.
+
+**Why:** An artifact is the requested deliverable, not operational detail.
+Folding it with the tool invocation makes completed work appear to be missing,
+while rendering the full report inline overwhelms the conversation and adds a
+nested scroll surface.
+
+---
