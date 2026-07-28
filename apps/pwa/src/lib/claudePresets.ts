@@ -175,6 +175,7 @@ export const CODEX_PERMISSION_MODES = [
 
 export const OPENCODE_PERMISSION_MODES = [
   { value: 'default', label: 'Default' },
+  { value: 'auto', label: 'Auto-approve' },
   { value: 'bypassPermissions', label: 'Bypass' },
 ];
 

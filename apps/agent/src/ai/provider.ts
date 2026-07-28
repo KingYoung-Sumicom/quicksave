@@ -78,6 +78,9 @@ export interface ProviderSession {
   interrupt(): void;
   kill(): void | Promise<void>;
   readonly alive: boolean;
+  /** Optional provider-native permission switch. OpenCode uses this to
+   * toggle client-side auto approval without restarting its server session. */
+  setPermissionMode?(level: PermissionLevel): void | Promise<void>;
   /** Optional — `terminalManager` terminal id when this provider owns a PTY
    *  the PWA should render alongside the structured card stream. Only the
    *  `claude-terminal` provider sets this today. SessionManager copies it into

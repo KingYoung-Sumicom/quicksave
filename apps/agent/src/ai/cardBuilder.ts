@@ -970,6 +970,28 @@ export class StreamCardBuilder {
     return this.addEvent(card);
   }
 
+  /** Refresh the canonical name/input of an already-created tool card.
+   *  Providers use this when an early pending event has empty arguments and a
+   *  later completed snapshot supplies the final structured input. */
+  updateToolUse(
+    toolUseId: string,
+    toolName: string,
+    toolInput: Record<string, unknown>,
+  ): CardEvent | null {
+    const subagentCardId = this.nestedToolUseToSubagentCard.get(toolUseId);
+    if (subagentCardId) {
+      const subagentCard = this.cards.get(subagentCardId) as SubagentCard | undefined;
+      if (!subagentCard?.toolCalls) return null;
+      const toolCalls = subagentCard.toolCalls.map((call) =>
+        call.id === toolUseId ? { ...call, toolName, toolInput } : call,
+      );
+      return this.updateEvent(subagentCardId, { toolCalls });
+    }
+    const cardId = this.toolUseIdToCardId.get(toolUseId);
+    if (!cardId) return null;
+    return this.updateEvent(cardId, { toolName, toolInput });
+  }
+
   /**
    * Pre-create a ToolCallCard from canUseTool (fires before tool_use stream event).
    * This eliminates the synthetic message hack.

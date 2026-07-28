@@ -532,6 +532,27 @@ describe('SessionManager', () => {
       expect(sendControlRequest).toHaveBeenCalledWith('set_permission_mode', { mode: 'plan' }, 15_000, 15_000);
     });
 
+    it('switches OpenCode auto-approve mode through its provider session', async () => {
+      const opencode = createMockProvider('opencode', 'memory');
+      const setPermissionMode = vi.fn();
+      (opencode.startSession as Mock).mockResolvedValue({
+        sessionId: 'opencode-auto',
+        session: createMockProviderSession({ setPermissionMode }),
+      });
+      const opencodeManager = new SessionManager([opencode]);
+      await opencodeManager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+        agent: 'opencode',
+        permissionMode: 'default',
+      });
+
+      await opencodeManager.setPermissionLevel('opencode-auto', 'auto');
+
+      expect(setPermissionMode).toHaveBeenCalledWith('auto');
+      expect(opencodeManager.getPermissionLevel('opencode-auto')).toBe('auto');
+    });
+
     it('defers set_permission_mode to the turn-end queue when a turn is in flight', async () => {
       const sessionId = 'perm-midturn';
       const sendControlRequest = vi.fn().mockResolvedValue(undefined);

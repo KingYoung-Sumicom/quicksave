@@ -8,9 +8,9 @@ const SIDE_BY_SIDE_MIN_WIDTH = 640;
 const AUTO_EXPAND_THRESHOLD = 2; // lines
 
 export function EditToolView({ input }: { input: Record<string, unknown> }) {
-  const filePath = (input.file_path as string) || '';
-  const oldStr = (input.old_string as string) || '';
-  const newStr = (input.new_string as string) || '';
+  const filePath = (input.file_path as string) || (input.filePath as string) || '';
+  const oldStr = (input.old_string as string) || (input.oldString as string) || '';
+  const newStr = (input.new_string as string) || (input.newString as string) || '';
 
   const containerRef = useRef<HTMLDivElement>(null);
   const [sideBySide, setSideBySide] = useState(false);

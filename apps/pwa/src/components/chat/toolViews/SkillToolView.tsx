@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 export function SkillToolView({ input }: { input: Record<string, unknown> }) {
-  const skill = (input.skill as string) || '?';
+  const skill = (input.skill as string) || (input.name as string) || '?';
   const args = input.args as string | undefined;
 
   return (

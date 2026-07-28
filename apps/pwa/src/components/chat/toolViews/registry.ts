@@ -17,6 +17,9 @@ import { AskUserQuestionToolView } from './AskUserQuestionToolView';
 import { EnterPlanModeToolView, ExitPlanModeToolView } from './PlanModeToolView';
 import { ToolSearchToolView } from './ToolSearchToolView';
 import { SessionStatusToolView } from './SessionStatusToolView';
+import { ExternalDirectoryToolView } from './ExternalDirectoryToolView';
+import { LspToolView } from './LspToolView';
+import { ApplyPatchToolView } from './ApplyPatchToolView';
 
 /** Canonical tool names exposed by Quicksave's own MCP server.
  *  Mirrors the constants in apps/agent/src/ai/sandboxMcp.ts. */
@@ -62,6 +65,9 @@ export const TOOL_VIEWS: Record<string, ComponentType<ToolViewProps>> = {
   EnterPlanMode: EnterPlanModeToolView as ComponentType<ToolViewProps>,
   ExitPlanMode: ExitPlanModeToolView,
   ToolSearch: ToolSearchToolView,
+  ExternalDirectory: ExternalDirectoryToolView,
+  LSP: LspToolView,
+  ApplyPatch: ApplyPatchToolView,
   [SANDBOX_BASH_TOOL]: SandboxBashToolView,
   [UPDATE_SESSION_STATUS_TOOL]: SessionStatusToolView,
 };
@@ -84,6 +90,9 @@ export const TOOL_COLORS: Record<string, string> = {
   EnterPlanMode: 'border-indigo-500/60',
   ExitPlanMode: 'border-indigo-500/60',
   ToolSearch: 'border-pink-500/60',
+  ExternalDirectory: 'border-amber-500/60',
+  LSP: 'border-sky-500/60',
+  ApplyPatch: 'border-yellow-500/60',
   [SANDBOX_BASH_TOOL]: 'border-cyan-500/60',
   [UPDATE_SESSION_STATUS_TOOL]: 'border-teal-500/60',
 };
