@@ -918,6 +918,16 @@ identityStore.ts
   getSecretKey() / getSigningSecretKey() / getSigningPublicKey()
   rotateIdentity()  // Generates a new masterSecret → returns the old signing keys for tombstone purposes
   clearAll()        // Clears masterSecret
+
+sessionRightPanelStore.ts
+  activeSessionId: string | null
+  sessionStates: Record<sessionId, {
+    mode: null | 'files' | 'git' | 'settings' | 'artifact'
+    filesRelPath / filesPreview / gitRepoOverride
+    artifactPreview: MarkdownArtifactRef | null
+  }>
+  // Artifact cards stay compact in chat. Opening one stores only its metadata
+  // here; ArtifactPreviewPane fetches bytes on demand through artifact:fetch.
 ```
 
 For the detailed threat model and key derivation see `docs/guidelines/sync-security.en.md`.

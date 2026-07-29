@@ -69,6 +69,10 @@ see [`quicksave-architecture.en.md`](./quicksave-architecture.en.md) §七.
   to repaint.
 - Serves an IPC (Unix socket) JSON-RPC API for the CLI to query state
   and issue debug commands.
+- Begins accepting IPC clients only after daemon-specific methods and the
+  shutdown handler are registered. This keeps a stale `service.json` from
+  exposing a half-initialized daemon that can answer `hello` but not CLI
+  methods such as `get-pairing-info`.
 - Triggers Web Push notifications through the relay when a permission
   prompt arrives and no PWA peer is currently subscribed.
 

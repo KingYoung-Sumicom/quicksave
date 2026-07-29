@@ -1121,6 +1121,8 @@ export class SessionManager extends EventEmitter {
         this.emitSessionUpdate(sessionId);
         throw err;
       }
+    } else if (session?.alive && typeof session.setPermissionMode === 'function') {
+      await session.setPermissionMode(level);
     }
 
     if (ps) {

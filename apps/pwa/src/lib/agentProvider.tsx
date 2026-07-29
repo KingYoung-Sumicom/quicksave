@@ -763,7 +763,9 @@ class OpenCodeAgentProvider extends BaseAgentProvider {
   readonly description = 'OpenCode via local vLLM';
   readonly capabilities: AgentCapabilities = {
     hasApiKey: false, hasCli: true, hasPlugin: false,
-    supportsResume: false, supportsSandbox: false, supportsStreaming: true,
+    supportsResume: true, supportsSandbox: false, supportsStreaming: true,
+    supportsAttachments: true,
+    supportedAttachmentKinds: ['image', 'pdf', 'text'],
   };
   readonly features = ['git'] as const;
   readonly defaultModel = '';

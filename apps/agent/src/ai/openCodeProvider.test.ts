@@ -11,9 +11,10 @@
 //   • Verify OpencodeSession's hot-resume path (sendUserMessage triggers a
 //     prompt POST against a mocked server).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { promises as fsp } from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+
+const __testDir = dirname(fileURLToPath(import.meta.url));
 
 // ── Mock child_process for binary lookup ─────────────────────────────────────
 
@@ -33,11 +34,22 @@ import {
   parseModelId,
   getOpenCodeBin,
   _resetOpenCodeBinCache,
+  normalizeOpenCodeToolInput,
+  normalizeOpenCodeToolName,
   type TurnConfig,
 } from './openCodeProvider.js';
 import { StreamCardBuilder } from './cardBuilder.js';
 import type { ProviderCallbacks } from './provider.js';
 import type { OpenCodeServer, OpenCodeEvent } from './openCodeServer.js';
+import {
+  buildOpenCodeQuicksaveConfig,
+  buildOpenCodePromptParts,
+  buildOpenCodeRequestHeaders,
+  buildOpenCodeServerEnv,
+  buildOpenCodeUrl,
+  getOpenCodeEventSessionId,
+  OPENCODE_SANDBOX_MCP_NAME,
+} from './openCodeServer.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -60,24 +72,43 @@ function makeCallbacks(): ProviderCallbacks & {
 }
 
 function makeMockServer(): OpenCodeServer & {
-  prompts: Array<{ sessionID: string; body: any }>;
-  aborts: string[];
-  replies: Array<{ requestID: string; reply: string }>;
+  creates: Array<Record<string, unknown>>;
+  prompts: Array<{ sessionID: string; directory: string; body: any }>;
+  aborts: Array<{ sessionID: string; directory: string }>;
+  replies: Array<{ requestID: string; directory: string; reply: string }>;
   messages: Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>;
 } {
-  const prompts: Array<{ sessionID: string; body: any }> = [];
-  const aborts: string[] = [];
-  const replies: Array<{ requestID: string; reply: string }> = [];
+  const creates: Array<Record<string, unknown>> = [];
+  const prompts: Array<{ sessionID: string; directory: string; body: any }> = [];
+  const aborts: Array<{ sessionID: string; directory: string }> = [];
+  const replies: Array<{ requestID: string; directory: string; reply: string }> = [];
   const messages: Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }> = [];
   return {
-    prompts, aborts, replies, messages,
+    creates, prompts, aborts, replies, messages,
     ensureRunning: async () => ({ baseUrl: 'http://127.0.0.1:4096' }),
-    createSession: async () => ({ id: 'ses_mock' }),
+    createSession: async (opts) => { creates.push(opts); return { id: 'ses_mock' }; },
     deleteSession: async () => undefined,
-    sendPromptAsync: async (sessionID, body) => { prompts.push({ sessionID, body }); },
-    abortSession: async (id) => { aborts.push(id); },
-    replyPermission: async (requestID, reply) => { replies.push({ requestID, reply }); },
+    sendPromptAsync: async (sessionID, directory, body) => { prompts.push({ sessionID, directory, body }); },
+    abortSession: async (sessionID, directory) => { aborts.push({ sessionID, directory }); },
+    replyPermission: async (requestID, directory, reply) => { replies.push({ requestID, directory, reply }); },
     getMessages: async () => messages,
+    getHealth: async () => ({ healthy: true, version: '1.18.4' }),
+    listProviders: async () => ({
+      all: [
+        {
+          id: 'vllm',
+          name: 'vLLM',
+          models: { 'foo/bar': { id: 'foo/bar', name: 'Foo Bar' } },
+        },
+        {
+          id: 'opencode',
+          name: 'OpenCode',
+          models: { 'big-pickle': { id: 'big-pickle', name: 'Big Pickle' } },
+        },
+      ],
+      default: {},
+      connected: ['vllm', 'opencode'],
+    }),
     subscribe: () => () => {},
     subscribeAll: () => () => {},
     shutdown: async () => {},
@@ -96,6 +127,60 @@ beforeEach(() => {
   delete process.env.OPENCODE_API_KEY;
   delete process.env.OPENAI_API_KEY;
   _resetOpenCodeBinCache();
+});
+
+describe('OpenCode Quicksave MCP injection', () => {
+  it('adds the Quicksave MCP, host plugin, and permission rules', () => {
+    const config = buildOpenCodeQuicksaveConfig(undefined);
+    const mcp = config.mcp as Record<string, {
+      type: string;
+      command: string[];
+      enabled: boolean;
+      timeout: number;
+    }>;
+    const command = mcp[OPENCODE_SANDBOX_MCP_NAME]?.command ?? [];
+
+    expect(OPENCODE_SANDBOX_MCP_NAME).toBe('mcp__quicksave-sandbox_');
+    expect(command[0]).toBe(join(
+      __testDir,
+      '..',
+      '..',
+      'node_modules',
+      '.bin',
+      'tsx',
+    ));
+    expect(command[1]).toBe(join(__testDir, 'sandboxMcpStdio.ts'));
+    expect(command).not.toContain('--cwd');
+    expect(config.plugin).toEqual([
+      expect.stringMatching(/openCodeMcpPlugin\.ts$/),
+    ]);
+    expect(config.permission).toMatchObject({
+      'mcp__quicksave-sandbox__SandboxBash': 'allow',
+      'mcp__quicksave-sandbox__UpdateSessionStatus': 'allow',
+      'mcp__quicksave-sandbox__DisplayMarkdownReport': 'allow',
+    });
+  });
+
+  it('preserves JSONC config content while overriding only Quicksave keys', () => {
+    const env = buildOpenCodeServerEnv({
+      OPENCODE_CONFIG_CONTENT: `{
+        // keep the user's config
+        "model": "vllm/test",
+        "plugin": ["existing-plugin",],
+        "permission": "ask",
+        "mcp": {
+          "existing": { "type": "remote", "url": "https://example.com/mcp", },
+        },
+      }`,
+    });
+    const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT!) as Record<string, any>;
+
+    expect(config.model).toBe('vllm/test');
+    expect(config.plugin[0]).toBe('existing-plugin');
+    expect(config.mcp.existing.url).toBe('https://example.com/mcp');
+    expect(config.permission['*']).toBe('ask');
+    expect(config.permission['mcp__quicksave-sandbox__UpdateSessionStatus']).toBe('allow');
+  });
 });
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -128,6 +213,56 @@ describe('parseModelId', () => {
   });
 });
 
+describe('OpenCode HTTP protocol helpers', () => {
+  it('routes directory as a query parameter', () => {
+    const url = buildOpenCodeUrl('http://127.0.0.1:4096', '/session/ses_1/message', {
+      directory: '/workspace/a b',
+    });
+    expect(url.pathname).toBe('/session/ses_1/message');
+    expect(url.searchParams.get('directory')).toBe('/workspace/a b');
+  });
+
+  it('encodes attachments as OpenCode file parts with data URLs', () => {
+    expect(buildOpenCodePromptParts('inspect', [{
+      id: 'att_1',
+      kind: 'image',
+      mimeType: 'image/png',
+      name: 'screen.png',
+      size: 3,
+      data: 'YWJj',
+    }])).toEqual([
+      { type: 'text', text: 'inspect' },
+      {
+        type: 'file',
+        mime: 'image/png',
+        filename: 'screen.png',
+        url: 'data:image/png;base64,YWJj',
+      },
+    ]);
+  });
+
+  it('finds session ids in both current and legacy event shapes', () => {
+    expect(getOpenCodeEventSessionId({
+      type: 'permission.asked',
+      properties: { sessionID: 'ses_direct' },
+    })).toBe('ses_direct');
+    expect(getOpenCodeEventSessionId({
+      type: 'message.part.updated',
+      properties: { part: { sessionID: 'ses_nested', type: 'text' } },
+    })).toBe('ses_nested');
+  });
+
+  it('uses OpenCode server credentials for REST and SSE', () => {
+    expect(buildOpenCodeRequestHeaders(true, {
+      OPENCODE_SERVER_USERNAME: 'quicksave',
+      OPENCODE_SERVER_PASSWORD: 'secret',
+    })).toEqual({
+      'content-type': 'application/json',
+      authorization: `Basic ${Buffer.from('quicksave:secret').toString('base64')}`,
+    });
+  });
+});
+
 describe('getOpenCodeBin', () => {
   it('returns "which opencode" output when available', () => {
     mockExecSync.mockImplementation(() => '/opt/bin/opencode');
@@ -155,18 +290,18 @@ describe('OpencodeSession', () => {
 
   it('interrupt fires server.abortSession', () => {
     const server = makeMockServer();
-    const s = new OpencodeSession('ses_x', server, turnConfig);
+    const s = new OpencodeSession('ses_x', server, '/workspace', turnConfig);
     s.interrupt();
     // abort is fire-and-forget; allow the microtask to run.
     return new Promise<void>((r) => setImmediate(() => {
-      expect(server.aborts).toContain('ses_x');
+      expect(server.aborts).toContainEqual({ sessionID: 'ses_x', directory: '/workspace' });
       r();
     }));
   });
 
   it('kill marks dead and disposes', () => {
     const server = makeMockServer();
-    const s = new OpencodeSession('ses_x', server, turnConfig);
+    const s = new OpencodeSession('ses_x', server, '/p', turnConfig);
     const dispose = vi.fn();
     s._setTurnWiring(
       new StreamCardBuilder('ses_x', '/p'),
@@ -181,7 +316,7 @@ describe('OpencodeSession', () => {
 
   it('sendUserMessage emits user card and POSTs prompt with stored model', async () => {
     const server = makeMockServer();
-    const s = new OpencodeSession('ses_y', server, {
+    const s = new OpencodeSession('ses_y', server, '/workspace', {
       model: { providerID: 'vllm', modelID: 'foo/bar' },
       variant: 'high',
       system: 'be brief',
@@ -196,8 +331,10 @@ describe('OpencodeSession', () => {
     expect(server.prompts).toHaveLength(1);
     expect(server.prompts[0]).toEqual({
       sessionID: 'ses_y',
+      directory: '/workspace',
       body: {
         text: 'how are you?',
+        attachments: undefined,
         model: { providerID: 'vllm', modelID: 'foo/bar' },
         variant: 'high',
         system: 'be brief',
@@ -207,7 +344,7 @@ describe('OpencodeSession', () => {
 
   it('sendUserMessage on a killed session is a no-op', () => {
     const server = makeMockServer();
-    const s = new OpencodeSession('ses_d', server, turnConfig);
+    const s = new OpencodeSession('ses_d', server, '/p', turnConfig);
     const cb = new StreamCardBuilder('ses_d', '/p');
     const cbs = makeCallbacks();
     s._setTurnWiring(cb, cbs, new SessionEventRouter('ses_d', cb, cbs, server), () => {});
@@ -217,7 +354,7 @@ describe('OpencodeSession', () => {
   });
 
   it('getContextUsage returns null (unsupported)', async () => {
-    expect(await new OpencodeSession('ses_x', makeMockServer(), turnConfig).getContextUsage()).toBeNull();
+    expect(await new OpencodeSession('ses_x', makeMockServer(), '/p', turnConfig).getContextUsage()).toBeNull();
   });
 });
 
@@ -228,7 +365,7 @@ describe('SessionEventRouter', () => {
     const server = makeMockServer();
     const cb = new StreamCardBuilder('ses_t', '/p');
     const cbs = makeCallbacks();
-    const router = new SessionEventRouter('ses_t', cb, cbs, server);
+    const router = new SessionEventRouter('ses_t', cb, cbs, server, { directory: '/p' });
     return { router, cb, cbs, server };
   };
 
@@ -255,6 +392,131 @@ describe('SessionEventRouter', () => {
     const persistedCards = cb.getCards();
     const textCard = persistedCards.find((c) => c.type === 'assistant_text');
     expect((textCard as any).text).toBe('hello world');
+  });
+
+  it('does not emit a card for a whitespace-only Markdown text part', () => {
+    const { router, cb, cbs } = makeRouter();
+    router.handle(ev('message.part.delta', {
+      sessionID: 'ses_t',
+      messageID: 'msg_assistant',
+      partID: 'prt_separator',
+      field: 'text',
+      delta: '\n\n',
+    }));
+    router.handle(ev('message.part.updated', {
+      part: {
+        id: 'prt_tool',
+        sessionID: 'ses_t',
+        messageID: 'msg_assistant',
+        type: 'tool',
+        tool: 'read',
+        callID: 'call_after_separator',
+        state: { status: 'running', input: {} },
+      },
+    }));
+
+    expect(cb.getCards().filter((card) => card.type === 'assistant_text')).toHaveLength(0);
+    expect(cbs.cards.filter((event: any) => event.card?.type === 'assistant_text')).toHaveLength(0);
+  });
+
+  it('keeps buffered leading whitespace when visible text arrives', () => {
+    const { router, cb } = makeRouter();
+    const props = (delta: string) => ({
+      sessionID: 'ses_t',
+      messageID: 'msg_assistant',
+      partID: 'prt_text',
+      field: 'text',
+      delta,
+    });
+    router.handle(ev('message.part.delta', props('\n\n')));
+    router.handle(ev('message.part.delta', props('visible answer')));
+
+    expect(cb.getCards().filter((card) => card.type === 'assistant_text')).toEqual([
+      expect.objectContaining({ text: '\n\nvisible answer' }),
+    ]);
+  });
+
+  it('does not echo OpenCode user message parts as assistant text', () => {
+    const { router, cbs } = makeRouter();
+    router.handle(ev('message.updated', {
+      info: { id: 'msg_user', sessionID: 'ses_t', role: 'user' },
+    }));
+    router.handle(ev('message.part.updated', {
+      part: {
+        id: 'prt_user',
+        sessionID: 'ses_t',
+        messageID: 'msg_user',
+        type: 'text',
+        text: 'same prompt',
+      },
+    }));
+    expect(cbs.cards.filter((event: any) => event.card?.type === 'assistant_text')).toHaveLength(0);
+  });
+
+  it('dedupes a final text snapshot after streaming deltas', () => {
+    const { router, cb } = makeRouter();
+    router.handle(ev('message.part.updated', {
+      part: {
+        id: 'prt_text',
+        sessionID: 'ses_t',
+        messageID: 'msg_assistant',
+        type: 'text',
+        text: '',
+      },
+    }));
+    router.handle(ev('message.part.delta', {
+      sessionID: 'ses_t',
+      messageID: 'msg_assistant',
+      partID: 'prt_text',
+      field: 'text',
+      delta: 'final answer',
+    }));
+    router.handle(ev('message.part.updated', {
+      part: {
+        id: 'prt_text',
+        sessionID: 'ses_t',
+        messageID: 'msg_assistant',
+        type: 'text',
+        text: 'final answer',
+      },
+    }));
+    const text = cb.getCards().find((card) => card.type === 'assistant_text');
+    expect(text).toMatchObject({ text: 'final answer' });
+  });
+
+  it('uses the part type when reasoning deltas report field=text', async () => {
+    const { router, cb } = makeRouter();
+    router.handle(ev('message.part.updated', {
+      part: {
+        id: 'prt_reasoning',
+        sessionID: 'ses_t',
+        messageID: 'msg_assistant',
+        type: 'reasoning',
+        text: '',
+      },
+    }));
+    router.handle(ev('message.part.delta', {
+      sessionID: 'ses_t',
+      messageID: 'msg_assistant',
+      partID: 'prt_reasoning',
+      field: 'text',
+      delta: 'private thought',
+    }));
+    router.handle(ev('message.part.updated', {
+      part: {
+        id: 'prt_reasoning',
+        sessionID: 'ses_t',
+        messageID: 'msg_assistant',
+        type: 'reasoning',
+        text: 'private thought',
+      },
+    }));
+    router.handle(ev('session.idle', { sessionID: 'ses_t' }));
+    await flushAsync();
+    expect(cb.getCards().filter((card) => card.type === 'assistant_text')).toHaveLength(0);
+    expect(cb.getCards().filter((card) => card.type === 'thinking')).toEqual([
+      expect.objectContaining({ text: 'private thought' }),
+    ]);
   });
 
   it('starts a new assistant_text card when partID changes', () => {
@@ -336,6 +598,15 @@ describe('SessionEventRouter', () => {
     expect(thinks).toHaveLength(1);
   });
 
+  it('emits only the added reasoning when a snapshot grows', () => {
+    const { router, cbs } = makeRouter();
+    const part = { id: 'prt_r', sessionID: 'ses_t', messageID: 'm', type: 'reasoning' as const };
+    router.handle(ev('message.part.updated', { sessionID: 'ses_t', part: { ...part, text: 'ponder' } }));
+    router.handle(ev('message.part.updated', { sessionID: 'ses_t', part: { ...part, text: 'ponder more' } }));
+    const thinks = cbs.cards.filter((c: any) => c.card?.type === 'thinking');
+    expect(thinks.map((c: any) => c.card.text)).toEqual(['ponder', ' more']);
+  });
+
   it('translates a tool part: completed → toolUse + toolResult', () => {
     const { router, cbs } = makeRouter();
     router.handle(ev('message.part.updated', {
@@ -346,7 +617,11 @@ describe('SessionEventRouter', () => {
         state: { status: 'completed', input: { filePath: '/etc/hosts' }, output: '127.0.0.1 localhost' },
       },
     }));
-    expect(cbs.tools).toEqual([{ sessionId: 'ses_t', toolName: 'read', input: { filePath: '/etc/hosts' } }]);
+    expect(cbs.tools).toEqual([{
+      sessionId: 'ses_t',
+      toolName: 'Read',
+      input: { filePath: '/etc/hosts', file_path: '/etc/hosts' },
+    }]);
     const result = cbs.cards.find((c: any) => c.type === 'update' && c.patch?.result);
     expect(result?.patch?.result?.content).toBe('127.0.0.1 localhost');
     expect(result?.patch?.result?.isError).toBe(false);
@@ -381,9 +656,79 @@ describe('SessionEventRouter', () => {
     expect(call).toBeTruthy();
   });
 
+  it('patches a tool card when the completed snapshot supplies its input', () => {
+    const { router, cb, cbs } = makeRouter();
+    const base = {
+      id: 'prt_late_input',
+      sessionID: 'ses_t',
+      messageID: 'm',
+      type: 'tool' as const,
+      tool: 'read',
+      callID: 'call_late_input',
+    };
+    router.handle(ev('message.part.updated', {
+      part: { ...base, state: { status: 'pending', input: {} } },
+    }));
+    router.handle(ev('message.part.updated', {
+      part: {
+        ...base,
+        state: {
+          status: 'completed',
+          input: { filePath: '/tmp/final.txt' },
+          output: 'content',
+        },
+      },
+    }));
+    const toolCard = cb.getCards().find((card) => card.type === 'tool_call');
+    expect(toolCard).toMatchObject({
+      toolName: 'Read',
+      toolInput: { filePath: '/tmp/final.txt', file_path: '/tmp/final.txt' },
+    });
+    expect(cbs.cards.some((event: any) =>
+      event.type === 'update' && event.patch?.toolInput?.file_path === '/tmp/final.txt',
+    )).toBe(true);
+  });
+
+  it('normalizes and patches a late Glob pattern', () => {
+    const { router, cb } = makeRouter();
+    const base = {
+      id: 'prt_glob',
+      sessionID: 'ses_t',
+      messageID: 'm',
+      type: 'tool' as const,
+      tool: 'glob',
+      callID: 'call_glob',
+    };
+    router.handle(ev('message.part.updated', {
+      part: { ...base, state: { status: 'pending', input: {} } },
+    }));
+    router.handle(ev('message.part.updated', {
+      part: {
+        ...base,
+        state: {
+          status: 'completed',
+          input: { pattern: '**/*.tsx', path: 'apps/pwa' },
+          output: 'apps/pwa/src/App.tsx',
+        },
+      },
+    }));
+    expect(cb.getCards().find((card) => card.type === 'tool_call')).toMatchObject({
+      toolName: 'Glob',
+      toolInput: { pattern: '**/*.tsx', path: 'apps/pwa' },
+    });
+  });
+
   it('session.idle finalizes with success=true', async () => {
     const { router, cbs } = makeRouter();
     router.handle(ev('session.idle', { sessionID: 'ses_t' }));
+    await flushAsync();
+    expect(cbs.ends).toHaveLength(1);
+    expect(cbs.ends[0]).toMatchObject({ sessionId: 'ses_t', success: true });
+  });
+
+  it('session.status idle also finalizes with success=true', async () => {
+    const { router, cbs } = makeRouter();
+    router.handle(ev('session.status', { sessionID: 'ses_t', status: { type: 'idle' } }));
     await flushAsync();
     expect(cbs.ends).toHaveLength(1);
     expect(cbs.ends[0]).toMatchObject({ sessionId: 'ses_t', success: true });
@@ -434,7 +779,7 @@ describe('SessionEventRouter', () => {
     });
     router.handle(ev('session.diff', { sessionID: 'ses_t', diff: [] }));
     await flushAsync();
-    expect(cbs.tools).toEqual([{ sessionId: 'ses_t', toolName: 'bash', input: { command: 'pwd' } }]);
+    expect(cbs.tools).toEqual([{ sessionId: 'ses_t', toolName: 'Bash', input: { command: 'pwd' } }]);
     const result = cbs.cards.find((c: any) => c.type === 'update' && c.patch?.result);
     expect(result?.patch?.result?.content).toBe('/home\n');
   });
@@ -480,6 +825,41 @@ describe('SessionEventRouter', () => {
     expect(cbs.cards.filter((c: any) => c.card?.type === 'tool_call')).toHaveLength(1);
   });
 
+  it('does not replay prior-turn REST tool parts after resetForNewTurn', async () => {
+    const { router, cbs, server } = makeRouter();
+    server.messages.push({
+      info: { id: 'msg_old', role: 'assistant' },
+      parts: [{
+        id: 'prt_old',
+        sessionID: 'ses_t',
+        messageID: 'msg_old',
+        type: 'tool',
+        tool: 'bash',
+        callID: 'call_old',
+        state: { status: 'completed', input: { command: 'pwd' }, output: '/p' },
+      }],
+    });
+    router.handle(ev('session.diff', { sessionID: 'ses_t', diff: [] }));
+    await flushAsync();
+    router.resetForNewTurn();
+    server.messages.push({
+      info: { id: 'msg_new', role: 'assistant' },
+      parts: [{
+        id: 'prt_new',
+        sessionID: 'ses_t',
+        messageID: 'msg_new',
+        type: 'tool',
+        tool: 'glob',
+        callID: 'call_new',
+        state: { status: 'completed', input: { pattern: '**/*.ts' }, output: 'a.ts' },
+      }],
+    });
+    router.handle(ev('session.diff', { sessionID: 'ses_t', diff: [] }));
+    await flushAsync();
+    expect(cbs.cards.filter((event: any) => event.card?.type === 'tool_call')).toHaveLength(2);
+    expect(cbs.tools.map((tool) => tool.toolName)).toEqual(['Bash', 'Glob']);
+  });
+
   it('resetForNewTurn allows a fresh turn to flow', async () => {
     const { router, cbs } = makeRouter();
     router.handle(ev('session.idle', { sessionID: 'ses_t' }));
@@ -504,7 +884,7 @@ describe('SessionEventRouter', () => {
         return { action: 'allow' };
       },
     };
-    const router = new SessionEventRouter('ses_t', cb, cbs, server);
+    const router = new SessionEventRouter('ses_t', cb, cbs, server, { directory: '/p' });
     router.handle({
       id: 'evt', type: 'permission.asked',
       properties: {
@@ -516,9 +896,43 @@ describe('SessionEventRouter', () => {
     });
     await new Promise((r) => setImmediate(r));
     expect(calls).toHaveLength(1);
-    expect(calls[0].toolName).toBe('bash');
+    expect(calls[0].toolName).toBe('Bash');
     expect(calls[0].toolInput).toEqual({ command: 'ls' });
-    expect(server.replies).toEqual([{ requestID: 'per_abc', reply: 'once' }]);
+    expect(server.replies).toEqual([{ requestID: 'per_abc', directory: '/p', reply: 'once' }]);
+  });
+
+  it('normalizes external_directory into its dedicated permission card shape', async () => {
+    const server = makeMockServer();
+    const cb = new StreamCardBuilder('ses_t', '/p');
+    const calls: any[] = [];
+    const cbs: ProviderCallbacks = {
+      ...makeCallbacks(),
+      handlePermissionRequest: async (_sessionId, req) => {
+        calls.push(req);
+        return { action: 'allow' };
+      },
+    };
+    const router = new SessionEventRouter('ses_t', cb, cbs, server, { directory: '/p' });
+    router.handle(ev('permission.asked', {
+      id: 'per_external',
+      sessionID: 'ses_t',
+      permission: 'external_directory',
+      patterns: ['/home/jimmy/.config/opencode/*'],
+      metadata: {
+        filepath: '/home/jimmy/.config/opencode/opencode.json',
+        parentDir: '/home/jimmy/.config/opencode',
+      },
+    }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(calls).toEqual([{
+      toolName: 'ExternalDirectory',
+      toolInput: {
+        filepath: '/home/jimmy/.config/opencode/opencode.json',
+        parentDir: '/home/jimmy/.config/opencode',
+        patterns: ['/home/jimmy/.config/opencode/*'],
+      },
+      toolUseId: 'per_external',
+    }]);
   });
 
   it('rejects permission when handlePermissionRequest returns deny', async () => {
@@ -528,7 +942,7 @@ describe('SessionEventRouter', () => {
       ...makeCallbacks(),
       handlePermissionRequest: async () => ({ action: 'deny' }),
     };
-    const router = new SessionEventRouter('ses_t', cb, cbs, server);
+    const router = new SessionEventRouter('ses_t', cb, cbs, server, { directory: '/p' });
     router.handle({
       id: 'evt', type: 'permission.asked',
       properties: {
@@ -539,7 +953,81 @@ describe('SessionEventRouter', () => {
       },
     });
     await new Promise((r) => setImmediate(r));
-    expect(server.replies).toEqual([{ requestID: 'per_xyz', reply: 'reject' }]);
+    expect(server.replies).toEqual([{ requestID: 'per_xyz', directory: '/p', reply: 'reject' }]);
+  });
+
+  it('auto mode replies once without prompting Quicksave', async () => {
+    const server = makeMockServer();
+    const cb = new StreamCardBuilder('ses_t', '/p');
+    const cbs = makeCallbacks();
+    const permissionSpy = vi.fn(async () => ({ action: 'allow' as const }));
+    cbs.handlePermissionRequest = permissionSpy;
+    const router = new SessionEventRouter('ses_t', cb, cbs, server, {
+      directory: '/p',
+      permissionLevel: 'auto',
+    });
+    router.handle(ev('permission.asked', {
+      id: 'per_auto',
+      sessionID: 'ses_t',
+      permission: 'bash',
+      patterns: ['git status *'],
+      metadata: { command: 'git status' },
+    }));
+    await new Promise((r) => setImmediate(r));
+    expect(permissionSpy).not.toHaveBeenCalled();
+    expect(server.replies).toEqual([{ requestID: 'per_auto', directory: '/p', reply: 'once' }]);
+  });
+
+  it('can switch auto mode on for an existing session', async () => {
+    const server = makeMockServer();
+    const cb = new StreamCardBuilder('ses_t', '/p');
+    const cbs = makeCallbacks();
+    const router = new SessionEventRouter('ses_t', cb, cbs, server, {
+      directory: '/p',
+      permissionLevel: 'default',
+    });
+    router.setPermissionLevel('auto');
+    router.handle(ev('permission.asked', { id: 'per_switched', sessionID: 'ses_t', permission: 'edit' }));
+    await new Promise((r) => setImmediate(r));
+    expect(server.replies).toEqual([{ requestID: 'per_switched', directory: '/p', reply: 'once' }]);
+  });
+});
+
+describe('OpenCode tool normalization', () => {
+  it('maps every built-in with a dedicated Quicksave card', () => {
+    expect([
+      'bash', 'shell', 'read', 'edit', 'write', 'grep', 'glob', 'webfetch',
+      'websearch', 'skill', 'task', 'todowrite', 'question', 'lsp',
+      'apply_patch', 'plan', 'external_directory',
+    ].map(normalizeOpenCodeToolName)).toEqual([
+      'Bash', 'Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob', 'WebFetch',
+      'WebSearch', 'Skill', 'Agent', 'TodoWrite', 'AskUserQuestion', 'LSP',
+      'ApplyPatch', 'ExitPlanMode', 'ExternalDirectory',
+    ]);
+  });
+
+  it('adapts OpenCode camelCase arguments to existing card schemas', () => {
+    expect(normalizeOpenCodeToolInput('edit', {
+      filePath: '/tmp/a',
+      oldString: 'a',
+      newString: 'b',
+      replaceAll: true,
+    })).toMatchObject({
+      file_path: '/tmp/a',
+      old_string: 'a',
+      new_string: 'b',
+      replace_all: true,
+    });
+    expect(normalizeOpenCodeToolInput('skill', { name: 'demo' })).toMatchObject({ skill: 'demo' });
+    expect(normalizeOpenCodeToolInput('apply_patch', { patchText: '*** Begin Patch' }))
+      .toMatchObject({ patch_text: '*** Begin Patch' });
+  });
+
+  it('hides the host-injected MCP session id from tool cards', () => {
+    expect(normalizeOpenCodeToolInput(
+      'mcp__quicksave-sandbox__UpdateSessionStatus',
+      { stage: 'working', _quicksaveSessionId: 'ses_123' },
+    )).toEqual({ stage: 'working' });
   });
 });
 
@@ -548,44 +1036,59 @@ describe('SessionEventRouter', () => {
 describe('OpenCodeProvider', () => {
   it('has correct id, label, historyMode, and reports resume support', async () => {
     mockExecSync.mockImplementation(() => '1.0.0');
-    const provider = new OpenCodeProvider();
+    const provider = new OpenCodeProvider(makeMockServer());
     expect(provider.id).toBe('opencode');
     expect(provider.label).toBe('OpenCode');
     expect(provider.historyMode).toBe('memory');
     const probe = await provider.probeProvider();
     expect(probe.capabilities.supportsResume).toBe(true);
     expect(probe.capabilities.supportsStreaming).toBe(true);
-    expect(probe.capabilities.supportsAttachments).toBeUndefined();
+    expect(probe.capabilities.supportsAttachments).toBe(true);
+    expect(probe.capabilities.supportedAttachmentKinds).toEqual(['image', 'pdf', 'text']);
+    expect(probe.version).toBe('1.18.4');
   });
 
-  it('reads models from user opencode.json (avoids `opencode models` /tmp leak)', async () => {
-    const tmpHome = await fsp.mkdtemp(path.join(os.tmpdir(), 'opencode-test-'));
-    const cfgDir = path.join(tmpHome, '.config', 'opencode');
-    await fsp.mkdir(cfgDir, { recursive: true });
-    await fsp.writeFile(path.join(cfgDir, 'opencode.json'), JSON.stringify({
-      provider: {
-        vllm: { models: { 'foo/bar': { name: 'Foo Bar' } } },
-        opencode: { models: { 'big-pickle': {} } },
+  it('reads models from the running server provider API', async () => {
+    mockExecSync.mockImplementation(() => '1.18.4');
+    const r = await new OpenCodeProvider(makeMockServer()).probeProvider();
+    const ids = r.models?.map((m) => m.id).sort();
+    expect(ids).toEqual(['opencode/big-pickle', 'vllm/foo/bar']);
+    expect(r.models?.find((m) => m.id === 'vllm/foo/bar')?.name).toBe('Foo Bar');
+  });
+
+  it('routes a new session to its directory and forwards attachments', async () => {
+    const server = makeMockServer();
+    const provider = new OpenCodeProvider(server);
+    await provider.startSession(
+      {
+        prompt: 'inspect this',
+        cwd: '/workspace/a',
+        permissionLevel: 'auto',
+        sandboxed: false,
+        model: 'vllm/foo/bar',
+        attachments: [{
+          id: 'att_1',
+          kind: 'image',
+          mimeType: 'image/png',
+          name: 'screen.png',
+          size: 3,
+          data: 'YWJj',
+        }],
       },
-    }));
-    const oldHome = process.env.HOME;
-    process.env.HOME = tmpHome;
-    try {
-      mockExecSync.mockImplementation((cmd: string) => {
-        if (cmd.includes('--version')) return '1.0.0';
-        if (cmd.includes('which')) return '/usr/bin/opencode';
-        if (cmd.includes(' models')) throw new Error('opencode models must not be invoked');
-        return '';
-      });
-      const r = await new OpenCodeProvider().probeProvider();
-      const ids = r.models?.map((m) => m.id).sort();
-      expect(ids).toEqual(['opencode/big-pickle', 'vllm/foo/bar']);
-      const named = r.models?.find((m) => m.id === 'vllm/foo/bar');
-      expect(named?.name).toBe('Foo Bar');
-    } finally {
-      process.env.HOME = oldHome;
-      await fsp.rm(tmpHome, { recursive: true, force: true });
-    }
+      new StreamCardBuilder('pending', '/workspace/a'),
+      makeCallbacks(),
+    );
+    await new Promise((r) => setImmediate(r));
+    expect(server.creates).toEqual([{ directory: '/workspace/a', agent: 'build' }]);
+    expect(server.prompts[0]).toMatchObject({
+      sessionID: 'ses_mock',
+      directory: '/workspace/a',
+      body: {
+        text: 'inspect this',
+        model: { providerID: 'vllm', modelID: 'foo/bar' },
+      },
+    });
+    expect(server.prompts[0]?.body.attachments).toHaveLength(1);
   });
 
   it('startSession rejects invalid model ids without spawning anything', async () => {

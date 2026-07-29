@@ -9,6 +9,7 @@ import {
   DEFAULT_PERMISSION_MODE,
   DEFAULT_REASONING_EFFORT,
 } from '@sumicom/quicksave-shared';
+import { normalizeAgentId } from '../lib/claudePresets';
 
 /**
  * Returns the runtime config for an active session.
@@ -40,9 +41,7 @@ export function useSessionConfig(sessionId: string | null): Record<string, Confi
   const sessionConfig = sessionConfigs[sessionId] ?? {};
   const rawSessionAgent = (sessionConfig['agent'] as string | undefined)
     ?? (((sessionConfig as Record<string, ConfigValue>)['provider']) as string | undefined);
-  const sessionAgent = rawSessionAgent
-    ? (rawSessionAgent === 'codex' || rawSessionAgent === 'codex-mcp' ? 'codex' : 'claude-code')
-    : undefined;
+  const sessionAgent = rawSessionAgent ? normalizeAgentId(rawSessionAgent) : undefined;
 
   // Active session — merge defaults with session-specific overrides
   return {

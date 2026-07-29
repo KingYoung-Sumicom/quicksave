@@ -9,6 +9,7 @@ import {
   DEFAULT_PERMISSION_MODE,
   DEFAULT_REASONING_EFFORT,
 } from '@sumicom/quicksave-shared';
+import { normalizeAgentId } from '../lib/claudePresets';
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -43,9 +44,7 @@ function getSessionConfig(sessionId: string | null): Record<string, ConfigValue>
   const sessionConfig = sessionConfigs[sessionId] ?? {};
   const rawSessionAgent = (sessionConfig['agent'] as string | undefined)
     ?? (((sessionConfig as Record<string, ConfigValue>)['provider']) as string | undefined);
-  const sessionAgent = rawSessionAgent
-    ? (rawSessionAgent === 'codex' || rawSessionAgent === 'codex-mcp' ? 'codex' : 'claude-code')
-    : undefined;
+  const sessionAgent = rawSessionAgent ? normalizeAgentId(rawSessionAgent) : undefined;
 
   return {
     agent: selectedAgent ?? DEFAULT_AGENT,
@@ -131,6 +130,22 @@ describe('useSessionConfig (logic)', () => {
         sessionConfigs: { 'session-1': { agent: 'codex-mcp' } },
       });
       expect(getSessionConfig('session-1').agent).toBe('codex');
+    });
+
+    it('preserves opencode agent from resumed session config', () => {
+      useClaudeStore.setState({
+        selectedAgent: 'claude-code',
+        sessionConfigs: { 'session-1': { agent: 'opencode' } },
+      });
+      expect(getSessionConfig('session-1').agent).toBe('opencode');
+    });
+
+    it('preserves pi agent from resumed session config', () => {
+      useClaudeStore.setState({
+        selectedAgent: 'claude-code',
+        sessionConfigs: { 'session-1': { agent: 'pi' } },
+      });
+      expect(getSessionConfig('session-1').agent).toBe('pi');
     });
 
     it('normalizes legacy provider field to agent', () => {

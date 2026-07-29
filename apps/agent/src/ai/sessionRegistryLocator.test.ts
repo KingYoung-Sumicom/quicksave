@@ -4,7 +4,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { findRegistryPathByCorr } from './sessionRegistryLocator.js';
+import {
+  findRegistryPathByCorr,
+  findRegistryPathBySessionId,
+} from './sessionRegistryLocator.js';
 
 describe('findRegistryPathByCorr', () => {
   let dir: string;
@@ -58,5 +61,37 @@ describe('findRegistryPathByCorr', () => {
     write('older.json', { sessionId: 'old', mcpCorrId: 'corr-mine' });
     write('newer.json', { sessionId: 'new', mcpCorrId: 'corr-other' });
     expect(findRegistryPathByCorr(dir, 'corr-mine')).toBe(join(dir, 'older.json'));
+  });
+});
+
+describe('findRegistryPathBySessionId', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'session-locator-'));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('finds the exact session across encoded project directories', () => {
+    const projectA = join(root, '-workspace-a');
+    const projectB = join(root, '-workspace-b');
+    mkdirSync(projectA);
+    mkdirSync(projectB);
+    writeFileSync(join(projectA, 'ses_other.json'), JSON.stringify({ sessionId: 'ses_other' }));
+    writeFileSync(join(projectB, 'ses_target.json'), JSON.stringify({ sessionId: 'ses_target' }));
+
+    expect(findRegistryPathBySessionId(root, 'ses_target'))
+      .toBe(join(projectB, 'ses_target.json'));
+  });
+
+  it('rejects path-like ids and ignores archived entries', () => {
+    const archivedProject = join(root, 'archived', '-workspace-a');
+    mkdirSync(archivedProject, { recursive: true });
+    writeFileSync(join(archivedProject, 'ses_old.json'), JSON.stringify({ sessionId: 'ses_old' }));
+
+    expect(findRegistryPathBySessionId(root, '../escape')).toBeNull();
+    expect(findRegistryPathBySessionId(root, 'ses_old')).toBeNull();
   });
 });

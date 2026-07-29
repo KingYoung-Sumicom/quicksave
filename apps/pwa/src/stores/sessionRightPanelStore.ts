@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { create } from 'zustand';
+import type { MarkdownArtifactRef } from '@sumicom/quicksave-shared';
 
-export type SessionPanelMode = null | 'files' | 'git' | 'settings';
+export type SessionPanelMode = null | 'files' | 'git' | 'settings' | 'artifact';
 
 export interface FilesPreview {
   path: string;
@@ -14,6 +15,7 @@ interface PerSessionPanelState {
   mode: SessionPanelMode;
   filesRelPath: string;
   filesPreview: FilesPreview | null;
+  artifactPreview: MarkdownArtifactRef | null;
   /** Optional cwd override for the Git tab. Set when the user picks a repo
    *  from the Settings tab's "Git repository" list — Git tab then renders
    *  that repo instead of the session's own cwd. Null = use session cwd. */
@@ -24,6 +26,7 @@ const DEFAULT_SESSION_STATE: PerSessionPanelState = {
   mode: null,
   filesRelPath: '',
   filesPreview: null,
+  artifactPreview: null,
   gitRepoOverride: null,
 };
 
@@ -46,6 +49,7 @@ interface SessionRightPanelStore {
   navigateFiles(relPath: string): void;
   openFilePreview(preview: FilesPreview): void;
   closeFilePreview(): void;
+  openArtifactPreview(artifact: MarkdownArtifactRef): void;
   /** Set/clear the Git tab's per-session cwd override. Null restores
    *  rendering the session's own cwd. */
   setGitRepoOverride(path: string | null): void;
@@ -98,12 +102,17 @@ export const useSessionRightPanelStore = create<SessionRightPanelStore>((set) =>
       return updateSession(s, {
         mode: newMode,
         filesPreview: null,
+        artifactPreview: null,
         // Keep filesRelPath when toggling files tab back on; reset for other tabs.
         filesRelPath: newMode === 'files' ? curr.filesRelPath : '',
       });
     }),
 
-  close: () => set((s) => updateSession(s, { mode: null, filesPreview: null })),
+  close: () => set((s) => updateSession(s, {
+    mode: null,
+    filesPreview: null,
+    artifactPreview: null,
+  })),
 
   setPanelWidth: (w) => {
     const clamped = Math.min(SESSION_PANEL_MAX, Math.max(SESSION_PANEL_MIN, Math.round(w)));
@@ -114,6 +123,11 @@ export const useSessionRightPanelStore = create<SessionRightPanelStore>((set) =>
   navigateFiles: (relPath) => set((s) => updateSession(s, { filesRelPath: relPath, filesPreview: null })),
   openFilePreview: (preview) => set((s) => updateSession(s, { filesPreview: preview })),
   closeFilePreview: () => set((s) => updateSession(s, { filesPreview: null })),
+  openArtifactPreview: (artifact) => set((s) => updateSession(s, {
+    mode: 'artifact',
+    filesPreview: null,
+    artifactPreview: artifact,
+  })),
   setGitRepoOverride: (path) => set((s) => updateSession(s, { gitRepoOverride: path })),
 }));
 
@@ -125,6 +139,11 @@ export function selectPanelMode(s: SessionRightPanelStore): SessionPanelMode {
 /** Selector: current session's files preview request. */
 export function selectFilesPreview(s: SessionRightPanelStore): FilesPreview | null {
   return getSession(s).filesPreview;
+}
+
+/** Selector: artifact currently displayed in the session panel. */
+export function selectArtifactPreview(s: SessionRightPanelStore): MarkdownArtifactRef | null {
+  return getSession(s).artifactPreview;
 }
 
 /** Selector: current session's directory path in the file browser. */
