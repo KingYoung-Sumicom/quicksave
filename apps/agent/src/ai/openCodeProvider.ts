@@ -633,10 +633,16 @@ export class SessionEventRouter {
     }
     state.text += p.delta;
     if (state.field === 'text') {
+      // OpenCode commonly emits "\n\n" as a separator between reasoning,
+      // tool calls, and visible assistant text. Keep leading whitespace
+      // buffered until this part contains something Markdown can display;
+      // otherwise a following tool call finalizes a blank assistant card.
+      if (!state.cardOpen && !state.text.trim()) return;
+      const openingCard = !state.cardOpen;
       // First chunk for this partID closes any other open text card, then
       // creates a fresh one. Subsequent chunks append to the same card via
       // assistantText() which the StreamCardBuilder coalesces.
-      if (!state.cardOpen) {
+      if (openingCard) {
         this.flushBufferedReasoning();
         const fin = this.cb.finalizeAssistantText();
         if (fin) this.callbacks.emitCardEvent(fin);
@@ -646,7 +652,8 @@ export class SessionEventRouter {
         // spurious sync at the very first text card of the turn is cheap.
         this.scheduleToolSync();
       }
-      this.callbacks.emitCardEvent(this.cb.assistantText(p.delta));
+      const text = openingCard ? state.text : p.delta;
+      this.callbacks.emitCardEvent(this.cb.assistantText(text));
       this.textPartIds.set(p.partID, state.text);
     }
     // reasoning deltas: buffer until we see a terminator. opencode doesn't
@@ -685,7 +692,7 @@ export class SessionEventRouter {
     if (part.type === 'text') {
       const tp = part as TextPart;
       this.partKinds.set(tp.id, 'text');
-      if (tp.ignored || !tp.text) return;
+      if (tp.ignored || !tp.text.trim()) return;
       // We may see the same partID several times as the model streams; replay
       // only the latest snapshot, replacing whatever we showed before. The
       // CardBuilder doesn't support in-place text replace, so the practical

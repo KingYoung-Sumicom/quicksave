@@ -394,6 +394,48 @@ describe('SessionEventRouter', () => {
     expect((textCard as any).text).toBe('hello world');
   });
 
+  it('does not emit a card for a whitespace-only Markdown text part', () => {
+    const { router, cb, cbs } = makeRouter();
+    router.handle(ev('message.part.delta', {
+      sessionID: 'ses_t',
+      messageID: 'msg_assistant',
+      partID: 'prt_separator',
+      field: 'text',
+      delta: '\n\n',
+    }));
+    router.handle(ev('message.part.updated', {
+      part: {
+        id: 'prt_tool',
+        sessionID: 'ses_t',
+        messageID: 'msg_assistant',
+        type: 'tool',
+        tool: 'read',
+        callID: 'call_after_separator',
+        state: { status: 'running', input: {} },
+      },
+    }));
+
+    expect(cb.getCards().filter((card) => card.type === 'assistant_text')).toHaveLength(0);
+    expect(cbs.cards.filter((event: any) => event.card?.type === 'assistant_text')).toHaveLength(0);
+  });
+
+  it('keeps buffered leading whitespace when visible text arrives', () => {
+    const { router, cb } = makeRouter();
+    const props = (delta: string) => ({
+      sessionID: 'ses_t',
+      messageID: 'msg_assistant',
+      partID: 'prt_text',
+      field: 'text',
+      delta,
+    });
+    router.handle(ev('message.part.delta', props('\n\n')));
+    router.handle(ev('message.part.delta', props('visible answer')));
+
+    expect(cb.getCards().filter((card) => card.type === 'assistant_text')).toEqual([
+      expect.objectContaining({ text: '\n\nvisible answer' }),
+    ]);
+  });
+
   it('does not echo OpenCode user message parts as assistant text', () => {
     const { router, cbs } = makeRouter();
     router.handle(ev('message.updated', {

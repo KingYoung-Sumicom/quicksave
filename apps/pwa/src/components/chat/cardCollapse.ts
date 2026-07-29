@@ -4,6 +4,14 @@ import type { Card, MarkdownArtifactRef } from '@sumicom/quicksave-shared';
 
 const ALWAYS_VISIBLE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode', 'TodoWrite']);
 
+export function isEmptyMarkdownTextCard(card: Card): boolean {
+  return card.type === 'assistant_text' && card.text.trim().length === 0;
+}
+
+export function filterRenderableCards(cards: readonly Card[]): Card[] {
+  return cards.filter((card) => !isEmptyMarkdownTextCard(card));
+}
+
 export function parseMarkdownArtifactRef(value: unknown): MarkdownArtifactRef | null {
   let parsed = value;
   if (typeof parsed === 'string') {
@@ -48,6 +56,8 @@ export function shouldCollapseCard(
   if (cardContainsArtifact(card)) return false;
   if (collapseIntermediate) return true;
   return hideToolCalls
-    && card.type === 'tool_call'
-    && !ALWAYS_VISIBLE_TOOLS.has(card.toolName);
+    && (
+      card.type === 'thinking'
+      || (card.type === 'tool_call' && !ALWAYS_VISIBLE_TOOLS.has(card.toolName))
+    );
 }

@@ -104,3 +104,16 @@ while rendering the full report inline overwhelms the conversation and adds a
 nested scroll surface.
 
 ---
+
+### Filter non-rendering cards before building the display sequence
+
+Cards whose rendered Markdown is empty (for example, whitespace-only assistant
+text) must be removed before tool-call grouping, completed-turn folding, and
+message wrapper creation. Thinking cards belong to the same folded operational
+run as adjacent tool calls when tool-call hiding is enabled.
+
+**Why:** Returning `null` from the inner message renderer is too late. The outer
+card wrapper can still create spacing, and the logically empty card can split
+two adjacent tool calls into separate folded groups.
+
+---
