@@ -467,6 +467,13 @@ export class OpenCodeProvider implements CodingAgentProvider {
       directory: opts.cwd,
       permissionLevel: opts.permissionLevel,
     });
+    // A cold resume creates a fresh router whose in-memory dedupe sets are
+    // empty, while OpenCode's message endpoint returns the entire session.
+    // Prime those sets before starting the new turn so the first REST tool
+    // sync does not replay every historical tool call into the chat.
+    await router.primeHistoricalState().catch((err) => {
+      console.warn('[openCode] failed to prime resume history:', err);
+    });
     const unsub = server.subscribe(opencodeSessionId, (ev) => router.handle(ev));
     session._setTurnWiring(cardBuilder, callbacks, router, unsub);
 
@@ -535,6 +542,40 @@ export class SessionEventRouter {
 
   getPermissionLevel(): PermissionLevel {
     return this.permissionLevel;
+  }
+
+  /** Seed session-wide REST dedupe state without emitting cards.
+   *
+   * OpenCode's message endpoint is a full-session snapshot. A newly-created
+   * router on cold resume must learn which tool calls already belong to the
+   * persisted history before the new prompt starts; otherwise the first
+   * session.diff/text/idle sync treats every old tool part as new.
+   */
+  async primeHistoricalState(): Promise<void> {
+    const messages = await this.server.getMessages(this.sessionId, this.directory);
+    for (const msg of messages) {
+      const id = msg.info?.id;
+      const role = msg.info?.role;
+      if (typeof id === 'string' && (role === 'user' || role === 'assistant')) {
+        this.messageRoles.set(id, role);
+      }
+      for (const part of msg.parts) {
+        if (part?.type !== 'tool') continue;
+        const callID = part.callID as string | undefined;
+        const rawToolName = part.tool as string | undefined;
+        if (!callID || !rawToolName) continue;
+        const state = (part.state ?? {}) as {
+          status?: string;
+          input?: Record<string, unknown>;
+        };
+        const toolName = normalizeOpenCodeToolName(rawToolName);
+        const input = normalizeOpenCodeToolInput(rawToolName, state.input ?? {});
+        this.toolCards.set(callID, JSON.stringify([toolName, input]));
+        if (state.status === 'completed' || state.status === 'error') {
+          this.toolResults.add(callID);
+        }
+      }
+    }
   }
 
   /** Expose current turn token totals so the session can build a

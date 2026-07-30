@@ -860,6 +860,43 @@ describe('SessionEventRouter', () => {
     expect(cbs.tools.map((tool) => tool.toolName)).toEqual(['Bash', 'Glob']);
   });
 
+  it('does not replay historical REST tool parts after cold-resume priming', async () => {
+    const { router, cbs, server } = makeRouter();
+    server.messages.push({
+      info: { id: 'msg_old', role: 'assistant' },
+      parts: [{
+        id: 'prt_old',
+        sessionID: 'ses_t',
+        messageID: 'msg_old',
+        type: 'tool',
+        tool: 'bash',
+        callID: 'call_old',
+        state: { status: 'completed', input: { command: 'pwd' }, output: '/p' },
+      }],
+    });
+
+    await router.primeHistoricalState();
+    server.messages.push({
+      info: { id: 'msg_new', role: 'assistant' },
+      parts: [{
+        id: 'prt_new',
+        sessionID: 'ses_t',
+        messageID: 'msg_new',
+        type: 'tool',
+        tool: 'glob',
+        callID: 'call_new',
+        state: { status: 'completed', input: { pattern: '**/*.ts' }, output: 'a.ts' },
+      }],
+    });
+    router.handle(ev('session.diff', { sessionID: 'ses_t', diff: [] }));
+    await flushAsync();
+
+    const toolCards = cbs.cards.filter((event: any) => event.card?.type === 'tool_call');
+    expect(toolCards).toHaveLength(1);
+    expect(toolCards[0]?.card).toMatchObject({ toolName: 'Glob', toolUseId: 'call_new' });
+    expect(cbs.tools.map((tool) => tool.toolName)).toEqual(['Glob']);
+  });
+
   it('resetForNewTurn allows a fresh turn to flow', async () => {
     const { router, cbs } = makeRouter();
     router.handle(ev('session.idle', { sessionID: 'ses_t' }));
@@ -1089,6 +1126,40 @@ describe('OpenCodeProvider', () => {
       },
     });
     expect(server.prompts[0]?.body.attachments).toHaveLength(1);
+  });
+
+  it('primes historical tool state before sending a cold-resume prompt', async () => {
+    const server = makeMockServer();
+    const provider = new OpenCodeProvider(server);
+    server.messages.push({
+      info: { id: 'msg_old', role: 'assistant' },
+      parts: [{
+        type: 'tool',
+        tool: 'read',
+        callID: 'call_old',
+        state: { status: 'completed', input: { filePath: '/old' }, output: 'old' },
+      }],
+    });
+    const getMessages = vi.spyOn(server, 'getMessages');
+
+    await provider.resumeSession(
+      {
+        sessionId: 'ses_existing',
+        prompt: 'continue',
+        cwd: '/workspace/a',
+        permissionLevel: 'auto',
+        sandboxed: false,
+        model: 'vllm/foo/bar',
+      },
+      new StreamCardBuilder('ses_existing', '/workspace/a'),
+      makeCallbacks(),
+    );
+
+    expect(getMessages).toHaveBeenCalledWith('ses_existing', '/workspace/a');
+    expect(server.prompts).toEqual([expect.objectContaining({
+      sessionID: 'ses_existing',
+      body: expect.objectContaining({ text: 'continue' }),
+    })]);
   });
 
   it('startSession rejects invalid model ids without spawning anything', async () => {

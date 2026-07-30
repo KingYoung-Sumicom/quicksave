@@ -428,6 +428,13 @@ interface CodingAgentProvider {
 
 **ResumeSessionOpts** — same fields as `StartSessionOpts` minus `cwd` resolution differences; SessionManager handles hot vs cold resume based on `providerSession.alive`, model change, and context window change.
 
+OpenCode is a memory-history provider, but its REST message endpoint returns a
+full-session snapshot on every tool sync. On cold resume, `OpenCodeProvider`
+primes the new event router's tool-call/result dedupe state from that snapshot
+before subscribing and sending the new prompt. The priming pass emits no cards;
+later `session.diff`, text-start, and idle syncs therefore add only tool calls
+that appeared after the resume boundary.
+
 To add a new provider, implement this interface and include it in the array passed to the `SessionManager` constructor:
 ```typescript
 const sessionManager = new SessionManager([
