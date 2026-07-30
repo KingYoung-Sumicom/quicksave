@@ -34,7 +34,13 @@ const PLATFORM_PROMPTS: Partial<Record<AgentId, string[]>> = {
   ],
 };
 
+const FALLBACK_PROMPTS = [
+  `The session status tool name is \`${UPDATE_SESSION_STATUS_TOOL}\`.`,
+  STATUS_PROMPT,
+  COMMIT_TRAILER_PROMPT,
+];
+
 export function buildSystemPrompt(agentId: AgentId, extra?: string): string {
-  const base = (PLATFORM_PROMPTS[agentId] ?? PLATFORM_PROMPTS['claude-code'] ?? []).join('\n\n');
+  const base = (PLATFORM_PROMPTS[agentId] ?? FALLBACK_PROMPTS).join('\n\n');
   return extra ? `${base}\n\n${extra}` : base;
 }
