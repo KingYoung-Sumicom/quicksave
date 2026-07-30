@@ -24,13 +24,13 @@ export interface NewSessionEmptyStateProps {
 
 export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptyStateProps) {
   const intl = useIntl();
-  const { selectedAgent, selectedModel, agentPrefs, allow1mForBilledModels, setSelectedAgent, setAgentSetting } = useClaudeStore();
+  const { selectedAgent, selectedModel, agentPrefs, allow1mForBilledModels, setSelectedAgent, setAgentSetting, lastChosenProviders, recordProviderChoice } = useClaudeStore();
   const codexModels = useConnectionStore((s) => s.codexModels);
   const { loginState } = useCodexLogin();
 
   const provider = getAgentProvider(selectedAgent);
   const opencodeModels = useConnectionStore((s) => s.opencodeModels);
-  const dynamic = { codexModels, opencodeModels };
+  const dynamic = { codexModels, opencodeModels, lastChosenProviders, recordProviderChoice };
   // Spread settings FIRST so `model:` from the agent bucket always wins.
   // (Old persisted state sometimes carries a stale `settings.model = ''`
   // that would otherwise override.)

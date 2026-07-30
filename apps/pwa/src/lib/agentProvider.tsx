@@ -26,7 +26,7 @@ import { clsx } from 'clsx';
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
-export type Option = { value: string; label: string };
+export type Option = { value: string; label: string; providerId?: string; providerName?: string };
 
 export type SettingKind =
   | { kind: 'preset'; options: ReadonlyArray<Option> }
@@ -45,7 +45,9 @@ export interface SettingDescriptor {
 
 export interface AgentDynamicData {
   codexModels?: CodexModelInfo[];
-  opencodeModels?: Array<{ id: string; name: string }>;
+  opencodeModels?: Array<{ id: string; name: string; providerId: string; providerName: string }>;
+  lastChosenProviders?: string[];
+  recordProviderChoice?: (providerId: string) => void;
 }
 
 export interface RenderSettingsOpts {
@@ -299,6 +301,7 @@ abstract class BaseAgentProvider implements AgentProvider {
     // Model picker
     const models = this.getModels(dynamic);
     if (models.length > 0 && !hide.has('model')) {
+      const hasGroups = models.some((m) => m.providerId);
       nodes.push(
         <ButtonGroup
           key="model"
@@ -307,6 +310,10 @@ abstract class BaseAgentProvider implements AgentProvider {
           value={(values['model'] as string) ?? ''}
           onSelect={(m) => onChange('model', m.value)}
           size={opts.mode === 'new-session' ? 'sm' : undefined}
+          providerLabel={hasGroups ? 'Model Provider' : undefined}
+          modelLabel={hasGroups ? 'Model' : undefined}
+          lastChosenProviders={opts.dynamic?.lastChosenProviders}
+          onProviderSelect={(providerId) => opts.dynamic?.recordProviderChoice?.(providerId)}
         />,
       );
     }
@@ -773,7 +780,12 @@ class OpenCodeAgentProvider extends BaseAgentProvider {
   readonly defaultReasoningEffort = '';
 
   getModels(dynamic?: AgentDynamicData): ReadonlyArray<Option> {
-    return (dynamic?.opencodeModels ?? []).map((m) => ({ value: m.id, label: m.name }));
+    return (dynamic?.opencodeModels ?? []).map((m) => ({
+      value: m.id,
+      label: m.name,
+      providerId: m.providerId,
+      providerName: m.providerName,
+    }));
   }
 
   getSettings(): ReadonlyArray<SettingDescriptor> {

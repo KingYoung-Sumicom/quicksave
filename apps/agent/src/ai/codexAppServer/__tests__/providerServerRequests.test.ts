@@ -445,6 +445,156 @@ describe('CodexAppServerSession active-turn follow-up routing', () => {
     expect(h.session.getQueueState()).toBeNull();
   });
 
+  it('auto-steers the first queued follow-up when the active turn starts a tool call', async () => {
+    const h = harness();
+    const startReqPromise = receiveClientRequest(h.serverSide);
+    const run = h.session.runTurn('initial prompt');
+
+    const startReq = await startReqPromise;
+    expect(startReq.method).toBe('turn/start');
+    await h.serverSide.send({ jsonrpc: '2.0', id: startReq.id, result: { turn: makeTurn('turn_1', 'inProgress') } });
+    await flushMicrotasks();
+
+    const failedSteerReqPromise = receiveClientRequest(h.serverSide);
+    h.session.sendUserMessage('queued until a tool call');
+
+    const failedSteerReq = await failedSteerReqPromise;
+    expect(failedSteerReq.method).toBe('turn/steer');
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      id: failedSteerReq.id,
+      error: { code: -32602, message: 'no active steerable turn' },
+    });
+
+    await flushMicrotasks();
+    expect(h.session.getQueueState()).toMatchObject({
+      pendingUserMessages: 1,
+      latestPromptPreview: 'queued until a tool call',
+    });
+
+    const autoSteerReqPromise = receiveClientRequest(h.serverSide);
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      method: 'item/started',
+      params: {
+        threadId: h.threadId,
+        turnId: 'turn_1',
+        item: {
+          type: 'mcpToolCall',
+          id: 'tool_1',
+          server: 'quicksave',
+          tool: 'Bash',
+          status: 'inProgress',
+          arguments: { command: 'pwd' },
+          pluginId: null,
+          result: null,
+          error: null,
+          durationMs: null,
+        },
+      },
+    });
+
+    const autoSteerReq = await autoSteerReqPromise;
+    expect(autoSteerReq.method).toBe('turn/steer');
+    expect(autoSteerReq.params).toEqual({
+      threadId: h.threadId,
+      input: [{ type: 'text', text: 'queued until a tool call', text_elements: [] }],
+      expectedTurnId: 'turn_1',
+    });
+    await h.serverSide.send({ jsonrpc: '2.0', id: autoSteerReq.id, result: { turnId: 'turn_1' } });
+    await flushMicrotasks();
+    expect(h.session.getQueueState()).toBeNull();
+
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: { threadId: h.threadId, turn: makeTurn('turn_1', 'completed') },
+    });
+    await run;
+
+    expect(h.callbacks.emitStreamEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a queued follow-up for the next turn after manual interrupt', async () => {
+    const h = harness();
+    const startReqPromise = receiveClientRequest(h.serverSide);
+    const run = h.session.runTurn('initial prompt');
+
+    const startReq = await startReqPromise;
+    expect(startReq.method).toBe('turn/start');
+    await h.serverSide.send({ jsonrpc: '2.0', id: startReq.id, result: { turn: makeTurn('turn_1', 'inProgress') } });
+    await flushMicrotasks();
+
+    const failedSteerReqPromise = receiveClientRequest(h.serverSide);
+    h.session.sendUserMessage('run after interrupt');
+
+    const failedSteerReq = await failedSteerReqPromise;
+    expect(failedSteerReq.method).toBe('turn/steer');
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      id: failedSteerReq.id,
+      error: { code: -32602, message: 'no active steerable turn' },
+    });
+    await flushMicrotasks();
+    expect(h.session.getQueueState()).toMatchObject({
+      pendingUserMessages: 1,
+      latestPromptPreview: 'run after interrupt',
+    });
+
+    const recorder = recordClientRequests(h.serverSide);
+    try {
+      const steerResult = h.session.steerQueuedMessage({ interruptCurrentTurn: true });
+      await h.serverSide.send({
+        jsonrpc: '2.0',
+        method: 'item/started',
+        params: {
+          threadId: h.threadId,
+          turnId: 'turn_1',
+          item: {
+            type: 'mcpToolCall',
+            id: 'tool_1',
+            server: 'quicksave',
+            tool: 'Bash',
+            status: 'inProgress',
+            arguments: { command: 'pwd' },
+            pluginId: null,
+            result: null,
+            error: null,
+            durationMs: null,
+          },
+        },
+      });
+      await expect(steerResult).resolves.toBe(true);
+
+      const interruptReq = await recorder.waitFor((req) => req.method === 'turn/interrupt');
+      expect(interruptReq.params).toEqual({ threadId: h.threadId, turnId: 'turn_1' });
+      await h.serverSide.send({ jsonrpc: '2.0', id: interruptReq.id, result: {} });
+      await flushMicrotasks();
+
+      expect(recorder.requests.some((req) => req.method === 'turn/steer')).toBe(false);
+
+      const secondStartReq = await recorder.waitFor((req) => req.method === 'turn/start');
+      expect(secondStartReq.params).toMatchObject({
+        threadId: h.threadId,
+        input: [{ type: 'text', text: 'run after interrupt', text_elements: [] }],
+      });
+      await h.serverSide.send({ jsonrpc: '2.0', id: secondStartReq.id, result: { turn: makeTurn('turn_2', 'inProgress') } });
+      await flushMicrotasks();
+      await sendTokenUsage(h, 'turn_2');
+      await h.serverSide.send({
+        jsonrpc: '2.0',
+        method: 'turn/completed',
+        params: { threadId: h.threadId, turn: makeTurn('turn_2', 'completed') },
+      });
+      await run;
+    } finally {
+      recorder.unsubscribe();
+    }
+
+    expect(h.callbacks.emitStreamEnd).toHaveBeenCalledTimes(2);
+    expect(h.session.getQueueState()).toBeNull();
+  });
+
   it('unblocks a later prompt when interrupt has no turn/completed notification', async () => {
     const h = harness();
     const firstStartReqPromise = receiveClientRequest(h.serverSide);
@@ -593,6 +743,39 @@ async function receiveClientRequest(serverSide: InMemoryTransport): Promise<Wire
       }
     });
   });
+}
+
+function recordClientRequests(serverSide: InMemoryTransport): {
+  requests: WireRequest[];
+  waitFor(predicate: (request: WireRequest) => boolean): Promise<WireRequest>;
+  unsubscribe(): void;
+} {
+  const requests: WireRequest[] = [];
+  const waiters = new Set<{
+    predicate: (request: WireRequest) => boolean;
+    resolve: (request: WireRequest) => void;
+  }>();
+  const unsubscribe = serverSide.onMessage((message) => {
+    if (!('id' in message && 'method' in message)) return;
+    const request = message as WireRequest;
+    requests.push(request);
+    for (const waiter of waiters) {
+      if (!waiter.predicate(request)) continue;
+      waiters.delete(waiter);
+      waiter.resolve(request);
+    }
+  });
+  return {
+    requests,
+    waitFor(predicate) {
+      const existing = requests.find(predicate);
+      if (existing) return Promise.resolve(existing);
+      return new Promise((resolve) => {
+        waiters.add({ predicate, resolve });
+      });
+    },
+    unsubscribe,
+  };
 }
 
 async function flushMicrotasks(): Promise<void> {

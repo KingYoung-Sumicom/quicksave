@@ -82,7 +82,21 @@ interface ToolPart extends BasePart {
   };
 }
 
-type AnyPart = TextPart | ReasoningPart | ToolPart | BasePart;
+interface StepFinishPart extends BasePart {
+  type: 'step-finish';
+  reason: string;
+  snapshot?: string;
+  cost: number;
+  tokens: {
+    total: number;
+    input: number;
+    output: number;
+    reasoning: number;
+    cache: { read: number; write: number };
+  };
+}
+
+type AnyPart = TextPart | ReasoningPart | ToolPart | StepFinishPart | BasePart;
 
 // ── Model id validation ──────────────────────────────────────────────────────
 //
@@ -199,7 +213,7 @@ export interface TurnConfig {
 
 export class OpencodeSession implements ProviderSession {
   /** opencode server's `ses_…` id. Stable across turns; we use it for
-   *  follow-up prompts and abort. */
+    *  follow-up prompts and abort. */
   readonly opencodeSessionId: string;
   private server: OpenCodeServer;
   private router: SessionEventRouter | null = null;
@@ -209,17 +223,21 @@ export class OpencodeSession implements ProviderSession {
   private turnConfig: TurnConfig;
   private cb: StreamCardBuilder | null = null;
   private callbacks: ProviderCallbacks | null = null;
+  /** Model context window for building ContextUsageBreakdown. */
+  private modelContextWindow: number | undefined;
 
   constructor(
     opencodeSessionId: string,
     server: OpenCodeServer,
     directory: string,
     turnConfig: TurnConfig,
+    modelContextWindow?: number,
   ) {
     this.opencodeSessionId = opencodeSessionId;
     this.server = server;
     this.directory = directory;
     this.turnConfig = turnConfig;
+    this.modelContextWindow = modelContextWindow;
   }
 
   /** @internal wires the per-session SSE consumer state for follow-ups. */
@@ -278,7 +296,25 @@ export class OpencodeSession implements ProviderSession {
 
   get alive(): boolean { return this.aliveFlag; }
 
-  async getContextUsage(): Promise<ContextUsageBreakdown | null> { return null; }
+  async getContextUsage(): Promise<ContextUsageBreakdown | null> {
+    if (!this.router) return null;
+    const totals = this.router.getTurnTokenTotals();
+    if (!totals.inputTokens && !totals.outputTokens) return null;
+    const modelContextWindow = this.modelContextWindow ?? totals.modelContextWindow;
+    if (!modelContextWindow || modelContextWindow <= 0) return null;
+    const totalTokens = totals.inputTokens;
+    return {
+      categories: [
+        { name: 'OpenCode input', tokens: totals.inputTokens, color: 'claude' },
+      ],
+      totalTokens,
+      maxTokens: modelContextWindow,
+      rawMaxTokens: modelContextWindow,
+      autocompactSource: 'opencode-last-turn-input',
+      percentage: (totalTokens / modelContextWindow) * 100,
+      model: this.turnConfig.model?.modelID,
+    };
+  }
 }
 
 // ── Provider ─────────────────────────────────────────────────────────────────
@@ -309,13 +345,15 @@ export class OpenCodeProvider implements CodingAgentProvider {
         this.server.getHealth(),
         this.server.listProviders(process.cwd()),
       ]);
-      const models = providerResult.all.flatMap((provider) => (
-        Object.entries(provider.models ?? {}).map(([modelKey, model]) => {
+      const connected = new Set(providerResult.connected ?? []);
+      const models = providerResult.all.flatMap((provider) => {
+        if (!connected.has(provider.id)) return [];
+        return Object.entries(provider.models ?? {}).map(([modelKey, model]) => {
           const modelID = model.id || modelKey;
           const id = `${provider.id}/${modelID}`;
-          return { id, name: model.name || id };
-        })
-      ));
+          return { id, name: model.name || id, providerId: provider.id, providerName: provider.name };
+        });
+      });
       return { version: health.version, capabilities, models };
     } catch (err) {
       console.warn('[openCode] failed to query server health/providers:', err);
@@ -359,7 +397,7 @@ export class OpenCodeProvider implements CodingAgentProvider {
       ...(opts.reasoningEffort ? { variant: opts.reasoningEffort } : {}),
       ...(opts.systemPrompt ? { system: opts.systemPrompt } : {}),
     };
-    const session = new OpencodeSession(opencodeSessionId, server, opts.cwd, turnConfig);
+    const session = new OpencodeSession(opencodeSessionId, server, opts.cwd, turnConfig, opts.contextWindow);
     cardBuilder.updateSessionId(opencodeSessionId);
 
     if (opts.prompt || (opts.attachments && opts.attachments.length > 0)) {
@@ -417,7 +455,7 @@ export class OpenCodeProvider implements CodingAgentProvider {
       ...(opts.reasoningEffort ? { variant: opts.reasoningEffort } : {}),
       ...(opts.systemPrompt ? { system: opts.systemPrompt } : {}),
     };
-    const session = new OpencodeSession(opencodeSessionId, server, opts.cwd, turnConfig);
+    const session = new OpencodeSession(opencodeSessionId, server, opts.cwd, turnConfig, opts.contextWindow);
     cardBuilder.updateSessionId(opencodeSessionId);
 
     if (opts.prompt || (opts.attachments && opts.attachments.length > 0)) {
@@ -468,6 +506,13 @@ export class SessionEventRouter {
   private reasoningPartIds = new Map<string, string>();
   private partKinds = new Map<string, 'text' | 'reasoning'>();
   private messageRoles = new Map<string, 'user' | 'assistant'>();
+  // Per-turn token tracking from step-finish parts.
+  private turnInputTokens = 0;
+  private turnOutputTokens = 0;
+  private turnCacheRead = 0;
+  private turnCacheWrite = 0;
+  private turnCost = 0;
+  private turnModelContextWindow: number | undefined;
 
   constructor(
     sessionId: string,
@@ -488,14 +533,45 @@ export class SessionEventRouter {
     this.permissionLevel = level;
   }
 
+  getPermissionLevel(): PermissionLevel {
+    return this.permissionLevel;
+  }
+
+  /** Expose current turn token totals so the session can build a
+    * ContextUsageBreakdown on demand. */
+  getTurnTokenTotals(): {
+    inputTokens: number;
+    outputTokens: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: number;
+    modelContextWindow: number | undefined;
+  } {
+    return {
+      inputTokens: this.turnInputTokens,
+      outputTokens: this.turnOutputTokens,
+      cacheRead: this.turnCacheRead,
+      cacheWrite: this.turnCacheWrite,
+      cost: this.turnCost,
+      modelContextWindow: this.turnModelContextWindow,
+    };
+  }
+
   /** Reset turn-scoped state so the next opencode turn streams into a fresh
-   *  set of cards. Per-session disposers and the SSE subscription stay live. */
+    * set of cards. Per-session disposers and the SSE subscription stay live. */
   resetForNewTurn(): void {
     this.finalized = false;
     // Keep message/part/call dedupe state for the whole OpenCode session.
     // REST returns historical messages on every sync, so clearing these maps
     // here would replay prior-turn tools into the new turn.
     this.deltaBuf.clear();
+    // Reset per-turn token counters.
+    this.turnInputTokens = 0;
+    this.turnOutputTokens = 0;
+    this.turnCacheRead = 0;
+    this.turnCacheWrite = 0;
+    this.turnCost = 0;
+    this.turnModelContextWindow = undefined;
   }
 
   handle(ev: OpenCodeEvent): void {
@@ -738,7 +814,16 @@ export class SessionEventRouter {
       this.emitToolPart(tp.tool, tp.callID, tp.state);
       return;
     }
-    // step / file / snapshot / patch / agent / retry / compaction → no card.
+    if (part.type === 'step-finish') {
+      const sp = part as StepFinishPart;
+      this.turnInputTokens = sp.tokens.input;
+      this.turnOutputTokens = sp.tokens.output;
+      this.turnCacheRead = sp.tokens.cache.read;
+      this.turnCacheWrite = sp.tokens.cache.write;
+      this.turnCost = sp.cost;
+      return;
+    }
+    // file / snapshot / patch / agent / retry / compaction → no card.
   }
 
   private emitToolPart(
@@ -852,6 +937,18 @@ export class SessionEventRouter {
       sessionId: this.sessionId,
       success,
       ...(error ? { error } : {}),
+      ...(this.turnInputTokens || this.turnOutputTokens || this.turnCost
+        ? {
+            tokenUsage: {
+              input: this.turnInputTokens,
+              output: this.turnOutputTokens,
+              cacheRead: this.turnCacheRead,
+              cacheCreation: this.turnCacheWrite,
+              ...(this.turnModelContextWindow && this.turnModelContextWindow > 0 ? { modelContextWindow: this.turnModelContextWindow } : {}),
+            },
+            totalCostUsd: this.turnCost,
+          }
+        : {}),
     };
     this.callbacks.emitStreamEnd(end);
     // Notify SessionManager so it can mark the session inactive between

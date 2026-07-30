@@ -31,6 +31,13 @@ const VOICE_HISTORY_MAX_MESSAGES = 80;
 const VOICE_HISTORY_KEEP_MESSAGES = 40;
 const VOICE_COMPACTION_SUMMARY_CHARS = 4000;
 
+interface PendingCodingChange {
+  id: string;
+  prompt: string;
+  spokenSummary: string;
+  createdAt: number;
+}
+
 export interface VoiceSessionCallbacks {
   emit: (event: VoiceAgentEvent) => void;
   /** Persist audio bytes and return an id the PWA fetches on demand. */
@@ -76,6 +83,8 @@ export class VoiceIntermediarySession {
   private readonly liveCards = new Map<string, Card>();
   private readonly liveNotes: string[] = [];
   private pendingPlaybackNote = '';
+  private pendingCodingChange: PendingCodingChange | null = null;
+  private codingChangeSeq = 0;
 
   constructor(opts: VoiceSessionOpts) {
     this.sessionId = opts.sessionId;
@@ -276,8 +285,11 @@ export class VoiceIntermediarySession {
         });
         if (this.closed) return;
 
-        // Speak any narration the model produced this round (interim or final).
-        if (result.content) await this.speak(result.content, meta);
+        // If the model requested tools, run them before speaking. This prevents
+        // "I'll do it" preambles from playing before the dispatch/proposal state
+        // actually exists; the next LLM round can narrate the tool result.
+        const shouldSpeakNow = result.content && result.toolCalls.length === 0;
+        if (shouldSpeakNow) await this.speak(result.content, meta);
 
         const assistantMessage: ChatMessage = {
           role: 'assistant',
@@ -305,6 +317,9 @@ export class VoiceIntermediarySession {
             bridge: this.bridge,
             liveContext: this.liveContextForBrain(),
             readVoiceHistory: (opts) => this.history.read(opts),
+            proposeCodingChange: (proposal) => this.proposeCodingChange(proposal),
+            confirmCodingChange: (proposalId, opts) => this.confirmCodingChange(proposalId, opts),
+            cancelCodingChange: (reason) => this.cancelCodingChange(reason),
             emitAction: (summary) => this.cb.emit({ kind: 'action', summary }),
           });
           voiceEventLogger.log({
@@ -473,6 +488,52 @@ export class VoiceIntermediarySession {
     return lines.slice(-12).join('\n');
   }
 
+  private proposeCodingChange(proposal: { prompt: string; spokenSummary: string }): string {
+    const id = `voice-change-${++this.codingChangeSeq}`;
+    this.pendingCodingChange = {
+      id,
+      prompt: proposal.prompt,
+      spokenSummary: proposal.spokenSummary,
+      createdAt: Date.now(),
+    };
+    void this.history.appendRuntimeEvent('coding_change.proposed', {
+      proposalId: id,
+      promptChars: proposal.prompt.length,
+      spokenSummary: proposal.spokenSummary,
+    });
+    return id;
+  }
+
+  private confirmCodingChange(proposalId?: string, opts: { interrupt?: boolean } = {}): string {
+    const pending = this.pendingCodingChange;
+    if (!pending) return 'error: no pending coding change proposal to confirm';
+    if (proposalId && proposalId !== pending.id) {
+      return `error: pending proposal is ${pending.id}, not ${proposalId}`;
+    }
+    const ok = this.bridge.sendUserMessageToSession(this.sessionId, pending.prompt, { interrupt: opts.interrupt === true });
+    if (!ok) return 'error: the coding session is not running';
+    this.pendingCodingChange = null;
+    this.cb.emit({ kind: 'action', summary: `已送出：${pending.spokenSummary}` });
+    void this.history.appendRuntimeEvent('coding_change.confirmed', {
+      proposalId: pending.id,
+      promptChars: pending.prompt.length,
+      ageMs: Date.now() - pending.createdAt,
+    });
+    return 'confirmed and sent (may queue until the current turn boundary)';
+  }
+
+  private cancelCodingChange(reason?: string): string {
+    const pending = this.pendingCodingChange;
+    if (!pending) return 'no pending coding change proposal';
+    this.pendingCodingChange = null;
+    void this.history.appendRuntimeEvent('coding_change.cancelled', {
+      proposalId: pending.id,
+      reason,
+    });
+    this.cb.emit({ kind: 'action', summary: `取消待確認修改：${pending.spokenSummary}` });
+    return reason ? `cancelled pending proposal: ${reason}` : 'cancelled pending proposal';
+  }
+
   private trimLiveCards(): void {
     while (this.liveCards.size > LIVE_CARD_CAP) {
       const oldest = this.liveCards.keys().next().value as string | undefined;
@@ -574,8 +635,24 @@ export function buildSystemPrompt(memory: string): string {
     '- 查詢類動作（讀卡片、查狀態）保持安靜，只有真正要告訴使用者的結論才開口。',
     '- 你可以 no-op：當系統事件或 live card 沒有值得打擾使用者的新資訊時，回覆空內容且不要呼叫工具；這代表保持安靜。',
     '',
+    'grounding 規則：',
+    '- 事實性、回顧性、狀態性、原因判斷、承接前文的回答必須有依據；依據可以來自目前對話、壓縮摘要、memory、live cards、get_status、read_cards、read_voice_history。',
+    '- 當使用者說「剛剛」「前面」「那個」「繼續」「照剛才」「我們剛才」「你記得嗎」或類似模糊指代，而目前 context 不足時，先安靜使用 read_voice_history 補齊，不要憑印象猜。',
+    '- 當使用者問目前做到哪、是否完成、為什麼失敗、測試/commit/錯誤/工具結果時，先用 get_status 或 read_cards 取得依據，再摘要回答。',
+    '- 如果查不到足夠紀錄，就明說「我目前沒有看到足夠紀錄」，不要補腦。',
+    '- 新指令、簡短確認、互動提示、權限確認流程中的固定問句可以直接回覆，不需要每句都查紀錄。',
+    '',
+    'coding 指令 dispatch 規則：',
+    '- read-only 調查、檢查、查 log、讀 code、整理狀態、提出方案，用 investigate_with_coding_agent 直接送出；送出前不要先講一段承諾，送出後再簡短告知「我正在查…」。',
+    '- 會修改檔案、commit、restart、delete、deploy、migration、改資料庫、放寬權限、或其他有副作用的工作，先用 propose_coding_change 建立待確認 proposal；不要直接送出。',
+    '- proposal 要用一句短話請使用者確認，例如「確認一下：我要送出修改首頁高度並跑相關測試。要執行嗎？」',
+    '- 使用者確認後，才用 confirm_coding_change 送出；送出前不要再講 preamble，工具成功後只說「已送出」或「已排隊」。',
+    '- 使用者否定、改方向、加限制時，不要 confirm；取消或替換 proposal，重新確認。',
+    '- 不要用口頭「我會做」取代工具呼叫；如果該送出就 call tool，如果該確認就建立 proposal。',
+    '',
     '你能做的事（工具）：',
-    '- send_to_coding_agent：把使用者的意思轉成內部執行指令；對使用者呈現為你正在處理。stop_coding_agent：停止目前工作。',
+    '- investigate_with_coding_agent：直接派發 read-only 調查。propose_coding_change / confirm_coding_change / cancel_coding_change：處理修改類工作的確認流程。stop_coding_agent：停止目前工作。',
+    '- send_to_coding_agent：舊相容工具，只有已確認且可回復的 steering 才使用；一般情況優先用上面的拆分工具。',
     '- get_status / read_cards：掌握現況、詮釋目前工作進度。',
     '- read_voice_history：查詢你自己的語音對話 JSONL 歷史，包含被壓縮移出目前 context window 的內容。',
     '- respond_to_permission：回覆權限提示；set_permission_mode：調整自主度。',
