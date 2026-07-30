@@ -56,6 +56,7 @@ function sortProviders<T extends ButtonGroupOption>(
     'openai', 'anthropic', 'google', 'groq', 'mistral', 'cohere',
     'deepinfra', 'fireworks', 'perplexity', 'together', 'openrouter',
     'cerebras', 'nvidia', 'huggingface', 'voyage', 'replicate',
+    'opencode',
   ]);
 
   if (lastChosenProviders.length === 0) {
@@ -254,11 +255,12 @@ export function ButtonGroup<T extends ButtonGroupOption>({
 
   // Two-level mode: provider dropdown + model buttons
   if (hasGroups) {
+    const sortedGroups = sortProviders(groups, lastChosenProviders ?? []);
     const [selectedProvider, setSelectedProvider] = useState<string>(
-      groups[0]?.[0]?.providerId ?? '',
+      sortedGroups[0]?.[0]?.providerId ?? '',
     );
 
-    const selectedProviderGroup = groups.find((g) => g[0]?.providerId === selectedProvider) ?? groups[0];
+    const selectedProviderGroup = sortedGroups.find((g) => g[0]?.providerId === selectedProvider) ?? sortedGroups[0];
     const selectedProviderName = selectedProviderGroup?.[0]?.providerName ?? '';
 
     return (
@@ -271,13 +273,13 @@ export function ButtonGroup<T extends ButtonGroupOption>({
               : 'text-sm text-slate-300 mb-1.5',
           )}>{providerLabel ?? 'Model Provider'}</p>
           <ProviderDropdown
-            groups={groups}
+            groups={sortedGroups}
             selectedProviderId={selectedProvider}
             onSelect={(providerId) => {
               setSelectedProvider(providerId);
               onProviderSelect?.(providerId);
               // Auto-select the previously selected model in this group, or first model
-              const group = groups.find((g) => g[0]?.providerId === providerId);
+              const group = sortedGroups.find((g) => g[0]?.providerId === providerId);
               const currentInGroup = group?.find((o) => o.value === value);
               const firstInGroup = group?.[0];
               if (currentInGroup || firstInGroup) {
