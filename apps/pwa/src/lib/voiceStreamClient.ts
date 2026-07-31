@@ -346,7 +346,6 @@ export class VoiceStreamSession {
     // Reuse a stream already grabbed at connect() (the Safari ICE-gate path);
     // otherwise acquire it now (the prewarmed path that didn't need it up front).
     const stream = this.mediaStream ?? (await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS));
-    this.mediaStream = stream;
 
     const ctx = new AudioContext();
     this.audioCtx = ctx;
@@ -365,6 +364,13 @@ export class VoiceStreamSession {
     const sink = ctx.createGain();
     sink.gain.value = 0;
     node.connect(sink).connect(ctx.destination);
+
+    // Only assign the stream after AudioContext work succeeds. If any step
+    // above throws, the mic must NOT stay captured — the state would remain
+    // 'ready' while the mic keeps recording, and the user would have no way
+    // to stop it (voice.recording stays false, so a second press calls
+    // startListening() again instead of stopListening()).
+    this.mediaStream = stream;
 
     this.dcSend({ t: 'start', config: this.config, sampleRate: VOICE_PCM_SAMPLE_RATE });
     this.setState('recording');
