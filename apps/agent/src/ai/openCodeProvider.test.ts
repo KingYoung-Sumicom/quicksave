@@ -47,8 +47,10 @@ import {
   buildOpenCodeRequestHeaders,
   buildOpenCodeServerEnv,
   buildOpenCodeUrl,
+  getOpenCodeServer,
   getOpenCodeEventSessionId,
   OPENCODE_SANDBOX_MCP_NAME,
+  _resetOpenCodeServer,
 } from './openCodeServer.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -75,13 +77,13 @@ function makeMockServer(): OpenCodeServer & {
   creates: Array<Record<string, unknown>>;
   prompts: Array<{ sessionID: string; directory: string; body: any }>;
   aborts: Array<{ sessionID: string; directory: string }>;
-  replies: Array<{ requestID: string; directory: string; reply: string }>;
+  replies: Array<{ requestID: string; directory: string; reply: string; message?: string }>;
   messages: Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>;
 } {
   const creates: Array<Record<string, unknown>> = [];
   const prompts: Array<{ sessionID: string; directory: string; body: any }> = [];
   const aborts: Array<{ sessionID: string; directory: string }> = [];
-  const replies: Array<{ requestID: string; directory: string; reply: string }> = [];
+  const replies: Array<{ requestID: string; directory: string; reply: string; message?: string }> = [];
   const messages: Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }> = [];
   return {
     creates, prompts, aborts, replies, messages,
@@ -90,7 +92,9 @@ function makeMockServer(): OpenCodeServer & {
     deleteSession: async () => undefined,
     sendPromptAsync: async (sessionID, directory, body) => { prompts.push({ sessionID, directory, body }); },
     abortSession: async (sessionID, directory) => { aborts.push({ sessionID, directory }); },
-    replyPermission: async (requestID, directory, reply) => { replies.push({ requestID, directory, reply }); },
+    replyPermission: async (requestID, directory, reply, message) => {
+      replies.push({ requestID, directory, reply, ...(message ? { message } : {}) });
+    },
     getMessages: async () => messages,
     getHealth: async () => ({ healthy: true, version: '1.18.4' }),
     listProviders: async () => ({
@@ -260,6 +264,33 @@ describe('OpenCode HTTP protocol helpers', () => {
       'content-type': 'application/json',
       authorization: `Basic ${Buffer.from('quicksave:secret').toString('base64')}`,
     });
+  });
+
+  it('serializes a rejection rationale in the permission reply body', async () => {
+    _resetOpenCodeServer();
+    const server = getOpenCodeServer();
+    const request = vi.fn(async () => true);
+    (server as any).req = request;
+
+    await server.replyPermission(
+      'per_reason',
+      '/workspace/a',
+      'reject',
+      'Use the read-only API instead',
+    );
+
+    expect(request).toHaveBeenCalledWith(
+      '/permission/per_reason/reply',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          reply: 'reject',
+          message: 'Use the read-only API instead',
+        }),
+      },
+      { directory: '/workspace/a' },
+    );
+    _resetOpenCodeServer();
   });
 });
 
@@ -972,12 +1003,15 @@ describe('SessionEventRouter', () => {
     }]);
   });
 
-  it('rejects permission when handlePermissionRequest returns deny', async () => {
+  it('sends the user-provided reason when rejecting permission', async () => {
     const server = makeMockServer();
     const cb = new StreamCardBuilder('ses_t', '/p');
     const cbs: ProviderCallbacks = {
       ...makeCallbacks(),
-      handlePermissionRequest: async () => ({ action: 'deny' }),
+      handlePermissionRequest: async () => ({
+        action: 'deny',
+        response: 'Use the read-only API instead',
+      }),
     };
     const router = new SessionEventRouter('ses_t', cb, cbs, server, { directory: '/p' });
     router.handle({
@@ -990,7 +1024,12 @@ describe('SessionEventRouter', () => {
       },
     });
     await new Promise((r) => setImmediate(r));
-    expect(server.replies).toEqual([{ requestID: 'per_xyz', directory: '/p', reply: 'reject' }]);
+    expect(server.replies).toEqual([{
+      requestID: 'per_xyz',
+      directory: '/p',
+      reply: 'reject',
+      message: 'Use the read-only API instead',
+    }]);
   });
 
   it('auto mode replies once without prompting Quicksave', async () => {

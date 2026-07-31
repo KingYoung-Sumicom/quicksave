@@ -493,6 +493,14 @@ class OpenCodeServer {
     );
   }
 
+  async compactSession(sessionID: string, directory: string): Promise<void> {
+    await this.req<unknown>(
+      `/api/session/${encodeURIComponent(sessionID)}/compact`,
+      { method: 'POST' },
+      { directory },
+    );
+  }
+
   async sendPromptAsync(sessionID: string, directory: string, opts: PromptOpts): Promise<void> {
     const parts = buildOpenCodePromptParts(opts.text, opts.attachments);
     const body: Record<string, unknown> = {
@@ -544,10 +552,14 @@ class OpenCodeServer {
     requestID: string,
     directory: string,
     reply: 'once' | 'always' | 'reject',
+    message?: string,
   ): Promise<void> {
     await this.req<unknown>(`/permission/${encodeURIComponent(requestID)}/reply`, {
       method: 'POST',
-      body: JSON.stringify({ reply }),
+      body: JSON.stringify({
+        reply,
+        ...(message ? { message } : {}),
+      }),
     }, { directory });
   }
 

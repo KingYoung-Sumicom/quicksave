@@ -435,6 +435,11 @@ before subscribing and sending the new prompt. The priming pass emits no cards;
 later `session.diff`, text-start, and idle syncs therefore add only tool calls
 that appeared after the resume boundary.
 
+OpenCode permission replies use the current
+`POST /permission/{requestID}/reply` shape. A denial sends both
+`reply: "reject"` and the PWA's optional rationale as `message`, so the active
+model turn receives the user's explanation as part of the rejected tool call.
+
 To add a new provider, implement this interface and include it in the array passed to the `SessionManager` constructor:
 ```typescript
 const sessionManager = new SessionManager([

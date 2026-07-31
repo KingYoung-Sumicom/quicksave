@@ -798,34 +798,6 @@ class OpenCodeAgentProvider extends BaseAgentProvider {
       },
     ];
   }
-
-  renderStatusChips(
-    values: Record<string, unknown>,
-    onChange: (key: string, value: unknown) => void,
-    opts: RenderChipsOpts,
-  ): React.ReactNode[] {
-    const nodes: React.ReactNode[] = [];
-    const model = (values['model'] as string | undefined) || '(default)';
-
-    // Model: read-only chip (no dropdown — set at session start only)
-    nodes.push(
-      <span
-        key="model"
-        className="flex items-center gap-1 px-2 py-1 rounded-md bg-slate-700/60 text-slate-400 text-xs"
-        title="Model is set at session start and cannot be changed mid-session"
-      >
-        {model}
-      </span>,
-    );
-
-    // Other settings (permissionMode etc.) use base chip rendering
-    for (const desc of this.getSettings()) {
-      if (desc.key === 'model') continue;
-      nodes.push(...this.renderSettingChip(desc, values, onChange, opts));
-    }
-
-    return nodes;
-  }
 }
 
 // ── Pi ────────────────────────────────────────────────────────────────────────

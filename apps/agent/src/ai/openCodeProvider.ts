@@ -431,6 +431,14 @@ export class OpenCodeProvider implements CodingAgentProvider {
     return { sessionId: opencodeSessionId, session };
   }
 
+  // ── compact ──────────────────────────────────────────────────────────────────
+
+  /** Compact an existing opencode session using the dedicated API. */
+  async compact(sessionId: string, opts?: { cwd?: string; directory?: string }): Promise<void> {
+    const directory = opts?.cwd ?? opts?.directory ?? process.cwd();
+    await this.server.compactSession(sessionId, directory);
+  }
+
   // ── resumeSession ───────────────────────────────────────────────────────────
 
   async resumeSession(
@@ -937,7 +945,12 @@ export class SessionEventRouter {
         toolUseId: requestID,
       });
       const reply: 'once' | 'always' | 'reject' = decision.action === 'allow' ? 'once' : 'reject';
-      await this.server.replyPermission(requestID, this.directory, reply);
+      await this.server.replyPermission(
+        requestID,
+        this.directory,
+        reply,
+        decision.action === 'deny' ? decision.response : undefined,
+      );
     } catch (err) {
       console.error('[openCode] permission handling failed', err);
       await this.server.replyPermission(requestID, this.directory, 'reject').catch(() => {});

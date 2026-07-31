@@ -683,6 +683,20 @@ export class SessionManager extends EventEmitter {
     attachments?: readonly Attachment[];
     interruptCurrentTurn?: boolean;
   }): Promise<string> {
+    // Compact: delegate to provider's native compact API instead of sending
+    // '/compact' as a user prompt.
+    if (opts.prompt === '/compact') {
+      const provider = this.getProvider(this.resolveAgentId(opts.sessionId, opts.cwd, opts.agent));
+      if (provider.compact) {
+        console.log(`[session-manager] compacting session=${opts.sessionId.slice(0, 8)} via provider.compact`);
+        await provider.compact(opts.sessionId, { cwd: opts.cwd });
+        this.emitSessionUpdate(opts.sessionId);
+        return opts.sessionId;
+      }
+      // Fallback: send /compact as a prompt (legacy behaviour)
+      console.log(`[session-manager] provider has no compact method, falling back to prompt`);
+    }
+
     const existing = this.sessions.get(opts.sessionId);
     const agentId = this.resolveAgentId(opts.sessionId, opts.cwd, opts.agent);
 
