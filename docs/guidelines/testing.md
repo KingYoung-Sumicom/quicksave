@@ -46,11 +46,18 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
    - Race conditions (e.g., clearCards before snapshotCutoff)
    - State after reconnect (e.g., pubsub subscriptions lost)
    - Missing or out-of-order events
+   - Streaming providers that emit both deltas and final snapshots: assert the
+     same text/reasoning part is rendered once, user-role parts are ignored,
+     and pending tool calls are patched when later snapshots populate inputs
    - Provider interrupt/cancel paths where the control request is sent or
      acknowledged but no terminal `completed`/`interrupted` notification arrives;
      assert the session still settles locally and the next prompt can start
    - Memory-mode provider cold resume: persisted card ids must not collide
      with new turn card ids, and history snapshots should remain chronological
+   - REST history-backed provider cold resume: seed dedupe state before the new
+     prompt, then assert the first sync emits only current-turn tool calls
+   - Permission adapters: assert a typed denial rationale survives the PWA,
+     SessionManager, and provider-specific rejection payload
    - Paginated card history that mixes persisted and active cards: assert the
      next page uses an agent-issued source cursor, not rendered `cards.length`.
      Include one-source-to-many-card expansion, partially persisted active

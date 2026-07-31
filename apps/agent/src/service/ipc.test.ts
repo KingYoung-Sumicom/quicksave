@@ -96,6 +96,21 @@ describe('IPC Server + Client', () => {
     expect(result.echoed).toEqual({ message: 'hello' });
   });
 
+  it('serves pre-registered daemon methods to the first client', async () => {
+    // Regression: runDaemon used to listen before registering its daemon
+    // methods. A client reaching the fixed socket through stale service state
+    // could complete hello, then receive METHOD_NOT_FOUND for pairing info.
+    const sock = socketPath();
+    server = new IpcServer({ version: PACKAGE_VERSION });
+    server.registerMethod('get-pairing-info', () => ({ agentId: 'ready' }));
+    await server.listen(sock);
+
+    const { client } = await createClient(sock);
+    await expect(client.request('get-pairing-info')).resolves.toEqual({
+      agentId: 'ready',
+    });
+  });
+
   it('multiple clients can connect', async () => {
     const sock = await createServer();
     const { client: c1 } = await createClient(sock);

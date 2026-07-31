@@ -10,7 +10,7 @@
 // `opencode serve` instance over HTTP + SSE; see `openCodeServer.ts` for the
 // shared lifecycle.
 //
-// Event → Card translation (verified against opencode 1.14):
+// Event → Card translation (verified against opencode 1.14 and 1.18):
 //   • `message.part.updated` is the source of truth for each part. We use it
 //     in preference to `message.part.delta` so the implementation is
 //     idempotent and easy to test (Card emission per Part snapshot, not per
@@ -19,8 +19,8 @@
 //       - ReasoningPart → thinkingBlock
 //       - ToolPart      → toolUse / toolResult (depending on state.status)
 //     Step / file / patch / snapshot parts are ignored — they have no card.
-//   • `session.idle` is the canonical end-of-turn signal. We emit `streamEnd`
-//     from there.
+//   • `session.status { type: "idle" }` is the current end-of-turn signal;
+//     `session.idle` remains supported for older OpenCode releases.
 //   • `session.error` becomes a visible `[opencode error]` card and a failed
 //     `streamEnd`.
 //   • `permission.asked` is forwarded to the PWA via the usual
@@ -28,7 +28,7 @@
 //     `/permission/{id}/reply`.
 
 import { execSync } from 'child_process';
-import { existsSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import type { Attachment, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
@@ -39,8 +39,10 @@ import type {
   StartSessionOpts,
   ResumeSessionOpts,
   ProbeResult,
+  PermissionLevel,
 } from './provider.js';
 import { getOpenCodeServer, type OpenCodeEvent, type OpenCodeServer } from './openCodeServer.js';
+import { QUICKSAVE_SESSION_ID_ARG } from './openCodeMcpPlugin.js';
 
 // ── Part types we translate (verified from opencode 1.14 OpenAPI Part union) ──
 
@@ -80,7 +82,21 @@ interface ToolPart extends BasePart {
   };
 }
 
-type AnyPart = TextPart | ReasoningPart | ToolPart | BasePart;
+interface StepFinishPart extends BasePart {
+  type: 'step-finish';
+  reason: string;
+  snapshot?: string;
+  cost: number;
+  tokens: {
+    total: number;
+    input: number;
+    output: number;
+    reasoning: number;
+    cache: { read: number; write: number };
+  };
+}
+
+type AnyPart = TextPart | ReasoningPart | ToolPart | StepFinishPart | BasePart;
 
 // ── Model id validation ──────────────────────────────────────────────────────
 //
@@ -100,6 +116,60 @@ export function isValidOpenCodeModelId(model: string | undefined | null): model 
 export function parseModelId(model: string): { providerID: string; modelID: string } {
   const idx = model.indexOf('/');
   return { providerID: model.slice(0, idx), modelID: model.slice(idx + 1) };
+}
+
+// OpenCode exposes lowercase tool IDs and uses camelCase for several argument
+// names. Quicksave's card registry follows the Claude-style canonical names
+// and snake_case file-edit inputs, so normalize at the provider boundary.
+const OPENCODE_TOOL_NAMES: Record<string, string> = {
+  bash: 'Bash',
+  shell: 'Bash',
+  read: 'Read',
+  edit: 'Edit',
+  write: 'Write',
+  grep: 'Grep',
+  glob: 'Glob',
+  webfetch: 'WebFetch',
+  websearch: 'WebSearch',
+  skill: 'Skill',
+  task: 'Agent',
+  todowrite: 'TodoWrite',
+  todoread: 'TodoWrite',
+  question: 'AskUserQuestion',
+  lsp: 'LSP',
+  apply_patch: 'ApplyPatch',
+  plan: 'ExitPlanMode',
+  external_directory: 'ExternalDirectory',
+};
+
+export function normalizeOpenCodeToolName(toolName: string): string {
+  return OPENCODE_TOOL_NAMES[toolName] ?? toolName;
+}
+
+export function normalizeOpenCodeToolInput(
+  toolName: string,
+  input: Record<string, unknown>,
+): Record<string, unknown> {
+  const normalized = { ...input };
+  // OpenCode's host hook adds this only to route workspace-scoped MCP calls
+  // to the correct Quicksave session. It is transport metadata, not card data.
+  delete normalized[QUICKSAVE_SESSION_ID_ARG];
+  const aliases: Array<[string, string]> = [
+    ['filePath', 'file_path'],
+    ['oldString', 'old_string'],
+    ['newString', 'new_string'],
+    ['replaceAll', 'replace_all'],
+    ['patchText', 'patch_text'],
+  ];
+  for (const [from, to] of aliases) {
+    if (normalized[to] === undefined && normalized[from] !== undefined) {
+      normalized[to] = normalized[from];
+    }
+  }
+  if (toolName === 'skill' && normalized.skill === undefined && normalized.name !== undefined) {
+    normalized.skill = normalized.name;
+  }
+  return normalized;
 }
 
 // ── Binary resolution (still needed for the `opencode models` probe + serve spawn) ──
@@ -143,20 +213,31 @@ export interface TurnConfig {
 
 export class OpencodeSession implements ProviderSession {
   /** opencode server's `ses_…` id. Stable across turns; we use it for
-   *  follow-up prompts and abort. */
+    *  follow-up prompts and abort. */
   readonly opencodeSessionId: string;
   private server: OpenCodeServer;
   private router: SessionEventRouter | null = null;
   private dispose: () => void = () => {};
   private aliveFlag = true;
+  private readonly directory: string;
   private turnConfig: TurnConfig;
   private cb: StreamCardBuilder | null = null;
   private callbacks: ProviderCallbacks | null = null;
+  /** Model context window for building ContextUsageBreakdown. */
+  private modelContextWindow: number | undefined;
 
-  constructor(opencodeSessionId: string, server: OpenCodeServer, turnConfig: TurnConfig) {
+  constructor(
+    opencodeSessionId: string,
+    server: OpenCodeServer,
+    directory: string,
+    turnConfig: TurnConfig,
+    modelContextWindow?: number,
+  ) {
     this.opencodeSessionId = opencodeSessionId;
     this.server = server;
+    this.directory = directory;
     this.turnConfig = turnConfig;
+    this.modelContextWindow = modelContextWindow;
   }
 
   /** @internal wires the per-session SSE consumer state for follow-ups. */
@@ -186,8 +267,9 @@ export class OpencodeSession implements ProviderSession {
     }
     this.cb.startNewTurn();
     this.router.resetForNewTurn();
-    this.server.sendPromptAsync(this.opencodeSessionId, {
+    this.server.sendPromptAsync(this.opencodeSessionId, this.directory, {
       text: prompt,
+      attachments,
       model: this.turnConfig.model,
       ...(this.turnConfig.variant ? { variant: this.turnConfig.variant } : {}),
       ...(this.turnConfig.system ? { system: this.turnConfig.system } : {}),
@@ -198,19 +280,41 @@ export class OpencodeSession implements ProviderSession {
   }
 
   interrupt(): void {
-    void this.server.abortSession(this.opencodeSessionId).catch(() => {});
+    void this.server.abortSession(this.opencodeSessionId, this.directory).catch(() => {});
   }
 
   kill(): void {
     if (!this.aliveFlag) return;
     this.aliveFlag = false;
-    void this.server.abortSession(this.opencodeSessionId).catch(() => {});
+    void this.server.abortSession(this.opencodeSessionId, this.directory).catch(() => {});
     this.dispose();
+  }
+
+  setPermissionMode(level: PermissionLevel): void {
+    this.router?.setPermissionLevel(level);
   }
 
   get alive(): boolean { return this.aliveFlag; }
 
-  async getContextUsage(): Promise<ContextUsageBreakdown | null> { return null; }
+  async getContextUsage(): Promise<ContextUsageBreakdown | null> {
+    if (!this.router) return null;
+    const totals = this.router.getTurnTokenTotals();
+    if (!totals.inputTokens && !totals.outputTokens) return null;
+    const modelContextWindow = this.modelContextWindow ?? totals.modelContextWindow;
+    if (!modelContextWindow || modelContextWindow <= 0) return null;
+    const totalTokens = totals.inputTokens;
+    return {
+      categories: [
+        { name: 'OpenCode input', tokens: totals.inputTokens, color: 'claude' },
+      ],
+      totalTokens,
+      maxTokens: modelContextWindow,
+      rawMaxTokens: modelContextWindow,
+      autocompactSource: 'opencode-last-turn-input',
+      percentage: (totalTokens / modelContextWindow) * 100,
+      model: this.turnConfig.model?.modelID,
+    };
+  }
 }
 
 // ── Provider ─────────────────────────────────────────────────────────────────
@@ -219,6 +323,8 @@ export class OpenCodeProvider implements CodingAgentProvider {
   readonly id = 'opencode' as const;
   readonly historyMode = 'memory' as const;
   readonly label = 'OpenCode';
+
+  constructor(private readonly server: OpenCodeServer = getOpenCodeServer()) {}
 
   async probeProvider(): Promise<ProbeResult> {
     const hasCli = this.isCliAvailable();
@@ -230,46 +336,40 @@ export class OpenCodeProvider implements CodingAgentProvider {
       supportsResume: true,
       supportsSandbox: false,
       supportsStreaming: true,
+      supportsAttachments: true,
+      supportedAttachmentKinds: ['image', 'pdf', 'text'],
     };
-    return { capabilities, models: hasCli ? this.listAvailableModels() : [] };
-  }
-
-  // Read models from user's opencode.json. Previously shelled out to
-  // `opencode models`, but every invocation leaks an 8MB libopentui.so into
-  // /tmp (sst/opencode#4605, #13479; open since Feb, no fix in sight).
-  // Trade-off: built-in `opencode/*` free models only show up if the user
-  // adds them to their own config.
-  private listAvailableModels(): Array<{ id: string; name: string }> {
-    return Array.from(this.readConfigModelNames().entries()).map(([id, name]) => ({ id, name }));
-  }
-
-  private readConfigModelNames(): Map<string, string> {
-    const names = new Map<string, string>();
+    if (!hasCli) return { capabilities, models: [] };
     try {
-      const home = process.env.HOME ?? '';
-      const configPath = join(home, '.config', 'opencode', 'opencode.json');
-      if (!existsSync(configPath)) return names;
-      const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-      const providers = config?.provider as
-        | Record<string, { models?: Record<string, { name?: string }> }>
-        | undefined;
-      if (!providers) return names;
-      for (const [providerID, cfg] of Object.entries(providers)) {
-        for (const [modelID, modelCfg] of Object.entries(cfg.models ?? {})) {
-          const full = `${providerID}/${modelID}`;
-          names.set(full, modelCfg.name ?? full);
-        }
-      }
-    } catch { /* ignore */ }
-    return names;
+      const [health, providerResult] = await Promise.all([
+        this.server.getHealth(),
+        this.server.listProviders(process.cwd()),
+      ]);
+      const connected = new Set(providerResult.connected ?? []);
+      const models = providerResult.all.flatMap((provider) => {
+        if (!connected.has(provider.id)) return [];
+        return Object.entries(provider.models ?? {}).map(([modelKey, model]) => {
+          const modelID = model.id || modelKey;
+          const id = `${provider.id}/${modelID}`;
+          return { id, name: model.name || id, providerId: provider.id, providerName: provider.name };
+        });
+      });
+      return { version: health.version, capabilities, models };
+    } catch (err) {
+      console.warn('[openCode] failed to query server health/providers:', err);
+      return { version: this.getCliVersion(), capabilities, models: [] };
+    }
   }
 
   private isCliAvailable(): boolean {
+    return this.getCliVersion() !== undefined;
+  }
+
+  private getCliVersion(): string | undefined {
     try {
       const bin = getOpenCodeBin();
-      execSync(`"${bin}" --version`, { timeout: 3_000, encoding: 'utf-8' });
-      return true;
-    } catch { return false; }
+      return execSync(`"${bin}" --version`, { timeout: 3_000, encoding: 'utf-8' }).trim();
+    } catch { return undefined; }
   }
 
   // ── startSession ────────────────────────────────────────────────────────────
@@ -286,7 +386,7 @@ export class OpenCodeProvider implements CodingAgentProvider {
           : 'opencode requires an explicit model id (provider/model)',
       );
     }
-    const server = getOpenCodeServer();
+    const server = this.server;
     const { id: opencodeSessionId } = await server.createSession({
       directory: opts.cwd,
       agent: 'build',
@@ -297,7 +397,7 @@ export class OpenCodeProvider implements CodingAgentProvider {
       ...(opts.reasoningEffort ? { variant: opts.reasoningEffort } : {}),
       ...(opts.systemPrompt ? { system: opts.systemPrompt } : {}),
     };
-    const session = new OpencodeSession(opencodeSessionId, server, turnConfig);
+    const session = new OpencodeSession(opencodeSessionId, server, opts.cwd, turnConfig, opts.contextWindow);
     cardBuilder.updateSessionId(opencodeSessionId);
 
     if (opts.prompt || (opts.attachments && opts.attachments.length > 0)) {
@@ -305,21 +405,45 @@ export class OpenCodeProvider implements CodingAgentProvider {
     }
     cardBuilder.startNewTurn();
 
-    const router = new SessionEventRouter(opencodeSessionId, cardBuilder, callbacks, server);
+    const router = new SessionEventRouter(opencodeSessionId, cardBuilder, callbacks, server, {
+      directory: opts.cwd,
+      permissionLevel: opts.permissionLevel,
+    });
     const unsub = server.subscribe(opencodeSessionId, (ev) => router.handle(ev));
     session._setTurnWiring(cardBuilder, callbacks, router, unsub);
 
-    server.sendPromptAsync(opencodeSessionId, {
-      text: opts.prompt,
-      model: turnConfig.model,
-      ...(turnConfig.variant ? { variant: turnConfig.variant } : {}),
-      ...(turnConfig.system ? { system: turnConfig.system } : {}),
-    }).catch((err: Error) => {
-      console.error('[openCode] prompt_async failed:', err);
-      router.finalize(false, err.message);
+    // Give SessionManager one macrotask to persist the new registry entry.
+    // The first UpdateSessionStatus MCP call can otherwise beat registration.
+    setImmediate(() => {
+      if (!session.alive) return;
+      server.sendPromptAsync(opencodeSessionId, opts.cwd, {
+        text: opts.prompt,
+        attachments: opts.attachments,
+        model: turnConfig.model,
+        ...(turnConfig.variant ? { variant: turnConfig.variant } : {}),
+        ...(turnConfig.system ? { system: turnConfig.system } : {}),
+      }).catch((err: Error) => {
+        console.error('[openCode] prompt_async failed:', err);
+        router.finalize(false, err.message);
+      });
     });
 
     return { sessionId: opencodeSessionId, session };
+  }
+
+  // ── compact ──────────────────────────────────────────────────────────────────
+
+  /** Compact an existing opencode session using the dedicated API. */
+  async compact(sessionId: string, opts?: { cwd?: string; directory?: string; model?: string }): Promise<void> {
+    const directory = opts?.cwd ?? opts?.directory ?? process.cwd();
+    if (!opts?.model || !isValidOpenCodeModelId(opts.model)) {
+      throw new Error(
+        opts?.model
+          ? `opencode compact requires the session model (provider/model), got "${opts.model}"`
+          : 'opencode compact requires the session model (provider/model)',
+      );
+    }
+    await this.server.compactSession(sessionId, directory, parseModelId(opts.model));
   }
 
   // ── resumeSession ───────────────────────────────────────────────────────────
@@ -336,7 +460,7 @@ export class OpenCodeProvider implements CodingAgentProvider {
           : 'opencode requires an explicit model id (provider/model)',
       );
     }
-    const server = getOpenCodeServer();
+    const server = this.server;
     // `opts.sessionId` from SessionManager IS opencode's ses_… (we returned
     // it from startSession). Reuse it directly — no createSession.
     const opencodeSessionId = opts.sessionId;
@@ -346,7 +470,7 @@ export class OpenCodeProvider implements CodingAgentProvider {
       ...(opts.reasoningEffort ? { variant: opts.reasoningEffort } : {}),
       ...(opts.systemPrompt ? { system: opts.systemPrompt } : {}),
     };
-    const session = new OpencodeSession(opencodeSessionId, server, turnConfig);
+    const session = new OpencodeSession(opencodeSessionId, server, opts.cwd, turnConfig, opts.contextWindow);
     cardBuilder.updateSessionId(opencodeSessionId);
 
     if (opts.prompt || (opts.attachments && opts.attachments.length > 0)) {
@@ -354,12 +478,23 @@ export class OpenCodeProvider implements CodingAgentProvider {
     }
     cardBuilder.startNewTurn();
 
-    const router = new SessionEventRouter(opencodeSessionId, cardBuilder, callbacks, server);
+    const router = new SessionEventRouter(opencodeSessionId, cardBuilder, callbacks, server, {
+      directory: opts.cwd,
+      permissionLevel: opts.permissionLevel,
+    });
+    // A cold resume creates a fresh router whose in-memory dedupe sets are
+    // empty, while OpenCode's message endpoint returns the entire session.
+    // Prime those sets before starting the new turn so the first REST tool
+    // sync does not replay every historical tool call into the chat.
+    await router.primeHistoricalState().catch((err) => {
+      console.warn('[openCode] failed to prime resume history:', err);
+    });
     const unsub = server.subscribe(opencodeSessionId, (ev) => router.handle(ev));
     session._setTurnWiring(cardBuilder, callbacks, router, unsub);
 
-    server.sendPromptAsync(opencodeSessionId, {
+    server.sendPromptAsync(opencodeSessionId, opts.cwd, {
       text: opts.prompt,
+      attachments: opts.attachments,
       model: turnConfig.model,
       ...(turnConfig.variant ? { variant: turnConfig.variant } : {}),
       ...(turnConfig.system ? { system: turnConfig.system } : {}),
@@ -380,38 +515,133 @@ export class SessionEventRouter {
   private readonly cb: StreamCardBuilder;
   private readonly callbacks: ProviderCallbacks;
   private readonly server: OpenCodeServer;
+  private readonly directory: string;
+  private permissionLevel: PermissionLevel;
   private finalized = false;
   /** Track which parts we've already emitted as cards so re-emits become
    *  no-ops. opencode publishes both `delta` and `updated` events for the
-   *  same Part; we listen only to `updated` but the same part can update
-   *  many times (e.g. tool state transitions). For text parts we coalesce
-   *  by holding only the latest snapshot. */
-  private toolCards = new Set<string>(); // callIDs we've emitted toolUse for
+   *  same Part, and tool state can transition from empty pending input to a
+   *  completed snapshot with final arguments. */
+  private toolCards = new Map<string, string>(); // callID → latest normalized tool/input fingerprint
   private toolResults = new Set<string>(); // callIDs we've emitted toolResult for
   private textPartIds = new Map<string, string>(); // partID → emitted text (for dedupe)
-  private reasoningPartIds = new Set<string>();
+  private reasoningPartIds = new Map<string, string>();
+  private partKinds = new Map<string, 'text' | 'reasoning'>();
+  private messageRoles = new Map<string, 'user' | 'assistant'>();
+  // Per-turn token tracking from step-finish parts.
+  private turnInputTokens = 0;
+  private turnOutputTokens = 0;
+  private turnCacheRead = 0;
+  private turnCacheWrite = 0;
+  private turnCost = 0;
+  private turnModelContextWindow: number | undefined;
 
-  constructor(sessionId: string, cb: StreamCardBuilder, callbacks: ProviderCallbacks, server: OpenCodeServer) {
+  constructor(
+    sessionId: string,
+    cb: StreamCardBuilder,
+    callbacks: ProviderCallbacks,
+    server: OpenCodeServer,
+    opts: { directory?: string; permissionLevel?: PermissionLevel } = {},
+  ) {
     this.sessionId = sessionId;
     this.cb = cb;
     this.callbacks = callbacks;
     this.server = server;
+    this.directory = opts.directory ?? process.cwd();
+    this.permissionLevel = opts.permissionLevel ?? 'default';
+  }
+
+  setPermissionLevel(level: PermissionLevel): void {
+    this.permissionLevel = level;
+  }
+
+  getPermissionLevel(): PermissionLevel {
+    return this.permissionLevel;
+  }
+
+  /** Seed session-wide REST dedupe state without emitting cards.
+   *
+   * OpenCode's message endpoint is a full-session snapshot. A newly-created
+   * router on cold resume must learn which tool calls already belong to the
+   * persisted history before the new prompt starts; otherwise the first
+   * session.diff/text/idle sync treats every old tool part as new.
+   */
+  async primeHistoricalState(): Promise<void> {
+    const messages = await this.server.getMessages(this.sessionId, this.directory);
+    for (const msg of messages) {
+      const id = msg.info?.id;
+      const role = msg.info?.role;
+      if (typeof id === 'string' && (role === 'user' || role === 'assistant')) {
+        this.messageRoles.set(id, role);
+      }
+      for (const part of msg.parts) {
+        if (part?.type !== 'tool') continue;
+        const callID = part.callID as string | undefined;
+        const rawToolName = part.tool as string | undefined;
+        if (!callID || !rawToolName) continue;
+        const state = (part.state ?? {}) as {
+          status?: string;
+          input?: Record<string, unknown>;
+        };
+        const toolName = normalizeOpenCodeToolName(rawToolName);
+        const input = normalizeOpenCodeToolInput(rawToolName, state.input ?? {});
+        this.toolCards.set(callID, JSON.stringify([toolName, input]));
+        if (state.status === 'completed' || state.status === 'error') {
+          this.toolResults.add(callID);
+        }
+      }
+    }
+  }
+
+  /** Expose current turn token totals so the session can build a
+    * ContextUsageBreakdown on demand. */
+  getTurnTokenTotals(): {
+    inputTokens: number;
+    outputTokens: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: number;
+    modelContextWindow: number | undefined;
+  } {
+    return {
+      inputTokens: this.turnInputTokens,
+      outputTokens: this.turnOutputTokens,
+      cacheRead: this.turnCacheRead,
+      cacheWrite: this.turnCacheWrite,
+      cost: this.turnCost,
+      modelContextWindow: this.turnModelContextWindow,
+    };
   }
 
   /** Reset turn-scoped state so the next opencode turn streams into a fresh
-   *  set of cards. Per-session disposers and the SSE subscription stay live. */
+    * set of cards. Per-session disposers and the SSE subscription stay live. */
   resetForNewTurn(): void {
     this.finalized = false;
-    this.toolCards.clear();
-    this.toolResults.clear();
-    this.textPartIds.clear();
-    this.reasoningPartIds.clear();
+    // Keep message/part/call dedupe state for the whole OpenCode session.
+    // REST returns historical messages on every sync, so clearing these maps
+    // here would replay prior-turn tools into the new turn.
     this.deltaBuf.clear();
+    // Reset per-turn token counters.
+    this.turnInputTokens = 0;
+    this.turnOutputTokens = 0;
+    this.turnCacheRead = 0;
+    this.turnCacheWrite = 0;
+    this.turnCost = 0;
+    this.turnModelContextWindow = undefined;
   }
 
   handle(ev: OpenCodeEvent): void {
     if (this.finalized) return;
     switch (ev.type) {
+      case 'message.updated': {
+        const info = (ev.properties as {
+          info?: { id?: string; role?: string };
+        }).info;
+        if (info?.id && (info.role === 'user' || info.role === 'assistant')) {
+          this.messageRoles.set(info.id, info.role);
+        }
+        break;
+      }
       case 'message.part.delta':
         // Streaming text/reasoning chunks. opencode does NOT also emit a
         // terminal `message.part.updated` for these (verified empirically),
@@ -435,6 +665,11 @@ export class SessionEventRouter {
       case 'session.idle':
         this.finalize(true);
         break;
+      case 'session.status': {
+        const status = (ev.properties as { status?: { type?: string } }).status;
+        if (status?.type === 'idle') this.finalize(true);
+        break;
+      }
       case 'session.error': {
         const err = (ev.properties as { error?: { data?: { message?: string }; name?: string } }).error;
         const msg = err?.data?.message || err?.name || 'opencode session error';
@@ -476,11 +711,20 @@ export class SessionEventRouter {
 
   /** Pull message parts from REST and emit cards for any tool parts we
    *  haven't seen yet. Idempotent — relies on `toolCards` / `toolResults`
-   *  sets keyed by callID to dedup against earlier syncs and against any
+   *  state keyed by callID to dedup against earlier syncs and against any
    *  future SSE-delivered `message.part.updated` events. */
   private async syncToolPartsFromRest(): Promise<void> {
     if (this.finalized) return;
-    const messages = await this.server.getMessages(this.sessionId);
+    const messages = await this.server.getMessages(this.sessionId, this.directory);
+    // Capture roles before handling parts. OpenCode publishes the user's
+    // prompt as a normal text part too; it must not become assistant output.
+    for (const msg of messages) {
+      const id = msg.info?.id;
+      const role = msg.info?.role;
+      if (typeof id === 'string' && (role === 'user' || role === 'assistant')) {
+        this.messageRoles.set(id, role);
+      }
+    }
     // Finalize any open text card BEFORE emitting tool cards so they
     // interleave in the correct chat order (text → tool → follow-up text).
     let flushedText = false;
@@ -491,26 +735,14 @@ export class SessionEventRouter {
         const toolName = part.tool as string | undefined;
         if (!callID || !toolName) continue;
         const state = (part.state ?? {}) as { status?: string; input?: Record<string, unknown>; output?: string; error?: string };
-        const input = state.input ?? {};
         if (!this.toolCards.has(callID)) {
           if (!flushedText) {
             const fin = this.cb.finalizeAssistantText();
             if (fin) this.callbacks.emitCardEvent(fin);
             flushedText = true;
           }
-          this.toolCards.add(callID);
-          this.callbacks.onToolUse?.(this.sessionId, toolName, input);
-          this.callbacks.emitCardEvent(this.cb.toolUse(toolName, input, callID));
         }
-        if ((state.status === 'completed' || state.status === 'error') && !this.toolResults.has(callID)) {
-          this.toolResults.add(callID);
-          const isError = state.status === 'error';
-          const content = isError
-            ? (state.error || state.output || 'Tool failed')
-            : (state.output ?? '');
-          const evt = this.cb.toolResult(callID, content, isError);
-          if (evt) this.callbacks.emitCardEvent(evt);
-        }
+        this.emitToolPart(toolName, callID, state);
       }
     }
   }
@@ -519,20 +751,31 @@ export class SessionEventRouter {
    *  partID and emit per-card for clean bubble grouping. */
   private deltaBuf = new Map<string, { field: 'text' | 'reasoning'; text: string; cardOpen: boolean }>();
 
-  private handleDelta(p: { partID: string; field: string; delta: string }): void {
+  private handleDelta(p: { partID: string; field: string; delta: string; messageID?: string }): void {
     if (!p.partID || !p.delta) return;
     if (p.field !== 'text' && p.field !== 'reasoning') return;
+    if (p.messageID && this.messageRoles.get(p.messageID) === 'user') return;
+    const field = this.partKinds.get(p.partID) ?? p.field;
     let state = this.deltaBuf.get(p.partID);
     if (!state) {
-      state = { field: p.field, text: '', cardOpen: false };
+      state = { field, text: '', cardOpen: false };
       this.deltaBuf.set(p.partID, state);
+    } else if (state.field !== field) {
+      state.field = field;
     }
     state.text += p.delta;
     if (state.field === 'text') {
+      // OpenCode commonly emits "\n\n" as a separator between reasoning,
+      // tool calls, and visible assistant text. Keep leading whitespace
+      // buffered until this part contains something Markdown can display;
+      // otherwise a following tool call finalizes a blank assistant card.
+      if (!state.cardOpen && !state.text.trim()) return;
+      const openingCard = !state.cardOpen;
       // First chunk for this partID closes any other open text card, then
       // creates a fresh one. Subsequent chunks append to the same card via
       // assistantText() which the StreamCardBuilder coalesces.
-      if (!state.cardOpen) {
+      if (openingCard) {
+        this.flushBufferedReasoning();
         const fin = this.cb.finalizeAssistantText();
         if (fin) this.callbacks.emitCardEvent(fin);
         state.cardOpen = true;
@@ -541,7 +784,9 @@ export class SessionEventRouter {
         // spurious sync at the very first text card of the turn is cheap.
         this.scheduleToolSync();
       }
-      this.callbacks.emitCardEvent(this.cb.assistantText(p.delta));
+      const text = openingCard ? state.text : p.delta;
+      this.callbacks.emitCardEvent(this.cb.assistantText(text));
+      this.textPartIds.set(p.partID, state.text);
     }
     // reasoning deltas: buffer until we see a terminator. opencode doesn't
     // emit a per-part `complete` event, so we flush reasoning on the next
@@ -551,11 +796,8 @@ export class SessionEventRouter {
   /** Flush buffered reasoning chunks (collected via handleDelta) into a
    *  single thinkingBlock per part. Idempotent. */
   private flushPendingReasoning(): void {
+    this.flushBufferedReasoning();
     for (const [partID, state] of this.deltaBuf) {
-      if (state.field === 'reasoning' && state.text) {
-        this.callbacks.emitCardEvent(this.cb.thinkingBlock(state.text));
-        state.text = '';
-      }
       if (state.field === 'text' && state.cardOpen) {
         const fin = this.cb.finalizeAssistantText();
         if (fin) this.callbacks.emitCardEvent(fin);
@@ -565,11 +807,24 @@ export class SessionEventRouter {
     }
   }
 
+  private flushBufferedReasoning(): void {
+    for (const [partID, state] of this.deltaBuf) {
+      if (state.field !== 'reasoning' || !state.text) continue;
+      const prev = this.reasoningPartIds.get(partID) ?? '';
+      const delta = state.text.startsWith(prev) ? state.text.slice(prev.length) : state.text;
+      if (delta) this.callbacks.emitCardEvent(this.cb.thinkingBlock(delta));
+      this.reasoningPartIds.set(partID, state.text);
+      state.text = '';
+    }
+  }
+
   private handlePart(part: AnyPart): void {
     if (!part || typeof part.type !== 'string') return;
+    if (this.messageRoles.get(part.messageID) === 'user') return;
     if (part.type === 'text') {
       const tp = part as TextPart;
-      if (tp.ignored || !tp.text) return;
+      this.partKinds.set(tp.id, 'text');
+      if (tp.ignored || !tp.text.trim()) return;
       // We may see the same partID several times as the model streams; replay
       // only the latest snapshot, replacing whatever we showed before. The
       // CardBuilder doesn't support in-place text replace, so the practical
@@ -599,31 +854,61 @@ export class SessionEventRouter {
     }
     if (part.type === 'reasoning') {
       const rp = part as ReasoningPart;
-      if (!rp.text || this.reasoningPartIds.has(rp.id)) return;
-      this.reasoningPartIds.add(rp.id);
-      this.callbacks.emitCardEvent(this.cb.thinkingBlock(rp.text));
+      this.partKinds.set(rp.id, 'reasoning');
+      if (!rp.text) return;
+      const prev = this.reasoningPartIds.get(rp.id) ?? '';
+      if (prev === rp.text) return;
+      const delta = rp.text.startsWith(prev) ? rp.text.slice(prev.length) : rp.text;
+      this.reasoningPartIds.set(rp.id, rp.text);
+      const buffered = this.deltaBuf.get(rp.id);
+      if (buffered?.field === 'reasoning') buffered.text = '';
+      if (delta) this.callbacks.emitCardEvent(this.cb.thinkingBlock(delta));
       return;
     }
     if (part.type === 'tool') {
       const tp = part as ToolPart;
-      const input = (tp.state?.input ?? {}) as Record<string, unknown>;
-      if (!this.toolCards.has(tp.callID)) {
-        this.toolCards.add(tp.callID);
-        this.callbacks.onToolUse?.(this.sessionId, tp.tool, input);
-        this.callbacks.emitCardEvent(this.cb.toolUse(tp.tool, input, tp.callID));
-      }
-      if ((tp.state?.status === 'completed' || tp.state?.status === 'error') && !this.toolResults.has(tp.callID)) {
-        this.toolResults.add(tp.callID);
-        const isError = tp.state.status === 'error';
-        const content = isError
-          ? (tp.state.error || tp.state.output || 'Tool failed')
-          : (tp.state.output ?? '');
-        const evt = this.cb.toolResult(tp.callID, content, isError);
-        if (evt) this.callbacks.emitCardEvent(evt);
-      }
+      this.emitToolPart(tp.tool, tp.callID, tp.state);
       return;
     }
-    // step / file / snapshot / patch / agent / retry / compaction → no card.
+    if (part.type === 'step-finish') {
+      const sp = part as StepFinishPart;
+      this.turnInputTokens = sp.tokens.input;
+      this.turnOutputTokens = sp.tokens.output;
+      this.turnCacheRead = sp.tokens.cache.read;
+      this.turnCacheWrite = sp.tokens.cache.write;
+      this.turnCost = sp.cost;
+      return;
+    }
+    // file / snapshot / patch / agent / retry / compaction → no card.
+  }
+
+  private emitToolPart(
+    rawToolName: string,
+    callID: string,
+    state: { status?: string; input?: Record<string, unknown>; output?: string; error?: string },
+  ): void {
+    const toolName = normalizeOpenCodeToolName(rawToolName);
+    const input = normalizeOpenCodeToolInput(rawToolName, state.input ?? {});
+    const fingerprint = JSON.stringify([toolName, input]);
+    const previous = this.toolCards.get(callID);
+    if (previous === undefined) {
+      this.toolCards.set(callID, fingerprint);
+      this.callbacks.onToolUse?.(this.sessionId, toolName, input);
+      this.callbacks.emitCardEvent(this.cb.toolUse(toolName, input, callID));
+    } else if (previous !== fingerprint) {
+      this.toolCards.set(callID, fingerprint);
+      const evt = this.cb.updateToolUse(callID, toolName, input);
+      if (evt) this.callbacks.emitCardEvent(evt);
+    }
+    if ((state.status === 'completed' || state.status === 'error') && !this.toolResults.has(callID)) {
+      this.toolResults.add(callID);
+      const isError = state.status === 'error';
+      const content = isError
+        ? (state.error || state.output || 'Tool failed')
+        : (state.output ?? '');
+      const evt = this.cb.toolResult(callID, content, isError);
+      if (evt) this.callbacks.emitCardEvent(evt);
+    }
   }
 
   private async handlePermissionAsked(ev: OpenCodeEvent): Promise<void> {
@@ -636,14 +921,30 @@ export class SessionEventRouter {
       id?: string;
       title?: string;
       permission?: string;
+      patterns?: string[];
       metadata?: Record<string, unknown>;
       tool?: { messageID?: string; callID?: string };
       sessionID?: string;
     };
     const requestID = req.id;
     if (!requestID) return;
-    const toolName = req.permission ?? req.title ?? 'permission';
-    const toolInput = (req.metadata ?? {}) as Record<string, unknown>;
+    if (this.permissionLevel === 'auto') {
+      // Match `opencode run --auto`: approve requests that reached "ask"
+      // exactly once. Explicit deny rules are enforced by OpenCode before an
+      // event is emitted and therefore remain effective.
+      await this.server.replyPermission(requestID, this.directory, 'once').catch((err) => {
+        console.error('[openCode] auto-approve permission reply failed', err);
+      });
+      return;
+    }
+    const rawToolName = req.permission ?? req.title ?? 'permission';
+    const toolName = normalizeOpenCodeToolName(rawToolName);
+    const toolInput = normalizeOpenCodeToolInput(rawToolName, {
+      ...(req.metadata ?? {}),
+      ...(req.patterns?.length && req.metadata?.patterns === undefined
+        ? { patterns: req.patterns }
+        : {}),
+    });
     try {
       const decision = await this.callbacks.handlePermissionRequest(this.sessionId, {
         toolName,
@@ -651,10 +952,15 @@ export class SessionEventRouter {
         toolUseId: requestID,
       });
       const reply: 'once' | 'always' | 'reject' = decision.action === 'allow' ? 'once' : 'reject';
-      await this.server.replyPermission(requestID, reply);
+      await this.server.replyPermission(
+        requestID,
+        this.directory,
+        reply,
+        decision.action === 'deny' ? decision.response : undefined,
+      );
     } catch (err) {
       console.error('[openCode] permission handling failed', err);
-      await this.server.replyPermission(requestID, 'reject').catch(() => {});
+      await this.server.replyPermission(requestID, this.directory, 'reject').catch(() => {});
     }
   }
 
@@ -692,6 +998,18 @@ export class SessionEventRouter {
       sessionId: this.sessionId,
       success,
       ...(error ? { error } : {}),
+      ...(this.turnInputTokens || this.turnOutputTokens || this.turnCost
+        ? {
+            tokenUsage: {
+              input: this.turnInputTokens,
+              output: this.turnOutputTokens,
+              cacheRead: this.turnCacheRead,
+              cacheCreation: this.turnCacheWrite,
+              ...(this.turnModelContextWindow && this.turnModelContextWindow > 0 ? { modelContextWindow: this.turnModelContextWindow } : {}),
+            },
+            totalCostUsd: this.turnCost,
+          }
+        : {}),
     };
     this.callbacks.emitStreamEnd(end);
     // Notify SessionManager so it can mark the session inactive between

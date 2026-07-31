@@ -295,9 +295,11 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   private running = false;
   private startingRunTurn = false;
   private prestartedRunTurnId: string | null = null;
+  private autoSteerQueuedAtToolCallInFlight = false;
   private exited = false;
   private readonly turnConsumers = new Map<string, CodexTurnStreamConsumer>();
   private readonly settledTurnIds = new Set<string>();
+  private readonly interruptedTurnIds = new Set<string>();
   private unsubscribeSessionNotifications: (() => void) | null = null;
   private unsubscribeTransportClose: (() => void) | null = null;
 
@@ -429,6 +431,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   interrupt(): void {
     const turnId = this.currentTurnId;
     if (!turnId) return;
+    this.interruptedTurnIds.add(turnId);
     void this.handle.rpc
       .request<unknown>(
         'turn/interrupt',
@@ -730,6 +733,9 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     if (!turnId || this.currentTurnId === turnId) {
       this.currentTurnId = null;
     }
+    if (turnId) {
+      this.interruptedTurnIds.delete(turnId);
+    }
     try {
       await this.cardBuilder.persistCards();
     } catch {
@@ -748,6 +754,39 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     const next = this.pendingTurns.shift()!;
     this.callbacks.onQueueStateChange?.(this.threadId);
     void this.runTurn(next.prompt, next.attachments);
+  }
+
+  private maybeAutoSteerQueuedAtToolCall(notification: { method: string; params: unknown }, turnId: string | null): void {
+    if (
+      this.exited ||
+      this.autoSteerQueuedAtToolCallInFlight ||
+      this.pendingTurns.length === 0 ||
+      !turnId ||
+      this.currentTurnId !== turnId ||
+      this.interruptedTurnIds.has(turnId) ||
+      !isToolCallStartNotification(notification)
+    ) {
+      return;
+    }
+
+    this.autoSteerQueuedAtToolCallInFlight = true;
+    void this.steerFirstQueuedPrompt(turnId)
+      .finally(() => {
+        this.autoSteerQueuedAtToolCallInFlight = false;
+      });
+  }
+
+  private async steerFirstQueuedPrompt(turnId: string): Promise<boolean> {
+    const queued = this.pendingTurns.shift();
+    if (!queued) return false;
+    this.callbacks.onQueueStateChange?.(this.threadId);
+
+    const steered = await this.steerCurrentTurn(queued.prompt, queued.attachments, turnId);
+    if (!steered && !this.exited) {
+      this.pendingTurns.unshift(queued);
+      this.callbacks.onQueueStateChange?.(this.threadId);
+    }
+    return steered;
   }
 
   private closeTurnConsumersAsInterrupted(): void {
@@ -788,6 +827,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       this.observeTokenUsageNotification(notification);
       const turnId = this.ensureTurnConsumerForNotification(notification);
       this.dispatchTurnNotification(notification, turnId);
+      this.maybeAutoSteerQueuedAtToolCall(notification, turnId);
 
       switch (notification.method) {
         case 'thread/goal/updated': {
@@ -1018,6 +1058,22 @@ function notificationTurnId(notification: { method: string; params: unknown }): 
       return typeof candidate === 'string' && candidate.length > 0 ? candidate : null;
     }
   }
+}
+
+function isToolCallStartNotification(notification: { method: string; params: unknown }): boolean {
+  if (notification.method !== 'item/started') return false;
+  if (typeof notification.params !== 'object' || notification.params === null) return false;
+  const item = (notification.params as { item?: unknown }).item;
+  if (typeof item !== 'object' || item === null) return false;
+  const type = (item as { type?: unknown }).type;
+  return (
+    type === 'commandExecution' ||
+    type === 'fileChange' ||
+    type === 'mcpToolCall' ||
+    type === 'dynamicToolCall' ||
+    type === 'webSearch' ||
+    type === 'collabAgentToolCall'
+  );
 }
 
 function shouldCreateTurnConsumerForNotification(method: string): boolean {

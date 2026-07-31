@@ -163,16 +163,11 @@ export async function runDaemon(): Promise<void> {
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let shuttingDown = false;
 
-  // 2. Start IPC server
+  // 2. Create the IPC server. Do not listen yet: a stale service.json can
+  // expose the fixed socket path while this daemon is still initializing.
+  // Listening only after all daemon methods and shutdown handlers are wired
+  // prevents clients from completing hello against a half-ready daemon.
   const ipcServer = new IpcServer({ version: PACKAGE_VERSION });
-
-  try {
-    await ipcServer.listen(socketPath);
-  } catch (err) {
-    console.error('Failed to start IPC server:', err);
-    releaseLock();
-    process.exit(1);
-  }
 
   // 3. Load config and managed repos
   const config = getOrCreateConfig('wss://signal.quicksave.dev');
@@ -697,30 +692,8 @@ export async function runDaemon(): Promise<void> {
     console.error('Connection error:', error.message);
   });
 
-  // Persist ready state — daemon becomes discoverable by CLI clients
-  writeServiceState(serviceState);
-
-  // Start signaling connection (may be slow — all IPC methods already registered above)
-  try {
-    await connection.start();
-    console.log('Signaling connection established');
-  } catch (error) {
-    console.error('Failed to start signaling connection:', error);
-    // Daemon continues running — will retry on reconnect
-  }
-
-  // 6. Heartbeat loop
-  heartbeatTimer = setInterval(() => {
-    serviceState.lastHeartbeatAt = new Date().toISOString();
-    serviceState.peerCount = connection.getPeerCount();
-    writeServiceState(serviceState);
-  }, HEARTBEAT_INTERVAL_MS);
-
-  console.log(`Quicksave daemon started (pid: ${process.pid})`);
-  console.log(`  IPC socket: ${socketPath}`);
-  console.log(`  Agent ID:   ${config.agentId}`);
-
-  // Shutdown handler
+  // Shutdown must be wired before the socket accepts clients. Otherwise a
+  // `shutdown` request received during startup can be acknowledged but lost.
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -754,6 +727,37 @@ export async function runDaemon(): Promise<void> {
   ipcServer.on('shutdown-requested', shutdown);
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+
+  try {
+    await ipcServer.listen(socketPath);
+  } catch (err) {
+    console.error('Failed to start IPC server:', err);
+    releaseLock();
+    process.exit(1);
+  }
+
+  // Persist ready state — daemon becomes discoverable by CLI clients
+  writeServiceState(serviceState);
+
+  // Start signaling connection (may be slow — all IPC methods already registered above)
+  try {
+    await connection.start();
+    console.log('Signaling connection established');
+  } catch (error) {
+    console.error('Failed to start signaling connection:', error);
+    // Daemon continues running — will retry on reconnect
+  }
+
+  // 6. Heartbeat loop
+  heartbeatTimer = setInterval(() => {
+    serviceState.lastHeartbeatAt = new Date().toISOString();
+    serviceState.peerCount = connection.getPeerCount();
+    writeServiceState(serviceState);
+  }, HEARTBEAT_INTERVAL_MS);
+
+  console.log(`Quicksave daemon started (pid: ${process.pid})`);
+  console.log(`  IPC socket: ${socketPath}`);
+  console.log(`  Agent ID:   ${config.agentId}`);
 }
 
 // ---------------------------------------------------------------------------

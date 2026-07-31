@@ -7,7 +7,7 @@ import { FilePathLink } from '../FilePathLink';
 const AUTO_EXPAND_THRESHOLD = 2; // lines
 
 export function WriteToolView({ input, headerSuffix }: { input: Record<string, unknown>; headerSuffix?: ReactNode }) {
-  const filePath = (input.file_path as string) || '';
+  const filePath = (input.file_path as string) || (input.filePath as string) || '';
   const content = (input.content as string) || '';
   const lines = content ? content.split('\n') : [];
   const lineCount = lines.length;

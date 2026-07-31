@@ -24,6 +24,7 @@ import { CodexQuotaBadges } from './chat/CodexQuotaBadges';
 import { StreamingReconnectIndicator } from './chat/StreamingReconnectIndicator';
 import { ToolCallGroupPlaceholder } from './chat/ToolCallGroupPlaceholder';
 import { ToolCallVisibilityChip } from './chat/ToolCallVisibilityChip';
+import { filterRenderableCards, shouldCollapseCard } from './chat/cardCollapse';
 import { AttachmentTray } from './AttachmentTray';
 import { useUiPrefsStore } from '../stores/uiPrefsStore';
 import { getAgentProvider } from '../lib/agentProvider';
@@ -383,15 +384,19 @@ export function ClaudePanel({
     const out: Item[] = [];
     let runCards: typeof cards = [];
     let runStartId: string | null = null;
-    const lastTurnId = [...cards].reverse().find((card) => card.isTurnIntermediate && card.turnId)?.turnId ?? null;
+    // Remove cards whose Markdown renders nothing before grouping. Returning
+    // null from CardRenderer is too late: the outer wrapper still occupies a
+    // `space-y` slot and the card can split adjacent tool-call runs.
+    const renderableCards = filterRenderableCards(cards);
+    const lastTurnId = [...renderableCards].reverse().find((card) => card.isTurnIntermediate && card.turnId)?.turnId ?? null;
     const finalAssistantCardByTurn = new Map<string, string>();
-    for (const card of cards) {
+    for (const card of renderableCards) {
       if (card.type === 'assistant_text' && card.turnId) {
         finalAssistantCardByTurn.set(card.turnId, card.id);
       }
     }
     const isCompletedTurn = (turnId: string): boolean =>
-      completedTurnIds[turnId] === true || cards.some((card) => card.turnId === turnId && card.turnCompleted);
+      completedTurnIds[turnId] === true || renderableCards.some((card) => card.turnId === turnId && card.turnCompleted);
     const shouldCollapseIntermediate = (card: typeof cards[number]): boolean => {
       if (!card.turnId) return false;
       if (isCompletedTurn(card.turnId)) {
@@ -437,20 +442,9 @@ export function ClaudePanel({
       runCards = [];
       runStartId = null;
     };
-    // Keep interactive planning/question tools visible for the user's
-    // hide-tool preference. Completed-turn collapse can still fold them.
-    const ALWAYS_VISIBLE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode', 'TodoWrite']);
-    for (const card of cards) {
-      if (pendingSubmission && card.type === 'user' && card.timestamp >= pendingSubmission.submittedAt - 1000) {
-        const cardAttachmentIds = (card.attachments ?? []).map((attachment) => attachment.id).sort();
-        const pendingAttachmentIds = [...pendingSubmission.attachmentIds].sort();
-        const isPendingCard = card.text === pendingSubmission.prompt
-          && cardAttachmentIds.join(',') === pendingAttachmentIds.join(',');
-        if (isPendingCard) continue;
-      }
+    for (const card of renderableCards) {
       const collapseIntermediate = shouldCollapseIntermediate(card);
-      const collapseToolCall = hideToolCalls && card.type === 'tool_call' && !ALWAYS_VISIBLE_TOOLS.has(card.toolName);
-      if (collapseIntermediate || collapseToolCall) {
+      if (shouldCollapseCard(card, collapseIntermediate, hideToolCalls)) {
         if (runStartId === null) runStartId = card.id;
         runCards.push(card);
       } else {

@@ -6,6 +6,7 @@ import {
   useSessionRightPanelStore,
   selectPanelMode,
   selectFilesPreview,
+  selectArtifactPreview,
   selectFilesRelPath,
   selectGitRepoOverride,
   SESSION_PANEL_MIN,
@@ -20,6 +21,7 @@ import { FileViewerPane } from './files/FilePreviewModal';
 import { RepoView } from './RepoView';
 import { SettingsPanelContent, type SettingsPanelContentProps } from './AgentSettingsDrawer';
 import { Spinner } from './ui/Spinner';
+import { ArtifactPreviewPane } from './chat/ArtifactMessage';
 
 export type SessionOps = Omit<SettingsPanelContentProps, 'onClose' | 'onOpenFiles'>;
 
@@ -61,6 +63,7 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps }: Sessi
   const close = useSessionRightPanelStore((s) => s.close);
   const toggle = useSessionRightPanelStore((s) => s.toggle);
   const setActiveSession = useSessionRightPanelStore((s) => s.setActiveSession);
+  const artifactPreview = useSessionRightPanelStore(selectArtifactPreview);
   const draggingRef = useRef(false);
 
   // Register this session as active; on unmount set null so paddingRight clears.
@@ -112,6 +115,14 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps }: Sessi
 
       {/* Tab header */}
       <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-slate-700 shrink-0 bg-slate-800/80">
+        {mode === 'artifact' && artifactPreview && (
+          <div className="flex items-center gap-1.5 rounded bg-slate-700 px-2.5 py-1 text-xs font-medium text-slate-100">
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h7l5 5v11a2 2 0 01-2 2z" />
+            </svg>
+            Artifact
+          </div>
+        )}
         <PanelTab
           label="Files"
           active={mode === 'files'}
@@ -163,6 +174,9 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps }: Sessi
         {mode === 'files' && <FilesPanel agentId={agentId} cwd={cwd} />}
         {mode === 'git' && <GitPanel agentId={agentId} cwd={cwd} />}
         {mode === 'settings' && <SettingsPanel sessionOps={sessionOps} />}
+        {mode === 'artifact' && artifactPreview && (
+          <ArtifactPreviewPane key={artifactPreview.artifactId} artifact={artifactPreview} />
+        )}
       </div>
     </div>
   );

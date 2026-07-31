@@ -18,6 +18,7 @@ import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { Spinner } from '../ui/Spinner';
 import { MarkdownPreview } from './MarkdownPreview';
 import { CsvViewer, isCsvPath, csvDelimiterFor } from './CsvViewer';
+import { PinchZoomImage } from './PinchZoomImage';
 
 /**
  * Single mount point — App.tsx renders this once. It subscribes to the
@@ -331,13 +332,12 @@ function PreviewContent({
   }
   if (data.kind === 'image' && data.content && data.mimeType) {
     return (
-      <div className="flex min-h-full items-center justify-center p-3 bg-slate-950">
-        <img
-          src={`data:${data.mimeType};base64,${data.content}`}
-          alt={displayPath.split('/').pop() ?? 'Image preview'}
-          className="max-h-[80vh] max-w-full object-contain"
-        />
-      </div>
+      <PinchZoomImage
+        src={`data:${data.mimeType};base64,${data.content}`}
+        alt={displayPath.split('/').pop() ?? 'Image preview'}
+        className="flex min-h-full items-center justify-center bg-slate-950 p-3"
+        imageClassName="max-h-[80vh] max-w-full object-contain"
+      />
     );
   }
   if (renderCsv && data.kind === 'text' && typeof data.content === 'string') {
@@ -356,13 +356,12 @@ function PreviewContent({
   if (renderSvg && data.kind === 'text' && typeof data.content === 'string') {
     const src = `data:image/svg+xml;utf8,${encodeURIComponent(data.content)}`;
     return (
-      <div className="flex items-center justify-center p-4 bg-[length:16px_16px] bg-[linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%),linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%)] bg-[position:0_0,8px_8px]">
-        <img
-          src={src}
-          alt={displayPath.split('/').pop() ?? 'SVG preview'}
-          className="max-w-full max-h-[70vh] object-contain"
-        />
-      </div>
+      <PinchZoomImage
+        src={src}
+        alt={displayPath.split('/').pop() ?? 'SVG preview'}
+        className="flex min-h-full items-center justify-center p-4 bg-[length:16px_16px] bg-[linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%),linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%)] bg-[position:0_0,8px_8px]"
+        imageClassName="max-h-[70vh] max-w-full object-contain"
+      />
     );
   }
   if (highlighted) {

@@ -428,6 +428,18 @@ interface CodingAgentProvider {
 
 **ResumeSessionOpts** — same fields as `StartSessionOpts` minus `cwd` resolution differences; SessionManager handles hot vs cold resume based on `providerSession.alive`, model change, and context window change.
 
+OpenCode is a memory-history provider, but its REST message endpoint returns a
+full-session snapshot on every tool sync. On cold resume, `OpenCodeProvider`
+primes the new event router's tool-call/result dedupe state from that snapshot
+before subscribing and sending the new prompt. The priming pass emits no cards;
+later `session.diff`, text-start, and idle syncs therefore add only tool calls
+that appeared after the resume boundary.
+
+OpenCode permission replies use the current
+`POST /permission/{requestID}/reply` shape. A denial sends both
+`reply: "reject"` and the PWA's optional rationale as `message`, so the active
+model turn receives the user's explanation as part of the rejected tool call.
+
 To add a new provider, implement this interface and include it in the array passed to the `SessionManager` constructor:
 ```typescript
 const sessionManager = new SessionManager([
@@ -918,6 +930,16 @@ identityStore.ts
   getSecretKey() / getSigningSecretKey() / getSigningPublicKey()
   rotateIdentity()  // Generates a new masterSecret → returns the old signing keys for tombstone purposes
   clearAll()        // Clears masterSecret
+
+sessionRightPanelStore.ts
+  activeSessionId: string | null
+  sessionStates: Record<sessionId, {
+    mode: null | 'files' | 'git' | 'settings' | 'artifact'
+    filesRelPath / filesPreview / gitRepoOverride
+    artifactPreview: MarkdownArtifactRef | null
+  }>
+  // Artifact cards stay compact in chat. Opening one stores only its metadata
+  // here; ArtifactPreviewPane fetches bytes on demand through artifact:fetch.
 ```
 
 For the detailed threat model and key derivation see `docs/guidelines/sync-security.en.md`.

@@ -743,7 +743,7 @@ export interface AgentProviderInfo {
   version?: string;
   capabilities: AgentCapabilities;
   /** Provider-specific model list (e.g. opencode's configured vLLM models). */
-  models?: Array<{ id: string; name: string }>;
+  models?: Array<{ id: string; name: string; providerId: string; providerName: string }>;
 }
 
 export interface AgentProbePayload {

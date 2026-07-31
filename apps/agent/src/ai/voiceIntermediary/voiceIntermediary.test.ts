@@ -220,6 +220,49 @@ describe('voice tools', () => {
     expect(actions.join('\n')).not.toContain('coding agent');
   });
 
+  it('investigate_with_coding_agent dispatches read-only work directly', async () => {
+    const { bridge, calls } = makeBridge();
+    const actions: string[] = [];
+    const out = await executeTool(
+      'investigate_with_coding_agent',
+      { prompt: '只讀取檢查 TTS log，不要修改檔案' },
+      ctx(bridge, actions),
+    );
+    expect(out).toBe('investigation dispatched');
+    expect(calls.send).toEqual([
+      { sessionId: 's1', prompt: '只讀取檢查 TTS log，不要修改檔案', interrupt: false },
+    ]);
+    expect(actions).toEqual([expect.stringContaining('開始查')]);
+  });
+
+  it('coding change proposal callbacks require explicit confirmation', async () => {
+    const { bridge } = makeBridge();
+    const actions: string[] = [];
+    let pending: { id: string; prompt: string; spokenSummary: string } | null = null;
+    const base = ctx(bridge, actions);
+    const proposed = await executeTool('propose_coding_change', {
+      prompt: '修改首頁高度並跑測試',
+      spoken_summary: '修改首頁高度並跑相關測試',
+    }, {
+      ...base,
+      proposeCodingChange: (proposal) => {
+        pending = { id: 'p1', prompt: proposal.prompt, spokenSummary: proposal.spokenSummary };
+        return 'p1';
+      },
+    });
+    expect(proposed).toContain('"pending_proposal_id":"p1"');
+    expect(actions).toEqual([expect.stringContaining('等待確認')]);
+
+    const confirmed = await executeTool('confirm_coding_change', {}, {
+      ...base,
+      confirmCodingChange: () => {
+        if (!pending) return 'error: no pending proposal';
+        return `sent ${pending.id}`;
+      },
+    });
+    expect(confirmed).toBe('sent p1');
+  });
+
   it('stop_coding_agent interrupts the turn', async () => {
     const { bridge, calls } = makeBridge();
     const out = await executeTool('stop_coding_agent', {}, ctx(bridge));
@@ -326,6 +369,15 @@ describe('voice system prompt', () => {
     expect(prompt).toContain('預設只講 1 到 3 句');
     expect(prompt).toContain('絕不把長輸出');
     expect(prompt).toContain('不要唸檔名、hash、路徑');
+    expect(prompt).toContain('grounding 規則');
+    expect(prompt).toContain('事實性、回顧性、狀態性、原因判斷、承接前文的回答必須有依據');
+    expect(prompt).toContain('先安靜使用 read_voice_history');
+    expect(prompt).toContain('先用 get_status 或 read_cards');
+    expect(prompt).toContain('我目前沒有看到足夠紀錄');
+    expect(prompt).toContain('coding 指令 dispatch 規則');
+    expect(prompt).toContain('read-only 調查');
+    expect(prompt).toContain('propose_coding_change');
+    expect(prompt).toContain('confirm_coding_change');
   });
 });
 
@@ -406,6 +458,92 @@ describe('VoiceIntermediarySession', () => {
       expect(speak).toMatchObject({ kind: 'speak', text: '它在跑測試，兩個掛了。', audioId: 'audio-xyz' });
       expect(events.some((e) => e.kind === 'state' && e.state === 'thinking')).toBe(true);
       expect(events.at(-1)).toMatchObject({ kind: 'state', state: 'idle' });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('dispatches tool calls before speaking model content from the same response', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'qs-voice-tool-before-speech-'));
+    try {
+      const { bridge: rawBridge, calls } = makeBridge({ cwd });
+      const order: string[] = [];
+      const bridge: VoiceManagerBridge = {
+        ...rawBridge,
+        sendUserMessageToSession: (sessionId, prompt, opts) => {
+          order.push('send');
+          return rawBridge.sendUserMessageToSession(sessionId, prompt, opts);
+        },
+      };
+      const session = new VoiceIntermediarySession({
+        sessionId: 's1',
+        cwd,
+        config: CONFIG,
+        bridge,
+        callbacks: {
+          emit: (e) => {
+            if (e.kind === 'speech-text') order.push(`speech:${e.text}`);
+          },
+          storeAudio: () => 'audio-order',
+        },
+        fetchImpl: scriptedFetch([
+          {
+            content: '我先幫你查。',
+            tool: { name: 'investigate_with_coding_agent', args: { prompt: '只讀取檢查目前錯誤，不要修改檔案' } },
+          },
+          { content: '好，我正在查目前錯誤。' },
+        ]),
+      });
+
+      await session.handleUtterance('幫我查錯誤');
+
+      expect(calls.send).toEqual([
+        { sessionId: 's1', prompt: '只讀取檢查目前錯誤，不要修改檔案', interrupt: false },
+      ]);
+      expect(order[0]).toBe('send');
+      expect(order).not.toContain('speech:我先幫你查。');
+      expect(order).toContain('speech:好，我正在查目前錯誤。');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('requires confirmation before sending a proposed coding change', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'qs-voice-proposal-'));
+    try {
+      const { bridge, calls } = makeBridge({ cwd });
+      const events: VoiceAgentEvent[] = [];
+      const session = new VoiceIntermediarySession({
+        sessionId: 's1',
+        cwd,
+        config: CONFIG,
+        bridge,
+        callbacks: { emit: (e) => events.push(e), storeAudio: () => 'audio-proposal' },
+        fetchImpl: scriptedFetch([
+          {
+            tool: {
+              name: 'propose_coding_change',
+              args: {
+                prompt: '修改首頁高度並跑相關測試',
+                spoken_summary: '修改首頁高度並跑相關測試',
+              },
+            },
+          },
+          { content: '確認一下：我要送出修改首頁高度並跑相關測試。要執行嗎？' },
+          { tool: { name: 'confirm_coding_change' } },
+          { content: '好，已送出。' },
+        ]),
+      });
+
+      await session.handleUtterance('幫我修首頁高度');
+      expect(calls.send).toHaveLength(0);
+      expect(events.some((e) => e.kind === 'speech-text' && e.text.includes('確認一下'))).toBe(true);
+
+      await session.handleUtterance('好');
+      expect(calls.send).toEqual([
+        { sessionId: 's1', prompt: '修改首頁高度並跑相關測試', interrupt: false },
+      ]);
+      expect(events.some((e) => e.kind === 'speech-text' && e.text === '好，已送出。')).toBe(true);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

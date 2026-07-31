@@ -26,7 +26,7 @@ import { clsx } from 'clsx';
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
-export type Option = { value: string; label: string };
+export type Option = { value: string; label: string; providerId?: string; providerName?: string };
 
 export type SettingKind =
   | { kind: 'preset'; options: ReadonlyArray<Option> }
@@ -45,7 +45,9 @@ export interface SettingDescriptor {
 
 export interface AgentDynamicData {
   codexModels?: CodexModelInfo[];
-  opencodeModels?: Array<{ id: string; name: string }>;
+  opencodeModels?: Array<{ id: string; name: string; providerId: string; providerName: string }>;
+  lastChosenProviders?: string[];
+  recordProviderChoice?: (providerId: string) => void;
 }
 
 export interface RenderSettingsOpts {
@@ -299,6 +301,7 @@ abstract class BaseAgentProvider implements AgentProvider {
     // Model picker
     const models = this.getModels(dynamic);
     if (models.length > 0 && !hide.has('model')) {
+      const hasGroups = models.some((m) => m.providerId);
       nodes.push(
         <ButtonGroup
           key="model"
@@ -307,6 +310,10 @@ abstract class BaseAgentProvider implements AgentProvider {
           value={(values['model'] as string) ?? ''}
           onSelect={(m) => onChange('model', m.value)}
           size={opts.mode === 'new-session' ? 'sm' : undefined}
+          providerLabel={hasGroups ? 'Model Provider' : undefined}
+          modelLabel={hasGroups ? 'Model' : undefined}
+          lastChosenProviders={opts.dynamic?.lastChosenProviders}
+          onProviderSelect={(providerId) => opts.dynamic?.recordProviderChoice?.(providerId)}
         />,
       );
     }
@@ -763,7 +770,9 @@ class OpenCodeAgentProvider extends BaseAgentProvider {
   readonly description = 'OpenCode via local vLLM';
   readonly capabilities: AgentCapabilities = {
     hasApiKey: false, hasCli: true, hasPlugin: false,
-    supportsResume: false, supportsSandbox: false, supportsStreaming: true,
+    supportsResume: true, supportsSandbox: false, supportsStreaming: true,
+    supportsAttachments: true,
+    supportedAttachmentKinds: ['image', 'pdf', 'text'],
   };
   readonly features = ['git'] as const;
   readonly defaultModel = '';
@@ -771,7 +780,12 @@ class OpenCodeAgentProvider extends BaseAgentProvider {
   readonly defaultReasoningEffort = '';
 
   getModels(dynamic?: AgentDynamicData): ReadonlyArray<Option> {
-    return (dynamic?.opencodeModels ?? []).map((m) => ({ value: m.id, label: m.name }));
+    return (dynamic?.opencodeModels ?? []).map((m) => ({
+      value: m.id,
+      label: m.name,
+      providerId: m.providerId,
+      providerName: m.providerName,
+    }));
   }
 
   getSettings(): ReadonlyArray<SettingDescriptor> {
@@ -783,34 +797,6 @@ class OpenCodeAgentProvider extends BaseAgentProvider {
         default: 'bypassPermissions',
       },
     ];
-  }
-
-  renderStatusChips(
-    values: Record<string, unknown>,
-    onChange: (key: string, value: unknown) => void,
-    opts: RenderChipsOpts,
-  ): React.ReactNode[] {
-    const nodes: React.ReactNode[] = [];
-    const model = (values['model'] as string | undefined) || '(default)';
-
-    // Model: read-only chip (no dropdown — set at session start only)
-    nodes.push(
-      <span
-        key="model"
-        className="flex items-center gap-1 px-2 py-1 rounded-md bg-slate-700/60 text-slate-400 text-xs"
-        title="Model is set at session start and cannot be changed mid-session"
-      >
-        {model}
-      </span>,
-    );
-
-    // Other settings (permissionMode etc.) use base chip rendering
-    for (const desc of this.getSettings()) {
-      if (desc.key === 'model') continue;
-      nodes.push(...this.renderSettingChip(desc, values, onChange, opts));
-    }
-
-    return nodes;
   }
 }
 

@@ -29,6 +29,12 @@ describe('claudePresets', () => {
       expect(normalizeAgentId('claude-code')).toBe('claude-code');
     });
 
+    it('preserves every current non-legacy provider id', () => {
+      expect(normalizeAgentId('claude-terminal')).toBe('claude-terminal');
+      expect(normalizeAgentId('opencode')).toBe('opencode');
+      expect(normalizeAgentId('pi')).toBe('pi');
+    });
+
     it('returns claude-code for undefined', () => {
       expect(normalizeAgentId(undefined)).toBe('claude-code');
     });

@@ -23,7 +23,10 @@ import { join, dirname } from 'path';
 import { homedir, platform } from 'os';
 import { fileURLToPath } from 'url';
 import { z } from 'zod';
-import { findRegistryPathByCorr } from './sessionRegistryLocator.js';
+import {
+  findRegistryPathByCorr,
+  findRegistryPathBySessionId,
+} from './sessionRegistryLocator.js';
 import { publishMarkdownArtifact } from './artifactStore.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
@@ -44,6 +47,8 @@ const sessionIdHint = readArg('--session-id');
  */
 const corrIdHint = readArg('--corr');
 const includeSandboxBash = !process.argv.includes('--no-sandbox-bash');
+const QUICKSAVE_SESSION_ID_ARG = '_quicksaveSessionId';
+const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
 
 const realCwd = realpathSync(cwd);
 const realHome = realpathSync(process.env.HOME ?? '/');
@@ -173,8 +178,8 @@ if (includeSandboxBash) {
   );
 }
 
-function currentSessionInfo(): { sessionId: string; cwd: string } | null {
-  const path = sessionRegistryPath();
+function currentSessionInfo(explicitSessionId?: string): { sessionId: string; cwd: string } | null {
+  const path = sessionRegistryPath(explicitSessionId);
   if (path && existsSync(path)) {
     try {
       const entry = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
@@ -185,7 +190,8 @@ function currentSessionInfo(): { sessionId: string; cwd: string } | null {
       return null;
     }
   }
-  if (sessionIdHint) return { sessionId: sessionIdHint, cwd };
+  const fallbackSessionId = validSessionId(explicitSessionId) ?? validSessionId(sessionIdHint);
+  if (fallbackSessionId) return { sessionId: fallbackSessionId, cwd: realCwd };
   return null;
 }
 
@@ -199,6 +205,8 @@ server.tool(
   {
     path: z.string().describe('Path to a generated .md/.markdown report inside the project directory. Relative paths resolve from the project cwd.'),
     title: z.string().optional().describe('User-facing report title shown on the artifact card. Defaults to the file name.'),
+    [QUICKSAVE_SESSION_ID_ARG]: z.string().regex(SESSION_ID_RE).optional()
+      .describe('Injected by the Quicksave OpenCode host. Do not set manually.'),
   },
   {
     readOnlyHint: false,
@@ -206,7 +214,7 @@ server.tool(
     openWorldHint: false,
   },
   async (args) => {
-    const session = currentSessionInfo();
+    const session = currentSessionInfo(args[QUICKSAVE_SESSION_ID_ARG]);
     if (!session) {
       return {
         content: [{
@@ -256,11 +264,11 @@ interface StatusSnapshot {
   source: 'stored' | 'unknown';
 }
 
-function readStoredStatus(): StatusSnapshot {
+function readStoredStatus(explicitSessionId?: string): StatusSnapshot {
   const empty: StatusSnapshot = {
     subject: null, stage: null, blocked: null, note: null, pendingMission: null, recentNotes: [], source: 'unknown',
   };
-  const path = sessionRegistryPath();
+  const path = sessionRegistryPath(explicitSessionId);
   if (!path || !existsSync(path)) return empty;
   try {
     const entry = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
@@ -282,6 +290,7 @@ function readStoredStatus(): StatusSnapshot {
 
 /** Resolved registry path, memoized once we successfully locate it via corr. */
 let resolvedRegistryPath: string | null = null;
+const resolvedRegistryPathsBySession = new Map<string, string>();
 
 /**
  * Locate this session's registry file.
@@ -295,9 +304,23 @@ let resolvedRegistryPath: string | null = null;
  * The corr match is exact and 1:1 with this process, so it's safe even when
  * several sessions share a cwd — unlike picking the newest file.
  */
-function sessionRegistryPath(): string | null {
-  if (sessionIdHint) {
-    return join(sessionRegistryDir, encodedCwd, `${sessionIdHint}.json`);
+function validSessionId(value: string | undefined): string | undefined {
+  return value && SESSION_ID_RE.test(value) ? value : undefined;
+}
+
+function sessionRegistryPath(explicitSessionId?: string): string | null {
+  const directSessionId = validSessionId(explicitSessionId) ?? validSessionId(sessionIdHint);
+  if (directSessionId) {
+    const cached = resolvedRegistryPathsBySession.get(directSessionId);
+    if (cached && existsSync(cached)) return cached;
+    const direct = join(sessionRegistryDir, encodedCwd, `${directSessionId}.json`);
+    if (existsSync(direct)) {
+      resolvedRegistryPathsBySession.set(directSessionId, direct);
+      return direct;
+    }
+    const found = findRegistryPathBySessionId(sessionRegistryDir, directSessionId);
+    if (found) resolvedRegistryPathsBySession.set(directSessionId, found);
+    return found;
   }
   if (!corrIdHint) return null;
   if (resolvedRegistryPath && existsSync(resolvedRegistryPath)) return resolvedRegistryPath;
@@ -328,8 +351,8 @@ function writeStoredStatus(args: {
   pendingMissionLabel?: string;
   pendingMissionUntil?: number | string;
   clearPendingMission?: boolean;
-}): void {
-  const path = sessionRegistryPath();
+}, explicitSessionId?: string): void {
+  const path = sessionRegistryPath(explicitSessionId);
   if (!path || !existsSync(path)) return;
 
   let entry: Record<string, unknown>;
@@ -447,6 +470,8 @@ server.tool(
     pendingMissionLabel: z.string().optional().describe('Short label for a long-running task, e.g. "training run"'),
     pendingMissionUntil: z.union([z.number(), z.string()]).optional().describe('Expected completion time as epoch ms or ISO date string'),
     clearPendingMission: z.boolean().optional().describe('Clear the long-running task marker'),
+    [QUICKSAVE_SESSION_ID_ARG]: z.string().regex(SESSION_ID_RE).optional()
+      .describe('Injected by the Quicksave OpenCode host. Do not set manually.'),
   },
   {
     readOnlyHint: false,
@@ -465,9 +490,10 @@ server.tool(
 
     // Codex MCP approval mode "approve" bypasses the daemon permission callback,
     // so this stdio server owns persistence when it has a session-id hint.
-    if (!isDryRun) writeStoredStatus(args);
+    const explicitSessionId = args[QUICKSAVE_SESSION_ID_ARG];
+    if (!isDryRun) writeStoredStatus(args, explicitSessionId);
 
-    const snapshot = readStoredStatus();
+    const snapshot = readStoredStatus(explicitSessionId);
 
     const header = isDryRun
       ? (snapshot.source === 'stored' ? 'Current session status (dry-run read):' : 'No stored status for this session yet.')

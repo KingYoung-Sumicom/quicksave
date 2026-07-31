@@ -78,6 +78,9 @@ export interface ProviderSession {
   interrupt(): void;
   kill(): void | Promise<void>;
   readonly alive: boolean;
+  /** Optional provider-native permission switch. OpenCode uses this to
+   * toggle client-side auto approval without restarting its server session. */
+  setPermissionMode?(level: PermissionLevel): void | Promise<void>;
   /** Optional — `terminalManager` terminal id when this provider owns a PTY
    *  the PWA should render alongside the structured card stream. Only the
    *  `claude-terminal` provider sets this today. SessionManager copies it into
@@ -256,7 +259,7 @@ export interface AgentCapabilities {
 export type ProbeResult = {
   version?: string;
   capabilities: AgentCapabilities;
-  models?: Array<{ id: string; name: string }>;
+  models?: Array<{ id: string; name: string; providerId: string; providerName: string }>;
 };
 
 export interface CodingAgentProvider {
@@ -278,6 +281,11 @@ export interface CodingAgentProvider {
     cardBuilder: StreamCardBuilder,
     callbacks: ProviderCallbacks,
   ): Promise<{ sessionId: string; session: ProviderSession }>;
+
+  /** Optional — compact a session using the provider's native API.
+   *  Called when the user clicks the compact button (prompt === '/compact').
+   *  `model` is the provider/model id the session was spawned with. */
+  compact?(sessionId: string, opts?: { cwd?: string; model?: string }): Promise<void>;
 
   /** Optional capability probe. Providers that omit it advertise only `id`
    *  and `label` in the `availableProviders` list (with zero capabilities). */

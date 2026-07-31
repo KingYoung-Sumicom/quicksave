@@ -29,6 +29,18 @@ vi.mock('../config.js', async (importOriginal) => {
   };
 });
 
+// Handshake probes every registered provider. Keep these handler tests from
+// starting a real `opencode serve`; OpenCode lifecycle is covered separately.
+vi.mock('../ai/openCodeProvider.js', () => ({
+  OpenCodeProvider: vi.fn().mockImplementation(() => ({
+    id: 'opencode' as const,
+    historyMode: 'memory' as const,
+    label: 'OpenCode',
+    startSession: vi.fn(async () => { throw new Error('mocked OpenCode provider'); }),
+    resumeSession: vi.fn(async () => { throw new Error('mocked OpenCode provider'); }),
+  })),
+}));
+
 function withRepo<T extends { repoPath?: string }>(message: T, repoPath: string): T {
   message.repoPath = repoPath;
   return message;

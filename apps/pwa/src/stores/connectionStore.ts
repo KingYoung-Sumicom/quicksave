@@ -46,7 +46,7 @@ interface ConnectionStore {
   agentVersion: string | null;
   latestVersion: string | null;
   codexModels: CodexModelInfo[];
-  opencodeModels: Array<{ id: string; name: string }>;
+  opencodeModels: Array<{ id: string; name: string; providerId: string; providerName: string }>;
   availableProviders: AgentProviderInfo[];
   reconnectAttempt: number | null;
   maxReconnectAttempts: number | null;

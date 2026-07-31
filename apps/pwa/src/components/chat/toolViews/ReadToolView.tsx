@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { FilePathLink } from '../FilePathLink';
 
 export function ReadToolView({ input, headerSuffix }: { input: Record<string, unknown>; headerSuffix?: ReactNode }) {
-  const filePath = (input.file_path as string) || '';
+  const filePath = (input.file_path as string) || (input.filePath as string) || '';
   const details: string[] = [];
   if (input.offset) details.push(`from L${input.offset}`);
   if (input.limit) details.push(`${input.limit} lines`);

@@ -683,6 +683,25 @@ export class SessionManager extends EventEmitter {
     attachments?: readonly Attachment[];
     interruptCurrentTurn?: boolean;
   }): Promise<string> {
+    // Compact: delegate to provider's native compact API instead of sending
+    // '/compact' as a user prompt (a '/compact' prompt is a TUI-only command —
+    // the agent loop never intercepts it, so it only adds a message without
+    // reducing context). On failure, surface the error rather than falling
+    // back to a no-op prompt.
+    const sessionCfg = this.sessionConfigs.get(opts.sessionId);
+    const desiredModel = (sessionCfg?.model as string | undefined)
+      ?? this.preferences.model;
+    if (opts.prompt === '/compact') {
+      const provider = this.getProvider(this.resolveAgentId(opts.sessionId, opts.cwd, opts.agent));
+      if (provider.compact) {
+        console.log(`[session-manager] compacting session=${opts.sessionId.slice(0, 8)} via provider.compact`);
+        await provider.compact(opts.sessionId, { cwd: opts.cwd, model: desiredModel });
+        this.emitSessionUpdate(opts.sessionId);
+        return opts.sessionId;
+      }
+      console.log(`[session-manager] provider ${provider.id} has no compact API — falling back to /compact prompt`);
+    }
+
     const existing = this.sessions.get(opts.sessionId);
     const agentId = this.resolveAgentId(opts.sessionId, opts.cwd, opts.agent);
 
@@ -690,9 +709,6 @@ export class SessionManager extends EventEmitter {
     // session was spawned. The active provider process was started with
     // `--model X` and the auto-compact env var; changing either requires
     // killing it and respawning with the new value.
-    const sessionCfg = this.sessionConfigs.get(opts.sessionId);
-    const desiredModel = (sessionCfg?.model as string | undefined)
-      ?? this.preferences.model;
     const desiredContextWindow = (sessionCfg?.contextWindow as number | undefined)
       ?? this.preferences.contextWindow;
     const modelChanged = existing?.providerSession?.alive
@@ -1121,6 +1137,8 @@ export class SessionManager extends EventEmitter {
         this.emitSessionUpdate(sessionId);
         throw err;
       }
+    } else if (session?.alive && typeof session.setPermissionMode === 'function') {
+      await session.setPermissionMode(level);
     }
 
     if (ps) {
