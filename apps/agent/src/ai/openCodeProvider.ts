@@ -434,9 +434,16 @@ export class OpenCodeProvider implements CodingAgentProvider {
   // ── compact ──────────────────────────────────────────────────────────────────
 
   /** Compact an existing opencode session using the dedicated API. */
-  async compact(sessionId: string, opts?: { cwd?: string; directory?: string }): Promise<void> {
+  async compact(sessionId: string, opts?: { cwd?: string; directory?: string; model?: string }): Promise<void> {
     const directory = opts?.cwd ?? opts?.directory ?? process.cwd();
-    await this.server.compactSession(sessionId, directory);
+    if (!opts?.model || !isValidOpenCodeModelId(opts.model)) {
+      throw new Error(
+        opts?.model
+          ? `opencode compact requires the session model (provider/model), got "${opts.model}"`
+          : 'opencode compact requires the session model (provider/model)',
+      );
+    }
+    await this.server.compactSession(sessionId, directory, parseModelId(opts.model));
   }
 
   // ── resumeSession ───────────────────────────────────────────────────────────

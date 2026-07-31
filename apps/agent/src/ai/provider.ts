@@ -283,8 +283,9 @@ export interface CodingAgentProvider {
   ): Promise<{ sessionId: string; session: ProviderSession }>;
 
   /** Optional — compact a session using the provider's native API.
-   *  Called when the user clicks the compact button (prompt === '/compact'). */
-  compact?(sessionId: string, opts?: { cwd?: string }): Promise<void>;
+   *  Called when the user clicks the compact button (prompt === '/compact').
+   *  `model` is the provider/model id the session was spawned with. */
+  compact?(sessionId: string, opts?: { cwd?: string; model?: string }): Promise<void>;
 
   /** Optional capability probe. Providers that omit it advertise only `id`
    *  and `label` in the `availableProviders` list (with zero capabilities). */

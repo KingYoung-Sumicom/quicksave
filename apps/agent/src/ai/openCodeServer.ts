@@ -493,10 +493,24 @@ class OpenCodeServer {
     );
   }
 
-  async compactSession(sessionID: string, directory: string): Promise<void> {
+  /** Compact a session conversation (summary + prune) via opencode's v1
+   *  `POST /session/{id}/summarize`. The v2 `POST /api/session/{id}/compact`
+   *  endpoint is a server-side stub that always returns 503 "Session compact
+   *  is not available yet" (see V2Session.compact in the opencode server). */
+  async compactSession(
+    sessionID: string,
+    directory: string,
+    model: { providerID: string; modelID: string },
+  ): Promise<void> {
     await this.req<unknown>(
-      `/api/session/${encodeURIComponent(sessionID)}/compact`,
-      { method: 'POST' },
+      `/session/${encodeURIComponent(sessionID)}/summarize`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          providerID: model.providerID,
+          modelID: model.modelID,
+        }),
+      },
       { directory },
     );
   }
