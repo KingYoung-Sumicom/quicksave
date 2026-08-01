@@ -388,6 +388,21 @@ export function ClaudePanel({
     // null from CardRenderer is too late: the outer wrapper still occupies a
     // `space-y` slot and the card can split adjacent tool-call runs.
     const renderableCards = filterRenderableCards(cards);
+    // Hide the user card that matches the pending submission until the ack
+    // arrives. A provider may broadcast its user-card event before the
+    // command response reaches this tab, so temporarily suppress it.
+    const suppressedCardIds = new Set<string>();
+    if (pendingSubmission) {
+      for (const card of renderableCards) {
+        if (
+          card.type === 'user'
+          && card.text === pendingSubmission.prompt
+          && JSON.stringify((card as { attachmentIds?: string[] }).attachmentIds ?? []) === JSON.stringify(pendingSubmission.attachmentIds)
+        ) {
+          suppressedCardIds.add(card.id);
+        }
+      }
+    }
     const lastTurnId = [...renderableCards].reverse().find((card) => card.isTurnIntermediate && card.turnId)?.turnId ?? null;
     const finalAssistantCardByTurn = new Map<string, string>();
     for (const card of renderableCards) {
@@ -443,6 +458,7 @@ export function ClaudePanel({
       runStartId = null;
     };
     for (const card of renderableCards) {
+      if (suppressedCardIds.has(card.id)) continue;
       const collapseIntermediate = shouldCollapseIntermediate(card);
       if (shouldCollapseCard(card, collapseIntermediate, hideToolCalls)) {
         if (runStartId === null) runStartId = card.id;
