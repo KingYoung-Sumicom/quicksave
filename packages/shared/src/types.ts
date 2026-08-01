@@ -1661,19 +1661,23 @@ export interface VoiceRtcIceUpdate {
 }
 
 /**
- * Messages exchanged over the voice DataChannel (JSON, except `audio` which the
- * PWA may send as a binary frame for efficiency). Kept here so PWA and agent
- * agree on the wire shape independent of the bus.
+ * Messages exchanged over the voice DataChannel. TTS uses a negotiated media
+ * track; microphone PCM currently uses binary frames while media-track ingress
+ * remains available behind the `audioTransport` selector.
  */
 export type VoiceDcMessage =
   // PWA → agent: begin an utterance; opens an ASR stream with this config.
-  | { t: 'start'; config: VoiceConfig; sampleRate: number }
+  | { t: 'start'; config: VoiceConfig; sampleRate: number; audioTransport?: 'datachannel' | 'media-track' }
   // PWA → agent: end the utterance; agent commits the audio buffer.
   | { t: 'stop' }
+  // PWA → agent: a transcript-confirmed barge-in should stop outbound TTS.
+  | { t: 'interrupt-playback' }
   // agent → PWA: server-side VAD says the user started/stopped speaking.
   | { t: 'speech'; active: boolean }
   // agent → PWA: incremental (partial) or finalized transcript text.
   | { t: 'transcript'; final: boolean; text: string }
+  // agent → PWA: outbound TTS media started/stopped producing audible frames.
+  | { t: 'playback'; active: boolean; streamId: string }
   // agent → PWA: a non-fatal/fatal error for the current utterance.
   | { t: 'error'; message: string };
 

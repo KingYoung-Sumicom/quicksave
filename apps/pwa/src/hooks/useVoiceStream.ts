@@ -27,6 +27,7 @@ export interface UseVoiceStream {
    *  recording, false if the P2P link couldn't be established. */
   start: () => Promise<boolean>;
   stop: (opts?: { releaseMic?: boolean }) => void;
+  interruptPlayback: () => void;
 }
 
 export function useVoiceStream(
@@ -34,6 +35,8 @@ export function useVoiceStream(
   onFinalText: (text: string) => void,
   onSpeechActivity?: (active: boolean) => void,
   onPartialText?: (text: string) => void,
+  onRemotePlayback?: (active: boolean, streamId: string) => void,
+  transportSessionId?: string,
 ): UseVoiceStream {
   const [state, setState] = useState<VoiceStreamState | 'idle'>('idle');
   const [interim, setInterim] = useState('');
@@ -47,6 +50,8 @@ export function useVoiceStream(
   onSpeechActivityRef.current = onSpeechActivity;
   const onPartialTextRef = useRef(onPartialText);
   onPartialTextRef.current = onPartialText;
+  const onRemotePlaybackRef = useRef(onRemotePlayback);
+  onRemotePlaybackRef.current = onRemotePlayback;
 
   useEffect(() => {
     return () => {
@@ -80,7 +85,7 @@ export function useVoiceStream(
         sessionRef.current.close();
         sessionRef.current = null;
       }
-      const session = new VoiceStreamSession(agentId, crypto.randomUUID(), config, {
+      const session = new VoiceStreamSession(agentId, transportSessionId || crypto.randomUUID(), config, {
         onPartial: (text) => {
           setInterim(text);
           onPartialTextRef.current?.(text);
@@ -90,6 +95,7 @@ export function useVoiceStream(
           if (text) onFinalRef.current(text);
         },
         onSpeechActivity: (active) => onSpeechActivityRef.current?.(active),
+        onRemotePlayback: (active, streamId) => onRemotePlaybackRef.current?.(active, streamId),
         onError: (message) => {
           setInterim('');
           setError(message);
@@ -109,19 +115,41 @@ export function useVoiceStream(
     const result = await connect;
     connectingRef.current = null;
     return result;
-  }, [agentId, state]);
+  }, [agentId, state, transportSessionId]);
 
   const start = useCallback(async (): Promise<boolean> => {
     setError(null);
+    // Create and resume Web Audio before the first await while this call still
+    // belongs to the user's click/tap. Firefox may otherwise suspend a context
+    // created after WebRTC signaling has consumed the transient activation.
+    const captureContext = new AudioContext();
+    try {
+      if (captureContext.state === 'suspended') await captureContext.resume();
+      if (captureContext.state !== 'running') {
+        throw new Error(`Microphone audio context did not start (state: ${captureContext.state}).`);
+      }
+    } catch (error) {
+      void captureContext.close().catch(() => undefined);
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`Could not activate microphone audio: ${reason}`);
+    }
     // Establish on the user gesture with the mic acquired first, so Safari
     // exposes host candidates (the passive prewarm can't grab the mic on iOS).
     const ok = await ensure(true);
-    if (ok) await sessionRef.current?.startUtterance();
+    if (ok) {
+      await sessionRef.current?.startUtterance(captureContext);
+    } else {
+      void captureContext.close().catch(() => undefined);
+    }
     return ok;
   }, [ensure]);
 
   const stop = useCallback((opts: { releaseMic?: boolean } = {}) => {
     sessionRef.current?.stopUtterance(opts);
+  }, []);
+
+  const interruptPlayback = useCallback(() => {
+    sessionRef.current?.interruptPlayback();
   }, []);
 
   return {
@@ -133,5 +161,6 @@ export function useVoiceStream(
     ensure,
     start,
     stop,
+    interruptPlayback,
   };
 }

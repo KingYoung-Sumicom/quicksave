@@ -15,7 +15,8 @@ const mocks = vi.hoisted(() => {
   const busSubscribe = vi.fn(() => () => {});
   const getUserMedia = vi.fn(async () => {
     calls.push('gum');
-    return { getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream;
+    const track = { kind: 'audio', stop: stopTrack };
+    return { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
   });
   return { calls, stopTrack, busCommand, busSubscribe, getUserMedia };
 });
@@ -39,7 +40,11 @@ class FakeRTCPeerConnection {
   onicecandidate: ((e: { candidate: unknown }) => void) | null = null;
   onconnectionstatechange: (() => void) | null = null;
   connectionState = 'new';
+  ontrack: ((e: { track: MediaStreamTrack; streams: MediaStream[] }) => void) | null = null;
   dc: FakeDataChannel | null = null;
+  sender = { replaceTrack: vi.fn(async () => {}) };
+  transceiver = { sender: this.sender };
+  addTransceiver = vi.fn(() => this.transceiver);
   createDataChannel = vi.fn(() => (this.dc = new FakeDataChannel()));
   createOffer = vi.fn(async () => {
     mocks.calls.push('createOffer');
@@ -64,22 +69,39 @@ class FakeRTCPeerConnection {
 let lastPc: FakeRTCPeerConnection | null = null;
 
 class FakeAudioContext {
+  state: AudioContextState = initialAudioContextState;
   destination = {};
   audioWorklet = { addModule: vi.fn(async () => {}) };
-  createMediaStreamSource = vi.fn(() => ({ connect: vi.fn((n: unknown) => n) }));
-  createGain = vi.fn(() => ({ gain: { value: 0 }, connect: vi.fn((n: unknown) => n) }));
+  createMediaStreamSource = vi.fn(() => ({ connect: vi.fn((n: unknown) => n), disconnect: vi.fn() }));
+  createGain = vi.fn(() => ({ gain: { value: 0 }, connect: vi.fn((n: unknown) => n), disconnect: vi.fn() }));
+  resume = vi.fn(async () => {
+    if (resumeError) throw resumeError;
+    this.state = 'running';
+  });
   close = vi.fn(async () => {});
+  constructor() {
+    lastAudioContext = this;
+  }
 }
+
+let initialAudioContextState: AudioContextState = 'running';
+let resumeError: Error | null = null;
+let lastAudioContext: FakeAudioContext | null = null;
 
 class FakeAudioWorkletNode {
   port: { onmessage: ((e: { data: unknown }) => void) | null } = { onmessage: null };
   connect = vi.fn((n: unknown) => n);
+  disconnect = vi.fn();
   constructor(
     public ctx: unknown,
     public name: string,
     public opts: unknown,
-  ) {}
+  ) {
+    lastWorkletNode = this;
+  }
 }
+
+let lastWorkletNode: FakeAudioWorkletNode | null = null;
 
 const CONFIG: VoiceConfig = {
   apiKey: '',
@@ -92,14 +114,24 @@ const CONFIG: VoiceConfig = {
 function makeSession() {
   const states: string[] = [];
   const speech: boolean[] = [];
+  const playback: Array<{ active: boolean; streamId: string }> = [];
   const session = new VoiceStreamSession('agent1', 'sess1', CONFIG, {
     onPartial: () => {},
     onFinal: () => {},
     onSpeechActivity: (active) => speech.push(active),
+    onRemotePlayback: (active, streamId) => playback.push({ active, streamId }),
     onError: () => {},
     onState: (s) => states.push(s),
   });
-  return { session, states, speech };
+  return { session, states, speech, playback };
+}
+
+async function startWithFirstFrame(session: VoiceStreamSession): Promise<void> {
+  const starting = session.startUtterance();
+  for (let i = 0; i < 10 && !lastWorkletNode; i++) await Promise.resolve();
+  expect(lastWorkletNode).not.toBeNull();
+  lastWorkletNode?.port.onmessage?.({ data: new Int16Array([1]).buffer });
+  await starting;
 }
 
 beforeEach(() => {
@@ -111,9 +143,14 @@ beforeEach(() => {
   mocks.getUserMedia.mockClear();
   mocks.stopTrack.mockClear();
   lastPc = null;
+  lastWorkletNode = null;
+  lastAudioContext = null;
+  initialAudioContextState = 'running';
+  resumeError = null;
   mocks.getUserMedia.mockImplementation(async () => {
     mocks.calls.push('gum');
-    return { getTracks: () => [{ stop: mocks.stopTrack }] } as unknown as MediaStream;
+    const track = { kind: 'audio', stop: mocks.stopTrack };
+    return { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream;
   });
 
   Object.defineProperty(globalThis.navigator, 'mediaDevices', {
@@ -123,6 +160,8 @@ beforeEach(() => {
   vi.stubGlobal('RTCPeerConnection', FakeRTCPeerConnection);
   vi.stubGlobal('AudioContext', FakeAudioContext);
   vi.stubGlobal('AudioWorkletNode', FakeAudioWorkletNode);
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
   vi.stubGlobal('URL', {
     ...URL,
     createObjectURL: vi.fn(() => 'blob:fake'),
@@ -132,6 +171,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -178,10 +218,12 @@ describe('VoiceStreamSession.startUtterance', () => {
     const { session } = makeSession();
     await session.connect({ acquireMic: true });
 
-    await session.startUtterance();
+    await startWithFirstFrame(session);
 
     // One acquisition total: the connect-time grab, reused for the utterance.
     expect(mocks.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(lastPc?.addTransceiver).toHaveBeenCalledWith('audio', { direction: 'recvonly' });
+    expect(lastPc?.sender.replaceTrack).not.toHaveBeenCalled();
   });
 
   it('acquires the mic lazily when connect() did not (prewarm path)', async () => {
@@ -189,7 +231,7 @@ describe('VoiceStreamSession.startUtterance', () => {
     await session.connect();
     expect(mocks.getUserMedia).not.toHaveBeenCalled();
 
-    await session.startUtterance();
+    await startWithFirstFrame(session);
 
     expect(mocks.getUserMedia).toHaveBeenCalledTimes(1);
   });
@@ -197,7 +239,7 @@ describe('VoiceStreamSession.startUtterance', () => {
   it('can stop an utterance without releasing the mic stream for continuous listening', async () => {
     const { session } = makeSession();
     await session.connect({ acquireMic: true });
-    await session.startUtterance();
+    await startWithFirstFrame(session);
 
     session.stopUtterance({ releaseMic: false });
 
@@ -205,6 +247,63 @@ describe('VoiceStreamSession.startUtterance', () => {
 
     session.close();
     expect(mocks.stopTrack).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends AudioWorklet PCM over the DataChannel and declares that ingress transport', async () => {
+    const { session } = makeSession();
+    await session.connect({ acquireMic: true });
+    lastPc?.dc?.send.mockClear();
+    await startWithFirstFrame(session);
+
+    const pcm = new Int16Array([100, -100]).buffer;
+    lastWorkletNode?.port.onmessage?.({ data: pcm });
+
+    expect(lastPc?.dc?.send).toHaveBeenCalledWith(expect.any(ArrayBuffer));
+    expect(lastPc?.dc?.send).toHaveBeenCalledWith(JSON.stringify({
+      t: 'start',
+      config: CONFIG,
+      sampleRate: 24_000,
+      audioTransport: 'datachannel',
+    }));
+  });
+
+  it('resumes a suspended AudioContext before accepting the first PCM frame', async () => {
+    initialAudioContextState = 'suspended';
+    const { session, states } = makeSession();
+    await session.connect({ acquireMic: true });
+
+    await startWithFirstFrame(session);
+
+    expect(lastAudioContext?.resume).toHaveBeenCalledTimes(1);
+    expect(lastAudioContext?.state).toBe('running');
+    expect(states).toContain('recording');
+  });
+
+  it('does not report recording when AudioContext resume fails', async () => {
+    initialAudioContextState = 'suspended';
+    resumeError = new DOMException('blocked', 'NotAllowedError');
+    const { session, states } = makeSession();
+    await session.connect({ acquireMic: true });
+
+    await expect(session.startUtterance()).rejects.toThrow('Could not start microphone capture');
+
+    expect(states).not.toContain('recording');
+    expect(mocks.stopTrack).toHaveBeenCalledTimes(1);
+  });
+
+  it('times out and cleans up when the worklet produces no PCM frames', async () => {
+    const { session, states } = makeSession();
+    await session.connect({ acquireMic: true });
+
+    const starting = session.startUtterance();
+    const rejected = expect(starting).rejects.toThrow('produced no audio frames');
+    for (let i = 0; i < 10 && !lastWorkletNode; i++) await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await rejected;
+    expect(states).not.toContain('recording');
+    expect(mocks.stopTrack).toHaveBeenCalledTimes(1);
+    expect(lastAudioContext?.close).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -217,5 +316,58 @@ describe('VoiceStreamSession DataChannel messages', () => {
     lastPc?.dc?.onmessage?.({ data: JSON.stringify({ t: 'speech', active: false }) });
 
     expect(speech).toEqual([true, false]);
+  });
+
+  it('routes remote playback lifecycle messages to the callback', async () => {
+    const { session, playback } = makeSession();
+    await session.connect();
+    lastPc?.ontrack?.({
+      track: { kind: 'audio', enabled: false } as MediaStreamTrack,
+      streams: [{} as MediaStream],
+    });
+
+    lastPc?.dc?.onmessage?.({ data: JSON.stringify({ t: 'playback', active: true, streamId: 'tts-1' }) });
+    await vi.advanceTimersByTimeAsync(0);
+    lastPc?.dc?.onmessage?.({ data: JSON.stringify({ t: 'playback', active: false, streamId: 'tts-1' }) });
+
+    expect(playback).toEqual([
+      { active: true, streamId: 'tts-1' },
+      { active: false, streamId: 'tts-1' },
+    ]);
+    session.close();
+  });
+
+  it('mounts the remote audio element and reports playback only after play() succeeds', async () => {
+    const { session, playback } = makeSession();
+    await session.connect();
+    const track = { kind: 'audio', enabled: false } as MediaStreamTrack;
+    const stream = {} as MediaStream;
+    lastPc?.ontrack?.({ track, streams: [stream] });
+
+    expect(document.body.querySelector('audio[aria-hidden="true"]')).toBeNull();
+
+    lastPc?.dc?.onmessage?.({ data: JSON.stringify({ t: 'playback', active: true, streamId: 'tts-dom' }) });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(track.enabled).toBe(true);
+    expect(document.body.querySelector('audio[aria-hidden="true"]')).not.toBeNull();
+    expect(playback).toContainEqual({ active: true, streamId: 'tts-dom' });
+
+    lastPc?.dc?.onmessage?.({ data: JSON.stringify({ t: 'playback', active: false, streamId: 'tts-dom' }) });
+    expect(document.body.querySelector('audio[aria-hidden="true"]')).toBeNull();
+    expect(HTMLMediaElement.prototype.pause).toHaveBeenCalled();
+
+    session.close();
+    expect(document.body.querySelector('audio[aria-hidden="true"]')).toBeNull();
+  });
+
+  it('sends a control message when confirmed barge-in stops remote playback', async () => {
+    const { session } = makeSession();
+    await session.connect();
+    lastPc?.dc?.send.mockClear();
+
+    session.interruptPlayback();
+
+    expect(lastPc?.dc?.send).toHaveBeenCalledWith(JSON.stringify({ t: 'interrupt-playback' }));
   });
 });
