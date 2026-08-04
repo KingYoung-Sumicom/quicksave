@@ -3,7 +3,7 @@
 import { create } from 'zustand';
 import type { MarkdownArtifactRef } from '@sumicom/quicksave-shared';
 
-export type SessionPanelMode = null | 'files' | 'git' | 'settings' | 'artifact';
+export type SessionPanelMode = null | 'voice' | 'files' | 'git' | 'settings' | 'artifact';
 
 export interface FilesPreview {
   path: string;
@@ -42,7 +42,9 @@ interface SessionRightPanelStore {
   /** Called by SessionRightPanel on mount/unmount to track which session is live. */
   setActiveSession(id: string | null): void;
   /** Toggle a panel tab for the current session. Same tab = close. */
-  toggle(m: 'files' | 'git' | 'settings'): void;
+  toggle(m: 'voice' | 'files' | 'git' | 'settings'): void;
+  /** Open a tab without toggling it closed when it is already active. */
+  open(m: 'voice' | 'files' | 'git' | 'settings'): void;
   /** Close the panel for the current session. */
   close(): void;
   setPanelWidth(w: number): void;
@@ -107,6 +109,13 @@ export const useSessionRightPanelStore = create<SessionRightPanelStore>((set) =>
         filesRelPath: newMode === 'files' ? curr.filesRelPath : '',
       });
     }),
+
+  open: (m) => set((s) => updateSession(s, {
+    mode: m,
+    filesPreview: null,
+    artifactPreview: null,
+    filesRelPath: m === 'files' ? getSession(s).filesRelPath : '',
+  })),
 
   close: () => set((s) => updateSession(s, {
     mode: null,

@@ -10,6 +10,7 @@
  */
 export { VoiceIntermediaryManager } from './manager.js';
 export type { VoiceManagerBridge } from './manager.js';
+export { VoiceIntermediarySupervisor } from './supervisor.js';
 export { VOICE_AGENT_TOOLS, formatCardForBrain } from './tools.js';
 export type { CodingSessionBridge } from './tools.js';
 export { loadMemory, appendMemory } from './memory.js';

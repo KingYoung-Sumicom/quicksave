@@ -100,6 +100,8 @@ import {
   VoiceAgentPlaybackEventResponsePayload,
   VoiceAgentFetchAudioRequestPayload,
   VoiceAgentFetchAudioResponsePayload,
+  VoiceAgentReloadRequestPayload,
+  VoiceAgentReloadResponsePayload,
   AttachmentUploadRequestPayload,
   AttachmentUploadResponsePayload,
   AttachmentCancelRequestPayload,
@@ -180,7 +182,7 @@ import { CommitSummaryService } from '../ai/commitSummary.js';
 import { CommitSummaryCliService, CommitSummaryCliError } from '../ai/commitSummaryCli.js';
 import { CommitSummaryStateStore } from '../ai/commitSummaryStore.js';
 import { SessionManager } from '../ai/sessionManager.js';
-import { VoiceIntermediaryManager } from '../ai/voiceIntermediary/index.js';
+import { VoiceIntermediarySupervisor } from '../ai/voiceIntermediary/index.js';
 import { ClaudeCodeProvider } from '../ai/claudeCodeProvider.js';
 import { ClaudeTerminalProvider } from '../ai/claudeTerminal/index.js';
 import { OpenCodeProvider } from '../ai/openCodeProvider.js';
@@ -311,7 +313,7 @@ export class MessageHandler {
   private claudeService: SessionManager;
   /** Voice intermediary ("AI coworker"). Bound to `claudeService` so its tools
    *  can steer/observe coding sessions; events wired to the bus in `run.ts`. */
-  private voiceIntermediary: VoiceIntermediaryManager;
+  private voiceIntermediary: VoiceIntermediarySupervisor;
   private attachmentStaging: AttachmentStaging = new AttachmentStaging();
   private attachmentGcTimer: NodeJS.Timeout | null = null;
   private pushClient: PushClient | null = null;
@@ -361,7 +363,7 @@ export class MessageHandler {
         new CodexAppServerProvider(),
         new OpenCodeProvider(),
       ]);
-    this.voiceIntermediary = new VoiceIntermediaryManager(this.claudeService);
+    this.voiceIntermediary = new VoiceIntermediarySupervisor(this.claudeService);
     this.codexCacheDir = options?.codexCacheDir ?? join(homedir(), '.codex');
 
     // Load explicit coding paths only (repos and coding paths are independent)
@@ -673,6 +675,7 @@ export class MessageHandler {
       clearInterval(this.attachmentGcTimer);
       this.attachmentGcTimer = null;
     }
+    await this.voiceIntermediary.close();
     await this.claudeService.cleanup();
   }
 
@@ -691,7 +694,7 @@ export class MessageHandler {
 
   /** Exposed so the daemon can republish voice-agent events on the bus and feed
    *  it coding-side permission prompts (see service/run.ts). */
-  getVoiceIntermediary(): VoiceIntermediaryManager {
+  getVoiceIntermediary(): VoiceIntermediarySupervisor {
     return this.voiceIntermediary;
   }
 
@@ -884,6 +887,8 @@ export class MessageHandler {
           return this.handleVoiceAgentPlaybackEvent(message as Message<VoiceAgentPlaybackEventRequestPayload>);
         case 'voice-agent:fetch-audio':
           return this.handleVoiceAgentFetchAudio(message as Message<VoiceAgentFetchAudioRequestPayload>);
+        case 'voice-agent:reload':
+          return this.handleVoiceAgentReload(message as Message<VoiceAgentReloadRequestPayload>);
         case 'session:set-config':
           return this.handleSetSessionConfig(message as Message<SessionSetConfigRequestPayload>);
         case 'session:control-request':
@@ -2607,10 +2612,10 @@ export class MessageHandler {
     }
   }
 
-  private handleVoiceAgentAttach(
+  private async handleVoiceAgentAttach(
     message: Message<VoiceAgentAttachRequestPayload>,
-  ): Message<VoiceAgentAttachResponsePayload> {
-    const { sessionId, config } = message.payload;
+  ): Promise<Message<VoiceAgentAttachResponsePayload>> {
+    const { sessionId, config, clientId } = message.payload;
     voiceEventLogger.log({
       sessionId,
       event: 'voice_agent.attach',
@@ -2625,16 +2630,18 @@ export class MessageHandler {
         ttsVoice: config.ttsVoice,
       },
     });
-    let result: { ok: boolean; active: boolean };
+    let result: VoiceAgentAttachResponsePayload;
     try {
-      result = this.voiceIntermediary.attach(sessionId, config);
+      result = await this.voiceIntermediary.attach(sessionId, config, clientId);
     } catch (err) {
       console.error('[voice-agent:attach] failed:', err);
-      result = { ok: false, active: false };
+      result = { ok: false, active: false, runtime: this.voiceIntermediary.getRuntimeStatus() };
     }
     const response = createMessage<VoiceAgentAttachResponsePayload>('voice-agent:attach:response', {
       ok: result.ok,
       active: result.active,
+      runtime: result.runtime,
+      traceHistory: result.traceHistory,
       error: result.ok ? undefined : 'attach failed',
     });
     response.id = message.id;
@@ -2649,7 +2656,7 @@ export class MessageHandler {
       event: 'voice_agent.detach',
       phase: 'voice_agent',
     });
-    this.voiceIntermediary.detach(message.payload.sessionId);
+    this.voiceIntermediary.detach(message.payload.sessionId, message.payload.clientId);
     const response = createMessage<VoiceAgentDetachResponsePayload>('voice-agent:detach:response', { ok: true });
     response.id = message.id;
     return response;
@@ -2694,10 +2701,10 @@ export class MessageHandler {
     return response;
   }
 
-  private handleVoiceAgentFetchAudio(
+  private async handleVoiceAgentFetchAudio(
     message: Message<VoiceAgentFetchAudioRequestPayload>,
-  ): Message<VoiceAgentFetchAudioResponsePayload> {
-    const stored = this.voiceIntermediary.getAudio(message.payload.audioId);
+  ): Promise<Message<VoiceAgentFetchAudioResponsePayload>> {
+    const stored = await this.voiceIntermediary.getAudio(message.payload.audioId);
     voiceEventLogger.log({
       sessionId: message.payload.sessionId,
       event: stored ? 'tts.audio.fetch' : 'tts.audio.expired',
@@ -2716,6 +2723,29 @@ export class MessageHandler {
     );
     response.id = message.id;
     return response;
+  }
+
+  private async handleVoiceAgentReload(
+    message: Message<VoiceAgentReloadRequestPayload>,
+  ): Promise<Message<VoiceAgentReloadResponsePayload>> {
+    try {
+      const runtime = await this.voiceIntermediary.reload();
+      const response = createMessage<VoiceAgentReloadResponsePayload>('voice-agent:reload:response', {
+        ok: true,
+        runtime,
+      });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const runtime = this.voiceIntermediary.getRuntimeStatus();
+      const response = createMessage<VoiceAgentReloadResponsePayload>('voice-agent:reload:response', {
+        ok: false,
+        runtime,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      response.id = message.id;
+      return response;
+    }
   }
 
   private handleSetPreferences(message: Message<ClaudeSetPreferencesRequestPayload>): Message<ClaudeSetPreferencesResponsePayload> {

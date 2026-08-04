@@ -232,6 +232,8 @@ export type MessageType =
   | 'voice-agent:playback-event:response'
   | 'voice-agent:fetch-audio'
   | 'voice-agent:fetch-audio:response'
+  | 'voice-agent:reload'
+  | 'voice-agent:reload:response'
   // Message bus envelope (transports opaque bus frames; see packages/message-bus)
   | 'bus:frame'
   | 'error';
@@ -1486,10 +1488,13 @@ export interface VoiceConfig {
    *  `gpt-4o-transcribe`). Realtime requires a realtime-capable model;
    *  `whisper-1` is batch-only. */
   streamModel: string;
-  /** Chat model for the voice intermediary agent's brain — POST
-   *  `{baseUrl}/chat/completions` (OpenAI-compatible, tool-calling). Optional;
+  /** Model for the voice intermediary agent's brain — POST
+   *  `{baseUrl}/responses` (OpenAI-compatible, reasoning/tool-calling). Optional;
    *  the voice agent stays disabled while empty. */
   agentModel?: string;
+  /** Optional Responses API reasoning effort for the intermediary brain.
+   *  Omitted = provider/model default. Availability is model-specific. */
+  agentReasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /** Model for text-to-speech — POST `{baseUrl}/audio/speech` (e.g. `tts-1`,
    *  `gpt-4o-mini-tts`). Optional; the agent runs silently while empty. */
   ttsModel?: string;
@@ -1544,18 +1549,25 @@ export interface VoiceLogEventResponsePayload {
 export interface VoiceAgentAttachRequestPayload {
   sessionId: string;
   config: VoiceConfig;
+  /** Identifies one enabled browser page. Multiple pages may share a session. */
+  clientId?: string;
 }
 export interface VoiceAgentAttachResponsePayload {
   ok: boolean;
   /** True when a brain model is configured and the session is live, i.e. the
    *  agent will actually respond. False means attached-but-idle (mis-config). */
   active: boolean;
+  runtime?: VoiceAgentRuntimeStatus;
+  /** Recent daemon-persisted debug timeline, replayed after a page refresh. */
+  traceHistory?: VoiceAgentTraceEntry[];
   error?: string;
 }
 
 /** PWA → agent: detach (tear down) the voice intermediary for a session. */
 export interface VoiceAgentDetachRequestPayload {
   sessionId: string;
+  /** Detach only this browser page; legacy callers detach the whole session. */
+  clientId?: string;
 }
 export interface VoiceAgentDetachResponsePayload {
   ok: boolean;
@@ -1604,6 +1616,45 @@ export interface VoiceAgentFetchAudioResponsePayload {
   error?: string;
 }
 
+/** PWA -> agent: restart only the reloadable intermediary worker. The daemon,
+ * coding session, microphone, and browser connection remain alive. */
+export interface VoiceAgentReloadRequestPayload {
+  sessionId: string;
+}
+export interface VoiceAgentReloadResponsePayload {
+  ok: boolean;
+  runtime: VoiceAgentRuntimeStatus;
+  error?: string;
+}
+
+export type VoiceAgentRuntimeState = 'starting' | 'ready' | 'reloading' | 'failed' | 'stopped';
+
+/** Identifies the exact intermediary worker currently serving voice turns. */
+export interface VoiceAgentRuntimeStatus {
+  state: VoiceAgentRuntimeState;
+  protocolVersion: number;
+  buildId: string;
+  instanceId: string;
+  pid?: number;
+  startedAt?: number;
+  restoredSessionCount: number;
+  error?: string;
+}
+
+/** Development trace emitted by the intermediary's decision loop. This is an
+ * observable execution trace (inputs, tools, results and optional reasoning
+ * summaries), not private model chain-of-thought. */
+export interface VoiceAgentTraceEntry {
+  id: string;
+  timestamp: number;
+  phase: 'context' | 'llm' | 'tool' | 'speech' | 'lifecycle';
+  event: string;
+  turnId?: string;
+  durationMs?: number;
+  summary?: string;
+  data?: Record<string, unknown>;
+}
+
 /** Lifecycle state of a session's voice agent, surfaced for UI affordances. */
 export type VoiceAgentState = 'idle' | 'thinking' | 'speaking' | 'listening';
 
@@ -1617,16 +1668,18 @@ export type VoiceAgentState = 'idle' | 'thinking' | 'speaking' | 'listening';
 export type VoiceAgentEvent =
   | { kind: 'state'; state: VoiceAgentState }
   | { kind: 'speech-text'; text: string }
-  | { kind: 'speak'; audioId: string; text: string; mimeType: string }
+  | { kind: 'speak'; audioId: string; text: string; mimeType: string; streamed?: boolean; interrupted?: boolean }
   | { kind: 'action'; summary: string }
+  | { kind: 'trace'; entry: VoiceAgentTraceEntry }
+  | { kind: 'runtime'; runtime: VoiceAgentRuntimeStatus }
   | { kind: 'error'; message: string };
 
 // ── Streaming voice (WebRTC) ────────────────────────────────────────────────
 
 /**
  * PCM16 little-endian mono is what the OpenAI Realtime transcription API (and
- * most streaming ASR servers) expect. The PWA captures at this rate via an
- * AudioWorklet and ships raw frames over the DataChannel.
+ * most streaming ASR servers) expect. WebRTC media tracks may arrive at a
+ * device rate and are normalized to this rate by the agent.
  */
 export const VOICE_PCM_SAMPLE_RATE = 24_000;
 
@@ -1634,6 +1687,8 @@ export const VOICE_PCM_SAMPLE_RATE = 24_000;
 export interface VoiceRtcConnectRequestPayload {
   /** Correlates the signaling exchange + the agent's ICE subscription path. */
   sessionId: string;
+  /** Intermediate/coding session whose outbound speech this page subscribes to. */
+  voiceSessionId?: string;
   /** SDP offer from the PWA. */
   sdp: string;
 }
@@ -1655,6 +1710,17 @@ export interface VoiceRtcIceResponsePayload {
   error?: string;
 }
 
+/** Session-scoped microphone lease. Claim happens before getUserMedia so two
+ * enabled pages never hold voice-coworker capture at the same time. */
+export interface VoiceRtcMicrophoneLeaseRequestPayload {
+  sessionId: string;
+  voiceSessionId: string;
+}
+export interface VoiceRtcMicrophoneLeaseResponsePayload {
+  ok: boolean;
+  error?: string;
+}
+
 /** A single ICE candidate the agent pushes to the PWA via subscription. */
 export interface VoiceRtcIceUpdate {
   candidate: string | null;
@@ -1666,10 +1732,16 @@ export interface VoiceRtcIceUpdate {
  * remains available behind the `audioTransport` selector.
  */
 export type VoiceDcMessage =
+  // PWA -> agent: acquire/release the one microphone lease for this voice session.
+  | { t: 'microphone-claim' }
+  | { t: 'microphone-claim-result'; granted: boolean; reason?: string }
+  | { t: 'microphone-release' }
   // PWA → agent: begin an utterance; opens an ASR stream with this config.
   | { t: 'start'; config: VoiceConfig; sampleRate: number; audioTransport?: 'datachannel' | 'media-track' }
-  // PWA → agent: end the utterance; agent commits the audio buffer.
-  | { t: 'stop' }
+  // PWA → agent: end the utterance; agent commits unless the user discarded it.
+  | { t: 'stop'; releaseMicrophone?: boolean; discard?: boolean }
+  // PWA → agent: retry ASR with the retained audio from the last utterance.
+  | { t: 'retry-transcription' }
   // PWA → agent: a transcript-confirmed barge-in should stop outbound TTS.
   | { t: 'interrupt-playback' }
   // agent → PWA: server-side VAD says the user started/stopped speaking.

@@ -20,6 +20,7 @@ import type {
 import type { FetchLike } from './llm.js';
 import type { CodingSessionBridge } from './tools.js';
 import { VoiceIntermediarySession, type VoiceTurnMeta } from './session.js';
+import type { SynthesizedSpeech } from './tts.js';
 
 /** The SessionManager surface the manager needs, beyond the tool bridge. */
 export type VoiceManagerBridge = CodingSessionBridge & {
@@ -32,6 +33,13 @@ interface StoredAudio {
   mimeType: string;
 }
 
+export type VoiceAudioStore = (audio: Buffer, mimeType: string) => string;
+export type VoiceSpeechSynthesizer = (
+  sessionId: string,
+  config: VoiceConfig,
+  text: string,
+) => Promise<SynthesizedSpeech | null>;
+
 /** Keep at most this many recent utterances of audio addressable for fetch. */
 const AUDIO_CACHE_CAP = 32;
 
@@ -43,6 +51,10 @@ export class VoiceIntermediaryManager extends EventEmitter {
     private readonly bridge: VoiceManagerBridge,
     /** Injected for tests. */
     private readonly fetchImpl?: FetchLike,
+    /** Lets the reloadable worker keep audio bytes in its stable supervisor. */
+    private readonly externalAudioStore?: VoiceAudioStore,
+    /** Lets the stable daemon own WebRTC TTS playback for a reloadable worker. */
+    private readonly externalSpeechSynthesizer?: VoiceSpeechSynthesizer,
   ) {
     super();
   }
@@ -75,6 +87,9 @@ export class VoiceIntermediaryManager extends EventEmitter {
         emit: (event) => this.emitEvent(sessionId, event),
         storeAudio: (a, mime) => this.storeAudio(a, mime),
       },
+      speechSynthesizer: this.externalSpeechSynthesizer
+        ? (voiceConfig, text) => this.externalSpeechSynthesizer!(sessionId, voiceConfig, text)
+        : undefined,
     });
     this.sessions.set(sessionId, session);
     return { ok: true, active };
@@ -146,6 +161,7 @@ export class VoiceIntermediaryManager extends EventEmitter {
   }
 
   private storeAudio(audio: Buffer, mimeType: string): string {
+    if (this.externalAudioStore) return this.externalAudioStore(audio, mimeType);
     const id = randomUUID();
     this.audio.set(id, { audio, mimeType });
     while (this.audio.size > AUDIO_CACHE_CAP) {

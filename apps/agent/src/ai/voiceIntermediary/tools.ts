@@ -28,15 +28,15 @@ import { formatVoiceHistoryEvent, type VoiceHistoryReadOptions, type VoiceHistor
  * with a tiny fake.
  */
 export interface CodingSessionBridge {
-  sendUserMessageToSession(sessionId: string, prompt: string, opts?: { interrupt?: boolean }): boolean;
+  sendUserMessageToSession(sessionId: string, prompt: string, opts?: { interrupt?: boolean }): boolean | Promise<boolean>;
   interruptSession(sessionId: string): Promise<boolean>;
-  resolveUserInput(response: ClaudeUserInputResponsePayload): boolean;
+  resolveUserInput(response: ClaudeUserInputResponsePayload): boolean | Promise<boolean>;
   setPermissionLevel(sessionId: string, level: string): Promise<boolean>;
   getCards(sessionId: string, cwd: string, offset?: number, limit?: number): Promise<CardHistoryResponse>;
-  getPendingInputRequests(): ClaudeUserInputRequestPayload[];
-  getPermissionLevel(sessionId: string): string;
-  getActiveSessions(): Array<{ sessionId: string; isStreaming?: boolean; hasPendingInput?: boolean; permissionMode?: string }>;
-  isStreaming(sessionId: string): boolean;
+  getPendingInputRequests(): ClaudeUserInputRequestPayload[] | Promise<ClaudeUserInputRequestPayload[]>;
+  getPermissionLevel(sessionId: string): string | Promise<string>;
+  getActiveSessions(): Array<{ sessionId: string; isStreaming?: boolean; hasPendingInput?: boolean; permissionMode?: string }> | Promise<Array<{ sessionId: string; isStreaming?: boolean; hasPendingInput?: boolean; permissionMode?: string }>>;
+  isStreaming(sessionId: string): boolean | Promise<boolean>;
 }
 
 export interface VoiceToolContext {
@@ -48,7 +48,7 @@ export interface VoiceToolContext {
   /** Read prior voice-agent JSONL history, including compacted context. */
   readVoiceHistory?: (opts: VoiceHistoryReadOptions) => Promise<VoiceHistoryEvent[]>;
   proposeCodingChange?: (proposal: { prompt: string; spokenSummary: string }) => string;
-  confirmCodingChange?: (proposalId?: string, opts?: { interrupt?: boolean }) => string;
+  confirmCodingChange?: (proposalId?: string, opts?: { interrupt?: boolean }) => string | Promise<string>;
   cancelCodingChange?: (reason?: string) => string;
   /** Narrate a side effect to the UI log (not spoken). */
   emitAction: (summary: string) => void;
@@ -294,7 +294,7 @@ export async function executeTool(
       const prompt = String(args.prompt ?? '').trim();
       if (!prompt) return 'error: empty prompt';
       const interrupt = !!args.interrupt;
-      const ok = bridge.sendUserMessageToSession(sessionId, prompt, { interrupt });
+      const ok = await bridge.sendUserMessageToSession(sessionId, prompt, { interrupt });
       if (!ok) return 'error: the coding session is not running';
       emitAction(interrupt ? `改查：${truncate(prompt, 60)}` : `開始查：${truncate(prompt, 60)}`);
       return interrupt ? 'investigation interrupted current turn and was sent' : 'investigation dispatched';
@@ -316,7 +316,7 @@ export async function executeTool(
 
     case 'confirm_coding_change': {
       if (!ctx.confirmCodingChange) return 'error: coding change confirmation is unavailable';
-      return ctx.confirmCodingChange(
+      return await ctx.confirmCodingChange(
         typeof args.proposal_id === 'string' ? args.proposal_id : undefined,
         { interrupt: args.interrupt === true },
       );
@@ -331,7 +331,7 @@ export async function executeTool(
       const prompt = String(args.prompt ?? '').trim();
       if (!prompt) return 'error: empty prompt';
       const interrupt = !!args.interrupt;
-      const ok = bridge.sendUserMessageToSession(sessionId, prompt, { interrupt });
+      const ok = await bridge.sendUserMessageToSession(sessionId, prompt, { interrupt });
       if (!ok) return 'error: the coding session is not running';
       emitAction(interrupt ? `改做：${truncate(prompt, 60)}` : `開始處理：${truncate(prompt, 60)}`);
       return interrupt ? 'interrupted and sent' : 'sent (will run on the next turn boundary)';
@@ -347,8 +347,8 @@ export async function executeTool(
       const requestId = String(args.request_id ?? '').trim();
       const decision = args.decision === 'deny' ? 'deny' : args.decision === 'allow' ? 'allow' : null;
       if (!requestId || !decision) return 'error: request_id and decision (allow|deny) are required';
-      const pending = bridge
-        .getPendingInputRequests()
+      const pending = (await bridge
+        .getPendingInputRequests())
         .find((r) => r.requestId === requestId && r.sessionId === sessionId);
       if (!pending) return `error: no pending permission request with id ${requestId} for this session`;
       const payload: ClaudeUserInputResponsePayload = {
@@ -357,7 +357,7 @@ export async function executeTool(
         action: decision,
         response: typeof args.reason === 'string' ? args.reason : undefined,
       };
-      const ok = bridge.resolveUserInput(payload);
+      const ok = await bridge.resolveUserInput(payload);
       if (ok) emitAction(`${decision === 'allow' ? '核准' : '拒絕'}權限：${pending.toolName ?? pending.title}`);
       return ok ? `relayed ${decision} for ${pending.toolName ?? 'request'}` : 'error: failed to relay the decision';
     }
@@ -371,9 +371,14 @@ export async function executeTool(
     }
 
     case 'get_status': {
-      const active = bridge.getActiveSessions().find((s) => s.sessionId === sessionId);
-      const pending = bridge
-        .getPendingInputRequests()
+      const [activeSessions, pendingRequests, permissionMode, streaming] = await Promise.all([
+        bridge.getActiveSessions(),
+        bridge.getPendingInputRequests(),
+        bridge.getPermissionLevel(sessionId),
+        bridge.isStreaming(sessionId),
+      ]);
+      const active = activeSessions.find((s) => s.sessionId === sessionId);
+      const pending = pendingRequests
         .filter((r) => r.sessionId === sessionId)
         .map((r) => ({
           request_id: r.requestId,
@@ -381,9 +386,9 @@ export async function executeTool(
           wants: r.toolInput ? briefInput(r.toolInput) : undefined,
         }));
       return JSON.stringify({
-        running: active ? bridge.isStreaming(sessionId) : false,
+        running: active ? streaming : false,
         attached: !!active,
-        permission_mode: bridge.getPermissionLevel(sessionId),
+        permission_mode: permissionMode,
         pending_permissions: pending,
       });
     }

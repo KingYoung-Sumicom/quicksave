@@ -12,10 +12,10 @@ import type {
 } from '@sumicom/quicksave-shared';
 import { upsertBullet, appendMemory, loadMemory, workspaceMemoryPath } from './memory.js';
 import { executeTool, formatCardForBrain, VOICE_AGENT_TOOLS, type CodingSessionBridge } from './tools.js';
-import { buildRuntimeContextReminder, buildSystemPrompt, sanitizeMessagesForChatCompletion, VoiceIntermediarySession } from './session.js';
+import { buildRuntimeContextReminder, buildSystemPrompt, sanitizeMessagesForResponses, VoiceIntermediarySession } from './session.js';
 import { VoiceIntermediaryManager, type VoiceManagerBridge } from './manager.js';
-import { chatCompletion } from './llm.js';
-import { synthesizeSpeech } from './tts.js';
+import { responseCompletion } from './llm.js';
+import { streamPcmSpeech, synthesizeSpeech } from './tts.js';
 import { VoiceHistoryStore } from './historyStore.js';
 import { setQuicksaveDir } from '../../service/singleton.js';
 
@@ -88,21 +88,40 @@ afterEach(async () => {
   await rm(quicksaveDir, { recursive: true, force: true });
 });
 
-/** A scripted OpenAI-compatible endpoint: N chat turns then audio. */
+function responsesPayload(
+  content = '',
+  tool?: { name: string; args?: unknown },
+  index = 1,
+): string {
+  const output: Array<Record<string, unknown>> = [];
+  if (content) {
+    output.push({
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: content, annotations: [] }],
+    });
+  }
+  if (tool) {
+    output.push({
+      type: 'function_call',
+      id: `fc-${index}`,
+      call_id: `call-${index}`,
+      name: tool.name,
+      arguments: JSON.stringify(tool.args ?? {}),
+    });
+  }
+  return JSON.stringify({ id: `resp-${index}`, status: 'completed', output });
+}
+
+/** A scripted OpenAI-compatible endpoint: N brain turns then audio. */
 function scriptedFetch(chatTurns: { content?: string; tool?: { name: string; args?: unknown } }[]): typeof fetch {
   let i = 0;
   return (async (url: string | URL | Request) => {
     const u = String(url);
-    if (u.endsWith('/chat/completions')) {
+    if (u.endsWith('/responses')) {
       const turn = chatTurns[Math.min(i, chatTurns.length - 1)];
       i++;
-      const message: Record<string, unknown> = { content: turn.content ?? '' };
-      if (turn.tool) {
-        message.tool_calls = [
-          { id: `call-${i}`, type: 'function', function: { name: turn.tool.name, arguments: JSON.stringify(turn.tool.args ?? {}) } },
-        ];
-      }
-      return new Response(JSON.stringify({ choices: [{ message }] }), { status: 200 });
+      return new Response(responsesPayload(turn.content, turn.tool, i), { status: 200 });
     }
     if (u.endsWith('/audio/speech')) {
       return new Response(Buffer.from([1, 2, 3, 4]), { status: 200 });
@@ -148,8 +167,8 @@ describe('voice memory', () => {
 // ── Chat message normalization ─────────────────────────────────────────────
 
 describe('voice chat message normalization', () => {
-  it('drops orphan tool messages before calling chat completions', () => {
-    const messages = sanitizeMessagesForChatCompletion([
+  it('drops orphan tool messages before calling Responses', () => {
+    const messages = sanitizeMessagesForResponses([
       { role: 'system', content: 's' },
       { role: 'tool', tool_call_id: 'missing', content: 'orphan' },
       { role: 'user', content: 'hi' },
@@ -159,7 +178,7 @@ describe('voice chat message normalization', () => {
   });
 
   it('keeps complete assistant tool-call groups', () => {
-    const messages = sanitizeMessagesForChatCompletion([
+    const messages = sanitizeMessagesForResponses([
       {
         role: 'assistant',
         content: null,
@@ -174,7 +193,7 @@ describe('voice chat message normalization', () => {
   });
 
   it('removes dangling assistant tool_calls when the result is missing', () => {
-    const messages = sanitizeMessagesForChatCompletion([
+    const messages = sanitizeMessagesForResponses([
       {
         role: 'assistant',
         content: null,
@@ -404,21 +423,135 @@ describe('voice system prompt', () => {
 });
 
 describe('voice LLM client', () => {
-  it('does not send a non-default temperature for models that reject it', async () => {
+  it('uses the Responses request shape without sampling overrides', async () => {
+    let body: Record<string, unknown> | undefined;
+    let url = '';
+    const fetchImpl = (async (requestUrl: string | URL | Request, init?: RequestInit) => {
+      url = String(requestUrl);
+      body = JSON.parse(String(init?.body ?? '{}'));
+      return new Response(responsesPayload('ok'), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await responseCompletion(CONFIG, {
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [{
+        type: 'function',
+        function: { name: 'get_status', description: 'status', parameters: { type: 'object' } },
+      }],
+      fetchImpl,
+    });
+
+    expect(url).toBe(`${CONFIG.baseUrl}/responses`);
+    expect(body).toMatchObject({
+      model: CONFIG.agentModel,
+      input: [{ role: 'user', content: 'hi' }],
+      tools: [{ type: 'function', name: 'get_status', description: 'status' }],
+      tool_choice: 'auto',
+      store: false,
+    });
+    expect(body).not.toHaveProperty('temperature');
+    expect(body).not.toHaveProperty('reasoning_effort');
+    expect(result).toEqual({
+      content: 'ok',
+      toolCalls: [],
+      reasoningItems: [],
+      reasoningSummary: [],
+    });
+  });
+
+  it('sends configured reasoning effort and replays durable reasoning items', async () => {
     let body: Record<string, unknown> | undefined;
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
       body = JSON.parse(String(init?.body ?? '{}'));
-      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 });
+      return new Response(JSON.stringify({
+        output: [
+          {
+            type: 'reasoning',
+            id: 'rs-new',
+            status: 'completed',
+            summary: [{ type: 'summary_text', text: 'Checked the latest evidence.' }],
+            encrypted_content: 'encrypted-new',
+            content: [{ type: 'reasoning_text', text: 'must not persist plaintext reasoning' }],
+          },
+          {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'done' }],
+          },
+        ],
+      }), { status: 200 });
     }) as typeof fetch;
 
-    await chatCompletion(CONFIG, {
-      messages: [{ role: 'user', content: 'hi' }],
+    const result = await responseCompletion({ ...CONFIG, agentReasoningEffort: 'medium' }, {
+      messages: [
+        { role: 'assistant', content: null, reasoning_items: [{
+          type: 'reasoning',
+          id: 'rs-old',
+          status: 'completed',
+          summary: [{ type: 'summary_text', text: 'Earlier summary.' }],
+          encrypted_content: 'encrypted-old',
+        }], tool_calls: [{
+          id: 'call-old',
+          type: 'function',
+          function: { name: 'get_status', arguments: '{}' },
+        }] },
+        { role: 'tool', tool_call_id: 'call-old', content: 'ready' },
+      ],
       tools: [],
       fetchImpl,
     });
 
-    expect(body).toMatchObject({ model: CONFIG.agentModel, tool_choice: 'auto' });
-    expect(body).not.toHaveProperty('temperature');
+    expect(body).toMatchObject({
+      reasoning: { effort: 'medium', summary: 'auto' },
+      include: ['reasoning.encrypted_content'],
+      input: [
+        expect.objectContaining({ type: 'reasoning', id: 'rs-old', encrypted_content: 'encrypted-old' }),
+        { type: 'function_call', call_id: 'call-old', name: 'get_status', arguments: '{}' },
+        { type: 'function_call_output', call_id: 'call-old', output: 'ready' },
+      ],
+    });
+    expect(result.reasoningSummary).toEqual(['Checked the latest evidence.']);
+    expect(result.reasoningItems).toEqual([{
+      type: 'reasoning',
+      id: 'rs-new',
+      status: 'completed',
+      summary: [{ type: 'summary_text', text: 'Checked the latest evidence.' }],
+      encrypted_content: 'encrypted-new',
+    }]);
+    expect(result.reasoningItems[0]).not.toHaveProperty('content');
+  });
+
+  it('converts stored tool history and parses Responses function calls', async () => {
+    let body: Record<string, unknown> | undefined;
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}'));
+      return new Response(responsesPayload('', { name: 'get_status', args: { detail: true } }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await responseCompletion(CONFIG, {
+      messages: [
+        { role: 'assistant', content: null, tool_calls: [{
+          id: 'call-old',
+          type: 'function',
+          function: { name: 'read_cards', arguments: '{"limit":1}' },
+        }] },
+        { role: 'tool', tool_call_id: 'call-old', content: 'one card' },
+        { role: 'user', content: 'what now?' },
+      ],
+      tools: [],
+      fetchImpl,
+    });
+
+    expect(body?.input).toEqual([
+      { type: 'function_call', call_id: 'call-old', name: 'read_cards', arguments: '{"limit":1}' },
+      { type: 'function_call_output', call_id: 'call-old', output: 'one card' },
+      { role: 'user', content: 'what now?' },
+    ]);
+    expect(result.toolCalls).toEqual([{
+      id: 'call-1',
+      type: 'function',
+      function: { name: 'get_status', arguments: '{"detail":true}' },
+    }]);
   });
 });
 
@@ -448,6 +581,25 @@ describe('voice TTS client', () => {
     expect(headers?.['X-Client-Request-Id']).toMatch(/^quicksave-tts-/);
     expect(speech).toMatchObject({ mimeType: 'audio/mpeg', requestId: 'req-123' });
     expect(speech?.audio).toEqual(Buffer.from([1, 2]));
+  });
+
+  it('requests raw PCM and forwards response chunks without retaining the clip', async () => {
+    let body: Record<string, unknown> | undefined;
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}'));
+      return new Response(Buffer.from([1, 2, 3, 4]), {
+        status: 200,
+        headers: { 'x-request-id': 'req-pcm' },
+      });
+    }) as typeof fetch;
+    const chunks: Buffer[] = [];
+
+    const speech = await streamPcmSpeech(CONFIG, '串流測試', (chunk) => chunks.push(Buffer.from(chunk)), { fetchImpl });
+
+    expect(body?.response_format).toBe('pcm');
+    expect(Buffer.concat(chunks)).toEqual(Buffer.from([1, 2, 3, 4]));
+    expect(speech).toMatchObject({ streamed: true, requestId: 'req-pcm' });
+    expect(speech?.audio).toHaveLength(0);
   });
 });
 
@@ -571,6 +723,55 @@ describe('VoiceIntermediarySession', () => {
     }
   });
 
+  it('restores a pending coding-change proposal after the intermediary reloads', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'qs-voice-proposal-restore-'));
+    try {
+      const { bridge, calls } = makeBridge({ cwd });
+      const sessionId = 's-proposal-restore';
+      const first = new VoiceIntermediarySession({
+        sessionId,
+        cwd,
+        config: CONFIG,
+        bridge,
+        callbacks: { emit: () => undefined, storeAudio: () => 'audio-proposal-1' },
+        fetchImpl: scriptedFetch([
+          {
+            tool: {
+              name: 'propose_coding_change',
+              args: {
+                prompt: '修改側邊欄並跑測試',
+                spoken_summary: '修改側邊欄並跑測試',
+              },
+            },
+          },
+          { content: '要執行嗎？' },
+        ]),
+      });
+      await first.handleUtterance('幫我改側邊欄');
+      first.close();
+      expect(calls.send).toHaveLength(0);
+
+      const second = new VoiceIntermediarySession({
+        sessionId,
+        cwd,
+        config: CONFIG,
+        bridge,
+        callbacks: { emit: () => undefined, storeAudio: () => 'audio-proposal-2' },
+        fetchImpl: scriptedFetch([
+          { tool: { name: 'confirm_coding_change' } },
+          { content: '已送出。' },
+        ]),
+      });
+      await second.handleUtterance('好');
+
+      expect(calls.send).toEqual([
+        { sessionId, prompt: '修改側邊欄並跑測試', interrupt: false },
+      ]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('loads prior voice context on startup before sending the next LLM request', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'qs-voice-restore-'));
     try {
@@ -587,12 +788,12 @@ describe('VoiceIntermediarySession', () => {
       await first.handleUtterance('第一句');
       first.close();
 
-      const bodies: Array<{ messages?: Array<{ role: string; content: string | null }> }> = [];
+      const bodies: Array<{ input?: Array<{ role?: string; content?: string | null }> }> = [];
       const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
         const u = String(url);
-        if (u.endsWith('/chat/completions')) {
+        if (u.endsWith('/responses')) {
           bodies.push(JSON.parse(String(init?.body ?? '{}')));
-          return new Response(JSON.stringify({ choices: [{ message: { content: '回答二。' } }] }), { status: 200 });
+          return new Response(responsesPayload('回答二。'), { status: 200 });
         }
         if (u.endsWith('/audio/speech')) return new Response(Buffer.from([1]), { status: 200 });
         throw new Error(`unexpected url ${u}`);
@@ -608,7 +809,7 @@ describe('VoiceIntermediarySession', () => {
       });
       await second.handleUtterance('第二句');
 
-      const sent = bodies[0]?.messages?.map((m) => m.content ?? '').join('\n') ?? '';
+      const sent = bodies[0]?.input?.map((m) => m.content ?? '').join('\n') ?? '';
       expect(sent).toContain('第一句');
       expect(sent).toContain('回答一。');
       expect(sent).toContain('第二句');
@@ -619,7 +820,80 @@ describe('VoiceIntermediarySession', () => {
     }
   });
 
-  it('does not send restored orphan tool messages to chat completions', async () => {
+  it('replays reasoning state across tool rounds and session reloads', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'qs-voice-reasoning-restore-'));
+    try {
+      const { bridge } = makeBridge({ cwd });
+      const sessionId = 's-reasoning-restore';
+      const config = { ...CONFIG, agentReasoningEffort: 'medium' as const };
+      const firstBodies: Array<{ input?: Array<Record<string, unknown>> }> = [];
+      let firstRound = 0;
+      const firstFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url);
+        if (u.endsWith('/responses')) {
+          firstBodies.push(JSON.parse(String(init?.body ?? '{}')));
+          firstRound++;
+          if (firstRound === 1) {
+            return new Response(JSON.stringify({ output: [
+              {
+                type: 'reasoning',
+                id: 'rs-persisted',
+                status: 'completed',
+                summary: [{ type: 'summary_text', text: 'Need current status.' }],
+                encrypted_content: 'encrypted-persisted',
+              },
+              { type: 'function_call', call_id: 'call-status', name: 'get_status', arguments: '{}' },
+            ] }), { status: 200 });
+          }
+          return new Response(responsesPayload('狀態正常。'), { status: 200 });
+        }
+        if (u.endsWith('/audio/speech')) return new Response(Buffer.from([1]), { status: 200 });
+        throw new Error(`unexpected url ${u}`);
+      }) as typeof fetch;
+      const first = new VoiceIntermediarySession({
+        sessionId,
+        cwd,
+        config,
+        bridge,
+        callbacks: { emit: () => undefined, storeAudio: () => 'audio-reasoning-1' },
+        fetchImpl: firstFetch,
+      });
+      await first.handleUtterance('現在狀態？');
+      first.close();
+
+      expect(firstBodies[1]?.input).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'reasoning', id: 'rs-persisted', encrypted_content: 'encrypted-persisted' }),
+      ]));
+
+      const secondBodies: Array<{ input?: Array<Record<string, unknown>> }> = [];
+      const secondFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url);
+        if (u.endsWith('/responses')) {
+          secondBodies.push(JSON.parse(String(init?.body ?? '{}')));
+          return new Response(responsesPayload('仍然正常。'), { status: 200 });
+        }
+        if (u.endsWith('/audio/speech')) return new Response(Buffer.from([1]), { status: 200 });
+        throw new Error(`unexpected url ${u}`);
+      }) as typeof fetch;
+      const second = new VoiceIntermediarySession({
+        sessionId,
+        cwd,
+        config,
+        bridge,
+        callbacks: { emit: () => undefined, storeAudio: () => 'audio-reasoning-2' },
+        fetchImpl: secondFetch,
+      });
+      await second.handleUtterance('再確認一次');
+
+      expect(secondBodies[0]?.input).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'reasoning', id: 'rs-persisted', encrypted_content: 'encrypted-persisted' }),
+      ]));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not send restored orphan tool messages to Responses', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'qs-voice-orphan-tool-'));
     try {
       const { bridge } = makeBridge({ cwd });
@@ -632,12 +906,12 @@ describe('VoiceIntermediarySession', () => {
         tool_calls: [{ id: 'dangling-call', type: 'function', function: { name: 'get_status', arguments: '{}' } }],
       });
 
-      const bodies: Array<{ messages?: Array<{ role: string; tool_call_id?: string; tool_calls?: unknown[] }> }> = [];
+      const bodies: Array<{ input?: Array<{ type?: string; role?: string }> }> = [];
       const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
         const u = String(url);
-        if (u.endsWith('/chat/completions')) {
+        if (u.endsWith('/responses')) {
           bodies.push(JSON.parse(String(init?.body ?? '{}')));
-          return new Response(JSON.stringify({ choices: [{ message: { content: '收到。' } }] }), { status: 200 });
+          return new Response(responsesPayload('收到。'), { status: 200 });
         }
         if (u.endsWith('/audio/speech')) return new Response(Buffer.from([1]), { status: 200 });
         throw new Error(`unexpected url ${u}`);
@@ -653,9 +927,9 @@ describe('VoiceIntermediarySession', () => {
       });
       await session.handleUtterance('繼續');
 
-      const messages = bodies[0]?.messages ?? [];
-      expect(messages.some((m) => m.role === 'tool')).toBe(false);
-      expect(messages.some((m) => Array.isArray(m.tool_calls))).toBe(false);
+      const input = bodies[0]?.input ?? [];
+      expect(input.some((item) => item.type === 'function_call_output')).toBe(false);
+      expect(input.some((item) => item.type === 'function_call')).toBe(false);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -696,12 +970,12 @@ describe('VoiceIntermediarySession', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'qs-voice-playback-note-'));
     try {
       const { bridge } = makeBridge({ cwd });
-      const bodies: Array<{ messages?: Array<{ role: string; content: string | null }> }> = [];
+      const bodies: Array<{ input?: Array<{ role?: string; content?: string | null }> }> = [];
       const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
         const u = String(url);
-        if (u.endsWith('/chat/completions')) {
+        if (u.endsWith('/responses')) {
           bodies.push(JSON.parse(String(init?.body ?? '{}')));
-          return new Response(JSON.stringify({ choices: [{ message: { content: '我接著處理。' } }] }), { status: 200 });
+          return new Response(responsesPayload('我接著處理。'), { status: 200 });
         }
         if (u.endsWith('/audio/speech')) return new Response(Buffer.from([1]), { status: 200 });
         throw new Error(`unexpected url ${u}`);
@@ -723,7 +997,7 @@ describe('VoiceIntermediarySession', () => {
       });
       await session.handleUtterance('我剛剛插話', { turnId: 'turn-new' });
 
-      const sent = bodies[0]?.messages?.map((m) => m.content ?? '').join('\n') ?? '';
+      const sent = bodies[0]?.input?.map((m) => m.content ?? '').join('\n') ?? '';
       expect(sent).toContain('上一段語音回覆在播放中被使用者打斷');
       expect(sent).toContain('我剛剛插話');
     } finally {
@@ -735,12 +1009,12 @@ describe('VoiceIntermediarySession', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'qs-voice-live-'));
     try {
       const { bridge } = makeBridge({ cwd });
-      const bodies: Array<{ messages?: Array<{ role: string; content: string }> }> = [];
+      const bodies: Array<{ input?: Array<{ role?: string; content?: string }> }> = [];
       const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
         const u = String(url);
-        if (u.endsWith('/chat/completions')) {
+        if (u.endsWith('/responses')) {
           bodies.push(JSON.parse(String(init?.body ?? '{}')));
-          return new Response(JSON.stringify({ choices: [{ message: { content: '我看到了最新輸出。' } }] }), { status: 200 });
+          return new Response(responsesPayload('我看到了最新輸出。'), { status: 200 });
         }
         if (u.endsWith('/audio/speech')) {
           return new Response(Buffer.from([1]), { status: 200 });
@@ -766,7 +1040,7 @@ describe('VoiceIntermediarySession', () => {
       expect(events).toEqual([]);
 
       await session.handleUtterance('目前看到什麼?');
-      const sent = bodies[0]?.messages?.map((m) => m.content).join('\n') ?? '';
+      const sent = bodies[0]?.input?.map((item) => item.content ?? '').join('\n') ?? '';
       expect(sent).toContain('最新 live card/stream 更新');
       expect(sent).toContain('正在跑最新測試');
     } finally {
@@ -804,10 +1078,10 @@ describe('VoiceIntermediarySession', () => {
       let ttsCalls = 0;
       const fetchImpl = (async (url: string | URL | Request) => {
         const u = String(url);
-        if (u.endsWith('/chat/completions')) {
+        if (u.endsWith('/responses')) {
           chatCalls++;
           return new Response(
-            JSON.stringify({ choices: [{ message: { content: chatCalls === 1 ? '第一次。' : '第二次。' } }] }),
+            responsesPayload(chatCalls === 1 ? '第一次。' : '第二次。'),
             { status: 200 },
           );
         }
@@ -877,6 +1151,37 @@ describe('VoiceIntermediaryManager', () => {
       const audio = mgr.getAudio(audioId);
       expect(audio).not.toBeNull();
       expect(audio!.mimeType).toBe('audio/mpeg');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('can delegate synthesized audio storage to a stable supervisor', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'qs-voice-external-audio-'));
+    try {
+      const { bridge } = makeBridge({ cwd });
+      const stored: Array<{ audio: Buffer; mimeType: string }> = [];
+      const mgr = new VoiceIntermediaryManager(
+        bridge,
+        scriptedFetch([{ content: '收到。' }]),
+        (audio, mimeType) => {
+          stored.push({ audio, mimeType });
+          return 'supervisor-audio-1';
+        },
+      );
+      const events: VoiceAgentEvent[] = [];
+      mgr.on('event', (_sessionId: string, event: VoiceAgentEvent) => events.push(event));
+
+      mgr.attach('s1', CONFIG);
+      await mgr.handleUtterance('s1', '嗨');
+
+      expect(events.find((event) => event.kind === 'speak')).toMatchObject({
+        kind: 'speak',
+        audioId: 'supervisor-audio-1',
+      });
+      expect(stored).toHaveLength(1);
+      expect(stored[0]?.mimeType).toBe('audio/mpeg');
+      expect(mgr.getAudio('supervisor-audio-1')).toBeNull();
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

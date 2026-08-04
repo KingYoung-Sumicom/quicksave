@@ -9,6 +9,7 @@ import { getVoiceConfig, saveVoiceConfig } from '../../lib/secureStorage';
 import { listModelsViaAgent, filterVoiceModels } from '../../lib/voiceTranscription';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { VoiceRtcDebugPanel } from './VoiceRtcDebugPanel';
+import type { VoiceConfig } from '@sumicom/quicksave-shared';
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_TRANSCRIBE_MODEL = 'whisper-1';
@@ -16,6 +17,9 @@ const DEFAULT_STREAM_MODEL = 'gpt-4o-transcribe';
 /** Known OpenAI(-compatible) TTS voices — `/models` doesn't list these, so the
  *  voice picker is a fixed dropdown (a saved custom value is still preserved). */
 const TTS_VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar'];
+const REASONING_EFFORTS: Array<NonNullable<VoiceConfig['agentReasoningEffort']>> = [
+  'none', 'low', 'medium', 'high', 'xhigh', 'max',
+];
 
 interface VoiceSectionProps {
   isOpen: boolean;
@@ -77,8 +81,9 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
   const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
   const [transcribeModel, setTranscribeModel] = useState(DEFAULT_TRANSCRIBE_MODEL);
   const [streamModel, setStreamModel] = useState(DEFAULT_STREAM_MODEL);
-  // Voice intermediary ("AI coworker") — brain (chat) + TTS, same endpoint.
+  // Voice intermediary ("AI coworker") — brain (Responses) + TTS, same endpoint.
   const [agentModel, setAgentModel] = useState('');
+  const [agentReasoningEffort, setAgentReasoningEffort] = useState<VoiceConfig['agentReasoningEffort']>();
   const [ttsModel, setTtsModel] = useState('');
   const [ttsVoice, setTtsVoice] = useState('');
   const [ttsInstructions, setTtsInstructions] = useState('');
@@ -103,6 +108,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
       if (c.transcribeModel) setTranscribeModel(c.transcribeModel);
       if (c.streamModel) setStreamModel(c.streamModel);
       if (c.agentModel) setAgentModel(c.agentModel);
+      setAgentReasoningEffort(c.agentReasoningEffort);
       if (c.ttsModel) setTtsModel(c.ttsModel);
       if (c.ttsVoice) setTtsVoice(c.ttsVoice);
       if (c.ttsInstructions) setTtsInstructions(c.ttsInstructions);
@@ -121,6 +127,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
       transcribeModel: transcribeModel.trim() || DEFAULT_TRANSCRIBE_MODEL,
       streamModel: streamModel.trim() || DEFAULT_STREAM_MODEL,
       agentModel: agentModel.trim() || undefined,
+      agentReasoningEffort,
       ttsModel: ttsModel.trim() || undefined,
       ttsVoice: ttsVoice.trim() || undefined,
       ttsInstructions: ttsInstructions.trim() || undefined,
@@ -275,7 +282,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
         </p>
 
         <ModelField
-          label="Brain 模型（chat completions）"
+          label="Brain 模型（Responses API）"
           hint="例如 gpt-4o-mini"
           value={agentModel}
           onChange={setAgentModel}
@@ -284,6 +291,23 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
           disabled={isSaving}
           allowEmpty
         />
+        <div className="space-y-1">
+          <label className="block text-xs text-slate-400">Brain 推理強度</label>
+          <select
+            value={agentReasoningEffort ?? ''}
+            onChange={(e) => setAgentReasoningEffort(
+              (e.target.value || undefined) as VoiceConfig['agentReasoningEffort'],
+            )}
+            className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+            disabled={isSaving}
+          >
+            <option value="">模型預設</option>
+            {REASONING_EFFORTS.map((effort) => (
+              <option key={effort} value={effort}>{effort}</option>
+            ))}
+          </select>
+          <p className="text-[11px] text-slate-500">可用層級依 provider 與模型而異；不確定時使用模型預設。</p>
+        </div>
         <ModelField
           label="TTS 模型（audio/speech）"
           hint="例如 gpt-4o-mini-tts 或 tts-1"

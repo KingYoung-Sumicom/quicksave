@@ -32,7 +32,11 @@ import { parseControlSlash, type ControlSlashSubtype } from '../lib/controlSlash
 import type { AttachmentMetadata, AgentId } from '@sumicom/quicksave-shared';
 import { useComposerVoice } from '../hooks/useComposerVoice';
 import { useComposerAttachments } from '../hooks/useComposerAttachments';
-import { useVoiceAgent } from '../hooks/useVoiceAgent';
+import { VoiceTranscriptionOverlay } from './VoiceTranscriptionOverlay';
+import { VoiceRecordingOverlay } from './VoiceRecordingOverlay';
+import { VoiceCapturePreparingOverlay } from './VoiceCapturePreparingOverlay';
+import type { UseVoiceAgent } from '../hooks/useVoiceAgent';
+import { selectPanelMode, type SessionPanelMode, useSessionRightPanelStore } from '../stores/sessionRightPanelStore';
 
 type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; fastMode?: boolean; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
 type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean };
@@ -66,6 +70,33 @@ interface ClaudePanelProps {
   onUnsubscribeSession?: (sessionId: string) => void;
   onDismissPendingMission?: (sessionId: string, cwd: string, dismissedAt?: number) => Promise<void> | void;
   onNewSession?: () => void;
+  /** Shared with the desktop session sidebar so audio/attach state has one owner. */
+  voiceAgent?: UseVoiceAgent;
+}
+
+const DISABLED_VOICE_AGENT: UseVoiceAgent = {
+  enabled: false,
+  toggle: () => undefined,
+  active: false,
+  state: 'idle',
+  lastTranscript: '',
+  lastSpoken: '',
+  actionLog: [],
+  error: null,
+  onTalkPress: () => undefined,
+  recording: false,
+  interim: '',
+  busy: false,
+  showMic: false,
+  traceLog: [],
+  clearTrace: () => undefined,
+  runtime: null,
+  reloading: false,
+  reload: async () => undefined,
+};
+
+export function shouldReplaceComposerWithVoice(enabled: boolean, panelMode: SessionPanelMode): boolean {
+  return enabled && panelMode === 'voice';
 }
 
 function formatMissionTime(ts: number): string {
@@ -277,6 +308,7 @@ export function ClaudePanel({
   onUnsubscribeSession,
   onDismissPendingMission,
   onNewSession,
+  voiceAgent: voiceAgentProp,
 }: ClaudePanelProps) {
   const {
     sessions,
@@ -996,7 +1028,9 @@ export function ClaudePanel({
   // Voice input (streaming-first, batch fallback) — shared with the new-session
   // composer. Transcripts append to the prompt; errors surface as the toast.
   const voice = useComposerVoice(agentId, commitTranscript, setAttachmentToast);
-  const voiceCoworker = useVoiceAgent(agentId, viewedSessionId ?? undefined);
+  const voiceCoworker = voiceAgentProp ?? DISABLED_VOICE_AGENT;
+  const sessionPanelMode = useSessionRightPanelStore(selectPanelMode);
+  const voiceWorkspaceOpen = shouldReplaceComposerWithVoice(voiceCoworker.enabled, sessionPanelMode);
   // While capturing/transcribing, lock the rest of the composer (textarea,
   // attach, send) so a stray tap can't edit or submit mid-utterance.
   const voiceActive = voice.recording || voice.busy;
@@ -1153,7 +1187,7 @@ export function ClaudePanel({
                 />
               </SessionStatusBar>
             )}
-            {!voiceCoworker.enabled && (
+            {!voiceWorkspaceOpen && (
               <AttachmentTray
                 pending={attach.pendingAttachments}
                 onRemove={attach.removePendingAttachment}
@@ -1203,7 +1237,7 @@ export function ClaudePanel({
               onDragLeave={isAwaitingSendAck ? undefined : attach.dragHandlers.onDragLeave}
               onDrop={isAwaitingSendAck ? undefined : attach.dragHandlers.onDrop}
             >
-              {!isAwaitingSendAck && !isTerminalNewSession && !voiceCoworker.enabled && slashOpen && filteredSlashCommands.length > 0 && (
+              {!isAwaitingSendAck && !isTerminalNewSession && !voiceWorkspaceOpen && slashOpen && filteredSlashCommands.length > 0 && (
                 <div ref={slashListRef} className="absolute left-0 right-0 bottom-full mb-2 max-h-56 overflow-y-auto rounded-lg border border-slate-700 bg-slate-800 shadow-lg z-10">
                   {filteredSlashCommands.map((cmd, i) => (
                     <button
@@ -1227,15 +1261,17 @@ export function ClaudePanel({
                   ))}
                 </div>
               )}
-              {voiceCoworker.enabled ? (
-                <VoiceCoworkerStatusPanel voiceAgent={voiceCoworker} />
+              {voiceWorkspaceOpen ? (
+                <div className="md:hidden">
+                  <VoiceCoworkerStatusPanel voiceAgent={voiceCoworker} />
+                </div>
               ) : !isTerminalNewSession && voice.streaming && (
                 <div className="flex items-center gap-1.5 px-1 text-xs text-slate-400">
                   <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shrink-0" />
                   <span className="truncate">{voice.interim || 'Listening…'}</span>
                 </div>
               )}
-              {!voiceCoworker.enabled && (
+              {!voiceWorkspaceOpen && (
                 isTerminalNewSession ? (
                   <div className="flex items-center justify-end">
                     <button
@@ -1295,7 +1331,9 @@ export function ClaudePanel({
                       )}
                     </div>
                     {viewedSessionId && agentId && (
-                      <VoiceCoworkerControl agentId={agentId} sessionId={viewedSessionId} voiceAgent={voiceCoworker} />
+                      <div className={voiceCoworker.enabled ? 'md:hidden' : undefined}>
+                        <VoiceCoworkerControl voiceAgent={voiceCoworker} />
+                      </div>
                     )}
                     {voice.showMic && (
                       <button
@@ -1363,6 +1401,17 @@ export function ClaudePanel({
                   </div>
                   </>
                 )
+              )}
+              {!voiceWorkspaceOpen && voice.arming && <VoiceCapturePreparingOverlay />}
+              {!voiceWorkspaceOpen && voice.recording && (
+                <VoiceRecordingOverlay onStop={voice.stopListening} onCancel={voice.cancelListening} />
+              )}
+              {!voiceWorkspaceOpen && voice.transcribing && (
+                <VoiceTranscriptionOverlay
+                  error={voice.transcriptionError}
+                  onRetry={voice.retryTranscription}
+                  onCancel={voice.cancelTranscription}
+                />
               )}
             </div>
           </div>

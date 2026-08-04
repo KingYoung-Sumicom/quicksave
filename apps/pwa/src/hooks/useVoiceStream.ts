@@ -26,8 +26,16 @@ export interface UseVoiceStream {
   /** Connect (mic-first) if needed, then begin an utterance. Resolves true once
    *  recording, false if the P2P link couldn't be established. */
   start: () => Promise<boolean>;
-  stop: (opts?: { releaseMic?: boolean }) => void;
+  stop: (opts?: { releaseMic?: boolean; discard?: boolean }) => void;
+  retryTranscription: () => void;
   interruptPlayback: () => void;
+  disconnect: () => void;
+}
+
+export interface UseVoiceStreamOptions {
+  transportSessionId?: string;
+  voiceSessionId?: string;
+  enabled?: boolean;
 }
 
 export function useVoiceStream(
@@ -36,14 +44,18 @@ export function useVoiceStream(
   onSpeechActivity?: (active: boolean) => void,
   onPartialText?: (text: string) => void,
   onRemotePlayback?: (active: boolean, streamId: string) => void,
-  transportSessionId?: string,
+  options: UseVoiceStreamOptions = {},
 ): UseVoiceStream {
+  const enabled = options.enabled ?? true;
   const [state, setState] = useState<VoiceStreamState | 'idle'>('idle');
   const [interim, setInterim] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
 
   const sessionRef = useRef<VoiceStreamSession | null>(null);
   const connectingRef = useRef<Promise<boolean> | null>(null);
+  const lifecycleGenerationRef = useRef(0);
   const onFinalRef = useRef(onFinalText);
   onFinalRef.current = onFinalText;
   const onSpeechActivityRef = useRef(onSpeechActivity);
@@ -55,12 +67,24 @@ export function useVoiceStream(
 
   useEffect(() => {
     return () => {
+      lifecycleGenerationRef.current++;
       sessionRef.current?.close();
       sessionRef.current = null;
     };
   }, []);
 
+  useEffect(() => {
+    if (enabled) return;
+    lifecycleGenerationRef.current++;
+    sessionRef.current?.close();
+    sessionRef.current = null;
+    connectingRef.current = null;
+    setState('idle');
+    setInterim('');
+  }, [enabled]);
+
   const ensure = useCallback(async (acquireMic = false): Promise<boolean> => {
+    if (!enabled) return false;
     if (sessionRef.current && (state === 'ready' || state === 'recording')) return true;
     if (connectingRef.current) {
       // A connect is already in flight (typically the passive prewarm). Wait for
@@ -74,7 +98,9 @@ export function useVoiceStream(
     }
 
     const connect = (async () => {
+      const generation = lifecycleGenerationRef.current;
       const config = await getVoiceConfig();
+      if (!enabledRef.current || generation !== lifecycleGenerationRef.current) return false;
       if (!isVoiceConfigUsable(config) || !agentId) {
         setState('unavailable');
         return false;
@@ -85,14 +111,16 @@ export function useVoiceStream(
         sessionRef.current.close();
         sessionRef.current = null;
       }
-      const session = new VoiceStreamSession(agentId, transportSessionId || crypto.randomUUID(), config, {
+      const session = new VoiceStreamSession(agentId, options.transportSessionId || crypto.randomUUID(), config, {
         onPartial: (text) => {
           setInterim(text);
           onPartialTextRef.current?.(text);
         },
         onFinal: (text) => {
           setInterim('');
-          if (text) onFinalRef.current(text);
+          // Empty completion is still significant: it lets the composer leave
+          // its post-stop transcription state without waiting for a timeout.
+          onFinalRef.current(text);
         },
         onSpeechActivity: (active) => onSpeechActivityRef.current?.(active),
         onRemotePlayback: (active, streamId) => onRemotePlaybackRef.current?.(active, streamId),
@@ -101,23 +129,25 @@ export function useVoiceStream(
           setError(message);
         },
         onState: (s) => setState(s),
-      });
+      }, undefined, options.voiceSessionId);
       sessionRef.current = session;
       const ok = await session.connect({ acquireMic });
-      if (!ok) {
+      if (!ok || !enabledRef.current || generation !== lifecycleGenerationRef.current) {
         session.close();
-        sessionRef.current = null;
+        if (sessionRef.current === session) sessionRef.current = null;
+        return false;
       }
       return ok;
     })();
 
     connectingRef.current = connect;
     const result = await connect;
-    connectingRef.current = null;
+    if (connectingRef.current === connect) connectingRef.current = null;
     return result;
-  }, [agentId, state, transportSessionId]);
+  }, [agentId, enabled, state, options.transportSessionId, options.voiceSessionId]);
 
   const start = useCallback(async (): Promise<boolean> => {
+    if (!enabled) return false;
     setError(null);
     // Create and resume Web Audio before the first await while this call still
     // belongs to the user's click/tap. Firefox may otherwise suspend a context
@@ -142,14 +172,27 @@ export function useVoiceStream(
       void captureContext.close().catch(() => undefined);
     }
     return ok;
-  }, [ensure]);
+  }, [enabled, ensure]);
 
-  const stop = useCallback((opts: { releaseMic?: boolean } = {}) => {
+  const stop = useCallback((opts: { releaseMic?: boolean; discard?: boolean } = {}) => {
     sessionRef.current?.stopUtterance(opts);
+  }, []);
+
+  const retryTranscription = useCallback(() => {
+    sessionRef.current?.retryTranscription();
   }, []);
 
   const interruptPlayback = useCallback(() => {
     sessionRef.current?.interruptPlayback();
+  }, []);
+
+  const disconnect = useCallback(() => {
+    lifecycleGenerationRef.current++;
+    sessionRef.current?.close();
+    sessionRef.current = null;
+    connectingRef.current = null;
+    setState('idle');
+    setInterim('');
   }, []);
 
   return {
@@ -161,6 +204,8 @@ export function useVoiceStream(
     ensure,
     start,
     stop,
+    retryTranscription,
     interruptPlayback,
+    disconnect,
   };
 }

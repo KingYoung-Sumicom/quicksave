@@ -15,14 +15,15 @@ import type {
   CardStreamEnd,
   VoiceAgentPlaybackEventRequestPayload,
   VoiceAgentEvent,
+  VoiceAgentTraceEntry,
   VoiceConfig,
 } from '@sumicom/quicksave-shared';
-import { chatCompletion, type ChatMessage, type FetchLike } from './llm.js';
-import { synthesizeSpeech } from './tts.js';
+import { responseCompletion, type ChatMessage, type FetchLike } from './llm.js';
+import { synthesizeSpeech, type SynthesizedSpeech } from './tts.js';
 import { VOICE_AGENT_TOOLS, executeTool, formatCardForBrain, type CodingSessionBridge } from './tools.js';
 import { loadMemory } from './memory.js';
 import { voiceEventLogger } from '../voiceLog.js';
-import { VoiceHistoryStore } from './historyStore.js';
+import { VoiceHistoryStore, type VoiceHistoryEvent } from './historyStore.js';
 
 /** Upper bound on tool round-trips per utterance — a runaway-loop backstop. */
 const MAX_TOOL_TURNS = 6;
@@ -54,6 +55,8 @@ export interface VoiceSessionOpts {
   fetchImpl?: FetchLike;
   /** Injected for tests. */
   historyStore?: VoiceHistoryStore;
+  /** Lets the daemon stream TTS through its WebRTC peer while this session lives in a worker. */
+  speechSynthesizer?: (config: VoiceConfig, text: string) => Promise<SynthesizedSpeech | null>;
 }
 
 export interface VoiceTurnMeta {
@@ -70,6 +73,7 @@ export class VoiceIntermediarySession {
   private readonly cb: VoiceSessionCallbacks;
   private readonly fetchImpl?: FetchLike;
   private readonly history: VoiceHistoryStore;
+  private readonly speechSynthesizer: (config: VoiceConfig, text: string) => Promise<SynthesizedSpeech | null>;
 
   private messages: ChatMessage[] = [];
   private systemPrompt = '';
@@ -85,6 +89,7 @@ export class VoiceIntermediarySession {
   private pendingPlaybackNote = '';
   private pendingCodingChange: PendingCodingChange | null = null;
   private codingChangeSeq = 0;
+  private traceSeq = 0;
 
   constructor(opts: VoiceSessionOpts) {
     this.sessionId = opts.sessionId;
@@ -94,6 +99,8 @@ export class VoiceIntermediarySession {
     this.cb = opts.callbacks;
     this.fetchImpl = opts.fetchImpl;
     this.history = opts.historyStore ?? new VoiceHistoryStore(this.sessionId);
+    this.speechSynthesizer = opts.speechSynthesizer
+      ?? ((config, speechText) => synthesizeSpeech(config, speechText, { fetchImpl: this.fetchImpl }));
     this.ready = this.init();
   }
 
@@ -120,6 +127,9 @@ export class VoiceIntermediarySession {
       this.messages.push({ role: 'system', content: buildCompactionMessage(restored.compactionSummary) });
     }
     this.messages.push(...restored.activeMessages);
+    const proposalState = restorePendingCodingChange(restored.events);
+    this.pendingCodingChange = proposalState.pending;
+    this.codingChangeSeq = proposalState.latestSeq;
   }
 
   /** Handle a final user utterance (STT transcript). Serialized per session. */
@@ -249,6 +259,11 @@ export class VoiceIntermediarySession {
         utteranceId: meta.utteranceId,
       },
     });
+    this.emitTrace('lifecycle', 'turn.started', {
+      text: userMessage.content ?? '',
+      interactionId: meta.interactionId,
+      utteranceId: meta.utteranceId,
+    }, turnId);
 
     this.cb.emit({ kind: 'state', state: 'thinking' });
     try {
@@ -266,7 +281,12 @@ export class VoiceIntermediarySession {
             toolCount: VOICE_AGENT_TOOLS.length,
           },
         });
-        const result = await chatCompletion(this.config, {
+        this.emitTrace('llm', 'llm.request', {
+          model: this.config.agentModel,
+          messages,
+          tools: VOICE_AGENT_TOOLS.map((tool) => tool.function.name),
+        }, turnId);
+        const result = await responseCompletion(this.config, {
           messages,
           tools: VOICE_AGENT_TOOLS,
           fetchImpl: this.fetchImpl,
@@ -283,6 +303,11 @@ export class VoiceIntermediarySession {
             toolCalls: result.toolCalls.map((call) => call.function.name),
           },
         });
+        this.emitTrace('llm', 'llm.response', {
+          content: result.content,
+          toolCalls: result.toolCalls,
+          reasoningSummary: result.reasoningSummary,
+        }, turnId, Date.now() - llmStarted);
         if (this.closed) return;
 
         // If the model requested tools, run them before speaking. This prevents
@@ -295,6 +320,10 @@ export class VoiceIntermediarySession {
           role: 'assistant',
           content: result.content || null,
           ...(result.toolCalls.length ? { tool_calls: result.toolCalls } : {}),
+          ...(result.reasoningItems.length ? { reasoning_items: result.reasoningItems } : {}),
+          ...(result.reasoningItems.length ? {
+            reasoning_source: `${this.config.baseUrl.trim().replace(/\/+$/, '')}|${this.config.agentModel?.trim()}`,
+          } : {}),
         };
         this.messages.push(assistantMessage);
         await this.history.appendChatMessage(assistantMessage);
@@ -311,6 +340,11 @@ export class VoiceIntermediarySession {
             turnId,
             data: { toolName: call.function.name, args },
           });
+          this.emitTrace('tool', 'tool.call', {
+            toolName: call.function.name,
+            args,
+            toolCallId: call.id,
+          }, turnId);
           const toolResult = await executeTool(call.function.name, args, {
             sessionId: this.sessionId,
             cwd: this.cwd,
@@ -334,6 +368,11 @@ export class VoiceIntermediarySession {
               resultChars: toolResult.length,
             },
           });
+          this.emitTrace('tool', 'tool.result', {
+            toolName: call.function.name,
+            toolCallId: call.id,
+            result: toolResult,
+          }, turnId, Date.now() - toolStarted);
           const toolMessage: ChatMessage = { role: 'tool', tool_call_id: call.id, content: toolResult };
           this.messages.push(toolMessage);
           await this.history.appendChatMessage(toolMessage);
@@ -364,6 +403,7 @@ export class VoiceIntermediarySession {
         phase: 'voice_agent',
         turnId,
       });
+      this.emitTrace('lifecycle', 'turn.ended', {}, turnId);
       if (!this.closed) this.cb.emit({ kind: 'state', state: 'idle' });
     }
   }
@@ -372,6 +412,7 @@ export class VoiceIntermediarySession {
     const turnId = meta.turnId;
     this.cb.emit({ kind: 'state', state: 'speaking' });
     this.cb.emit({ kind: 'speech-text', text });
+    this.emitTrace('speech', 'speech.proposed', { text }, turnId);
     voiceEventLogger.log({
       sessionId: this.sessionId,
       event: 'speech.text',
@@ -403,10 +444,10 @@ export class VoiceIntermediarySession {
           textChars: text.length,
         },
       });
-      const speech = await synthesizeSpeech(this.config, text, { fetchImpl: this.fetchImpl });
+      const speech = await this.speechSynthesizer(this.config, text);
       if (this.closed) return;
       if (speech) {
-        const audioId = this.cb.storeAudio(speech.audio, speech.mimeType);
+        const audioId = speech.audio.length > 0 ? this.cb.storeAudio(speech.audio, speech.mimeType) : '';
         voiceEventLogger.log({
           sessionId: this.sessionId,
           event: 'tts.result',
@@ -418,9 +459,18 @@ export class VoiceIntermediarySession {
             audioBytes: speech.audio.length,
             mimeType: speech.mimeType,
             requestId: speech.requestId,
+            streamed: speech.streamed === true,
+            interrupted: speech.interrupted === true,
           },
         });
-        this.cb.emit({ kind: 'speak', audioId, text, mimeType: speech.mimeType });
+        this.cb.emit({
+          kind: 'speak',
+          audioId,
+          text,
+          mimeType: speech.mimeType,
+          streamed: speech.streamed,
+          interrupted: speech.interrupted,
+        });
       } else {
         // No TTS configured — still surface the text so the PWA can render/voice it.
         voiceEventLogger.log({
@@ -466,7 +516,7 @@ export class VoiceIntermediarySession {
 
   private messagesWithLiveContext(): ChatMessage[] {
     const live = this.liveContextForBrain();
-    const messages = sanitizeMessagesForChatCompletion(this.messages);
+    const messages = sanitizeMessagesForResponses(this.messages);
     return [
       ...messages,
       ...(live ? [{
@@ -498,19 +548,19 @@ export class VoiceIntermediarySession {
     };
     void this.history.appendRuntimeEvent('coding_change.proposed', {
       proposalId: id,
-      promptChars: proposal.prompt.length,
+      prompt: proposal.prompt,
       spokenSummary: proposal.spokenSummary,
     });
     return id;
   }
 
-  private confirmCodingChange(proposalId?: string, opts: { interrupt?: boolean } = {}): string {
+  private async confirmCodingChange(proposalId?: string, opts: { interrupt?: boolean } = {}): Promise<string> {
     const pending = this.pendingCodingChange;
     if (!pending) return 'error: no pending coding change proposal to confirm';
     if (proposalId && proposalId !== pending.id) {
       return `error: pending proposal is ${pending.id}, not ${proposalId}`;
     }
-    const ok = this.bridge.sendUserMessageToSession(this.sessionId, pending.prompt, { interrupt: opts.interrupt === true });
+    const ok = await this.bridge.sendUserMessageToSession(this.sessionId, pending.prompt, { interrupt: opts.interrupt === true });
     if (!ok) return 'error: the coding session is not running';
     this.pendingCodingChange = null;
     this.cb.emit({ kind: 'action', summary: `已送出：${pending.spokenSummary}` });
@@ -542,6 +592,27 @@ export class VoiceIntermediarySession {
     }
   }
 
+  private emitTrace(
+    phase: VoiceAgentTraceEntry['phase'],
+    event: string,
+    data: Record<string, unknown>,
+    turnId?: string,
+    durationMs?: number,
+  ): void {
+    this.cb.emit({
+      kind: 'trace',
+      entry: {
+        id: `${this.sessionId}:${++this.traceSeq}`,
+        timestamp: Date.now(),
+        phase,
+        event,
+        turnId,
+        durationMs,
+        data,
+      },
+    });
+  }
+
   private async maybeCompactHistory(): Promise<void> {
     const historyMessages = this.messages.slice(1);
     if (historyMessages.length <= VOICE_HISTORY_MAX_MESSAGES) return;
@@ -566,7 +637,7 @@ export class VoiceIntermediarySession {
   }
 }
 
-export function sanitizeMessagesForChatCompletion(messages: readonly ChatMessage[]): ChatMessage[] {
+export function sanitizeMessagesForResponses(messages: readonly ChatMessage[]): ChatMessage[] {
   const out: ChatMessage[] = [];
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i]!;
@@ -709,4 +780,32 @@ function compactMessageText(message: ChatMessage): string {
   const text = [message.content ?? '', calls].filter(Boolean).join(' ');
   const normalized = text.replace(/\s+/g, ' ').trim();
   return normalized.length > 240 ? `${normalized.slice(0, 240)}…` : normalized;
+}
+
+function restorePendingCodingChange(events: readonly VoiceHistoryEvent[]): {
+  pending: PendingCodingChange | null;
+  latestSeq: number;
+} {
+  let pending: PendingCodingChange | null = null;
+  let latestSeq = 0;
+  for (const event of events) {
+    if (event.type !== 'runtime_event' || !event.data || typeof event.data !== 'object') continue;
+    const data = event.data as Record<string, unknown>;
+    const proposalId = typeof data.proposalId === 'string' ? data.proposalId : '';
+    const match = /^voice-change-(\d+)$/.exec(proposalId);
+    if (match) latestSeq = Math.max(latestSeq, Number(match[1]));
+    if (event.event === 'coding_change.proposed') {
+      const prompt = typeof data.prompt === 'string' ? data.prompt : '';
+      const spokenSummary = typeof data.spokenSummary === 'string' ? data.spokenSummary : '';
+      pending = proposalId && prompt && spokenSummary
+        ? { id: proposalId, prompt, spokenSummary, createdAt: event.ts }
+        : null;
+    } else if (
+      (event.event === 'coding_change.confirmed' || event.event === 'coding_change.cancelled')
+      && pending?.id === proposalId
+    ) {
+      pending = null;
+    }
+  }
+  return { pending, latestSeq };
 }
