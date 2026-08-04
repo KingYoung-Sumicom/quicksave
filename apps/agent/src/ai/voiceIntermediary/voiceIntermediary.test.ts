@@ -11,8 +11,8 @@ import type {
   VoiceConfig,
 } from '@sumicom/quicksave-shared';
 import { upsertBullet, appendMemory, loadMemory, workspaceMemoryPath } from './memory.js';
-import { executeTool, formatCardForBrain, type CodingSessionBridge } from './tools.js';
-import { buildSystemPrompt, sanitizeMessagesForChatCompletion, VoiceIntermediarySession } from './session.js';
+import { executeTool, formatCardForBrain, VOICE_AGENT_TOOLS, type CodingSessionBridge } from './tools.js';
+import { buildRuntimeContextReminder, buildSystemPrompt, sanitizeMessagesForChatCompletion, VoiceIntermediarySession } from './session.js';
 import { VoiceIntermediaryManager, type VoiceManagerBridge } from './manager.js';
 import { chatCompletion } from './llm.js';
 import { synthesizeSpeech } from './tts.js';
@@ -372,12 +372,34 @@ describe('voice system prompt', () => {
     expect(prompt).toContain('grounding 規則');
     expect(prompt).toContain('事實性、回顧性、狀態性、原因判斷、承接前文的回答必須有依據');
     expect(prompt).toContain('先安靜使用 read_voice_history');
-    expect(prompt).toContain('先用 get_status 或 read_cards');
+    expect(prompt).toContain('用 read_cards');
+    expect(prompt).toContain('用 get_status');
     expect(prompt).toContain('我目前沒有看到足夠紀錄');
     expect(prompt).toContain('coding 指令 dispatch 規則');
     expect(prompt).toContain('read-only 調查');
     expect(prompt).toContain('propose_coding_change');
     expect(prompt).toContain('confirm_coding_change');
+    expect(prompt).toContain('直接送進語音合成的口語講稿');
+    expect(prompt).toContain('禁止標題、條列、編號、表格、Markdown');
+    expect(prompt).toContain('不限制內部 tool arguments');
+  });
+
+  it('warns each model request not to imitate stale voice history formatting', () => {
+    const reminder = buildRuntimeContextReminder();
+    expect(reminder).toContain('不是目前 coding 進度的權威來源');
+    expect(reminder).toContain('禁止模仿其格式');
+    expect(reminder).toContain('可直接朗讀的純口語');
+  });
+
+  it('requires user-facing tool summaries to be plain spoken text', () => {
+    const descriptions = Object.fromEntries(VOICE_AGENT_TOOLS.map((tool) => [
+      tool.function.name,
+      `${tool.function.description ?? ''} ${JSON.stringify(tool.function.parameters)}`,
+    ]));
+    expect(descriptions.propose_coding_change).toContain('no Markdown');
+    expect(descriptions.get_status).toContain('plain spoken');
+    expect(descriptions.read_cards).toContain('Never preserve or quote that layout');
+    expect(descriptions.read_voice_history).toContain('never imitate it');
   });
 });
 
@@ -590,6 +612,8 @@ describe('VoiceIntermediarySession', () => {
       expect(sent).toContain('第一句');
       expect(sent).toContain('回答一。');
       expect(sent).toContain('第二句');
+      expect(sent).toContain('禁止模仿其格式');
+      expect(sent.lastIndexOf('第二句')).toBeLessThan(sent.lastIndexOf('禁止模仿其格式'));
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

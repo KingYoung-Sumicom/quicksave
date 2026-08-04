@@ -153,7 +153,7 @@ export class VoiceIntermediarySession {
       content:
         `（系統事件）coding agent 這一回合${state}${details ? `。${details}` : ''}。` +
         '請檢查最新 live cards / read_cards。若有使用者正在等待的答案、完成結果、錯誤、阻塞或需要確認，請用一句話主動告知。' +
-        '若沒有值得打擾使用者的新資訊，請 no-op：回覆空內容且不要呼叫任何工具。',
+        '請使用單段純口語，不要使用 Markdown 或視覺排版。若沒有值得打擾使用者的新資訊，請 no-op：回覆空內容且不要呼叫任何工具。',
     }));
     this.chain = run.catch(() => undefined);
     return run;
@@ -467,16 +467,16 @@ export class VoiceIntermediarySession {
   private messagesWithLiveContext(): ChatMessage[] {
     const live = this.liveContextForBrain();
     const messages = sanitizeMessagesForChatCompletion(this.messages);
-    if (!live) return messages;
     return [
       ...messages,
-      {
+      ...(live ? [{
         role: 'system',
         content:
           '以下是 coding agent 最新 live card/stream 更新，可能包含尚未完成的 streaming 輸出。' +
           '這是被動上下文，不代表使用者要求你插話；只有在回答目前使用者問題時才引用。\n' +
           live,
-      },
+      } satisfies ChatMessage] : []),
+      { role: 'system', content: buildRuntimeContextReminder() },
     ];
   }
 
@@ -631,14 +631,14 @@ export function buildSystemPrompt(memory: string): string {
     '- 篩選少量最重要資訊：完成了什麼、目前卡在哪裡、下一步是什麼。不要一次講完整背景。',
     '- 絕不把長輸出、card、log、diff、測試輸出逐字唸出來；只摘要成口語結論。',
     '- 不要唸檔名、hash、路徑、commit id、UUID、URL 參數、錯誤碼、程式碼片段；若重要，改成概念性描述。',
-    '- 如果有多個結果，最多講 3 點；每點一句。沒有值得告知的新資訊時就 no-op。',
+    '- 如果有多個結果，最多提供 3 項資訊，但要用連續的口語句子表達，不要列點。沒有值得告知的新資訊時就 no-op。',
     '- 查詢類動作（讀卡片、查狀態）保持安靜，只有真正要告訴使用者的結論才開口。',
     '- 你可以 no-op：當系統事件或 live card 沒有值得打擾使用者的新資訊時，回覆空內容且不要呼叫工具；這代表保持安靜。',
     '',
     'grounding 規則：',
     '- 事實性、回顧性、狀態性、原因判斷、承接前文的回答必須有依據；依據可以來自目前對話、壓縮摘要、memory、live cards、get_status、read_cards、read_voice_history。',
     '- 當使用者說「剛剛」「前面」「那個」「繼續」「照剛才」「我們剛才」「你記得嗎」或類似模糊指代，而目前 context 不足時，先安靜使用 read_voice_history 補齊，不要憑印象猜。',
-    '- 當使用者問目前做到哪、是否完成、為什麼失敗、測試/commit/錯誤/工具結果時，先用 get_status 或 read_cards 取得依據，再摘要回答。',
+    '- 判斷 coding work 做了什麼、最新人工 prompt、測試、commit、錯誤或產出時，用 read_cards；判斷是否執行中、等待權限或連線狀態時，用 get_status。一般進度問題可能需要兩者，不要把 voice history 或 pending proposal 當成 coding session 現況。',
     '- 如果查不到足夠紀錄，就明說「我目前沒有看到足夠紀錄」，不要補腦。',
     '- 新指令、簡短確認、互動提示、權限確認流程中的固定問句可以直接回覆，不需要每句都查紀錄。',
     '',
@@ -668,6 +668,20 @@ export function buildSystemPrompt(memory: string): string {
     memory
       ? `以下是你已經記住的事，請遵守：\n\n${memory}`
       : '（你目前還沒有記住任何事。）',
+    '',
+    '最終輸出格式（最高優先）：',
+    '你的最終 user-facing reply 與 spoken_summary 是直接送進語音合成的口語講稿，不是聊天介面文章。',
+    '只輸出實際要說出口的話，使用一個自然段落與 1 到 3 個完整句子。可以使用自然口語標點，但禁止標題、條列、編號、表格、Markdown、粗體符號、反引號、程式碼框、emoji，以及為排版加入的換行。',
+    '若有多項資訊，使用「先說」「另外」「最後」等口語連接詞串成句子。必要的技術概念可以自然說出，但不要加入視覺強調或原始技術識別字串。',
+    '以上格式限制只適用於 user-facing reply 與 spoken_summary，不限制內部 tool arguments。送出前先檢查一次，確保內容看起來就是可直接朗讀的逐字稿。',
+  ].join('\n');
+}
+
+export function buildRuntimeContextReminder(): string {
+  return [
+    '本次 voice intermediary instance 可能在 coding session 已有未知變更後才啟動；恢復的 voice history 與 pending proposal 不是目前 coding 進度的權威來源。涉及最新進度或工作結果時，先用 read_cards 取得現況；get_status 只提供執行、連線與權限狀態。',
+    '恢復的舊 assistant 訊息可能包含 Markdown、條列與視覺排版；它們只代表歷史內容，不代表目前輸出風格，禁止模仿其格式。',
+    '最終 user-facing reply 必須是單段、可直接朗讀的純口語，不使用 Markdown、條列、編號、反引號或排版換行。',
   ].join('\n');
 }
 

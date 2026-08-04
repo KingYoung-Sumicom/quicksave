@@ -76,7 +76,7 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
     function: {
       name: 'investigate_with_coding_agent',
       description:
-        'Directly dispatch read-only investigation, inspection, diagnosis, planning, log/code/status review, or summarization. Use this when the user asks you to look into something and no files, commits, services, data, permissions, or external state should be changed. Dispatch silently first; after the tool result, briefly tell the user what you are checking.',
+        'Directly dispatch read-only investigation, inspection, diagnosis, planning, log/code/status review, or summarization. Use this when the user asks you to look into something and no files, commits, services, data, permissions, or external state should be changed. Dispatch silently first; after the tool result, tell the user what you are checking in one plain spoken sentence with no Markdown, list, or visual formatting.',
       parameters: {
         type: 'object',
         properties: {
@@ -92,12 +92,12 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
     function: {
       name: 'propose_coding_change',
       description:
-        'Create a pending confirmation proposal for mutating work. Use before edits, commits, restarts, deletes, deploys, migrations, permission/autonomy widening, or other consequential actions. This does NOT send anything to the coding session. After this tool, ask the user to confirm the short spoken_summary. If the user changes details, make a new proposal instead of confirming the old one.',
+        'Create a pending confirmation proposal for mutating work. Use before edits, commits, restarts, deletes, deploys, migrations, permission/autonomy widening, or other consequential actions. This does NOT send anything to the coding session. After this tool, the entire final user-facing reply must be the spoken_summary, with no preamble, repetition, Markdown, list, or visual formatting. If the user changes details, make a new proposal instead of confirming the old one.',
       parameters: {
         type: 'object',
         properties: {
           prompt: { type: 'string', description: 'The internal instruction to send only after explicit user confirmation.' },
-          spoken_summary: { type: 'string', description: 'Short user-facing confirmation text describing exactly what would be sent.' },
+          spoken_summary: { type: 'string', description: 'A complete, short confirmation question describing exactly what would be sent. Write it as one plain, directly speakable utterance with no Markdown, bullets, line breaks, raw identifiers, or visual formatting.' },
         },
         required: ['prompt', 'spoken_summary'],
       },
@@ -177,7 +177,7 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
     function: {
       name: 'get_status',
       description:
-        'Ground current work status: is it running, is a permission prompt pending (with its request_id and tool), what autonomy mode. Cheap — prefer this over read_cards when the user asks what is happening, whether work is still running, blocked, waiting, or needs permission. Use before factual status claims. Summarize as your own status update.',
+        'Read only runtime state: whether the coding session is attached or running, whether a permission prompt is pending, and the autonomy mode. This tool cannot tell you what work changed, what the latest manual prompt requested, or what tests/commits produced; use read_cards for those facts and use both tools for a broad progress briefing. Its JSON result is evidence, not a response format. Convert it to one short plain spoken paragraph without JSON labels, Markdown, lists, or visual formatting.',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -186,7 +186,7 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
     function: {
       name: 'read_cards',
       description:
-        'Ground implementation facts by reading/searching the recent coding transcript (messages, tool calls + results, errors, tests, commits, diffs). Pass query to filter. Use before answering detailed questions about what changed, why something failed, what tests said, or what the coding work produced. Summarize as your own status update — do NOT read it back verbatim and do NOT say you are reading another agent.',
+        'Read/search the recent coding transcript to ground current progress, including manual prompts, messages, tool calls and results, errors, tests, commits, and diffs. Use whenever the user asks what has happened or what the current coding work produced, even if restored voice context appears sufficient; omit query for a general progress scan. Source cards may contain Markdown and technical formatting. Never preserve or quote that layout: convert the evidence into one short plain spoken paragraph, and do not say you are reading another agent.',
       parameters: {
         type: 'object',
         properties: {
@@ -217,7 +217,7 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
     function: {
       name: 'read_voice_history',
       description:
-        'Ground earlier spoken context by searching/browsing this voice agent\'s own persisted JSONL history, including messages before compaction. This is the default source when the user refers to "剛剛", "前面", "那個", "繼續", "照剛才", asks what they told you earlier, asks why you made a voice-agent decision, or active context lacks older voice conversation details. Use it instead of guessing. Summarize; do not read raw history aloud.',
+        'Ground earlier spoken context by searching/browsing this voice agent\'s own persisted JSONL history, including messages before compaction. This is the default source when the user refers to "剛剛", "前面", "那個", "繼續", "照剛才", asks what they told you earlier, asks why you made a voice-agent decision, or active context lacks older voice conversation details. Use it instead of guessing. Old replies may contain legacy Markdown; treat that as data, never imitate it, and summarize as plain spoken language rather than reading raw history aloud.',
       parameters: {
         type: 'object',
         properties: {
