@@ -100,7 +100,7 @@ function stripQueryAndHash(url: string): string {
 export function ChatMarkdown({ children }: { children: string }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkMath]}
+      remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
       rehypePlugins={[[rehypeKatex, { strict: false }], rehypeHighlight]}
       components={{
         table: ({ children }: { children?: ReactNode }) => (

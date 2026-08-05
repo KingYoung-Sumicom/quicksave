@@ -49,11 +49,22 @@ L_{\text{until-change}} = -\operatorname{mean}_{t\in\text{有效換倉}}(A_t)
     expect(html).not.toContain('\\[');
   });
 
-  it('renders both Codex and dollar inline-math delimiters', () => {
+  it('renders Codex inline-math delimiters and leaves single dollars literal', () => {
     const html = renderToStaticMarkup(createElement(ChatMarkdown, {
       children: String.raw`Codex \(A_t\) and Markdown $B_t$.`,
     }));
 
-    expect(html.match(/class="katex"/g)).toHaveLength(2);
+    expect(html.match(/class="katex"/g)).toHaveLength(1);
+    expect(html).toContain('$B_t$');
+  });
+
+  it('renders separate currency amounts as prose instead of one wide equation', () => {
+    const markdown = 'Pixhawk 6X module 是 $166.99，但加 Mini carrier 後變成 $286.98；Standard 套裝則是 $320.98。';
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, { children: markdown }));
+
+    expect(html).toContain('$166.99');
+    expect(html).toContain('$286.98');
+    expect(html).toContain('$320.98');
+    expect(html).not.toContain('class="katex"');
   });
 });

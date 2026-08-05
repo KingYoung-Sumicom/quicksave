@@ -23,7 +23,8 @@ function replacePairedDelimiters(
   source: string,
   opening: string,
   closing: string,
-  replacement: string,
+  openingReplacement: string,
+  closingReplacement = openingReplacement,
 ): string {
   let output = '';
   let cursor = 0;
@@ -35,9 +36,9 @@ function replacePairedDelimiters(
     if (end < 0) break;
 
     output += source.slice(cursor, start);
-    output += replacement;
+    output += openingReplacement;
     output += source.slice(start + opening.length, end);
-    output += replacement;
+    output += closingReplacement;
     cursor = end + closing.length;
   }
 
@@ -45,8 +46,10 @@ function replacePairedDelimiters(
 }
 
 function replaceLatexDelimiters(source: string): string {
-  const withDisplayMath = replacePairedDelimiters(source, '\\[', '\\]', '$$');
-  return replacePairedDelimiters(withDisplayMath, '\\(', '\\)', '$');
+  const withDisplayMath = replacePairedDelimiters(source, '\\[', '\\]', '$$\n', '\n$$');
+  // With singleDollarTextMath disabled, paired double dollars embedded in a
+  // paragraph are unambiguous inline math. Single dollars remain prose.
+  return replacePairedDelimiters(withDisplayMath, '\\(', '\\)', '$$');
 }
 
 function openingFence(line: string): Fence | null {
