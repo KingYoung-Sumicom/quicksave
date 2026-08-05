@@ -1,9 +1,17 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { useCallback, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
+} from 'react';
 
 const MIN_SCALE = 1;
 const MAX_SCALE = 4;
+const ZOOM_STEP = 0.5;
 
 export interface ZoomTransform {
   scale: number;
@@ -167,14 +175,31 @@ export function PinchZoomImage({
     setTransform({ scale: MIN_SCALE, x: 0, y: 0 });
   }, [setTransform]);
 
+  useEffect(() => {
+    reset();
+  }, [reset, src]);
+
+  const zoomBy = useCallback((delta: number) => {
+    setTransform({
+      ...transformRef.current,
+      scale: transformRef.current.scale + delta,
+    });
+  }, [setTransform]);
+
+  const onWheel = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    zoomBy(event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
+  }, [zoomBy]);
+
   return (
     <div
       ref={containerRef}
-      className={`relative overflow-hidden touch-none ${className}`}
+      className={`relative overflow-hidden touch-none ${transform.scale > MIN_SCALE ? 'cursor-grab active:cursor-grabbing' : ''} ${className}`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endPointer}
       onPointerCancel={endPointer}
+      onWheel={onWheel}
     >
       <img
         ref={imageRef}
@@ -187,12 +212,46 @@ export function PinchZoomImage({
           transformOrigin: 'center',
         }}
       />
+      <div
+        className="absolute right-3 top-3 hidden h-8 items-stretch overflow-hidden rounded border border-slate-600 bg-slate-900/85 text-slate-100 shadow-md backdrop-blur md:flex"
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={() => zoomBy(-ZOOM_STEP)}
+          disabled={transform.scale <= MIN_SCALE}
+          className="flex w-8 items-center justify-center text-lg hover:bg-slate-700 disabled:opacity-35"
+          aria-label="Zoom out"
+          title="Zoom out"
+        >
+          −
+        </button>
+        <button
+          type="button"
+          onClick={reset}
+          className="min-w-14 border-x border-slate-600 px-2 text-xs hover:bg-slate-700"
+          aria-label="Reset image zoom"
+          title="Reset zoom"
+        >
+          {Math.round(transform.scale * 100)}%
+        </button>
+        <button
+          type="button"
+          onClick={() => zoomBy(ZOOM_STEP)}
+          disabled={transform.scale >= MAX_SCALE}
+          className="flex w-8 items-center justify-center text-lg hover:bg-slate-700 disabled:opacity-35"
+          aria-label="Zoom in"
+          title="Zoom in"
+        >
+          +
+        </button>
+      </div>
       {transform.scale > MIN_SCALE && (
         <button
           type="button"
           onPointerDown={(event) => event.stopPropagation()}
           onClick={reset}
-          className="absolute right-3 top-3 rounded-full bg-slate-900/75 px-2.5 py-1 text-xs text-slate-100 shadow-md backdrop-blur"
+          className="absolute right-3 top-3 rounded-full bg-slate-900/75 px-2.5 py-1 text-xs text-slate-100 shadow-md backdrop-blur md:hidden"
           aria-label="Reset image zoom"
           title="Reset zoom"
         >

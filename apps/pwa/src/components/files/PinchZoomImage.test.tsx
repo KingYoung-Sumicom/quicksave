@@ -106,6 +106,29 @@ describe('PinchZoomImage gestures', () => {
     });
 
     expect(image.style.transform).toContain('scale(2)');
-    expect(viewport.querySelector('button')?.textContent).toBe('200%');
+    expect(viewport.querySelector('[aria-label="Reset image zoom"]')?.textContent).toBe('200%');
+  });
+
+  it('supports desktop zoom buttons', async () => {
+    await act(async () => {
+      root.render(<PinchZoomImage src="image.png" alt="Preview" />);
+    });
+    const viewport = host.firstElementChild as HTMLDivElement;
+    const image = viewport.querySelector('img') as HTMLImageElement;
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 200 },
+      clientHeight: { configurable: true, value: 200 },
+    });
+    Object.defineProperties(image, {
+      clientWidth: { configurable: true, value: 200 },
+      clientHeight: { configurable: true, value: 200 },
+    });
+
+    await act(async () => {
+      viewport.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')?.click();
+    });
+
+    expect(image.style.transform).toContain('scale(1.5)');
+    expect(viewport.querySelector('[aria-label="Reset image zoom"]')?.textContent).toBe('150%');
   });
 });
