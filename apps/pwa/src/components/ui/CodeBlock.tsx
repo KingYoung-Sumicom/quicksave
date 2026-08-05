@@ -74,7 +74,7 @@ export function CodeBlock({ children }: { children?: ReactNode }) {
           )}
         </button>
       </div>
-      <pre className="p-3 text-[12px] overflow-x-auto">{children}</pre>
+      <pre className="p-3 text-[12px]">{children}</pre>
     </div>
   );
 }
