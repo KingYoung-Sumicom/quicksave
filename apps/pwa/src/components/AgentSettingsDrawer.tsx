@@ -10,6 +10,7 @@ import { useConnectionStore } from '../stores/connectionStore';
 import { ClaudeSettingsSection } from './settings/ClaudeSettingsSection';
 import { ControlRequestPalette } from './settings/ControlRequestPalette';
 import { pathToHash } from '../lib/pathHash';
+import { SubagentsPanel } from './chat/SubagentsPanel';
 
 export interface SettingsPanelContentProps {
   sessionId?: string;
@@ -30,6 +31,8 @@ export interface SettingsPanelContentProps {
    *  /r/:repoId route. Desktop right panel passes this so the click switches
    *  to its Git tab instead of navigating away. */
   onOpenRepo?: (repoPath: string) => void;
+  /** Mobile utilities drawer includes the session's sub-agent registry. */
+  showSubagents?: boolean;
 }
 
 /**
@@ -50,6 +53,7 @@ export function SettingsPanelContent({
   onClose,
   onOpenFiles,
   onOpenRepo,
+  showSubagents = false,
 }: SettingsPanelContentProps) {
   const navigate = useNavigate();
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -137,6 +141,13 @@ export function SettingsPanelContent({
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {activeSessionId && showSubagents && (
+        <div className="space-y-3">
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Sub-agents</h3>
+          <SubagentsPanel embedded />
         </div>
       )}
 
@@ -278,7 +289,7 @@ export function AgentSettingsDrawer({ isOpen, onClose, ...rest }: AgentSettingsD
           </svg>
         </button>
       </div>
-      <SettingsPanelContent onClose={onClose} {...rest} />
+      <SettingsPanelContent {...rest} onClose={onClose} showSubagents />
     </SwipeableDrawer>
   );
 }

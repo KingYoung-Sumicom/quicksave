@@ -24,6 +24,7 @@ import { Spinner } from './ui/Spinner';
 import { ArtifactPreviewPane } from './chat/ArtifactMessage';
 import { VoiceCoworkerSidebar } from './VoiceCoworkerControl';
 import type { UseVoiceAgent } from '../hooks/useVoiceAgent';
+import { SubagentsPanel } from './chat/SubagentsPanel';
 
 export type SessionOps = Omit<SettingsPanelContentProps, 'onClose' | 'onOpenFiles'>;
 
@@ -142,6 +143,12 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps, voiceAg
           }
         />
         <PanelTab
+          label="Agents"
+          active={mode === 'subagents'}
+          onClick={() => toggle('subagents')}
+          icon={<span className="text-xs" aria-hidden>AI</span>}
+        />
+        <PanelTab
           label="Files"
           active={mode === 'files'}
           onClick={() => toggle('files')}
@@ -190,6 +197,7 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps, voiceAg
       {/* Content */}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {mode === 'voice' && <VoiceCoworkerSidebar voiceAgent={voiceAgent} />}
+        {mode === 'subagents' && <SubagentsPanel />}
         {mode === 'files' && <FilesPanel agentId={agentId} cwd={cwd} />}
         {mode === 'git' && <GitPanel agentId={agentId} cwd={cwd} />}
         {mode === 'settings' && <SettingsPanel sessionOps={sessionOps} />}

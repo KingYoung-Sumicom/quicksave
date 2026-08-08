@@ -1879,7 +1879,7 @@ describe('cardAdapter — surfaced ThreadItem variants', () => {
     expect((reviewCards[1].card as { text?: string }).text).toMatch(/Exited review mode/);
   });
 
-  it('collabAgentToolCall emits a tool_call card with the prompt', async () => {
+  it('collabAgentToolCall emits a structured sub-agent card with the prompt', async () => {
     const h = harness();
     await h.send('item/started', {
       threadId: 'thr_test',
@@ -1918,15 +1918,16 @@ describe('cardAdapter — surfaced ThreadItem variants', () => {
       turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
     });
     await h.consume;
-    const toolAdds = h.events.filter(
+    const subagentAdds = h.events.filter(
       (e): e is Extract<typeof e, { type: 'add' }> =>
-        e.type === 'add' && (e.card as { type?: string }).type === 'tool_call',
+        e.type === 'add' && (e.card as { type?: string }).type === 'subagent',
     );
-    expect(toolAdds.length).toBeGreaterThanOrEqual(1);
-    expect((toolAdds[0].card as { toolName?: string }).toolName).toMatch(/^collab:/);
+    expect(subagentAdds).toHaveLength(1);
+    expect((subagentAdds[0].card as { agentId?: string }).agentId).toBe('child_1');
+    expect((subagentAdds[0].card as { prompt?: string }).prompt).toBe('investigate the bug');
   });
 
-  it('subAgentActivity emits one info card across the item lifecycle', async () => {
+  it('subAgentActivity updates one structured sub-agent card across the item lifecycle', async () => {
     const h = harness();
     const item = {
       type: 'subAgentActivity',
@@ -1945,9 +1946,13 @@ describe('cardAdapter — surfaced ThreadItem variants', () => {
 
     const activityCards = h.events.filter(
       (e): e is Extract<typeof e, { type: 'add' }> =>
-        e.type === 'add' && (e.card as { text?: string }).text?.includes('Sub-agent started: agents/reviewer') === true,
+        e.type === 'add' && (e.card as { type?: string }).type === 'subagent',
     );
     expect(activityCards).toHaveLength(1);
+    expect((activityCards[0].card as { agentPath?: string }).agentPath).toBeUndefined();
+    expect(h.events.some(
+      (e) => e.type === 'update' && (e.patch as { agentPath?: string }).agentPath === 'agents/reviewer',
+    )).toBe(true);
     expect(h.events.some(
       (e) => e.type === 'add' && (e.card as { text?: string }).text?.includes('Internal adapter error'),
     )).toBe(false);

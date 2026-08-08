@@ -46,6 +46,10 @@ function cardContainsArtifact(card: Card): boolean {
     && parseMarkdownArtifactRef(card.result?.content) !== null;
 }
 
+function isVisibleSystemAlert(card: Card): boolean {
+  return card.type === 'system' && (card.subtype === 'error' || card.subtype === 'warning');
+}
+
 export function shouldCollapseCard(
   card: Card,
   collapseIntermediate: boolean,
@@ -54,6 +58,9 @@ export function shouldCollapseCard(
   // Artifacts are user-facing deliverables, even when transported as a tool
   // result. They must split a folded run instead of disappearing inside it.
   if (cardContainsArtifact(card)) return false;
+  // Provider and runtime failures need to remain visible after a turn ends;
+  // otherwise they get mistaken for an item inside the collapsed tool run.
+  if (isVisibleSystemAlert(card)) return false;
   if (collapseIntermediate) return true;
   return hideToolCalls
     && (

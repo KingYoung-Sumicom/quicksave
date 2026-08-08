@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment, ConfigValue, NativeSessionSummary, SlashCommandInfo } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, ConfigValue, NativeSessionSummary, SlashCommandInfo, SubagentActivity } from '@sumicom/quicksave-shared';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -38,6 +38,8 @@ import type { SandboxMode } from './schema/generated/v2/SandboxMode.js';
 import type { ThreadStartParams } from './schema/generated/v2/ThreadStartParams.js';
 import type { ThreadStartResponse } from './schema/generated/v2/ThreadStartResponse.js';
 import type { Thread } from './schema/generated/v2/Thread.js';
+import type { ThreadItem } from './schema/generated/v2/ThreadItem.js';
+import type { ThreadReadResponse } from './schema/generated/v2/ThreadReadResponse.js';
 import type { ThreadListParams } from './schema/generated/v2/ThreadListParams.js';
 import type { ThreadListResponse } from './schema/generated/v2/ThreadListResponse.js';
 import type { ThreadResumeParams } from './schema/generated/v2/ThreadResumeParams.js';
@@ -302,6 +304,8 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   private readonly interruptedTurnIds = new Set<string>();
   private unsubscribeSessionNotifications: (() => void) | null = null;
   private unsubscribeTransportClose: (() => void) | null = null;
+  private readonly knownSubagentThreadIds = new Set<string>();
+  private readonly subagentRefreshes = new Map<string, Promise<void>>();
 
   constructor(args: SessionArgs) {
     this.handle = args.handle;
@@ -737,6 +741,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       this.interruptedTurnIds.delete(turnId);
     }
     try {
+      await Promise.allSettled(this.subagentRefreshes.values());
       await this.cardBuilder.persistCards();
     } catch {
       // best-effort
@@ -824,9 +829,15 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
 
   private handleSessionNotification(notification: { method: string; params: unknown }): void {
     try {
+      const notificationThreadId = threadIdFromParams(notification.params);
+      if (notificationThreadId && notificationThreadId !== this.threadId && this.knownSubagentThreadIds.has(notificationThreadId)) {
+        this.scheduleSubagentRefresh(notificationThreadId);
+        return;
+      }
       this.observeTokenUsageNotification(notification);
       const turnId = this.ensureTurnConsumerForNotification(notification);
       this.dispatchTurnNotification(notification, turnId);
+      this.observeSubagentThreads(notification);
       this.maybeAutoSteerQueuedAtToolCall(notification, turnId);
 
       switch (notification.method) {
@@ -850,6 +861,36 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
         `[codex-app] failed to handle session notification method=${notification.method} session=${this.threadId.slice(0, 8)} params=${codexProtocolPreview(notification.params)} error=${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  private observeSubagentThreads(notification: { method: string; params: unknown }): void {
+    if (notification.method !== 'item/started' && notification.method !== 'item/completed') return;
+    const item = (notification.params as { item?: ThreadItem }).item;
+    if (!item) return;
+    const ids = item.type === 'subAgentActivity'
+      ? [item.agentThreadId]
+      : item.type === 'collabAgentToolCall'
+        ? item.receiverThreadIds
+        : [];
+    for (const id of ids) {
+      this.knownSubagentThreadIds.add(id);
+      this.scheduleSubagentRefresh(id);
+    }
+  }
+
+  private scheduleSubagentRefresh(threadId: string): void {
+    if (this.subagentRefreshes.has(threadId)) return;
+    const refresh = new Promise<void>((resolve) => setTimeout(resolve, 200))
+      .then(async () => {
+        const response = await this.handle.rpc.request<ThreadReadResponse>('thread/read', { threadId, includeTurns: true });
+        const event = this.cardBuilder.subagentDetails(threadId, subagentThreadSnapshot(response.thread));
+        if (event) this.callbacks.emitCardEvent(event);
+      })
+      .catch((err) => {
+        console.warn(`[codex-app] failed to refresh sub-agent ${threadId.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`);
+      })
+      .finally(() => this.subagentRefreshes.delete(threadId));
+    this.subagentRefreshes.set(threadId, refresh);
   }
 
   private observeTokenUsageNotification(notification: { method: string; params: unknown }): void {
@@ -1035,6 +1076,69 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
 }
 
 // ── helpers ──
+
+function threadIdFromParams(params: unknown): string | null {
+  if (typeof params !== 'object' || params === null) return null;
+  const candidate = (params as { threadId?: unknown }).threadId;
+  return typeof candidate === 'string' ? candidate : null;
+}
+
+function subagentThreadSnapshot(thread: Thread): {
+  description: string;
+  status: 'running' | 'completed' | 'failed' | 'stopped';
+  summary?: string;
+  statusMessage?: string;
+  activities: SubagentActivity[];
+} {
+  const activities: SubagentActivity[] = [];
+  let summary: string | undefined;
+  for (const turn of thread.turns) {
+    for (const item of turn.items) {
+      if (item.type === 'agentMessage') {
+        summary = item.text || summary;
+        activities.push({ id: item.id, type: 'message', title: 'Response', detail: item.text });
+      } else if (item.type === 'reasoning') {
+        const detail = [...(item.summary ?? []), ...(item.content ?? [])].join('\n').trim();
+        if (detail) activities.push({ id: item.id, type: 'reasoning', title: 'Reasoning', detail });
+      } else if (item.type === 'commandExecution') {
+        activities.push({
+          id: item.id,
+          type: 'tool',
+          title: item.command,
+          detail: item.aggregatedOutput || undefined,
+          status: item.status === 'failed' ? 'failed' : item.status === 'completed' ? 'completed' : 'running',
+        });
+      } else if (item.type === 'fileChange') {
+        activities.push({
+          id: item.id,
+          type: 'tool',
+          title: `Changed ${item.changes.length} file${item.changes.length === 1 ? '' : 's'}`,
+          status: item.status === 'failed' ? 'failed' : item.status === 'completed' ? 'completed' : 'running',
+        });
+      } else if (item.type === 'mcpToolCall') {
+        activities.push({
+          id: item.id,
+          type: 'tool',
+          title: `${item.server}:${item.tool}`,
+          detail: item.error?.message ?? undefined,
+          status: item.status === 'failed' ? 'failed' : item.status === 'completed' ? 'completed' : 'running',
+        });
+      }
+    }
+  }
+  const status = thread.status.type === 'active'
+    ? 'running'
+    : thread.status.type === 'systemError'
+      ? 'failed'
+      : 'completed';
+  return {
+    description: thread.agentNickname || thread.agentRole || thread.preview || 'Sub-agent',
+    status,
+    summary,
+    statusMessage: thread.status.type,
+    activities: activities.slice(-80),
+  };
+}
 
 function notificationBelongsToThread(params: unknown, threadId: string): boolean {
   if (typeof params !== 'object' || params === null) return true;

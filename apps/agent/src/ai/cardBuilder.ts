@@ -1238,7 +1238,7 @@ export class StreamCardBuilder {
     extras?: { prompt?: string; subagentType?: string; requestedModel?: string },
   ): CardEvent {
     this.currentTextCardId = null;
-    const id = this.nextId();
+    const existingCardId = this.agentIdToCardId.get(agentId);
 
     const stashed = toolUseId ? this.agentToolUseStash.get(toolUseId) : undefined;
     if (toolUseId) this.agentToolUseStash.delete(toolUseId);
@@ -1246,6 +1246,18 @@ export class StreamCardBuilder {
     const subagentType = stashed?.subagentType ?? extras?.subagentType;
     const requestedModel = stashed?.requestedModel ?? extras?.requestedModel;
     const prompt = extras?.prompt ?? stashed?.prompt;
+
+    if (existingCardId) {
+      return this.updateEvent(existingCardId, {
+        description,
+        status: 'running',
+        ...(subagentType ? { subagentType } : {}),
+        ...(requestedModel ? { requestedModel } : {}),
+        ...(prompt ? { prompt } : {}),
+      });
+    }
+
+    const id = this.nextId();
 
     const card: SubagentCard = {
       type: 'subagent', id, timestamp: Date.now(),
@@ -1264,6 +1276,16 @@ export class StreamCardBuilder {
     return this.addEvent(card, afterCardId);
   }
 
+  subagentDetails(
+    agentId: string,
+    patch: Partial<Pick<SubagentCard,
+      'description' | 'status' | 'summary' | 'agentPath' | 'statusMessage'
+      | 'requestedModel' | 'requestedReasoningEffort' | 'activities'>>,
+  ): CardEvent | null {
+    const cardId = this.agentIdToCardId.get(agentId);
+    return cardId ? this.updateEvent(cardId, patch) : null;
+  }
+
   subagentProgress(agentId: string, toolUseId: string | undefined, toolUseCount?: number, lastToolName?: string): CardEvent | null {
     const cardId = this.agentIdToCardId.get(agentId)
       ?? (toolUseId ? this.agentIdToCardId.get(toolUseId) : undefined);
@@ -1272,6 +1294,10 @@ export class StreamCardBuilder {
     if (toolUseCount !== undefined) patch.toolUseCount = toolUseCount;
     if (lastToolName !== undefined) patch.lastToolName = lastToolName;
     return this.updateEvent(cardId, patch);
+  }
+
+  hasSubagent(agentId: string): boolean {
+    return this.agentIdToCardId.has(agentId);
   }
 
   subagentEnd(

@@ -55,6 +55,14 @@ export function SessionAppBar({
     panelMode === null ? (
       <div className="flex items-center gap-0.5">
         <button
+          onClick={() => togglePanel('subagents')}
+          className="p-1.5 rounded transition-colors text-slate-400 hover:text-slate-200 hover:bg-slate-700/60"
+          aria-label="Open sub-agent panel"
+          title="Sub-agents"
+        >
+          <span className="block text-[10px] font-semibold leading-4">AI</span>
+        </button>
+        <button
           onClick={() => togglePanel('files')}
           className="p-1.5 rounded transition-colors text-slate-400 hover:text-slate-200 hover:bg-slate-700/60"
           aria-label="Open file browser"

@@ -3,6 +3,31 @@
 import { useState } from 'react';
 import type { SystemCard } from '@sumicom/quicksave-shared';
 
+const URL_PATTERN = /https?:\/\/[^\s)]+/g;
+
+function linkedText(text: string) {
+  const parts = text.split(URL_PATTERN);
+  const urls = text.match(URL_PATTERN) ?? [];
+
+  return parts.flatMap((part, index) => {
+    const url = urls[index];
+    return url
+      ? [
+          part,
+          <a
+            key={`${url}:${index}`}
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="underline decoration-red-400/50 underline-offset-2 hover:text-red-200"
+          >
+            {url}
+          </a>,
+        ]
+      : [part];
+  });
+}
+
 /** "1m 25s" / "45s" — mirrors the agent's formatDurationMs for the badge. */
 function formatDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '0s';
@@ -30,6 +55,42 @@ export function SystemMessage({ card }: { card: SystemCard }) {
 
   if (meta?.kind === 'stop_hook_summary') {
     return <StopHookSummary meta={meta} fallbackText={card.text} />;
+  }
+
+  if (card.subtype === 'error') {
+    return (
+      <div className="my-2 mr-auto w-full max-w-2xl rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2.5 text-left shadow-sm">
+        <div className="mb-1 text-[11px] font-semibold uppercase text-red-300">Request failed</div>
+        <div className="whitespace-pre-wrap break-words text-sm text-red-100">
+          {linkedText(card.text)}
+        </div>
+      </div>
+    );
+  }
+
+  if (card.subtype === 'warning') {
+    return (
+      <div className="my-2 mr-auto w-full max-w-2xl rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-left shadow-sm">
+        <div className="mb-1 text-[11px] font-semibold uppercase text-amber-300">Warning</div>
+        <div className="whitespace-pre-wrap break-words text-sm text-amber-100">{linkedText(card.text)}</div>
+      </div>
+    );
+  }
+
+  if (card.subtype === 'compacted') {
+    return (
+      <div className="my-1 mr-auto inline-flex rounded-md border border-cyan-500/25 bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-200">
+        {card.text}
+      </div>
+    );
+  }
+
+  if (card.subtype === 'info') {
+    return (
+      <div className="my-1.5 mr-auto w-full max-w-2xl rounded-md border border-slate-700 bg-slate-800/60 px-3 py-2 text-left">
+        <div className="whitespace-pre-wrap break-words text-xs text-slate-300">{linkedText(card.text)}</div>
+      </div>
+    );
   }
 
   // Plain one-line system note.

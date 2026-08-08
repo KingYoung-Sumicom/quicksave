@@ -680,10 +680,11 @@ export function createCodexTurnStreamConsumer(
       }
 
       case 'collabAgentToolCall': {
-        // A sub-agent collaboration. Render as a tool_call card so the
-        // PWA's existing tool view picks it up; the toolName is
-        // `collab:${tool}` to namespace it away from real tools.
         flushText();
+        if (item.receiverThreadIds.length > 0) {
+          emitCollabSubagents(item);
+          return;
+        }
         const toolName = `collab:${item.tool}`;
         emit(
           cb.toolUse(
@@ -823,9 +824,10 @@ export function createCodexTurnStreamConsumer(
       }
 
       case 'collabAgentToolCall': {
-        // Mirror mcpToolCall: ensure the card exists, then surface the
-        // final state. Schema doesn't expose a result body so we
-        // synthesize a one-liner from status + receivers.
+        if (item.receiverThreadIds.length > 0) {
+          emitCollabSubagents(item);
+          return;
+        }
         if (!cb.hasToolCard(item.id)) {
           emit(
             cb.toolUse(
@@ -884,13 +886,42 @@ export function createCodexTurnStreamConsumer(
   const emitSubAgentActivity = (item: Extract<ThreadItem, { type: 'subAgentActivity' }>): void => {
     if (state.handledSubAgentActivityIds.has(item.id)) return;
     state.handledSubAgentActivityIds.add(item.id);
-    const label = item.agentPath || item.agentThreadId;
-    const verb = item.kind === 'started'
-      ? 'started'
-      : item.kind === 'interacted'
-        ? 'active'
-        : 'interrupted';
-    emit(cb.systemMessage(`Sub-agent ${verb}: ${label}`, item.kind === 'interrupted' ? 'warning' : 'info'));
+    if (!cb.hasSubagent(item.agentThreadId)) {
+      emit(cb.subagentStart(item.agentPath || 'Sub-agent', item.agentThreadId));
+    }
+    emit(cb.subagentDetails(item.agentThreadId, {
+      agentPath: item.agentPath,
+      description: item.agentPath || 'Sub-agent',
+      status: item.kind === 'interrupted' ? 'stopped' : 'running',
+      statusMessage: item.kind === 'interacted' ? 'Active' : item.kind === 'started' ? 'Started' : 'Interrupted',
+    }));
+  };
+
+  const emitCollabSubagents = (item: Extract<ThreadItem, { type: 'collabAgentToolCall' }>): void => {
+    for (const agentId of item.receiverThreadIds) {
+      const state = item.agentsStates[agentId];
+      if (!cb.hasSubagent(agentId)) {
+        emit(cb.subagentStart(item.prompt || 'Sub-agent', agentId, item.id, {
+          prompt: item.prompt ?? undefined,
+          requestedModel: item.model ?? undefined,
+        }));
+      }
+      const status = state?.status === 'completed' || state?.status === 'shutdown'
+        ? 'completed'
+        : state?.status === 'errored'
+          ? 'failed'
+          : state?.status === 'interrupted'
+            ? 'stopped'
+            : item.status === 'failed'
+              ? 'failed'
+              : 'running';
+      emit(cb.subagentDetails(agentId, {
+        status,
+        statusMessage: state?.message ?? `${item.tool} ${item.status}`,
+        requestedModel: item.model ?? undefined,
+        requestedReasoningEffort: item.reasoningEffort ?? undefined,
+      }));
+    }
   };
 
   const emitFileChangeCards = (

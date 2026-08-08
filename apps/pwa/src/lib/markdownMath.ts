@@ -25,6 +25,7 @@ function replacePairedDelimiters(
   closing: string,
   openingReplacement: string,
   closingReplacement = openingReplacement,
+  isValidPair: (source: string, start: number, end: number) => boolean = () => true,
 ): string {
   let output = '';
   let cursor = 0;
@@ -34,6 +35,12 @@ function replacePairedDelimiters(
     if (start < 0) break;
     const end = findUnescaped(source, closing, start + opening.length);
     if (end < 0) break;
+
+    if (!isValidPair(source, start, end)) {
+      output += source.slice(cursor, start + opening.length);
+      cursor = start + opening.length;
+      continue;
+    }
 
     output += source.slice(cursor, start);
     output += openingReplacement;
@@ -45,11 +52,67 @@ function replacePairedDelimiters(
   return output + source.slice(cursor);
 }
 
+function lineBounds(source: string, index: number): { start: number; end: number } {
+  const previousNewline = source.lastIndexOf('\n', index - 1);
+  const nextNewline = source.indexOf('\n', index);
+  return {
+    start: previousNewline < 0 ? 0 : previousNewline + 1,
+    end: nextNewline < 0 ? source.length : nextNewline,
+  };
+}
+
+function isStandaloneDelimiter(source: string, index: number, tokenLength: number): boolean {
+  const line = lineBounds(source, index);
+  return source.slice(line.start, index).trim() === ''
+    && source.slice(index + tokenLength, line.end).trim() === '';
+}
+
+function validDisplayPair(source: string, start: number, end: number): boolean {
+  const content = source.slice(start + 2, end);
+  if (!content.includes('\n')) return content.trim().length > 0;
+  return isStandaloneDelimiter(source, start, 2)
+    && isStandaloneDelimiter(source, end, 2)
+    && content.trim().length > 0;
+}
+
+function validInlinePair(source: string, start: number, end: number): boolean {
+  const content = source.slice(start + 2, end);
+  return !content.includes('\n') && content.trim().length > 0;
+}
+
+function replaceDisplayDelimiters(source: string): string {
+  let output = '';
+  let cursor = 0;
+
+  while (cursor < source.length) {
+    const start = findUnescaped(source, '\\[', cursor);
+    if (start < 0) break;
+    const end = findUnescaped(source, '\\]', start + 2);
+    if (end < 0) break;
+
+    if (!validDisplayPair(source, start, end)) {
+      output += source.slice(cursor, start + 2);
+      cursor = start + 2;
+      continue;
+    }
+
+    const content = source.slice(start + 2, end);
+    output += source.slice(cursor, start);
+    // Standalone multiline delimiters already provide their own line breaks
+    // and indentation. Replacing them in place keeps both $$ markers inside
+    // the same Markdown list/blockquote container.
+    output += content.includes('\n') ? `$$${content}$$` : `$$\n${content}\n$$`;
+    cursor = end + 2;
+  }
+
+  return output + source.slice(cursor);
+}
+
 function replaceLatexDelimiters(source: string): string {
-  const withDisplayMath = replacePairedDelimiters(source, '\\[', '\\]', '$$\n', '\n$$');
+  const withDisplayMath = replaceDisplayDelimiters(source);
   // With singleDollarTextMath disabled, paired double dollars embedded in a
   // paragraph are unambiguous inline math. Single dollars remain prose.
-  return replacePairedDelimiters(withDisplayMath, '\\(', '\\)', '$$');
+  return replacePairedDelimiters(withDisplayMath, '\\(', '\\)', '$$', '$$', validInlinePair);
 }
 
 function openingFence(line: string): Fence | null {
