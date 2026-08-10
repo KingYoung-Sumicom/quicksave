@@ -12,6 +12,7 @@ describe('parseVoiceConfig', () => {
       transcribeModel: 'whisper-1',
       streamModel: 'gpt-4o-transcribe',
       agentModel: 'gpt-4o-mini',
+      agentReasoningEffort: 'medium',
       ttsModel: 'gpt-4o-mini-tts',
       ttsVoice: 'nova',
       ttsInstructions: '聲音自然、溫和，語速稍快。',
@@ -23,6 +24,7 @@ describe('parseVoiceConfig', () => {
       transcribeModel: 'whisper-1',
       streamModel: 'gpt-4o-transcribe',
       agentModel: 'gpt-4o-mini',
+      agentReasoningEffort: 'medium',
       ttsModel: 'gpt-4o-mini-tts',
       ttsVoice: 'nova',
       ttsInstructions: '聲音自然、溫和，語速稍快。',
@@ -33,9 +35,19 @@ describe('parseVoiceConfig', () => {
     const cfg = parseVoiceConfig(JSON.stringify({ baseUrl: 'http://x/v1', transcribeModel: 'whisper-1' }));
     expect(cfg).toMatchObject({ baseUrl: 'http://x/v1', mode: 'streaming' });
     expect(cfg?.agentModel).toBeUndefined();
+    expect(cfg?.agentReasoningEffort).toBeUndefined();
     expect(cfg?.ttsModel).toBeUndefined();
     expect(cfg?.ttsVoice).toBeUndefined();
     expect(cfg?.ttsInstructions).toBeUndefined();
+  });
+
+  it('drops unsupported voice reasoning effort values', () => {
+    const cfg = parseVoiceConfig(JSON.stringify({
+      baseUrl: 'http://x/v1',
+      transcribeModel: 'whisper-1',
+      agentReasoningEffort: 'turbo',
+    }));
+    expect(cfg?.agentReasoningEffort).toBeUndefined();
   });
 
   it('migrates the pre-split single `model` field to transcribeModel', () => {

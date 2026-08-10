@@ -17,6 +17,8 @@ import type {
   VoiceAgentPlaybackEventResponsePayload,
   VoiceAgentFetchAudioRequestPayload,
   VoiceAgentFetchAudioResponsePayload,
+  VoiceAgentReloadRequestPayload,
+  VoiceAgentReloadResponsePayload,
   VoiceLogEventRequestPayload,
   VoiceLogEventResponsePayload,
   VoiceConfig,
@@ -28,24 +30,25 @@ export async function attachVoiceAgent(
   agentId: string,
   sessionId: string,
   config: VoiceConfig,
+  clientId?: string,
 ): Promise<VoiceAgentAttachResponsePayload> {
   const bus = getBusForAgent(agentId);
   if (!bus) return { ok: false, active: false, error: 'Not connected to an agent.' };
   return bus.command<VoiceAgentAttachResponsePayload, VoiceAgentAttachRequestPayload>(
     'voice-agent:attach',
-    { sessionId, config },
+    { sessionId, config, clientId },
     { timeoutMs: 15_000 },
   );
 }
 
 /** Tear down the voice agent for a session. Best-effort. */
-export async function detachVoiceAgent(agentId: string, sessionId: string): Promise<void> {
+export async function detachVoiceAgent(agentId: string, sessionId: string, clientId?: string): Promise<void> {
   const bus = getBusForAgent(agentId);
   if (!bus) return;
   await bus
     .command<VoiceAgentDetachResponsePayload, VoiceAgentDetachRequestPayload>(
       'voice-agent:detach',
-      { sessionId },
+      { sessionId, clientId },
       { timeoutMs: 5_000 },
     )
     .catch(() => undefined);
@@ -96,6 +99,33 @@ export async function fetchVoiceAgentAudio(
   );
   if (!res.audioBase64) return null;
   return { bytes: decodeBase64(res.audioBase64), mimeType: res.mimeType || 'audio/mpeg' };
+}
+
+/** Restart only the intermediary brain worker while preserving the daemon,
+ * browser audio pipeline, and attached coding session. */
+export async function reloadVoiceAgent(
+  agentId: string,
+  sessionId: string,
+): Promise<VoiceAgentReloadResponsePayload> {
+  const bus = getBusForAgent(agentId);
+  if (!bus) {
+    return {
+      ok: false,
+      error: 'Not connected to an agent.',
+      runtime: {
+        state: 'failed',
+        protocolVersion: 0,
+        buildId: 'unknown',
+        instanceId: 'none',
+        restoredSessionCount: 0,
+      },
+    };
+  }
+  return bus.command<VoiceAgentReloadResponsePayload, VoiceAgentReloadRequestPayload>(
+    'voice-agent:reload',
+    { sessionId },
+    { timeoutMs: 30_000 },
+  );
 }
 
 export function logVoiceEvent(

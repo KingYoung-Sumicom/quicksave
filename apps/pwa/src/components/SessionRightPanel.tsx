@@ -22,6 +22,9 @@ import { RepoView } from './RepoView';
 import { SettingsPanelContent, type SettingsPanelContentProps } from './AgentSettingsDrawer';
 import { Spinner } from './ui/Spinner';
 import { ArtifactPreviewPane } from './chat/ArtifactMessage';
+import { VoiceCoworkerSidebar } from './VoiceCoworkerControl';
+import type { UseVoiceAgent } from '../hooks/useVoiceAgent';
+import { SubagentsPanel } from './chat/SubagentsPanel';
 
 export type SessionOps = Omit<SettingsPanelContentProps, 'onClose' | 'onOpenFiles'>;
 
@@ -30,6 +33,7 @@ interface SessionRightPanelProps {
   agentId: string;
   cwd: string;
   sessionOps: SessionOps;
+  voiceAgent: UseVoiceAgent;
 }
 
 type RepoPathLike = { path: string };
@@ -56,7 +60,7 @@ export function resolveGitRepoScope(
   return best;
 }
 
-export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps }: SessionRightPanelProps) {
+export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps, voiceAgent }: SessionRightPanelProps) {
   const mode = useSessionRightPanelStore(selectPanelMode);
   const panelWidth = useSessionRightPanelStore((s) => s.panelWidth);
   const setPanelWidth = useSessionRightPanelStore((s) => s.setPanelWidth);
@@ -65,6 +69,11 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps }: Sessi
   const setActiveSession = useSessionRightPanelStore((s) => s.setActiveSession);
   const artifactPreview = useSessionRightPanelStore(selectArtifactPreview);
   const draggingRef = useRef(false);
+
+  const closePanel = useCallback(() => {
+    if (mode === 'voice' && voiceAgent.enabled) voiceAgent.toggle();
+    close();
+  }, [close, mode, voiceAgent]);
 
   // Register this session as active; on unmount set null so paddingRight clears.
   useEffect(() => {
@@ -124,6 +133,22 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps }: Sessi
           </div>
         )}
         <PanelTab
+          label="Voice"
+          active={mode === 'voice'}
+          onClick={() => toggle('voice')}
+          icon={
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 2a3 3 0 00-3 3v6a3 3 0 006 0V5a3 3 0 00-3-3zM5 10a7 7 0 0014 0M12 17v4m-4 0h8" />
+            </svg>
+          }
+        />
+        <PanelTab
+          label="Agents"
+          active={mode === 'subagents'}
+          onClick={() => toggle('subagents')}
+          icon={<span className="text-xs" aria-hidden>AI</span>}
+        />
+        <PanelTab
           label="Files"
           active={mode === 'files'}
           onClick={() => toggle('files')}
@@ -159,7 +184,7 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps }: Sessi
         />
         <div className="flex-1" />
         <button
-          onClick={close}
+          onClick={closePanel}
           className="p-1 hover:bg-slate-700 rounded transition-colors text-slate-400 hover:text-slate-200"
           aria-label="Close panel"
         >
@@ -171,6 +196,8 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps }: Sessi
 
       {/* Content */}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        {mode === 'voice' && <VoiceCoworkerSidebar voiceAgent={voiceAgent} />}
+        {mode === 'subagents' && <SubagentsPanel />}
         {mode === 'files' && <FilesPanel agentId={agentId} cwd={cwd} />}
         {mode === 'git' && <GitPanel agentId={agentId} cwd={cwd} />}
         {mode === 'settings' && <SettingsPanel sessionOps={sessionOps} />}

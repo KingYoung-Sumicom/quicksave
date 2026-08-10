@@ -582,7 +582,10 @@ export async function runDaemon(): Promise<void> {
   // through `bus.publish('/voice/rtc/:id')`. WebRTC is an optional native dep;
   // if it can't load, these verbs return an error and the PWA falls back to the
   // batch `voice:transcribe` path.
-  wireVoiceStream(bus);
+  const voiceStream = wireVoiceStream(bus);
+  voiceIntermediary.setSpeechSynthesizer(
+    (sessionId, config, text) => voiceStream.synthesizeSpeech(sessionId, config, text),
+  );
 
   // Init preferences from the last session's JSONL (best-effort, non-blocking)
   claudeService.initPreferences().catch(() => {});

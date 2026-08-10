@@ -15,6 +15,7 @@
  * transcript text goes (`onTranscript`) and how errors surface (`onError`).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { VoiceConfig } from '@sumicom/quicksave-shared';
 import { useConnectionStore } from '../stores/connectionStore';
 import { getVoiceConfig } from '../lib/secureStorage';
 import { transcribeViaAgent, isVoiceConfigUsable } from '../lib/voiceTranscription';
@@ -32,12 +33,22 @@ export interface UseComposerVoice {
   startListening: () => Promise<boolean>;
   /** Explicitly stop capture. In streaming mode this releases the mic track. */
   stopListening: () => void;
+  /** Stop capture and discard the current utterance without transcribing it. */
+  cancelListening: () => void;
+  /** Confirmed barge-in: stop remote WebRTC TTS without closing the mic. */
+  interruptPlayback: () => void;
   /** True while a live utterance is streaming or a batch clip is recording. */
   recording: boolean;
   /** True between press and capture actually starting (setup in progress). */
   arming: boolean;
-  /** True while a batch clip is being transcribed (post-recording). */
+  /** True after capture stops and until the final transcript is available. */
   transcribing: boolean;
+  /** Recoverable timeout shown inside the transcription overlay. */
+  transcriptionError: string | null;
+  /** Re-submit the retained audio after a recoverable timeout. */
+  retryTranscription: () => void;
+  /** Discard retained audio and close the transcription overlay. */
+  cancelTranscription: () => void;
   /** recording || arming || transcribing — the button should reflect this. */
   busy: boolean;
   /** Live partial transcript for the in-progress streaming utterance. */
@@ -60,13 +71,18 @@ export interface UseComposerVoiceOptions {
   onSpeechStopped?: () => void;
   onTranscriptPartial?: (textChars: number) => void;
   onTranscriptFinal?: (textChars: number) => void;
+  onRemotePlayback?: (active: boolean, streamId: string) => void;
   shouldSuppressTranscript?: () => boolean;
   getLogContext?: () => { turnId?: string; data?: Record<string, unknown> };
   keepStreamingMicAlive?: boolean;
+  /** Hard lifecycle gate used by voice coworker pages. Disabled pages create no audio resources. */
+  streamingConnectionEnabled?: boolean;
+  streamTransportId?: string;
+  streamVoiceSessionId?: string;
 }
 
 // Browser capabilities required to capture mic audio (both modes use
-// getUserMedia; streaming additionally needs WebRTC + AudioContext).
+// getUserMedia; streaming additionally needs a WebRTC media transceiver).
 const browserCanCapture =
   typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia;
 const browserCanStream =
@@ -77,6 +93,11 @@ const browserCanStream =
 // a small window to resume after a natural pause.
 const STREAM_INTENT_SILENCE_MS = 1000;
 const STREAM_COMMIT_GRACE_MS = 500;
+const STREAM_TRANSCRIPTION_TIMEOUT_MS = 15_000;
+
+function isTimeoutError(error: unknown): boolean {
+  return /timed?\s*out|timeout/i.test(error instanceof Error ? error.message : String(error));
+}
 
 export function useComposerVoice(
   agentId: string,
@@ -94,6 +115,7 @@ export function useComposerVoice(
   const [mode, setMode] = useState<'streaming' | 'batch'>('streaming');
   const [configured, setConfigured] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [arming, setArming] = useState(false);
   // Set when a user-gesture attempt to establish the streaming link fails (e.g.
   // no TURN on this network). Drives the disabled/greyed mic affordance. We
@@ -101,7 +123,6 @@ export function useComposerVoice(
   // prewarm can't grab the mic so it always fails, and surfacing that would
   // wrongly disable the button before the user ever taps.
   const [liveUnavailable, setLiveUnavailable] = useState(false);
-  const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Latest onError without re-subscribing effects on every parent render.
   const onErrorRef = useRef(onError);
@@ -111,6 +132,9 @@ export function useComposerVoice(
   const streamFragmentsRef = useRef<string[]>([]);
   const streamSilenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const streamGraceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const streamTranscriptionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transcriptionKindRef = useRef<'streaming' | 'batch' | null>(null);
+  const pendingBatchRef = useRef<{ blob: Blob; config: VoiceConfig } | null>(null);
   const sessionIdForLogsRef = useRef(resolvedOptions?.sessionIdForLogs);
   sessionIdForLogsRef.current = resolvedOptions?.sessionIdForLogs;
   const cueCallbacksRef = useRef({
@@ -121,6 +145,7 @@ export function useComposerVoice(
     onSpeechStopped: resolvedOptions?.onSpeechStopped,
     onTranscriptPartial: resolvedOptions?.onTranscriptPartial,
     onTranscriptFinal: resolvedOptions?.onTranscriptFinal,
+    onRemotePlayback: resolvedOptions?.onRemotePlayback,
     shouldSuppressTranscript: resolvedOptions?.shouldSuppressTranscript,
     getLogContext: resolvedOptions?.getLogContext,
     keepStreamingMicAlive: resolvedOptions?.keepStreamingMicAlive,
@@ -133,6 +158,7 @@ export function useComposerVoice(
     onSpeechStopped: resolvedOptions?.onSpeechStopped,
     onTranscriptPartial: resolvedOptions?.onTranscriptPartial,
     onTranscriptFinal: resolvedOptions?.onTranscriptFinal,
+    onRemotePlayback: resolvedOptions?.onRemotePlayback,
     shouldSuppressTranscript: resolvedOptions?.shouldSuppressTranscript,
     getLogContext: resolvedOptions?.getLogContext,
     keepStreamingMicAlive: resolvedOptions?.keepStreamingMicAlive,
@@ -148,6 +174,28 @@ export function useComposerVoice(
       data: { ...(ctx?.data ?? {}), ...data },
     });
   }, [agentId]);
+
+  const finishStreamingTranscription = useCallback(() => {
+    if (streamTranscriptionTimerRef.current) {
+      clearTimeout(streamTranscriptionTimerRef.current);
+      streamTranscriptionTimerRef.current = null;
+    }
+    transcriptionKindRef.current = null;
+    setTranscriptionError(null);
+    setTranscribing(false);
+  }, []);
+
+  const beginStreamingTranscription = useCallback(() => {
+    if (streamTranscriptionTimerRef.current) clearTimeout(streamTranscriptionTimerRef.current);
+    transcriptionKindRef.current = 'streaming';
+    setTranscriptionError(null);
+    setTranscribing(true);
+    streamTranscriptionTimerRef.current = setTimeout(() => {
+      streamTranscriptionTimerRef.current = null;
+      logStreamingEvent('asr.final_timeout', { timeoutMs: STREAM_TRANSCRIPTION_TIMEOUT_MS });
+      setTranscriptionError('Transcription timed out.');
+    }, STREAM_TRANSCRIPTION_TIMEOUT_MS);
+  }, [logStreamingEvent]);
 
   const clearStreamingEndpointTimers = useCallback(() => {
     if (streamSilenceTimerRef.current) {
@@ -165,13 +213,17 @@ export function useComposerVoice(
     const text = streamFragmentsRef.current.join(' ').replace(/\s+/g, ' ').trim();
     const fragmentCount = streamFragmentsRef.current.length;
     streamFragmentsRef.current = [];
-    if (text) {
-      logStreamingEvent('intent.endpoint', { reason: 'grace_elapsed', fragmentCount, text, textChars: text.length });
-      onTranscriptRef.current(text);
-      cueCallbacksRef.current.onIntentCommitted?.();
-      logStreamingEvent('voice_agent.utterance.sent', { textChars: text.length });
+    try {
+      if (text) {
+        logStreamingEvent('intent.endpoint', { reason: 'grace_elapsed', fragmentCount, text, textChars: text.length });
+        onTranscriptRef.current(text);
+        cueCallbacksRef.current.onIntentCommitted?.();
+        logStreamingEvent('voice_agent.utterance.sent', { textChars: text.length });
+      }
+    } finally {
+      finishStreamingTranscription();
     }
-  }, [clearStreamingEndpointTimers, logStreamingEvent]);
+  }, [clearStreamingEndpointTimers, finishStreamingTranscription, logStreamingEvent]);
 
   const scheduleStreamingEndpoint = useCallback((delayMs = STREAM_INTENT_SILENCE_MS) => {
     if (streamFragmentsRef.current.length === 0) return;
@@ -206,7 +258,13 @@ export function useComposerVoice(
       return;
     }
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      finishStreamingTranscription();
+      return;
+    }
+    // A late final may arrive after the timeout UI appeared. Return to the
+    // progress state while the normal endpoint grace period completes.
+    setTranscriptionError(null);
     streamFragmentsRef.current.push(trimmed);
     logStreamingEvent('asr.final_fragment', {
       text: trimmed,
@@ -214,7 +272,7 @@ export function useComposerVoice(
       fragmentCount: streamFragmentsRef.current.length,
     });
     scheduleStreamingEndpoint();
-  }, [logStreamingEvent, scheduleStreamingEndpoint]);
+  }, [finishStreamingTranscription, logStreamingEvent, scheduleStreamingEndpoint]);
 
   const handleStreamingSpeechActivity = useCallback((active: boolean) => {
     if (active) {
@@ -245,6 +303,12 @@ export function useComposerVoice(
     handleStreamingFinalFragment,
     handleStreamingSpeechActivity,
     handleStreamingPartial,
+    (active, streamId) => cueCallbacksRef.current.onRemotePlayback?.(active, streamId),
+    {
+      transportSessionId: resolvedOptions?.streamTransportId ?? resolvedOptions?.sessionIdForLogs,
+      voiceSessionId: resolvedOptions?.streamVoiceSessionId,
+      enabled: resolvedOptions?.streamingConnectionEnabled ?? true,
+    },
   );
 
   useEffect(() => {
@@ -259,48 +323,85 @@ export function useComposerVoice(
 
   // Prewarm the WebRTC link so the first streaming utterance starts instantly.
   useEffect(() => {
+    if (resolvedOptions?.streamingConnectionEnabled === false) return;
     if (!agentId || mode !== 'streaming' || !streamingSupported) return;
-    void getVoiceConfig().then((c) => { if (isVoiceConfigUsable(c)) void voiceStream.ensure(); });
+    let cancelled = false;
+    void getVoiceConfig().then((c) => {
+      if (!cancelled && isVoiceConfigUsable(c)) void voiceStream.ensure();
+    });
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId, mode, streamingSupported]);
+  }, [agentId, mode, streamingSupported, resolvedOptions?.streamingConnectionEnabled]);
 
   useEffect(() => {
-    if (voiceStream.error) onErrorRef.current(voiceStream.error);
-  }, [voiceStream.error]);
+    if (!voiceStream.error) return;
+    finishStreamingTranscription();
+    onErrorRef.current(voiceStream.error);
+  }, [finishStreamingTranscription, voiceStream.error]);
 
   useEffect(() => () => {
-    if (armTimerRef.current) clearTimeout(armTimerRef.current);
+    if (streamTranscriptionTimerRef.current) clearTimeout(streamTranscriptionTimerRef.current);
     clearStreamingEndpointTimers();
   }, [clearStreamingEndpointTimers]);
 
   const stopArming = useCallback(() => {
-    if (armTimerRef.current) { clearTimeout(armTimerRef.current); armTimerRef.current = null; }
     setArming(false);
   }, []);
 
-  const batchStopAndTranscribe = useCallback(async () => {
-    const blob = await recorder.stop();
-    if (!blob) return;
-    const config = await getVoiceConfig();
-    if (!isVoiceConfigUsable(config)) {
-      setConfigured(false);
-      onErrorRef.current('Voice transcription is not configured. Set it up in Settings.');
-      return;
-    }
+  const runBatchTranscription = useCallback(async (blob: Blob, config: VoiceConfig) => {
+    pendingBatchRef.current = { blob, config };
+    transcriptionKindRef.current = 'batch';
+    setTranscriptionError(null);
     setTranscribing(true);
     try {
       const text = await transcribeViaAgent(blob, config, agentId);
-      if (text) onTranscript(text);
+      if (text) onTranscriptRef.current(text);
+      pendingBatchRef.current = null;
+      transcriptionKindRef.current = null;
+      setTranscribing(false);
     } catch (err) {
+      if (isTimeoutError(err)) {
+        setTranscriptionError('Transcription timed out.');
+        return;
+      }
+      pendingBatchRef.current = null;
+      transcriptionKindRef.current = null;
+      setTranscribing(false);
       if (err instanceof DOMException && err.name === 'AbortError') return;
       onErrorRef.current(err instanceof Error ? err.message : 'Transcription failed.');
-    } finally {
-      setTranscribing(false);
     }
-  }, [recorder, agentId, onTranscript]);
+  }, [agentId]);
+
+  const batchStopAndTranscribe = useCallback(async () => {
+    transcriptionKindRef.current = 'batch';
+    setTranscriptionError(null);
+    setTranscribing(true);
+    try {
+      const blob = await recorder.stop();
+      if (!blob) {
+        transcriptionKindRef.current = null;
+        setTranscribing(false);
+        return;
+      }
+      const config = await getVoiceConfig();
+      if (!isVoiceConfigUsable(config)) {
+        setConfigured(false);
+        transcriptionKindRef.current = null;
+        setTranscribing(false);
+        onErrorRef.current('Voice transcription is not configured. Set it up in Settings.');
+        return;
+      }
+      await runBatchTranscription(blob, config);
+    } catch (err) {
+      transcriptionKindRef.current = null;
+      setTranscribing(false);
+      onErrorRef.current(err instanceof Error ? err.message : 'Transcription failed.');
+    }
+  }, [recorder, runBatchTranscription]);
 
   const stopListening = useCallback(() => {
     if (voiceStream.recording) {
+      beginStreamingTranscription();
       voiceStream.stop({ releaseMic: !cueCallbacksRef.current.keepStreamingMicAlive });
       scheduleStreamingEndpoint(0);
       return;
@@ -308,20 +409,63 @@ export function useComposerVoice(
     if (recorder.state === 'recording') {
       void batchStopAndTranscribe();
     }
-  }, [voiceStream, recorder.state, batchStopAndTranscribe, scheduleStreamingEndpoint]);
+  }, [voiceStream, recorder.state, batchStopAndTranscribe, beginStreamingTranscription, scheduleStreamingEndpoint]);
+
+  const cancelListening = useCallback(() => {
+    clearStreamingEndpointTimers();
+    streamFragmentsRef.current = [];
+    finishStreamingTranscription();
+    if (voiceStream.recording) {
+      voiceStream.stop({
+        releaseMic: !cueCallbacksRef.current.keepStreamingMicAlive,
+        discard: true,
+      });
+      cueCallbacksRef.current.onIntentCancelled?.();
+      logStreamingEvent('intent.capture_cancelled');
+      return;
+    }
+    if (recorder.state === 'recording') recorder.cancel();
+  }, [clearStreamingEndpointTimers, finishStreamingTranscription, logStreamingEvent, recorder, voiceStream]);
+
+  const retryTranscription = useCallback(() => {
+    if (transcriptionKindRef.current === 'streaming') {
+      streamFragmentsRef.current = [];
+      voiceStream.retryTranscription();
+      beginStreamingTranscription();
+      logStreamingEvent('asr.retry_requested');
+      return;
+    }
+    const pending = pendingBatchRef.current;
+    if (pending) void runBatchTranscription(pending.blob, pending.config);
+  }, [beginStreamingTranscription, logStreamingEvent, runBatchTranscription, voiceStream]);
+
+  const cancelTranscription = useCallback(() => {
+    clearStreamingEndpointTimers();
+    streamFragmentsRef.current = [];
+    pendingBatchRef.current = null;
+    if (transcriptionKindRef.current === 'streaming') {
+      voiceStream.stop({ releaseMic: false, discard: true });
+      logStreamingEvent('asr.retry_cancelled');
+    }
+    finishStreamingTranscription();
+  }, [clearStreamingEndpointTimers, finishStreamingTranscription, logStreamingEvent, voiceStream]);
 
   const startListening = useCallback(async (): Promise<boolean> => {
+    if (resolvedOptions?.streamingConnectionEnabled === false) return false;
     if (transcribing || arming) return false;
     if (voiceStream.recording || recorder.state === 'recording') return true;
-    const config = await getVoiceConfig();
-    if (!isVoiceConfigUsable(config)) {
-      setConfigured(false);
-      onErrorRef.current('Voice transcription is not configured. Set it up in Settings.');
-      return false;
-    }
-    setConfigured(true);
-    armTimerRef.current = setTimeout(() => setArming(true), 120);
+    // Show preparation immediately. Streaming start resolves only after the
+    // first PCM frame reaches the DataChannel; batch start resolves only after
+    // MediaRecorder has entered its recording state.
+    setArming(true);
     try {
+      const config = await getVoiceConfig();
+      if (!isVoiceConfigUsable(config)) {
+        setConfigured(false);
+        onErrorRef.current('Voice transcription is not configured. Set it up in Settings.');
+        return false;
+      }
+      setConfigured(true);
       if (mode === 'streaming') {
         // Establish the P2P link on this gesture if it isn't up yet — the mic
         // permission grab is what unlocks Safari's host ICE candidates — then
@@ -343,7 +487,7 @@ export function useComposerVoice(
     } finally {
       stopArming();
     }
-  }, [transcribing, arming, mode, voiceStream, recorder.state, recorder, stopArming]);
+  }, [transcribing, arming, mode, voiceStream, recorder.state, recorder, stopArming, resolvedOptions?.streamingConnectionEnabled]);
 
   const onMicPress = useCallback(async () => {
     if (transcribing || arming) return;
@@ -362,9 +506,14 @@ export function useComposerVoice(
     onMicPress,
     startListening,
     stopListening,
+    cancelListening,
+    interruptPlayback: voiceStream.interruptPlayback,
     recording: voiceStream.recording || recorder.state === 'recording',
     arming,
     transcribing,
+    transcriptionError,
+    retryTranscription,
+    cancelTranscription,
     busy: transcribing || arming,
     interim: voiceStream.interim,
     configured,

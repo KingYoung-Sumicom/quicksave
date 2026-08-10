@@ -428,6 +428,18 @@ interface CodingAgentProvider {
 
 **ResumeSessionOpts** — same fields as `StartSessionOpts` minus `cwd` resolution differences; SessionManager handles hot vs cold resume based on `providerSession.alive`, model change, and context window change.
 
+OpenCode is a memory-history provider, but its REST message endpoint returns a
+full-session snapshot on every tool sync. On cold resume, `OpenCodeProvider`
+primes the new event router's tool-call/result dedupe state from that snapshot
+before subscribing and sending the new prompt. The priming pass emits no cards;
+later `session.diff`, text-start, and idle syncs therefore add only tool calls
+that appeared after the resume boundary.
+
+OpenCode permission replies use the current
+`POST /permission/{requestID}/reply` shape. A denial sends both
+`reply: "reject"` and the PWA's optional rationale as `message`, so the active
+model turn receives the user's explanation as part of the rejected tool call.
+
 To add a new provider, implement this interface and include it in the array passed to the `SessionManager` constructor:
 ```typescript
 const sessionManager = new SessionManager([
@@ -521,24 +533,57 @@ Generation can take ~2 minutes; if state lived in the PWA it would be interrupte
 
 `apps/agent/src/ai/voiceIntermediary/` — a daemon-side, tool-calling LLM that
 interprets a coding session's output and lets the user steer it by voice. It is
-**not** a `CodingAgentProvider`; it wraps one. Brain (chat) and TTS both ride the
+**not** a `CodingAgentProvider`; it wraps one. Brain (Responses) and TTS both ride the
 **same OpenAI-compatible endpoint as STT** (`VoiceConfig`) via raw `fetch`, so a
 missing `ANTHROPIC_API_KEY` (subscription users) doesn't disable it.
 
-- **`VoiceIntermediaryManager`** (held by `MessageHandler`; its `'event'` is
-  bridged to the bus in `service/run.ts`): `attach`/`detach`/`handleUtterance`
-  per session, an LRU audio store for fetch-by-id, and `notifyPendingPermission`
-  (wired off the existing `user-input-request` event so the agent proactively
-  narrates a pending permission — "it wants to run X, shall I allow?").
-- **`VoiceIntermediarySession`**: per-session brain history in RAM — **no
-  persistent store; the coding agent's cards ARE the memory** (it re-derives via
-  `read_cards`). Each utterance runs a tool loop: narrate → silent tools → speak.
-  Assistant text *is* the spoken output (synthesized to mp3); there is no `speak`
-  tool.
-- **Seven tools** (`tools.ts`), all bound to existing `SessionManager` methods
-  except the new `sendUserMessageToSession`: `send_to_coding_agent`,
-  `stop_coding_agent`, `respond_to_permission`, `set_permission_mode`,
-  `get_status`, `read_cards`, `remember`.
+The brain calls the OpenAI-compatible **Responses API** at
+`{baseUrl}/responses`. Its durable source of truth remains Quicksave's local
+JSONL history: the adapter converts restored chat messages, function calls and
+function outputs into Responses `input` items for each round and sends
+`store: false`. Provider-side response storage or `previous_response_id` is not
+required for session resume, which keeps the same history path usable with
+compatible self-hosted backends.
+
+When a reasoning effort is configured, the request asks for an automatic
+reasoning summary and encrypted reasoning content. The adapter persists only
+the provider's replay-safe reasoning item fields (ID, status, summary and
+encrypted content), then restores them in order across tool rounds and worker
+reloads when the endpoint and model still match. Plaintext hidden reasoning
+content is neither logged nor persisted; summary-only items remain observable
+but are not replayed with `store: false`.
+
+- **`VoiceIntermediarySupervisor`** (held by `MessageHandler`) keeps the daemon,
+  coding-session bridge and PWA connection alive while spawning the intermediary
+  brain as a reloadable Node child process. A versioned Node IPC protocol carries
+  commands, model/tool trace events, synthesized-audio results and bridge requests. Side
+  effects and the bounded audio cache stay in the daemon, so already-announced
+  playback survives a worker reload. `voice-agent:reload` replaces only this
+  worker, performs a protocol handshake, re-attaches live sessions and reports
+  build/instance/PID state.
+- **Debug timeline** (`voice-debug/<sessionId>.jsonl`) is append-only and owned
+  by the supervisor. It records observable model/tool traces plus worker
+  starting/ready/reloading/failed entries with the brain model, build ID,
+  instance ID, PID and protocol version. `voice-agent:attach` replays the latest
+  200 entries so the sidebar conversation and decision trace survive a page
+  refresh and show worker replacement boundaries.
+- **`VoiceIntermediaryManager`** runs inside the worker: `attach`/`detach`/
+  `handleUtterance` per session and proactive permission/turn-end notifications.
+  Its `'event'` crosses IPC to the supervisor, then `service/run.ts` publishes it
+  on the session bus topic.
+- **`VoiceIntermediarySession`** mirrors model-visible chat messages and runtime
+  boundaries into append-only JSONL. Startup restores the active context window,
+  compaction summary and pending coding-change confirmation. Coding-agent cards
+  remain a separate evidence stream available through live context and
+  `read_cards`. Each utterance runs a tool loop; assistant text is the spoken
+  output, with no `speak` tool. The worker delegates synthesis back to the
+  daemon: an active session WebRTC peer receives 24 kHz mono PCM over its
+  outbound audio track; otherwise synthesis retains the fetchable MP3 path.
+- **Tools** (`tools.ts`) separate read-only dispatch
+  (`investigate_with_coding_agent`) from mutating work
+  (`propose_coding_change` → explicit confirmation → `confirm_coding_change`, or
+  `cancel_coding_change`). Status/cards/history, permission relay, stop, memory,
+  and the legacy steering escape hatch remain available.
 - **Trust boundary** (steer, don't decide): steering is free (reversible);
   irreversible moves — answering a permission prompt, widening autonomy — only
   RELAY the user's spoken decision, enforced by the system prompt.
@@ -553,11 +598,15 @@ buffering streaming ASR final fragments until an intent endpoint is reached,
 then routing the combined transcript to `voice-agent:utterance`; streaming intent
 submission currently waits ~1s after a realtime VAD stop/final fragment, then a
 ~0.5s grace window, while agent-side server VAD keeps a 2s silence threshold for
-natural pauses), `lib/voiceOutput.ts`
-(sequential mp3 playback with barge-in), `lib/voiceAgentClient.ts` (verb
-wrappers), `components/VoiceCoworkerControl.tsx` (composer-toolbar toggle), and
-three extra `VoiceConfig` fields in `settings/VoiceSection.tsx`
-(`agentModel`/`ttsModel`/`ttsVoice`).
+natural pauses), `lib/voiceStreamClient.ts` (a full-duplex `sendrecv` audio
+recvonly TTS transceiver plus a DataChannel for ASR PCM and control/VAD/transcript events),
+`lib/voiceOutput.ts` (sequential MP3 fallback playback),
+`lib/voiceAgentClient.ts` (verb
+wrappers), `components/VoiceCoworkerControl.tsx` (composer toggle plus the
+desktop Voice sidebar's transcript, execution trace, worker version and reload
+controls), and
+the intermediary fields in `settings/VoiceSection.tsx` (brain model and
+reasoning effort, plus TTS model, voice and instructions).
 
 ---
 
@@ -768,8 +817,8 @@ interface Message {
 | `terminal:` | PTY terminal (create/input/resize/rename/close) |
 | `files:` | Read-only file browser (list / read; pure request-response, no bus subscription) |
 | `attachment:` | Chunked upload + cancel for files and long-pasted text (see "Attachment Staging" in §三) |
-| `voice:` | Voice input. **Batch**: `voice:transcribe` (audio bytes + `VoiceConfig` in, text out), `voice:list-models` (lists `{baseUrl}/models` for the Settings dropdown), and `voice:log-event` (PWA-side voice intent/endpoint events sent back to the agent's JSONL voice log). **Streaming (WebRTC)**: `voice:rtc-connect` (SDP offer→answer) and `voice:rtc-ice` (PWA→agent trickle ICE); the agent pushes its own ICE candidates on the `/voice/rtc/{sessionId}` subscription. The agent proxies a Whisper-compatible API (no browser CORS limit; OpenAI works). `VoiceConfig` (key/baseUrl + separate `transcribeModel` for batch and `streamModel` for realtime) is the PWA's synced single source of truth and travels in each request; the agent persists nothing. Streaming audio + transcripts ride the WebRTC **DataChannel** (`VoiceDcMessage`: PCM16 binary frames up, `start`/`stop` control, server-VAD `speech`, `transcript`/`error` down), not the bus. The PWA treats streaming `transcript.final` as ASR fragments and waits for an intent endpoint before sending one combined `voice-agent:utterance`. The `voice:rtc-*` verbs are wired directly via `bus.onCommand` in `service/run.ts` (`wireVoiceStream`), **not** through `LEGACY_BUS_VERBS`, because they push ICE asynchronously. `@roamhq/wrtc` is an optional, lazily-loaded native dep. **The input mode is user-selected** (`VoiceConfig.mode`: `streaming` | `batch`) — there is no automatic fallback between them. `streaming` needs `audio.streaming` (wrtc) + the P2P link (STUN-only, no TURN). The link is established **mic-first on the user's first tap** — acquiring the mic before the SDP offer is what makes Safari/iOS expose real host ICE candidates (the passive prewarm can't, since iOS gates `getUserMedia` on a user gesture; non-iOS browsers still prewarm for an instant first utterance). If a tapped attempt still can't connect (e.g. no TURN across NAT/CGNAT), the mic shows a "live voice unavailable" tooltip after that attempt; `batch` needs `audio.transcription`. The composer hides the mic when the selected mode isn't supported on that machine. |
-| `voice-agent:` | Voice intermediary ("AI coworker"). `voice-agent:attach` (bring up the brain for a session + `VoiceConfig`), `voice-agent:detach`, `voice-agent:utterance` (final STT transcript in; the spoken reply streams back asynchronously), `voice-agent:fetch-audio` (synthesized mp3 bytes by id — metadata-first, never inlined in the push). Wired through `LEGACY_BUS_VERBS` + the `MessageHandler` switch. The agent pushes `VoiceAgentEvent` (`state`/`speak`/`action`/`error`) on the `/sessions/:sessionId/voice-agent` subscription. See section two "Voice Intermediary". |
+| `voice:` | Voice input. **Batch**: `voice:transcribe` (audio bytes + `VoiceConfig` in, text out), `voice:list-models` (lists `{baseUrl}/models` for the Settings dropdown), and `voice:log-event` (PWA-side voice intent/endpoint events sent back to the agent's JSONL voice log). **Streaming (WebRTC)**: `voice:rtc-connect` (SDP offer→answer) and `voice:rtc-ice` (PWA→agent trickle ICE); the agent pushes its own ICE candidates on the `/voice/rtc/{sessionId}` subscription. The agent proxies a Whisper-compatible API (no browser CORS limit; OpenAI works). `VoiceConfig` (key/baseUrl + separate `transcribeModel` for batch and `streamModel` for realtime) is the PWA's synced single source of truth and travels in each request; the agent persists nothing. A recvonly audio transceiver carries daemon TTS PCM to the browser. Streaming ASR retains the proven AudioWorklet path: the PWA downsamples mic input to 24 kHz mono PCM16 and sends binary frames over the ordered **DataChannel**. JSON `VoiceDcMessage` frames carry `start`/`stop`, the selected `audioTransport`, transcript-confirmed `interrupt-playback`, server-VAD `speech`, `transcript`, TTS `playback`, and `error`. The daemon can also ingest `media-track` frames when explicitly selected, without mixing both transports. The PWA treats streaming `transcript.final` as ASR fragments and waits for an intent endpoint before sending one combined `voice-agent:utterance`. The `voice:rtc-*` verbs are wired directly via `bus.onCommand` in `service/run.ts` (`wireVoiceStream`), **not** through `LEGACY_BUS_VERBS`, because they push ICE asynchronously. `@roamhq/wrtc` is an optional, lazily-loaded native dep. **The input mode is user-selected** (`VoiceConfig.mode`: `streaming` | `batch`) — there is no automatic fallback between them. `streaming` needs `audio.streaming` (wrtc) + the P2P link (STUN-only, no TURN). The link is established **mic-first on the user's first tap** — acquiring the mic before the SDP offer is what makes Safari/iOS expose real host ICE candidates (the passive prewarm can't, since iOS gates `getUserMedia` on a user gesture; non-iOS browsers still prewarm for an instant first utterance). If a tapped attempt still can't connect (e.g. no TURN across NAT/CGNAT), the mic shows a "live voice unavailable" tooltip after that attempt; `batch` needs `audio.transcription`. The composer hides the mic when the selected mode isn't supported on that machine. |
+| `voice-agent:` | Voice intermediary ("AI coworker"). `voice-agent:attach` (bring up the reloadable brain worker for a session + `VoiceConfig`), `voice-agent:detach`, `voice-agent:utterance` (final STT transcript in; the spoken reply streams back asynchronously), `voice-agent:fetch-audio` (fallback synthesized audio by id — metadata-first, never inlined in the push), and `voice-agent:reload` (restart only the intermediary child, then restore attached sessions). Wired through `LEGACY_BUS_VERBS` + the `MessageHandler` switch. The agent pushes `VoiceAgentEvent` (`state`/`speak`/`action`/`trace`/`runtime`/`error`) on `/sessions/:sessionId/voice-agent`; `speak.streamed` tells a new PWA that audio was already delivered by the WebRTC track so it must not fetch/play the fallback. Trace entries expose observable model inputs/outputs and tool execution, not private chain-of-thought. See section two "Voice Intermediary". |
 | `systemd:` | Linux-only `quicksave.service` user-unit install/uninstall/status (see `docs/references/agent-cli.md`) |
 | `bus:frame` | MessageBus envelope (transports opaque bus frames; see `packages/message-bus`) |
 | `ping`/`pong` | Heartbeat |

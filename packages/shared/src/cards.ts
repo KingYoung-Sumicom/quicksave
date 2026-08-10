@@ -105,6 +105,14 @@ export interface SubagentToolCall {
   result?: { content: string; isError: boolean };
 }
 
+export interface SubagentActivity {
+  id: string;
+  type: 'message' | 'reasoning' | 'tool';
+  title: string;
+  detail?: string;
+  status?: 'running' | 'completed' | 'failed';
+}
+
 export interface SubagentCard extends CardBase {
   type: 'subagent';
   description: string;
@@ -122,10 +130,16 @@ export interface SubagentCard extends CardBase {
   requestedModel?: string;
   /** Actual model used by the subagent. Reserved — not yet available from CLI. */
   actualModel?: string;
+  /** App-server thread path and latest status message. */
+  agentPath?: string;
+  statusMessage?: string;
+  requestedReasoningEffort?: string;
   /** Initial prompt given to the subagent. */
   prompt?: string;
   /** Tool calls made by the subagent, nested here instead of top-level cards. */
   toolCalls?: SubagentToolCall[];
+  /** Snapshot of the child thread, refreshed while it is active. */
+  activities?: SubagentActivity[];
 }
 
 export type SystemCardSubtype = 'compacted' | 'cost' | 'error' | 'info' | 'warning';

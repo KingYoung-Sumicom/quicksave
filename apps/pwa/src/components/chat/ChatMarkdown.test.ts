@@ -49,11 +49,71 @@ L_{\text{until-change}} = -\operatorname{mean}_{t\in\text{有效換倉}}(A_t)
     expect(html).not.toContain('\\[');
   });
 
-  it('renders both Codex and dollar inline-math delimiters', () => {
+  it('renders Codex inline-math delimiters and leaves single dollars literal', () => {
     const html = renderToStaticMarkup(createElement(ChatMarkdown, {
       children: String.raw`Codex \(A_t\) and Markdown $B_t$.`,
     }));
 
-    expect(html.match(/class="katex"/g)).toHaveLength(2);
+    expect(html.match(/class="katex"/g)).toHaveLength(1);
+    expect(html).toContain('$B_t$');
+  });
+
+  it('renders separate currency amounts as prose instead of one wide equation', () => {
+    const markdown = 'Pixhawk 6X module 是 $166.99，但加 Mini carrier 後變成 $286.98；Standard 套裝則是 $320.98。';
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, { children: markdown }));
+
+    expect(html).toContain('$166.99');
+    expect(html).toContain('$286.98');
+    expect(html).toContain('$320.98');
+    expect(html).not.toContain('class="katex"');
+  });
+
+  it('renders only the bounded display equation in a mixed prose payload', () => {
+    const markdown = [
+      '1. **方向有事後標準答案**',
+      '   固定持有期間、交易成本與 BTC-relative 基準後，可以定義：',
+      String.raw`   \[`,
+      String.raw`   y_t=\operatorname{sign}(U_t(\text{long})-U_t(\text{short}))`,
+      String.raw`   \]`,
+      '   但它不一定等於單純的下一根 8h 漲跌；`prev position` 也可能改變答案。',
+      '',
+      '2. `P(direction correct | state)` 可以用 BCE 等 proper loss 學習。',
+    ].join('\n');
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, { children: markdown }));
+
+    expect(html.match(/class="katex-display"/g)).toHaveLength(1);
+    expect(html).toContain('但它不一定等於單純的下一根 8h 漲跌');
+    expect(html).toContain('<code>prev position</code>');
+    expect(html).toContain('<code>P(direction correct | state)</code>');
+  });
+});
+
+describe('ChatMarkdown file links', () => {
+  it('does not infer file links from inline code', () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, { children: '`apps/pwa/src/App.tsx`' }));
+
+    expect(html).toContain('<code>apps/pwa/src/App.tsx</code>');
+    expect(html).not.toContain('<a');
+  });
+
+  it('keeps explicitly authored Markdown file links interactive', () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      children: '[open file](apps/pwa/src/App.tsx)',
+    }));
+
+    expect(html).toContain('open file');
+    expect(html).toContain('<button');
+  });
+
+  it('renders Codex file citation headers as explicit file links', () => {
+    const path = '/Users/jimmy/Documents/P3768_A04_OrCAD_schematics(base_version).pdf';
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      children: `:codex-file-citation{path="${path}" purpose="source"}`,
+    }));
+
+    expect(html).toContain('<button');
+    expect(html).toContain('Source · P3768_A04_OrCAD_schematics(base_version).pdf');
+    expect(html).toContain(`title="${path}"`);
+    expect(html).not.toContain(':codex-file-citation');
   });
 });

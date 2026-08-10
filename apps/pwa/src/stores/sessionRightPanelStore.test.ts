@@ -57,4 +57,13 @@ describe('sessionRightPanelStore artifact preview', () => {
 
     expect(selectArtifactPreview(useSessionRightPanelStore.getState())).toBeNull();
   });
+
+  it('opens the voice debugger without toggling it closed', () => {
+    const store = useSessionRightPanelStore.getState();
+    store.setActiveSession('session-1');
+    store.open('voice');
+    useSessionRightPanelStore.getState().open('voice');
+
+    expect(selectPanelMode(useSessionRightPanelStore.getState())).toBe('voice');
+  });
 });

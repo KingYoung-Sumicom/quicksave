@@ -49,6 +49,20 @@ describe('PinchZoomImage transforms', () => {
     expect(zoomedIn.scale).toBe(4);
   });
 
+  it('allows a higher dynamic limit for full-resolution images', () => {
+    const zoomedIn = transformForPinch(
+      { scale: 2, x: 0, y: 0 },
+      100,
+      { x: 0, y: 0 },
+      1_000,
+      { x: 0, y: 0 },
+      { x: 0, y: 0 },
+      12,
+    );
+
+    expect(zoomedIn.scale).toBe(12);
+  });
+
   it('keeps panning within the scaled image bounds and recenters at one times', () => {
     expect(clampZoomTransform(
       { scale: 2, x: 500, y: -500 },
@@ -92,12 +106,15 @@ describe('PinchZoomImage gestures', () => {
     Object.defineProperties(image, {
       clientWidth: { configurable: true, value: 200 },
       clientHeight: { configurable: true, value: 200 },
+      naturalWidth: { configurable: true, value: 1_600 },
+      naturalHeight: { configurable: true, value: 1_600 },
     });
     viewport.getBoundingClientRect = () => ({
       x: 0, y: 0, left: 0, top: 0, right: 200, bottom: 200,
       width: 200, height: 200, toJSON: () => ({}),
     });
 
+    await act(async () => image.dispatchEvent(new Event('load')));
     await act(async () => {
       viewport.dispatchEvent(pointerEvent('pointerdown', 1, 75, 100));
       viewport.dispatchEvent(pointerEvent('pointerdown', 2, 125, 100));
@@ -105,7 +122,72 @@ describe('PinchZoomImage gestures', () => {
       viewport.dispatchEvent(pointerEvent('pointermove', 2, 150, 100));
     });
 
-    expect(image.style.transform).toContain('scale(2)');
-    expect(viewport.querySelector('button')?.textContent).toBe('200%');
+    expect(image.style.width).toBe('400px');
+    expect(image.style.height).toBe('400px');
+    expect(image.style.transform).not.toContain('scale(');
+    expect(viewport.querySelector('[aria-label="Reset image zoom"]')?.textContent).toBe('200%');
+
+    await act(async () => {
+      viewport.dispatchEvent(pointerEvent('pointerup', 1, 50, 100));
+      viewport.dispatchEvent(pointerEvent('pointerup', 2, 150, 100));
+      viewport.dispatchEvent(pointerEvent('pointerdown', 3, 100, 100));
+      viewport.dispatchEvent(pointerEvent('pointermove', 3, 100, 160));
+    });
+
+    expect(image.style.transform).toContain('translate3d(0px, 60px, 0)');
+  });
+
+  it('supports desktop zoom buttons', async () => {
+    await act(async () => {
+      root.render(<PinchZoomImage src="image.png" alt="Preview" />);
+    });
+    const viewport = host.firstElementChild as HTMLDivElement;
+    const image = viewport.querySelector('img') as HTMLImageElement;
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 200 },
+      clientHeight: { configurable: true, value: 200 },
+    });
+    Object.defineProperties(image, {
+      clientWidth: { configurable: true, value: 200 },
+      clientHeight: { configurable: true, value: 200 },
+      naturalWidth: { configurable: true, value: 800 },
+      naturalHeight: { configurable: true, value: 800 },
+    });
+
+    await act(async () => image.dispatchEvent(new Event('load')));
+    await act(async () => {
+      viewport.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')?.click();
+    });
+
+    expect(image.style.width).toBe('300px');
+    expect(image.style.height).toBe('300px');
+    expect(viewport.querySelector('[aria-label="Reset image zoom"]')?.textContent).toBe('150%');
+  });
+
+  it('jumps to the original pixel ratio', async () => {
+    await act(async () => {
+      root.render(<PinchZoomImage src="image.png" alt="Preview" />);
+    });
+    const viewport = host.firstElementChild as HTMLDivElement;
+    const image = viewport.querySelector('img') as HTMLImageElement;
+    Object.defineProperties(viewport, {
+      clientWidth: { configurable: true, value: 200 },
+      clientHeight: { configurable: true, value: 100 },
+    });
+    Object.defineProperties(image, {
+      clientWidth: { configurable: true, value: 200 },
+      clientHeight: { configurable: true, value: 100 },
+      naturalWidth: { configurable: true, value: 1_600 },
+      naturalHeight: { configurable: true, value: 800 },
+    });
+
+    await act(async () => image.dispatchEvent(new Event('load')));
+    await act(async () => {
+      viewport.querySelector<HTMLButtonElement>('[aria-label="Show actual pixels"]')?.click();
+    });
+
+    expect(image.style.width).toBe('1600px');
+    expect(image.style.height).toBe('800px');
+    expect(image.style.transform).not.toContain('scale(');
   });
 });

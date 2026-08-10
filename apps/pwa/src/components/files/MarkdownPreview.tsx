@@ -46,7 +46,7 @@ export function MarkdownPreview({
   return (
     <div className="px-4 py-3 text-sm text-slate-200 leading-relaxed break-words markdown-preview">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
         rehypePlugins={[[rehypeKatex, { strict: false }], rehypeHighlight]}
         components={{
           h1: ({ children }) => <h1 className="text-2xl font-semibold mt-4 mb-3 text-slate-100 border-b border-slate-700 pb-1">{children}</h1>,

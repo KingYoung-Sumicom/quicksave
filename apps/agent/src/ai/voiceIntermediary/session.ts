@@ -15,14 +15,15 @@ import type {
   CardStreamEnd,
   VoiceAgentPlaybackEventRequestPayload,
   VoiceAgentEvent,
+  VoiceAgentTraceEntry,
   VoiceConfig,
 } from '@sumicom/quicksave-shared';
-import { chatCompletion, type ChatMessage, type FetchLike } from './llm.js';
-import { synthesizeSpeech } from './tts.js';
+import { responseCompletion, type ChatMessage, type FetchLike } from './llm.js';
+import { synthesizeSpeech, type SynthesizedSpeech } from './tts.js';
 import { VOICE_AGENT_TOOLS, executeTool, formatCardForBrain, type CodingSessionBridge } from './tools.js';
 import { loadMemory } from './memory.js';
 import { voiceEventLogger } from '../voiceLog.js';
-import { VoiceHistoryStore } from './historyStore.js';
+import { VoiceHistoryStore, type VoiceHistoryEvent } from './historyStore.js';
 
 /** Upper bound on tool round-trips per utterance — a runaway-loop backstop. */
 const MAX_TOOL_TURNS = 6;
@@ -30,6 +31,13 @@ const LIVE_CARD_CAP = 30;
 const VOICE_HISTORY_MAX_MESSAGES = 80;
 const VOICE_HISTORY_KEEP_MESSAGES = 40;
 const VOICE_COMPACTION_SUMMARY_CHARS = 4000;
+
+interface PendingCodingChange {
+  id: string;
+  prompt: string;
+  spokenSummary: string;
+  createdAt: number;
+}
 
 export interface VoiceSessionCallbacks {
   emit: (event: VoiceAgentEvent) => void;
@@ -47,6 +55,8 @@ export interface VoiceSessionOpts {
   fetchImpl?: FetchLike;
   /** Injected for tests. */
   historyStore?: VoiceHistoryStore;
+  /** Lets the daemon stream TTS through its WebRTC peer while this session lives in a worker. */
+  speechSynthesizer?: (config: VoiceConfig, text: string) => Promise<SynthesizedSpeech | null>;
 }
 
 export interface VoiceTurnMeta {
@@ -63,6 +73,7 @@ export class VoiceIntermediarySession {
   private readonly cb: VoiceSessionCallbacks;
   private readonly fetchImpl?: FetchLike;
   private readonly history: VoiceHistoryStore;
+  private readonly speechSynthesizer: (config: VoiceConfig, text: string) => Promise<SynthesizedSpeech | null>;
 
   private messages: ChatMessage[] = [];
   private systemPrompt = '';
@@ -76,6 +87,9 @@ export class VoiceIntermediarySession {
   private readonly liveCards = new Map<string, Card>();
   private readonly liveNotes: string[] = [];
   private pendingPlaybackNote = '';
+  private pendingCodingChange: PendingCodingChange | null = null;
+  private codingChangeSeq = 0;
+  private traceSeq = 0;
 
   constructor(opts: VoiceSessionOpts) {
     this.sessionId = opts.sessionId;
@@ -85,6 +99,8 @@ export class VoiceIntermediarySession {
     this.cb = opts.callbacks;
     this.fetchImpl = opts.fetchImpl;
     this.history = opts.historyStore ?? new VoiceHistoryStore(this.sessionId);
+    this.speechSynthesizer = opts.speechSynthesizer
+      ?? ((config, speechText) => synthesizeSpeech(config, speechText, { fetchImpl: this.fetchImpl }));
     this.ready = this.init();
   }
 
@@ -111,6 +127,9 @@ export class VoiceIntermediarySession {
       this.messages.push({ role: 'system', content: buildCompactionMessage(restored.compactionSummary) });
     }
     this.messages.push(...restored.activeMessages);
+    const proposalState = restorePendingCodingChange(restored.events);
+    this.pendingCodingChange = proposalState.pending;
+    this.codingChangeSeq = proposalState.latestSeq;
   }
 
   /** Handle a final user utterance (STT transcript). Serialized per session. */
@@ -144,7 +163,7 @@ export class VoiceIntermediarySession {
       content:
         `（系統事件）coding agent 這一回合${state}${details ? `。${details}` : ''}。` +
         '請檢查最新 live cards / read_cards。若有使用者正在等待的答案、完成結果、錯誤、阻塞或需要確認，請用一句話主動告知。' +
-        '若沒有值得打擾使用者的新資訊，請 no-op：回覆空內容且不要呼叫任何工具。',
+        '請使用單段純口語，不要使用 Markdown 或視覺排版。若沒有值得打擾使用者的新資訊，請 no-op：回覆空內容且不要呼叫任何工具。',
     }));
     this.chain = run.catch(() => undefined);
     return run;
@@ -240,6 +259,11 @@ export class VoiceIntermediarySession {
         utteranceId: meta.utteranceId,
       },
     });
+    this.emitTrace('lifecycle', 'turn.started', {
+      text: userMessage.content ?? '',
+      interactionId: meta.interactionId,
+      utteranceId: meta.utteranceId,
+    }, turnId);
 
     this.cb.emit({ kind: 'state', state: 'thinking' });
     try {
@@ -257,7 +281,12 @@ export class VoiceIntermediarySession {
             toolCount: VOICE_AGENT_TOOLS.length,
           },
         });
-        const result = await chatCompletion(this.config, {
+        this.emitTrace('llm', 'llm.request', {
+          model: this.config.agentModel,
+          messages,
+          tools: VOICE_AGENT_TOOLS.map((tool) => tool.function.name),
+        }, turnId);
+        const result = await responseCompletion(this.config, {
           messages,
           tools: VOICE_AGENT_TOOLS,
           fetchImpl: this.fetchImpl,
@@ -274,15 +303,27 @@ export class VoiceIntermediarySession {
             toolCalls: result.toolCalls.map((call) => call.function.name),
           },
         });
+        this.emitTrace('llm', 'llm.response', {
+          content: result.content,
+          toolCalls: result.toolCalls,
+          reasoningSummary: result.reasoningSummary,
+        }, turnId, Date.now() - llmStarted);
         if (this.closed) return;
 
-        // Speak any narration the model produced this round (interim or final).
-        if (result.content) await this.speak(result.content, meta);
+        // If the model requested tools, run them before speaking. This prevents
+        // "I'll do it" preambles from playing before the dispatch/proposal state
+        // actually exists; the next LLM round can narrate the tool result.
+        const shouldSpeakNow = result.content && result.toolCalls.length === 0;
+        if (shouldSpeakNow) await this.speak(result.content, meta);
 
         const assistantMessage: ChatMessage = {
           role: 'assistant',
           content: result.content || null,
           ...(result.toolCalls.length ? { tool_calls: result.toolCalls } : {}),
+          ...(result.reasoningItems.length ? { reasoning_items: result.reasoningItems } : {}),
+          ...(result.reasoningItems.length ? {
+            reasoning_source: `${this.config.baseUrl.trim().replace(/\/+$/, '')}|${this.config.agentModel?.trim()}`,
+          } : {}),
         };
         this.messages.push(assistantMessage);
         await this.history.appendChatMessage(assistantMessage);
@@ -299,12 +340,20 @@ export class VoiceIntermediarySession {
             turnId,
             data: { toolName: call.function.name, args },
           });
+          this.emitTrace('tool', 'tool.call', {
+            toolName: call.function.name,
+            args,
+            toolCallId: call.id,
+          }, turnId);
           const toolResult = await executeTool(call.function.name, args, {
             sessionId: this.sessionId,
             cwd: this.cwd,
             bridge: this.bridge,
             liveContext: this.liveContextForBrain(),
             readVoiceHistory: (opts) => this.history.read(opts),
+            proposeCodingChange: (proposal) => this.proposeCodingChange(proposal),
+            confirmCodingChange: (proposalId, opts) => this.confirmCodingChange(proposalId, opts),
+            cancelCodingChange: (reason) => this.cancelCodingChange(reason),
             emitAction: (summary) => this.cb.emit({ kind: 'action', summary }),
           });
           voiceEventLogger.log({
@@ -319,6 +368,11 @@ export class VoiceIntermediarySession {
               resultChars: toolResult.length,
             },
           });
+          this.emitTrace('tool', 'tool.result', {
+            toolName: call.function.name,
+            toolCallId: call.id,
+            result: toolResult,
+          }, turnId, Date.now() - toolStarted);
           const toolMessage: ChatMessage = { role: 'tool', tool_call_id: call.id, content: toolResult };
           this.messages.push(toolMessage);
           await this.history.appendChatMessage(toolMessage);
@@ -349,6 +403,7 @@ export class VoiceIntermediarySession {
         phase: 'voice_agent',
         turnId,
       });
+      this.emitTrace('lifecycle', 'turn.ended', {}, turnId);
       if (!this.closed) this.cb.emit({ kind: 'state', state: 'idle' });
     }
   }
@@ -357,6 +412,7 @@ export class VoiceIntermediarySession {
     const turnId = meta.turnId;
     this.cb.emit({ kind: 'state', state: 'speaking' });
     this.cb.emit({ kind: 'speech-text', text });
+    this.emitTrace('speech', 'speech.proposed', { text }, turnId);
     voiceEventLogger.log({
       sessionId: this.sessionId,
       event: 'speech.text',
@@ -388,10 +444,10 @@ export class VoiceIntermediarySession {
           textChars: text.length,
         },
       });
-      const speech = await synthesizeSpeech(this.config, text, { fetchImpl: this.fetchImpl });
+      const speech = await this.speechSynthesizer(this.config, text);
       if (this.closed) return;
       if (speech) {
-        const audioId = this.cb.storeAudio(speech.audio, speech.mimeType);
+        const audioId = speech.audio.length > 0 ? this.cb.storeAudio(speech.audio, speech.mimeType) : '';
         voiceEventLogger.log({
           sessionId: this.sessionId,
           event: 'tts.result',
@@ -403,9 +459,18 @@ export class VoiceIntermediarySession {
             audioBytes: speech.audio.length,
             mimeType: speech.mimeType,
             requestId: speech.requestId,
+            streamed: speech.streamed === true,
+            interrupted: speech.interrupted === true,
           },
         });
-        this.cb.emit({ kind: 'speak', audioId, text, mimeType: speech.mimeType });
+        this.cb.emit({
+          kind: 'speak',
+          audioId,
+          text,
+          mimeType: speech.mimeType,
+          streamed: speech.streamed,
+          interrupted: speech.interrupted,
+        });
       } else {
         // No TTS configured — still surface the text so the PWA can render/voice it.
         voiceEventLogger.log({
@@ -451,17 +516,17 @@ export class VoiceIntermediarySession {
 
   private messagesWithLiveContext(): ChatMessage[] {
     const live = this.liveContextForBrain();
-    const messages = sanitizeMessagesForChatCompletion(this.messages);
-    if (!live) return messages;
+    const messages = sanitizeMessagesForResponses(this.messages);
     return [
       ...messages,
-      {
+      ...(live ? [{
         role: 'system',
         content:
           '以下是 coding agent 最新 live card/stream 更新，可能包含尚未完成的 streaming 輸出。' +
           '這是被動上下文，不代表使用者要求你插話；只有在回答目前使用者問題時才引用。\n' +
           live,
-      },
+      } satisfies ChatMessage] : []),
+      { role: 'system', content: buildRuntimeContextReminder() },
     ];
   }
 
@@ -473,12 +538,79 @@ export class VoiceIntermediarySession {
     return lines.slice(-12).join('\n');
   }
 
+  private proposeCodingChange(proposal: { prompt: string; spokenSummary: string }): string {
+    const id = `voice-change-${++this.codingChangeSeq}`;
+    this.pendingCodingChange = {
+      id,
+      prompt: proposal.prompt,
+      spokenSummary: proposal.spokenSummary,
+      createdAt: Date.now(),
+    };
+    void this.history.appendRuntimeEvent('coding_change.proposed', {
+      proposalId: id,
+      prompt: proposal.prompt,
+      spokenSummary: proposal.spokenSummary,
+    });
+    return id;
+  }
+
+  private async confirmCodingChange(proposalId?: string, opts: { interrupt?: boolean } = {}): Promise<string> {
+    const pending = this.pendingCodingChange;
+    if (!pending) return 'error: no pending coding change proposal to confirm';
+    if (proposalId && proposalId !== pending.id) {
+      return `error: pending proposal is ${pending.id}, not ${proposalId}`;
+    }
+    const ok = await this.bridge.sendUserMessageToSession(this.sessionId, pending.prompt, { interrupt: opts.interrupt === true });
+    if (!ok) return 'error: the coding session is not running';
+    this.pendingCodingChange = null;
+    this.cb.emit({ kind: 'action', summary: `已送出：${pending.spokenSummary}` });
+    void this.history.appendRuntimeEvent('coding_change.confirmed', {
+      proposalId: pending.id,
+      promptChars: pending.prompt.length,
+      ageMs: Date.now() - pending.createdAt,
+    });
+    return 'confirmed and sent (may queue until the current turn boundary)';
+  }
+
+  private cancelCodingChange(reason?: string): string {
+    const pending = this.pendingCodingChange;
+    if (!pending) return 'no pending coding change proposal';
+    this.pendingCodingChange = null;
+    void this.history.appendRuntimeEvent('coding_change.cancelled', {
+      proposalId: pending.id,
+      reason,
+    });
+    this.cb.emit({ kind: 'action', summary: `取消待確認修改：${pending.spokenSummary}` });
+    return reason ? `cancelled pending proposal: ${reason}` : 'cancelled pending proposal';
+  }
+
   private trimLiveCards(): void {
     while (this.liveCards.size > LIVE_CARD_CAP) {
       const oldest = this.liveCards.keys().next().value as string | undefined;
       if (!oldest) break;
       this.liveCards.delete(oldest);
     }
+  }
+
+  private emitTrace(
+    phase: VoiceAgentTraceEntry['phase'],
+    event: string,
+    data: Record<string, unknown>,
+    turnId?: string,
+    durationMs?: number,
+  ): void {
+    this.cb.emit({
+      kind: 'trace',
+      entry: {
+        id: `${this.sessionId}:${++this.traceSeq}`,
+        timestamp: Date.now(),
+        phase,
+        event,
+        turnId,
+        durationMs,
+        data,
+      },
+    });
   }
 
   private async maybeCompactHistory(): Promise<void> {
@@ -505,7 +637,7 @@ export class VoiceIntermediarySession {
   }
 }
 
-export function sanitizeMessagesForChatCompletion(messages: readonly ChatMessage[]): ChatMessage[] {
+export function sanitizeMessagesForResponses(messages: readonly ChatMessage[]): ChatMessage[] {
   const out: ChatMessage[] = [];
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i]!;
@@ -570,12 +702,28 @@ export function buildSystemPrompt(memory: string): string {
     '- 篩選少量最重要資訊：完成了什麼、目前卡在哪裡、下一步是什麼。不要一次講完整背景。',
     '- 絕不把長輸出、card、log、diff、測試輸出逐字唸出來；只摘要成口語結論。',
     '- 不要唸檔名、hash、路徑、commit id、UUID、URL 參數、錯誤碼、程式碼片段；若重要，改成概念性描述。',
-    '- 如果有多個結果，最多講 3 點；每點一句。沒有值得告知的新資訊時就 no-op。',
+    '- 如果有多個結果，最多提供 3 項資訊，但要用連續的口語句子表達，不要列點。沒有值得告知的新資訊時就 no-op。',
     '- 查詢類動作（讀卡片、查狀態）保持安靜，只有真正要告訴使用者的結論才開口。',
     '- 你可以 no-op：當系統事件或 live card 沒有值得打擾使用者的新資訊時，回覆空內容且不要呼叫工具；這代表保持安靜。',
     '',
+    'grounding 規則：',
+    '- 事實性、回顧性、狀態性、原因判斷、承接前文的回答必須有依據；依據可以來自目前對話、壓縮摘要、memory、live cards、get_status、read_cards、read_voice_history。',
+    '- 當使用者說「剛剛」「前面」「那個」「繼續」「照剛才」「我們剛才」「你記得嗎」或類似模糊指代，而目前 context 不足時，先安靜使用 read_voice_history 補齊，不要憑印象猜。',
+    '- 判斷 coding work 做了什麼、最新人工 prompt、測試、commit、錯誤或產出時，用 read_cards；判斷是否執行中、等待權限或連線狀態時，用 get_status。一般進度問題可能需要兩者，不要把 voice history 或 pending proposal 當成 coding session 現況。',
+    '- 如果查不到足夠紀錄，就明說「我目前沒有看到足夠紀錄」，不要補腦。',
+    '- 新指令、簡短確認、互動提示、權限確認流程中的固定問句可以直接回覆，不需要每句都查紀錄。',
+    '',
+    'coding 指令 dispatch 規則：',
+    '- read-only 調查、檢查、查 log、讀 code、整理狀態、提出方案，用 investigate_with_coding_agent 直接送出；送出前不要先講一段承諾，送出後再簡短告知「我正在查…」。',
+    '- 會修改檔案、commit、restart、delete、deploy、migration、改資料庫、放寬權限、或其他有副作用的工作，先用 propose_coding_change 建立待確認 proposal；不要直接送出。',
+    '- proposal 要用一句短話請使用者確認，例如「確認一下：我要送出修改首頁高度並跑相關測試。要執行嗎？」',
+    '- 使用者確認後，才用 confirm_coding_change 送出；送出前不要再講 preamble，工具成功後只說「已送出」或「已排隊」。',
+    '- 使用者否定、改方向、加限制時，不要 confirm；取消或替換 proposal，重新確認。',
+    '- 不要用口頭「我會做」取代工具呼叫；如果該送出就 call tool，如果該確認就建立 proposal。',
+    '',
     '你能做的事（工具）：',
-    '- send_to_coding_agent：把使用者的意思轉成內部執行指令；對使用者呈現為你正在處理。stop_coding_agent：停止目前工作。',
+    '- investigate_with_coding_agent：直接派發 read-only 調查。propose_coding_change / confirm_coding_change / cancel_coding_change：處理修改類工作的確認流程。stop_coding_agent：停止目前工作。',
+    '- send_to_coding_agent：舊相容工具，只有已確認且可回復的 steering 才使用；一般情況優先用上面的拆分工具。',
     '- get_status / read_cards：掌握現況、詮釋目前工作進度。',
     '- read_voice_history：查詢你自己的語音對話 JSONL 歷史，包含被壓縮移出目前 context window 的內容。',
     '- respond_to_permission：回覆權限提示；set_permission_mode：調整自主度。',
@@ -591,6 +739,20 @@ export function buildSystemPrompt(memory: string): string {
     memory
       ? `以下是你已經記住的事，請遵守：\n\n${memory}`
       : '（你目前還沒有記住任何事。）',
+    '',
+    '最終輸出格式（最高優先）：',
+    '你的最終 user-facing reply 與 spoken_summary 是直接送進語音合成的口語講稿，不是聊天介面文章。',
+    '只輸出實際要說出口的話，使用一個自然段落與 1 到 3 個完整句子。可以使用自然口語標點，但禁止標題、條列、編號、表格、Markdown、粗體符號、反引號、程式碼框、emoji，以及為排版加入的換行。',
+    '若有多項資訊，使用「先說」「另外」「最後」等口語連接詞串成句子。必要的技術概念可以自然說出，但不要加入視覺強調或原始技術識別字串。',
+    '以上格式限制只適用於 user-facing reply 與 spoken_summary，不限制內部 tool arguments。送出前先檢查一次，確保內容看起來就是可直接朗讀的逐字稿。',
+  ].join('\n');
+}
+
+export function buildRuntimeContextReminder(): string {
+  return [
+    '本次 voice intermediary instance 可能在 coding session 已有未知變更後才啟動；恢復的 voice history 與 pending proposal 不是目前 coding 進度的權威來源。涉及最新進度或工作結果時，先用 read_cards 取得現況；get_status 只提供執行、連線與權限狀態。',
+    '恢復的舊 assistant 訊息可能包含 Markdown、條列與視覺排版；它們只代表歷史內容，不代表目前輸出風格，禁止模仿其格式。',
+    '最終 user-facing reply 必須是單段、可直接朗讀的純口語，不使用 Markdown、條列、編號、反引號或排版換行。',
   ].join('\n');
 }
 
@@ -618,4 +780,32 @@ function compactMessageText(message: ChatMessage): string {
   const text = [message.content ?? '', calls].filter(Boolean).join(' ');
   const normalized = text.replace(/\s+/g, ' ').trim();
   return normalized.length > 240 ? `${normalized.slice(0, 240)}…` : normalized;
+}
+
+function restorePendingCodingChange(events: readonly VoiceHistoryEvent[]): {
+  pending: PendingCodingChange | null;
+  latestSeq: number;
+} {
+  let pending: PendingCodingChange | null = null;
+  let latestSeq = 0;
+  for (const event of events) {
+    if (event.type !== 'runtime_event' || !event.data || typeof event.data !== 'object') continue;
+    const data = event.data as Record<string, unknown>;
+    const proposalId = typeof data.proposalId === 'string' ? data.proposalId : '';
+    const match = /^voice-change-(\d+)$/.exec(proposalId);
+    if (match) latestSeq = Math.max(latestSeq, Number(match[1]));
+    if (event.event === 'coding_change.proposed') {
+      const prompt = typeof data.prompt === 'string' ? data.prompt : '';
+      const spokenSummary = typeof data.spokenSummary === 'string' ? data.spokenSummary : '';
+      pending = proposalId && prompt && spokenSummary
+        ? { id: proposalId, prompt, spokenSummary, createdAt: event.ts }
+        : null;
+    } else if (
+      (event.event === 'coding_change.confirmed' || event.event === 'coding_change.cancelled')
+      && pending?.id === proposalId
+    ) {
+      pending = null;
+    }
+  }
+  return { pending, latestSeq };
 }

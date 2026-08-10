@@ -51,10 +51,10 @@ export function SessionStatsBar({
   const hasContextData = lastTurnTotal > 0;
   const contextTokens = session?.lastTurnContextUsage?.totalTokens ?? lastTurnTotal;
 
-  // The best anchor is the timestamp of the latest provider message whose
-  // usage reported cache activity. Claude emits this mid-turn via
-  // `lastCacheTouchAt`; Codex currently reports cached tokens at turn end, so
-  // the turn-end fallback anchors its prompt-cache countdown.
+  // KV cache countdown is only meaningful for Claude and Codex, which
+  // report actual cache-touch timestamps. OpenCode has no such signal —
+  // falling back to lastTurnEndedAt would show a misleading countdown,
+  // so we skip it entirely for non-cache-aware providers.
   const cacheAnchor = Math.max(
     session?.lastCacheTouchAt ?? 0,
     session?.lastTurnEndedAt ?? 0,
@@ -63,12 +63,13 @@ export function SessionStatsBar({
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
+    if (agentId === 'opencode') return; // no cache-touch signal
     if (!cacheAnchor) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [cacheAnchor]);
+  }, [cacheAnchor, agentId]);
 
-  const hasCountdown = typeof cacheAnchor === 'number';
+  const hasCountdown = typeof cacheAnchor === 'number' && agentId !== 'opencode';
   if (!hasContextData && !hasCountdown) return null;
 
   const remainingMs = hasCountdown ? Math.max(0, cacheAnchor! + effectiveCacheLifetimeMs - now) : 0;

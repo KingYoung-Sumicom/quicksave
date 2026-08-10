@@ -78,6 +78,7 @@ import {
 import { SyncClient } from './lib/syncClient';
 import { mergeSyncPayloads, syncPayloadsEqual, type SyncPayloadV3 } from './lib/syncMerge';
 import { useMediaQuery } from './hooks/useMediaQuery';
+import { useVoiceAgent } from './hooks/useVoiceAgent';
 import { SessionRightPanel } from './components/SessionRightPanel';
 
 /**
@@ -1362,6 +1363,10 @@ function ProjectRouteSession({
   );
 
   const { isReady, isConnecting, cwd, agentId: targetAgentId } = useProjectConnection(projectId, onConnect, onSwitchMachine);
+  const voiceAgent = useVoiceAgent(
+    targetAgentId ?? '',
+    urlSessionId && urlSessionId !== 'new' ? urlSessionId : undefined,
+  );
 
   // Route all bus operations through this agent's dedicated bus. The URL's
   // projectId is the routing source of truth, so reconnects or other tabs
@@ -1584,6 +1589,7 @@ function ProjectRouteSession({
         onDeleteQueuedSession={(sid, qid) => deleteQueuedSession(sid, qid)}
         onRespondToUserInput={respondToUserInput}
         onDismissPendingMission={dismissPendingMission}
+        voiceAgent={voiceAgent}
       />
       {isDesktop && targetAgentId && cwd && (
         <GitOpsContext.Provider value={sessionGitOpsBundle}>
@@ -1591,6 +1597,7 @@ function ProjectRouteSession({
             sessionId={urlSessionId ?? ''}
             agentId={targetAgentId}
             cwd={cwd}
+            voiceAgent={voiceAgent}
             sessionOps={{
               sessionId: urlSessionId,
               projectId,

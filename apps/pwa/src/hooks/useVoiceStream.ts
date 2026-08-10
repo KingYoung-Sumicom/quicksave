@@ -26,7 +26,16 @@ export interface UseVoiceStream {
   /** Connect (mic-first) if needed, then begin an utterance. Resolves true once
    *  recording, false if the P2P link couldn't be established. */
   start: () => Promise<boolean>;
-  stop: (opts?: { releaseMic?: boolean }) => void;
+  stop: (opts?: { releaseMic?: boolean; discard?: boolean }) => void;
+  retryTranscription: () => void;
+  interruptPlayback: () => void;
+  disconnect: () => void;
+}
+
+export interface UseVoiceStreamOptions {
+  transportSessionId?: string;
+  voiceSessionId?: string;
+  enabled?: boolean;
 }
 
 export function useVoiceStream(
@@ -34,28 +43,48 @@ export function useVoiceStream(
   onFinalText: (text: string) => void,
   onSpeechActivity?: (active: boolean) => void,
   onPartialText?: (text: string) => void,
+  onRemotePlayback?: (active: boolean, streamId: string) => void,
+  options: UseVoiceStreamOptions = {},
 ): UseVoiceStream {
+  const enabled = options.enabled ?? true;
   const [state, setState] = useState<VoiceStreamState | 'idle'>('idle');
   const [interim, setInterim] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
 
   const sessionRef = useRef<VoiceStreamSession | null>(null);
   const connectingRef = useRef<Promise<boolean> | null>(null);
+  const lifecycleGenerationRef = useRef(0);
   const onFinalRef = useRef(onFinalText);
   onFinalRef.current = onFinalText;
   const onSpeechActivityRef = useRef(onSpeechActivity);
   onSpeechActivityRef.current = onSpeechActivity;
   const onPartialTextRef = useRef(onPartialText);
   onPartialTextRef.current = onPartialText;
+  const onRemotePlaybackRef = useRef(onRemotePlayback);
+  onRemotePlaybackRef.current = onRemotePlayback;
 
   useEffect(() => {
     return () => {
+      lifecycleGenerationRef.current++;
       sessionRef.current?.close();
       sessionRef.current = null;
     };
   }, []);
 
+  useEffect(() => {
+    if (enabled) return;
+    lifecycleGenerationRef.current++;
+    sessionRef.current?.close();
+    sessionRef.current = null;
+    connectingRef.current = null;
+    setState('idle');
+    setInterim('');
+  }, [enabled]);
+
   const ensure = useCallback(async (acquireMic = false): Promise<boolean> => {
+    if (!enabled) return false;
     if (sessionRef.current && (state === 'ready' || state === 'recording')) return true;
     if (connectingRef.current) {
       // A connect is already in flight (typically the passive prewarm). Wait for
@@ -69,7 +98,9 @@ export function useVoiceStream(
     }
 
     const connect = (async () => {
+      const generation = lifecycleGenerationRef.current;
       const config = await getVoiceConfig();
+      if (!enabledRef.current || generation !== lifecycleGenerationRef.current) return false;
       if (!isVoiceConfigUsable(config) || !agentId) {
         setState('unavailable');
         return false;
@@ -80,48 +111,88 @@ export function useVoiceStream(
         sessionRef.current.close();
         sessionRef.current = null;
       }
-      const session = new VoiceStreamSession(agentId, crypto.randomUUID(), config, {
+      const session = new VoiceStreamSession(agentId, options.transportSessionId || crypto.randomUUID(), config, {
         onPartial: (text) => {
           setInterim(text);
           onPartialTextRef.current?.(text);
         },
         onFinal: (text) => {
           setInterim('');
-          if (text) onFinalRef.current(text);
+          // Empty completion is still significant: it lets the composer leave
+          // its post-stop transcription state without waiting for a timeout.
+          onFinalRef.current(text);
         },
         onSpeechActivity: (active) => onSpeechActivityRef.current?.(active),
+        onRemotePlayback: (active, streamId) => onRemotePlaybackRef.current?.(active, streamId),
         onError: (message) => {
           setInterim('');
           setError(message);
         },
         onState: (s) => setState(s),
-      });
+      }, undefined, options.voiceSessionId);
       sessionRef.current = session;
       const ok = await session.connect({ acquireMic });
-      if (!ok) {
+      if (!ok || !enabledRef.current || generation !== lifecycleGenerationRef.current) {
         session.close();
-        sessionRef.current = null;
+        if (sessionRef.current === session) sessionRef.current = null;
+        return false;
       }
       return ok;
     })();
 
     connectingRef.current = connect;
     const result = await connect;
-    connectingRef.current = null;
+    if (connectingRef.current === connect) connectingRef.current = null;
     return result;
-  }, [agentId, state]);
+  }, [agentId, enabled, state, options.transportSessionId, options.voiceSessionId]);
 
   const start = useCallback(async (): Promise<boolean> => {
+    if (!enabled) return false;
     setError(null);
+    // Create and resume Web Audio before the first await while this call still
+    // belongs to the user's click/tap. Firefox may otherwise suspend a context
+    // created after WebRTC signaling has consumed the transient activation.
+    const captureContext = new AudioContext();
+    try {
+      if (captureContext.state === 'suspended') await captureContext.resume();
+      if (captureContext.state !== 'running') {
+        throw new Error(`Microphone audio context did not start (state: ${captureContext.state}).`);
+      }
+    } catch (error) {
+      void captureContext.close().catch(() => undefined);
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`Could not activate microphone audio: ${reason}`);
+    }
     // Establish on the user gesture with the mic acquired first, so Safari
     // exposes host candidates (the passive prewarm can't grab the mic on iOS).
     const ok = await ensure(true);
-    if (ok) await sessionRef.current?.startUtterance();
+    if (ok) {
+      await sessionRef.current?.startUtterance(captureContext);
+    } else {
+      void captureContext.close().catch(() => undefined);
+    }
     return ok;
-  }, [ensure]);
+  }, [enabled, ensure]);
 
-  const stop = useCallback((opts: { releaseMic?: boolean } = {}) => {
+  const stop = useCallback((opts: { releaseMic?: boolean; discard?: boolean } = {}) => {
     sessionRef.current?.stopUtterance(opts);
+  }, []);
+
+  const retryTranscription = useCallback(() => {
+    sessionRef.current?.retryTranscription();
+  }, []);
+
+  const interruptPlayback = useCallback(() => {
+    sessionRef.current?.interruptPlayback();
+  }, []);
+
+  const disconnect = useCallback(() => {
+    lifecycleGenerationRef.current++;
+    sessionRef.current?.close();
+    sessionRef.current = null;
+    connectingRef.current = null;
+    setState('idle');
+    setInterim('');
   }, []);
 
   return {
@@ -133,5 +204,8 @@ export function useVoiceStream(
     ensure,
     start,
     stop,
+    retryTranscription,
+    interruptPlayback,
+    disconnect,
   };
 }

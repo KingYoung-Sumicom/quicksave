@@ -332,6 +332,9 @@ export function parseVoiceConfig(raw: string): VoiceConfig | null {
       streamModel: parsed.streamModel ?? '',
       // Voice intermediary ("AI coworker") — optional.
       agentModel: parsed.agentModel,
+      agentReasoningEffort: isVoiceReasoningEffort(parsed.agentReasoningEffort)
+        ? parsed.agentReasoningEffort
+        : undefined,
       ttsModel: parsed.ttsModel,
       ttsVoice: parsed.ttsVoice,
       ttsInstructions: parsed.ttsInstructions,
@@ -339,6 +342,11 @@ export function parseVoiceConfig(raw: string): VoiceConfig | null {
   } catch {
     return null;
   }
+}
+
+function isVoiceReasoningEffort(value: unknown): value is NonNullable<VoiceConfig['agentReasoningEffort']> {
+  return value === 'none' || value === 'low' || value === 'medium'
+    || value === 'high' || value === 'xhigh' || value === 'max';
 }
 
 /** Returns the parsed voice config, or null if not set / unparseable. */

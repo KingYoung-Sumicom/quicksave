@@ -54,6 +54,10 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
      assert the session still settles locally and the next prompt can start
    - Memory-mode provider cold resume: persisted card ids must not collide
      with new turn card ids, and history snapshots should remain chronological
+   - REST history-backed provider cold resume: seed dedupe state before the new
+     prompt, then assert the first sync emits only current-turn tool calls
+   - Permission adapters: assert a typed denial rationale survives the PWA,
+     SessionManager, and provider-specific rejection payload
    - Paginated card history that mixes persisted and active cards: assert the
      next page uses an agent-issued source cursor, not rendered `cards.length`.
      Include one-source-to-many-card expansion, partially persisted active

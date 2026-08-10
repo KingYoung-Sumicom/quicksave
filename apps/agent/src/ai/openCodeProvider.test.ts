@@ -47,8 +47,10 @@ import {
   buildOpenCodeRequestHeaders,
   buildOpenCodeServerEnv,
   buildOpenCodeUrl,
+  getOpenCodeServer,
   getOpenCodeEventSessionId,
   OPENCODE_SANDBOX_MCP_NAME,
+  _resetOpenCodeServer,
 } from './openCodeServer.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -75,13 +77,13 @@ function makeMockServer(): OpenCodeServer & {
   creates: Array<Record<string, unknown>>;
   prompts: Array<{ sessionID: string; directory: string; body: any }>;
   aborts: Array<{ sessionID: string; directory: string }>;
-  replies: Array<{ requestID: string; directory: string; reply: string }>;
+  replies: Array<{ requestID: string; directory: string; reply: string; message?: string }>;
   messages: Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>;
 } {
   const creates: Array<Record<string, unknown>> = [];
   const prompts: Array<{ sessionID: string; directory: string; body: any }> = [];
   const aborts: Array<{ sessionID: string; directory: string }> = [];
-  const replies: Array<{ requestID: string; directory: string; reply: string }> = [];
+  const replies: Array<{ requestID: string; directory: string; reply: string; message?: string }> = [];
   const messages: Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }> = [];
   return {
     creates, prompts, aborts, replies, messages,
@@ -90,7 +92,9 @@ function makeMockServer(): OpenCodeServer & {
     deleteSession: async () => undefined,
     sendPromptAsync: async (sessionID, directory, body) => { prompts.push({ sessionID, directory, body }); },
     abortSession: async (sessionID, directory) => { aborts.push({ sessionID, directory }); },
-    replyPermission: async (requestID, directory, reply) => { replies.push({ requestID, directory, reply }); },
+    replyPermission: async (requestID, directory, reply, message) => {
+      replies.push({ requestID, directory, reply, ...(message ? { message } : {}) });
+    },
     getMessages: async () => messages,
     getHealth: async () => ({ healthy: true, version: '1.18.4' }),
     listProviders: async () => ({
@@ -260,6 +264,33 @@ describe('OpenCode HTTP protocol helpers', () => {
       'content-type': 'application/json',
       authorization: `Basic ${Buffer.from('quicksave:secret').toString('base64')}`,
     });
+  });
+
+  it('serializes a rejection rationale in the permission reply body', async () => {
+    _resetOpenCodeServer();
+    const server = getOpenCodeServer();
+    const request = vi.fn(async () => true);
+    (server as any).req = request;
+
+    await server.replyPermission(
+      'per_reason',
+      '/workspace/a',
+      'reject',
+      'Use the read-only API instead',
+    );
+
+    expect(request).toHaveBeenCalledWith(
+      '/permission/per_reason/reply',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          reply: 'reject',
+          message: 'Use the read-only API instead',
+        }),
+      },
+      { directory: '/workspace/a' },
+    );
+    _resetOpenCodeServer();
   });
 });
 
@@ -860,6 +891,43 @@ describe('SessionEventRouter', () => {
     expect(cbs.tools.map((tool) => tool.toolName)).toEqual(['Bash', 'Glob']);
   });
 
+  it('does not replay historical REST tool parts after cold-resume priming', async () => {
+    const { router, cbs, server } = makeRouter();
+    server.messages.push({
+      info: { id: 'msg_old', role: 'assistant' },
+      parts: [{
+        id: 'prt_old',
+        sessionID: 'ses_t',
+        messageID: 'msg_old',
+        type: 'tool',
+        tool: 'bash',
+        callID: 'call_old',
+        state: { status: 'completed', input: { command: 'pwd' }, output: '/p' },
+      }],
+    });
+
+    await router.primeHistoricalState();
+    server.messages.push({
+      info: { id: 'msg_new', role: 'assistant' },
+      parts: [{
+        id: 'prt_new',
+        sessionID: 'ses_t',
+        messageID: 'msg_new',
+        type: 'tool',
+        tool: 'glob',
+        callID: 'call_new',
+        state: { status: 'completed', input: { pattern: '**/*.ts' }, output: 'a.ts' },
+      }],
+    });
+    router.handle(ev('session.diff', { sessionID: 'ses_t', diff: [] }));
+    await flushAsync();
+
+    const toolCards = cbs.cards.filter((event: any) => event.card?.type === 'tool_call');
+    expect(toolCards).toHaveLength(1);
+    expect(toolCards[0]?.card).toMatchObject({ toolName: 'Glob', toolUseId: 'call_new' });
+    expect(cbs.tools.map((tool) => tool.toolName)).toEqual(['Glob']);
+  });
+
   it('resetForNewTurn allows a fresh turn to flow', async () => {
     const { router, cbs } = makeRouter();
     router.handle(ev('session.idle', { sessionID: 'ses_t' }));
@@ -935,12 +1003,15 @@ describe('SessionEventRouter', () => {
     }]);
   });
 
-  it('rejects permission when handlePermissionRequest returns deny', async () => {
+  it('sends the user-provided reason when rejecting permission', async () => {
     const server = makeMockServer();
     const cb = new StreamCardBuilder('ses_t', '/p');
     const cbs: ProviderCallbacks = {
       ...makeCallbacks(),
-      handlePermissionRequest: async () => ({ action: 'deny' }),
+      handlePermissionRequest: async () => ({
+        action: 'deny',
+        response: 'Use the read-only API instead',
+      }),
     };
     const router = new SessionEventRouter('ses_t', cb, cbs, server, { directory: '/p' });
     router.handle({
@@ -953,7 +1024,12 @@ describe('SessionEventRouter', () => {
       },
     });
     await new Promise((r) => setImmediate(r));
-    expect(server.replies).toEqual([{ requestID: 'per_xyz', directory: '/p', reply: 'reject' }]);
+    expect(server.replies).toEqual([{
+      requestID: 'per_xyz',
+      directory: '/p',
+      reply: 'reject',
+      message: 'Use the read-only API instead',
+    }]);
   });
 
   it('auto mode replies once without prompting Quicksave', async () => {
@@ -1089,6 +1165,40 @@ describe('OpenCodeProvider', () => {
       },
     });
     expect(server.prompts[0]?.body.attachments).toHaveLength(1);
+  });
+
+  it('primes historical tool state before sending a cold-resume prompt', async () => {
+    const server = makeMockServer();
+    const provider = new OpenCodeProvider(server);
+    server.messages.push({
+      info: { id: 'msg_old', role: 'assistant' },
+      parts: [{
+        type: 'tool',
+        tool: 'read',
+        callID: 'call_old',
+        state: { status: 'completed', input: { filePath: '/old' }, output: 'old' },
+      }],
+    });
+    const getMessages = vi.spyOn(server, 'getMessages');
+
+    await provider.resumeSession(
+      {
+        sessionId: 'ses_existing',
+        prompt: 'continue',
+        cwd: '/workspace/a',
+        permissionLevel: 'auto',
+        sandboxed: false,
+        model: 'vllm/foo/bar',
+      },
+      new StreamCardBuilder('ses_existing', '/workspace/a'),
+      makeCallbacks(),
+    );
+
+    expect(getMessages).toHaveBeenCalledWith('ses_existing', '/workspace/a');
+    expect(server.prompts).toEqual([expect.objectContaining({
+      sessionID: 'ses_existing',
+      body: expect.objectContaining({ text: 'continue' }),
+    })]);
   });
 
   it('startSession rejects invalid model ids without spawning anything', async () => {

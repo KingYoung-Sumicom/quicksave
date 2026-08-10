@@ -4,7 +4,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useClaudeStore } from '../stores/claudeStore';
-import { ClaudePanel } from './ClaudePanel';
+import { ClaudePanel, shouldReplaceComposerWithVoice } from './ClaudePanel';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -120,5 +120,13 @@ describe('ClaudePanel composer acknowledgement', () => {
     expect(textarea.disabled).toBe(false);
     expect(textarea.value).toBe('message awaiting ack');
     expect(localStorage.getItem('qs_draft_new')).toBe('message awaiting ack');
+  });
+});
+
+describe('ClaudePanel voice workspace visibility', () => {
+  it('replaces the composer only while the voice sidebar is active', () => {
+    expect(shouldReplaceComposerWithVoice(true, 'voice')).toBe(true);
+    expect(shouldReplaceComposerWithVoice(true, null)).toBe(false);
+    expect(shouldReplaceComposerWithVoice(false, 'voice')).toBe(false);
   });
 });

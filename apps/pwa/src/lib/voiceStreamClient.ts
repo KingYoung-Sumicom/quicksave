@@ -4,9 +4,9 @@
  * PWA-side WebRTC streaming voice client.
  *
  * Establishes a P2P WebRTC connection to the agent (signaling over the bus),
- * captures mic audio as 24 kHz PCM16 via an AudioWorklet, and ships raw frames
- * over a DataChannel. The agent bridges to a streaming ASR and pushes back
- * partial/final transcripts. No TURN is used — if the P2P connection can't be
+ * negotiates an inbound TTS audio track, and uses a DataChannel for ASR PCM plus
+ * VAD/transcript/playback control. The agent sends TTS as a remote track. No
+ * TURN is used — if the P2P connection can't be
  * established within a timeout, the session reports `unavailable` and the
  * caller falls back to batch transcription.
  */
@@ -18,11 +18,15 @@ import {
   type VoiceRtcConnectResponsePayload,
   type VoiceRtcIceRequestPayload,
   type VoiceRtcIceUpdate,
+  type VoiceRtcMicrophoneLeaseRequestPayload,
+  type VoiceRtcMicrophoneLeaseResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { getBusForAgent } from './busRegistry';
 
 const STUN_URL = 'stun:stun.l.google.com:19302';
 const CONNECT_TIMEOUT_MS = 8_000;
+const CAPTURE_FIRST_FRAME_TIMEOUT_MS = 2_500;
+const MICROPHONE_CLAIM_TIMEOUT_MS = 3_000;
 
 // Mic capture constraints (mono + light DSP), shared by the connect-time
 // permission grab (Safari ICE gate) and per-utterance capture.
@@ -36,6 +40,7 @@ export interface VoiceStreamCallbacks {
   onPartial(text: string): void;
   onFinal(text: string): void;
   onSpeechActivity?(active: boolean): void;
+  onRemotePlayback?(active: boolean, streamId: string): void;
   onError(message: string): void;
   onState(state: VoiceStreamState): void;
 }
@@ -64,6 +69,20 @@ export function classifyIceCandidate(candidate: string): IceCandidateType {
   }
 }
 
+export function shouldUseLegacyPcmCapture(userAgent: string): boolean {
+  return /Firefox\//i.test(userAgent);
+}
+
+function downsampleFloatPcm(input: Float32Array, sourceRate: number): ArrayBuffer {
+  const ratio = sourceRate / VOICE_PCM_SAMPLE_RATE;
+  const output = new Int16Array(Math.max(1, Math.floor(input.length / ratio)));
+  for (let i = 0; i < output.length; i++) {
+    const sample = Math.max(-1, Math.min(1, input[Math.min(input.length - 1, Math.floor(i * ratio))] ?? 0));
+    output[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+  return output.buffer;
+}
+
 export interface VoiceRtcDebugEvent {
   /** Milliseconds since the test started. */
   t: number;
@@ -74,10 +93,9 @@ export interface VoiceRtcDebugEvent {
 
 export type VoiceRtcDebugObserver = (event: VoiceRtcDebugEvent) => void;
 
-// AudioWorklet processor: downsample the mic stream to the target rate and emit
-// Int16 PCM frames. Kept as a string + Blob URL so it works regardless of the
-// bundler's asset handling. Crude decimation (no anti-alias filter) — adequate
-// for speech recognition; revisit if quality demands it.
+// Keep ASR ingress on the proven PCM/DataChannel path while outbound TTS uses
+// a WebRTC media track. RTP microphone ingress remains available agent-side
+// for a future browser-validated transport switch.
 const WORKLET_SRC = `
 class PcmCaptureProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -85,7 +103,14 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
     this.ratio = sampleRate / options.processorOptions.targetRate;
     this._acc = 0;
   }
-  process(inputs) {
+  process(inputs, outputs) {
+    // Never route the microphone to the speakers. Keeping an explicitly silent
+    // output connected avoids Firefox treating a downstream zero-gain branch as
+    // inactive while still letting the processor observe the input frames.
+    const output = outputs[0];
+    if (output) {
+      for (const channel of output) channel.fill(0);
+    }
     const ch = inputs[0] && inputs[0][0];
     if (!ch) return true;
     const out = [];
@@ -93,7 +118,7 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
       this._acc += 1;
       if (this._acc >= this.ratio) {
         this._acc -= this.ratio;
-        let s = Math.max(-1, Math.min(1, ch[i]));
+        const s = Math.max(-1, Math.min(1, ch[i]));
         out.push(s < 0 ? s * 0x8000 : s * 0x7fff);
       }
     }
@@ -112,11 +137,25 @@ export class VoiceStreamSession {
   private dc: RTCDataChannel | null = null;
   private unsubIce: (() => void) | null = null;
   private state: VoiceStreamState = 'connecting';
-
-  // Capture graph (created lazily per utterance).
-  private mediaStream: MediaStream | null = null;
+  private remoteAudio: HTMLAudioElement | null = null;
+  private remoteAudioTrack: MediaStreamTrack | null = null;
+  private remoteAudioStream: MediaStream | null = null;
+  private remotePlaybackActive = false;
+  private remotePlaybackNotified = false;
+  private remotePlaybackStreamId = '';
   private audioCtx: AudioContext | null = null;
+  private captureSource: MediaStreamAudioSourceNode | null = null;
+  private captureNode: AudioWorkletNode | null = null;
+  private captureLegacyNode: ScriptProcessorNode | null = null;
+  private captureSink: GainNode | null = null;
   private workletUrl: string | null = null;
+  private microphoneClaimed = false;
+  private microphoneClaimPromise: Promise<{ granted: boolean; reason?: string }> | null = null;
+  private startUtterancePromise: Promise<void> | null = null;
+
+  // The mic stream stays granted between utterances in voice-agent mode. ASR
+  // reads it through Web Audio; the peer transceiver is recvonly for TTS.
+  private mediaStream: MediaStream | null = null;
 
   // Debug instrumentation (no-op unless an observer is supplied).
   private debugStart = 0;
@@ -127,6 +166,7 @@ export class VoiceStreamSession {
     private readonly config: VoiceConfig,
     private readonly cb: VoiceStreamCallbacks,
     private readonly onDebug?: VoiceRtcDebugObserver,
+    private readonly voiceSessionId?: string,
   ) {}
 
   getState(): VoiceStreamState {
@@ -197,11 +237,19 @@ export class VoiceStreamSession {
     // only on the tap path (not the passive prewarm, which omits acquireMic).
     // The stream is reused by the first utterance.
     if (opts.acquireMic && !this.mediaStream) {
+      if (this.voiceSessionId) {
+        const claim = await this.claimMicrophone();
+        if (!claim.granted) {
+          this.cb.onError(claim.reason || 'Microphone is active on another voice page.');
+          return false;
+        }
+      }
       this.dbg('info', 'requesting mic (getUserMedia) before building the offer');
       try {
         this.mediaStream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
         this.dbg('info', 'mic granted');
       } catch {
+        this.releaseMicrophone();
         this.dbg('result', 'unavailable: mic permission denied/unavailable');
         this.setState('unavailable');
         return false;
@@ -212,6 +260,8 @@ export class VoiceStreamSession {
     this.pc = pc;
     this.dbg('info', `RTCPeerConnection created (STUN ${STUN_URL})`);
     this.instrumentPc(pc);
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+    pc.ontrack = (event) => this.attachRemoteAudio(event.track, event.streams[0]);
     const dc = pc.createDataChannel('voice', { ordered: true });
     dc.binaryType = 'arraybuffer';
     this.dc = dc;
@@ -265,7 +315,7 @@ export class VoiceStreamSession {
         }
       };
       setTimeout(() => {
-        if (this.state !== 'ready') {
+        if (!settled) {
           this.dbg('result', `unavailable: timed out after ${CONNECT_TIMEOUT_MS}ms (state=${this.state})`);
           this.setState('unavailable');
           finish(false);
@@ -279,7 +329,7 @@ export class VoiceStreamSession {
       this.dbg('sdp', `local offer set (${offer.sdp?.length ?? 0} bytes)`);
       const res = await bus.command<VoiceRtcConnectResponsePayload, VoiceRtcConnectRequestPayload>(
         'voice:rtc-connect',
-        { sessionId: this.sessionId, sdp: offer.sdp ?? '' },
+        { sessionId: this.sessionId, voiceSessionId: this.voiceSessionId, sdp: offer.sdp ?? '' },
         { timeoutMs: 15_000 },
       );
       if (res.error || !res.sdp) {
@@ -335,60 +385,227 @@ export class VoiceStreamSession {
       else this.cb.onPartial(msg.text);
     } else if (msg.t === 'speech') {
       this.cb.onSpeechActivity?.(msg.active);
+    } else if (msg.t === 'playback') {
+      this.handleRemotePlayback(msg.active, msg.streamId);
     } else if (msg.t === 'error') {
       this.cb.onError(msg.message);
     }
   }
 
-  /** Begin an utterance: open the mic, start the ASR stream, pipe PCM frames. */
-  async startUtterance(): Promise<void> {
+  /** Begin an utterance and send proven Worklet PCM frames for ASR. */
+  startUtterance(preparedContext?: AudioContext): Promise<void> {
+    if (this.startUtterancePromise) return this.startUtterancePromise;
+    const starting = this.startUtteranceOnce(preparedContext);
+    this.startUtterancePromise = starting;
+    void starting.then(
+      () => { if (this.startUtterancePromise === starting) this.startUtterancePromise = null; },
+      () => { if (this.startUtterancePromise === starting) this.startUtterancePromise = null; },
+    );
+    return starting;
+  }
+
+  private async startUtteranceOnce(preparedContext?: AudioContext): Promise<void> {
     if (this.state !== 'ready' || !this.dc) return;
+    if (this.voiceSessionId) {
+      const claim = await this.claimMicrophone();
+      if (!claim.granted) {
+        throw new Error(claim.reason || 'Microphone is active on another voice page.');
+      }
+    }
     // Reuse a stream already grabbed at connect() (the Safari ICE-gate path);
     // otherwise acquire it now (the prewarmed path that didn't need it up front).
     const stream = this.mediaStream ?? (await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS));
-    this.mediaStream = stream;
+    const track = stream.getAudioTracks()[0];
+    if (!track) throw new Error('Microphone audio track is unavailable.');
+    if (track.readyState === 'ended') throw new Error('Microphone audio track ended before capture started.');
 
-    const ctx = new AudioContext();
-    this.audioCtx = ctx;
-    this.workletUrl = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'application/javascript' }));
-    await ctx.audioWorklet.addModule(this.workletUrl);
+    let startSent = false;
+    let firstFrameTimeout: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const ctx = preparedContext ?? new AudioContext();
+      this.audioCtx = ctx;
+      if (ctx.state === 'suspended') {
+        this.dbg('info', 'resuming suspended microphone AudioContext');
+        await ctx.resume();
+      }
+      if (ctx.state !== 'running') {
+        throw new Error(`Microphone audio context did not start (state: ${ctx.state}).`);
+      }
+      const source = ctx.createMediaStreamSource(stream);
+      const sink = ctx.createGain();
+      sink.gain.value = 1;
+      sink.connect(ctx.destination);
+      this.captureSource = source;
+      this.captureSink = sink;
+      this.mediaStream = stream;
 
-    const source = ctx.createMediaStreamSource(stream);
-    const node = new AudioWorkletNode(ctx, 'pcm-capture', {
-      processorOptions: { targetRate: VOICE_PCM_SAMPLE_RATE },
-    });
-    node.port.onmessage = (e) => {
-      if (this.dc?.readyState === 'open') this.dc.send(e.data as ArrayBuffer);
-    };
-    source.connect(node);
-    // Worklet needs a downstream node to be pulled; route to a muted gain.
-    const sink = ctx.createGain();
-    sink.gain.value = 0;
-    node.connect(sink).connect(ctx.destination);
+      const firstFrame = new Promise<void>((resolve, reject) => {
+        let received = false;
+        const acceptFrame = (pcm: ArrayBuffer) => {
+          if (this.dc?.readyState === 'open') this.dc.send(pcm);
+          if (received) return;
+          received = true;
+          if (firstFrameTimeout) clearTimeout(firstFrameTimeout);
+          firstFrameTimeout = null;
+          resolve();
+        };
+        firstFrameTimeout = setTimeout(() => {
+          if (received) return;
+          received = true;
+          reject(new Error(
+            `Microphone started but produced no audio frames `
+            + `(context=${ctx.state}, track=${track.readyState}, enabled=${track.enabled}, muted=${track.muted}, sampleRate=${ctx.sampleRate}).`,
+          ));
+        }, CAPTURE_FIRST_FRAME_TIMEOUT_MS);
 
-    this.dcSend({ t: 'start', config: this.config, sampleRate: VOICE_PCM_SAMPLE_RATE });
+        if (shouldUseLegacyPcmCapture(navigator.userAgent)) {
+          // Firefox can leave a live MediaStreamAudioSource -> AudioWorklet
+          // graph unpulled. ScriptProcessor is deprecated but remains the most
+          // reliable realtime PCM fallback there; it exists only while capture
+          // is active and still emits the same 24 kHz PCM DataChannel frames.
+          const legacy = ctx.createScriptProcessor(2048, 1, 1);
+          legacy.onaudioprocess = (event) => {
+            const output = event.outputBuffer.getChannelData(0);
+            output.fill(0);
+            const input = event.inputBuffer.getChannelData(0);
+            if (input.length > 0) acceptFrame(downsampleFloatPcm(input, ctx.sampleRate));
+          };
+          source.connect(legacy);
+          legacy.connect(sink);
+          this.captureLegacyNode = legacy;
+          return;
+        }
+
+        this.workletUrl = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'application/javascript' }));
+        void ctx.audioWorklet.addModule(this.workletUrl).then(() => {
+          if (received) return;
+          const node = new AudioWorkletNode(ctx, 'pcm-capture', {
+            processorOptions: { targetRate: VOICE_PCM_SAMPLE_RATE },
+            numberOfInputs: 1,
+            numberOfOutputs: 1,
+            outputChannelCount: [1],
+            channelCount: 1,
+            channelCountMode: 'explicit',
+          });
+          node.onprocessorerror = () => {
+            if (received) return;
+            received = true;
+            if (firstFrameTimeout) clearTimeout(firstFrameTimeout);
+            firstFrameTimeout = null;
+            reject(new Error('Microphone AudioWorklet processor failed.'));
+          };
+          node.port.onmessage = (event) => acceptFrame(event.data as ArrayBuffer);
+          source.connect(node);
+          node.connect(sink);
+          this.captureNode = node;
+        }).catch((error) => {
+          if (received) return;
+          received = true;
+          if (firstFrameTimeout) clearTimeout(firstFrameTimeout);
+          firstFrameTimeout = null;
+          reject(error);
+        });
+      });
+
+      this.dcSend({
+        t: 'start',
+        config: this.config,
+        sampleRate: VOICE_PCM_SAMPLE_RATE,
+        audioTransport: 'datachannel',
+      });
+      startSent = true;
+      await firstFrame;
+    } catch (error) {
+      if (firstFrameTimeout) clearTimeout(firstFrameTimeout);
+      if (startSent) this.dcSend({ t: 'stop', releaseMicrophone: true });
+      this.teardownCapture({ releaseMic: true });
+      this.releaseMicrophone();
+      const reason = error instanceof Error ? error.message : String(error);
+      this.dbg('error', 'microphone capture failed to start', { reason });
+      throw new Error(`Could not start microphone capture: ${reason}`);
+    }
     this.setState('recording');
   }
 
   /** End the current utterance: stop capture and ask the agent to finalize.
    *  Voice-agent continuous listening keeps the granted mic stream alive so the
    *  next utterance can start during assistant speech without a permission gap. */
-  stopUtterance(opts: { releaseMic?: boolean } = {}): void {
-    this.dcSend({ t: 'stop' });
-    this.teardownCapture({ releaseMic: opts.releaseMic ?? true });
+  stopUtterance(opts: { releaseMic?: boolean; discard?: boolean } = {}): void {
+    const releaseMic = opts.releaseMic ?? true;
+    this.dcSend({ t: 'stop', releaseMicrophone: releaseMic, discard: opts.discard });
+    this.teardownCapture({ releaseMic });
+    if (releaseMic) this.releaseMicrophone(false);
     if (this.state === 'recording') this.setState('ready');
+  }
+
+  /** Ask the agent to run ASR again over its retained copy of this utterance. */
+  retryTranscription(): void {
+    this.dcSend({ t: 'retry-transcription' });
+  }
+
+  /** Stop the agent's current outbound TTS after barge-in is confirmed. */
+  interruptPlayback(): void {
+    this.dcSend({ t: 'interrupt-playback' });
   }
 
   private dcSend(msg: VoiceDcMessage): void {
     if (this.dc?.readyState === 'open') this.dc.send(JSON.stringify(msg));
   }
 
+  private claimMicrophone(): Promise<{ granted: boolean; reason?: string }> {
+    if (this.microphoneClaimed) return Promise.resolve({ granted: true });
+    if (this.microphoneClaimPromise) return this.microphoneClaimPromise;
+    const bus = getBusForAgent(this.agentId);
+    if (!bus) return Promise.resolve({ granted: false, reason: 'Not connected to an agent.' });
+
+    const claim = bus.command<VoiceRtcMicrophoneLeaseResponsePayload, VoiceRtcMicrophoneLeaseRequestPayload>(
+      'voice:microphone-claim',
+      { sessionId: this.sessionId, voiceSessionId: this.voiceSessionId ?? this.sessionId },
+      { timeoutMs: MICROPHONE_CLAIM_TIMEOUT_MS },
+    ).then((result) => {
+      this.microphoneClaimed = result.ok;
+      return { granted: result.ok, reason: result.error };
+    }).catch(() => ({ granted: false, reason: 'Microphone ownership request failed.' }));
+    this.microphoneClaimPromise = claim;
+    void claim.finally(() => {
+      if (this.microphoneClaimPromise === claim) this.microphoneClaimPromise = null;
+    });
+    return claim;
+  }
+
+  private releaseMicrophone(send = true): void {
+    if (send && this.microphoneClaimed) this.dcSend({ t: 'microphone-release' });
+    if (send && this.microphoneClaimed && this.voiceSessionId) {
+      const bus = getBusForAgent(this.agentId);
+      void bus?.command<VoiceRtcMicrophoneLeaseResponsePayload, VoiceRtcMicrophoneLeaseRequestPayload>(
+        'voice:microphone-release',
+        { sessionId: this.sessionId, voiceSessionId: this.voiceSessionId },
+      ).catch(() => undefined);
+    }
+    this.microphoneClaimed = false;
+  }
+
   private teardownCapture(opts: { releaseMic?: boolean } = {}): void {
+    if (this.captureNode) this.captureNode.port.onmessage = null;
+    if (this.captureNode) this.captureNode.onprocessorerror = null;
+    if (this.captureLegacyNode) this.captureLegacyNode.onaudioprocess = null;
+    try {
+      this.captureSource?.disconnect();
+      this.captureNode?.disconnect();
+      this.captureLegacyNode?.disconnect();
+      this.captureSink?.disconnect();
+    } catch {
+      /* graph may already be disconnected */
+    }
+    this.captureSource = null;
+    this.captureNode = null;
+    this.captureLegacyNode = null;
+    this.captureSink = null;
     if (opts.releaseMic !== false) {
       this.mediaStream?.getTracks().forEach((t) => t.stop());
       this.mediaStream = null;
     }
-    void this.audioCtx?.close().catch(() => {});
+    void this.audioCtx?.close().catch(() => undefined);
     this.audioCtx = null;
     if (this.workletUrl) {
       URL.revokeObjectURL(this.workletUrl);
@@ -396,7 +613,75 @@ export class VoiceStreamSession {
     }
   }
 
+  private attachRemoteAudio(track: MediaStreamTrack, stream?: MediaStream): void {
+    if (track.kind !== 'audio') return;
+    track.enabled = true;
+    this.remoteAudioTrack = track;
+    this.remoteAudioStream = stream ?? null;
+  }
+
+  private handleRemotePlayback(active: boolean, streamId: string): void {
+    this.remotePlaybackActive = active;
+    this.remotePlaybackStreamId = active ? streamId : '';
+    if (!active) {
+      const wasNotified = this.remotePlaybackNotified;
+      this.remotePlaybackNotified = false;
+      // Always send the end marker so waiting cues can settle even when play()
+      // was rejected before an active marker reached the hook.
+      this.cb.onRemotePlayback?.(false, streamId);
+      if (!wasNotified) this.dbg('error', 'remote TTS ended before browser playback started');
+      this.releaseRemoteAudioElement();
+      return;
+    }
+
+    if (!this.remoteAudioTrack) {
+      this.cb.onError('Remote voice track is unavailable in the browser.');
+      this.cb.onRemotePlayback?.(false, streamId);
+      return;
+    }
+    const el = new Audio();
+    el.autoplay = false;
+    el.muted = false;
+    el.volume = 1;
+    el.setAttribute('playsinline', '');
+    el.setAttribute('aria-hidden', 'true');
+    Object.assign(el.style, {
+      position: 'fixed',
+      width: '1px',
+      height: '1px',
+      opacity: '0',
+      pointerEvents: 'none',
+    });
+    el.srcObject = this.remoteAudioStream ?? new MediaStream([this.remoteAudioTrack]);
+    document.body.appendChild(el);
+    this.remoteAudio = el;
+    void el.play().then(() => {
+      if (!this.remotePlaybackActive || this.remotePlaybackStreamId !== streamId) return;
+      this.remotePlaybackNotified = true;
+      this.cb.onRemotePlayback?.(true, streamId);
+      this.dbg('info', 'remote TTS audio element playing');
+    }).catch((error) => {
+      if (!this.remotePlaybackActive || this.remotePlaybackStreamId !== streamId) return;
+      const reason = error instanceof Error ? error.message : String(error);
+      this.dbg('error', 'remote TTS play() rejected', { reason });
+      this.cb.onError(`Browser blocked remote voice playback: ${reason}`);
+      this.cb.onRemotePlayback?.(false, streamId);
+      this.releaseRemoteAudioElement();
+    });
+  }
+
+  private releaseRemoteAudioElement(): void {
+    if (!this.remoteAudio) return;
+    this.remoteAudio.pause();
+    this.remoteAudio.srcObject = null;
+    this.remoteAudio.remove();
+    this.remoteAudio = null;
+  }
+
   close(): void {
+    this.releaseMicrophone();
+    this.microphoneClaimPromise = null;
+    this.startUtterancePromise = null;
     this.teardownCapture({ releaseMic: true });
     this.unsubIce?.();
     this.unsubIce = null;
@@ -408,6 +693,12 @@ export class VoiceStreamSession {
     }
     this.dc = null;
     this.pc = null;
+    this.releaseRemoteAudioElement();
+    this.remoteAudioTrack = null;
+    this.remoteAudioStream = null;
+    this.remotePlaybackActive = false;
+    this.remotePlaybackNotified = false;
+    this.remotePlaybackStreamId = '';
     this.setState('closed');
   }
 }

@@ -25,9 +25,7 @@ interface FilePathLinkProps {
  */
 const RESET = 'appearance-none bg-transparent border-0 p-0 m-0 cursor-pointer text-inherit text-left';
 
-/** Default visual: inline-block, blue, bold, underline (used by tool-call
- *  headers). Linkify call-sites pass their own equivalent without
- *  `truncate` so paths inside `<pre>` output don't get clipped. */
+/** Default visual for explicit file links and structured tool views. */
 const DEFAULT_LOOK = 'inline-block align-baseline text-blue-400 hover:text-blue-300 font-bold underline transition-colors font-mono truncate max-w-full';
 
 /**
@@ -35,8 +33,8 @@ const DEFAULT_LOOK = 'inline-block align-baseline text-blue-400 hover:text-blue-
  * referenced file, using the active session's cwd as the resolution base
  * for relative paths.
  *
- * Use this everywhere a card surfaces a file path — Read/Write/Edit tool
- * headers, Bash output paths, inline code in assistant markdown, etc.
+ * Use this where a card explicitly identifies a file path, such as
+ * Read/Write/Edit tool headers or authored Markdown file links.
  */
 export function FilePathLink({ path, children, className, title }: FilePathLinkProps) {
   const cwd = useClaudeStore((s) => {

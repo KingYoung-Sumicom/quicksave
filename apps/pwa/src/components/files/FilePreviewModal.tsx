@@ -20,6 +20,43 @@ import { MarkdownPreview } from './MarkdownPreview';
 import { CsvViewer, isCsvPath, csvDelimiterFor } from './CsvViewer';
 import { PinchZoomImage } from './PinchZoomImage';
 
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function textDownloadMime(fileName: string): string {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.svg')) return 'image/svg+xml;charset=utf-8';
+  if (lower.endsWith('.csv')) return 'text/csv;charset=utf-8';
+  if (lower.endsWith('.json')) return 'application/json;charset=utf-8';
+  if (lower.endsWith('.md') || lower.endsWith('.markdown') || lower.endsWith('.mdx')) {
+    return 'text/markdown;charset=utf-8';
+  }
+  return 'text/plain;charset=utf-8';
+}
+
+export function createPreviewDownload(
+  data: FilesReadResponsePayload | null,
+  fileName: string,
+): { blob: Blob; fileName: string } | null {
+  if (!data?.success || typeof data.content !== 'string') return null;
+  if (data.kind === 'image') {
+    return {
+      blob: new Blob([base64ToBytes(data.content) as BlobPart], {
+        type: data.mimeType || 'application/octet-stream',
+      }),
+      fileName,
+    };
+  }
+  if (data.kind === 'text') {
+    return { blob: new Blob([data.content], { type: textDownloadMime(fileName) }), fileName };
+  }
+  return null;
+}
+
 /**
  * Single mount point — App.tsx renders this once. It subscribes to the
  * `filePreviewStore` and pops over everything when a request is queued.
@@ -121,6 +158,20 @@ export function FileViewerPane({
   const [renderMarkdown, setRenderMarkdown] = useState(true);
   const [renderSvg, setRenderSvg] = useState(true);
   const [renderCsv, setRenderCsv] = useState(true);
+  const [showLineNumbers, setShowLineNumbers] = useState(false);
+  const showsRawText = data?.kind === 'text'
+    && !(isMarkdown && renderMarkdown)
+    && !(isSvg && renderSvg)
+    && !(isCsv && renderCsv);
+  const canDownload = data?.success === true
+    && typeof data.content === 'string'
+    && (data.kind === 'text' || data.kind === 'image');
+  const showsZoomImage = data?.success === true
+    && (data.kind === 'image' || (data.kind === 'text' && isSvg && renderSvg));
+
+  useEffect(() => {
+    setShowLineNumbers(false);
+  }, [request.cwd, request.path]);
 
   return (
     <>
@@ -160,6 +211,44 @@ export function FileViewerPane({
             {renderCsv ? 'Raw' : 'Table'}
           </button>
         )}
+        {showsRawText && (
+          <button
+            type="button"
+            onClick={() => setShowLineNumbers((visible) => !visible)}
+            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded border font-mono text-[9px] transition-colors ${showLineNumbers
+              ? 'border-blue-500 bg-blue-500/15 text-blue-200'
+              : 'border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200'}`}
+            title={showLineNumbers ? 'Hide line numbers' : 'Show line numbers'}
+            aria-label={showLineNumbers ? 'Hide line numbers' : 'Show line numbers'}
+            aria-pressed={showLineNumbers}
+          >
+            123
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            const download = createPreviewDownload(data, fileName);
+            if (!download) return;
+            const url = URL.createObjectURL(download.blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = download.fileName;
+            anchor.rel = 'noopener';
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 4_000);
+          }}
+          disabled={!canDownload}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-300 transition-colors hover:bg-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+          aria-label="Download file"
+          title={canDownload ? 'Download file' : 'Download unavailable for this preview'}
+        >
+          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M12 3v12m0 0 4-4m-4 4-4-4M5 20h14" />
+          </svg>
+        </button>
         <button
           onClick={refresh}
           disabled={loading}
@@ -188,7 +277,7 @@ export function FileViewerPane({
       </div>
 
       {/* Body */}
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className={`flex-1 min-h-0 ${showsZoomImage ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {loading && (
           <div className="flex items-center justify-center py-12">
             <Spinner size="w-5 h-5" color="border-blue-400" />
@@ -210,6 +299,7 @@ export function FileViewerPane({
             renderMarkdown={isMarkdown && renderMarkdown}
             renderSvg={isSvg && renderSvg}
             renderCsv={isCsv && renderCsv}
+            showLineNumbers={showLineNumbers}
           />
         )}
       </div>
@@ -295,6 +385,7 @@ function PreviewContent({
   renderMarkdown,
   renderSvg,
   renderCsv,
+  showLineNumbers,
 }: {
   data: FilesReadResponsePayload;
   displayPath: string;
@@ -303,6 +394,7 @@ function PreviewContent({
   renderMarkdown: boolean;
   renderSvg: boolean;
   renderCsv: boolean;
+  showLineNumbers: boolean;
 }) {
   const lang = useMemo(() => detectLanguage(displayPath), [displayPath]);
   const highlighted = useMemo(() => {
@@ -335,7 +427,7 @@ function PreviewContent({
       <PinchZoomImage
         src={`data:${data.mimeType};base64,${data.content}`}
         alt={displayPath.split('/').pop() ?? 'Image preview'}
-        className="flex min-h-full items-center justify-center bg-slate-950 p-3"
+        className="flex h-full min-h-0 w-full items-center justify-center bg-slate-950 p-3"
         imageClassName="max-h-[80vh] max-w-full object-contain"
       />
     );
@@ -359,26 +451,68 @@ function PreviewContent({
       <PinchZoomImage
         src={src}
         alt={displayPath.split('/').pop() ?? 'SVG preview'}
-        className="flex min-h-full items-center justify-center p-4 bg-[length:16px_16px] bg-[linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%),linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%)] bg-[position:0_0,8px_8px]"
+        className="flex h-full min-h-0 w-full items-center justify-center p-4 bg-[length:16px_16px] bg-[linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%),linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%)] bg-[position:0_0,8px_8px]"
         imageClassName="max-h-[70vh] max-w-full object-contain"
       />
     );
   }
   if (highlighted) {
     return (
-      <pre className="px-4 py-3 text-[12px] leading-snug whitespace-pre overflow-x-auto font-mono">
-        <code
-          className={`hljs language-${lang}`}
-          dangerouslySetInnerHTML={{ __html: highlighted }}
-        />
-      </pre>
+      <RawTextPreview
+        content={data.content ?? ''}
+        highlighted={highlighted}
+        language={lang}
+        showLineNumbers={showLineNumbers}
+      />
     );
   }
   return (
-    <pre className="px-4 py-3 text-[12px] leading-snug text-slate-200 whitespace-pre overflow-x-auto font-mono">
-      {data.content ?? ''}
-    </pre>
+    <RawTextPreview content={data.content ?? ''} showLineNumbers={showLineNumbers} />
   );
+}
+
+function RawTextPreview({
+  content,
+  highlighted,
+  language,
+  showLineNumbers,
+}: {
+  content: string;
+  highlighted?: string;
+  language?: string;
+  showLineNumbers: boolean;
+}) {
+  const lineNumbers = useMemo(
+    () => buildLineNumberText(content),
+    [content],
+  );
+
+  return (
+    <div className="overflow-x-auto font-mono text-[12px] leading-snug">
+      <div className="flex min-w-max">
+        {showLineNumbers && (
+          <pre
+            aria-hidden="true"
+            className="sticky left-0 z-[1] shrink-0 select-none border-r border-slate-700 bg-slate-900 px-3 py-3 text-right text-slate-600"
+          >
+            {lineNumbers}
+          </pre>
+        )}
+        <pre className="min-w-max flex-1 whitespace-pre px-4 py-3 text-slate-200">
+          {highlighted && language ? (
+            <code
+              className={`hljs language-${language} !overflow-visible !p-0`}
+              dangerouslySetInnerHTML={{ __html: highlighted }}
+            />
+          ) : content}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+export function buildLineNumberText(content: string): string {
+  return Array.from({ length: content.split('\n').length }, (_, index) => index + 1).join('\n');
 }
 
 function isMarkdownPath(filePath: string): boolean {

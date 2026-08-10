@@ -90,3 +90,14 @@ doc(s) your change touches.
 See `docs/guidelines/testing.md` for full testing guidelines.
 
 **Key rule:** Write tests in the same pass as the code, not as a separate batch later. When implementing a feature or fixing a bug in `apps/agent`, write or update the corresponding tests before considering the task done.
+
+## Session Management
+
+You have access to `mcp__quicksave-sandbox__UpdateSessionStatus` — a ticket-style status tool that tracks what you're working on. **Always use it.** It is the user's primary signal of progress.
+
+- **First response of every session:** call it with `subject` (what the user is solving, e.g. "Fix auth token expiring early") and `stage` (investigating / working / verifying / done). Do not wait for the user to ask.
+- **On resume:** if you cannot see a prior status call in conversation, do a dry-run first (no args), then set/correct if blank or drifted.
+- **Stage transitions:** call it whenever the stage changes. Do not skip `verifying` — if you ran tests/build/repro, call it with `stage: "verifying"`.
+- **Blocked/unblocked:** set `blocked: true` when stuck (waiting on user, permission, external service); set `blocked: false` when unblocked. Do not change stage when toggling blocked.
+- **Notes:** emit a `note` (one line, ~12 words) on meaningful state changes — ruling out a hypothesis, completing a sub-goal, hitting a blocker, starting verification. For long-running tasks, emit a note every time you cross a sub-goal.
+- **Do not declare `done`** until the user's problem is fully resolved. Do not skip `verifying`.

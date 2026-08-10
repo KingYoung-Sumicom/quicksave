@@ -63,6 +63,30 @@ describe('shouldCollapseCard', () => {
     expect(shouldCollapseCard(toolCall(), true, false)).toBe(true);
   });
 
+  it('keeps system errors visible after a turn completes', () => {
+    const card: Card = {
+      type: 'system',
+      id: 'usage-limit-error',
+      timestamp: 123,
+      text: "Error: You've hit your usage limit.",
+      subtype: 'error',
+    };
+
+    expect(shouldCollapseCard(card, true, true)).toBe(false);
+  });
+
+  it('keeps system warnings visible after a turn completes', () => {
+    const card: Card = {
+      type: 'system',
+      id: 'warning',
+      timestamp: 123,
+      text: 'Account verification required.',
+      subtype: 'warning',
+    };
+
+    expect(shouldCollapseCard(card, true, true)).toBe(false);
+  });
+
   it('folds thinking cards into preference-based tool-call groups', () => {
     const card: Card = {
       type: 'thinking',

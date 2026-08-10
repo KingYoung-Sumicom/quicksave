@@ -275,7 +275,7 @@ html, body {
   @apply font-mono text-xs bg-slate-800 text-emerald-400 px-1 py-0.5 rounded;
 }
 .chat-markdown pre {
-  @apply my-2 rounded-lg overflow-x-auto bg-slate-900 p-3;
+  @apply my-2 rounded-lg bg-slate-900 p-3;
 }
 .chat-markdown pre code {
   @apply bg-transparent p-0 text-slate-300;

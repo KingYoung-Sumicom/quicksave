@@ -28,15 +28,15 @@ import { formatVoiceHistoryEvent, type VoiceHistoryReadOptions, type VoiceHistor
  * with a tiny fake.
  */
 export interface CodingSessionBridge {
-  sendUserMessageToSession(sessionId: string, prompt: string, opts?: { interrupt?: boolean }): boolean;
+  sendUserMessageToSession(sessionId: string, prompt: string, opts?: { interrupt?: boolean }): boolean | Promise<boolean>;
   interruptSession(sessionId: string): Promise<boolean>;
-  resolveUserInput(response: ClaudeUserInputResponsePayload): boolean;
+  resolveUserInput(response: ClaudeUserInputResponsePayload): boolean | Promise<boolean>;
   setPermissionLevel(sessionId: string, level: string): Promise<boolean>;
   getCards(sessionId: string, cwd: string, offset?: number, limit?: number): Promise<CardHistoryResponse>;
-  getPendingInputRequests(): ClaudeUserInputRequestPayload[];
-  getPermissionLevel(sessionId: string): string;
-  getActiveSessions(): Array<{ sessionId: string; isStreaming?: boolean; hasPendingInput?: boolean; permissionMode?: string }>;
-  isStreaming(sessionId: string): boolean;
+  getPendingInputRequests(): ClaudeUserInputRequestPayload[] | Promise<ClaudeUserInputRequestPayload[]>;
+  getPermissionLevel(sessionId: string): string | Promise<string>;
+  getActiveSessions(): Array<{ sessionId: string; isStreaming?: boolean; hasPendingInput?: boolean; permissionMode?: string }> | Promise<Array<{ sessionId: string; isStreaming?: boolean; hasPendingInput?: boolean; permissionMode?: string }>>;
+  isStreaming(sessionId: string): boolean | Promise<boolean>;
 }
 
 export interface VoiceToolContext {
@@ -47,6 +47,9 @@ export interface VoiceToolContext {
   liveContext?: string;
   /** Read prior voice-agent JSONL history, including compacted context. */
   readVoiceHistory?: (opts: VoiceHistoryReadOptions) => Promise<VoiceHistoryEvent[]>;
+  proposeCodingChange?: (proposal: { prompt: string; spokenSummary: string }) => string;
+  confirmCodingChange?: (proposalId?: string, opts?: { interrupt?: boolean }) => string | Promise<string>;
+  cancelCodingChange?: (reason?: string) => string;
   /** Narrate a side effect to the UI log (not spoken). */
   emitAction: (summary: string) => void;
 }
@@ -57,7 +60,7 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
     function: {
       name: 'send_to_coding_agent',
       description:
-        'Internally dispatch implementation work. To the user, present this as your own action ("I will handle it", "I am checking"), not as asking another agent. Use for "do X", redirection, and answering open questions. Set interrupt=true ONLY when the user wants to stop the current work and change course now ("no, stop and do X instead"); otherwise the prompt queues politely.',
+        'Legacy escape hatch. Prefer investigate_with_coding_agent for read-only investigation and propose_coding_change/confirm_coding_change for edits or other mutations. Only use this directly for already-confirmed, reversible steering. Do not use it to bypass mutation confirmation.',
       parameters: {
         type: 'object',
         properties: {
@@ -65,6 +68,67 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
           interrupt: { type: 'boolean', description: 'Interrupt the in-flight turn before sending. Default false.' },
         },
         required: ['prompt'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'investigate_with_coding_agent',
+      description:
+        'Directly dispatch read-only investigation, inspection, diagnosis, planning, log/code/status review, or summarization. Use this when the user asks you to look into something and no files, commits, services, data, permissions, or external state should be changed. Dispatch silently first; after the tool result, tell the user what you are checking in one plain spoken sentence with no Markdown, list, or visual formatting.',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: 'The internal read-only investigation instruction. It must explicitly say not to modify files when appropriate.' },
+          interrupt: { type: 'boolean', description: 'Interrupt the in-flight turn before sending. Default false; use only if the user wants to change course now.' },
+        },
+        required: ['prompt'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'propose_coding_change',
+      description:
+        'Create a pending confirmation proposal for mutating work. Use before edits, commits, restarts, deletes, deploys, migrations, permission/autonomy widening, or other consequential actions. This does NOT send anything to the coding session. After this tool, the entire final user-facing reply must be the spoken_summary, with no preamble, repetition, Markdown, list, or visual formatting. If the user changes details, make a new proposal instead of confirming the old one.',
+      parameters: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: 'The internal instruction to send only after explicit user confirmation.' },
+          spoken_summary: { type: 'string', description: 'A complete, short confirmation question describing exactly what would be sent. Write it as one plain, directly speakable utterance with no Markdown, bullets, line breaks, raw identifiers, or visual formatting.' },
+        },
+        required: ['prompt', 'spoken_summary'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'confirm_coding_change',
+      description:
+        'After the user explicitly confirms the currently pending coding-change proposal, send it to the coding session. Do not call this for vague acknowledgements, edits to the proposal, or if no proposal is pending.',
+      parameters: {
+        type: 'object',
+        properties: {
+          proposal_id: { type: 'string', description: 'Optional proposal id from propose_coding_change. Omit to confirm the latest pending proposal.' },
+          interrupt: { type: 'boolean', description: 'Interrupt the in-flight turn before sending. Default false; use only if the user explicitly wants to stop current work and change course.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cancel_coding_change',
+      description:
+        'Cancel the pending coding-change proposal when the user says no, changes direction, or asks to hold off. If the user supplies new details, cancel/replace with propose_coding_change rather than confirming.',
+      parameters: {
+        type: 'object',
+        properties: {
+          reason: { type: 'string', description: 'Short reason for cancellation or replacement.' },
+        },
       },
     },
   },
@@ -113,7 +177,7 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
     function: {
       name: 'get_status',
       description:
-        'Glance at current work: is it running, is a permission prompt pending (with its request_id and tool), what autonomy mode. Cheap — prefer this over read_cards when the user asks what is happening. Summarize as your own status update.',
+        'Read only runtime state: whether the coding session is attached or running, whether a permission prompt is pending, and the autonomy mode. This tool cannot tell you what work changed, what the latest manual prompt requested, or what tests/commits produced; use read_cards for those facts and use both tools for a broad progress briefing. Its JSON result is evidence, not a response format. Convert it to one short plain spoken paragraph without JSON labels, Markdown, lists, or visual formatting.',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -122,7 +186,7 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
     function: {
       name: 'read_cards',
       description:
-        'Read or search the recent implementation transcript (messages, tool calls + results, errors). Pass query to filter. Use to interpret what happened and answer detailed questions. Summarize as your own status update — do NOT read it back verbatim and do NOT say you are reading another agent.',
+        'Read/search the recent coding transcript to ground current progress, including manual prompts, messages, tool calls and results, errors, tests, commits, and diffs. Use whenever the user asks what has happened or what the current coding work produced, even if restored voice context appears sufficient; omit query for a general progress scan. Source cards may contain Markdown and technical formatting. Never preserve or quote that layout: convert the evidence into one short plain spoken paragraph, and do not say you are reading another agent.',
       parameters: {
         type: 'object',
         properties: {
@@ -153,7 +217,7 @@ export const VOICE_AGENT_TOOLS: ToolSchema[] = [
     function: {
       name: 'read_voice_history',
       description:
-        'Search or browse this voice agent\'s own persisted JSONL history, including messages before compaction. Use when the user asks what they told you earlier, why you made a voice-agent decision, or when active context lacks older voice conversation details. Summarize; do not read raw history aloud.',
+        'Ground earlier spoken context by searching/browsing this voice agent\'s own persisted JSONL history, including messages before compaction. This is the default source when the user refers to "剛剛", "前面", "那個", "繼續", "照剛才", asks what they told you earlier, asks why you made a voice-agent decision, or active context lacks older voice conversation details. Use it instead of guessing. Old replies may contain legacy Markdown; treat that as data, never imitate it, and summarize as plain spoken language rather than reading raw history aloud.',
       parameters: {
         type: 'object',
         properties: {
@@ -226,11 +290,48 @@ export async function executeTool(
   const { sessionId, cwd, bridge, emitAction } = ctx;
 
   switch (name) {
+    case 'investigate_with_coding_agent': {
+      const prompt = String(args.prompt ?? '').trim();
+      if (!prompt) return 'error: empty prompt';
+      const interrupt = !!args.interrupt;
+      const ok = await bridge.sendUserMessageToSession(sessionId, prompt, { interrupt });
+      if (!ok) return 'error: the coding session is not running';
+      emitAction(interrupt ? `改查：${truncate(prompt, 60)}` : `開始查：${truncate(prompt, 60)}`);
+      return interrupt ? 'investigation interrupted current turn and was sent' : 'investigation dispatched';
+    }
+
+    case 'propose_coding_change': {
+      if (!ctx.proposeCodingChange) return 'error: coding change proposals are unavailable';
+      const prompt = String(args.prompt ?? '').trim();
+      const spokenSummary = String(args.spoken_summary ?? '').trim();
+      if (!prompt || !spokenSummary) return 'error: prompt and spoken_summary are required';
+      const proposalId = ctx.proposeCodingChange({ prompt, spokenSummary });
+      emitAction(`等待確認：${truncate(spokenSummary, 60)}`);
+      return JSON.stringify({
+        pending_proposal_id: proposalId,
+        spoken_summary: spokenSummary,
+        instruction: 'Ask the user to confirm this proposal before calling confirm_coding_change. Do not say it has been sent yet.',
+      });
+    }
+
+    case 'confirm_coding_change': {
+      if (!ctx.confirmCodingChange) return 'error: coding change confirmation is unavailable';
+      return await ctx.confirmCodingChange(
+        typeof args.proposal_id === 'string' ? args.proposal_id : undefined,
+        { interrupt: args.interrupt === true },
+      );
+    }
+
+    case 'cancel_coding_change': {
+      if (!ctx.cancelCodingChange) return 'error: coding change cancellation is unavailable';
+      return ctx.cancelCodingChange(typeof args.reason === 'string' ? args.reason : undefined);
+    }
+
     case 'send_to_coding_agent': {
       const prompt = String(args.prompt ?? '').trim();
       if (!prompt) return 'error: empty prompt';
       const interrupt = !!args.interrupt;
-      const ok = bridge.sendUserMessageToSession(sessionId, prompt, { interrupt });
+      const ok = await bridge.sendUserMessageToSession(sessionId, prompt, { interrupt });
       if (!ok) return 'error: the coding session is not running';
       emitAction(interrupt ? `改做：${truncate(prompt, 60)}` : `開始處理：${truncate(prompt, 60)}`);
       return interrupt ? 'interrupted and sent' : 'sent (will run on the next turn boundary)';
@@ -246,8 +347,8 @@ export async function executeTool(
       const requestId = String(args.request_id ?? '').trim();
       const decision = args.decision === 'deny' ? 'deny' : args.decision === 'allow' ? 'allow' : null;
       if (!requestId || !decision) return 'error: request_id and decision (allow|deny) are required';
-      const pending = bridge
-        .getPendingInputRequests()
+      const pending = (await bridge
+        .getPendingInputRequests())
         .find((r) => r.requestId === requestId && r.sessionId === sessionId);
       if (!pending) return `error: no pending permission request with id ${requestId} for this session`;
       const payload: ClaudeUserInputResponsePayload = {
@@ -256,7 +357,7 @@ export async function executeTool(
         action: decision,
         response: typeof args.reason === 'string' ? args.reason : undefined,
       };
-      const ok = bridge.resolveUserInput(payload);
+      const ok = await bridge.resolveUserInput(payload);
       if (ok) emitAction(`${decision === 'allow' ? '核准' : '拒絕'}權限：${pending.toolName ?? pending.title}`);
       return ok ? `relayed ${decision} for ${pending.toolName ?? 'request'}` : 'error: failed to relay the decision';
     }
@@ -270,9 +371,14 @@ export async function executeTool(
     }
 
     case 'get_status': {
-      const active = bridge.getActiveSessions().find((s) => s.sessionId === sessionId);
-      const pending = bridge
-        .getPendingInputRequests()
+      const [activeSessions, pendingRequests, permissionMode, streaming] = await Promise.all([
+        bridge.getActiveSessions(),
+        bridge.getPendingInputRequests(),
+        bridge.getPermissionLevel(sessionId),
+        bridge.isStreaming(sessionId),
+      ]);
+      const active = activeSessions.find((s) => s.sessionId === sessionId);
+      const pending = pendingRequests
         .filter((r) => r.sessionId === sessionId)
         .map((r) => ({
           request_id: r.requestId,
@@ -280,9 +386,9 @@ export async function executeTool(
           wants: r.toolInput ? briefInput(r.toolInput) : undefined,
         }));
       return JSON.stringify({
-        running: active ? bridge.isStreaming(sessionId) : false,
+        running: active ? streaming : false,
         attached: !!active,
-        permission_mode: bridge.getPermissionLevel(sessionId),
+        permission_mode: permissionMode,
         pending_permissions: pending,
       });
     }

@@ -52,6 +52,9 @@ interface PersistedPrefs {
    *  false so the UI keeps the user away from a "silently eat your money"
    *  failure mode — see docs in claudePresets.ts. */
   allow1mForBilledModels?: boolean;
+  /** Ordered list of provider ids sorted by last chosen (most recent first).
+   *  Used to sort the provider picker in the two-level model selector. */
+  lastChosenProviders?: string[];
 }
 
 /**
@@ -65,6 +68,7 @@ function loadPrefs(): PersistedPrefs {
     selectedAgent: DEFAULT_AGENT,
     agentPrefs: defaultAgentPrefsMap(),
     allow1mForBilledModels: false,
+    lastChosenProviders: [],
   };
   try {
     const raw = localStorage.getItem(PREFS_KEY);
@@ -254,6 +258,8 @@ interface ClaudeStore {
   /** User-level opt-in to billed 1M context (Sonnet today). Persisted to
    *  the same prefs blob as agent settings. See PersistedPrefs.allow1mForBilledModels. */
   allow1mForBilledModels: boolean;
+  /** Ordered list of provider ids sorted by last chosen (most recent first). */
+  lastChosenProviders: string[];
 
   // Per-session runtime config (keyed by sessionId)
   sessionConfigs: Record<string, Record<string, ConfigValue>>;
@@ -317,6 +323,8 @@ interface ClaudeStore {
   /** Write a pref on a specific agent's bucket regardless of the active agent.
    *  Used by the connection handler when the daemon pushes agent-scoped prefs. */
   setAgentPref: (agent: AgentId, key: string, value: unknown) => void;
+  /** Record a provider choice — moves it to the front of lastChosenProviders. */
+  recordProviderChoice: (providerId: string) => void;
 
   // Actions — per-session runtime config
   setSessionConfigKey: (sessionId: string, key: string, value: ConfigValue) => void;
@@ -350,6 +358,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   agentPrefs: savedPrefs.agentPrefs,
   ...flatViewOf(savedPrefs.agentPrefs[savedPrefs.selectedAgent]),
   allow1mForBilledModels: savedPrefs.allow1mForBilledModels === true,
+  lastChosenProviders: savedPrefs.lastChosenProviders ?? [],
   sessionConfigs: {},
 
   // Sessions
@@ -688,6 +697,14 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         : { agentPrefs: updated },
     );
     savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
+  },
+  recordProviderChoice: (providerId) => {
+    const { lastChosenProviders } = get();
+    const filtered = lastChosenProviders.filter((id) => id !== providerId);
+    const updated = [providerId, ...filtered];
+    set({ lastChosenProviders: updated });
+    const { selectedAgent, agentPrefs, allow1mForBilledModels } = get();
+    savePrefs({ selectedAgent, agentPrefs, allow1mForBilledModels, lastChosenProviders: updated });
   },
 
   // Per-session runtime config

@@ -10,7 +10,12 @@
  *  - plays the agent's spoken replies, with barge-in the moment the user talks.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { VoiceAgentEvent, VoiceAgentState } from '@sumicom/quicksave-shared';
+import type {
+  VoiceAgentEvent,
+  VoiceAgentRuntimeStatus,
+  VoiceAgentState,
+  VoiceAgentTraceEntry,
+} from '@sumicom/quicksave-shared';
 import { getVoiceConfig } from '../lib/secureStorage';
 import { getBusForAgent } from '../lib/busRegistry';
 import {
@@ -20,6 +25,7 @@ import {
   sendVoiceAgentPlaybackEvent,
   fetchVoiceAgentAudio,
   logVoiceEvent,
+  reloadVoiceAgent,
 } from '../lib/voiceAgentClient';
 import { VoiceCues, VoiceOutput } from '../lib/voiceOutput';
 import {
@@ -46,9 +52,16 @@ export interface UseVoiceAgent {
   interim: string;
   busy: boolean;
   showMic: boolean;
+  traceLog: VoiceAgentTraceEntry[];
+  clearTrace: () => void;
+  runtime: VoiceAgentRuntimeStatus | null;
+  reloading: boolean;
+  reload: () => Promise<void>;
 }
 
 export function useVoiceAgent(agentId: string, sessionId: string | undefined): UseVoiceAgent {
+  const clientIdRef = useRef(`voice-page-${crypto.randomUUID()}`);
+  const transportIdRef = useRef(`voice-rtc-${crypto.randomUUID()}`);
   const [enabled, setEnabled] = useState(false);
   const [active, setActive] = useState(false);
   const [state, setState] = useState<VoiceAgentState>('idle');
@@ -56,6 +69,9 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
   const [lastSpoken, setLastSpoken] = useState('');
   const [actionLog, setActionLog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [traceLog, setTraceLog] = useState<VoiceAgentTraceEntry[]>([]);
+  const [runtime, setRuntime] = useState<VoiceAgentRuntimeStatus | null>(null);
+  const [reloading, setReloading] = useState(false);
   const outputRef = useRef<VoiceOutput | null>(null);
   const cuesRef = useRef<VoiceCues | null>(null);
   const autoListenPausedRef = useRef(false);
@@ -107,6 +123,7 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
           break;
         case 'interrupt_agent_speech':
           outputRef.current?.interrupt();
+          voiceRef.current?.interruptPlayback();
           cuesRef.current?.stopProcessing();
           logVoiceEvent(agentId, {
             sessionId,
@@ -164,9 +181,40 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
     onSpeechStopped: () => handleInterruptionEvent({ type: 'user_speech_stopped' }),
     onTranscriptPartial: (textChars) => handleInterruptionEvent({ type: 'transcript_partial', textChars }),
     onTranscriptFinal: (textChars) => handleInterruptionEvent({ type: 'transcript_final', textChars }),
+    onRemotePlayback: (active, streamId) => {
+      if (!sessionId) return;
+      const ctx = interruptionRef.current.logContext();
+      if (active) {
+        cuesRef.current?.stopProcessing();
+        handleInterruptionEvent({ type: 'agent_speech_started', audioId: streamId });
+        setTimeout(() => { void startAutoListening(); }, 0);
+        sendVoiceAgentPlaybackEvent(agentId, {
+          sessionId,
+          event: 'started',
+          audioId: streamId,
+          turnId: ctx.turnId,
+          interactionId: ctx.data?.interactionId as string | undefined,
+          utteranceId: ctx.data?.utteranceId as string | undefined,
+        });
+      } else {
+        cuesRef.current?.stopProcessing();
+        handleInterruptionEvent({ type: 'agent_speech_ended', audioId: streamId });
+        sendVoiceAgentPlaybackEvent(agentId, {
+          sessionId,
+          event: 'ended',
+          audioId: streamId,
+          turnId: ctx.turnId,
+          interactionId: ctx.data?.interactionId as string | undefined,
+          utteranceId: ctx.data?.utteranceId as string | undefined,
+        });
+      }
+    },
     shouldSuppressTranscript: () => interruptionRef.current.shouldSuppressTranscript(),
     getLogContext: () => interruptionRef.current.logContext(),
     keepStreamingMicAlive: true,
+    streamingConnectionEnabled: enabled,
+    streamTransportId: transportIdRef.current,
+    streamVoiceSessionId: sessionId,
   });
   voiceRef.current = voice;
 
@@ -246,9 +294,19 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
         return;
       }
       try {
-        const res = await attachVoiceAgent(agentId, sessionId, cfg);
+        const res = await attachVoiceAgent(agentId, sessionId, cfg, clientIdRef.current);
         if (cancelled) return;
         setActive(!!res.active);
+        if (res.runtime) setRuntime(res.runtime);
+        if (res.traceHistory) {
+          setTraceLog(res.traceHistory.slice(-200));
+          const latestUser = [...res.traceHistory].reverse().find((entry) => entry.event === 'turn.started');
+          const latestSpeech = [...res.traceHistory].reverse().find((entry) => entry.event === 'speech.proposed');
+          const userText = latestUser?.data?.text;
+          const speechText = latestSpeech?.data?.text;
+          if (typeof userText === 'string') setLastTranscript(userText);
+          if (typeof speechText === 'string') setLastSpoken(speechText);
+        }
         if (!res.active) {
           autoListenPausedRef.current = true;
           voiceRef.current?.stopListening();
@@ -273,14 +331,21 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
             case 'speak':
               setLastSpoken(ev.text);
               handleInterruptionEvent({ type: 'agent_response_ready', audioId: ev.audioId || undefined });
-              if (ev.audioId) {
+              if (ev.audioId && !ev.streamed) {
                 output.enqueue(ev.audioId);
-              } else {
+              } else if (!ev.streamed) {
                 cues.stopProcessing();
               }
               break;
             case 'action':
               setActionLog((log) => [...log.slice(-19), ev.summary]);
+              break;
+            case 'trace':
+              setTraceLog((log) => [...log.slice(-199), ev.entry]);
+              break;
+            case 'runtime':
+              setRuntime(ev.runtime);
+              setReloading(ev.runtime.state === 'reloading' || ev.runtime.state === 'starting');
               break;
             case 'error':
               cues.stopProcessing();
@@ -304,7 +369,7 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
       autoListenPausedRef.current = false;
       voiceRef.current?.stopListening();
       setActive(false);
-      void detachVoiceAgent(agentId, sessionId);
+      void detachVoiceAgent(agentId, sessionId, clientIdRef.current);
     };
   }, [enabled, sessionId, agentId, startAutoListening]);
 
@@ -320,14 +385,13 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
     if (next) {
       autoListenPausedRef.current = false;
       autoListenAttemptedRef.current = false;
-      void startAutoListening();
     } else {
       autoListenPausedRef.current = false;
       autoListenAttemptedRef.current = false;
       interruptionRef.current.reset();
       voiceRef.current?.stopListening();
     }
-  }, [enabled, startAutoListening]);
+  }, [enabled]);
 
   const onTalkPress = useCallback(() => {
     if (voice.recording) {
@@ -339,6 +403,23 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
     autoListenAttemptedRef.current = false;
     void startAutoListening();
   }, [startAutoListening, voice.recording]);
+
+  const clearTrace = useCallback(() => setTraceLog([]), []);
+
+  const reload = useCallback(async () => {
+    if (!sessionId || reloading) return;
+    setReloading(true);
+    setError(null);
+    try {
+      const result = await reloadVoiceAgent(agentId, sessionId);
+      setRuntime(result.runtime);
+      if (!result.ok) setError(result.error ?? '語音同事重新載入失敗。');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setReloading(false);
+    }
+  }, [agentId, reloading, sessionId]);
 
   return {
     enabled,
@@ -354,5 +435,10 @@ export function useVoiceAgent(agentId: string, sessionId: string | undefined): U
     interim: voice.interim,
     busy: voice.busy,
     showMic: voice.showMic,
+    traceLog,
+    clearTrace,
+    runtime,
+    reloading,
+    reload,
   };
 }

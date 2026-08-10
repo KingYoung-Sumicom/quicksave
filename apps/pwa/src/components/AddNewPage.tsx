@@ -26,6 +26,9 @@ import { AttachmentTray } from './AttachmentTray';
 import { getAgentProvider } from '../lib/agentProvider';
 import { useComposerVoice } from '../hooks/useComposerVoice';
 import { useComposerAttachments } from '../hooks/useComposerAttachments';
+import { VoiceTranscriptionOverlay } from './VoiceTranscriptionOverlay';
+import { VoiceRecordingOverlay } from './VoiceRecordingOverlay';
+import { VoiceCapturePreparingOverlay } from './VoiceCapturePreparingOverlay';
 import { toProjectId } from '../lib/projectId';
 import { getBusForAgent } from '../lib/busRegistry';
 import { useClaudeOperations } from '../hooks/useClaudeOperations';
@@ -899,6 +902,17 @@ function SessionTab({
                 </div>
               </div>
             </>
+          )}
+          {voice.arming && <VoiceCapturePreparingOverlay />}
+          {voice.recording && (
+            <VoiceRecordingOverlay onStop={voice.stopListening} onCancel={voice.cancelListening} />
+          )}
+          {voice.transcribing && (
+            <VoiceTranscriptionOverlay
+              error={voice.transcriptionError}
+              onRetry={voice.retryTranscription}
+              onCancel={voice.cancelTranscription}
+            />
           )}
         </div>
       </div>

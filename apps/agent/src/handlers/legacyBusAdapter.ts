@@ -121,6 +121,7 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   'voice-agent:utterance',
   'voice-agent:playback-event',
   'voice-agent:fetch-audio',
+  'voice-agent:reload',
 ];
 
 function isRepoScopedVerb(verb: MessageType): boolean {

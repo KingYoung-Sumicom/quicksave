@@ -17,13 +17,9 @@ import { FallbackToolView } from './toolViews/FallbackToolView';
 import { LONG_BASH_COMMAND_THRESHOLD } from './toolViews/BashToolView';
 import { InlinePermissionActions } from './InlinePermissionActions';
 import { InteractiveQuestionView } from './InteractiveQuestionView';
-import { linkifyPaths } from './linkifyPaths';
 import { ArtifactMessage } from './ArtifactMessage';
 import { parseMarkdownArtifactRef } from './cardCollapse';
 import { parseReadToolResult, parseShellToolResult } from './toolViews/openCodeToolResult';
-
-/** Tools whose stdout typically contains paths worth linkifying. */
-const LINKIFY_RESULT_TOOLS = new Set(['Bash', 'Glob', 'Grep', SANDBOX_BASH_TOOL]);
 
 const INLINE_RESULT_TOOLS = new Set([
   'Read',
@@ -72,14 +68,10 @@ function InlineToolResult({ content, toolName, suppressContent, expanded }: {
 
   if (!expanded) return null;
 
-  const body = toolName && LINKIFY_RESULT_TOOLS.has(toolName)
-    ? linkifyPaths(content)
-    : content;
-
   return (
     <div className={`mt-1.5 border-t ${borderColor}`}>
       <pre className="mt-1 min-w-0 whitespace-pre-wrap break-all text-slate-400 overflow-x-auto pt-1">
-        {body}
+        {content}
       </pre>
     </div>
   );
