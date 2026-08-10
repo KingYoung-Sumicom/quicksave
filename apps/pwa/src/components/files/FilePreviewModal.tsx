@@ -166,6 +166,8 @@ export function FileViewerPane({
   const canDownload = data?.success === true
     && typeof data.content === 'string'
     && (data.kind === 'text' || data.kind === 'image');
+  const showsZoomImage = data?.success === true
+    && (data.kind === 'image' || (data.kind === 'text' && isSvg && renderSvg));
 
   useEffect(() => {
     setShowLineNumbers(false);
@@ -275,7 +277,7 @@ export function FileViewerPane({
       </div>
 
       {/* Body */}
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className={`flex-1 min-h-0 ${showsZoomImage ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {loading && (
           <div className="flex items-center justify-center py-12">
             <Spinner size="w-5 h-5" color="border-blue-400" />
@@ -425,7 +427,7 @@ function PreviewContent({
       <PinchZoomImage
         src={`data:${data.mimeType};base64,${data.content}`}
         alt={displayPath.split('/').pop() ?? 'Image preview'}
-        className="flex min-h-full items-center justify-center bg-slate-950 p-3"
+        className="flex h-full min-h-0 w-full items-center justify-center bg-slate-950 p-3"
         imageClassName="max-h-[80vh] max-w-full object-contain"
       />
     );
@@ -449,7 +451,7 @@ function PreviewContent({
       <PinchZoomImage
         src={src}
         alt={displayPath.split('/').pop() ?? 'SVG preview'}
-        className="flex min-h-full items-center justify-center p-4 bg-[length:16px_16px] bg-[linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%),linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%)] bg-[position:0_0,8px_8px]"
+        className="flex h-full min-h-0 w-full items-center justify-center p-4 bg-[length:16px_16px] bg-[linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%),linear-gradient(45deg,rgba(255,255,255,0.04)_25%,transparent_25%,transparent_75%,rgba(255,255,255,0.04)_75%)] bg-[position:0_0,8px_8px]"
         imageClassName="max-h-[70vh] max-w-full object-contain"
       />
     );
