@@ -30,12 +30,26 @@ function base64ToBytes(base64: string): Uint8Array {
 function textDownloadMime(fileName: string): string {
   const lower = fileName.toLowerCase();
   if (lower.endsWith('.svg')) return 'image/svg+xml;charset=utf-8';
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'text/html;charset=utf-8';
   if (lower.endsWith('.csv')) return 'text/csv;charset=utf-8';
   if (lower.endsWith('.json')) return 'application/json;charset=utf-8';
   if (lower.endsWith('.md') || lower.endsWith('.markdown') || lower.endsWith('.mdx')) {
     return 'text/markdown;charset=utf-8';
   }
   return 'text/plain;charset=utf-8';
+}
+
+const HTML_PREVIEW_CSP = "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; font-src data:";
+
+export function buildSafeHtmlPreviewDocument(source: string): string {
+  const policy = `<meta http-equiv="Content-Security-Policy" content="${HTML_PREVIEW_CSP}">`;
+  if (/<head(?:\s[^>]*)?>/i.test(source)) {
+    return source.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${policy}`);
+  }
+  if (/<html(?:\s[^>]*)?>/i.test(source)) {
+    return source.replace(/<html(?:\s[^>]*)?>/i, (html) => `${html}<head>${policy}</head>`);
+  }
+  return `${policy}${source}`;
 }
 
 export function createPreviewDownload(
@@ -153,14 +167,17 @@ export function FileViewerPane({
   const displayPath = data?.absolutePath ?? request.path;
   const fileName = displayPath.split('/').pop() || displayPath;
   const isMarkdown = useMemo(() => isMarkdownPath(displayPath), [displayPath]);
+  const isHtml = useMemo(() => isHtmlPath(displayPath), [displayPath]);
   const isSvg = useMemo(() => isSvgPath(displayPath), [displayPath]);
   const isCsv = useMemo(() => isCsvPath(displayPath), [displayPath]);
   const [renderMarkdown, setRenderMarkdown] = useState(true);
+  const [renderHtml, setRenderHtml] = useState(true);
   const [renderSvg, setRenderSvg] = useState(true);
   const [renderCsv, setRenderCsv] = useState(true);
   const [showLineNumbers, setShowLineNumbers] = useState(false);
   const showsRawText = data?.kind === 'text'
     && !(isMarkdown && renderMarkdown)
+    && !(isHtml && renderHtml)
     && !(isSvg && renderSvg)
     && !(isCsv && renderCsv);
   const canDownload = data?.success === true
@@ -168,6 +185,10 @@ export function FileViewerPane({
     && (data.kind === 'text' || data.kind === 'image');
   const showsZoomImage = data?.success === true
     && (data.kind === 'image' || (data.kind === 'text' && isSvg && renderSvg));
+  const showsRenderedHtml = data?.success === true
+    && data.kind === 'text'
+    && isHtml
+    && renderHtml;
 
   useEffect(() => {
     setShowLineNumbers(false);
@@ -191,6 +212,15 @@ export function FileViewerPane({
             title={renderMarkdown ? 'Show raw source' : 'Render markdown'}
           >
             {renderMarkdown ? 'Raw' : 'Rendered'}
+          </button>
+        )}
+        {isHtml && data?.kind === 'text' && (
+          <button
+            onClick={() => setRenderHtml((value) => !value)}
+            className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
+            title={renderHtml ? 'Show raw source' : 'Render HTML'}
+          >
+            {renderHtml ? 'Raw' : 'Rendered'}
           </button>
         )}
         {isSvg && data?.kind === 'text' && (
@@ -277,7 +307,7 @@ export function FileViewerPane({
       </div>
 
       {/* Body */}
-      <div className={`flex-1 min-h-0 ${showsZoomImage ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+      <div className={`flex-1 min-h-0 ${showsZoomImage || showsRenderedHtml ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {loading && (
           <div className="flex items-center justify-center py-12">
             <Spinner size="w-5 h-5" color="border-blue-400" />
@@ -297,6 +327,7 @@ export function FileViewerPane({
             cwd={request.cwd}
             agentId={request.agentId ?? ''}
             renderMarkdown={isMarkdown && renderMarkdown}
+            renderHtml={isHtml && renderHtml}
             renderSvg={isSvg && renderSvg}
             renderCsv={isCsv && renderCsv}
             showLineNumbers={showLineNumbers}
@@ -383,6 +414,7 @@ function PreviewContent({
   cwd,
   agentId,
   renderMarkdown,
+  renderHtml,
   renderSvg,
   renderCsv,
   showLineNumbers,
@@ -392,6 +424,7 @@ function PreviewContent({
   cwd: string;
   agentId: string;
   renderMarkdown: boolean;
+  renderHtml: boolean;
   renderSvg: boolean;
   renderCsv: boolean;
   showLineNumbers: boolean;
@@ -442,6 +475,17 @@ function PreviewContent({
         fileAbsolutePath={data.absolutePath ?? displayPath}
         cwd={cwd}
         agentId={agentId}
+      />
+    );
+  }
+  if (renderHtml && data.kind === 'text' && typeof data.content === 'string') {
+    return (
+      <iframe
+        title={`Rendered preview of ${displayPath.split('/').pop() ?? 'HTML file'}`}
+        srcDoc={buildSafeHtmlPreviewDocument(data.content)}
+        sandbox=""
+        referrerPolicy="no-referrer"
+        className="h-full min-h-[20rem] w-full border-0 bg-white"
       />
     );
   }
@@ -518,6 +562,11 @@ export function buildLineNumberText(content: string): string {
 function isMarkdownPath(filePath: string): boolean {
   const name = (filePath.split('/').pop() ?? '').toLowerCase();
   return name.endsWith('.md') || name.endsWith('.markdown') || name.endsWith('.mdx');
+}
+
+function isHtmlPath(filePath: string): boolean {
+  const name = (filePath.split('/').pop() ?? '').toLowerCase();
+  return name.endsWith('.html') || name.endsWith('.htm');
 }
 
 function isSvgPath(filePath: string): boolean {
