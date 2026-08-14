@@ -887,7 +887,7 @@ export function createCodexTurnStreamConsumer(
     if (state.handledSubAgentActivityIds.has(item.id)) return;
     state.handledSubAgentActivityIds.add(item.id);
     if (!cb.hasSubagent(item.agentThreadId)) {
-      emit(cb.subagentStart(item.agentPath || 'Sub-agent', item.agentThreadId));
+      emit(cb.subagentStart(item.agentPath || 'Sub-agent', item.agentThreadId, undefined, { nestToolCalls: false }));
     }
     emit(cb.subagentDetails(item.agentThreadId, {
       agentPath: item.agentPath,
@@ -898,12 +898,15 @@ export function createCodexTurnStreamConsumer(
   };
 
   const emitCollabSubagents = (item: Extract<ThreadItem, { type: 'collabAgentToolCall' }>): void => {
+    const provisionalToolCard = cb.removeToolCard(item.id);
+    if (provisionalToolCard) emit(provisionalToolCard);
     for (const agentId of item.receiverThreadIds) {
       const state = item.agentsStates[agentId];
       if (!cb.hasSubagent(agentId)) {
         emit(cb.subagentStart(item.prompt || 'Sub-agent', agentId, item.id, {
           prompt: item.prompt ?? undefined,
           requestedModel: item.model ?? undefined,
+          nestToolCalls: false,
         }));
       }
       const status = state?.status === 'completed' || state?.status === 'shutdown'

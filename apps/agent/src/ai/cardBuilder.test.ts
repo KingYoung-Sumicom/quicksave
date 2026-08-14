@@ -625,6 +625,15 @@ describe('StreamCardBuilder', () => {
       expect(card.toolUseCount).toBe(0);
     });
 
+    it('can keep subsequent parent tool calls outside a concurrent subagent', () => {
+      builder.subagentStart('Concurrent child', 'agent-concurrent', undefined, { nestToolCalls: false });
+      const toolEvent = builder.toolUse('Bash', { command: 'pwd' }, 'parent-tool') as CardAddEvent;
+
+      expect(toolEvent.card).toMatchObject({ type: 'tool_call', toolUseId: 'parent-tool' });
+      const subagent = builder.getCards().find((card) => card.type === 'subagent') as SubagentCard;
+      expect(subagent.toolCalls).toBeUndefined();
+    });
+
     it('uses agentId as toolUseId when toolUseId is undefined', () => {
       const event = builder.subagentStart('task', 'agent-2') as CardAddEvent;
       expect((event.card as SubagentCard).toolUseId).toBe('agent-2');
