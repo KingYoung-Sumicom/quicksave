@@ -3,8 +3,14 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ResumeSessionOpts, StartSessionOpts } from '../../provider.js';
-import { buildThreadResumeParams, buildThreadStartParams, codexSkillsToSlashCommands } from '../provider.js';
+import {
+  buildThreadResumeParams,
+  buildThreadStartParams,
+  codexSkillsToSlashCommands,
+  subagentThreadSnapshot,
+} from '../provider.js';
 import type { SkillsListResponse } from '../schema/generated/v2/SkillsListResponse.js';
+import type { Thread } from '../schema/generated/v2/Thread.js';
 
 describe('CodexAppServerProvider history persistence', () => {
   it('does not send removed legacy history flags when starting a thread', () => {
@@ -119,6 +125,56 @@ describe('CodexAppServerProvider history persistence', () => {
         name: 'openai-docs',
         description: 'Official OpenAI docs',
         source: 'codex-skill',
+      },
+    ]);
+  });
+});
+
+describe('subagentThreadSnapshot', () => {
+  it('includes dynamic tools and web searches in sub-agent activity', () => {
+    const thread = {
+      id: 'child-thread',
+      preview: 'Inspect the repository',
+      agentNickname: 'Euler',
+      agentRole: null,
+      status: { type: 'idle' },
+      turns: [{
+        items: [
+          {
+            type: 'dynamicToolCall',
+            id: 'dynamic-1',
+            namespace: null,
+            tool: 'exec',
+            arguments: { cmd: 'rg -n TODO apps' },
+            status: 'completed',
+            contentItems: [{ type: 'inputText', text: 'apps/example.ts:10:TODO' }],
+            success: true,
+            durationMs: 12,
+          },
+          {
+            type: 'webSearch',
+            id: 'search-1',
+            query: '',
+            action: { type: 'search', query: 'Codex app-server tools', queries: null },
+          },
+        ],
+      }],
+    } as unknown as Thread;
+
+    expect(subagentThreadSnapshot(thread).activities).toEqual([
+      {
+        id: 'dynamic-1',
+        type: 'tool',
+        title: 'exec',
+        detail: 'apps/example.ts:10:TODO',
+        status: 'completed',
+      },
+      {
+        id: 'search-1',
+        type: 'tool',
+        title: 'Web search',
+        detail: 'Codex app-server tools',
+        status: 'completed',
       },
     ]);
   });

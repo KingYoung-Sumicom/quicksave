@@ -1927,6 +1927,75 @@ describe('cardAdapter — surfaced ThreadItem variants', () => {
     expect((subagentAdds[0].card as { prompt?: string }).prompt).toBe('investigate the bug');
   });
 
+  it('replaces a provisional spawn tool card when the child id arrives on completion', async () => {
+    const h = harness();
+    const base = {
+      type: 'collabAgentToolCall' as const,
+      id: 'collab_late_child',
+      tool: 'spawnAgent' as const,
+      senderThreadId: h.sessionId,
+      prompt: 'inspect the sidebar',
+      model: null,
+      reasoningEffort: null,
+      agentsStates: {},
+    };
+    await h.send('item/started', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: { ...base, status: 'inProgress', receiverThreadIds: [] },
+    });
+    await h.send('item/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: { ...base, status: 'completed', receiverThreadIds: ['child_late'] },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    expect(h.events.some((event) => event.type === 'remove')).toBe(true);
+    expect(h.cb.getCards().some((card) => card.type === 'tool_call' && card.toolUseId === base.id)).toBe(false);
+    expect(h.cb.getCards()).toContainEqual(expect.objectContaining({
+      type: 'subagent',
+      agentId: 'child_late',
+      prompt: 'inspect the sidebar',
+    }));
+  });
+
+  it('creates a structured sub-agent card when wait is the first event carrying the child id', async () => {
+    const h = harness();
+    await h.send('item/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: {
+        type: 'collabAgentToolCall',
+        id: 'collab_wait',
+        tool: 'wait',
+        status: 'completed',
+        senderThreadId: h.sessionId,
+        receiverThreadIds: ['child_from_wait'],
+        prompt: null,
+        model: null,
+        reasoningEffort: null,
+        agentsStates: { child_from_wait: { status: 'completed', message: 'Finished inspection' } },
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    expect(h.cb.getCards()).toContainEqual(expect.objectContaining({
+      type: 'subagent',
+      agentId: 'child_from_wait',
+      status: 'completed',
+      statusMessage: 'Finished inspection',
+    }));
+  });
+
   it('subAgentActivity updates one structured sub-agent card across the item lifecycle', async () => {
     const h = harness();
     const item = {

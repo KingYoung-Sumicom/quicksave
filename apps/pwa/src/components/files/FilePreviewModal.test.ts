@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
-import { buildLineNumberText, createPreviewDownload } from './FilePreviewModal';
+import {
+  buildLineNumberText,
+  buildSafeHtmlPreviewDocument,
+  createPreviewDownload,
+} from './FilePreviewModal';
 
 describe('buildLineNumberText', () => {
   it('numbers every visible text line', () => {
@@ -28,5 +32,21 @@ describe('createPreviewDownload', () => {
 
   it('does not offer a download when the preview has no file body', () => {
     expect(createPreviewDownload({ success: true, kind: 'binary' }, 'archive.bin')).toBeNull();
+  });
+});
+
+describe('buildSafeHtmlPreviewDocument', () => {
+  it('injects a restrictive content security policy into an existing head', () => {
+    const preview = buildSafeHtmlPreviewDocument('<html><head><title>Demo</title></head><body>Hello</body></html>');
+
+    expect(preview).toContain('<head><meta http-equiv="Content-Security-Policy"');
+    expect(preview).toContain("default-src 'none'");
+    expect(preview).toContain('<title>Demo</title>');
+  });
+
+  it('creates a head when the document does not include one', () => {
+    const preview = buildSafeHtmlPreviewDocument('<html><body>Hello</body></html>');
+
+    expect(preview).toContain('<html><head><meta http-equiv="Content-Security-Policy"');
   });
 });

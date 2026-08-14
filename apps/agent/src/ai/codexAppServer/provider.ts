@@ -1083,7 +1083,7 @@ function threadIdFromParams(params: unknown): string | null {
   return typeof candidate === 'string' ? candidate : null;
 }
 
-function subagentThreadSnapshot(thread: Thread): {
+export function subagentThreadSnapshot(thread: Thread): {
   description: string;
   status: 'running' | 'completed' | 'failed' | 'stopped';
   summary?: string;
@@ -1123,6 +1123,30 @@ function subagentThreadSnapshot(thread: Thread): {
           detail: item.error?.message ?? undefined,
           status: item.status === 'failed' ? 'failed' : item.status === 'completed' ? 'completed' : 'running',
         });
+      } else if (item.type === 'dynamicToolCall') {
+        const output = (item.contentItems ?? [])
+          .flatMap((content) => content.type === 'inputText' ? [content.text] : [])
+          .join('\n')
+          .trim();
+        activities.push({
+          id: item.id,
+          type: 'tool',
+          title: item.namespace ? `${item.namespace}:${item.tool}` : item.tool,
+          detail: truncateSubagentActivityDetail(output || JSON.stringify(item.arguments)),
+          status: item.status === 'failed' || item.success === false
+            ? 'failed'
+            : item.status === 'completed'
+              ? 'completed'
+              : 'running',
+        });
+      } else if (item.type === 'webSearch') {
+        activities.push({
+          id: item.id,
+          type: 'tool',
+          title: 'Web search',
+          detail: truncateSubagentActivityDetail(webSearchActivityDetail(item)),
+          status: 'completed',
+        });
       }
     }
   }
@@ -1138,6 +1162,28 @@ function subagentThreadSnapshot(thread: Thread): {
     statusMessage: thread.status.type,
     activities: activities.slice(-80),
   };
+}
+
+function truncateSubagentActivityDetail(detail: string): string | undefined {
+  const normalized = detail.trim();
+  if (!normalized) return undefined;
+  const maxLength = 4_000;
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
+function webSearchActivityDetail(item: Extract<ThreadItem, { type: 'webSearch' }>): string {
+  if (item.query) return item.query;
+  if (!item.action) return '';
+  switch (item.action.type) {
+    case 'search':
+      return item.action.query ?? item.action.queries?.join(', ') ?? '';
+    case 'openPage':
+      return item.action.url ?? '';
+    case 'findInPage':
+      return [item.action.pattern, item.action.url].filter(Boolean).join(' in ');
+    case 'other':
+      return '';
+  }
 }
 
 function notificationBelongsToThread(params: unknown, threadId: string): boolean {

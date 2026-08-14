@@ -99,6 +99,15 @@ export function shouldReplaceComposerWithVoice(enabled: boolean, panelMode: Sess
   return enabled && panelMode === 'voice';
 }
 
+export function scrollTopAfterPrepend(
+  previousScrollTop: number,
+  previousScrollHeight: number,
+  nextScrollHeight: number,
+): number | null {
+  const addedHeight = nextScrollHeight - previousScrollHeight;
+  return addedHeight > 0 ? previousScrollTop + addedHeight : null;
+}
+
 function formatMissionTime(ts: number): string {
   return new Intl.DateTimeFormat(undefined, {
     month: 'short',
@@ -848,12 +857,22 @@ export function ClaudePanel({
     if (!activeSessionId || useClaudeStore.getState().isLoadingHistory || !historyHasMore) return;
     const container = chatContainerRef.current;
     const prevScrollHeight = container?.scrollHeight ?? 0;
+    const prevScrollTop = container?.scrollTop ?? 0;
     // cards.length is only the compatibility offset. The operation hook sends
     // the agent-issued history cursor when the current server supports it.
     await onGetSessionCards(activeSessionId, cards.length);
-    // Restore scroll position so the viewport doesn't jump to top
+    // Preserve the visible content after older cards are inserted above it.
+    // A collapsed page can add no height; in that case, do not touch scrollTop.
     if (container) {
-      container.scrollTop = container.scrollHeight - prevScrollHeight;
+      requestAnimationFrame(() => {
+        if (chatContainerRef.current !== container) return;
+        const nextScrollTop = scrollTopAfterPrepend(
+          prevScrollTop,
+          prevScrollHeight,
+          container.scrollHeight,
+        );
+        if (nextScrollTop !== null) container.scrollTop = nextScrollTop;
+      });
     }
   }, [activeSessionId, historyHasMore, cards.length, onGetSessionCards]);
 

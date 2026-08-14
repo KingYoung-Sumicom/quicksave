@@ -1185,6 +1185,15 @@ export class StreamCardBuilder {
     return this.toolUseIdToCardId.has(toolUseId);
   }
 
+  /** Remove a provisional tool card once a richer structured card supersedes it. */
+  removeToolCard(toolUseId: string): CardEvent | null {
+    const cardId = this.toolUseIdToCardId.get(toolUseId);
+    if (!cardId) return null;
+    this.toolUseIdToCardId.delete(toolUseId);
+    this.ephemeralCards.delete(cardId);
+    return this.removeEvent(cardId);
+  }
+
   /** Return all live cards (insertion order). Cards carry pendingInput if set. */
   getCards(): Card[] {
     return Array.from(this.cards.values());
@@ -1235,7 +1244,7 @@ export class StreamCardBuilder {
     description: string,
     agentId: string,
     toolUseId?: string,
-    extras?: { prompt?: string; subagentType?: string; requestedModel?: string },
+    extras?: { prompt?: string; subagentType?: string; requestedModel?: string; nestToolCalls?: boolean },
   ): CardEvent {
     this.currentTextCardId = null;
     const existingCardId = this.agentIdToCardId.get(agentId);
@@ -1271,7 +1280,7 @@ export class StreamCardBuilder {
       ...(prompt ? { prompt } : {}),
     };
     this.agentIdToCardId.set(agentId, id);
-    this.activeSubagentCardId = id;
+    if (extras?.nestToolCalls !== false) this.activeSubagentCardId = id;
     const afterCardId = toolUseId ? this.toolUseIdToCardId.get(toolUseId) : undefined;
     return this.addEvent(card, afterCardId);
   }

@@ -4,7 +4,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useClaudeStore } from '../stores/claudeStore';
-import { ClaudePanel, shouldReplaceComposerWithVoice } from './ClaudePanel';
+import { ClaudePanel, scrollTopAfterPrepend, shouldReplaceComposerWithVoice } from './ClaudePanel';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -128,5 +128,15 @@ describe('ClaudePanel voice workspace visibility', () => {
     expect(shouldReplaceComposerWithVoice(true, 'voice')).toBe(true);
     expect(shouldReplaceComposerWithVoice(true, null)).toBe(false);
     expect(shouldReplaceComposerWithVoice(false, 'voice')).toBe(false);
+  });
+});
+
+describe('ClaudePanel history scroll restoration', () => {
+  it('keeps the same content visible when prepended cards add height', () => {
+    expect(scrollTopAfterPrepend(120, 800, 1100)).toBe(420);
+  });
+
+  it('does not request a scroll change when collapsed cards add no height', () => {
+    expect(scrollTopAfterPrepend(120, 800, 800)).toBeNull();
   });
 });
