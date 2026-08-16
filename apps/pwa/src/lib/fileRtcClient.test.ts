@@ -1,14 +1,25 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { createHash, webcrypto } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { FilesRtcDataMessage } from '@sumicom/quicksave-shared';
 import { assembleRtcFileResponse, readFileViaRtc } from './fileRtcClient';
 
 beforeAll(() => {
-  if (!globalThis.crypto?.subtle) {
-    Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
-  }
+  Object.defineProperty(globalThis, 'crypto', {
+    configurable: true,
+    value: {
+      subtle: {
+        digest(algorithm: AlgorithmIdentifier, data: BufferSource) {
+          const view = ArrayBuffer.isView(data)
+            ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+            : new Uint8Array(data);
+          return webcrypto.subtle.digest(algorithm, Buffer.from(Array.from(view)));
+        },
+      },
+    },
+  });
 });
 
 const header: Extract<FilesRtcDataMessage, { t: 'header' }> = {
