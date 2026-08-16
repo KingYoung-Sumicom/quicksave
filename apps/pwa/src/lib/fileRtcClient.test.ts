@@ -6,9 +6,9 @@ import type { FilesRtcDataMessage } from '@sumicom/quicksave-shared';
 import { assembleRtcFileResponse, readFileViaRtc } from './fileRtcClient';
 
 beforeAll(() => {
-  if (!globalThis.crypto?.subtle) {
-    Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
-  }
+  // Keep Web Crypto and the Node-created test buffers in the same realm.
+  // Node 24 rejects cross-realm BufferSource values more strictly.
+  Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
 });
 
 const header: Extract<FilesRtcDataMessage, { t: 'header' }> = {
