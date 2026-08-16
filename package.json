@@ -46,6 +46,9 @@
     "ws": "^8.18.0"
   },
   "pnpm": {
+    "patchedDependencies": {
+      "@sumicom/ws-relay@0.1.1": "patches/@sumicom__ws-relay@0.1.1.patch"
+    },
     "onlyBuiltDependencies": [
       "better-sqlite3",
       "esbuild",

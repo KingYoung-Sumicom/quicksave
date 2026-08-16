@@ -1,0 +1,28 @@
+diff --git a/dist/relay.js b/dist/relay.js
+index 8ce5a54..8083f52 100644
+--- a/dist/relay.js
++++ b/dist/relay.js
+@@ -190,6 +190,15 @@ export function createRelay(config) {
+             ws.close(1008, 'Rate limited');
+             return;
+         }
++        // Register quota cleanup before validation and duplicate checks. Those
++        // paths may close and return before the peer-level close handler exists.
++        let connectionQuotaReleased = false;
++        const releaseConnectionQuota = () => {
++            if (connectionQuotaReleased) return;
++            connectionQuotaReleased = true;
++            rateLimiter.releaseConnection(ip);
++        };
++        ws.once('close', releaseConnectionQuota);
+         // Key validation
+         let validatedKey;
+         if (keyStore) {
+@@ -354,7 +363,6 @@ export function createRelay(config) {
+         });
+         // ── Disconnect ──────────────────────────────────────────────────
+         ws.on('close', () => {
+-            rateLimiter.releaseConnection(ip);
+             // Notify watchers that this peer went offline
+             const peerWatchers = registry.getWatchers(peer.address);
+             for (const watcherAddr of peerWatchers) {

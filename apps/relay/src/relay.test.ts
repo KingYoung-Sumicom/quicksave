@@ -40,7 +40,7 @@ function waitForMessage(ws: WebSocket): Promise<Record<string, unknown>> {
 
 // ── Test relay setup (mirrors index.ts but on a test port) ─────────────────
 
-function createTestRelay(): RelayInstance {
+function createTestRelay(rateLimitMaxConnections = 30): RelayInstance {
   const agentWatchers = new Map<string, Set<string>>();
 
   let relay!: RelayInstance;
@@ -49,6 +49,7 @@ function createTestRelay(): RelayInstance {
     port: TEST_PORT,
     keyStore: false,
     blobStore: false,
+    rateLimitMaxConnections,
     channels: [
       { name: 'agent', onDuplicate: 'reject' },
       {
@@ -162,11 +163,42 @@ describe('signaling server', () => {
       expect((msg.payload as Record<string, unknown>).code).toBe('ID_IN_USE');
     });
 
+    it('releases connection quota after rejecting a duplicate agent ID', async () => {
+      relay.close();
+      await new Promise<void>((resolve) => relay.server.close(() => resolve()));
+      relay = createTestRelay(2);
+
+      const original = track(connect('/agent/agent-quota-1234'));
+      await waitForOpen(original);
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const duplicate = track(connect('/agent/agent-quota-1234'));
+        const closed = new Promise<void>((resolve) => duplicate.once('close', () => resolve()));
+        const msg = await waitForMessage(duplicate);
+        expect((msg.payload as Record<string, unknown>).code).toBe('ID_IN_USE');
+        await closed;
+      }
+    });
+
     it('rejects invalid URL', async () => {
       const ws = track(new WebSocket(`ws://localhost:${TEST_PORT}/unknown/path`));
       const msg = await waitForMessage(ws);
       expect(msg.type).toBe('error');
       expect((msg.payload as Record<string, unknown>).code).toBe('INVALID_URL');
+    });
+
+    it('releases connection quota after rejecting an invalid URL', async () => {
+      relay.close();
+      await new Promise<void>((resolve) => relay.server.close(() => resolve()));
+      relay = createTestRelay(1);
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const invalid = track(connect('/unknown/path'));
+        const closed = new Promise<void>((resolve) => invalid.once('close', () => resolve()));
+        const msg = await waitForMessage(invalid);
+        expect((msg.payload as Record<string, unknown>).code).toBe('INVALID_URL');
+        await closed;
+      }
     });
   });
 
