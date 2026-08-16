@@ -219,7 +219,9 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const input = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  // Blob copies cross-realm views into an ArrayBuffer owned by the current
+  // browser realm, which Web Crypto requires on stricter runtimes.
+  const input = await new Blob([new Uint8Array(bytes)]).arrayBuffer();
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', input));
   return [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
