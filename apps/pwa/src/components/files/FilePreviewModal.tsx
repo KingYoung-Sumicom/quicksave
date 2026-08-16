@@ -133,14 +133,25 @@ export function FileViewerPane({
   const { readFile } = useFileOps(getBus, { queueWhileDisconnected: false });
   const [data, setData] = useState<FilesReadResponsePayload | null>(null);
   const [loading, setLoading] = useState(true);
+  const [transferProgress, setTransferProgress] = useState<{ receivedBytes: number; totalBytes: number } | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const reqIdRef = useRef(0);
 
   useEffect(() => {
     setLoading(true);
     setData(null);
+    setTransferProgress(null);
     const myId = ++reqIdRef.current;
-    readFile({ cwd: request.cwd, path: request.path, maxBytes: request.maxBytes, allowImage: true })
+    const controller = new AbortController();
+    readFile(
+      { cwd: request.cwd, path: request.path, maxBytes: request.maxBytes, allowImage: true },
+      {
+        signal: controller.signal,
+        onProgress: (progress) => {
+          if (myId === reqIdRef.current) setTransferProgress(progress);
+        },
+      },
+    )
       .then((res) => {
         if (myId !== reqIdRef.current) return;
         setData(res);
@@ -157,6 +168,7 @@ export function FileViewerPane({
       .finally(() => {
         if (myId === reqIdRef.current) setLoading(false);
       });
+    return () => controller.abort();
   }, [request.cwd, request.path, request.maxBytes, readFile, reloadNonce]);
 
   const refresh = useCallback(() => {
@@ -175,20 +187,22 @@ export function FileViewerPane({
   const [renderSvg, setRenderSvg] = useState(true);
   const [renderCsv, setRenderCsv] = useState(true);
   const [showLineNumbers, setShowLineNumbers] = useState(false);
+  const canRichRender = (data?.size ?? 0) <= 4 * 1024 * 1024;
   const showsRawText = data?.kind === 'text'
-    && !(isMarkdown && renderMarkdown)
-    && !(isHtml && renderHtml)
-    && !(isSvg && renderSvg)
-    && !(isCsv && renderCsv);
+    && !(isMarkdown && renderMarkdown && canRichRender)
+    && !(isHtml && renderHtml && canRichRender)
+    && !(isSvg && renderSvg && canRichRender)
+    && !(isCsv && renderCsv && canRichRender);
   const canDownload = data?.success === true
     && typeof data.content === 'string'
     && (data.kind === 'text' || data.kind === 'image');
   const showsZoomImage = data?.success === true
-    && (data.kind === 'image' || (data.kind === 'text' && isSvg && renderSvg));
+    && (data.kind === 'image' || (data.kind === 'text' && isSvg && renderSvg && canRichRender));
   const showsRenderedHtml = data?.success === true
     && data.kind === 'text'
     && isHtml
-    && renderHtml;
+    && renderHtml
+    && canRichRender;
 
   useEffect(() => {
     setShowLineNumbers(false);
@@ -205,7 +219,7 @@ export function FileViewerPane({
           <p className="text-sm font-medium text-slate-100 truncate">{fileName}</p>
           <p className="text-[11px] text-slate-500 truncate">{displayPath}</p>
         </div>
-        {isMarkdown && data?.kind === 'text' && (
+        {isMarkdown && data?.kind === 'text' && canRichRender && (
           <button
             onClick={() => setRenderMarkdown((v) => !v)}
             className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
@@ -214,7 +228,7 @@ export function FileViewerPane({
             {renderMarkdown ? 'Raw' : 'Rendered'}
           </button>
         )}
-        {isHtml && data?.kind === 'text' && (
+        {isHtml && data?.kind === 'text' && canRichRender && (
           <button
             onClick={() => setRenderHtml((value) => !value)}
             className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
@@ -223,7 +237,7 @@ export function FileViewerPane({
             {renderHtml ? 'Raw' : 'Rendered'}
           </button>
         )}
-        {isSvg && data?.kind === 'text' && (
+        {isSvg && data?.kind === 'text' && canRichRender && (
           <button
             onClick={() => setRenderSvg((v) => !v)}
             className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
@@ -232,7 +246,7 @@ export function FileViewerPane({
             {renderSvg ? 'Raw' : 'Rendered'}
           </button>
         )}
-        {isCsv && data?.kind === 'text' && (
+        {isCsv && data?.kind === 'text' && canRichRender && (
           <button
             onClick={() => setRenderCsv((v) => !v)}
             className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
@@ -241,7 +255,7 @@ export function FileViewerPane({
             {renderCsv ? 'Raw' : 'Table'}
           </button>
         )}
-        {showsRawText && (
+        {showsRawText && canRichRender && (
           <button
             type="button"
             onClick={() => setShowLineNumbers((visible) => !visible)}
@@ -309,8 +323,13 @@ export function FileViewerPane({
       {/* Body */}
       <div className={`flex-1 min-h-0 ${showsZoomImage || showsRenderedHtml ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {loading && (
-          <div className="flex items-center justify-center py-12">
+          <div className="flex flex-col items-center justify-center gap-3 py-12">
             <Spinner size="w-5 h-5" color="border-blue-400" />
+            {transferProgress && (
+              <div className="text-center text-xs text-slate-400">
+                Direct WebRTC · {formatSize(transferProgress.receivedBytes)} / {formatSize(transferProgress.totalBytes)}
+              </div>
+            )}
           </div>
         )}
 
@@ -326,10 +345,10 @@ export function FileViewerPane({
             displayPath={displayPath}
             cwd={request.cwd}
             agentId={request.agentId ?? ''}
-            renderMarkdown={isMarkdown && renderMarkdown}
-            renderHtml={isHtml && renderHtml}
-            renderSvg={isSvg && renderSvg}
-            renderCsv={isCsv && renderCsv}
+            renderMarkdown={isMarkdown && renderMarkdown && canRichRender}
+            renderHtml={isHtml && renderHtml && canRichRender}
+            renderSvg={isSvg && renderSvg && canRichRender}
+            renderCsv={isCsv && renderCsv && canRichRender}
             showLineNumbers={showLineNumbers}
           />
         )}
@@ -431,7 +450,7 @@ function PreviewContent({
 }) {
   const lang = useMemo(() => detectLanguage(displayPath), [displayPath]);
   const highlighted = useMemo(() => {
-    if (data.kind !== 'text' || !lang) return null;
+    if (data.kind !== 'text' || !lang || (data.size ?? 0) > 4 * 1024 * 1024) return null;
     const content = data.content ?? '';
     if (!content) return null;
     try {
@@ -451,7 +470,10 @@ function PreviewContent({
   if (data.kind === 'oversized') {
     return (
       <div className="px-4 py-12 text-center text-sm text-slate-500">
-        File is larger than the preview cap.
+        <p>File is larger than the preview cap.</p>
+        {data.transferError && (
+          <p className="mt-2 text-xs text-amber-400">Direct transfer unavailable: {data.transferError}</p>
+        )}
       </div>
     );
   }

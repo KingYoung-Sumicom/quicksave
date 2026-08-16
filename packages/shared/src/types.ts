@@ -188,6 +188,12 @@ export type MessageType =
   | 'files:list:response'
   | 'files:read'             // pwa-request: read a text file (binary / oversized return a placeholder)
   | 'files:read:response'
+  | 'files:rtc-connect'      // pwa-request: negotiate a direct large-file DataChannel
+  | 'files:rtc-connect:response'
+  | 'files:rtc-ice'
+  | 'files:rtc-ice:response'
+  | 'files:rtc-cancel'
+  | 'files:rtc-cancel:response'
   // Attachments — chunked upload of files / long-pasted text the user attaches
   // to a chat message. Bytes are staged on the agent until consumed by a
   // `claude:start` / `claude:resume` whose payload references their ids.
@@ -2351,5 +2357,57 @@ export interface FilesReadResponsePayload {
    *  should keep using its cached body; `content`/`kind` are omitted in
    *  this case but `size`/`mtime` are still echoed. */
   notModified?: boolean;
+  /** Set by the PWA when an oversized preview could not be upgraded to the
+   * direct WebRTC transport. The metadata response remains usable. */
+  transferError?: string;
   error?: string;
 }
+
+// Large file previews use an ephemeral, file-specific WebRTC DataChannel.
+// Signaling stays on the authenticated message bus; file bytes never do.
+export interface FilesRtcConnectRequestPayload {
+  transferId: string;
+  cwd: string;
+  path: string;
+  sdp: string;
+  allowImage?: boolean;
+}
+
+export interface FilesRtcConnectResponsePayload {
+  sdp?: string;
+  error?: string;
+}
+
+export interface FilesRtcIceRequestPayload {
+  transferId: string;
+  candidate: string | null;
+}
+
+export interface FilesRtcIceResponsePayload {
+  ok: boolean;
+  error?: string;
+}
+
+export interface FilesRtcCancelRequestPayload {
+  transferId: string;
+}
+
+export type FilesRtcCancelResponsePayload = FilesRtcIceResponsePayload;
+
+export interface FilesRtcIceUpdate {
+  candidate: string | null;
+}
+
+export type FilesRtcDataMessage =
+  | {
+      t: 'header';
+      kind: FileReadKind;
+      cwd: string;
+      path: string;
+      absolutePath: string;
+      size: number;
+      mtime: number;
+      mimeType?: string;
+    }
+  | { t: 'complete'; bytes: number; sha256?: string }
+  | { t: 'error'; message: string };

@@ -477,18 +477,16 @@ describe('FileBrowser', () => {
       expect(res.content).toBeUndefined();
     });
 
-    it('image branch uses its own larger cap — files above the default text cap still load', async () => {
-      // 2 MiB of "PNG" — bytes don't matter, the image branch trusts the
-      // extension and skips NUL sniffing.
+    it('routes images above the inline cap to the direct-transfer path', async () => {
       const big = Buffer.alloc(2 * 1024 * 1024, 0x42);
       writeFileSync(join(root, 'big.png'), big);
       const res = await fb.read({ cwd: root, path: 'big.png', allowImage: true });
       expect(res.success).toBe(true);
-      expect(res.kind).toBe('image');
-      expect(res.content!.length).toBeGreaterThan(0);
+      expect(res.kind).toBe('oversized');
+      expect(res.content).toBeUndefined();
     });
 
-    it('image branch enforces its own ceiling — files above 16 MiB return oversized', async () => {
+    it('also keeps very large images off the inline bus response', async () => {
       const huge = Buffer.alloc(17 * 1024 * 1024, 0x43); // 17 MiB
       writeFileSync(join(root, 'huge.png'), huge);
       const res = await fb.read({ cwd: root, path: 'huge.png', allowImage: true });

@@ -25,6 +25,7 @@ import { MessageBusServer } from '@sumicom/quicksave-message-bus';
 import { MessageHandler } from '../handlers/messageHandler.js';
 import { wireLegacyBusVerbs } from '../handlers/legacyBusAdapter.js';
 import { wireVoiceStream } from '../ai/voiceStream.js';
+import { wireFileRtcStream } from '../files/fileRtcStream.js';
 import { GitOperations } from '../git/operations.js';
 import { IpcServer } from './ipcServer.js';
 import { DebugHttpServer } from './debugHttpServer.js';
@@ -583,6 +584,7 @@ export async function runDaemon(): Promise<void> {
   // if it can't load, these verbs return an error and the PWA falls back to the
   // batch `voice:transcribe` path.
   const voiceStream = wireVoiceStream(bus);
+  wireFileRtcStream(bus);
   voiceIntermediary.setSpeechSynthesizer(
     (sessionId, config, text) => voiceStream.synthesizeSpeech(sessionId, config, text),
   );

@@ -118,6 +118,14 @@ describe('fileCache', () => {
       expect(fetcher.mock.calls[1][0]).not.toHaveProperty('ifNoneMatch');
     });
 
+    it('does not cache metadata-only oversized responses', async () => {
+      const req: FilesReadRequestPayload = { cwd: '/p', path: 'large.txt' };
+      const fetcher = vi.fn(async () => ok({ kind: 'oversized', content: undefined, size: 2_000_000 }));
+      await readWithCache(req, fetcher);
+      await readWithCache(req, fetcher);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    });
+
     it('does NOT cache failed responses — re-fetches cold on next call', async () => {
       const req: FilesReadRequestPayload = { cwd: '/p', path: 'missing.md' };
       const fetcher = vi.fn(async () => ({
