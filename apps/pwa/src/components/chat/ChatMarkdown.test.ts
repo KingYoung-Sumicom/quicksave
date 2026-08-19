@@ -28,12 +28,32 @@ describe('previewPathFromMarkdownHref', () => {
     );
   });
 
+  it('routes arbitrary absolute Unix paths to file preview paths', () => {
+    const path = '/private/tmp/orin-eco2-replay.xAbghh/render-root/I30V11-CVM connector 3 of 3.png';
+
+    expect(previewPathFromMarkdownHref(encodeURI(path))).toBe(path);
+    expect(previewPathFromMarkdownHref('/custom/mount/with spaces/report.pdf')).toBe(
+      '/custom/mount/with spaces/report.pdf',
+    );
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      children: `[I30V11-CVM connector 3 of 3.png](${encodeURI(path)})`,
+    }));
+    expect(html).toContain('<button');
+    expect(html).toContain('I30V11-CVM connector 3 of 3.png');
+    expect(html).toContain(`title="${path}"`);
+  });
+
   it('does not capture external or anchor-only links', () => {
     expect(previewPathFromMarkdownHref('https://example.com/README.md')).toBeNull();
     expect(previewPathFromMarkdownHref('example.com')).toBeNull();
-    expect(previewPathFromMarkdownHref('/p/project/s/session')).toBeNull();
-    expect(previewPathFromMarkdownHref(`${window.location.origin}/p/project/s/session`)).toBeNull();
     expect(previewPathFromMarkdownHref('#readme')).toBeNull();
+  });
+
+  it('treats app-shaped absolute paths as files too', () => {
+    expect(previewPathFromMarkdownHref('/p/project/s/session')).toBe('/p/project/s/session');
+    expect(previewPathFromMarkdownHref(`${window.location.origin}/p/project/s/session`)).toBe(
+      '/p/project/s/session',
+    );
   });
 });
 

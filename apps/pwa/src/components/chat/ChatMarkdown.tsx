@@ -16,8 +16,6 @@ import { CodeBlock } from '../ui/CodeBlock';
 /** File-shaped hrefs explicitly supplied by Markdown links. */
 const SINGLE_PATH_RE = /^((?:\.{1,2}\/|\/)?[\w@.~-]+(?:\/[\w@.~-]+)+)(?::\d+(?:[-:]\d+)?)?$/;
 const SINGLE_MARKDOWN_FILE_RE = /^((?:\.{1,2}\/)?[\w@.~-]+\.(?:md|markdown|mdx))(?::\d+(?:[-:]\d+)?)?$/i;
-const ABSOLUTE_FILESYSTEM_PATH_RE = /^\/(?:home|Users|tmp|var|opt|workspace|mnt|Volumes)\//;
-const APP_ROUTE_RE = /^\/(?:p|settings|pair|add)(?:\/|$)/;
 const LINE_SUFFIX_RE = /:\d+(?:[-:]\d+)?$/;
 
 /** Schemes we treat as "external" — open in a new tab. Anything else with
@@ -34,7 +32,7 @@ export function previewPathFromMarkdownHref(href: string): string | null {
   const absoluteFilesystemPath = decodeAbsoluteFilesystemPath(path);
   if (absoluteFilesystemPath) return absoluteFilesystemPath;
   const decodedPath = decodePath(path);
-  if (!decodedPath || APP_ROUTE_RE.test(decodedPath)) return null;
+  if (!decodedPath) return null;
   if (isRelativePathCandidate(decodedPath)) return stripLineSuffix(decodedPath);
   return decodedPath.match(SINGLE_PATH_RE)?.[1] ?? decodedPath.match(SINGLE_MARKDOWN_FILE_RE)?.[1] ?? null;
 }
@@ -60,8 +58,8 @@ function pathFromSameOriginUrl(href: string): string | null {
 
 function decodeAbsoluteFilesystemPath(path: string): string | null {
   const decoded = decodePath(path);
-  if (!decoded) return null;
-  return ABSOLUTE_FILESYSTEM_PATH_RE.test(decoded) ? stripLineSuffix(decoded) : null;
+  if (!decoded || !decoded.startsWith('/')) return null;
+  return stripLineSuffix(decoded);
 }
 
 function decodePath(path: string): string | null {
