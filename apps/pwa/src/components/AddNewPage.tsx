@@ -29,10 +29,12 @@ import { useComposerAttachments } from '../hooks/useComposerAttachments';
 import { VoiceTranscriptionOverlay } from './VoiceTranscriptionOverlay';
 import { VoiceRecordingOverlay } from './VoiceRecordingOverlay';
 import { VoiceCapturePreparingOverlay } from './VoiceCapturePreparingOverlay';
+import { VoiceRecoveryDrafts } from './VoiceRecoveryDrafts';
 import { toProjectId } from '../lib/projectId';
 import { getBusForAgent } from '../lib/busRegistry';
 import { useClaudeOperations } from '../hooks/useClaudeOperations';
 import { useGitOperations } from '../hooks/useGitOperations';
+import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from '../lib/composerDraft';
 import type { WebSocketClient } from '../lib/websocket';
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 
@@ -635,6 +637,25 @@ function SessionTab({
   const [prompt, setPrompt] = useState('');
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const newSessionDraftKey = project ? `qs_addnew_draft_${project.projectId}` : null;
+
+  // Add New lives outside ClaudePanel, so it needs its own project-scoped
+  // composer draft. Switching projects restores that project's unfinished text.
+  useEffect(() => {
+    if (!newSessionDraftKey) {
+      setPrompt('');
+      return;
+    }
+    setPrompt(loadComposerDraft(newSessionDraftKey));
+  }, [newSessionDraftKey]);
+
+  useEffect(() => {
+    if (!newSessionDraftKey) return;
+    const timer = window.setTimeout(() => {
+      saveComposerDraft(newSessionDraftKey, prompt);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [newSessionDraftKey, prompt]);
 
   // Voice input (shared with the chat composer). Appends transcripts to the
   // prompt; gated on the selected machine advertising audio support.
@@ -642,6 +663,7 @@ function SessionTab({
     project?.agentId ?? '',
     (text) => setPrompt((p) => (p.trim() ? `${p.trim()} ${text}` : text)),
     setError,
+    { recoveryKey: project ? `new-session:${project.projectId}` : undefined },
   );
   // Lock the rest of the composer while capturing/transcribing.
   const voiceActive = voice.recording || voice.busy;
@@ -717,6 +739,7 @@ function SessionTab({
         setGlobalPromptInput('');
       } else {
         setPrompt('');
+        if (newSessionDraftKey) clearComposerDraft(newSessionDraftKey);
         attach.clear();
       }
       if (sid) {
@@ -754,6 +777,12 @@ function SessionTab({
       {error && <ErrorBar message={error} />}
 
       <div className="border-t border-slate-700 px-4 py-3 bg-slate-900 safe-area-bottom-input">
+        <VoiceRecoveryDrafts
+          drafts={voice.recoveryDrafts ?? []}
+          busy={voice.busy}
+          onRetry={(id) => { void voice.retryRecoveryDraft(id); }}
+          onDiscard={(id) => { void voice.discardRecoveryDraft(id); }}
+        />
         <AttachmentTray pending={attach.pendingAttachments} onRemove={attach.removePendingAttachment} />
         {supportsAttachments && (
           <input

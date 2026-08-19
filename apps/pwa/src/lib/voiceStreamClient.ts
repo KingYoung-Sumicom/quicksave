@@ -39,6 +39,9 @@ export type VoiceStreamState = 'connecting' | 'ready' | 'recording' | 'unavailab
 export interface VoiceStreamCallbacks {
   onPartial(text: string): void;
   onFinal(text: string): void;
+  /** PCM accepted by the local capture graph, before transport. This lets the
+   * caller retain a recovery copy even if the P2P link later fails. */
+  onAudioFrame?(pcm: ArrayBuffer): void;
   onSpeechActivity?(active: boolean): void;
   onRemotePlayback?(active: boolean, streamId: string): void;
   onError(message: string): void;
@@ -442,6 +445,9 @@ export class VoiceStreamSession {
       const firstFrame = new Promise<void>((resolve, reject) => {
         let received = false;
         const acceptFrame = (pcm: ArrayBuffer) => {
+          // Keep a caller-owned copy before sending. DataChannel delivery is
+          // reliable while open, but it is not a durable local buffer.
+          this.cb.onAudioFrame?.(pcm.slice(0));
           if (this.dc?.readyState === 'open') this.dc.send(pcm);
           if (received) return;
           received = true;
@@ -525,6 +531,26 @@ export class VoiceStreamSession {
       throw new Error(`Could not start microphone capture: ${reason}`);
     }
     this.setState('recording');
+  }
+
+  /** Re-send a locally retained PCM utterance through a fresh/live ASR
+   * session. The ordered DataChannel preserves the original audio order. */
+  replayUtterance(frames: ArrayBuffer[]): boolean {
+    if (this.state !== 'ready' || this.dc?.readyState !== 'open' || frames.length === 0) return false;
+    this.dcSend({
+      t: 'start',
+      config: this.config,
+      sampleRate: VOICE_PCM_SAMPLE_RATE,
+      audioTransport: 'datachannel',
+    });
+    for (const frame of frames) this.dc.send(frame);
+    this.dcSend({ t: 'stop', releaseMicrophone: true });
+    // A retry may have acquired the microphone solely to expose Safari host
+    // ICE candidates. Replay itself has no local capture graph, so release it
+    // immediately rather than leaving the browser mic indicator active.
+    this.teardownCapture({ releaseMic: true });
+    this.releaseMicrophone(false);
+    return true;
   }
 
   /** End the current utterance: stop capture and ask the agent to finalize.

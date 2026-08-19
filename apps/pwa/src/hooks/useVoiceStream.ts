@@ -28,6 +28,8 @@ export interface UseVoiceStream {
   start: () => Promise<boolean>;
   stop: (opts?: { releaseMic?: boolean; discard?: boolean }) => void;
   retryTranscription: () => void;
+  /** Re-send a locally retained PCM utterance after an agent/network failure. */
+  replayTranscription: (frames: ArrayBuffer[]) => Promise<boolean>;
   interruptPlayback: () => void;
   disconnect: () => void;
 }
@@ -43,6 +45,7 @@ export function useVoiceStream(
   onFinalText: (text: string) => void,
   onSpeechActivity?: (active: boolean) => void,
   onPartialText?: (text: string) => void,
+  onAudioFrame?: (pcm: ArrayBuffer) => void,
   onRemotePlayback?: (active: boolean, streamId: string) => void,
   options: UseVoiceStreamOptions = {},
 ): UseVoiceStream {
@@ -62,6 +65,8 @@ export function useVoiceStream(
   onSpeechActivityRef.current = onSpeechActivity;
   const onPartialTextRef = useRef(onPartialText);
   onPartialTextRef.current = onPartialText;
+  const onAudioFrameRef = useRef(onAudioFrame);
+  onAudioFrameRef.current = onAudioFrame;
   const onRemotePlaybackRef = useRef(onRemotePlayback);
   onRemotePlaybackRef.current = onRemotePlayback;
 
@@ -116,6 +121,7 @@ export function useVoiceStream(
           setInterim(text);
           onPartialTextRef.current?.(text);
         },
+        onAudioFrame: (pcm) => onAudioFrameRef.current?.(pcm),
         onFinal: (text) => {
           setInterim('');
           // Empty completion is still significant: it lets the composer leave
@@ -182,6 +188,14 @@ export function useVoiceStream(
     sessionRef.current?.retryTranscription();
   }, []);
 
+  const replayTranscription = useCallback(async (frames: ArrayBuffer[]): Promise<boolean> => {
+    // Retry is initiated by an explicit button press. Acquire the mic while it
+    // is still a user gesture so Safari can expose host ICE candidates for a
+    // replacement P2P connection; replayUtterance releases it immediately.
+    const ok = await ensure(true);
+    return ok && !!sessionRef.current?.replayUtterance(frames);
+  }, [ensure]);
+
   const interruptPlayback = useCallback(() => {
     sessionRef.current?.interruptPlayback();
   }, []);
@@ -205,6 +219,7 @@ export function useVoiceStream(
     start,
     stop,
     retryTranscription,
+    replayTranscription,
     interruptPlayback,
     disconnect,
   };

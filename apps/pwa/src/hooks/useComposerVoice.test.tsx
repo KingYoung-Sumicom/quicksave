@@ -52,6 +52,7 @@ vi.mock('./useVoiceStream', () => ({
       start: mocks.streamStart,
       stop: mocks.streamStop,
       retryTranscription: mocks.streamRetry,
+      replayTranscription: vi.fn(async () => true),
       interruptPlayback: vi.fn(),
       disconnect: vi.fn(),
     };

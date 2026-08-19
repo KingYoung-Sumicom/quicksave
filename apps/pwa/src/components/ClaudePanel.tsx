@@ -35,6 +35,7 @@ import { useComposerAttachments } from '../hooks/useComposerAttachments';
 import { VoiceTranscriptionOverlay } from './VoiceTranscriptionOverlay';
 import { VoiceRecordingOverlay } from './VoiceRecordingOverlay';
 import { VoiceCapturePreparingOverlay } from './VoiceCapturePreparingOverlay';
+import { VoiceRecoveryDrafts } from './VoiceRecoveryDrafts';
 import type { UseVoiceAgent } from '../hooks/useVoiceAgent';
 import { selectPanelMode, type SessionPanelMode, useSessionRightPanelStore } from '../stores/sessionRightPanelStore';
 
@@ -1046,7 +1047,9 @@ export function ClaudePanel({
 
   // Voice input (streaming-first, batch fallback) — shared with the new-session
   // composer. Transcripts append to the prompt; errors surface as the toast.
-  const voice = useComposerVoice(agentId, commitTranscript, setAttachmentToast);
+  const voice = useComposerVoice(agentId, commitTranscript, setAttachmentToast, {
+    recoveryKey: viewedSessionId ? `session:${viewedSessionId}` : 'new-session:default',
+  });
   const voiceCoworker = voiceAgentProp ?? DISABLED_VOICE_AGENT;
   const sessionPanelMode = useSessionRightPanelStore(selectPanelMode);
   const voiceWorkspaceOpen = shouldReplaceComposerWithVoice(voiceCoworker.enabled, sessionPanelMode);
@@ -1422,6 +1425,14 @@ export function ClaudePanel({
                 )
               )}
               {!voiceWorkspaceOpen && voice.arming && <VoiceCapturePreparingOverlay />}
+              {!voiceWorkspaceOpen && (
+                <VoiceRecoveryDrafts
+                  drafts={voice.recoveryDrafts ?? []}
+                  busy={voice.busy}
+                  onRetry={(id) => { void voice.retryRecoveryDraft(id); }}
+                  onDiscard={(id) => { void voice.discardRecoveryDraft(id); }}
+                />
+              )}
               {!voiceWorkspaceOpen && voice.recording && (
                 <VoiceRecordingOverlay onStop={voice.stopListening} onCancel={voice.cancelListening} />
               )}

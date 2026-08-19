@@ -138,15 +138,17 @@ function makeSession(voiceSessionId?: string) {
   const states: string[] = [];
   const speech: boolean[] = [];
   const playback: Array<{ active: boolean; streamId: string }> = [];
+  const audioFrames: ArrayBuffer[] = [];
   const session = new VoiceStreamSession('agent1', 'sess1', CONFIG, {
     onPartial: () => {},
     onFinal: () => {},
+    onAudioFrame: (pcm) => audioFrames.push(pcm),
     onSpeechActivity: (active) => speech.push(active),
     onRemotePlayback: (active, streamId) => playback.push({ active, streamId }),
     onError: () => {},
     onState: (s) => states.push(s),
   }, undefined, voiceSessionId);
-  return { session, states, speech, playback };
+  return { session, states, speech, playback, audioFrames };
 }
 
 async function startWithFirstFrame(session: VoiceStreamSession): Promise<void> {
@@ -389,7 +391,7 @@ describe('VoiceStreamSession.startUtterance', () => {
   });
 
   it('sends AudioWorklet PCM over the DataChannel and declares that ingress transport', async () => {
-    const { session } = makeSession();
+    const { session, audioFrames } = makeSession();
     await session.connect({ acquireMic: true });
     lastPc?.dc?.send.mockClear();
     await startWithFirstFrame(session);
@@ -412,6 +414,27 @@ describe('VoiceStreamSession.startUtterance', () => {
       channelCountMode: 'explicit',
     }));
     expect(lastGainNode?.gain.value).toBe(1);
+    expect(audioFrames).toHaveLength(2);
+    // The recovery callback owns a separate copy, so capture survives callers
+    // that later transfer or otherwise detach their outgoing frame.
+    expect(audioFrames[1]).not.toBe(pcm);
+  });
+
+  it('replays retained PCM frames in order without reopening the microphone', async () => {
+    const { session } = makeSession();
+    await session.connect();
+    lastPc?.dc?.send.mockClear();
+    const first = new Int16Array([1, 2]).buffer;
+    const second = new Int16Array([3, 4]).buffer;
+
+    expect(session.replayUtterance([first, second])).toBe(true);
+    expect(lastPc?.dc?.send.mock.calls.map(([value]) => value)).toEqual([
+      JSON.stringify({ t: 'start', config: CONFIG, sampleRate: 24_000, audioTransport: 'datachannel' }),
+      first,
+      second,
+      JSON.stringify({ t: 'stop', releaseMicrophone: true }),
+    ]);
+    expect(mocks.getUserMedia).not.toHaveBeenCalled();
   });
 
   it('resumes a suspended AudioContext before accepting the first PCM frame', async () => {
