@@ -687,6 +687,43 @@ describe('SessionEventRouter', () => {
     expect(call).toBeTruthy();
   });
 
+  it('mirrors OpenCode task tools into the provider-neutral sub-agent registry', () => {
+    const { router, cb, cbs } = makeRouter();
+    const part = {
+      id: 'prt_task', sessionID: 'ses_t', messageID: 'm', type: 'tool' as const,
+      tool: 'task', callID: 'call_task',
+    };
+    router.handle(ev('message.part.updated', {
+      part: {
+        ...part,
+        state: {
+          status: 'running',
+          input: { prompt: 'Inspect the test suite', agent: 'explore', model: 'openai/gpt-5' },
+        },
+      },
+    }));
+
+    expect(cb.getCards().find((card) => card.type === 'subagent')).toMatchObject({
+      agentId: 'call_task',
+      toolUseId: 'call_task',
+      description: 'Inspect the test suite',
+      prompt: 'Inspect the test suite',
+      subagentType: 'explore',
+      requestedModel: 'openai/gpt-5',
+      status: 'running',
+    });
+
+    router.handle(ev('message.part.updated', {
+      part: { ...part, state: { status: 'completed', input: { prompt: 'Inspect the test suite' }, output: 'All clear.' } },
+    }));
+
+    expect(cb.getCards().find((card) => card.type === 'subagent')).toMatchObject({
+      status: 'completed',
+      summary: 'All clear.',
+    });
+    expect(cbs.cards.filter((event: any) => event.card?.type === 'subagent')).toHaveLength(1);
+  });
+
   it('patches a tool card when the completed snapshot supplies its input', () => {
     const { router, cb, cbs } = makeRouter();
     const base = {

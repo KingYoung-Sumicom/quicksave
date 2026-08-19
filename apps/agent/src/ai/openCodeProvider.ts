@@ -172,6 +172,14 @@ export function normalizeOpenCodeToolInput(
   return normalized;
 }
 
+function firstTaskString(input: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = input[key];
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return undefined;
+}
+
 // ── Binary resolution (still needed for the `opencode models` probe + serve spawn) ──
 
 let _opencodeBin: string | undefined;
@@ -900,6 +908,15 @@ export class SessionEventRouter {
       const evt = this.cb.updateToolUse(callID, toolName, input);
       if (evt) this.callbacks.emitCardEvent(evt);
     }
+
+    // OpenCode's `task` tool runs an agent independently, but exposes it as
+    // an ordinary ToolPart rather than the dedicated lifecycle events used by
+    // Claude and Codex. Mirror that lifecycle into a SubagentCard so the
+    // provider-neutral Agents sidebar can show OpenCode tasks as well.
+    if (rawToolName === 'task') {
+      this.emitOpenCodeTask(callID, input, state);
+    }
+
     if ((state.status === 'completed' || state.status === 'error') && !this.toolResults.has(callID)) {
       this.toolResults.add(callID);
       const isError = state.status === 'error';
@@ -907,6 +924,35 @@ export class SessionEventRouter {
         ? (state.error || state.output || 'Tool failed')
         : (state.output ?? '');
       const evt = this.cb.toolResult(callID, content, isError);
+      if (evt) this.callbacks.emitCardEvent(evt);
+    }
+  }
+
+  private emitOpenCodeTask(
+    callID: string,
+    input: Record<string, unknown>,
+    state: { status?: string; output?: string; error?: string },
+  ): void {
+    const prompt = firstTaskString(input, 'prompt', 'description', 'task');
+    const subagentType = firstTaskString(input, 'subagent_type', 'subagentType', 'agent');
+    const requestedModel = firstTaskString(input, 'model');
+    if (!this.cb.hasSubagent(callID)) {
+      this.callbacks.emitCardEvent(this.cb.subagentStart(
+        prompt || subagentType || 'OpenCode task',
+        callID,
+        callID,
+        { prompt, subagentType, requestedModel, nestToolCalls: false },
+      ));
+    }
+
+    if (state.status === 'completed' || state.status === 'error') {
+      const summary = (state.status === 'error' ? state.error : state.output)?.trim() || undefined;
+      const evt = this.cb.subagentEnd(
+        callID,
+        callID,
+        state.status === 'completed' ? 'completed' : 'failed',
+        summary,
+      );
       if (evt) this.callbacks.emitCardEvent(evt);
     }
   }
