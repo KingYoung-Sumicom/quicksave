@@ -2449,6 +2449,25 @@ describe('SessionManager', () => {
       }
     });
 
+    it('does not apply the Claude default model to a legacy Codex session without one', async () => {
+      const sessionId = 'legacy-codex-no-model';
+      const entry = { sessionId, cwd: '/tmp/codex', agent: 'codex', archived: true };
+      (getSessionRegistry().getEntry as Mock).mockReturnValue(null);
+      (getSessionRegistry().readArchivedEntry as Mock).mockReturnValue(entry);
+      (codexProvider.resumeSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+
+      try {
+        await multiManager.resumeSession({ sessionId, prompt: 'Continue', cwd: entry.cwd });
+        expect((codexProvider.resumeSession as Mock).mock.calls[0][0].model).toBeUndefined();
+      } finally {
+        (getSessionRegistry().getEntry as Mock).mockReturnValue(null);
+        (getSessionRegistry().readArchivedEntry as Mock).mockReturnValue(undefined);
+      }
+    });
+
     it('seeds memory-mode card ids from persisted cards before cold resume', async () => {
       const sessionId = 'codex-resume-history';
       const { StreamCardBuilder } = await import('./cardBuilder.js');

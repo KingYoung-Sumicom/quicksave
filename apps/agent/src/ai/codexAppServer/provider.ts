@@ -90,6 +90,14 @@ const CODEX_BUILT_IN_SLASH_COMMANDS: SlashCommandInfo[] = [
   },
 ];
 
+// `thread/resume` normally completes immediately after the app-server
+// handshake.  Without a bound here, a single malformed or temporarily locked
+// thread leaves SessionManager's cold-resume flight in memory forever and the
+// PWA can only appear to be loading.  The caller shuts the handle down on
+// rejection, so timing out also releases the child process for a clean retry.
+const CODEX_THREAD_RESUME_TIMEOUT_MS = 45_000;
+const CODEX_TURN_START_TIMEOUT_MS = 45_000;
+
 /**
  * Codex provider driving the JSON-RPC v2 `app-server` protocol.
  * Phase 2 of the migration — see
@@ -180,12 +188,15 @@ export class CodexAppServerProvider implements CodingAgentProvider {
     const resumeParams = buildThreadResumeParams(opts);
     let response: ThreadResumeResponse;
     try {
-      response = await handle.rpc.request<ThreadResumeResponse>('thread/resume', resumeParams);
+      response = await withTimeout(
+        handle.rpc.request<ThreadResumeResponse>('thread/resume', resumeParams),
+        'thread/resume',
+        CODEX_THREAD_RESUME_TIMEOUT_MS,
+      );
     } catch (err) {
       await handle.shutdown();
       throw err;
     }
-
     const tokens = new TokenAccounting();
     tokens.seedFromLastTurn(loadCumulativeSeed(opts.sessionId));
     const overrideStore = new RuntimeOverrideStore();
@@ -235,6 +246,18 @@ export class CodexAppServerProvider implements CodingAgentProvider {
       await handle.shutdown().catch(() => {});
     }
   }
+}
+
+function withTimeout<T>(promise: Promise<T>, operation: string, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${operation} timed out after ${Math.ceil(timeoutMs / 1000)}s`));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
 }
 
 function scheduleInitialTurn(
@@ -622,7 +645,11 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       this.prestartedRunTurnId = null;
       let response: TurnStartResponse;
       try {
-        response = await this.handle.rpc.request<TurnStartResponse>('turn/start', params);
+        response = await withTimeout(
+          this.handle.rpc.request<TurnStartResponse>('turn/start', params),
+          'turn/start',
+          CODEX_TURN_START_TIMEOUT_MS,
+        );
       } finally {
         this.startingRunTurn = false;
       }
@@ -644,6 +671,9 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       // Adapter wasn't able to settle (e.g., turn/start itself failed).
       // Emit a synthetic failure stream-end matching the SDK behavior.
       const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('turn/start timed out')) {
+        await this.handle.shutdown().catch(() => {});
+      }
       this.callbacks.emitStreamEnd({
         sessionId: this.threadId,
         success: false,
@@ -1545,6 +1575,10 @@ function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promis
   return spawnAppServer(
     codexAppServerInit(),
     {
+      // Codex resolves project config and plugins before handling
+      // thread/resume. Keep its process CWD aligned with the thread CWD;
+      // passing `cwd` only in the RPC params is too late for that setup.
+      cwd: opts.cwd,
       extraArgs: buildCodexSandboxMcpConfigArgs({
         cwd: opts.cwd,
         sessionId: 'sessionId' in opts ? opts.sessionId : undefined,

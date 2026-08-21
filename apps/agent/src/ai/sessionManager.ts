@@ -815,7 +815,12 @@ export class SessionManager extends EventEmitter {
       // makes per-session settings survive a daemon restart.
       const resumeModel = (sessionConfig?.model as string | undefined)
         ?? registryEntry?.model
-        ?? this.preferences.model;
+        // `preferences.model` is the Claude Code preference. Older Codex
+        // registry entries predate per-session model persistence, so applying
+        // that Claude identifier to their `thread/resume` request can leave
+        // the app-server waiting on an incompatible model. Omit it and let
+        // Codex restore the model stored on the thread instead.
+        ?? (provider.id === 'codex' ? undefined : this.preferences.model);
       const resumeReasoningEffort = (sessionConfig?.reasoningEffort as string | undefined)
         ?? registryEntry?.reasoningEffort
         ?? this.preferences.reasoningEffort;
