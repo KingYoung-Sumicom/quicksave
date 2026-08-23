@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import type { ReactNode } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
@@ -11,6 +11,7 @@ import 'katex/dist/katex.min.css';
 import { normalizeLatexDelimiters } from '../../lib/markdownMath';
 import { normalizeCodexFileCitations } from '../../lib/codexCitations';
 import { FilePathLink } from './FilePathLink';
+import { isDirectImageSource, isLocalFileUrl, LocalFileImage } from './LocalFileImage';
 import { CodeBlock } from '../ui/CodeBlock';
 
 /** File-shaped hrefs explicitly supplied by Markdown links. */
@@ -89,11 +90,26 @@ function stripQueryAndHash(url: string): string {
   return idx < 0 ? url : url.slice(0, idx);
 }
 
-export function ChatMarkdown({ children }: { children: string }) {
+export function ChatMarkdown({
+  children,
+  cwd,
+  baseDir,
+  agentId,
+}: {
+  children: string;
+  cwd?: string;
+  baseDir?: string;
+  agentId?: string;
+}) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
       rehypePlugins={[[rehypeKatex, { strict: false }], rehypeHighlight]}
+      urlTransform={(url, key, node) => (
+        key === 'src' && node.tagName === 'img' && isLocalFileUrl(url)
+          ? url
+          : defaultUrlTransform(url)
+      )}
       components={{
         table: ({ children }: { children?: ReactNode }) => (
           <div className="overflow-x-auto my-2">
@@ -129,6 +145,23 @@ export function ChatMarkdown({ children }: { children: string }) {
             >
               {children}
             </a>
+          );
+        },
+        img: ({ src, alt, title }) => {
+          const url = typeof src === 'string' ? src : '';
+          if (!url) return <span className="text-slate-500 italic">[image]</span>;
+          if (isDirectImageSource(url)) {
+            return <img src={url} alt={alt ?? ''} title={title} className="max-w-full h-auto rounded my-2" />;
+          }
+          return (
+            <LocalFileImage
+              src={url}
+              alt={alt ?? ''}
+              title={title}
+              cwd={cwd}
+              baseDir={baseDir}
+              agentId={agentId}
+            />
           );
         },
       }}

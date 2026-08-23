@@ -137,3 +137,33 @@ describe('ChatMarkdown file links', () => {
     expect(html).not.toContain(':codex-file-citation');
   });
 });
+
+describe('ChatMarkdown images', () => {
+  it('routes local filesystem images through the file loader', () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      children: '![diagram](/tmp/render%20output.png)',
+    }));
+
+    expect(html).toContain('loading image');
+    expect(html).toContain('title="/tmp/render output.png"');
+    expect(html).not.toContain('<img src="/tmp');
+  });
+
+  it('routes local file URLs through the file loader without browser file access', () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      children: '![diagram](file:///tmp/render%20output.png)',
+    }));
+
+    expect(html).toContain('loading image');
+    expect(html).toContain('title="/tmp/render output.png"');
+    expect(html).not.toContain('<img src="file:');
+  });
+
+  it('renders network images directly', () => {
+    const remote = renderToStaticMarkup(createElement(ChatMarkdown, {
+      children: '![remote](https://example.com/image.png)',
+    }));
+
+    expect(remote).toContain('<img src="https://example.com/image.png"');
+  });
+});

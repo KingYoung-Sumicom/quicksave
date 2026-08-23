@@ -119,6 +119,19 @@ nested scroll surface.
 
 ---
 
+### Local Markdown images must use the file-read pipeline
+
+Markdown renderers and image-view cards must load local image paths through the
+shared `LocalFileImage` component and `files:read`, including the PWA file cache.
+Do not assign filesystem paths or `file://` URLs directly to browser `<img>`
+elements, and do not embed image bytes in card snapshots.
+
+**Why:** Browser/PWA security rules cannot directly read the agent machine's
+filesystem. Fetching on demand keeps cards metadata-only, works across remote
+agents, and lets every local-image surface share cache and error behavior.
+
+---
+
 ### Filter non-rendering cards before building the display sequence
 
 Cards whose rendered Markdown is empty (for example, whitespace-only assistant

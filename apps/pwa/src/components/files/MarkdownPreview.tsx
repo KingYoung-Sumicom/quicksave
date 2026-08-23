@@ -1,20 +1,17 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { type ReactNode } from 'react';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeKatex from 'rehype-katex';
 import 'highlight.js/styles/github-dark-dimmed.css';
 import 'katex/dist/katex.min.css';
-import type { FilesReadResponsePayload } from '@sumicom/quicksave-shared';
-import { useFileOps } from '../../hooks/useFileOps';
-import { getBusForAgent } from '../../lib/busRegistry';
 import { normalizeLatexDelimiters } from '../../lib/markdownMath';
 import { useFilePreviewStore } from '../../stores/filePreviewStore';
-import { Spinner } from '../ui/Spinner';
 import { CodeBlock } from '../ui/CodeBlock';
+import { isDirectImageSource, isLocalFileUrl, LocalFileImage } from '../chat/LocalFileImage';
 
 /** Inline-code paths and link hrefs that look like file paths route to the
  *  preview modal. Matches `ChatMarkdown`'s behaviour. */
@@ -48,6 +45,11 @@ export function MarkdownPreview({
       <ReactMarkdown
         remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
         rehypePlugins={[[rehypeKatex, { strict: false }], rehypeHighlight]}
+        urlTransform={(url, key, node) => (
+          key === 'src' && node.tagName === 'img' && isLocalFileUrl(url)
+            ? url
+            : defaultUrlTransform(url)
+        )}
         components={{
           h1: ({ children }) => <h1 className="text-2xl font-semibold mt-4 mb-3 text-slate-100 border-b border-slate-700 pb-1">{children}</h1>,
           h2: ({ children }) => <h2 className="text-xl font-semibold mt-4 mb-2 text-slate-100 border-b border-slate-700 pb-1">{children}</h2>,
@@ -75,7 +77,7 @@ export function MarkdownPreview({
             const url = typeof href === 'string' ? href : '';
             const linkClass = 'text-blue-400 hover:text-blue-300 underline transition-colors';
             // External — open in new tab.
-            if (url && EXTERNAL_SCHEME_RE.test(url)) {
+            if (url && isDirectImageSource(url)) {
               return (
                 <a {...rest} href={url} target="_blank" rel="noopener noreferrer" className={linkClass}>
                   {children}
@@ -130,7 +132,7 @@ export function MarkdownPreview({
               return <img src={url} alt={alt ?? ''} title={title} className="max-w-full h-auto rounded" />;
             }
             if (!url) return <span className="text-slate-500 italic">[image]</span>;
-            return <MarkdownImage dir={dir} cwd={cwd} src={url} alt={alt ?? ''} title={title} agentId={agentId} />;
+            return <LocalFileImage baseDir={dir} cwd={cwd} src={url} alt={alt ?? ''} title={title} agentId={agentId} />;
           },
         }}
       >
@@ -174,91 +176,6 @@ function FileLink({
   );
 }
 
-function MarkdownImage({
-  dir,
-  cwd,
-  src,
-  alt,
-  title,
-  agentId,
-}: {
-  dir: string;
-  cwd: string;
-  src: string;
-  alt: string;
-  title?: string;
-  agentId: string;
-}) {
-  const getBus = useCallback(() => getBusForAgent(agentId), [agentId]);
-  const { readFile } = useFileOps(getBus, { queueWhileDisconnected: false });
-  const [state, setState] = useState<
-    | { kind: 'loading' }
-    | { kind: 'ok'; url: string }
-    | { kind: 'error'; message: string }
-  >({ kind: 'loading' });
-  const reqId = useRef(0);
-
-  // Strip query/hash before resolving — the agent doesn't understand them
-  // and the FS path is what we need.
-  const absolutePath = resolveAgainst(dir, stripQuery(src));
-
-  useEffect(() => {
-    setState({ kind: 'loading' });
-    const myId = ++reqId.current;
-
-    // SVG is text — read normally. The browser can render the markup
-    // straight as a data URL.
-    const isSvg = /\.svg(\?|#|$)/i.test(src);
-
-    readFile({ cwd, path: absolutePath, allowImage: !isSvg })
-      .then((res: FilesReadResponsePayload) => {
-        if (myId !== reqId.current) return;
-        if (!res.success) {
-          setState({ kind: 'error', message: res.error ?? 'Failed to load image' });
-          return;
-        }
-        if (res.kind === 'image' && res.content && res.encoding === 'base64' && res.mimeType) {
-          setState({ kind: 'ok', url: `data:${res.mimeType};base64,${res.content}` });
-          return;
-        }
-        if (isSvg && res.kind === 'text' && typeof res.content === 'string') {
-          const encoded = encodeURIComponent(res.content);
-          setState({ kind: 'ok', url: `data:image/svg+xml;utf8,${encoded}` });
-          return;
-        }
-        if (res.kind === 'oversized') {
-          setState({ kind: 'error', message: 'Image exceeds the 16 MB preview cap' });
-          return;
-        }
-        setState({ kind: 'error', message: 'Unsupported image format' });
-      })
-      .catch((err) => {
-        if (myId !== reqId.current) return;
-        setState({
-          kind: 'error',
-          message: err instanceof Error ? err.message : String(err),
-        });
-      });
-  }, [cwd, absolutePath, src, readFile]);
-
-  if (state.kind === 'loading') {
-    return (
-      <span className="inline-flex items-center gap-2 text-xs text-slate-500 my-1">
-        <Spinner size="w-3 h-3" color="border-slate-400" />
-        loading image…
-      </span>
-    );
-  }
-  if (state.kind === 'error') {
-    return (
-      <span className="inline-block text-xs text-amber-400 my-1" title={absolutePath}>
-        [image: {alt || src} — {state.message}]
-      </span>
-    );
-  }
-  return <img src={state.url} alt={alt} title={title ?? alt} className="max-w-full h-auto rounded my-2" />;
-}
-
 function dirnameOf(absPath: string): string {
   const i = absPath.lastIndexOf('/');
   if (i <= 0) return '/';
@@ -293,11 +210,4 @@ function collapseDots(p: string): string {
   }
   const joined = out.join('/');
   return joined || '/';
-}
-
-function stripQuery(url: string): string {
-  const q = url.indexOf('?');
-  const h = url.indexOf('#');
-  const idx = q < 0 ? h : h < 0 ? q : Math.min(q, h);
-  return idx < 0 ? url : url.slice(0, idx);
 }
