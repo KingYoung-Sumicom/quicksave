@@ -94,6 +94,14 @@ export type MessageType =
   | 'agent:restart:response'
   | 'agent:probe'
   | 'agent:probe:response'
+  | 'opencode:config-snapshot'
+  | 'opencode:config-snapshot:response'
+  | 'opencode:mcp-upsert'
+  | 'opencode:mcp-upsert:response'
+  | 'opencode:mcp-remove'
+  | 'opencode:mcp-remove:response'
+  | 'opencode:websearch-update'
+  | 'opencode:websearch-update:response'
   // systemd user-unit (auto-start at login) — Linux only
   | 'systemd:status'
   | 'systemd:status:response'
@@ -759,6 +767,62 @@ export interface AgentProviderInfo {
 export interface AgentProbePayload {
   availableProviders: AgentProviderInfo[];
 }
+
+// OpenCode machine configuration (read-only snapshot). This intentionally
+// contains summaries only: credential values and raw config documents never
+// cross the agent/PWA boundary.
+export interface OpenCodeConfigSnapshotPayload {
+  available: boolean;
+  version?: string;
+  schema?: 'v1' | 'v2' | 'unknown';
+  defaultModel?: string;
+  smallModel?: string;
+  websearch: { exaEnabled: boolean; permission: 'ask' | 'allow' | 'deny' | 'unknown' };
+  mcp: Array<{
+    name: string;
+    type?: 'local' | 'remote';
+    enabled?: boolean;
+    status?: string;
+    toolCount?: number;
+    managed?: boolean;
+  }>;
+  providers: Array<{
+    id: string;
+    name: string;
+    connected: boolean;
+    modelCount: number;
+    /** Provider-exposed model metadata; does not contain credentials. */
+    models: Array<{ id: string; name: string }>;
+  }>;
+  agents: Array<{
+    name: string;
+    description?: string;
+    mode?: string;
+    model?: string;
+  }>;
+  skills: Array<{ name: string; location?: string }>;
+  commands: Array<{ name: string; description?: string }>;
+  plugins: Array<{ name: string; managed?: boolean }>;
+  error?: string;
+}
+
+export type OpenCodeConfigSnapshotRequestPayload = Record<string, never>;
+export type OpenCodeConfigSnapshotResponsePayload = OpenCodeConfigSnapshotPayload;
+
+export interface OpenCodeMcpConfigInput {
+  type: 'local' | 'remote';
+  command?: string[];
+  url?: string;
+  environment?: Record<string, string>;
+  headers?: Record<string, string>;
+  enabled?: boolean;
+  timeout?: number;
+}
+export interface OpenCodeMcpUpsertRequestPayload { name: string; config: OpenCodeMcpConfigInput; }
+export interface OpenCodeMcpRemoveRequestPayload { name: string; }
+export interface OpenCodeMcpMutationResponsePayload { success: boolean; error?: string; }
+export interface OpenCodeWebSearchUpdateRequestPayload { exaEnabled: boolean; }
+export interface OpenCodeWebSearchUpdateResponsePayload { success: boolean; error?: string; }
 
 /**
  * Machine-level voice capability the agent advertises in the handshake ack.

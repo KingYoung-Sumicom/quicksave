@@ -185,6 +185,16 @@ describe('OpenCode Quicksave MCP injection', () => {
     expect(config.permission['*']).toBe('ask');
     expect(config.permission['mcp__quicksave-sandbox__UpdateSessionStatus']).toBe('allow');
   });
+
+  it('enables built-in Exa only when the persistent machine setting asks for it', () => {
+    const enabled = buildOpenCodeServerEnv({}, __testDir, true);
+    const enabledConfig = JSON.parse(enabled.OPENCODE_CONFIG_CONTENT!) as Record<string, any>;
+    expect(enabled.OPENCODE_ENABLE_EXA).toBe('1');
+    expect(enabledConfig.permission.websearch).toBe('ask');
+
+    const disabled = buildOpenCodeServerEnv({ OPENCODE_ENABLE_EXA: '1' }, __testDir, false);
+    expect(disabled.OPENCODE_ENABLE_EXA).toBeUndefined();
+  });
 });
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────

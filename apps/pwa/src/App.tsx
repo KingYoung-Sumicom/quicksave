@@ -41,6 +41,7 @@ import {
   type ProjectListSummariesResponsePayload,
   type TerminalSummary,
   type TerminalsUpdate,
+  type OpenCodeConfigSnapshotResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { useCodexLoginStore } from './stores/codexLoginStore';
 import { useClaudeAuthStore } from './stores/claudeAuthStore';
@@ -55,6 +56,7 @@ import { buildOfferMessage, getCurrentSubscription, notificationPermission } fro
 import { GitIdentityModal } from './components/GitIdentityModal';
 import { SettingsPage } from './components/SettingsPage';
 import { MachineInfoPage } from './components/MachineInfoPage';
+import { OpenCodeConfigPage } from './components/OpenCodeConfigPage';
 import { ArchivedSessionsPage } from './components/ArchivedSessionsPage';
 import { AddNewPage } from './components/AddNewPage';
 import { JoinGroupPage } from './routes/JoinGroupPage';
@@ -982,6 +984,7 @@ function AppContent() {
                 <Route path="/p/:projectId/files/*" element={<FileBrowserPage />} />
                 <Route path="/add" element={<AddNewPage clientRef={clientRef} onConnect={handleConnect} />} />
                 <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={hasConnectedAgent ? sendApiKeyToConnectedAgents : undefined} onPushOffer={handlePushOffer} />} />
+                <Route path="/settings/m/:agentId/opencode" element={<OpenCodeConfigRoute />} />
                 <Route path="/settings/m/:agentId" element={<MachineInfoRoute clientRef={clientRef} />} />
                 <Route path="/settings/m/:agentId/p/:projectId/archived" element={<ArchivedSessionsPage />} />
                 <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
@@ -1003,6 +1006,7 @@ function AppContent() {
           <Route path="/p/:projectId/files/*" element={<FileBrowserPage />} />
           <Route path="/add" element={<AddNewPage clientRef={clientRef} onConnect={handleConnect} />} />
           <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={hasConnectedAgent ? sendApiKeyToConnectedAgents : undefined} onPushOffer={handlePushOffer} />} />
+          <Route path="/settings/m/:agentId/opencode" element={<OpenCodeConfigRoute />} />
           <Route path="/settings/m/:agentId" element={<MachineInfoRoute clientRef={clientRef} />} />
           <Route path="/settings/m/:agentId/p/:projectId/archived" element={<ArchivedSessionsPage />} />
           <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
@@ -1256,6 +1260,7 @@ function MachineInfoRoute({
   clientRef: React.RefObject<WebSocketClient | null>;
 }) {
   const { agentId } = useParams<{ agentId: string }>();
+  const navigate = useNavigate();
   const agentBus = useCallback(
     (): MessageBusClient | null => (agentId ? getBusForAgent(agentId) : null),
     [agentId],
@@ -1273,7 +1278,6 @@ function MachineInfoRoute({
     uninstallSystemdUnit,
   } = useGitOperations(clientRef, agentBus, getTargetAgentId);
   const { deleteProject, listProjectSummaries } = useClaudeOperations(agentBus);
-
   const handleDeleteProject = useCallback(async (cwd: string): Promise<ProjectDeleteResponsePayload | null> => {
     const result = await deleteProject(cwd);
     if (result?.success && agentId) {
@@ -1298,8 +1302,31 @@ function MachineInfoRoute({
       onGetSystemdStatus={getSystemdStatus}
       onInstallSystemdUnit={installSystemdUnit}
       onUninstallSystemdUnit={uninstallSystemdUnit}
+      onOpenOpenCodeConfig={() => navigate(`/settings/m/${agentId}/opencode`)}
     />
   );
+}
+
+function OpenCodeConfigRoute() {
+  const { agentId } = useParams<{ agentId: string }>();
+  const getSnapshot = useCallback(async (): Promise<OpenCodeConfigSnapshotResponsePayload> => {
+    const bus = agentId ? getBusForAgent(agentId) : null;
+    if (!bus) throw new Error('Not connected');
+    return bus.command<OpenCodeConfigSnapshotResponsePayload>(
+      'opencode:config-snapshot', {}, { timeoutMs: 30_000, queueWhileDisconnected: false },
+    );
+  }, [agentId]);
+  const upsertMcp = useCallback(async (name: string, config: { type: 'local' | 'remote'; command?: string[]; url?: string; headers?: Record<string, string> }) => {
+    const bus = agentId ? getBusForAgent(agentId) : null;
+    if (!bus) throw new Error('Not connected');
+    return bus.command<{ success: boolean; error?: string }>('opencode:mcp-upsert', { name, config }, { timeoutMs: 30_000, queueWhileDisconnected: false });
+  }, [agentId]);
+  const setWebSearch = useCallback(async (exaEnabled: boolean) => {
+    const bus = agentId ? getBusForAgent(agentId) : null;
+    if (!bus) throw new Error('Not connected');
+    return bus.command<{ success: boolean; error?: string }>('opencode:websearch-update', { exaEnabled }, { timeoutMs: 30_000, queueWhileDisconnected: false });
+  }, [agentId]);
+  return <OpenCodeConfigPage onGetSnapshot={getSnapshot} onUpsertMcp={upsertMcp} onSetWebSearch={setWebSearch} />;
 }
 
 function GitIdentityModalForAgent({

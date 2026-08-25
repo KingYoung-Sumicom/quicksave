@@ -106,6 +106,10 @@ export const REQUEST_RESPONSE_MAP: Record<string, string> = {
   'claude:get-messages': 'claude:get-messages:response',
   'claude:set-preferences': 'claude:set-preferences:response',
   'voice:log-event': 'voice:log-event:response',
+  'opencode:config-snapshot': 'opencode:config-snapshot:response',
+  'opencode:mcp-upsert': 'opencode:mcp-upsert:response',
+  'opencode:mcp-remove': 'opencode:mcp-remove:response',
+  'opencode:websearch-update': 'opencode:websearch-update:response',
   // Session registry (history)
   'session:update-history': 'session:update-history:response',
   'session:delete-history': 'session:delete-history:response',

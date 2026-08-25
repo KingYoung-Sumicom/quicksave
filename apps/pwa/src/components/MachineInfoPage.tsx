@@ -25,6 +25,7 @@ interface MachineInfoPageProps {
   onGetSystemdStatus?: () => Promise<SystemdStatusResponsePayload>;
   onInstallSystemdUnit?: () => Promise<SystemdInstallResponsePayload>;
   onUninstallSystemdUnit?: () => Promise<SystemdUninstallResponsePayload>;
+  onOpenOpenCodeConfig?: () => void;
 }
 
 /**
@@ -40,6 +41,7 @@ export function MachineInfoPage({
   onGetSystemdStatus,
   onInstallSystemdUnit,
   onUninstallSystemdUnit,
+  onOpenOpenCodeConfig,
 }: MachineInfoPageProps) {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
@@ -175,6 +177,25 @@ export function MachineInfoPage({
               <p className="text-xs text-slate-400 font-mono truncate">{machine.agentId}</p>
             </div>
           </div>
+
+          <section className="space-y-2">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">OpenCode</h3>
+            <button
+              type="button"
+              disabled={!isOnline || !onOpenOpenCodeConfig}
+              onClick={onOpenOpenCodeConfig}
+              className="w-full flex items-center justify-between gap-3 p-3 rounded-lg bg-slate-700/30 hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed text-left transition-colors"
+            >
+              <span>
+                <span className="block text-sm text-slate-200">Configuration</span>
+                <span className="block mt-0.5 text-xs text-slate-500">MCP, providers, agents, skills, commands and plugins</span>
+              </span>
+              <svg className="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+            {!isOnline && <p className="text-xs text-slate-500">Connect to this machine to inspect OpenCode configuration.</p>}
+          </section>
 
           {/* Projects section — first thing the user sees, since this is the
               page's main interactive content. Tapping a row goes to the

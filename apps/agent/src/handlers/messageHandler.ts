@@ -169,6 +169,12 @@ import {
   SystemdStatusResponsePayload,
   SystemdInstallResponsePayload,
   SystemdUninstallResponsePayload,
+  OpenCodeConfigSnapshotResponsePayload,
+  OpenCodeMcpUpsertRequestPayload,
+  OpenCodeMcpRemoveRequestPayload,
+  OpenCodeMcpMutationResponsePayload,
+  OpenCodeWebSearchUpdateRequestPayload,
+  OpenCodeWebSearchUpdateResponsePayload,
 } from '@sumicom/quicksave-shared';
 import {
   getSystemdStatus,
@@ -178,7 +184,7 @@ import {
 } from '../service/systemdUnit.js';
 import { GitOperations } from '../git/operations.js';
 import type { PushClient } from '../service/pushClient.js';
-import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, removeManagedRepo, addManagedCodingPath, removeManagedCodingPath } from '../config.js';
+import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, removeManagedRepo, addManagedCodingPath, removeManagedCodingPath, getOpenCodeEnableExa, setOpenCodeEnableExa } from '../config.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';
 import { CommitSummaryCliService, CommitSummaryCliError } from '../ai/commitSummaryCli.js';
 import { CommitSummaryStateStore } from '../ai/commitSummaryStore.js';
@@ -203,7 +209,7 @@ import { getFileBrowser } from '../files/fileBrowser.js';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { enrichEntry } from '../ai/enrichEntry.js';
 import { getEventStore } from '../storage/eventStore.js';
-import { readdir, stat, readFile } from 'fs/promises';
+import { readdir, stat, readFile, mkdir, writeFile, rename } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { homedir, platform as osPlatform } from 'os';
@@ -216,6 +222,155 @@ const VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
 // every PWA reload; short enough that plan upgrades / model rollouts surface
 // within the same session day. Force-refreshes still bypass the TTL.
 const CODEX_MODELS_TTL_MS = 30 * 60 * 1000;
+
+function openCodeGlobalConfigPath(): string {
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode', 'opencode.json');
+}
+
+async function updateOpenCodeMcpConfig(name: string, next: Record<string, unknown> | null): Promise<void> {
+  const path = openCodeGlobalConfigPath();
+  const { parseOpenCodeConfigContent } = await import('../ai/openCodeServer.js');
+  let document: Record<string, unknown> = {};
+  try { document = parseOpenCodeConfigContent(await readFile(path, 'utf8')); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  const mcp = isRecord(document.mcp) ? { ...document.mcp } : {};
+  // Current deployed OpenCode is V1. Preserve V2's nested `servers` shape
+  // when a newer agent uses it.
+  if (isRecord(mcp.servers)) {
+    const servers = { ...mcp.servers };
+    if (next) servers[name] = next; else delete servers[name];
+    mcp.servers = servers;
+  } else if (next) mcp[name] = next; else delete mcp[name];
+  document.mcp = mcp;
+  await mkdir(dirname(path), { recursive: true });
+  const temp = `${path}.quicksave-${process.pid}-${Date.now()}`;
+  await writeFile(temp, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 });
+  await rename(temp, path);
+}
+
+type OpenCodeSnapshotInput = {
+  version: string;
+  config: Record<string, unknown>;
+  mcpStatus: Record<string, Record<string, unknown>>;
+  providers: {
+    all: Array<{ id: string; name: string; models: Record<string, unknown> }>;
+    default: Record<string, string>;
+    connected: string[];
+  };
+  agents: Array<Record<string, unknown>>;
+  commands: Array<Record<string, unknown>>;
+  exaEnabled: boolean;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const asString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() ? value : undefined;
+
+function configDocument(config: Record<string, unknown>): Record<string, unknown> {
+  return isRecord(config.config) ? config.config : config;
+}
+
+function configEntries(value: unknown): Array<[string, Record<string, unknown>]> {
+  if (isRecord(value)) return Object.entries(value).filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1]));
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => {
+      if (!isRecord(item)) return [];
+      const name = asString(item.name) ?? asString(item.id);
+      return name ? [[name, item] as [string, Record<string, unknown>]] : [];
+    });
+  }
+  return [];
+}
+
+function emptyOpenCodeSnapshot(error?: string): OpenCodeConfigSnapshotResponsePayload {
+  return { available: false, websearch: { exaEnabled: getOpenCodeEnableExa(), permission: getOpenCodeEnableExa() ? 'ask' : 'unknown' }, mcp: [], providers: [], agents: [], skills: [], commands: [], plugins: [], error };
+}
+
+/** Convert version-skewed OpenCode server/config responses into safe display
+ * data. In particular we omit local commands, URLs, headers, prompts and all
+ * arbitrary config values: they may include secrets or sensitive paths. */
+function summarizeOpenCodeConfig(input: OpenCodeSnapshotInput): OpenCodeConfigSnapshotResponsePayload {
+  const document = configDocument(input.config);
+  const schema: 'v1' | 'v2' | 'unknown' =
+    document.providers || document.agents || document.permissions ? 'v2'
+      : document.provider || document.agent || document.permission ? 'v1'
+        : 'unknown';
+  const mcpConfig = isRecord(document.mcp) && isRecord(document.mcp.servers)
+    ? document.mcp.servers
+    : document.mcp;
+  const mcpByName = new Map(configEntries(mcpConfig));
+  const mcpNames = new Set([...Object.keys(input.mcpStatus), ...mcpByName.keys()]);
+  const mcp = [...mcpNames].sort().map((name) => {
+    const config = mcpByName.get(name);
+    const status = input.mcpStatus[name] ?? {};
+    const typeValue = asString(config?.type);
+    const rawStatus = asString(status.status) ?? asString(status.state);
+    const toolList = Array.isArray(status.tools) ? status.tools : undefined;
+    return {
+      name,
+      ...(typeValue === 'local' || typeValue === 'remote' ? { type: typeValue as 'local' | 'remote' } : {}),
+      ...(typeof config?.enabled === 'boolean' ? { enabled: config.enabled } : typeof config?.disabled === 'boolean' ? { enabled: !config.disabled } : {}),
+      ...(rawStatus ? { status: rawStatus } : {}),
+      ...(toolList ? { toolCount: toolList.length } : typeof status.toolCount === 'number' ? { toolCount: status.toolCount } : {}),
+      ...(name.toLowerCase().includes('quicksave') ? { managed: true } : {}),
+    };
+  });
+  const providers = input.providers.all.map((provider) => ({
+    id: provider.id,
+    name: provider.name,
+    connected: input.providers.connected.includes(provider.id),
+    modelCount: Object.keys(provider.models ?? {}).length,
+    models: Object.entries(provider.models ?? {}).map(([id, model]) => ({
+      id,
+      name: isRecord(model) ? asString(model.name) ?? id : id,
+    })).sort((a, b) => a.name.localeCompare(b.name)),
+  }));
+  const agentEntries: Array<Record<string, unknown>> = input.agents.length > 0
+    ? input.agents
+    : configEntries(document.agents ?? document.agent).map(([name, value]) => ({ name, ...value }));
+  const agents = agentEntries.flatMap((agent) => {
+    const name = asString(agent.name) ?? asString(agent.id);
+    if (!name) return [];
+    return [{
+      name,
+      ...(asString(agent.description) ? { description: asString(agent.description) } : {}),
+      ...(asString(agent.mode) ? { mode: asString(agent.mode) } : {}),
+      ...(asString(agent.model) ? { model: asString(agent.model) } : {}),
+    }];
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  const skillsValue = document.skills ?? document.skill;
+  const skills = Array.isArray(skillsValue)
+    ? skillsValue.flatMap((skill) => typeof skill === 'string' ? [{ name: skill }] : isRecord(skill) && asString(skill.name) ? [{ name: asString(skill.name)!, ...(asString(skill.location) ? { location: asString(skill.location) } : {}) }] : [])
+    : configEntries(skillsValue).map(([name, value]) => ({ name, ...(asString(value.location) ? { location: asString(value.location) } : {}) }));
+  const commandEntries: Array<Record<string, unknown>> = input.commands.length > 0
+    ? input.commands
+    : configEntries(document.commands ?? document.command).map(([name, value]) => ({ name, ...value }));
+  const commands = commandEntries.flatMap((command) => {
+    const name = asString(command.name) ?? asString(command.id);
+    return name ? [{ name, ...(asString(command.description) ? { description: asString(command.description) } : {}) }] : [];
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  const pluginValue = document.plugin ?? document.plugins;
+  const plugins = (Array.isArray(pluginValue) ? pluginValue : []).flatMap((plugin) => {
+    const name = typeof plugin === 'string' ? plugin : isRecord(plugin) ? asString(plugin.name) : undefined;
+    return name ? [{ name, ...(name.toLowerCase().includes('quicksave') ? { managed: true } : {}) }] : [];
+  });
+  return {
+    available: true,
+    websearch: { exaEnabled: input.exaEnabled, permission: input.exaEnabled ? 'ask' : 'unknown' },
+    version: input.version,
+    schema,
+    ...(asString(document.model) ? { defaultModel: asString(document.model) } : {}),
+    ...(asString(document.small_model) ? { smallModel: asString(document.small_model) } : asString(document.smallModel) ? { smallModel: asString(document.smallModel) } : {}),
+    mcp,
+    providers,
+    agents,
+    skills,
+    commands,
+    plugins,
+  };
+}
 
 /** Coerce `os.platform()` into the narrow union the PWA expects. Anything
  *  outside the three first-class platforms gets `'other'` so the field is
@@ -841,6 +996,14 @@ export class MessageHandler {
           return this.handleAgentRestart(message);
         case 'agent:probe':
           return this.handleAgentProbe();
+        case 'opencode:config-snapshot':
+          return this.handleOpenCodeConfigSnapshot(message);
+        case 'opencode:mcp-upsert':
+          return this.handleOpenCodeMcpUpsert(message as Message<OpenCodeMcpUpsertRequestPayload>);
+        case 'opencode:mcp-remove':
+          return this.handleOpenCodeMcpRemove(message as Message<OpenCodeMcpRemoveRequestPayload>);
+        case 'opencode:websearch-update':
+          return this.handleOpenCodeWebSearchUpdate(message as Message<OpenCodeWebSearchUpdateRequestPayload>);
         case 'systemd:status':
           return this.handleSystemdStatus(message);
         case 'systemd:install':
@@ -2117,6 +2280,119 @@ export class MessageHandler {
       'agent:probe:response',
       { availableProviders },
     );
+  }
+
+  /**
+   * A deliberately reduced, read-only OpenCode configuration view. Raw config
+   * may contain API keys or header values, so it must never be returned to the
+   * PWA. This snapshot is also schema-tolerant while agents transition from
+   * OpenCode v1 to v2.
+   */
+  private async handleOpenCodeConfigSnapshot(
+    message: Message,
+  ): Promise<Message<OpenCodeConfigSnapshotResponsePayload>> {
+    try {
+      const { getOpenCodeServer } = await import('../ai/openCodeServer.js');
+      const server = getOpenCodeServer();
+      const directory = process.cwd();
+      const [health, config, mcpStatus, providerResult, agents, commands] = await Promise.all([
+        server.getHealth(),
+        server.getConfig(directory),
+        server.listMcp(directory),
+        server.listProviders(directory),
+        server.listAgents(directory),
+        server.listCommands(directory),
+      ]);
+      const snapshot = summarizeOpenCodeConfig({
+        version: health.version,
+        config,
+        mcpStatus,
+        providers: providerResult,
+        agents,
+        commands,
+        exaEnabled: getOpenCodeEnableExa(),
+      });
+      const response = createMessage<OpenCodeConfigSnapshotResponsePayload>(
+        'opencode:config-snapshot:response', snapshot,
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<OpenCodeConfigSnapshotResponsePayload>(
+        'opencode:config-snapshot:response',
+        emptyOpenCodeSnapshot(error instanceof Error ? error.message : 'Failed to load OpenCode configuration'),
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleOpenCodeMcpUpsert(
+    message: Message<OpenCodeMcpUpsertRequestPayload>,
+  ): Promise<Message<OpenCodeMcpMutationResponsePayload>> {
+    try {
+      const name = message.payload.name.trim();
+      const config = message.payload.config;
+      if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new Error('MCP name may only contain letters, numbers, dot, underscore, and dash');
+      if (config.type === 'local' && (!config.command || config.command.length === 0)) throw new Error('Local MCP requires a command');
+      if (config.type === 'remote' && !config.url) throw new Error('Remote MCP requires a URL');
+      await updateOpenCodeMcpConfig(name, config as unknown as Record<string, unknown>);
+      // Apply additions/updates to the already-running server immediately.
+      const { getOpenCodeServer } = await import('../ai/openCodeServer.js');
+      await getOpenCodeServer().addMcp(name, config as unknown as Record<string, unknown>, process.cwd());
+      const response = createMessage<OpenCodeMcpMutationResponsePayload>('opencode:mcp-upsert:response', { success: true });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<OpenCodeMcpMutationResponsePayload>('opencode:mcp-upsert:response', { success: false, error: error instanceof Error ? error.message : 'Failed to save MCP' });
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleOpenCodeMcpRemove(
+    message: Message<OpenCodeMcpRemoveRequestPayload>,
+  ): Promise<Message<OpenCodeMcpMutationResponsePayload>> {
+    try {
+      const name = message.payload.name.trim();
+      if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new Error('Invalid MCP name');
+      if (name.toLowerCase().includes('quicksave')) throw new Error('Quicksave-managed MCP cannot be removed');
+      await updateOpenCodeMcpConfig(name, null);
+      const response = createMessage<OpenCodeMcpMutationResponsePayload>('opencode:mcp-remove:response', { success: true });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<OpenCodeMcpMutationResponsePayload>('opencode:mcp-remove:response', { success: false, error: error instanceof Error ? error.message : 'Failed to remove MCP' });
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  /** Persist the built-in Exa switch before restarting the OpenCode child.
+   * It is deliberately agent-owned rather than part of the OpenCode JSONC,
+   * so it remains per-machine and does not expose a raw config editor. */
+  private async handleOpenCodeWebSearchUpdate(
+    message: Message<OpenCodeWebSearchUpdateRequestPayload>,
+  ): Promise<Message<OpenCodeWebSearchUpdateResponsePayload>> {
+    try {
+      const enabled = message.payload.exaEnabled;
+      if (typeof enabled !== 'boolean') throw new Error('exaEnabled must be a boolean');
+      setOpenCodeEnableExa(enabled);
+      const { getOpenCodeServer } = await import('../ai/openCodeServer.js');
+      await getOpenCodeServer().restart();
+      const response = createMessage<OpenCodeWebSearchUpdateResponsePayload>(
+        'opencode:websearch-update:response', { success: true },
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<OpenCodeWebSearchUpdateResponsePayload>(
+        'opencode:websearch-update:response',
+        { success: false, error: error instanceof Error ? error.message : 'Failed to update web search' },
+      );
+      response.id = message.id;
+      return response;
+    }
   }
 
   // ==========================================================================

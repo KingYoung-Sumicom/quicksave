@@ -60,6 +60,10 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   'agent:update',
   'agent:restart',
   'agent:probe',
+  'opencode:config-snapshot',
+  'opencode:mcp-upsert',
+  'opencode:mcp-remove',
+  'opencode:websearch-update',
   // systemd user-unit (Linux only — agent returns available:false elsewhere)
   'systemd:status',
   'systemd:install',

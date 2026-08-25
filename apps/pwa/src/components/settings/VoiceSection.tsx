@@ -8,6 +8,7 @@ import { ErrorBox } from '../ui/ErrorBox';
 import { getVoiceConfig, saveVoiceConfig } from '../../lib/secureStorage';
 import { listModelsViaAgent, filterVoiceModels } from '../../lib/voiceTranscription';
 import { useConnectionStore } from '../../stores/connectionStore';
+import { MaskedSecretInput } from '../ui/MaskedSecretInput';
 import { VoiceRtcDebugPanel } from './VoiceRtcDebugPanel';
 import type { VoiceConfig } from '@sumicom/quicksave-shared';
 
@@ -352,14 +353,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
           </span>
         )}
       </div>
-      <input
-        type="password"
-        value={apiKey}
-        onChange={(e) => setApiKey(e.target.value)}
-        placeholder={keyPlaceholder}
-        className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-        disabled={isSaving}
-      />
+      <MaskedSecretInput value={apiKey} onChange={setApiKey} placeholder={keyPlaceholder} disabled={isSaving} autoComplete="new-password" />
 
       <p className="text-xs text-slate-400">
         <FormattedMessage id="settings.voice.storageNote" />

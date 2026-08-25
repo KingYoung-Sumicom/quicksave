@@ -75,6 +75,29 @@ vi.mock('../service/systemdUnit.js', () => ({
   // names the handler imports need to exist.
 }));
 
+const openCodeServerMock = {
+  getHealth: vi.fn(async () => ({ healthy: true, version: '1.18.8' })),
+  getConfig: vi.fn(async () => ({
+    provider: { vllm: { options: { apiKey: 'must-not-leave-agent' } } },
+    agent: { build: { mode: 'primary', model: 'vllm/model-a' } },
+    mcp: { demo: { type: 'local', enabled: true } },
+    skills: ['review'],
+    command: { deploy: { description: 'Deploy safely' } },
+    plugin: ['example-plugin'],
+    model: 'vllm/model-a',
+  })),
+  listMcp: vi.fn(async () => ({ demo: { status: 'connected', tools: [{}, {}] } })),
+  listProviders: vi.fn(async () => ({
+    all: [{ id: 'vllm', name: 'Local vLLM', models: { 'model-a': {} } }],
+    default: {}, connected: ['vllm'],
+  })),
+  listAgents: vi.fn(async () => [{ name: 'build', description: 'Build things', mode: 'primary', model: 'vllm/model-a' }]),
+  listCommands: vi.fn(async () => [{ name: 'deploy', description: 'Deploy safely' }]),
+};
+vi.mock('../ai/openCodeServer.js', () => ({
+  getOpenCodeServer: vi.fn(() => openCodeServerMock),
+}));
+
 const { MessageHandler } = await import('./messageHandler.js');
 const { resetSessionRegistry } = await import('../ai/sessionRegistry.js');
 const { setQuicksaveDir } = await import('../service/singleton.js');
@@ -138,6 +161,26 @@ describe('MessageHandler — systemd verbs', () => {
       isActive: true,
       lingerEnabled: true,
     });
+  });
+
+  it('opencode:config-snapshot returns a sanitized V1 display summary', async () => {
+    const req = createMessage('opencode:config-snapshot', {});
+    const res = await handler!.handleMessage(req);
+    expect(res?.type).toBe('opencode:config-snapshot:response');
+    expect(res?.id).toBe(req.id);
+    expect(res?.payload).toMatchObject({
+      available: true,
+      version: '1.18.8',
+      schema: 'v1',
+      defaultModel: 'vllm/model-a',
+      mcp: [{ name: 'demo', type: 'local', enabled: true, status: 'connected', toolCount: 2 }],
+      providers: [{ id: 'vllm', connected: true, modelCount: 1, models: [{ id: 'model-a', name: 'model-a' }] }],
+      agents: [{ name: 'build', mode: 'primary' }],
+      skills: [{ name: 'review' }],
+      commands: [{ name: 'deploy' }],
+      plugins: [{ name: 'example-plugin' }],
+    });
+    expect(JSON.stringify(res?.payload)).not.toContain('must-not-leave-agent');
   });
 
   it('systemd:install delegates to installUserUnit and returns its result', async () => {

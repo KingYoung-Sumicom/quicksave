@@ -21,6 +21,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import type { Attachment } from '@sumicom/quicksave-shared';
 import { getOpenCodeBin } from './openCodeProvider.js';
+import { getOpenCodeEnableExa } from '../config.js';
 import {
   DISPLAY_MARKDOWN_REPORT_TOOL,
   SANDBOX_BASH_TOOL,
@@ -43,7 +44,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Parse the JSONC accepted by OPENCODE_CONFIG_CONTENT without executing it. */
-function parseOpenCodeConfigContent(content: string): Record<string, unknown> {
+export function parseOpenCodeConfigContent(content: string): Record<string, unknown> {
   let stripped = '';
   let inString = false;
   let escaped = false;
@@ -110,6 +111,7 @@ function parseOpenCodeConfigContent(content: string): Record<string, unknown> {
 export function buildOpenCodeQuicksaveConfig(
   existingContent: string | undefined,
   ownDir = __aiDir,
+  enableExa = false,
 ): Record<string, unknown> {
   const existing = existingContent?.trim()
     ? parseOpenCodeConfigContent(existingContent)
@@ -147,6 +149,7 @@ export function buildOpenCodeQuicksaveConfig(
       [SANDBOX_BASH_TOOL]: 'allow',
       [UPDATE_SESSION_STATUS_TOOL]: 'allow',
       [DISPLAY_MARKDOWN_REPORT_TOOL]: 'allow',
+      ...(enableExa ? { websearch: 'ask' } : {}),
     },
   };
 }
@@ -154,11 +157,16 @@ export function buildOpenCodeQuicksaveConfig(
 export function buildOpenCodeServerEnv(
   env: NodeJS.ProcessEnv = process.env,
   ownDir = __aiDir,
+  enableExa = getOpenCodeEnableExa(),
 ): NodeJS.ProcessEnv {
+  // Do not inherit an unrelated shell's opt-in: this per-agent setting is
+  // authoritative and must be able to turn Exa off as well as on.
+  const { OPENCODE_ENABLE_EXA: _ignoredExa, ...baseEnv } = env;
   return {
-    ...env,
+    ...baseEnv,
+    ...(enableExa ? { OPENCODE_ENABLE_EXA: '1' } : {}),
     OPENCODE_CONFIG_CONTENT: JSON.stringify(
-      buildOpenCodeQuicksaveConfig(env.OPENCODE_CONFIG_CONTENT, ownDir),
+      buildOpenCodeQuicksaveConfig(env.OPENCODE_CONFIG_CONTENT, ownDir, enableExa),
     ),
   };
 }
@@ -593,6 +601,31 @@ class OpenCodeServer {
     }>('/provider', {}, { directory });
   }
 
+  /** Read-only configuration endpoints. The caller is responsible for
+   * reducing these raw server payloads to a safe PWA-facing snapshot. */
+  async getConfig(directory: string): Promise<Record<string, unknown>> {
+    return this.req<Record<string, unknown>>('/config', {}, { directory });
+  }
+
+  async listMcp(directory: string): Promise<Record<string, Record<string, unknown>>> {
+    return this.req<Record<string, Record<string, unknown>>>('/mcp', {}, { directory });
+  }
+
+  async addMcp(name: string, config: Record<string, unknown>, directory: string): Promise<Record<string, unknown>> {
+    return this.req<Record<string, unknown>>('/mcp', {
+      method: 'POST',
+      body: JSON.stringify({ name, config }),
+    }, { directory });
+  }
+
+  async listAgents(directory: string): Promise<Array<Record<string, unknown>>> {
+    return this.req<Array<Record<string, unknown>>>('/agent', {}, { directory });
+  }
+
+  async listCommands(directory: string): Promise<Array<Record<string, unknown>>> {
+    return this.req<Array<Record<string, unknown>>>('/command', {}, { directory });
+  }
+
   /** Shutdown the server. Idempotent.
    *
    * Awaits actual child exit. Without this, callers (notably the daemon's
@@ -632,6 +665,22 @@ class OpenCodeServer {
     }, 3_000);
     await exited;
     clearTimeout(killer);
+  }
+
+  /** Restart only the OpenCode child after a server-start environment change.
+   * Active OpenCode turns cannot survive this boundary, so notify their
+   * consumers just as an unexpected child exit would. */
+  async restart(): Promise<void> {
+    const hadServer = !!this.proc || !!this.port;
+    if (hadServer) {
+      this.broadcast({
+        id: `local-${Date.now()}`,
+        type: 'server.disposed',
+        properties: {},
+      });
+    }
+    await this.shutdown();
+    this.shuttingDown = false;
   }
 
   /** @internal for tests */
