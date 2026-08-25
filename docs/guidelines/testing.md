@@ -65,6 +65,9 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
    - Connection admission limits: repeatedly exercise every rejected handshake
      path under a deliberately small quota and assert each rejected socket
      releases its slot before the next attempt.
+   - Multi-machine selectors: seed conflicting per-agent state and assert the
+     selected project or machine wins over the mutable active-agent fallback,
+     especially for machine-local authentication and capability gates.
    - Put these in a dedicated `edgeCases.test.ts` or alongside the relevant module
 
 3. **Integration tests** — Cross-module flows with real filesystem.

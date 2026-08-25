@@ -165,6 +165,8 @@ export type MessageType =
   | 'codex:login-cancel'          // pwa-request: cancel an in-progress login attempt
   | 'codex:login-cancel:response'
   | 'codex:login-updated'         // agent-push: login state changed (success, failure, cancel)
+  | 'claude:auth-status'          // pwa-request: current Claude CLI authentication state
+  | 'claude:auth-status:response'
   // Project summaries
   | 'project:list-summaries'
   | 'project:list-summaries:response'
@@ -903,6 +905,19 @@ export interface CodexLoginCancelResponsePayload {
 }
 
 export type CodexLoginUpdatedPayload = CodexLoginState;
+
+/** Sanitized result of `claude auth status --json` for one daemon machine. */
+export interface ClaudeAuthState {
+  loggedIn: boolean;
+  /** Authentication source reported by Claude Code, e.g. `claude.ai`. */
+  method?: string;
+  /** Subscription tier without account identity fields. */
+  subscriptionType?: string;
+  /** Machine-local detection failure. Email/org/account ids are never exposed. */
+  error?: 'claude-cli-not-found' | 'auth-status-unavailable';
+}
+
+export type ClaudeAuthStatusResponsePayload = ClaudeAuthState;
 
 // Status
 export interface StatusRequestPayload {

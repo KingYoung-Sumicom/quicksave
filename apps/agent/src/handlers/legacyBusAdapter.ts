@@ -70,6 +70,7 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   'codex:login-status',
   'codex:login-cancel',
   // claude
+  'claude:auth-status',
   'claude:start',
   'claude:resume',
   'claude:interrupt',

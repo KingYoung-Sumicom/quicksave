@@ -766,6 +766,7 @@ function SessionTab({
       <div className="flex-1 overflow-y-auto">
         <NewSessionEmptyState
           cwd={project?.cwd}
+          agentId={project?.agentId}
           projectSelector={{
             projects,
             selectedProjectId,

@@ -25,6 +25,7 @@ import { ClaudePanel } from './components/ClaudePanel';
 import {
   type ClaudePreferences,
   type CodexLoginState,
+  type ClaudeAuthState,
   type CodexModelInfo,
   type CodexQuotaSnapshot,
   type CommitSummaryState,
@@ -42,6 +43,7 @@ import {
   type TerminalsUpdate,
 } from '@sumicom/quicksave-shared';
 import { useCodexLoginStore } from './stores/codexLoginStore';
+import { useClaudeAuthStore } from './stores/claudeAuthStore';
 import { useCodexQuotaStore } from './stores/codexQuotaStore';
 import { useTerminalStore } from './stores/terminalStore';
 import { registerAgentBusGetter, getBusForAgent } from './lib/busRegistry';
@@ -146,6 +148,12 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
     onSnapshot: (state) => useCodexLoginStore.getState().set(agentId, state),
     onUpdate: (state) => useCodexLoginStore.getState().set(agentId, state),
     onError: (err) => console.warn('[bus] /codex/login error:', err),
+  });
+
+  bus.subscribe<ClaudeAuthState, never>('/claude/auth', {
+    onSnapshot: (state) => useClaudeAuthStore.getState().set(agentId, state),
+    onUpdate: () => {},
+    onError: (err) => console.warn('[bus] /claude/auth error:', err),
   });
 
   // Live local Codex model list. Daemon's fs.watch on ~/.codex/models_cache.json

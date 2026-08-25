@@ -96,6 +96,7 @@ export const REQUEST_RESPONSE_MAP: Record<string, string> = {
   handshake: 'handshake:ack',
   ping: 'pong',
   // Claude Code SDK
+  'claude:auth-status': 'claude:auth-status:response',
   'claude:start': 'claude:start:response',
   'claude:resume': 'claude:resume:response',
   'claude:interrupt': 'claude:interrupt:response',

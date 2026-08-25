@@ -12,9 +12,9 @@ import { useCodexLogin } from '../../hooks/useCodexLogin';
  * modal which walks the user through the OAuth flow on whatever device
  * they have at hand.
  */
-export function CodexLoginBanner() {
+export function CodexLoginBanner({ agentId }: { agentId?: string | null }) {
   const [open, setOpen] = useState(false);
-  const { loginState } = useCodexLogin();
+  const { loginState } = useCodexLogin(agentId);
 
   // Once login completes we dismiss the modal automatically (the effect
   // inside CodexLoginModal closes itself; we keep the banner hidden too).
@@ -43,14 +43,14 @@ export function CodexLoginBanner() {
           </button>
         </div>
       </div>
-      {open && <CodexLoginModal onClose={() => setOpen(false)} />}
+      {open && <CodexLoginModal agentId={agentId} onClose={() => setOpen(false)} />}
     </>
   );
 }
 
-function CodexLoginModal({ onClose }: { onClose: () => void }) {
+function CodexLoginModal({ agentId, onClose }: { agentId?: string | null; onClose: () => void }) {
   const intl = useIntl();
-  const { loginState, start, cancel, refreshModels } = useCodexLogin();
+  const { loginState, start, cancel, refreshModels } = useCodexLogin(agentId);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);

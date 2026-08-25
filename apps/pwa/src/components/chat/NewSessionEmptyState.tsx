@@ -11,9 +11,13 @@ import type { ProjectEntry } from '../../hooks/useProjects';
 import { MachineIcon } from '../icons/MachineIcon';
 import { CodexLoginBanner } from './CodexLogin';
 import { useCodexLogin } from '../../hooks/useCodexLogin';
+import { ClaudeAuthBanner } from './ClaudeAuth';
+import { useClaudeAuth } from '../../hooks/useClaudeAuth';
 
 export interface NewSessionEmptyStateProps {
   cwd?: string;
+  /** Machine that owns the selected project. Defaults to the active machine. */
+  agentId?: string | null;
   /** When provided, replaces the static cwd line with a project dropdown. */
   projectSelector?: {
     projects: ProjectEntry[];
@@ -22,11 +26,12 @@ export interface NewSessionEmptyStateProps {
   };
 }
 
-export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptyStateProps) {
+export function NewSessionEmptyState({ cwd, agentId, projectSelector }: NewSessionEmptyStateProps) {
   const intl = useIntl();
   const { selectedAgent, selectedModel, agentPrefs, allow1mForBilledModels, setSelectedAgent, setAgentSetting, lastChosenProviders, recordProviderChoice } = useClaudeStore();
   const codexModels = useConnectionStore((s) => s.codexModels);
-  const { loginState } = useCodexLogin();
+  const { loginState } = useCodexLogin(agentId);
+  const { authState: claudeAuthState } = useClaudeAuth(agentId);
 
   const provider = getAgentProvider(selectedAgent);
   const opencodeModels = useConnectionStore((s) => s.opencodeModels);
@@ -39,6 +44,8 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
     model: selectedModel,
   };
   const showCodexLoginGate = selectedAgent === 'codex' && loginState?.loggedIn === false;
+  const showClaudeAuthGate = (selectedAgent === 'claude-code' || selectedAgent === 'claude-terminal')
+    && claudeAuthState?.loggedIn === false;
 
   const selected = projectSelector
     ? projectSelector.projects.find((p) => p.projectId === projectSelector.selectedProjectId) ?? null
@@ -84,7 +91,8 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
           onSelect={(agent) => setSelectedAgent(agent.value as Parameters<typeof setSelectedAgent>[0])}
           size="sm"
         />
-        {showCodexLoginGate && <CodexLoginBanner />}
+        {showCodexLoginGate && <CodexLoginBanner agentId={agentId} />}
+        {showClaudeAuthGate && <ClaudeAuthBanner agentId={agentId} />}
 
         {/* Provider-owned settings — model + all knobs */}
         {provider.renderSettings(values, setAgentSetting, { mode: 'new-session', dynamic, allow1mForBilledModels })}

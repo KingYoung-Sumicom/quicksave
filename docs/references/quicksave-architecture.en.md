@@ -649,6 +649,7 @@ All request-response, state subscribe, and server push between PWA and Agent go 
 | `/sessions/config` | `Record<sessionId, Record<key, ConfigValue>>` | `SessionConfigUpdatedPayload` | `claudeService.getAllSessionConfigs()` + `session-config-updated` event |
 | `/sessions/:sessionId/cards` | `CardHistoryResponse` (initial page, opaque `nextCursor`, pendingInput overlay + title) | `SessionCardsUpdate` (`{ kind: 'card', event }` or `{ kind: 'stream-end', result }`) | `claudeService.getCards()` + `card-event` / `card-stream-end` events |
 | `/sessions/:sessionId/attention` | `null` (presence-only) | — | The PWA only subscribes when on the session page and the tab is visible+focused; `subscriberCount === 0` acts as the push gate |
+| `/claude/auth` | `ClaudeAuthState` | — | Sanitized machine-local `claude auth status --json`; email, organization, and account ids never leave the daemon |
 | `/codex/quota` | `CodexQuotaSnapshot \| null` | `CodexQuotaSnapshot` | Agent-wide `CodexQuotaService`; includes reset-credit summaries when app-server provides them; stale-on-subscribe refreshes after 5 minutes, and `codex-turn-settled` force-refreshes after each Codex prompt |
 | `/terminals` | `TerminalSummary[]` | `TerminalsUpdate` (`{ kind: 'upsert', terminal }` or `{ kind: 'remove', terminalId }`) | `terminalManager.listSummaries()` + `terminals-updated` / `terminal-updated` events |
 | `/terminals/:terminalId/output` | `TerminalOutputSnapshot \| null` (scrollback + seq + size + exit status) | `TerminalOutputChunk` (next chunk of output, monotonic `seq`) | `terminalManager.outputSnapshot()` + PTY `'data'` event |
@@ -831,6 +832,7 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 | Type | Direction | Bus Equivalent | Description |
 |---|---|---|---|
 | — | Agent→PWA push | `bus.subscribe('/sessions/history')` | Full snapshot of historical sessions + incremental updates (replaces the now-removed `claude:list-sessions` command, avoiding races with `/sessions/active`) |
+| `claude:auth-status` | PWA→Agent | `bus.command('claude:auth-status', {})` | Re-run the selected machine's sanitized Claude CLI authentication check |
 | `claude:start` | PWA→Agent | `bus.command('claude:start', …)` | Start a new session. `attachmentIds?` resolved from staging |
 | `claude:resume` | PWA→Agent | `bus.command('claude:resume', …)` | Resume a session. `attachmentIds?` resolved from staging; `interruptCurrentTurn?` interrupts the active turn before sending |
 | `claude:steer-queued` | PWA→Agent | `bus.command('claude:steer-queued', …)` | Steer or expedite the first queued prompt; `interruptCurrentTurn?` cancels the active turn so the queued prompt runs next |
@@ -850,6 +852,7 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 | — | Agent→PWA push | `bus.subscribe('/sessions/:id/cards')` → `{kind: 'card', event}` / `{kind: 'stream-end', result}` | The old `claude:card-event` / `claude:card-stream-end` / `claude:user-input-request` have all moved to this path (CardBuilder carries the input request inside the pendingInput overlay) |
 | — | Agent→PWA push | `bus.subscribe('/sessions/active')` | Replaces the removed `claude:active-sessions` command and `claude:session-updated` push |
 | — | Agent→PWA push | `bus.subscribe('/preferences')` | Replaces the removed `claude:get-preferences` command and `claude:preferences-updated` push |
+| — | Agent→PWA snapshot | `bus.subscribe('/claude/auth')` | Machine-local Claude login gate; contains no account identity fields |
 | — | Agent→PWA push | `bus.subscribe('/sessions/config')` | Config dict for all sessions (replaces the removed `session:get-config` command; for one-shot reads use `bus.getSnapshot('/sessions/config')`) |
 | — | Agent→PWA push | `bus.subscribe('/repos/commit-summary')` | AI commit summary state for all repos (replaces the removed `ai:commit-summary:get` command) |
 | — | Agent→PWA push | `bus.subscribe('/codex/quota')` | Agent-wide Codex quota snapshot (`5h` / `7d` windows only). The agent owns the app-server query and refreshes after Codex turns or when a subscriber finds the cache older than 5 minutes |
@@ -987,6 +990,10 @@ For the detailed threat model and key derivation see `docs/guidelines/sync-secur
 expect a bus getter that is already scoped to the intended agent. `getAgentId`
 lets git operations compare in-flight responses against the same owner agent
 even if `WebSocketClient.activeAgentId` changes while the command is pending.
+`useCodexLogin(agentId?)` likewise accepts the selected project's owner agent;
+when omitted, it falls back to the active agent for single-machine views.
+`useClaudeAuth(agentId?)` follows the same rule and mirrors the sanitized
+`/claude/auth` snapshot. Account identity fields never leave the daemon.
 
 ```typescript
 // Session operations

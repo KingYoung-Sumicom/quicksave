@@ -68,6 +68,7 @@ import {
   type SessionHistoryUpdatedPayload,
   type SessionUpdatePayload,
   type CodexLoginState,
+  type ClaudeAuthState,
   type CodexModelInfo,
   type CodexQuotaSnapshot,
   type TerminalSummary,
@@ -522,6 +523,15 @@ export async function runDaemon(): Promise<void> {
   commitSummaryStore.on('state-updated', (state) => {
     bus.publish<CommitSummaryState>('/repos/commit-summary', state);
   });
+
+  // Claude authentication is machine-local. The snapshot runs the official
+  // `claude auth status --json` command and strips account identity fields
+  // before publishing the result to connected PWAs.
+  const claudeAuthManager = messageHandler.getClaudeAuthManager();
+  bus.onSubscribe<'/claude/auth', ClaudeAuthState, never>(
+    '/claude/auth',
+    { snapshot: () => claudeAuthManager.getStatus() },
+  );
 
   // Codex OAuth device-auth state. The PWA subscribes while the login
   // modal is open; `snap` delivers the current state (idle, in-progress,

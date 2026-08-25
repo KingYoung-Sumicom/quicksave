@@ -141,6 +141,7 @@ import {
   CodexLoginStartResponsePayload,
   CodexLoginStatusResponsePayload,
   CodexLoginCancelResponsePayload,
+  ClaudeAuthStatusResponsePayload,
   CodexQuotaSnapshot,
   ProjectListSummariesResponsePayload,
   ProjectSummary,
@@ -194,6 +195,7 @@ import { probeAudioSupport } from '../ai/voiceStream.js';
 import { voiceEventLogger } from '../ai/voiceLog.js';
 import { CodexAppServerProvider } from '../ai/codexAppServer/index.js';
 import { CodexLoginManager } from '../ai/codexLogin.js';
+import { ClaudeAuthManager } from '../ai/claudeAuth.js';
 import { CodexQuotaService } from '../ai/codexQuota.js';
 import { PACKAGE_VERSION } from '../version.js';
 import { getTerminalManager } from '../terminal/terminalManager.js';
@@ -329,6 +331,7 @@ export class MessageHandler {
    *  app-server instance). */
   private readonly codexCacheDir: string;
   private codexLoginManager = new CodexLoginManager();
+  private claudeAuthManager = new ClaudeAuthManager();
   onHistoryUpdated?: (cwd: string, entry: SessionRegistryEntry, action: 'upsert' | 'delete') => void;
 
   private productionBuild: boolean;
@@ -852,6 +855,8 @@ export class MessageHandler {
           return this.handleCodexLoginStatus(message);
         case 'codex:login-cancel':
           return this.handleCodexLoginCancel(message);
+        case 'claude:auth-status':
+          return this.handleClaudeAuthStatus(message);
         // Claude Code SDK
         case 'claude:start':
           return this.handleClaudeStart(message as Message<ClaudeStartRequestPayload>, peerAddress);
@@ -2261,6 +2266,22 @@ export class MessageHandler {
   /** Expose for the daemon to wire login-state updates into bus broadcasts. */
   getCodexLoginManager(): CodexLoginManager {
     return this.codexLoginManager;
+  }
+
+  private async handleClaudeAuthStatus(
+    message: Message,
+  ): Promise<Message<ClaudeAuthStatusResponsePayload>> {
+    const response = createMessage<ClaudeAuthStatusResponsePayload>(
+      'claude:auth-status:response',
+      await this.claudeAuthManager.getStatus(),
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  /** Expose the machine-local auth detector for the bus snapshot. */
+  getClaudeAuthManager(): ClaudeAuthManager {
+    return this.claudeAuthManager;
   }
 
   // ============================================================================
