@@ -9,6 +9,7 @@
  * decides what to do with the Blob.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { acquireVoiceMicrophone } from '../lib/voiceStreamClient';
 
 export type RecorderState = 'idle' | 'recording';
 
@@ -18,7 +19,7 @@ export interface UseVoiceRecorder {
   isSupported: boolean;
   /** Last error (permission denied, no device, etc.), or null. */
   error: string | null;
-  start: () => Promise<void>;
+  start: () => Promise<boolean>;
   /** Stops and resolves with the audio Blob, or null if nothing was captured. */
   stop: () => Promise<Blob | null>;
   cancel: () => void;
@@ -56,13 +57,14 @@ export function useVoiceRecorder(): UseVoiceRecorder {
   const start = useCallback(async () => {
     if (!isSupported) {
       setError('Audio recording is not supported in this browser.');
-      return;
+      return false;
     }
     setError(null);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-      });
+      const stream = await acquireVoiceMicrophone();
+      // Own the stream before constructing MediaRecorder so teardown also
+      // releases it if WebKit throws while creating the recorder instance.
+      streamRef.current = stream;
       const mimeType = pickMimeType();
       // Speech recognition needs very little fidelity; a low mono bitrate keeps
       // the inline-base64 upload well under the single-frame cap (~512 KB →
@@ -75,10 +77,10 @@ export function useVoiceRecorder(): UseVoiceRecorder {
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
-      streamRef.current = stream;
       recorderRef.current = recorder;
       recorder.start();
       setState('recording');
+      return true;
     } catch (err) {
       const name = err instanceof DOMException ? err.name : '';
       setError(
@@ -90,6 +92,7 @@ export function useVoiceRecorder(): UseVoiceRecorder {
       );
       teardown();
       setState('idle');
+      return false;
     }
   }, [isSupported, teardown]);
 

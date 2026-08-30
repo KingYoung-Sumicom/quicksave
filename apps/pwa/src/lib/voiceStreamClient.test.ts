@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { VoiceConfig } from '@sumicom/quicksave-shared';
-import { shouldUseLegacyPcmCapture, VoiceStreamSession } from './voiceStreamClient';
+import {
+  MICROPHONE_START_TIMEOUT_MS,
+  shouldUseLegacyPcmCapture,
+  VoiceStreamSession,
+} from './voiceStreamClient';
 
 // Shared, hoisted spies so the `./busRegistry` mock factory (hoisted above the
 // imports by vitest) can reference them without a TDZ error.
@@ -275,6 +279,23 @@ describe('VoiceStreamSession.connect', () => {
     expect(ok).toBe(false);
     expect(states).toContain('unavailable');
     expect(mocks.calls).not.toContain('createOffer');
+  });
+
+  it('times out a pending permission request and stops a stream that arrives late', async () => {
+    let resolveMicrophone!: (stream: MediaStream) => void;
+    const lateStop = vi.fn();
+    const preparedMicrophone = new Promise<MediaStream>((resolve) => { resolveMicrophone = resolve; });
+    const { session, states } = makeSession();
+
+    const connecting = session.connect({ acquireMic: true, preparedMicrophone });
+    await vi.advanceTimersByTimeAsync(MICROPHONE_START_TIMEOUT_MS);
+
+    await expect(connecting).resolves.toBe(false);
+    expect(states).toContain('unavailable');
+    resolveMicrophone({ getTracks: () => [{ stop: lateStop }] } as unknown as MediaStream);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(lateStop).toHaveBeenCalledOnce();
   });
 });
 

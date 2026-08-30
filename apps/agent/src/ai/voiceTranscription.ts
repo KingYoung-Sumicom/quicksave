@@ -11,6 +11,7 @@ import type { VoiceConfig } from '@sumicom/quicksave-shared';
 
 /** Below this the audio is effectively empty (decodes to 0 seconds). */
 export const MIN_AUDIO_BYTES = 1024;
+const TRADITIONAL_CHINESE_PROMPT = '臺灣繁體中文語音，請使用繁體中文字形，並保留原本的英文技術名詞。';
 
 export class VoiceTranscriptionError extends Error {
   constructor(message: string, readonly cause?: unknown) {
@@ -69,6 +70,12 @@ export async function transcribeAudio(
   form.append('file', new Blob([audio], { type: mimeType || 'audio/webm' }), `recording.${ext}`);
   form.append('model', config.transcribeModel.trim());
   form.append('response_format', 'json');
+  if (config.transcriptionLocale === 'zh-TW') {
+    // The batch API's language field is ISO-639-1, so `zh` identifies spoken
+    // Chinese while the same-language prompt disambiguates the output script.
+    form.append('language', 'zh');
+    form.append('prompt', TRADITIONAL_CHINESE_PROMPT);
+  }
 
   let res: Response;
   try {

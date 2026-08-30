@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { VoiceConfig } from '@sumicom/quicksave-shared';
 import { useConnectionStore } from '../stores/connectionStore';
+import { useLocaleStore } from '../stores/localeStore';
 import { getVoiceConfig } from '../lib/secureStorage';
 import { transcribeViaAgent, isVoiceConfigUsable } from '../lib/voiceTranscription';
 import { logVoiceEvent } from '../lib/voiceAgentClient';
@@ -124,6 +125,7 @@ export function useComposerVoice(
   const agentAudio = useConnectionStore((s) => (agentId ? s.agentConnections[agentId]?.audio : undefined));
   const streamingSupported = !!agentAudio?.streaming;
   const batchSupported = !!agentAudio?.transcription;
+  const transcriptionLocale = useLocaleStore((s) => s.active === 'zh-TW' ? 'zh-TW' as const : undefined);
 
   const recorder = useVoiceRecorder();
 
@@ -409,6 +411,7 @@ export function useComposerVoice(
       transportSessionId: resolvedOptions?.streamTransportId ?? resolvedOptions?.sessionIdForLogs,
       voiceSessionId: resolvedOptions?.streamVoiceSessionId,
       enabled: resolvedOptions?.streamingConnectionEnabled ?? true,
+      transcriptionLocale,
     },
   );
 
@@ -456,7 +459,8 @@ export function useComposerVoice(
     setTranscriptionError(null);
     setTranscribing(true);
     try {
-      const text = await transcribeViaAgent(blob, config, agentId);
+      const localizedConfig = transcriptionLocale ? { ...config, transcriptionLocale } : config;
+      const text = await transcribeViaAgent(blob, localizedConfig, agentId);
       if (text) onTranscriptRef.current(text);
       finishCurrentRecovery();
       pendingBatchRef.current = null;
@@ -475,7 +479,7 @@ export function useComposerVoice(
       if (err instanceof DOMException && err.name === 'AbortError') return;
       onErrorRef.current(err instanceof Error ? err.message : 'Transcription failed.');
     }
-  }, [agentId, finishCurrentRecovery, persistRecovery]);
+  }, [agentId, finishCurrentRecovery, persistRecovery, transcriptionLocale]);
 
   const batchStopAndTranscribe = useCallback(async () => {
     transcriptionKindRef.current = 'batch';
@@ -600,9 +604,19 @@ export function useComposerVoice(
     // MediaRecorder has entered its recording state.
     setArming(true);
     beginLocalRecoveryCapture();
+    // Begin the streaming gesture path before any storage await. iOS Home
+    // Screen PWAs can otherwise lose transient activation while IndexedDB is
+    // loading and leave getUserMedia pending without showing its dialog.
+    const streamingStart = mode === 'streaming' ? voiceStream.start() : null;
+    const batchStart = mode === 'batch' ? recorder.start() : null;
     try {
       const config = await getVoiceConfig();
       if (!isVoiceConfigUsable(config)) {
+        if (streamingStart) await streamingStart.catch(() => false);
+        if (batchStart) {
+          await batchStart.catch(() => false);
+          recorder.cancel();
+        }
         setConfigured(false);
         onErrorRef.current('Voice transcription is not configured. Set it up in Settings.');
         return false;
@@ -613,15 +627,15 @@ export function useComposerVoice(
         // permission grab is what unlocks Safari's host ICE candidates — then
         // start recording. start() resolves false if the link can't be made.
         setLiveUnavailable(false);
-        const ok = await voiceStream.start();
+        if (!streamingStart) return false;
+        const ok = await streamingStart;
         if (!ok) {
           setLiveUnavailable(true);
           onErrorRef.current('Live voice couldn’t connect on this network.');
         }
         return ok;
       } else {
-        await recorder.start();
-        return true;
+        return batchStart ? await batchStart : false;
       }
     } catch (err) {
       onErrorRef.current(err instanceof Error ? err.message : 'Could not start voice input.');

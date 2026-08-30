@@ -108,6 +108,10 @@ cd apps/pwa && npm run test:e2e           # Playwright end-to-end
 Vitest runs in a `jsdom` environment with globals enabled. Test files
 follow `src/**/*.test.ts` and `src/**/*.test.tsx`.
 
+For browser permission or media startup paths, include a test where the browser
+promise never settles. Assert a bounded timeout returns the UI to a retryable
+state and that a resource resolving after the timeout is immediately released.
+
 ## Continuous Process Refinement
 
 Testing practices should evolve alongside the codebase. When a bug is found in production or during development:

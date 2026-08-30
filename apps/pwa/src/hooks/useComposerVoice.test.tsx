@@ -9,12 +9,15 @@ const mocks = vi.hoisted(() => ({
   mode: 'streaming' as 'streaming' | 'batch',
   recorderState: 'idle' as 'idle' | 'recording',
   recorderStop: vi.fn(),
+  recorderStart: vi.fn(),
   recorderCancel: vi.fn(),
   streamRecording: false,
   streamStart: vi.fn(),
   streamStop: vi.fn(),
   streamRetry: vi.fn(),
+  getVoiceConfig: vi.fn(),
   onStreamFinal: null as ((text: string) => void) | null,
+  voiceStreamOptions: undefined as unknown,
   transcribe: vi.fn(),
 }));
 
@@ -24,7 +27,10 @@ vi.mock('../stores/connectionStore', () => ({
   }),
 }));
 vi.mock('../lib/secureStorage', () => ({
-  getVoiceConfig: vi.fn(async () => ({ mode: mocks.mode })),
+  getVoiceConfig: (...args: unknown[]) => mocks.getVoiceConfig(...args),
+}));
+vi.mock('../stores/localeStore', () => ({
+  useLocaleStore: (selector: (state: unknown) => unknown) => selector({ active: 'zh-TW' }),
 }));
 vi.mock('../lib/voiceTranscription', () => ({
   isVoiceConfigUsable: () => true,
@@ -34,14 +40,23 @@ vi.mock('../lib/voiceAgentClient', () => ({ logVoiceEvent: vi.fn() }));
 vi.mock('./useVoiceRecorder', () => ({
   useVoiceRecorder: () => ({
     state: mocks.recorderState,
-    start: vi.fn(),
+    start: mocks.recorderStart,
     stop: mocks.recorderStop,
     cancel: mocks.recorderCancel,
   }),
 }));
 vi.mock('./useVoiceStream', () => ({
-  useVoiceStream: (_agentId: string, onFinal: (text: string) => void) => {
+  useVoiceStream: (
+    _agentId: string,
+    onFinal: (text: string) => void,
+    _onSpeech?: unknown,
+    _onPartial?: unknown,
+    _onFrame?: unknown,
+    _onPlayback?: unknown,
+    options?: unknown,
+  ) => {
     mocks.onStreamFinal = onFinal;
+    mocks.voiceStreamOptions = options;
     return {
       ready: true,
       recording: mocks.streamRecording,
@@ -85,11 +100,14 @@ describe('useComposerVoice post-stop transcription state', () => {
     mocks.recorderState = 'idle';
     mocks.streamRecording = false;
     mocks.onStreamFinal = null;
+    mocks.voiceStreamOptions = undefined;
     mocks.recorderStop.mockReset();
+    mocks.recorderStart.mockReset().mockResolvedValue(true);
     mocks.recorderCancel.mockReset();
     mocks.streamStop.mockReset();
     mocks.streamRetry.mockReset();
     mocks.streamStart.mockReset().mockResolvedValue(true);
+    mocks.getVoiceConfig.mockReset().mockImplementation(async () => ({ mode: mocks.mode }));
     mocks.transcribe.mockReset();
     onTranscript = vi.fn();
     container = document.createElement('div');
@@ -118,6 +136,49 @@ describe('useComposerVoice post-stop transcription state', () => {
     expect(container.firstElementChild?.getAttribute('data-arming')).toBe('false');
   });
 
+  it('starts the streaming gesture before an IndexedDB config read settles', async () => {
+    await act(async () => root.render(<Harness />));
+    await act(async () => { await Promise.resolve(); });
+
+    let resolveConfig!: (config: { mode: 'streaming' }) => void;
+    mocks.getVoiceConfig.mockReturnValueOnce(new Promise((resolve) => { resolveConfig = resolve; }));
+
+    act(() => { void voice.onMicPress(); });
+    expect(mocks.streamStart).toHaveBeenCalledOnce();
+    expect(container.firstElementChild?.getAttribute('data-arming')).toBe('true');
+
+    await act(async () => { resolveConfig({ mode: 'streaming' }); });
+    expect(container.firstElementChild?.getAttribute('data-arming')).toBe('false');
+  });
+
+  it('starts batch getUserMedia before an IndexedDB config read settles', async () => {
+    mocks.mode = 'batch';
+    await act(async () => root.render(<Harness />));
+    await act(async () => { await Promise.resolve(); });
+
+    let resolveConfig!: (config: { mode: 'batch' }) => void;
+    mocks.getVoiceConfig.mockReturnValueOnce(new Promise((resolve) => { resolveConfig = resolve; }));
+
+    act(() => { void voice.onMicPress(); });
+    expect(mocks.recorderStart).toHaveBeenCalledOnce();
+    expect(container.firstElementChild?.getAttribute('data-arming')).toBe('true');
+
+    await act(async () => { resolveConfig({ mode: 'batch' }); });
+    expect(container.firstElementChild?.getAttribute('data-arming')).toBe('false');
+  });
+
+  it('returns batch capture to idle when microphone startup fails', async () => {
+    mocks.mode = 'batch';
+    mocks.recorderStart.mockResolvedValue(false);
+    await act(async () => root.render(<Harness />));
+
+    let started = true;
+    await act(async () => { started = await voice.startListening(); });
+
+    expect(started).toBe(false);
+    expect(container.firstElementChild?.getAttribute('data-arming')).toBe('false');
+  });
+
   it('covers the composer immediately while a batch recorder is stopping', async () => {
     mocks.mode = 'batch';
     mocks.recorderState = 'recording';
@@ -132,7 +193,17 @@ describe('useComposerVoice post-stop transcription state', () => {
 
     await act(async () => { resolveStop(new Blob(['audio'])); });
     expect(onTranscript).toHaveBeenCalledWith('done');
+    expect(mocks.transcribe.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+      transcriptionLocale: 'zh-TW',
+    }));
     expect(container.firstElementChild?.getAttribute('data-transcribing')).toBe('false');
+  });
+
+  it('passes the active Traditional Chinese locale to streaming ASR', async () => {
+    await act(async () => root.render(<Harness />));
+    expect(mocks.voiceStreamOptions).toEqual(expect.objectContaining({
+      transcriptionLocale: 'zh-TW',
+    }));
   });
 
   it('stays covered after streaming stop until the final transcript is committed', async () => {

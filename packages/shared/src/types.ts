@@ -1573,6 +1573,10 @@ export interface VoiceConfig {
    *  `gpt-4o-transcribe`). Realtime requires a realtime-capable model;
    *  `whisper-1` is batch-only. */
   streamModel: string;
+  /** Runtime transcription hint supplied by the PWA locale. This is not a
+   * persisted voice setting; `zh-TW` asks supported ASR providers to prefer
+   * Traditional Chinese output while retaining English technical terms. */
+  transcriptionLocale?: 'zh-TW';
   /** Model for the voice intermediary agent's brain — POST
    *  `{baseUrl}/responses` (OpenAI-compatible, reasoning/tool-calling). Optional;
    *  the voice agent stays disabled while empty. */

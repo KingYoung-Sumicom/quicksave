@@ -7,9 +7,32 @@
  * the caller can fall back to batch transcription.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { VoiceConfig } from '@sumicom/quicksave-shared';
 import { getVoiceConfig } from '../lib/secureStorage';
 import { isVoiceConfigUsable } from '../lib/voiceTranscription';
-import { VoiceStreamSession, type VoiceStreamState } from '../lib/voiceStreamClient';
+import {
+  requestVoiceMicrophone,
+  stopVoiceMicrophoneWhenReady,
+  VoiceStreamSession,
+  type VoiceStreamState,
+} from '../lib/voiceStreamClient';
+
+const AUDIO_CONTEXT_START_TIMEOUT_MS = 3_000;
+
+async function resumeAudioContext(context: AudioContext): Promise<void> {
+  if (context.state !== 'suspended') return;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    await Promise.race([
+      context.resume(),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error('Audio activation timed out.')), AUDIO_CONTEXT_START_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 
 export interface UseVoiceStream {
   /** True once the connection is usable for an utterance. */
@@ -38,6 +61,7 @@ export interface UseVoiceStreamOptions {
   transportSessionId?: string;
   voiceSessionId?: string;
   enabled?: boolean;
+  transcriptionLocale?: VoiceConfig['transcriptionLocale'];
 }
 
 export function useVoiceStream(
@@ -88,7 +112,10 @@ export function useVoiceStream(
     setInterim('');
   }, [enabled]);
 
-  const ensure = useCallback(async (acquireMic = false): Promise<boolean> => {
+  const ensure = useCallback(async (
+    acquireMic = false,
+    preparedMicrophone?: Promise<MediaStream>,
+  ): Promise<boolean> => {
     if (!enabled) return false;
     if (sessionRef.current && (state === 'ready' || state === 'recording')) return true;
     if (connectingRef.current) {
@@ -104,7 +131,10 @@ export function useVoiceStream(
 
     const connect = (async () => {
       const generation = lifecycleGenerationRef.current;
-      const config = await getVoiceConfig();
+      const storedConfig = await getVoiceConfig();
+      const config = storedConfig && options.transcriptionLocale
+        ? { ...storedConfig, transcriptionLocale: options.transcriptionLocale }
+        : storedConfig;
       if (!enabledRef.current || generation !== lifecycleGenerationRef.current) return false;
       if (!isVoiceConfigUsable(config) || !agentId) {
         setState('unavailable');
@@ -137,7 +167,7 @@ export function useVoiceStream(
         onState: (s) => setState(s),
       }, undefined, options.voiceSessionId);
       sessionRef.current = session;
-      const ok = await session.connect({ acquireMic });
+      const ok = await session.connect({ acquireMic, preparedMicrophone });
       if (!ok || !enabledRef.current || generation !== lifecycleGenerationRef.current) {
         session.close();
         if (sessionRef.current === session) sessionRef.current = null;
@@ -150,32 +180,47 @@ export function useVoiceStream(
     const result = await connect;
     if (connectingRef.current === connect) connectingRef.current = null;
     return result;
-  }, [agentId, enabled, state, options.transportSessionId, options.voiceSessionId]);
+  }, [agentId, enabled, state, options.transportSessionId, options.voiceSessionId, options.transcriptionLocale]);
 
   const start = useCallback(async (): Promise<boolean> => {
     if (!enabled) return false;
     setError(null);
+    // Invoke getUserMedia synchronously in the original tap stack. In an iOS
+    // Home Screen PWA, awaiting IndexedDB, prewarm, or signaling first can lose
+    // the transient user activation and leave the permission promise pending.
+    // Voice-coworker pages must claim their cross-page lease before capture,
+    // so their existing lease-first path remains unchanged.
+    const preparedMicrophone = options.voiceSessionId ? undefined : requestVoiceMicrophone();
     // Create and resume Web Audio before the first await while this call still
     // belongs to the user's click/tap. Firefox may otherwise suspend a context
     // created after WebRTC signaling has consumed the transient activation.
-    const captureContext = new AudioContext();
+    let captureContext: AudioContext;
     try {
-      if (captureContext.state === 'suspended') await captureContext.resume();
+      captureContext = new AudioContext();
+    } catch (error) {
+      if (preparedMicrophone) stopVoiceMicrophoneWhenReady(preparedMicrophone);
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`Could not create microphone audio context: ${reason}`);
+    }
+    try {
+      await resumeAudioContext(captureContext);
       if (captureContext.state !== 'running') {
         throw new Error(`Microphone audio context did not start (state: ${captureContext.state}).`);
       }
     } catch (error) {
       void captureContext.close().catch(() => undefined);
+      if (preparedMicrophone) stopVoiceMicrophoneWhenReady(preparedMicrophone);
       const reason = error instanceof Error ? error.message : String(error);
       throw new Error(`Could not activate microphone audio: ${reason}`);
     }
     // Establish on the user gesture with the mic acquired first, so Safari
     // exposes host candidates (the passive prewarm can't grab the mic on iOS).
-    const ok = await ensure(true);
+    const ok = await ensure(true, preparedMicrophone);
     if (ok) {
-      await sessionRef.current?.startUtterance(captureContext);
+      await sessionRef.current?.startUtterance(captureContext, preparedMicrophone);
     } else {
       void captureContext.close().catch(() => undefined);
+      if (preparedMicrophone) stopVoiceMicrophoneWhenReady(preparedMicrophone);
     }
     return ok;
   }, [enabled, ensure]);

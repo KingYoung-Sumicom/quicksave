@@ -27,12 +27,40 @@ const STUN_URL = 'stun:stun.l.google.com:19302';
 const CONNECT_TIMEOUT_MS = 8_000;
 const CAPTURE_FIRST_FRAME_TIMEOUT_MS = 2_500;
 const MICROPHONE_CLAIM_TIMEOUT_MS = 3_000;
+export const MICROPHONE_START_TIMEOUT_MS = 12_000;
 
 // Mic capture constraints (mono + light DSP), shared by the connect-time
 // permission grab (Safari ICE gate) and per-utterance capture.
 const MIC_CONSTRAINTS: MediaStreamConstraints = {
   audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
 };
+
+export function requestVoiceMicrophone(): Promise<MediaStream> {
+  return navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+}
+
+export function stopVoiceMicrophoneWhenReady(streamPromise: Promise<MediaStream>): void {
+  void streamPromise.then((stream) => {
+    stream.getTracks().forEach((track) => track.stop());
+  }).catch(() => undefined);
+}
+
+export async function acquireVoiceMicrophone(
+  streamPromise: Promise<MediaStream> = requestVoiceMicrophone(),
+): Promise<MediaStream> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const timed = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      stopVoiceMicrophoneWhenReady(streamPromise);
+      reject(new Error('Microphone permission request timed out. Please tap the microphone again.'));
+    }, MICROPHONE_START_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([streamPromise, timed]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 
 export type VoiceStreamState = 'connecting' | 'ready' | 'recording' | 'unavailable' | 'closed';
 
@@ -221,7 +249,7 @@ export class VoiceStreamSession {
 
   /** Establish the WebRTC connection. Resolves true if ready, false if P2P
    *  could not be established (caller should fall back to batch). */
-  async connect(opts: { acquireMic?: boolean } = {}): Promise<boolean> {
+  async connect(opts: { acquireMic?: boolean; preparedMicrophone?: Promise<MediaStream> } = {}): Promise<boolean> {
     this.debugStart = performance.now();
     this.dbg('info', `connect start (acquireMic=${!!opts.acquireMic})`);
     const bus = getBusForAgent(this.agentId);
@@ -249,7 +277,7 @@ export class VoiceStreamSession {
       }
       this.dbg('info', 'requesting mic (getUserMedia) before building the offer');
       try {
-        this.mediaStream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+        this.mediaStream = await acquireVoiceMicrophone(opts.preparedMicrophone);
         this.dbg('info', 'mic granted');
       } catch {
         this.releaseMicrophone();
@@ -396,9 +424,12 @@ export class VoiceStreamSession {
   }
 
   /** Begin an utterance and send proven Worklet PCM frames for ASR. */
-  startUtterance(preparedContext?: AudioContext): Promise<void> {
+  startUtterance(
+    preparedContext?: AudioContext,
+    preparedMicrophone?: Promise<MediaStream>,
+  ): Promise<void> {
     if (this.startUtterancePromise) return this.startUtterancePromise;
-    const starting = this.startUtteranceOnce(preparedContext);
+    const starting = this.startUtteranceOnce(preparedContext, preparedMicrophone);
     this.startUtterancePromise = starting;
     void starting.then(
       () => { if (this.startUtterancePromise === starting) this.startUtterancePromise = null; },
@@ -407,7 +438,10 @@ export class VoiceStreamSession {
     return starting;
   }
 
-  private async startUtteranceOnce(preparedContext?: AudioContext): Promise<void> {
+  private async startUtteranceOnce(
+    preparedContext?: AudioContext,
+    preparedMicrophone?: Promise<MediaStream>,
+  ): Promise<void> {
     if (this.state !== 'ready' || !this.dc) return;
     if (this.voiceSessionId) {
       const claim = await this.claimMicrophone();
@@ -417,7 +451,7 @@ export class VoiceStreamSession {
     }
     // Reuse a stream already grabbed at connect() (the Safari ICE-gate path);
     // otherwise acquire it now (the prewarmed path that didn't need it up front).
-    const stream = this.mediaStream ?? (await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS));
+    const stream = this.mediaStream ?? (await acquireVoiceMicrophone(preparedMicrophone));
     const track = stream.getAudioTracks()[0];
     if (!track) throw new Error('Microphone audio track is unavailable.');
     if (track.readyState === 'ended') throw new Error('Microphone audio track ended before capture started.');
