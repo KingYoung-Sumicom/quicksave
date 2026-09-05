@@ -813,7 +813,7 @@ interface Message {
 | `agent:` | Daemon management (list-repos/add-repo/clone-repo/check-update/update/restart/...) |
 | `opencode:` | Machine-local OpenCode management. `config-snapshot` is a read-only, sanitized summary of OpenCode version/schema plus MCP, provider/model, agent, skill/command, plugin, and built-in Exa web-search metadata. `mcp-upsert` and `mcp-remove` persist global MCP configuration on the paired machine; secret values are write-only in the UI and snapshots remain redacted. `websearch-update` persists the per-agent Exa opt-in and restarts only its OpenCode child; the injected `websearch` permission remains `ask`. |
 | `ai:` | AI utilities (generate-commit-summary, commit-summary:clear, commit-summary:updated, set-api-key, get-api-key-status) |
-| `codex:` | Codex model list + device-auth login flow (`list-models`, `login-start/-status/-cancel`, `login-updated`); quota is exposed through the `/codex/quota` bus subscription, not a request/response verb |
+| `codex:` | Codex model list, device-auth login flow, and CLI update controls. `list-models`, `login-start/-status/-cancel`, and `check-update`/`update` are request-response verbs. The update action supports a resolved npm global package (using its sibling npm executable) or the documented Codex standalone-install location (using OpenAI's non-interactive installer); other installation methods remain manual to avoid overwriting an unrelated package manager's install. Quota is exposed through the `/codex/quota` bus subscription, not a request/response verb. |
 | `project:` | Project summaries (`list-summaries`, `list-repos`, `delete`) |
 | `push:` | Web Push subscription handoff (`push:subscription-offer`) |
 | `terminal:` | PTY terminal (create/input/resize/rename/close) |

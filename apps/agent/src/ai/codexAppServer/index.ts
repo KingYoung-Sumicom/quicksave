@@ -5,6 +5,7 @@ export {
   spawnAppServer,
   detectCodexVersion,
   getCodexBin,
+  isStandaloneCodexInstall,
   checkSchemaVersionCompatibility,
   type AppServerHandle,
   type AppServerInitOptions,

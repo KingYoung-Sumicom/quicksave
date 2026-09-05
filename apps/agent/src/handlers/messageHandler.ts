@@ -215,7 +215,12 @@ import { readdir, stat, readFile, mkdir, writeFile, rename } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { homedir, platform as osPlatform } from 'os';
-import { detectCodexVersion, getCodexBin, spawnAppServer } from '../ai/codexAppServer/index.js';
+import {
+  detectCodexVersion,
+  getCodexBin,
+  isStandaloneCodexInstall,
+  spawnAppServer,
+} from '../ai/codexAppServer/index.js';
 import type { Model as CodexAppServerModel } from '../ai/codexAppServer/schema/generated/v2/Model.js';
 
 const VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
@@ -604,10 +609,16 @@ export class MessageHandler {
     return this.codexVersionCheckInFlight;
   }
 
-  /** An npm executable next to Codex makes the update target unambiguous. */
-  private getCodexNpmBin(): string | null {
+  /** Select a safe updater for the resolved Codex installation. */
+  private getCodexUpdateMethod(): 'npm' | 'standalone-installer' | null {
     const codexBin = getCodexBin();
     const npmBin = join(dirname(codexBin), 'npm');
+    if (existsSync(npmBin)) return 'npm';
+    return isStandaloneCodexInstall(codexBin) ? 'standalone-installer' : null;
+  }
+
+  private getCodexNpmBin(): string | null {
+    const npmBin = join(dirname(getCodexBin()), 'npm');
     return existsSync(npmBin) ? npmBin : null;
   }
 
@@ -2530,7 +2541,7 @@ export class MessageHandler {
           currentVersion,
           latestVersion: latestVersion || undefined,
           updateAvailable: !!latestVersion && latestVersion !== currentVersion,
-          canUpdate: !!this.getCodexNpmBin(),
+          canUpdate: !!this.getCodexUpdateMethod(),
         },
       );
       response.id = message.id;
@@ -2556,13 +2567,22 @@ export class MessageHandler {
     let previousVersion = 'unknown';
     try {
       previousVersion = await detectCodexVersion();
-      const npmBin = this.getCodexNpmBin();
-      if (!npmBin) throw new Error('This Codex installation is not an npm global package Quicksave can update.');
+      const updateMethod = this.getCodexUpdateMethod();
+      if (!updateMethod) throw new Error('This Codex installation is not managed by npm or the official standalone installer.');
 
       const { execFile } = await import('child_process');
       const { promisify } = await import('util');
       const execFileAsync = promisify(execFile);
-      await execFileAsync(npmBin, ['install', '-g', '@openai/codex@latest'], { timeout: 120_000 });
+      if (updateMethod === 'npm') {
+        const npmBin = this.getCodexNpmBin();
+        if (!npmBin) throw new Error('Could not locate the npm executable for this Codex installation.');
+        await execFileAsync(npmBin, ['install', '-g', '@openai/codex@latest'], { timeout: 120_000 });
+      } else {
+        await execFileAsync('sh', [
+          '-c',
+          'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh',
+        ], { timeout: 120_000 });
+      }
       const newVersion = await detectCodexVersion();
       this.latestCodexVersionCache = { version: newVersion, checkedAt: Date.now() };
 

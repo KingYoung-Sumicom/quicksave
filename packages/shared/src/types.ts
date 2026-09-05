@@ -1274,12 +1274,12 @@ export interface CodexCheckUpdateResponsePayload {
   currentVersion: string;
   latestVersion?: string;
   updateAvailable: boolean;
-  /** Whether this installation is an npm global package that Quicksave can update. */
+  /** Whether Quicksave can update this npm or official standalone installation. */
   canUpdate: boolean;
   error?: string;
 }
 
-// Codex CLI self-update (npm global installations only)
+// Codex CLI self-update (npm global or official standalone installations)
 export type CodexUpdateRequestPayload = Record<string, never>;
 
 export interface CodexUpdateResponsePayload {

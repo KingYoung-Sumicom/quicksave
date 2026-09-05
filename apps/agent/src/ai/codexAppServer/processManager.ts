@@ -91,6 +91,26 @@ export function getCodexBin(): string {
 }
 
 /**
+ * Whether `codexBin` is the user-facing command maintained by Codex's
+ * standalone installer. The installer keeps its package cache under
+ * `CODEX_HOME/packages/standalone` and exposes the command from
+ * `CODEX_INSTALL_DIR` (both locations are documented public behavior).
+ */
+export function isStandaloneCodexInstall(
+  codexBin = getCodexBin(),
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const home = env.HOME;
+  if (!home || !isAbsolute(codexBin)) return false;
+
+  const installDir = env.CODEX_INSTALL_DIR ?? join(home, '.local', 'bin');
+  if (codexBin === join(installDir, 'codex')) return true;
+
+  const codexHome = env.CODEX_HOME ?? join(home, '.codex');
+  return codexBin.startsWith(`${join(codexHome, 'packages', 'standalone')}/`);
+}
+
+/**
  * Build the environment used for Codex CLI child processes. When Codex is
  * installed under nvm/npm, the shim may rely on `env node`; prepend both the
  * resolved Codex bin directory and this daemon's Node directory.

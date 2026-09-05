@@ -10,6 +10,7 @@ import {
   buildCodexCliEnv,
   checkSchemaVersionCompatibility,
   getCodexBin,
+  isStandaloneCodexInstall,
 } from '../processManager.js';
 import { buildCodexSandboxMcpConfigArgs } from '../provider.js';
 
@@ -94,6 +95,28 @@ describe('buildCodexCliEnv', () => {
     const env = buildCodexCliEnv({ PATH: `${dirname(codex)}${delimiter}/usr/bin` }, codex);
 
     expect(env.PATH.split(delimiter).filter((part) => part === dirname(codex))).toHaveLength(1);
+  });
+});
+
+describe('isStandaloneCodexInstall', () => {
+  it('recognizes the official default install command', () => {
+    expect(isStandaloneCodexInstall('/home/user/.local/bin/codex', { HOME: '/home/user' })).toBe(true);
+  });
+
+  it('honors custom standalone install and state directories', () => {
+    expect(isStandaloneCodexInstall('/opt/codex/bin/codex', {
+      HOME: '/home/user',
+      CODEX_INSTALL_DIR: '/opt/codex/bin',
+    })).toBe(true);
+    expect(isStandaloneCodexInstall('/srv/codex/packages/standalone/0.1.0/codex', {
+      HOME: '/home/user',
+      CODEX_HOME: '/srv/codex',
+    })).toBe(true);
+  });
+
+  it('does not treat an arbitrary command or package-manager path as standalone', () => {
+    expect(isStandaloneCodexInstall('codex', { HOME: '/home/user' })).toBe(false);
+    expect(isStandaloneCodexInstall('/usr/local/bin/codex', { HOME: '/home/user' })).toBe(false);
   });
 });
 
