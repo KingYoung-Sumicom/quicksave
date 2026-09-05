@@ -39,7 +39,7 @@ import { VoiceRecoveryDrafts } from './VoiceRecoveryDrafts';
 import type { UseVoiceAgent } from '../hooks/useVoiceAgent';
 import { selectPanelMode, type SessionPanelMode, useSessionRightPanelStore } from '../stores/sessionRightPanelStore';
 
-type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; fastMode?: boolean; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
+type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; machineAgentId?: string; sandboxed?: boolean; reasoningEffort?: string; fastMode?: boolean; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
 type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean };
 
 interface ClaudePanelProps {
@@ -783,6 +783,7 @@ export function ClaudePanel({
       } else {
         acknowledged = await onStartSession(isTerminalNewSession ? '' : prompt, {
           agent: selectedAgent,
+          machineAgentId: agentId,
           model: selectedModel,
           permissionMode: selectedPermissionMode,
           sandboxed: sandboxEnabled || undefined,
@@ -1166,7 +1167,7 @@ export function ClaudePanel({
             })()}
             {/* New session empty state — inside scrollable container */}
             {newSession && cards.length === 0 && (
-              <NewSessionEmptyState cwd={cwd} />
+              <NewSessionEmptyState cwd={cwd} agentId={agentId} />
             )}
             <div ref={messagesEndRef} />
           </div>

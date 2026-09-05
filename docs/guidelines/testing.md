@@ -111,6 +111,9 @@ follow `src/**/*.test.ts` and `src/**/*.test.tsx`.
 For browser permission or media startup paths, include a test where the browser
 promise never settles. Assert a bounded timeout returns the UI to a retryable
 state and that a resource resolving after the timeout is immediately released.
+For iOS PWA media changes, also model a background freeze where the first
+foreground `AudioContext.resume()` never settles while `getUserMedia` succeeds;
+assert the same user gesture recovers without requiring a second tap.
 
 ## Continuous Process Refinement
 

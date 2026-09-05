@@ -146,6 +146,32 @@ describe('fileCache', () => {
   });
 
   describe('readWithCache — conditional revalidation', () => {
+    it('does not let cached binary metadata suppress a direct-transfer retry', async () => {
+      const req: FilesReadRequestPayload = { cwd: '/p', path: 'archive.bin' };
+      const fetcher = vi.fn()
+        .mockResolvedValueOnce(ok({
+          path: 'archive.bin',
+          kind: 'binary',
+          content: undefined,
+          encoding: undefined,
+          size: 42,
+        }))
+        .mockResolvedValueOnce(ok({
+          path: 'archive.bin',
+          kind: 'binary',
+          content: 'AAEC',
+          encoding: 'base64',
+          size: 3,
+        }));
+
+      await readWithCache(req, fetcher);
+      const retried = await readWithCache(req, fetcher);
+
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher.mock.calls[1][0]).not.toHaveProperty('ifNoneMatch');
+      expect(retried).toMatchObject({ kind: 'binary', content: 'AAEC', encoding: 'base64' });
+    });
+
     it('warm hit revalidates: fetcher receives ifNoneMatch, cached body returned on notModified', async () => {
       const req: FilesReadRequestPayload = { cwd: '/p', path: 'a.md' };
       let nthCall = 0;

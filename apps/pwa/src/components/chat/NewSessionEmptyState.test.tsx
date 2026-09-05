@@ -76,6 +76,19 @@ describe('NewSessionEmptyState machine-scoped auth gates', () => {
     expect(container.textContent).toContain('claude auth login');
   });
 
+  it('renders the selected project machine’s Codex catalog only', async () => {
+    const store = useConnectionStore.getState();
+    store.setAgentConnected('machine-a', '/a', false);
+    store.setAgentConnected('machine-b', '/b', false);
+    store.setAgentCodexModels('machine-a', [{ id: 'gpt-5.5', name: 'GPT-5.5' }]);
+    store.setAgentCodexModels('machine-b', [{ id: 'gpt-6-astra', name: 'GPT-6-Astra' }]);
+
+    await renderFor('machine-b');
+
+    expect(container.textContent).toContain('GPT-6-Astra');
+    expect(container.textContent).not.toContain('GPT-5.5');
+  });
+
   async function renderFor(agentId: string) {
     await act(async () => {
       root.render(

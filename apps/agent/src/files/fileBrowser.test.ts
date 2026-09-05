@@ -259,6 +259,19 @@ describe('FileBrowser', () => {
       expect(typeof res.mtime).toBe('number');
     });
 
+    it('routes audio extensions to direct transfer even when their bytes look textual', async () => {
+      writeFileSync(join(root, 'recording.mp3'), 'ID3-text-like-header');
+
+      const res = await fb.read({ cwd: root, path: 'recording.mp3' });
+
+      expect(res).toMatchObject({
+        success: true,
+        kind: 'binary',
+        mimeType: 'audio/mpeg',
+      });
+      expect(res.content).toBeUndefined();
+    });
+
     it('returns kind "oversized" with no content for files exceeding the default 1 MiB cap', async () => {
       const big = Buffer.alloc(2 * 1024 * 1024, 0x41);
       writeFileSync(join(root, 'big.txt'), big);

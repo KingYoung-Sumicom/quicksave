@@ -715,6 +715,7 @@ function SessionTab({
     try {
       const acknowledged = await startSession(isTerminalNewSession ? '' : text, {
         agent: selectedAgent,
+        machineAgentId: project.agentId,
         model: selectedModel,
         permissionMode: selectedPermissionMode,
         sandboxed: sandboxEnabled || undefined,

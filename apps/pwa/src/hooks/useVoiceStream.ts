@@ -11,9 +11,11 @@ import type { VoiceConfig } from '@sumicom/quicksave-shared';
 import { getVoiceConfig } from '../lib/secureStorage';
 import { isVoiceConfigUsable } from '../lib/voiceTranscription';
 import {
+  acquireVoiceMicrophone,
   requestVoiceMicrophone,
   stopVoiceMicrophoneWhenReady,
   VoiceStreamSession,
+  type VoiceRtcDebugEvent,
   type VoiceStreamState,
 } from '../lib/voiceStreamClient';
 
@@ -31,6 +33,52 @@ async function resumeAudioContext(context: AudioContext): Promise<void> {
     ]);
   } finally {
     if (timeout) clearTimeout(timeout);
+  }
+}
+
+export interface ActivatedVoiceAudioContext {
+  context: AudioContext;
+  recoveredAfterTimeout: boolean;
+}
+
+/**
+ * iOS Home Screen PWAs can leave the first AudioContext.resume() pending after
+ * the page has spent a few minutes frozen in the background. getUserMedia,
+ * started in the same tap, still commonly succeeds and wakes the native audio
+ * session. Once that track is live, rebuilding the context recovers capture
+ * without making the user tap a second time.
+ */
+export async function activateVoiceAudioContext(
+  context: AudioContext,
+  preparedMicrophone?: Promise<MediaStream>,
+  createContext: () => AudioContext = () => new AudioContext(),
+): Promise<ActivatedVoiceAudioContext> {
+  try {
+    await resumeAudioContext(context);
+    if (context.state !== 'running') {
+      throw new Error(`Microphone audio context did not start (state: ${context.state}).`);
+    }
+    return { context, recoveredAfterTimeout: false };
+  } catch (error) {
+    const timedOut = /Audio activation timed out/i.test(error instanceof Error ? error.message : String(error));
+    if (!timedOut || !preparedMicrophone) throw error;
+
+    // Await the already-started permission request; do not request a second
+    // stream or consume another user activation.
+    await acquireVoiceMicrophone(preparedMicrophone);
+    void context.close().catch(() => undefined);
+
+    const retry = createContext();
+    try {
+      await resumeAudioContext(retry);
+      if (retry.state !== 'running') {
+        throw new Error(`Microphone audio context did not start after foreground recovery (state: ${retry.state}).`);
+      }
+      return { context: retry, recoveredAfterTimeout: true };
+    } catch (retryError) {
+      void retry.close().catch(() => undefined);
+      throw retryError;
+    }
   }
 }
 
@@ -62,6 +110,8 @@ export interface UseVoiceStreamOptions {
   voiceSessionId?: string;
   enabled?: boolean;
   transcriptionLocale?: VoiceConfig['transcriptionLocale'];
+  /** Structured lifecycle diagnostics. Never includes microphone bytes or transcript text. */
+  onDebug?: (event: VoiceRtcDebugEvent) => void;
 }
 
 export function useVoiceStream(
@@ -79,6 +129,12 @@ export function useVoiceStream(
   const [error, setError] = useState<string | null>(null);
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
+  const onDebugRef = useRef(options.onDebug);
+  onDebugRef.current = options.onDebug;
+
+  const debug = useCallback((event: VoiceRtcDebugEvent) => {
+    onDebugRef.current?.(event);
+  }, []);
 
   const sessionRef = useRef<VoiceStreamSession | null>(null);
   const connectingRef = useRef<Promise<boolean> | null>(null);
@@ -103,6 +159,34 @@ export function useVoiceStream(
   }, []);
 
   useEffect(() => {
+    const discardFrozenSession = (reason: 'visibility-hidden' | 'pagehide') => {
+      if (!sessionRef.current && !connectingRef.current) return;
+      debug({
+        t: 0,
+        kind: 'info',
+        detail: 'discarding voice session before background freeze',
+        data: { reason },
+      });
+      lifecycleGenerationRef.current++;
+      sessionRef.current?.close();
+      sessionRef.current = null;
+      connectingRef.current = null;
+      setState('idle');
+      setInterim('');
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') discardFrozenSession('visibility-hidden');
+    };
+    const onPageHide = () => discardFrozenSession('pagehide');
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, [debug]);
+
+  useEffect(() => {
     if (enabled) return;
     lifecycleGenerationRef.current++;
     sessionRef.current?.close();
@@ -117,7 +201,7 @@ export function useVoiceStream(
     preparedMicrophone?: Promise<MediaStream>,
   ): Promise<boolean> => {
     if (!enabled) return false;
-    if (sessionRef.current && (state === 'ready' || state === 'recording')) return true;
+    if (sessionRef.current?.isReadyForCapture()) return true;
     if (connectingRef.current) {
       // A connect is already in flight (typically the passive prewarm). Wait for
       // it: reuse it if it produced a ready session; otherwise fall through and
@@ -125,7 +209,7 @@ export function useVoiceStream(
       // prewarm can't grab the mic, so on iOS its attempt always fails, and a
       // tap landing inside that window must not inherit the doomed result.
       const inflight = await connectingRef.current;
-      if (inflight && sessionRef.current) return true;
+      if (inflight && sessionRef.current?.isReadyForCapture()) return true;
       if (!acquireMic) return inflight;
     }
 
@@ -165,7 +249,7 @@ export function useVoiceStream(
           setError(message);
         },
         onState: (s) => setState(s),
-      }, undefined, options.voiceSessionId);
+      }, (event) => debug(event), options.voiceSessionId);
       sessionRef.current = session;
       const ok = await session.connect({ acquireMic, preparedMicrophone });
       if (!ok || !enabledRef.current || generation !== lifecycleGenerationRef.current) {
@@ -185,45 +269,75 @@ export function useVoiceStream(
   const start = useCallback(async (): Promise<boolean> => {
     if (!enabled) return false;
     setError(null);
+    const captureStartedAt = performance.now();
+    const captureDebug = (
+      kind: VoiceRtcDebugEvent['kind'],
+      detail: string,
+      data?: Record<string, unknown>,
+    ) => debug({ t: Math.round(performance.now() - captureStartedAt), kind, detail, data });
+    captureDebug('info', 'user-gesture capture start', {
+      visibilityState: document.visibilityState,
+      userActivationActive: navigator.userActivation?.isActive,
+      userActivationHasBeenActive: navigator.userActivation?.hasBeenActive,
+    });
     // Invoke getUserMedia synchronously in the original tap stack. In an iOS
     // Home Screen PWA, awaiting IndexedDB, prewarm, or signaling first can lose
     // the transient user activation and leave the permission promise pending.
     // Voice-coworker pages must claim their cross-page lease before capture,
     // so their existing lease-first path remains unchanged.
     const preparedMicrophone = options.voiceSessionId ? undefined : requestVoiceMicrophone();
+    captureDebug('info', preparedMicrophone
+      ? 'getUserMedia requested synchronously'
+      : 'getUserMedia deferred until microphone lease is granted');
     // Create and resume Web Audio before the first await while this call still
     // belongs to the user's click/tap. Firefox may otherwise suspend a context
     // created after WebRTC signaling has consumed the transient activation.
     let captureContext: AudioContext;
     try {
       captureContext = new AudioContext();
+      captureDebug('info', 'AudioContext created', {
+        state: captureContext.state,
+        sampleRate: captureContext.sampleRate,
+      });
     } catch (error) {
       if (preparedMicrophone) stopVoiceMicrophoneWhenReady(preparedMicrophone);
       const reason = error instanceof Error ? error.message : String(error);
+      captureDebug('error', 'AudioContext creation failed', { reason });
       throw new Error(`Could not create microphone audio context: ${reason}`);
     }
     try {
-      await resumeAudioContext(captureContext);
-      if (captureContext.state !== 'running') {
-        throw new Error(`Microphone audio context did not start (state: ${captureContext.state}).`);
-      }
+      const activated = await activateVoiceAudioContext(captureContext, preparedMicrophone);
+      captureContext = activated.context;
+      captureDebug('info', 'AudioContext running', {
+        state: captureContext.state,
+        sampleRate: captureContext.sampleRate,
+        recoveredAfterTimeout: activated.recoveredAfterTimeout,
+      });
     } catch (error) {
       void captureContext.close().catch(() => undefined);
       if (preparedMicrophone) stopVoiceMicrophoneWhenReady(preparedMicrophone);
       const reason = error instanceof Error ? error.message : String(error);
+      captureDebug('error', 'AudioContext activation failed', {
+        reason,
+        state: captureContext.state,
+      });
       throw new Error(`Could not activate microphone audio: ${reason}`);
     }
     // Establish on the user gesture with the mic acquired first, so Safari
     // exposes host candidates (the passive prewarm can't grab the mic on iOS).
     const ok = await ensure(true, preparedMicrophone);
+    captureDebug(ok ? 'info' : 'error', ok
+      ? 'streaming session ready for capture'
+      : 'streaming session unavailable before capture');
     if (ok) {
       await sessionRef.current?.startUtterance(captureContext, preparedMicrophone);
+      captureDebug('result', 'capture entered recording state');
     } else {
       void captureContext.close().catch(() => undefined);
       if (preparedMicrophone) stopVoiceMicrophoneWhenReady(preparedMicrophone);
     }
     return ok;
-  }, [enabled, ensure]);
+  }, [debug, enabled, ensure, options.voiceSessionId]);
 
   const stop = useCallback((opts: { releaseMic?: boolean; discard?: boolean } = {}) => {
     sessionRef.current?.stopUtterance(opts);

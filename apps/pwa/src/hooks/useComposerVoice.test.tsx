@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   onStreamFinal: null as ((text: string) => void) | null,
   voiceStreamOptions: undefined as unknown,
   transcribe: vi.fn(),
+  logVoiceEvent: vi.fn(),
 }));
 
 vi.mock('../stores/connectionStore', () => ({
@@ -36,7 +37,9 @@ vi.mock('../lib/voiceTranscription', () => ({
   isVoiceConfigUsable: () => true,
   transcribeViaAgent: (...args: unknown[]) => mocks.transcribe(...args),
 }));
-vi.mock('../lib/voiceAgentClient', () => ({ logVoiceEvent: vi.fn() }));
+vi.mock('../lib/voiceAgentClient', () => ({
+  logVoiceEvent: (...args: unknown[]) => mocks.logVoiceEvent(...args),
+}));
 vi.mock('./useVoiceRecorder', () => ({
   useVoiceRecorder: () => ({
     state: mocks.recorderState,
@@ -109,6 +112,7 @@ describe('useComposerVoice post-stop transcription state', () => {
     mocks.streamStart.mockReset().mockResolvedValue(true);
     mocks.getVoiceConfig.mockReset().mockImplementation(async () => ({ mode: mocks.mode }));
     mocks.transcribe.mockReset();
+    mocks.logVoiceEvent.mockReset();
     onTranscript = vi.fn();
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -149,6 +153,16 @@ describe('useComposerVoice post-stop transcription state', () => {
 
     await act(async () => { resolveConfig({ mode: 'streaming' }); });
     expect(container.firstElementChild?.getAttribute('data-arming')).toBe('false');
+
+    const lifecycleEvents = mocks.logVoiceEvent.mock.calls
+      .map(([, event]) => event as { event: string; data?: Record<string, unknown> })
+      .filter((event) => event.event.startsWith('capture.attempt_'));
+    expect(lifecycleEvents.map((event) => event.event)).toEqual([
+      'capture.attempt_started',
+      'capture.attempt_recording',
+    ]);
+    expect(lifecycleEvents[0]?.data?.captureAttemptId).toEqual(expect.any(String));
+    expect(lifecycleEvents[1]?.data?.captureAttemptId).toBe(lifecycleEvents[0]?.data?.captureAttemptId);
   });
 
   it('starts batch getUserMedia before an IndexedDB config read settles', async () => {
@@ -204,6 +218,28 @@ describe('useComposerVoice post-stop transcription state', () => {
     expect(mocks.voiceStreamOptions).toEqual(expect.objectContaining({
       transcriptionLocale: 'zh-TW',
     }));
+  });
+
+  it('persists capture diagnostics without private ICE candidate addresses', async () => {
+    await act(async () => root.render(<Harness />));
+    const onDebug = (mocks.voiceStreamOptions as {
+      onDebug?: (event: { t: number; kind: 'local-candidate'; detail: string; data: Record<string, unknown> }) => void;
+    }).onDebug;
+
+    act(() => onDebug?.({
+      t: 42,
+      kind: 'local-candidate',
+      detail: 'host',
+      data: { type: 'host', candidate: 'candidate with private address' },
+    }));
+
+    expect(mocks.logVoiceEvent).toHaveBeenCalledWith('agent', expect.objectContaining({
+      event: 'capture.local-candidate',
+      phase: 'capture',
+      data: expect.objectContaining({ elapsedMs: 42, detail: 'host', type: 'host' }),
+    }));
+    const payload = mocks.logVoiceEvent.mock.calls.at(-1)?.[1] as { data?: Record<string, unknown> };
+    expect(payload.data).not.toHaveProperty('candidate');
   });
 
   it('stays covered after streaming stop until the final transcript is committed', async () => {

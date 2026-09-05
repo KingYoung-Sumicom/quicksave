@@ -13,6 +13,8 @@ export interface AgentConnectionState {
   availableCodingPaths: CodingPath[];
   isPro: boolean;
   agentVersion: string | null;
+  /** Account-scoped Codex catalog advertised by this machine only. */
+  codexModels: CodexModelInfo[];
   devBuild: boolean;
   /** OS the agent reported in the handshake-ack. `undefined` means the agent
    *  is older than the platform-aware build; treat as "unknown — hide
@@ -80,6 +82,7 @@ interface ConnectionStore {
   // Multi-agent actions
   setAgentConnecting: (agentId: string) => void;
   setAgentConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string, devBuild?: boolean, platform?: 'linux' | 'darwin' | 'win32' | 'other', audio?: AgentAudioCapabilities) => void;
+  setAgentCodexModels: (agentId: string, models: CodexModelInfo[]) => void;
   setAgentDisconnected: (agentId: string) => void;
   setAgentError: (agentId: string, error: string) => void;
   setAgentOnlineFor: (agentId: string, online: boolean) => void;
@@ -87,6 +90,15 @@ interface ConnectionStore {
   addAgentRepo: (agentId: string, repo: Repository) => void;
   getAgentState: (agentId: string) => AgentConnectionState | undefined;
   isAgentConnected: (agentId: string) => boolean;
+}
+
+/** Return the account-specific Codex catalog for one machine. */
+export function selectCodexModelsForAgent(
+  state: Pick<ConnectionStore, 'agentId' | 'agentConnections' | 'codexModels'>,
+  agentId?: string | null,
+): CodexModelInfo[] {
+  const target = agentId ?? state.agentId;
+  return target ? state.agentConnections[target]?.codexModels ?? [] : state.codexModels;
 }
 
 // In dev mode, use the same host as the page (signaling is embedded in Vite dev server)
@@ -255,6 +267,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
           availableCodingPaths: [],
           isPro: false,
           agentVersion: null,
+          codexModels: [],
           devBuild: false,
           connectedAt: null,
           error: null,
@@ -273,6 +286,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
           availableCodingPaths: availableCodingPaths || [],
           isPro,
           agentVersion: agentVersion || null,
+          codexModels: state.agentConnections[agentId]?.codexModels ?? [],
           devBuild: devBuild || false,
           platform,
           audio,
@@ -281,6 +295,21 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
         },
       },
     })),
+
+  setAgentCodexModels: (agentId, models) =>
+    set((state) => {
+      const existing = state.agentConnections[agentId];
+      if (!existing) return state;
+      return {
+        agentConnections: {
+          ...state.agentConnections,
+          [agentId]: { ...existing, codexModels: models },
+        },
+        // Preserve the legacy active-agent mirror for callers that do not
+        // have an agent id. Per-session UI must use agentConnections instead.
+        ...(state.agentId === agentId ? { codexModels: models } : {}),
+      };
+    }),
 
   setAgentDisconnected: (agentId) =>
     set((state) => {
@@ -296,6 +325,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
           ...(state.agentConnections[agentId] || {
             state: 'error', repoPath: null, availableRepos: [],
             availableCodingPaths: [], isPro: false, agentVersion: null, devBuild: false, connectedAt: null,
+            codexModels: [],
           }),
           state: 'error',
           error,

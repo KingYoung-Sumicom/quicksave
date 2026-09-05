@@ -90,6 +90,43 @@ describe('FileRtcStreamManager', () => {
     manager.cancel('transfer-1', 'peer-a');
   });
 
+  it('streams unsupported binary formats so the PWA can download them', async () => {
+    const body = Buffer.from([0, 1, 2, 3, 255]);
+    await writeFile(join(dir, 'archive.bin'), body);
+    const manager = new FileRtcStreamManager({ onCommand: () => {}, onSubscribe: () => {}, publish: () => {} });
+
+    await manager.connect({ transferId: 'binary-download', cwd: dir, path: 'archive.bin', sdp: 'offer' }, 'peer-a');
+    const channel = new FakeDataChannel();
+    latestPc?.ondatachannel?.({ channel });
+    await vi.waitFor(() => {
+      expect(channel.sent.some((frame) => typeof frame === 'string' && JSON.parse(frame).t === 'complete')).toBe(true);
+    });
+
+    const controls = channel.sent.filter((frame): frame is string => typeof frame === 'string').map((frame) => JSON.parse(frame));
+    expect(controls[0]).toMatchObject({ t: 'header', kind: 'binary', size: body.byteLength });
+    expect(controls.at(-1)).toMatchObject({ t: 'complete', bytes: body.byteLength });
+    expect(Buffer.concat(channel.sent.filter((frame): frame is Uint8Array => typeof frame !== 'string').map(Buffer.from))).toEqual(body);
+    manager.cancel('binary-download', 'peer-a');
+  });
+
+  it('labels common audio files for native playback while streaming their bytes', async () => {
+    const body = Buffer.from([0x49, 0x44, 0x33, 0, 1, 2, 3]);
+    await writeFile(join(dir, 'recording.mp3'), body);
+    const manager = new FileRtcStreamManager({ onCommand: () => {}, onSubscribe: () => {}, publish: () => {} });
+
+    await manager.connect({ transferId: 'audio-playback', cwd: dir, path: 'recording.mp3', sdp: 'offer' }, 'peer-a');
+    const channel = new FakeDataChannel();
+    latestPc?.ondatachannel?.({ channel });
+    await vi.waitFor(() => {
+      expect(channel.sent.some((frame) => typeof frame === 'string' && JSON.parse(frame).t === 'complete')).toBe(true);
+    });
+
+    const header = JSON.parse(channel.sent.find((frame): frame is string => typeof frame === 'string') ?? '{}');
+    expect(header).toMatchObject({ t: 'header', kind: 'binary', mimeType: 'audio/mpeg', size: body.byteLength });
+    expect(Buffer.concat(channel.sent.filter((frame): frame is Uint8Array => typeof frame !== 'string').map(Buffer.from))).toEqual(body);
+    manager.cancel('audio-playback', 'peer-a');
+  });
+
   it('does not let another bus peer add ICE or cancel a transfer', async () => {
     await writeFile(join(dir, 'large.txt'), 'hello');
     const manager = new FileRtcStreamManager({ onCommand: () => {}, onSubscribe: () => {}, publish: () => {} });

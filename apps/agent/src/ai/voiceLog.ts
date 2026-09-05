@@ -25,6 +25,14 @@ function enabled(): boolean {
   return isDebugEnabled() && process.env.NODE_ENV !== 'test';
 }
 
+/** Capture lifecycle metadata is safe and small enough to retain by default;
+ * richer voice logs may contain transcript text and remain debug-only. An
+ * explicit QUICKSAVE_VOICE_LOG=0 disables both. */
+export function shouldLogVoiceEvent(event: string, normallyEnabled: boolean, env = process.env.QUICKSAVE_VOICE_LOG?.trim()): boolean {
+  if (env === '0') return false;
+  return normallyEnabled || event.startsWith('capture.');
+}
+
 function shortSessionId(sessionId: string | undefined): string {
   if (!sessionId) return 'unknown';
   return sessionId.length > 12 ? sessionId.slice(0, 12) : sessionId;
@@ -57,7 +65,7 @@ export class VoiceEventLogger {
   constructor(private readonly isEnabled = enabled) {}
 
   log(entry: VoiceLogEntry): void {
-    if (!this.isEnabled()) return;
+    if (!shouldLogVoiceEvent(entry.event, this.isEnabled())) return;
     const line = JSON.stringify({
       v: 1,
       ts: new Date().toISOString(),

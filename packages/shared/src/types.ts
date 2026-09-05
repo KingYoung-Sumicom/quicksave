@@ -92,6 +92,10 @@ export type MessageType =
   | 'agent:update:response'
   | 'agent:restart'
   | 'agent:restart:response'
+  | 'codex:check-update'
+  | 'codex:check-update:response'
+  | 'codex:update'
+  | 'codex:update:response'
   | 'agent:probe'
   | 'agent:probe:response'
   | 'opencode:config-snapshot'
@@ -1263,6 +1267,28 @@ export interface AgentRestartResponsePayload {
   error?: string;
 }
 
+// Codex CLI update check
+export type CodexCheckUpdateRequestPayload = Record<string, never>;
+
+export interface CodexCheckUpdateResponsePayload {
+  currentVersion: string;
+  latestVersion?: string;
+  updateAvailable: boolean;
+  /** Whether this installation is an npm global package that Quicksave can update. */
+  canUpdate: boolean;
+  error?: string;
+}
+
+// Codex CLI self-update (npm global installations only)
+export type CodexUpdateRequestPayload = Record<string, never>;
+
+export interface CodexUpdateResponsePayload {
+  success: boolean;
+  previousVersion: string;
+  newVersion?: string;
+  error?: string;
+}
+
 // systemd user-unit (Linux auto-start at login).
 // All three verbs share the same status payload as the response body so the
 // PWA can re-render the toggle from a single shape regardless of which call
@@ -2427,10 +2453,11 @@ export interface FilesReadResponsePayload {
    *  placeholder. Absent only on failures (see `error`). */
   kind?: FileReadKind;
   /** File body. UTF-8 string for `kind === 'text'`; base64 string for
-   *  `kind === 'image'`. Absent for `binary` / `oversized`. */
+   *  `kind === 'image'`, or for `binary` after a direct WebRTC transfer.
+   *  Absent for bus-only binary metadata and `oversized`. */
   content?: string;
   encoding?: 'utf-8' | 'base64';
-  /** MIME type — populated alongside base64 content for `kind === 'image'`. */
+  /** MIME type — populated for inline images and direct-transfer audio files. */
   mimeType?: string;
   /** File size in bytes — present for every successful read (including
    *  binary/oversized) so the UI can show "3.2 MB binary file". */
@@ -2446,8 +2473,8 @@ export interface FilesReadResponsePayload {
   error?: string;
 }
 
-// Large file previews use an ephemeral, file-specific WebRTC DataChannel.
-// Signaling stays on the authenticated message bus; file bytes never do.
+// Large previews and binary downloads use an ephemeral, file-specific WebRTC
+// DataChannel. Signaling stays on the authenticated bus; file bytes never do.
 export interface FilesRtcConnectRequestPayload {
   transferId: string;
   cwd: string;

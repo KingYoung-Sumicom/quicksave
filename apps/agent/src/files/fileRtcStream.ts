@@ -35,6 +35,18 @@ const IMAGE_MIME: Record<string, string> = {
   webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp', ico: 'image/x-icon',
 };
 
+const AUDIO_MIME: Record<string, string> = {
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  oga: 'audio/ogg',
+  opus: 'audio/ogg',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  flac: 'audio/flac',
+  webm: 'audio/webm',
+};
+
 export interface FileRtcBus {
   onCommand<Req = unknown, Res = unknown>(
     verb: string,
@@ -160,11 +172,6 @@ export class FileRtcStreamManager {
     const header: FilesRtcDataMessage = { t: 'header', ...peer.file };
     try {
       channel.send(JSON.stringify(header));
-      if (peer.file.kind === 'binary') {
-        channel.send(JSON.stringify({ t: 'complete', bytes: 0 } satisfies FilesRtcDataMessage));
-        return;
-      }
-
       const hash = createHash('sha256');
       let sent = 0;
       for await (const chunk of createReadStream(peer.file.absolutePath, { highWaterMark: FILE_RTC_CHUNK_BYTES })) {
@@ -209,14 +216,15 @@ async function prepareFile(payload: FilesRtcConnectRequestPayload): Promise<Prep
   const absolutePath = await resolveTarget(payload.cwd, payload.path);
   const info = await stat(absolutePath);
   if (!info.isFile()) throw new Error('Not a regular file.');
-  if (info.size > FILE_RTC_MAX_BYTES) throw new Error('File exceeds the 64 MiB direct preview limit.');
+  if (info.size > FILE_RTC_MAX_BYTES) throw new Error('File exceeds the 64 MiB direct transfer limit.');
 
   const dot = absolutePath.lastIndexOf('.');
-  const mimeType = payload.allowImage && dot >= 0
-    ? IMAGE_MIME[absolutePath.slice(dot + 1).toLowerCase()]
-    : undefined;
-  let kind: FileReadKind = mimeType ? 'image' : 'text';
-  if (!mimeType) {
+  const extension = dot >= 0 ? absolutePath.slice(dot + 1).toLowerCase() : '';
+  const imageMimeType = payload.allowImage ? IMAGE_MIME[extension] : undefined;
+  const audioMimeType = AUDIO_MIME[extension];
+  const mimeType = imageMimeType ?? audioMimeType;
+  let kind: FileReadKind = imageMimeType ? 'image' : 'text';
+  if (!imageMimeType) {
     const handle = await open(absolutePath, 'r');
     try {
       const sniff = Buffer.alloc(Math.min(SNIFF_BYTES, info.size));
@@ -226,6 +234,10 @@ async function prepareFile(payload: FilesRtcConnectRequestPayload): Promise<Prep
       await handle.close();
     }
   }
+  // Audio is transported as binary with a precise MIME type. The PWA can
+  // render it with the native player while all other binary formats keep the
+  // download-only placeholder.
+  if (audioMimeType) kind = 'binary';
   return {
     cwd: payload.cwd,
     path: payload.path,

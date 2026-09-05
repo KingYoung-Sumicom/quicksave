@@ -33,6 +33,19 @@ describe('createPreviewDownload', () => {
   it('does not offer a download when the preview has no file body', () => {
     expect(createPreviewDownload({ success: true, kind: 'binary' }, 'archive.bin')).toBeNull();
   });
+
+  it('creates an octet-stream download for binary bytes received over WebRTC', async () => {
+    const download = createPreviewDownload({
+      success: true,
+      kind: 'binary',
+      content: 'AAEC/w==',
+      encoding: 'base64',
+    }, 'archive.bin');
+
+    expect(download?.fileName).toBe('archive.bin');
+    expect(download?.blob.type).toBe('application/octet-stream');
+    expect(new Uint8Array(await download?.blob.arrayBuffer())).toEqual(new Uint8Array([0, 1, 2, 255]));
+  });
 });
 
 describe('buildSafeHtmlPreviewDocument', () => {

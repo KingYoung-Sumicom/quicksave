@@ -20,6 +20,8 @@ import type {
 interface MachineInfoPageProps {
   onCheckAgentUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; error?: string }>;
   onUpdateAgent?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; restarting: boolean; error?: string }>;
+  onCheckCodexUpdate?: () => Promise<{ currentVersion: string; latestVersion?: string; updateAvailable: boolean; canUpdate: boolean; error?: string }>;
+  onUpdateCodex?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; error?: string }>;
   onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
   onDeleteProject?: (cwd: string) => Promise<ProjectDeleteResponsePayload | null>;
   onGetSystemdStatus?: () => Promise<SystemdStatusResponsePayload>;
@@ -36,6 +38,8 @@ interface MachineInfoPageProps {
 export function MachineInfoPage({
   onCheckAgentUpdate,
   onUpdateAgent,
+  onCheckCodexUpdate,
+  onUpdateCodex,
   onRestartAgent,
   onDeleteProject,
   onGetSystemdStatus,
@@ -75,6 +79,12 @@ export function MachineInfoPage({
   const [updateResult, setUpdateResult] = useState<{ success: boolean; message: string } | null>(null);
   const [isRestarting, setIsRestarting] = useState(false);
   const [restartResult, setRestartResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [codexVersion, setCodexVersion] = useState<string | null>(null);
+  const [latestCodexVersion, setLatestCodexVersion] = useState<string | null>(null);
+  const [codexCanUpdate, setCodexCanUpdate] = useState(false);
+  const [isCheckingCodexUpdate, setIsCheckingCodexUpdate] = useState(false);
+  const [isUpdatingCodex, setIsUpdatingCodex] = useState(false);
+  const [codexUpdateResult, setCodexUpdateResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // systemd auto-start: gated on Linux (the only platform this matters on)
   // and an online connection (we need IPC to query/install). The fetch is
@@ -85,6 +95,27 @@ export function MachineInfoPage({
   const [systemdLoading, setSystemdLoading] = useState(false);
   const [systemdError, setSystemdError] = useState<string | null>(null);
   const [systemdMutating, setSystemdMutating] = useState(false);
+
+  const loadCodexUpdateStatus = async () => {
+    if (!onCheckCodexUpdate) return;
+    setIsCheckingCodexUpdate(true);
+    try {
+      const result = await onCheckCodexUpdate();
+      setCodexVersion(result.currentVersion);
+      setLatestCodexVersion(result.latestVersion ?? null);
+      setCodexCanUpdate(result.canUpdate);
+      if (result.error) setCodexUpdateResult({ success: false, message: result.error });
+    } finally {
+      setIsCheckingCodexUpdate(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isOnline || !onCheckCodexUpdate) return;
+    void loadCodexUpdateStatus();
+  // The status is deliberately refreshed once whenever this machine page opens.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOnline, onCheckCodexUpdate]);
 
   useEffect(() => {
     if (!showSystemdSection || !onGetSystemdStatus) return;
@@ -459,6 +490,76 @@ export function MachineInfoPage({
                 </button>
               </>
             )}
+          </div>
+
+          <div className="space-y-3">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Codex CLI</h3>
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-slate-300">Installed version</p>
+              <span className="text-sm font-mono text-slate-400">
+                {isCheckingCodexUpdate ? <Spinner size="w-3 h-3" /> : (codexVersion || (isOnline ? '—' : 'offline'))}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-slate-300">Latest version</p>
+              <span className="text-sm font-mono text-slate-400 flex items-center gap-2">
+                {latestCodexVersion || '—'}
+                {isOnline && onCheckCodexUpdate && !isCheckingCodexUpdate && (
+                  <button
+                    onClick={() => { setCodexUpdateResult(null); void loadCodexUpdateStatus(); }}
+                    className="p-0.5 hover:bg-slate-600 rounded transition-colors"
+                    aria-label="Check Codex updates"
+                    title="Check Codex updates"
+                  >
+                    <svg className="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357 2m15.357-2H15" />
+                    </svg>
+                  </button>
+                )}
+              </span>
+            </div>
+            {codexVersion && latestCodexVersion && codexVersion !== latestCodexVersion && (
+              <div className="p-2 bg-amber-500/20 border border-amber-500/50 rounded text-sm text-amber-400">
+                New Codex version available: {latestCodexVersion}
+              </div>
+            )}
+            {codexUpdateResult && (
+              <div className={`p-2 rounded text-sm ${codexUpdateResult.success
+                ? 'bg-green-500/20 border border-green-500/50 text-green-400'
+                : 'bg-red-500/20 border border-red-500/50 text-red-400'}`}>
+                {codexUpdateResult.message}
+              </div>
+            )}
+            {isOnline && !codexCanUpdate && codexVersion && (
+              <p className="text-xs text-slate-500">This Codex installation cannot be updated automatically.</p>
+            )}
+            <button
+              onClick={async () => {
+                if (!onUpdateCodex) return;
+                setIsUpdatingCodex(true);
+                setCodexUpdateResult(null);
+                try {
+                  const result = await onUpdateCodex();
+                  if (result.success) {
+                    setCodexVersion(result.newVersion ?? result.previousVersion);
+                    setLatestCodexVersion(result.newVersion ?? null);
+                    setCodexUpdateResult({ success: true, message: result.newVersion === result.previousVersion
+                      ? `Already on the latest version (${result.previousVersion}).`
+                      : `Updated Codex: ${result.previousVersion} → ${result.newVersion}.` });
+                  } else {
+                    setCodexUpdateResult({ success: false, message: result.error || 'Failed to update Codex' });
+                  }
+                } catch (err) {
+                  setCodexUpdateResult({ success: false, message: err instanceof Error ? err.message : 'Failed to update Codex' });
+                } finally {
+                  setIsUpdatingCodex(false);
+                }
+              }}
+              disabled={!isOnline || !onUpdateCodex || !codexCanUpdate || isUpdatingCodex || (!!latestCodexVersion && latestCodexVersion === codexVersion)}
+              className="w-full py-2 px-4 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors flex items-center justify-center gap-2"
+            >
+              {isUpdatingCodex ? <><Spinner color="border-white" />Updating Codex...</> : 'Update Codex'}
+            </button>
           </div>
 
           {/* Auto-start section — Linux only, lets the user install a

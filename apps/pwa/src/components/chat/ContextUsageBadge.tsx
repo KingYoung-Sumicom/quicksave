@@ -5,7 +5,7 @@ import { FormattedMessage, useIntl } from 'react-intl';
 import { clsx } from 'clsx';
 import type { ContextUsageBreakdown } from '@sumicom/quicksave-shared';
 import { useClaudeStore } from '../../stores/claudeStore';
-import { useConnectionStore } from '../../stores/connectionStore';
+import { selectCodexModelsForAgent, useConnectionStore } from '../../stores/connectionStore';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
 import { getAgentProvider } from '../../lib/agentProvider';
 import { normalizeAgentId } from '../../lib/claudePresets';
@@ -71,7 +71,8 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
   const modelFromBreakdown = breakdown?.model;
   const modelFromConfig = config.model as string | undefined;
   const model = modelFromBreakdown ?? modelFromConfig;
-  const codexModels = useConnectionStore((s) => s.codexModels);
+  const sessionMachineAgentId = useClaudeStore((s) => s.sessions[sessionId]?.machineAgentId);
+  const codexModels = useConnectionStore((s) => selectCodexModelsForAgent(s, sessionMachineAgentId));
   const agentId = normalizeAgentId((config.agent as string | undefined) ?? 'claude-code');
   const sessionContextWindow = config.contextWindow as number | undefined;
   const configuredContextWindow = agentId === 'claude-code' ? sessionContextWindow : undefined;

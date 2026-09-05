@@ -66,6 +66,8 @@ import {
   AgentCheckUpdateResponsePayload,
   AgentUpdateResponsePayload,
   AgentRestartResponsePayload,
+  CodexCheckUpdateResponsePayload,
+  CodexUpdateResponsePayload,
   AgentProbePayload,
   ClaudeStartRequestPayload,
   ClaudeStartResponsePayload,
@@ -213,10 +215,11 @@ import { readdir, stat, readFile, mkdir, writeFile, rename } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { homedir, platform as osPlatform } from 'os';
-import { spawnAppServer } from '../ai/codexAppServer/index.js';
+import { detectCodexVersion, getCodexBin, spawnAppServer } from '../ai/codexAppServer/index.js';
 import type { Model as CodexAppServerModel } from '../ai/codexAppServer/schema/generated/v2/Model.js';
 
 const VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
+const CODEX_VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
 // model/list reflects the current authenticated account's available models.
 // 30 min strikes a balance: long enough to avoid spawning a fresh app-server
 // every PWA reload; short enough that plan upgrades / model rollouts surface
@@ -476,6 +479,8 @@ export class MessageHandler {
   private pushClient: PushClient | null = null;
   private latestVersionCache: { version: string; checkedAt: number } | null = null;
   private versionCheckInFlight: Promise<string | null> | null = null;
+  private latestCodexVersionCache: { version: string; checkedAt: number } | null = null;
+  private codexVersionCheckInFlight: Promise<string | null> | null = null;
   private codexModelsCache: { models: CodexModelInfo[]; checkedAt: number } | null = null;
   private codexModelsCheckInFlight: Promise<CodexModelInfo[] | null> | null = null;
   private codexModelsUpdateHandler: ((models: CodexModelInfo[]) => void) | null = null;
@@ -571,6 +576,39 @@ export class MessageHandler {
     })();
 
     return this.versionCheckInFlight;
+  }
+
+  /** Check npm for the latest Codex CLI version, with the same 12h dedupe as the agent check. */
+  private async checkLatestCodexVersion(force = false): Promise<string | null> {
+    if (!force && this.latestCodexVersionCache &&
+        Date.now() - this.latestCodexVersionCache.checkedAt < CODEX_VERSION_CHECK_INTERVAL_MS) {
+      return this.latestCodexVersionCache.version;
+    }
+    if (this.codexVersionCheckInFlight) return this.codexVersionCheckInFlight;
+
+    this.codexVersionCheckInFlight = (async () => {
+      try {
+        const res = await fetch('https://registry.npmjs.org/@openai/codex/latest');
+        if (!res.ok) return null;
+        const data = await res.json() as { version?: string };
+        if (!data.version) return null;
+        this.latestCodexVersionCache = { version: data.version, checkedAt: Date.now() };
+        return data.version;
+      } catch {
+        return null;
+      } finally {
+        this.codexVersionCheckInFlight = null;
+      }
+    })();
+
+    return this.codexVersionCheckInFlight;
+  }
+
+  /** An npm executable next to Codex makes the update target unambiguous. */
+  private getCodexNpmBin(): string | null {
+    const codexBin = getCodexBin();
+    const npmBin = join(dirname(codexBin), 'npm');
+    return existsSync(npmBin) ? npmBin : null;
   }
 
   /**
@@ -1012,6 +1050,10 @@ export class MessageHandler {
           return this.handleSystemdUninstall(message);
         case 'codex:list-models':
           return this.handleCodexListModels(message);
+        case 'codex:check-update':
+          return this.handleCodexCheckUpdate(message);
+        case 'codex:update':
+          return this.handleCodexUpdate(message);
         case 'codex:login-start':
           return this.handleCodexLoginStart(message);
         case 'codex:login-status':
@@ -2172,7 +2214,13 @@ export class MessageHandler {
 
       // Use npm to install the latest global package
       const { stdout, stderr } = await execFileAsync('npm', [
-        'install', '-g', '@sumicom/quicksave@latest',
+        'install', '-g',
+        // npm 11 blocks lifecycle scripts unless explicitly allow-listed.
+        // These two native modules are required by the agent (SQLite history
+        // and PTY terminals); scope consent to this invocation rather than
+        // changing the user's global npm config.
+        '--allow-scripts=better-sqlite3,node-pty',
+        '@sumicom/quicksave@latest',
       ], { timeout: 120_000 });
 
       const output = (stdout + '\n' + stderr).trim();
@@ -2467,6 +2515,77 @@ export class MessageHandler {
     });
     response.id = message.id;
     return response;
+  }
+
+  private async handleCodexCheckUpdate(
+    message: Message,
+  ): Promise<Message<CodexCheckUpdateResponsePayload>> {
+    let currentVersion = 'unknown';
+    try {
+      currentVersion = await detectCodexVersion();
+      const latestVersion = await this.checkLatestCodexVersion(/* force */ true);
+      const response = createMessage<CodexCheckUpdateResponsePayload>(
+        'codex:check-update:response',
+        {
+          currentVersion,
+          latestVersion: latestVersion || undefined,
+          updateAvailable: !!latestVersion && latestVersion !== currentVersion,
+          canUpdate: !!this.getCodexNpmBin(),
+        },
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<CodexCheckUpdateResponsePayload>(
+        'codex:check-update:response',
+        {
+          currentVersion,
+          updateAvailable: false,
+          canUpdate: false,
+          error: error instanceof Error ? error.message : 'Failed to check Codex updates',
+        },
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleCodexUpdate(
+    message: Message,
+  ): Promise<Message<CodexUpdateResponsePayload>> {
+    let previousVersion = 'unknown';
+    try {
+      previousVersion = await detectCodexVersion();
+      const npmBin = this.getCodexNpmBin();
+      if (!npmBin) throw new Error('This Codex installation is not an npm global package Quicksave can update.');
+
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+      await execFileAsync(npmBin, ['install', '-g', '@openai/codex@latest'], { timeout: 120_000 });
+      const newVersion = await detectCodexVersion();
+      this.latestCodexVersionCache = { version: newVersion, checkedAt: Date.now() };
+
+      const response = createMessage<CodexUpdateResponsePayload>(
+        'codex:update:response',
+        { success: true, previousVersion, newVersion },
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<CodexUpdateResponsePayload>(
+        'codex:update:response',
+        {
+          success: false,
+          previousVersion,
+          error: error instanceof Error
+            ? (error.message.includes('EACCES') ? 'Permission denied. Update Codex with the same npm installation that installed it.' : error.message)
+            : 'Failed to update Codex',
+        },
+      );
+      response.id = message.id;
+      return response;
+    }
   }
 
   private async handleCodexListModels(

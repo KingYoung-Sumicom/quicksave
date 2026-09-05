@@ -13,7 +13,7 @@ import {
   normalizeAgentId,
 } from '../../lib/claudePresets';
 import { useClaudeStore } from '../../stores/claudeStore';
-import { useConnectionStore } from '../../stores/connectionStore';
+import { selectCodexModelsForAgent, useConnectionStore } from '../../stores/connectionStore';
 import { CodexGoalBadge } from './CodexGoalBadge';
 
 interface SessionStatusBarProps {
@@ -58,7 +58,8 @@ export function SessionStatusBar({
   const config = useSessionConfig(sessionId);
   const [openPopover, setOpenPopover] = useState<string | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
-  const codexModels = useConnectionStore((s) => s.codexModels);
+  const sessionMachineAgentId = useClaudeStore((s) => s.sessions[sessionId]?.machineAgentId);
+  const codexModels = useConnectionStore((s) => selectCodexModelsForAgent(s, sessionMachineAgentId));
   const allow1mForBilledModels = useClaudeStore((s) => s.allow1mForBilledModels);
 
   const rawAgent = (config.agent as string) ?? 'claude-code';

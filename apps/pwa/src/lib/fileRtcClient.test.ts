@@ -52,10 +52,18 @@ describe('assembleRtcFileResponse', () => {
     })).rejects.toThrow('Incomplete file transfer');
   });
 
-  it('returns metadata only for binary files', async () => {
-    await expect(assembleRtcFileResponse({ ...header, kind: 'binary', size: 500 }, [], 0, {
-      t: 'complete', bytes: 0,
-    })).resolves.toMatchObject({ success: true, kind: 'binary', size: 500 });
+  it('assembles binary files as base64 for download', async () => {
+    const bytes = new Uint8Array([0, 1, 2, 255]);
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    await expect(assembleRtcFileResponse({ ...header, kind: 'binary', size: bytes.byteLength }, [bytes], bytes.byteLength, {
+      t: 'complete', bytes: bytes.byteLength, sha256,
+    })).resolves.toMatchObject({
+      success: true,
+      kind: 'binary',
+      size: bytes.byteLength,
+      content: 'AAEC/w==',
+      encoding: 'base64',
+    });
   });
 });
 

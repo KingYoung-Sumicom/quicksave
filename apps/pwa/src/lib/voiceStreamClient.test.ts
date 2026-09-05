@@ -43,6 +43,7 @@ class FakeDataChannel {
   readyState = 'open';
   send = vi.fn();
   close = vi.fn();
+  addEventListener = vi.fn();
 }
 
 class FakeRTCPeerConnection {
@@ -70,6 +71,7 @@ class FakeRTCPeerConnection {
   });
   addIceCandidate = vi.fn(async () => {});
   close = vi.fn();
+  addEventListener = vi.fn();
   constructor(public config: unknown) {
     lastPc = this;
   }
@@ -138,7 +140,7 @@ const CONFIG: VoiceConfig = {
   streamModel: '',
 };
 
-function makeSession(voiceSessionId?: string) {
+function makeSession(voiceSessionId?: string, onDebug?: (event: { detail: string; data?: Record<string, unknown> }) => void) {
   const states: string[] = [];
   const speech: boolean[] = [];
   const playback: Array<{ active: boolean; streamId: string }> = [];
@@ -151,7 +153,7 @@ function makeSession(voiceSessionId?: string) {
     onRemotePlayback: (active, streamId) => playback.push({ active, streamId }),
     onError: () => {},
     onState: (s) => states.push(s),
-  }, undefined, voiceSessionId);
+  }, onDebug, voiceSessionId);
   return { session, states, speech, playback, audioFrames };
 }
 
@@ -300,6 +302,20 @@ describe('VoiceStreamSession.connect', () => {
 });
 
 describe('VoiceStreamSession.startUtterance', () => {
+  it('rejects a stale ready state when the DataChannel is no longer open', async () => {
+    const { session, states } = makeSession();
+    await session.connect();
+    expect(session.isReadyForCapture()).toBe(true);
+    if (lastPc?.dc) lastPc.dc.readyState = 'closed';
+    mocks.getUserMedia.mockClear();
+
+    await expect(session.startUtterance()).rejects.toThrow('no longer ready');
+
+    expect(session.isReadyForCapture()).toBe(false);
+    expect(mocks.getUserMedia).not.toHaveBeenCalled();
+    expect(states).not.toContain('recording');
+  });
+
   it('uses the ScriptProcessor PCM fallback in Firefox', async () => {
     Object.defineProperty(globalThis.navigator, 'userAgent', {
       configurable: true,
@@ -324,6 +340,43 @@ describe('VoiceStreamSession.startUtterance', () => {
     expect(output.every((sample) => sample === 0)).toBe(true);
     expect(lastPc?.dc?.send).toHaveBeenCalledWith(expect.any(ArrayBuffer));
     expect(states).toContain('recording');
+  });
+
+  it('uses the ScriptProcessor PCM fallback in an iOS Home Screen PWA', async () => {
+    Object.defineProperty(globalThis.navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148',
+    });
+    expect(shouldUseLegacyPcmCapture(navigator.userAgent)).toBe(true);
+    const { session, states } = makeSession();
+    await session.connect();
+
+    const starting = session.startUtterance();
+    for (let i = 0; i < 50 && !lastLegacyNode; i++) await Promise.resolve();
+    expect(lastLegacyNode).not.toBeNull();
+    expect(lastWorkletNode).toBeNull();
+    const input = new Float32Array(2048).fill(0.2);
+    const output = new Float32Array(2048).fill(1);
+    lastLegacyNode?.onaudioprocess?.({
+      inputBuffer: { getChannelData: () => input },
+      outputBuffer: { getChannelData: () => output },
+    } as AudioProcessingEvent);
+    await starting;
+
+    expect(output.every((sample) => sample === 0)).toBe(true);
+    expect(lastPc?.dc?.send).toHaveBeenCalledWith(expect.any(ArrayBuffer));
+    expect(states).toContain('recording');
+  });
+
+  it('recognizes the desktop-style iPad user agent', () => {
+    expect(shouldUseLegacyPcmCapture(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 Mobile/15E148',
+      5,
+    )).toBe(true);
+    expect(shouldUseLegacyPcmCapture(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 Safari/605.1.15',
+      0,
+    )).toBe(false);
   });
 
   it('does not open the microphone until the session lease is granted', async () => {
@@ -488,7 +541,8 @@ describe('VoiceStreamSession.startUtterance', () => {
   });
 
   it('times out and cleans up when the worklet produces no PCM frames', async () => {
-    const { session, states } = makeSession();
+    const debugEvents: Array<{ detail: string; data?: Record<string, unknown> }> = [];
+    const { session, states } = makeSession(undefined, (event) => debugEvents.push(event));
     await session.connect({ acquireMic: true });
 
     const starting = session.startUtterance();
@@ -504,6 +558,24 @@ describe('VoiceStreamSession.startUtterance', () => {
     expect(states).not.toContain('recording');
     expect(mocks.stopTrack).toHaveBeenCalledTimes(1);
     expect(lastAudioContext?.close).toHaveBeenCalledTimes(1);
+    expect(debugEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        detail: 'capture processor selected',
+        data: expect.objectContaining({ processor: 'AudioWorklet' }),
+      }),
+      expect.objectContaining({
+        detail: 'first PCM frame timed out',
+        data: expect.objectContaining({
+          timeoutMs: 2_500,
+          frameCount: 0,
+          contextState: 'running',
+          sampleRate: 48_000,
+          dataChannelState: 'open',
+        }),
+      }),
+      expect.objectContaining({ detail: 'capture teardown' }),
+      expect.objectContaining({ detail: 'microphone capture failed to start' }),
+    ]));
   });
 
   it('fails promptly and cleans up when Firefox reports a worklet processor error', async () => {

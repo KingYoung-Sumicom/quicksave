@@ -50,10 +50,28 @@ const IMAGE_EXT_TO_MIME: Record<string, string> = {
   ico: 'image/x-icon',
 };
 
+const AUDIO_EXT_TO_MIME: Record<string, string> = {
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  oga: 'audio/ogg',
+  opus: 'audio/ogg',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  flac: 'audio/flac',
+  webm: 'audio/webm',
+};
+
 function imageMimeFor(absPath: string): string | undefined {
   const dot = absPath.lastIndexOf('.');
   if (dot < 0) return undefined;
   return IMAGE_EXT_TO_MIME[absPath.slice(dot + 1).toLowerCase()];
+}
+
+function audioMimeFor(absPath: string): string | undefined {
+  const dot = absPath.lastIndexOf('.');
+  if (dot < 0) return undefined;
+  return AUDIO_EXT_TO_MIME[absPath.slice(dot + 1).toLowerCase()];
 }
 
 /** Weak ETag built from stat metadata. Same shape that the PWA produces
@@ -145,6 +163,15 @@ export class FileBrowser {
           encoding: 'base64',
           mimeType: imageMime,
         };
+      }
+
+      // Audio bytes never ride the normal message bus, even when the file is
+      // small or its initial bytes happen to look textual. Returning metadata
+      // as binary makes the PWA upgrade to the direct WebRTC transfer, where
+      // the MIME type enables the native audio player.
+      const audioMime = audioMimeFor(targetAbs);
+      if (audioMime) {
+        return { success: true, ...meta, kind: 'binary', mimeType: audioMime };
       }
 
       const requested = payload.maxBytes ?? DEFAULT_PREVIEW_BYTES;

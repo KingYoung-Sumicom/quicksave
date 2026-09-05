@@ -15,6 +15,14 @@ interface UseFileOpsOptions {
   queueWhileDisconnected?: boolean;
 }
 
+/** Binary files cannot be previewed, but the direct channel can still fetch
+ * their bytes for download. Oversized previewable files use the same path. */
+export function shouldUseFileRtc(metadata: FilesReadResponsePayload): boolean {
+  return metadata.success
+    && !metadata.notModified
+    && (metadata.kind === 'oversized' || metadata.kind === 'binary');
+}
+
 /**
  * One-shot file browser commands. Pure request/response — no
  * subscriptions, no streaming — so this is just a thin wrapper around
@@ -45,7 +53,7 @@ export function useFileOps(
     (payload: FilesReadRequestPayload, readOptions: FileRtcReadOptions = {}) =>
       readWithCache(payload, async (p) => {
         const metadata = await sendCommand<FilesReadResponsePayload>('files:read', p);
-        if (!metadata.success || metadata.notModified || metadata.kind !== 'oversized') return metadata;
+        if (!shouldUseFileRtc(metadata)) return metadata;
         const bus = getBus();
         if (!bus) return { ...metadata, transferError: 'Not connected' };
         try {

@@ -51,9 +51,15 @@ export async function readWithCache(
   fetcher: (req: FilesReadRequestPayload) => Promise<FilesReadResponsePayload>,
 ): Promise<FilesReadResponsePayload> {
   const cached = await fileCache.peek(req);
-  // Metadata-only oversized entries from older builds must not suppress a
-  // fresh attempt to upgrade the body through WebRTC.
-  if (cached?.kind === 'oversized') return fetcher(req);
+  // Metadata-only oversized/binary entries from older builds must not
+  // suppress a fresh attempt to fetch the body through WebRTC. In
+  // particular, revalidating an old binary entry with ifNoneMatch would make
+  // the agent return notModified before the direct-transfer fallback runs.
+  if (cached?.kind === 'oversized'
+    || (cached?.kind === 'binary'
+      && (cached.encoding !== 'base64' || typeof cached.content !== 'string'))) {
+    return fetcher(req);
+  }
   const etag = etagFor(cached);
   if (cached && etag) {
     // Conditional revalidation — send the etag, expect 304 or full body.

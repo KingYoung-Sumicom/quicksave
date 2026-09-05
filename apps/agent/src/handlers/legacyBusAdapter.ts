@@ -70,6 +70,8 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   'systemd:uninstall',
   // codex
   'codex:list-models',
+  'codex:check-update',
+  'codex:update',
   'codex:login-start',
   'codex:login-status',
   'codex:login-cancel',

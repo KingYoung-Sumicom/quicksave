@@ -30,6 +30,8 @@ import {
   type AgentCheckUpdateResponsePayload,
   type AgentUpdateResponsePayload,
   type AgentRestartResponsePayload,
+  type CodexCheckUpdateResponsePayload,
+  type CodexUpdateResponsePayload,
   type SystemdStatusResponsePayload,
   type SystemdInstallResponsePayload,
   type SystemdUninstallResponsePayload,
@@ -720,6 +722,31 @@ export function useGitOperations(
     }
   }, [sendCommand]);
 
+  const checkCodexUpdate = useCallback(async () => {
+    try {
+      return await sendCommand<CodexCheckUpdateResponsePayload>('codex:check-update', {}, 15_000);
+    } catch (error) {
+      return {
+        currentVersion: 'unknown',
+        updateAvailable: false,
+        canUpdate: false,
+        error: error instanceof Error ? error.message : 'Failed to check Codex updates',
+      };
+    }
+  }, [sendCommand]);
+
+  const updateCodex = useCallback(async () => {
+    try {
+      return await sendCommand<CodexUpdateResponsePayload>('codex:update', {}, 180_000);
+    } catch (error) {
+      return {
+        success: false,
+        previousVersion: 'unknown',
+        error: error instanceof Error ? error.message : 'Failed to update Codex',
+      };
+    }
+  }, [sendCommand]);
+
   const getGitIdentity = useCallback(async () => {
     try {
       return await sendCommand<GitConfigGetResponsePayload>('git:config-get', {}, 5000);
@@ -811,6 +838,8 @@ export function useGitOperations(
     setGitIdentity,
     checkAgentUpdate,
     updateAgent,
+    checkCodexUpdate,
+    updateCodex,
     restartAgent,
     getSystemdStatus,
     installSystemdUnit,

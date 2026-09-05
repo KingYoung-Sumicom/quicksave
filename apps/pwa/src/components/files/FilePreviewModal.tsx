@@ -65,6 +65,14 @@ export function createPreviewDownload(
       fileName,
     };
   }
+  if (data.kind === 'binary' && data.encoding === 'base64') {
+    return {
+      blob: new Blob([base64ToBytes(data.content) as BlobPart], {
+        type: data.mimeType || 'application/octet-stream',
+      }),
+      fileName,
+    };
+  }
   if (data.kind === 'text') {
     return { blob: new Blob([data.content], { type: textDownloadMime(fileName) }), fileName };
   }
@@ -195,7 +203,9 @@ export function FileViewerPane({
     && !(isCsv && renderCsv && canRichRender);
   const canDownload = data?.success === true
     && typeof data.content === 'string'
-    && (data.kind === 'text' || data.kind === 'image');
+    && (data.kind === 'text'
+      || data.kind === 'image'
+      || (data.kind === 'binary' && data.encoding === 'base64'));
   const showsZoomImage = data?.success === true
     && (data.kind === 'image' || (data.kind === 'text' && isSvg && renderSvg && canRichRender));
   const showsRenderedHtml = data?.success === true
@@ -203,6 +213,19 @@ export function FileViewerPane({
     && isHtml
     && renderHtml
     && canRichRender;
+  const downloadFile = useCallback(() => {
+    const download = createPreviewDownload(data, fileName);
+    if (!download) return;
+    const url = URL.createObjectURL(download.blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = download.fileName;
+    anchor.rel = 'noopener';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4_000);
+  }, [data, fileName]);
 
   useEffect(() => {
     setShowLineNumbers(false);
@@ -271,19 +294,7 @@ export function FileViewerPane({
         )}
         <button
           type="button"
-          onClick={() => {
-            const download = createPreviewDownload(data, fileName);
-            if (!download) return;
-            const url = URL.createObjectURL(download.blob);
-            const anchor = document.createElement('a');
-            anchor.href = url;
-            anchor.download = download.fileName;
-            anchor.rel = 'noopener';
-            document.body.appendChild(anchor);
-            anchor.click();
-            anchor.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 4_000);
-          }}
+          onClick={downloadFile}
           disabled={!canDownload}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-300 transition-colors hover:bg-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
           aria-label="Download file"
@@ -350,6 +361,8 @@ export function FileViewerPane({
             renderSvg={isSvg && renderSvg && canRichRender}
             renderCsv={isCsv && renderCsv && canRichRender}
             showLineNumbers={showLineNumbers}
+            canDownload={canDownload}
+            onDownload={downloadFile}
           />
         )}
       </div>
@@ -427,7 +440,7 @@ function DesktopSidePanel({
   );
 }
 
-function PreviewContent({
+export function PreviewContent({
   data,
   displayPath,
   cwd,
@@ -437,6 +450,8 @@ function PreviewContent({
   renderSvg,
   renderCsv,
   showLineNumbers,
+  canDownload,
+  onDownload,
 }: {
   data: FilesReadResponsePayload;
   displayPath: string;
@@ -447,6 +462,8 @@ function PreviewContent({
   renderSvg: boolean;
   renderCsv: boolean;
   showLineNumbers: boolean;
+  canDownload: boolean;
+  onDownload: () => void;
 }) {
   const lang = useMemo(() => detectLanguage(displayPath), [displayPath]);
   const highlighted = useMemo(() => {
@@ -460,10 +477,32 @@ function PreviewContent({
     }
   }, [data.kind, data.content, lang]);
 
+  if (data.kind === 'binary'
+    && data.encoding === 'base64'
+    && data.mimeType?.startsWith('audio/')) {
+    return <AudioPreview data={data} />;
+  }
+
   if (data.kind === 'binary') {
     return (
-      <div className="px-4 py-12 text-center text-sm text-slate-500">
-        Binary file — preview not shown.
+      <div className="flex flex-col items-center px-4 py-12 text-center text-sm text-slate-500">
+        <p>Preview isn't available for this file format.</p>
+        {canDownload ? (
+          <>
+            <p className="mt-2 text-xs text-slate-400">The file was received over the direct connection.</p>
+            <button
+              type="button"
+              onClick={onDownload}
+              className="mt-4 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-500"
+            >
+              Download file
+            </button>
+          </>
+        ) : (
+          <p className="mt-2 text-xs text-amber-400">
+            {data.transferError ? `Download unavailable: ${data.transferError}` : 'Download unavailable.'}
+          </p>
+        )}
       </div>
     );
   }
@@ -534,6 +573,36 @@ function PreviewContent({
   }
   return (
     <RawTextPreview content={data.content ?? ''} showLineNumbers={showLineNumbers} />
+  );
+}
+
+function AudioPreview({ data }: { data: FilesReadResponsePayload }) {
+  const objectUrl = useMemo(() => {
+    if (typeof URL.createObjectURL !== 'function') return null;
+    const download = createPreviewDownload(data, 'audio');
+    return download ? URL.createObjectURL(download.blob) : null;
+  }, [data]);
+
+  useEffect(() => () => {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }, [objectUrl]);
+
+  if (!objectUrl) {
+    return <div className="px-4 py-12 text-center text-sm text-amber-400">Audio playback unavailable.</div>;
+  }
+
+  return (
+    <div className="flex h-full min-h-48 items-center justify-center bg-slate-900 px-6 py-12">
+      <audio
+        controls
+        preload="metadata"
+        src={objectUrl}
+        className="w-full max-w-xl"
+        aria-label="Audio player"
+      >
+        Your browser does not support audio playback.
+      </audio>
+    </div>
   );
 }
 

@@ -165,10 +165,10 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
   // populated list during a transient daemon-side load.
   bus.subscribe<CodexModelInfo[], CodexModelInfo[]>('/codex/models', {
     onSnapshot: (models) => {
-      if (models.length > 0) useConnectionStore.getState().setCodexModels(models);
+      if (models.length > 0) useConnectionStore.getState().setAgentCodexModels(agentId, models);
     },
     onUpdate: (models) => {
-      if (models.length > 0) useConnectionStore.getState().setCodexModels(models);
+      if (models.length > 0) useConnectionStore.getState().setAgentCodexModels(agentId, models);
     },
     onError: (err) => console.warn('[bus] /codex/models error:', err),
   });
@@ -535,9 +535,6 @@ function AppContent() {
           // so codex prefs aren't clobbered when the user is on Codex.
           useClaudeStore.getState().setAgentPref('claude-code', 'model', preferences.model);
         }
-        if (codexModels?.length) {
-          useConnectionStore.getState().setCodexModels(codexModels);
-        }
         if (availableProviders?.length) {
           useConnectionStore.getState().setAvailableProviders(availableProviders);
         }
@@ -554,6 +551,9 @@ function AppContent() {
         }
         // Update multi-agent connection map (authoritative per-agent state)
         useConnectionStore.getState().setAgentConnected(agentId, path, pro, availableRepos, availableCodingPaths, agentVersion, devBuild, platform, audio);
+        if (codexModels?.length) {
+          useConnectionStore.getState().setAgentCodexModels(agentId, codexModels);
+        }
         const repoPaths = availableRepos?.map((r) => r.path);
         const codingPaths = availableCodingPaths?.map((p) => p.path);
         handlersRef.current.recordConnection(agentId, path, pro, repoPaths, codingPaths);
@@ -1272,6 +1272,8 @@ function MachineInfoRoute({
   const {
     checkAgentUpdate,
     updateAgent,
+    checkCodexUpdate,
+    updateCodex,
     restartAgent,
     getSystemdStatus,
     installSystemdUnit,
@@ -1297,6 +1299,8 @@ function MachineInfoRoute({
     <MachineInfoPage
       onCheckAgentUpdate={checkAgentUpdate}
       onUpdateAgent={updateAgent}
+      onCheckCodexUpdate={checkCodexUpdate}
+      onUpdateCodex={updateCodex}
       onRestartAgent={restartAgent}
       onDeleteProject={handleDeleteProject}
       onGetSystemdStatus={getSystemdStatus}

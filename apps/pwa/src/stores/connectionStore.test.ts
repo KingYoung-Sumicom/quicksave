@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useConnectionStore } from './connectionStore';
+import { selectCodexModelsForAgent, useConnectionStore } from './connectionStore';
 
 describe('connectionStore', () => {
   beforeEach(() => {
@@ -164,6 +164,18 @@ describe('connectionStore', () => {
     it('setCodexModels', () => {
       useConnectionStore.getState().setCodexModels([{ id: 'o3', name: 'o3' }]);
       expect(useConnectionStore.getState().codexModels).toEqual([{ id: 'o3', name: 'o3' }]);
+    });
+
+    it('keeps Codex model catalogs isolated per machine', () => {
+      const store = useConnectionStore.getState();
+      store.setAgentConnected('machine-a', '/a', false);
+      store.setAgentConnected('machine-b', '/b', false);
+      store.setAgentCodexModels('machine-a', [{ id: 'gpt-6-astra', name: 'GPT-6-Astra' }]);
+      store.setAgentCodexModels('machine-b', [{ id: 'gpt-5.5', name: 'GPT-5.5' }]);
+
+      const state = useConnectionStore.getState();
+      expect(selectCodexModelsForAgent(state, 'machine-a').map((model) => model.id)).toEqual(['gpt-6-astra']);
+      expect(selectCodexModelsForAgent(state, 'machine-b').map((model) => model.id)).toEqual(['gpt-5.5']);
     });
   });
 });

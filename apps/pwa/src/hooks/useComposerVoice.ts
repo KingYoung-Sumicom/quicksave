@@ -31,6 +31,7 @@ import {
 } from '../lib/voiceRecoveryStore';
 import { useVoiceRecorder } from './useVoiceRecorder';
 import { useVoiceStream } from './useVoiceStream';
+import type { VoiceRtcDebugEvent } from '../lib/voiceStreamClient';
 
 export interface UseComposerVoice {
   /** Whether to render the mic button at all (browser can capture + machine
@@ -159,6 +160,7 @@ export function useComposerVoice(
   const replayingRecoveryIdRef = useRef<string | null>(null);
   const sessionIdForLogsRef = useRef(resolvedOptions?.sessionIdForLogs);
   sessionIdForLogsRef.current = resolvedOptions?.sessionIdForLogs;
+  const captureAttemptIdRef = useRef<string | null>(null);
   const cueCallbacksRef = useRef({
     onGraceStarted: resolvedOptions?.onGraceStarted,
     onIntentCommitted: resolvedOptions?.onIntentCommitted,
@@ -193,7 +195,32 @@ export function useComposerVoice(
       event,
       phase: 'intent',
       turnId: ctx?.turnId,
-      data: { ...(ctx?.data ?? {}), ...data },
+      data: {
+        ...(ctx?.data ?? {}),
+        ...(captureAttemptIdRef.current ? { captureAttemptId: captureAttemptIdRef.current } : {}),
+        ...data,
+      },
+    });
+  }, [agentId]);
+
+  const logCaptureDebug = useCallback((debugEvent: VoiceRtcDebugEvent) => {
+    // ICE candidate strings can contain private network addresses. Candidate
+    // type is sufficient for the persisted lifecycle log; the Settings debug
+    // panel still receives the full in-memory event for interactive diagnosis.
+    const { candidate: _candidate, ...safeData } = debugEvent.data ?? {};
+    const ctx = cueCallbacksRef.current.getLogContext?.();
+    logVoiceEvent(agentId, {
+      sessionId: sessionIdForLogsRef.current,
+      event: `capture.${debugEvent.kind}`,
+      phase: 'capture',
+      turnId: ctx?.turnId,
+      data: {
+        ...(ctx?.data ?? {}),
+        ...(captureAttemptIdRef.current ? { captureAttemptId: captureAttemptIdRef.current } : {}),
+        elapsedMs: debugEvent.t,
+        detail: debugEvent.detail,
+        ...safeData,
+      },
     });
   }, [agentId]);
 
@@ -412,6 +439,7 @@ export function useComposerVoice(
       voiceSessionId: resolvedOptions?.streamVoiceSessionId,
       enabled: resolvedOptions?.streamingConnectionEnabled ?? true,
       transcriptionLocale,
+      onDebug: logCaptureDebug,
     },
   );
 
@@ -511,6 +539,7 @@ export function useComposerVoice(
 
   const stopListening = useCallback(() => {
     if (voiceStream.recording) {
+      logStreamingEvent('capture.stop_requested', { mode: 'streaming' });
       beginStreamingTranscription();
       void persistStreamingRecovery();
       voiceStream.stop({ releaseMic: !cueCallbacksRef.current.keepStreamingMicAlive });
@@ -518,9 +547,10 @@ export function useComposerVoice(
       return;
     }
     if (recorder.state === 'recording') {
+      logStreamingEvent('capture.stop_requested', { mode: 'batch' });
       void batchStopAndTranscribe();
     }
-  }, [voiceStream, recorder.state, batchStopAndTranscribe, beginStreamingTranscription, persistStreamingRecovery, scheduleStreamingEndpoint]);
+  }, [voiceStream, recorder.state, batchStopAndTranscribe, beginStreamingTranscription, logStreamingEvent, persistStreamingRecovery, scheduleStreamingEndpoint]);
 
   const cancelListening = useCallback(() => {
     clearStreamingEndpointTimers();
@@ -603,6 +633,14 @@ export function useComposerVoice(
     // first PCM frame reaches the DataChannel; batch start resolves only after
     // MediaRecorder has entered its recording state.
     setArming(true);
+    captureAttemptIdRef.current = crypto.randomUUID();
+    logStreamingEvent('capture.attempt_started', {
+      mode,
+      visibilityState: document.visibilityState,
+      userAgent: navigator.userAgent,
+      maxTouchPoints: navigator.maxTouchPoints,
+      standalone: window.matchMedia?.('(display-mode: standalone)').matches ?? false,
+    });
     beginLocalRecoveryCapture();
     // Begin the streaming gesture path before any storage await. iOS Home
     // Screen PWAs can otherwise lose transient activation while IndexedDB is
@@ -612,6 +650,7 @@ export function useComposerVoice(
     try {
       const config = await getVoiceConfig();
       if (!isVoiceConfigUsable(config)) {
+        logStreamingEvent('capture.config_unavailable', { mode });
         if (streamingStart) await streamingStart.catch(() => false);
         if (batchStart) {
           await batchStart.catch(() => false);
@@ -630,20 +669,31 @@ export function useComposerVoice(
         if (!streamingStart) return false;
         const ok = await streamingStart;
         if (!ok) {
+          logStreamingEvent('capture.attempt_failed', { mode, reason: 'streaming_session_unavailable' });
           setLiveUnavailable(true);
           onErrorRef.current('Live voice couldn’t connect on this network.');
         }
+        if (ok) logStreamingEvent('capture.attempt_recording', { mode });
         return ok;
       } else {
-        return batchStart ? await batchStart : false;
+        const ok = batchStart ? await batchStart : false;
+        logStreamingEvent(ok ? 'capture.attempt_recording' : 'capture.attempt_failed', {
+          mode,
+          ...(!ok ? { reason: 'media_recorder_start_failed' } : {}),
+        });
+        return ok;
       }
     } catch (err) {
+      logStreamingEvent('capture.attempt_failed', {
+        mode,
+        reason: err instanceof Error ? err.message : String(err),
+      });
       onErrorRef.current(err instanceof Error ? err.message : 'Could not start voice input.');
       return false;
     } finally {
       stopArming();
     }
-  }, [transcribing, arming, mode, voiceStream, recorder.state, recorder, stopArming, beginLocalRecoveryCapture, resolvedOptions?.streamingConnectionEnabled]);
+  }, [transcribing, arming, mode, voiceStream, recorder.state, recorder, stopArming, beginLocalRecoveryCapture, logStreamingEvent, resolvedOptions?.streamingConnectionEnabled]);
 
   const onMicPress = useCallback(async () => {
     if (transcribing || arming) return;

@@ -172,9 +172,6 @@ export async function assembleRtcFileResponse(
   receivedBytes: number,
   complete: Extract<FilesRtcDataMessage, { t: 'complete' }>,
 ): Promise<FilesReadResponsePayload> {
-  if (header.kind === 'binary') {
-    return { success: true, ...header, content: undefined };
-  }
   if (receivedBytes !== header.size || complete.bytes !== receivedBytes) {
     throw new Error(`Incomplete file transfer (${receivedBytes}/${header.size} bytes).`);
   }
@@ -192,10 +189,10 @@ export async function assembleRtcFileResponse(
     mtime: header.mtime,
     kind: header.kind,
     mimeType: header.mimeType,
-    encoding: header.kind === 'image' ? 'base64' : 'utf-8',
-    content: header.kind === 'image'
-      ? bytesToBase64(bytes)
-      : new TextDecoder().decode(bytes),
+    encoding: header.kind === 'text' ? 'utf-8' : 'base64',
+    content: header.kind === 'text'
+      ? new TextDecoder().decode(bytes)
+      : bytesToBase64(bytes),
   };
 }
 
