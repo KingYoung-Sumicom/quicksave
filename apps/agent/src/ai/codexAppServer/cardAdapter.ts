@@ -151,6 +151,7 @@ function guardianActionToolName(action: GuardianApprovalReviewAction): string | 
     case 'command':
     case 'execve':
     case 'networkAccess':
+    case 'writeStdin':
       return 'Bash';
     case 'applyPatch':
       return 'Edit';
@@ -387,8 +388,11 @@ export function createCodexTurnStreamConsumer(
       case 'warning':
       case 'configWarning':
       case 'deprecationNotice': {
-        const params = notification.params as { message?: string };
-        const text = params?.message ?? `(${notification.method})`;
+        const params = notification.params as { message?: string; summary?: string; details?: string | null };
+        const structuredText = [params?.summary, params?.details]
+          .filter((part): part is string => Boolean(part))
+          .join('\n\n');
+        const text = params?.message ?? (structuredText || `(${notification.method})`);
         emit(cb.systemMessage(text, 'warning'));
         return;
       }
@@ -442,6 +446,28 @@ export function createCodexTurnStreamConsumer(
           .map((v) => v.message ?? v.kind ?? 'verification required')
           .join('; ');
         emit(cb.systemMessage(`Account verification: ${messages}`, 'warning'));
+        return;
+      }
+
+      case 'modelProvider/authRecoveryStarted':
+      case 'modelProvider/authRecoveryCompleted': {
+        const params = notification.params as { threadId: string; turnId: string; provider: string; message: string };
+        if (params.threadId !== ctx.threadId || params.turnId !== ctx.turnId) return;
+        emit(cb.systemMessage(`Authentication recovery (${params.provider}): ${params.message}`, 'warning'));
+        return;
+      }
+
+      case 'autoApprovalReview/strictReviewRequired': {
+        const params = notification.params as { threadId: string; turnId: string };
+        if (params.threadId !== ctx.threadId || params.turnId !== ctx.turnId) return;
+        emit(cb.systemMessage('Additional approval review is required before this action can continue.', 'warning'));
+        return;
+      }
+
+      case 'thread/reverted': {
+        const params = notification.params as { threadId: string };
+        if (params.threadId !== ctx.threadId) return;
+        emit(cb.systemMessage('Thread reverted to an earlier state.', 'info'));
         return;
       }
 
@@ -551,15 +577,25 @@ export function createCodexTurnStreamConsumer(
       case 'hook/started':
       case 'hook/completed':
       case 'mcpServer/oauthLogin/completed':
+      case 'mcpServer/event/stream/notification':
       case 'process/outputDelta':
       case 'process/exited':
+      case 'project/changed':
+      case 'rawResponse/completed':
       case 'remoteControl/status/changed':
       case 'skills/changed':
+      case 'thread/environment/connected':
+      case 'thread/environment/disconnected':
+      case 'thread/project/updated':
+      case 'thread/queue/changed':
       case 'thread/realtime/closed':
       case 'thread/realtime/error':
       case 'thread/realtime/itemAdded':
+      case 'thread/realtime/item/completed':
+      case 'thread/realtime/item/started':
       case 'thread/realtime/outputAudio/delta':
       case 'thread/realtime/sdp':
+      case 'thread/realtime/item/transcript/delta':
       case 'thread/realtime/started':
       case 'thread/realtime/transcript/delta':
       case 'thread/realtime/transcript/done':
@@ -581,6 +617,7 @@ export function createCodexTurnStreamConsumer(
     switch (item.type) {
       case 'userMessage':
       case 'hookPrompt':
+      case 'functionCallOutput':
         // Provider already emitted the user card via cb.userMessage.
         return;
 
@@ -864,6 +901,7 @@ export function createCodexTurnStreamConsumer(
 
       case 'userMessage':
       case 'hookPrompt':
+      case 'functionCallOutput':
       case 'imageView':
       case 'enteredReviewMode':
       case 'exitedReviewMode':
@@ -1179,6 +1217,7 @@ function extractWebSearchQuery(item: Extract<ThreadItem, { type: 'webSearch' }>)
     case 'other':
       return '';
   }
+  return '';
 }
 
 function mcpResultText(item: Extract<ThreadItem, { type: 'mcpToolCall' }>): string {

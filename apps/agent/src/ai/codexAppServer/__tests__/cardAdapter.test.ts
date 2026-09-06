@@ -2067,11 +2067,11 @@ describe('cardAdapter — turn id isolation (R6)', () => {
 });
 
 describe('cardAdapter — warning notifications', () => {
-  it('warning/configWarning/deprecationNotice all map to system warning cards', async () => {
+  it('warning/configWarning/deprecationNotice all map to system warning cards with their details', async () => {
     const h = harness();
     await h.send('warning', { threadId: 'thr_test', message: 'soft warning' });
     await h.send('configWarning', { summary: 'config thing', details: null, path: null, range: null });
-    await h.send('deprecationNotice', { message: 'method X is deprecated' });
+    await h.send('deprecationNotice', { summary: 'method X is deprecated', details: 'Use method Y instead.' });
     await h.send('turn/completed', {
       threadId: 'thr_test',
       turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
@@ -2083,9 +2083,33 @@ describe('cardAdapter — warning notifications', () => {
         (e.card as { type?: string }).type === 'system' &&
         (e.card as { subtype?: string }).subtype === 'warning',
     );
-    // configWarning has `summary` not `message`, so we expect 2 warnings carrying `message`.
-    // The dispatcher reads `params.message` only — so configWarning falls back to the method name.
-    expect(warnings.length).toBeGreaterThanOrEqual(2);
+    const texts = warnings.map((e) => (e as { card: { text: string } }).card.text);
+    expect(texts).toContain('soft warning');
+    expect(texts).toContain('config thing');
+    expect(texts).toContain('method X is deprecated\n\nUse method Y instead.');
+  });
+
+  it('surfaces actionable current-protocol review and auth-recovery notifications', async () => {
+    const h = harness();
+    await h.send('modelProvider/authRecoveryStarted', {
+      threadId: 'thr_test', turnId: 'turn_1', provider: 'openai', message: 'Refresh your login.',
+    });
+    await h.send('autoApprovalReview/strictReviewRequired', {
+      threadId: 'thr_test', turnId: 'turn_1', startedAtMs: 0,
+    });
+    await h.send('thread/reverted', { threadId: 'thr_test' });
+    await h.send('turn/completed', {
+      threadId: 'thr_test',
+      turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const texts = h.events
+      .filter((e) => e.type === 'add' && (e.card as { type?: string }).type === 'system')
+      .map((e) => (e as { card: { text: string } }).card.text);
+    expect(texts).toContain('Authentication recovery (openai): Refresh your login.');
+    expect(texts).toContain('Additional approval review is required before this action can continue.');
+    expect(texts).toContain('Thread reverted to an earlier state.');
   });
 
   it('unknown notifications surface as warning cards', async () => {

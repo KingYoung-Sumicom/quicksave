@@ -160,6 +160,7 @@ export function makeBreakdown(input: number, output: number, cachedInput = 0): T
     totalTokens: input + output,
     inputTokens: input,
     cachedInputTokens: cachedInput,
+    cacheWriteInputTokens: 0,
     outputTokens: output,
     reasoningOutputTokens: 0,
   };

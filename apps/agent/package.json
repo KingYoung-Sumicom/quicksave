@@ -1,6 +1,6 @@
 {
   "name": "@sumicom/quicksave",
-  "version": "0.8.32",
+  "version": "0.8.33",
   "description": "Quicksave agent - remote git control CLI",
   "repository": {
     "type": "git",

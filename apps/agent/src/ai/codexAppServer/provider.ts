@@ -1155,7 +1155,7 @@ export function subagentThreadSnapshot(thread: Thread): {
         });
       } else if (item.type === 'dynamicToolCall') {
         const output = (item.contentItems ?? [])
-          .flatMap((content) => content.type === 'inputText' ? [content.text] : [])
+          .flatMap((content: { type: string; text?: string }) => content.type === 'inputText' && content.text ? [content.text] : [])
           .join('\n')
           .trim();
         activities.push({
@@ -1214,6 +1214,7 @@ function webSearchActivityDetail(item: Extract<ThreadItem, { type: 'webSearch' }
     case 'other':
       return '';
   }
+  return '';
 }
 
 function notificationBelongsToThread(params: unknown, threadId: string): boolean {

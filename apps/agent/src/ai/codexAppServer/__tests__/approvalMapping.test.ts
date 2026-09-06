@@ -49,15 +49,21 @@ describe('Codex app-server approval mapping', () => {
     ).toEqual({ decision: 'decline' });
   });
 
-  it('uses legacy review decisions for execCommandApproval', () => {
+  it('uses the current legacy review decisions for execCommandApproval and applyPatchApproval', () => {
     expect(codexApprovalResponse('execCommandApproval', {}, { action: 'allow' })).toEqual({
       decision: 'approved',
     });
     expect(codexApprovalResponse('execCommandApproval', {}, { action: 'deny' })).toEqual({
-      decision: 'denied',
+      decision: { denied: { rejection: 'User declined approval' } },
     });
     expect(codexApprovalResponse('execCommandApproval', {}, { action: 'respond' })).toEqual({
-      decision: 'denied',
+      decision: { denied: { rejection: 'User declined approval' } },
+    });
+    expect(codexApprovalResponse('applyPatchApproval', {}, { action: 'allow' })).toEqual({
+      decision: 'approved',
+    });
+    expect(codexApprovalResponse('applyPatchApproval', {}, { action: 'deny' })).toEqual({
+      decision: { denied: { rejection: 'User declined approval' } },
     });
   });
 
