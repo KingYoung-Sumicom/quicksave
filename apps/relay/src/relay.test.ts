@@ -122,6 +122,12 @@ function createTestRelay(rateLimitMaxConnections = 30): RelayInstance {
   return relay;
 }
 
+async function closeTestRelay(relay: RelayInstance): Promise<void> {
+  for (const client of relay.wss.clients) client.terminate();
+  await new Promise<void>((resolve) => relay.wss.close(() => resolve()));
+  await new Promise<void>((resolve) => relay.server.close(() => resolve()));
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('signaling server', () => {
@@ -142,8 +148,7 @@ describe('signaling server', () => {
       if (ws.readyState !== WebSocket.CLOSED) ws.terminate();
     }
     sockets.length = 0;
-    await new Promise<void>((resolve) => relay.server.close(() => resolve()));
-    relay.close();
+    await closeTestRelay(relay);
   });
 
   describe('agent channel', () => {
@@ -164,8 +169,7 @@ describe('signaling server', () => {
     });
 
     it('releases connection quota after rejecting a duplicate agent ID', async () => {
-      relay.close();
-      await new Promise<void>((resolve) => relay.server.close(() => resolve()));
+      await closeTestRelay(relay);
       relay = createTestRelay(2);
 
       const original = track(connect('/agent/agent-quota-1234'));
@@ -188,8 +192,7 @@ describe('signaling server', () => {
     });
 
     it('releases connection quota after rejecting an invalid URL', async () => {
-      relay.close();
-      await new Promise<void>((resolve) => relay.server.close(() => resolve()));
+      await closeTestRelay(relay);
       relay = createTestRelay(1);
 
       for (let attempt = 0; attempt < 3; attempt++) {
