@@ -40,6 +40,8 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
   const terminalCount = useMemo(() => Object.keys(terminals).length, [terminals]);
   const [tab, setTab] = useState<'sessions' | 'terminals' | 'files'>('sessions');
   const [missionNow, setMissionNow] = useState(Date.now());
+  const [machineFilter, setMachineFilter] = useState<string>('');
+  const [projectFilter, setProjectFilter] = useState<string>('');
 
   // Build a cwd → ProjectEntry index so we can attach a project name + route to
   // each session without recomputing per row.
@@ -69,6 +71,33 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
       .filter((s) => s.cwd && s.machineAgentId && !s.archived)
       .sort((a, b) => compareSessionsForList(a, b, missionNow));
   }, [sessions, missionNow]);
+
+  const filterProjects = useMemo(
+    () => machineFilter ? projects.filter((project) => project.agentId === machineFilter) : projects,
+    [machineFilter, projects],
+  );
+
+  const filteredSessions = useMemo(
+    () => flatSessions.filter((session) => {
+      if (machineFilter && session.machineAgentId !== machineFilter) return false;
+      if (!projectFilter) return true;
+      const project = projectByCwd.get(`${session.machineAgentId}\0${session.cwd}`);
+      return project?.projectId === projectFilter;
+    }),
+    [flatSessions, machineFilter, projectByCwd, projectFilter],
+  );
+
+  const handleMachineFilterChange = (agentId: string) => {
+    setMachineFilter(agentId);
+    if (projectFilter && !projects.some((project) => project.projectId === projectFilter && (!agentId || project.agentId === agentId))) {
+      setProjectFilter('');
+    }
+  };
+
+  const clearFilters = () => {
+    setMachineFilter('');
+    setProjectFilter('');
+  };
 
   useEffect(() => {
     const id = window.setInterval(() => setMissionNow(Date.now()), 60_000);
@@ -107,10 +136,38 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
       <div className="flex-1 overflow-y-auto">
         {tab === 'sessions' && (
           <div className={`${compact ? '' : 'max-w-lg mx-auto py-4'} space-y-5`}>
-            {/* Flat ticket list — every session, sorted by recency. */}
-            {flatSessions.length > 0 && (
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2 px-3">
+              <FilterPill
+                ariaLabel="Filter sessions by machine"
+                label="Machine"
+                value={machineFilter}
+                onChange={handleMachineFilterChange}
+                options={machines.map((machine) => ({ value: machine.agentId, label: machine.nickname }))}
+              />
+              <FilterPill
+                ariaLabel="Filter sessions by project"
+                label="Project"
+                value={projectFilter}
+                onChange={setProjectFilter}
+                options={filterProjects.map((project) => ({
+                  value: project.projectId,
+                  label: machineFilter ? project.displayName : `${project.machineName} · ${project.displayName}`,
+                }))}
+              />
+              <button
+                type="button"
+                onClick={clearFilters}
+                disabled={!machineFilter && !projectFilter}
+                className="rounded-full px-2.5 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-100 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-400"
+              >
+                Clear
+              </button>
+            </div>
+
+            {/* Flat ticket list — filtered sessions, sorted by recency. */}
+            {filteredSessions.length > 0 && (
               <div className="divide-y divide-slate-700/40">
-                {flatSessions.map((session) => {
+                {filteredSessions.map((session) => {
                   const project = projectByCwd.get(`${session.machineAgentId}\0${session.cwd}`);
                   const projectName = project?.displayName ?? session.cwd?.split('/').pop() ?? '';
                   const projectId = project?.projectId ?? toProjectId(session.machineAgentId!, session.cwd!);
@@ -132,9 +189,9 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
               </div>
             )}
 
-            {flatSessions.length === 0 && (
+            {filteredSessions.length === 0 && (
               <p className="text-center text-sm text-slate-500 py-12">
-                <FormattedMessage id="projectList.empty.noTasks" />
+                {machineFilter || projectFilter ? 'No matching tasks.' : <FormattedMessage id="projectList.empty.noTasks" />}
               </p>
             )}
           </div>
@@ -143,6 +200,38 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
         {tab === 'files' && <FileBrowserSection />}
       </div>
     </div>
+  );
+}
+
+function FilterPill({
+  ariaLabel,
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  ariaLabel: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<{ value: string; label: string }>;
+}) {
+  return (
+    <label className="relative inline-flex min-w-0 w-full items-center rounded-full border border-slate-600 bg-slate-800 text-xs text-slate-300 transition-colors hover:border-slate-500 focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-400">
+      <span className="pointer-events-none shrink-0 pl-3 font-medium text-slate-400">{label}</span>
+      <select
+        aria-label={ariaLabel}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="min-w-0 flex-1 cursor-pointer appearance-none bg-transparent py-1.5 pl-1 pr-7 text-slate-100 outline-none"
+      >
+        <option value="">All</option>
+        {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select>
+      <svg aria-hidden className="pointer-events-none absolute right-2 h-3 w-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m6 9 6 6 6-6" />
+      </svg>
+    </label>
   );
 }
 

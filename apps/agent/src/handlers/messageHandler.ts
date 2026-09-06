@@ -2234,7 +2234,17 @@ export class MessageHandler {
         '@sumicom/quicksave@latest',
       ], { timeout: 120_000 });
 
-      const output = (stdout + '\n' + stderr).trim();
+      // npm can retain an already-installed native dependency while replacing
+      // the package itself. Rebuild explicitly so better-sqlite3 and node-pty
+      // match the Node ABI that will load the updated daemon.
+      const { stdout: rebuildStdout, stderr: rebuildStderr } = await execFileAsync('npm', [
+        'rebuild', '-g',
+        '--foreground-scripts',
+        '--allow-scripts=better-sqlite3,node-pty',
+        'better-sqlite3', 'node-pty',
+      ], { timeout: 120_000 });
+
+      const output = (stdout + '\n' + stderr + '\n' + rebuildStdout + '\n' + rebuildStderr).trim();
 
       // Parse the installed version from npm output
       // npm output typically contains lines like: + @sumicom/quicksave@0.5.3
