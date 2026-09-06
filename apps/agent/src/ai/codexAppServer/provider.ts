@@ -40,6 +40,9 @@ import type { ThreadStartResponse } from './schema/generated/v2/ThreadStartRespo
 import type { Thread } from './schema/generated/v2/Thread.js';
 import type { ThreadItem } from './schema/generated/v2/ThreadItem.js';
 import type { ThreadReadResponse } from './schema/generated/v2/ThreadReadResponse.js';
+import type { ThreadTurnsListResponse } from './schema/generated/v2/ThreadTurnsListResponse.js';
+import type { ThreadItemsListResponse } from './schema/generated/v2/ThreadItemsListResponse.js';
+import type { ThreadItemEntry } from './schema/generated/v2/ThreadItemEntry.js';
 import type { ThreadListParams } from './schema/generated/v2/ThreadListParams.js';
 import type { ThreadListResponse } from './schema/generated/v2/ThreadListResponse.js';
 import type { ThreadResumeParams } from './schema/generated/v2/ThreadResumeParams.js';
@@ -912,8 +915,8 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     if (this.subagentRefreshes.has(threadId)) return;
     const refresh = new Promise<void>((resolve) => setTimeout(resolve, 200))
       .then(async () => {
-        const response = await this.handle.rpc.request<ThreadReadResponse>('thread/read', { threadId, includeTurns: true });
-        const event = this.cardBuilder.subagentDetails(threadId, subagentThreadSnapshot(response.thread));
+        const thread = await this.readSubagentThread(threadId);
+        const event = this.cardBuilder.subagentDetails(threadId, subagentThreadSnapshot(thread));
         if (event) this.callbacks.emitCardEvent(event);
       })
       .catch((err) => {
@@ -921,6 +924,35 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       })
       .finally(() => this.subagentRefreshes.delete(threadId));
     this.subagentRefreshes.set(threadId, refresh);
+  }
+
+  /** Paginated threads reject `thread/read { includeTurns: true }`. Hydrate
+   * sub-agent activity through the dedicated cursored endpoints instead. */
+  private async readSubagentThread(threadId: string): Promise<Thread> {
+    const response = await this.handle.rpc.request<ThreadReadResponse>('thread/read', { threadId, includeTurns: false });
+    const turns = await this.readAllThreadPages<ThreadTurnsListResponse>(
+      'thread/turns/list',
+      { threadId, sortDirection: 'asc', itemsView: 'notLoaded' },
+    );
+    const entries = await this.readAllThreadPages<ThreadItemsListResponse>(
+      'thread/items/list',
+      { threadId, sortDirection: 'asc' },
+    );
+    return hydrateThreadItems(response.thread, turns.flatMap((page) => page.data), entries.flatMap((page) => page.data));
+  }
+
+  private async readAllThreadPages<T extends { nextCursor: string | null }>(
+    method: 'thread/turns/list' | 'thread/items/list',
+    params: Record<string, unknown>,
+  ): Promise<T[]> {
+    const pages: T[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: T = await this.handle.rpc.request<T>(method, { ...params, cursor });
+      pages.push(page);
+      cursor = page.nextCursor;
+    } while (cursor);
+    return pages;
   }
 
   private observeTokenUsageNotification(notification: { method: string; params: unknown }): void {
@@ -1111,6 +1143,23 @@ function threadIdFromParams(params: unknown): string | null {
   if (typeof params !== 'object' || params === null) return null;
   const candidate = (params as { threadId?: unknown }).threadId;
   return typeof candidate === 'string' ? candidate : null;
+}
+
+export function hydrateThreadItems(thread: Thread, turns: readonly Thread['turns'][number][], entries: readonly ThreadItemEntry[]): Thread {
+  const itemsByTurn = new Map<string, ThreadItem[]>();
+  for (const { turnId, item } of entries) {
+    const items = itemsByTurn.get(turnId) ?? [];
+    items.push(item);
+    itemsByTurn.set(turnId, items);
+  }
+  return {
+    ...thread,
+    turns: turns.map((turn) => ({
+      ...turn,
+      items: itemsByTurn.get(turn.id) ?? turn.items,
+      itemsView: 'full',
+    })),
+  };
 }
 
 export function subagentThreadSnapshot(thread: Thread): {

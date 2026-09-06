@@ -7,6 +7,7 @@ import {
   buildThreadResumeParams,
   buildThreadStartParams,
   codexSkillsToSlashCommands,
+  hydrateThreadItems,
   subagentThreadSnapshot,
 } from '../provider.js';
 import type { SkillsListResponse } from '../schema/generated/v2/SkillsListResponse.js';
@@ -131,6 +132,19 @@ describe('CodexAppServerProvider history persistence', () => {
 });
 
 describe('subagentThreadSnapshot', () => {
+  it('hydrates paginated item entries into their matching turns', () => {
+    const thread = { id: 'child-thread', turns: [] } as unknown as Thread;
+    const turn = {
+      id: 'turn-1', items: [], itemsView: 'notLoaded', status: 'completed',
+      error: null, startedAt: 0, completedAt: 1, durationMs: 1,
+    } as unknown as Thread['turns'][number];
+    const item = { type: 'agentMessage', id: 'message-1', text: 'Done.' };
+
+    expect(hydrateThreadItems(thread, [turn], [{ turnId: 'turn-1', item } as never])).toMatchObject({
+      turns: [{ id: 'turn-1', itemsView: 'full', items: [item] }],
+    });
+  });
+
   it('includes dynamic tools and web searches in sub-agent activity', () => {
     const thread = {
       id: 'child-thread',
