@@ -101,6 +101,20 @@ const CODEX_BUILT_IN_SLASH_COMMANDS: SlashCommandInfo[] = [
 const CODEX_THREAD_RESUME_TIMEOUT_MS = 45_000;
 const CODEX_TURN_START_TIMEOUT_MS = 45_000;
 
+/** Codex owns the cross-application lease; callers must not retry by force. */
+export class CodexSessionLockedError extends Error {
+  readonly code = 'session_locked';
+  constructor() {
+    super('This Codex session is already open in another application. Close it there, then try again.');
+    this.name = 'CodexSessionLockedError';
+  }
+}
+
+function isCodexSessionLockedError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return /(?:already\s+(?:open|opened|in use).*application|application.{0,40}(?:already\s+)?(?:open|opened|in use)|another application|(?:session|thread).{0,40}(?:locked|in use))/i.test(text);
+}
+
 /**
  * Codex provider driving the JSON-RPC v2 `app-server` protocol.
  * Phase 2 of the migration — see
@@ -112,6 +126,7 @@ const CODEX_TURN_START_TIMEOUT_MS = 45_000;
 export class CodexAppServerProvider implements CodingAgentProvider {
   readonly id: AgentId = 'codex';
   readonly historyMode: ProviderHistoryMode = 'codex-thread';
+  readonly archiveStorage = 'native' as const;
   readonly label = 'Codex';
 
   async probeProvider() {
@@ -150,6 +165,7 @@ export class CodexAppServerProvider implements CodingAgentProvider {
       response = await handle.rpc.request<ThreadStartResponse>('thread/start', threadStartParams);
     } catch (err) {
       await handle.shutdown();
+      if (isCodexSessionLockedError(err)) throw new CodexSessionLockedError();
       throw err;
     }
 
@@ -198,6 +214,7 @@ export class CodexAppServerProvider implements CodingAgentProvider {
       );
     } catch (err) {
       await handle.shutdown();
+      if (isCodexSessionLockedError(err)) throw new CodexSessionLockedError();
       throw err;
     }
     const tokens = new TokenAccounting();
@@ -250,16 +267,29 @@ export class CodexAppServerProvider implements CodingAgentProvider {
     }
   }
 
-  /** Read-only history path: it never resumes or takes ownership of a thread. */
-  async loadCardHistory(opts: { sessionId: string; cwd: string; offset: number; limit: number }): Promise<CardHistoryResponse> {
+  async archiveSession(sessionId: string): Promise<void> {
     const handle = await spawnCodexNativeListAppServer();
     try {
-      const thread = await readPersistedThread(handle, opts.sessionId);
-      const cards = projectCodexThreadCards(opts.sessionId, opts.cwd, thread);
-      const start = Math.max(0, cards.length - opts.offset - opts.limit);
-      const end = Math.max(start, cards.length - opts.offset);
-      return { cards: cards.slice(start, end), total: cards.length, hasMore: start > 0,
-        ...(start > 0 ? { nextCursor: `codex-offset:${opts.offset + (end - start)}` } : {}) };
+      await handle.rpc.request('thread/archive', { threadId: sessionId });
+    } finally {
+      await handle.shutdown().catch(() => {});
+    }
+  }
+
+  async unarchiveSession(sessionId: string): Promise<void> {
+    const handle = await spawnCodexNativeListAppServer();
+    try {
+      await handle.rpc.request('thread/unarchive', { threadId: sessionId });
+    } finally {
+      await handle.shutdown().catch(() => {});
+    }
+  }
+
+  /** Read-only history path: it never resumes or takes ownership of a thread. */
+  async loadCardHistory(opts: { sessionId: string; cwd: string; offset: number; limit: number; cursor?: string }): Promise<CardHistoryResponse> {
+    const handle = await spawnCodexNativeListAppServer();
+    try {
+      return await readCodexHistoryPage(handle, opts);
     } finally {
       await handle.shutdown().catch(() => {});
     }
@@ -324,6 +354,8 @@ export interface CodexAppServerProviderSession extends ProviderSession {
   sendControlRequest(subtype: string, params?: Record<string, unknown>): Promise<unknown>;
   /** Re-read Codex thread goal state and mirror it into session config. */
   refreshGoalConfig(): Promise<void>;
+  /** Archive through the app-server instance that already owns this thread. */
+  setArchived(archived: boolean): Promise<void>;
 }
 
 export class CodexAppServerSession implements CodexAppServerProviderSession {
@@ -458,6 +490,13 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
 
   async refreshGoalConfig(): Promise<void> {
     await this.refreshGoalConfigAndReturn();
+  }
+
+  async setArchived(archived: boolean): Promise<void> {
+    await this.handle.rpc.request(
+      archived ? 'thread/archive' : 'thread/unarchive',
+      { threadId: this.threadId },
+    );
   }
 
   async listSlashCommands(opts?: { cwd?: string; forceReload?: boolean }): Promise<SlashCommandInfo[]> {
@@ -949,11 +988,26 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       'thread/turns/list',
       { threadId, sortDirection: 'asc', itemsView: 'notLoaded' },
     );
-    const entries = await this.readAllThreadPages<ThreadItemsListResponse>(
-      'thread/items/list',
-      { threadId, sortDirection: 'asc' },
+    let entries: ThreadItemEntry[];
+    try {
+      entries = (await this.readAllThreadPages<ThreadItemsListResponse>(
+        'thread/items/list',
+        { threadId, sortDirection: 'asc' },
+      )).flatMap((page) => page.data);
+    } catch (error) {
+      if (!isUnsupportedCodexMethod(error)) throw error;
+      return this.readLegacyThread(threadId);
+    }
+    return hydrateThreadItems(response.thread, turns.flatMap((page) => page.data), entries);
+  }
+
+  /** Compatibility path for pre-pagination app-server versions. */
+  private async readLegacyThread(threadId: string): Promise<Thread> {
+    const response = await this.handle.rpc.request<ThreadReadResponse>(
+      'thread/read',
+      { threadId, includeTurns: true },
     );
-    return hydrateThreadItems(response.thread, turns.flatMap((page) => page.data), entries.flatMap((page) => page.data));
+    return response.thread;
   }
 
   private async readAllThreadPages<T extends { nextCursor: string | null }>(
@@ -1636,13 +1690,146 @@ function spawnCodexNativeListAppServer(): Promise<AppServerHandle> {
   return spawnAppServer(codexAppServerInit());
 }
 
-async function readPersistedThread(handle: AppServerHandle, threadId: string): Promise<Thread> {
-  const response = await handle.rpc.request<ThreadReadResponse>('thread/read', { threadId, includeTurns: false });
-  const turns = await readAllPersistedPages<ThreadTurnsListResponse>(handle, 'thread/turns/list',
-    { threadId, sortDirection: 'asc', itemsView: 'notLoaded' });
-  const items = await readAllPersistedPages<ThreadItemsListResponse>(handle, 'thread/items/list',
-    { threadId, sortDirection: 'asc' });
-  return hydrateThreadItems(response.thread, turns.flatMap((page) => page.data), items.flatMap((page) => page.data));
+const CODEX_HISTORY_CURSOR_PREFIX = 'codex-turn-page:';
+const CODEX_HISTORY_TURN_PAGE_MAX = 20;
+const unsupportedHistoryMethods = new Set<string>();
+
+type CodexHistoryCursor = {
+  v: 1;
+  turnCursor: string;
+};
+
+/**
+ * Read one bounded native turn page. A page is deliberately turn-based rather
+ * than card-based: one persisted item can fan out into multiple UI cards, so
+ * calculating an exact card total would require scanning the whole thread.
+ */
+export async function readCodexHistoryPage(
+  handle: AppServerHandle,
+  opts: { sessionId: string; cwd: string; offset: number; limit: number; cursor?: string },
+): Promise<CardHistoryResponse> {
+  const metadata = await handle.rpc.request<ThreadReadResponse>(
+    'thread/read',
+    { threadId: opts.sessionId, includeTurns: false },
+  );
+  const cursor = parseCodexHistoryCursor(opts.cursor);
+  const turnCursor = cursor?.turnCursor ?? null;
+  const turnLimit = Math.max(1, Math.min(CODEX_HISTORY_TURN_PAGE_MAX, Math.ceil(Math.max(1, opts.limit) / 4)));
+  const mode = metadata.thread.historyMode;
+
+  if (unsupportedHistoryMethods.has(historyCapabilityKey(handle, mode, 'thread/turns/list'))) {
+    const legacy = await handle.rpc.request<ThreadReadResponse>(
+      'thread/read',
+      { threadId: opts.sessionId, includeTurns: true },
+    );
+    const cards = projectCodexThreadCards(opts.sessionId, opts.cwd, legacy.thread);
+    return { cards, total: cards.length, hasMore: false };
+  }
+
+  let page: ThreadTurnsListResponse;
+  try {
+    page = await readCodexTurnPage(handle, opts.sessionId, mode, turnCursor, turnLimit);
+  } catch (error) {
+    if (!isUnsupportedCodexMethod(error)) throw error;
+    unsupportedHistoryMethods.add(historyCapabilityKey(handle, mode, 'thread/turns/list'));
+    // Extremely old app-server / thread combinations have no cursored turn
+    // API. This is the sole remaining full-history compatibility path.
+    const legacy = await handle.rpc.request<ThreadReadResponse>(
+      'thread/read',
+      { threadId: opts.sessionId, includeTurns: true },
+    );
+    const cards = projectCodexThreadCards(opts.sessionId, opts.cwd, legacy.thread);
+    return { cards, total: cards.length, hasMore: false };
+  }
+
+  let turns = page.data;
+  if (mode === 'paginated') {
+    try {
+      const entries = (await Promise.all(turns.map(async (turn) => (
+        readAllPersistedPages<ThreadItemsListResponse>(handle, 'thread/items/list', {
+          threadId: opts.sessionId,
+          turnId: turn.id,
+          sortDirection: 'asc',
+        })
+      )))).flatMap((turnPages) => turnPages.flatMap((itemPage) => itemPage.data));
+      turns = hydrateThreadItems(metadata.thread, turns, entries).turns;
+    } catch (error) {
+      if (!isUnsupportedCodexMethod(error)) throw error;
+      unsupportedHistoryMethods.add(historyCapabilityKey(handle, mode, 'thread/items/list'));
+      // A partially upgraded server can paginate turns but not items. Ask for
+      // full items on this bounded turn page instead of hydrating the thread.
+      page = await handle.rpc.request<ThreadTurnsListResponse>('thread/turns/list', {
+        threadId: opts.sessionId,
+        cursor: turnCursor,
+        limit: turnLimit,
+        sortDirection: 'desc',
+        itemsView: 'full',
+      });
+      turns = page.data;
+    }
+  }
+
+  const cards = projectCodexThreadCards(opts.sessionId, opts.cwd, {
+    ...metadata.thread,
+    turns: [...turns].reverse(),
+  });
+  const nextCursor = page.nextCursor ? encodeCodexHistoryCursor(page.nextCursor) : undefined;
+  return {
+    cards,
+    // Exact card totals are intentionally unknown until every native turn has
+    // been read, which we deliberately never do merely to populate a counter.
+    hasMore: !!nextCursor,
+    ...(nextCursor ? { nextCursor } : {}),
+  };
+}
+
+async function readCodexTurnPage(
+  handle: AppServerHandle,
+  threadId: string,
+  historyMode: Thread['historyMode'],
+  cursor: string | null,
+  limit: number,
+): Promise<ThreadTurnsListResponse> {
+  const itemsView = historyMode === 'legacy'
+    || unsupportedHistoryMethods.has(historyCapabilityKey(handle, historyMode, 'thread/items/list'))
+    ? 'full'
+    : 'notLoaded';
+  return handle.rpc.request<ThreadTurnsListResponse>('thread/turns/list', {
+    threadId,
+    cursor,
+    limit,
+    sortDirection: 'desc',
+    itemsView,
+  });
+}
+
+function historyCapabilityKey(
+  handle: AppServerHandle,
+  historyMode: Thread['historyMode'],
+  method: 'thread/turns/list' | 'thread/items/list',
+): string {
+  return `${handle.cliVersion}\u0000${historyMode}\u0000${method}`;
+}
+
+function parseCodexHistoryCursor(cursor: string | undefined): CodexHistoryCursor | undefined {
+  if (!cursor?.startsWith(CODEX_HISTORY_CURSOR_PREFIX)) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor.slice(CODEX_HISTORY_CURSOR_PREFIX.length), 'base64url').toString('utf8')) as Partial<CodexHistoryCursor>;
+    return parsed.v === 1 && typeof parsed.turnCursor === 'string' ? { v: 1, turnCursor: parsed.turnCursor } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function encodeCodexHistoryCursor(turnCursor: string): string {
+  return `${CODEX_HISTORY_CURSOR_PREFIX}${Buffer.from(JSON.stringify({ v: 1, turnCursor } satisfies CodexHistoryCursor)).toString('base64url')}`;
+}
+
+/** JSON-RPC -32601 means this Codex app-server predates a method. */
+export function isUnsupportedCodexMethod(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && (error as { code?: unknown }).code === -32601;
 }
 
 async function readAllPersistedPages<T extends { nextCursor: string | null }>(
@@ -1668,7 +1855,16 @@ export function projectCodexThreadCards(sessionId: string, cwd: string, thread: 
     for (const item of turn.items) projectCodexItem(builder, item);
     for (const event of builder.markTurnCompleted(turn.id)) void event;
   }
-  return builder.getCards();
+  // StreamCardBuilder sequence IDs are intentionally ephemeral. A history
+  // page begins a fresh builder, so retain the same visual projection but
+  // derive page-independent IDs from the native turn and its card position.
+  const cardIndexByTurn = new Map<string, number>();
+  return builder.getCards().map((card) => {
+    const turnKey = card.turnId ?? 'thread';
+    const index = (cardIndexByTurn.get(turnKey) ?? 0) + 1;
+    cardIndexByTurn.set(turnKey, index);
+    return { ...card, id: `${sessionId}:codex:${turnKey}:${index}` } as Card;
+  });
 }
 
 function projectCodexItem(builder: StreamCardBuilder, item: ThreadItem): void {

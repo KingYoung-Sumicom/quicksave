@@ -524,6 +524,8 @@ export interface SessionRegistryEntry {
   messageCount?: number;
   totalCostUsd?: number;
   pinned?: boolean;
+  /** Cached display projection of a provider-native archive state. */
+  nativeArchived?: boolean;
   archived?: boolean;
   // Ticket-model metadata — set via the UpdateSessionStatus MCP tool
   stage?: SessionStage;
@@ -2101,6 +2103,8 @@ export interface ClaudeResumeResponsePayload {
   success: boolean;
   sessionId?: string;
   queueState?: SessionQueueState | null;
+  /** A machine-readable reason for a rejected resume attempt. */
+  errorCode?: 'session_locked';
   error?: string;
 }
 

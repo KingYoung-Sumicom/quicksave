@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ResumeSessionOpts, StartSessionOpts } from '../../provider.js';
 import {
@@ -8,13 +8,21 @@ import {
   buildThreadStartParams,
   codexSkillsToSlashCommands,
   hydrateThreadItems,
+  isUnsupportedCodexMethod,
   projectCodexThreadCards,
+  readCodexHistoryPage,
   subagentThreadSnapshot,
 } from '../provider.js';
 import type { SkillsListResponse } from '../schema/generated/v2/SkillsListResponse.js';
 import type { Thread } from '../schema/generated/v2/Thread.js';
 
 describe('CodexAppServerProvider history persistence', () => {
+  it('uses the legacy history path only for a missing app-server method', () => {
+    expect(isUnsupportedCodexMethod({ code: -32601 })).toBe(true);
+    expect(isUnsupportedCodexMethod({ code: -32000 })).toBe(false);
+    expect(isUnsupportedCodexMethod(new Error('thread/items/list is not supported yet'))).toBe(false);
+  });
+
   it('does not send removed legacy history flags when starting a thread', () => {
     const opts: StartSessionOpts = {
       prompt: 'start',
@@ -129,6 +137,74 @@ describe('CodexAppServerProvider history persistence', () => {
         source: 'codex-skill',
       },
     ]);
+  });
+});
+
+describe('readCodexHistoryPage', () => {
+  const paginatedThread = {
+    id: 'thr-page', historyMode: 'paginated', turns: [],
+  } as unknown as Thread;
+  const turn = {
+    id: 'turn-newest', items: [], itemsView: 'notLoaded', status: 'completed',
+    error: null, startedAt: 1, completedAt: 2, durationMs: 1,
+  } as unknown as Thread['turns'][number];
+
+  it('loads only the requested native turn page and returns its opaque cursor', async () => {
+    const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'thread/read') return { thread: paginatedThread };
+      if (method === 'thread/turns/list') {
+        expect(params).toMatchObject({ threadId: 'thr-page', limit: 1, sortDirection: 'desc', itemsView: 'notLoaded' });
+        return { data: [turn], nextCursor: 'next-native-turn', backwardsCursor: null };
+      }
+      if (method === 'thread/items/list') {
+        expect(params).toMatchObject({ threadId: 'thr-page', turnId: 'turn-newest', sortDirection: 'asc' });
+        return {
+          data: [{ turnId: 'turn-newest', item: { type: 'agentMessage', id: 'msg-1', text: 'Newest reply' } }],
+          nextCursor: null,
+          backwardsCursor: null,
+        };
+      }
+      throw new Error(`unexpected ${method}`);
+    });
+    const handle = { cliVersion: '0.153.4', rpc: { request } } as never;
+
+    const page = await readCodexHistoryPage(handle, {
+      sessionId: 'thr-page', cwd: '/repo', offset: 0, limit: 1,
+    });
+
+    expect(page.cards).toHaveLength(1);
+    expect(page.cards[0]).toMatchObject({ id: 'thr-page:codex:turn-newest:1', text: 'Newest reply' });
+    expect(page.total).toBeUndefined();
+    expect(page.hasMore).toBe(true);
+    expect(page.nextCursor).toMatch(/^codex-turn-page:/);
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      'thread/read', 'thread/turns/list', 'thread/items/list',
+    ]);
+  });
+
+  it('uses turns/list with full items for legacy threads, without items/list', async () => {
+    const legacyThread = { ...paginatedThread, historyMode: 'legacy' } as Thread;
+    const fullTurn = {
+      ...turn,
+      itemsView: 'full',
+      items: [{ type: 'agentMessage', id: 'legacy-msg', text: 'Legacy reply' }],
+    } as unknown as Thread['turns'][number];
+    const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'thread/read') return { thread: legacyThread };
+      if (method === 'thread/turns/list') {
+        expect(params).toMatchObject({ itemsView: 'full', sortDirection: 'desc' });
+        return { data: [fullTurn], nextCursor: null, backwardsCursor: null };
+      }
+      throw new Error(`unexpected ${method}`);
+    });
+    const handle = { cliVersion: '0.153.4', rpc: { request } } as never;
+
+    const page = await readCodexHistoryPage(handle, {
+      sessionId: 'thr-page', cwd: '/repo', offset: 0, limit: 1,
+    });
+
+    expect(page.cards[0]).toMatchObject({ id: 'thr-page:codex:turn-newest:1', text: 'Legacy reply' });
+    expect(request.mock.calls.map(([method]) => method)).toEqual(['thread/read', 'thread/turns/list']);
   });
 });
 

@@ -229,7 +229,7 @@ interface ClaudeStore {
 
   // Cards (current session)
   cards: Card[];
-  historyTotal: number;
+  historyTotal: number | null;
   historyHasMore: boolean;
   /** Opaque agent-issued cursor for the next older persisted history page. */
   historyCursor: string | null;
@@ -295,7 +295,7 @@ interface ClaudeStore {
   prependCards: (cards: Card[]) => void;
   appendCard: (card: Card) => void;
   handleCardEvent: (event: CardEvent) => void;
-  setHistoryMeta: (total: number, hasMore: boolean, nextCursor?: string | null) => void;
+  setHistoryMeta: (total: number | undefined, hasMore: boolean, nextCursor?: string | null) => void;
   setLoadingHistory: (loading: boolean) => void;
   setHistoryError: (error: string | null) => void;
   markTurnCompleted: (turnId: string) => void;
@@ -537,7 +537,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
   },
 
   setHistoryMeta: (total, hasMore, nextCursor = null) => set({
-    historyTotal: total,
+    historyTotal: total ?? null,
     historyHasMore: hasMore,
     historyCursor: nextCursor,
   }),

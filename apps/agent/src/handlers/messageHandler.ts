@@ -1089,7 +1089,7 @@ export class MessageHandler {
         case 'claude:close':
           return this.handleClaudeClose(message as Message<ClaudeCloseRequestPayload>);
         case 'claude:end-task':
-          return this.handleClaudeEndTask(message as Message<ClaudeEndTaskRequestPayload>);
+          return await this.handleClaudeEndTask(message as Message<ClaudeEndTaskRequestPayload>);
         case 'claude:user-input-response':
           return this.handleClaudeUserInputResponse(message as Message<ClaudeUserInputResponsePayload>);
         case 'claude:set-preferences':
@@ -1131,7 +1131,7 @@ export class MessageHandler {
         case 'project:list-repos':
           return await this.handleListProjectRepos(message as Message<ProjectListReposRequestPayload>);
         case 'project:delete':
-          return this.handleDeleteProject(message as Message<ProjectDeleteRequestPayload>);
+          return await this.handleDeleteProject(message as Message<ProjectDeleteRequestPayload>);
         case 'push:subscription-offer':
           return this.handlePushSubscriptionOffer(message as Message<PushSubscriptionOfferPayload>);
         case 'terminal:create':
@@ -2889,9 +2889,14 @@ export class MessageHandler {
       return response;
     } catch (error) {
       console.error(`[agent:resume] error:`, error);
+      const locked = (error as { code?: unknown })?.code === 'session_locked';
       const response = createMessage<ClaudeResumeResponsePayload>(
         'claude:resume:response',
-        { success: false, error: error instanceof Error ? error.message : 'Failed to resume session' }
+        {
+          success: false,
+          ...(locked ? { errorCode: 'session_locked' as const } : {}),
+          error: error instanceof Error ? error.message : 'Failed to resume session',
+        }
       );
       response.id = message.id;
       return response;
@@ -2968,8 +2973,8 @@ export class MessageHandler {
   }
 
   /**
-   * End Task: archive the session's registry entry, then terminate the live
-   * CLI process. Order matters — closeSession emits a session-updated whose
+   * End Task: archive the provider's durable session, project that result into
+   * the local registry, then terminate the live CLI process. Order matters — closeSession emits a session-updated whose
    * `archived` flag is derived from "no in-memory entry AND no active
    * registry entry". Archiving first ensures that emit carries archived=true,
    * which the PWA reads as the "navigate away" signal.
@@ -2978,19 +2983,37 @@ export class MessageHandler {
    * so users can still archive a stale active entry whose CLI has already
    * exited (cold-closed sessions still appear in the drawer).
    */
-  private handleClaudeEndTask(
+  private async handleClaudeEndTask(
     message: Message<ClaudeEndTaskRequestPayload>
-  ): Message<ClaudeEndTaskResponsePayload> {
+  ): Promise<Message<ClaudeEndTaskResponsePayload>> {
     const { sessionId } = message.payload;
     const cwd = this.claudeService.getSessionCwd(sessionId)
       ?? getSessionRegistry().findBySessionId(sessionId)?.cwd;
 
     let archived = false;
     if (cwd) {
-      const updated = getSessionRegistry().updateEntry(cwd, sessionId, { archived: true });
-      if (updated) {
-        archived = true;
-        this.onHistoryUpdated?.(cwd, updated, 'upsert');
+      try {
+        await this.claudeService.setSessionArchived(sessionId, cwd, true);
+        const agent = this.claudeService.getSessionAgent(sessionId, cwd);
+        const isNativeArchiveProvider = agent === 'codex' || agent === 'opencode';
+        const updated = getSessionRegistry().updateEntry(cwd, sessionId, isNativeArchiveProvider
+          ? { archived: false, nativeArchived: true }
+          : { archived: true });
+        if (updated) {
+          archived = true;
+          this.onHistoryUpdated?.(cwd, updated, isNativeArchiveProvider ? 'delete' : 'upsert');
+        }
+      } catch (error) {
+        console.error(`[agent:end-task] native archive failed session=${sessionId}:`, error);
+        const response = createMessage<ClaudeEndTaskResponsePayload>(
+          'claude:end-task:response',
+          {
+            success: false,
+            error: error instanceof Error ? error.message : 'Native archive update failed',
+          },
+        );
+        response.id = message.id;
+        return response;
       }
     }
 
@@ -3321,18 +3344,47 @@ export class MessageHandler {
   ): Promise<Message<SessionUpdateHistoryResponsePayload>> {
     const { sessionId, cwd, updates } = message.payload;
     const registry = getSessionRegistry();
-    let entry = registry.updateEntry(cwd, sessionId, updates);
-    if (!entry && updates.archived === false) {
-      const native = await this.claudeService.findNativeSession(cwd, sessionId);
-      if (native) {
-        const materialized = {
-          ...this.nativeSessionToRegistryEntry(native, false),
-          ...updates,
-          archived: false,
-        };
-        registry.upsertEntry(materialized);
-        entry = registry.getEntry(cwd, sessionId) ?? materialized;
+    const existing = registry.getEntry(cwd, sessionId)
+      ?? registry.readArchivedEntry(cwd, sessionId);
+    let native: NativeSessionSummary | undefined;
+    if (!existing && updates.archived === false) {
+      native = await this.claudeService.findNativeSession(cwd, sessionId);
+    }
+
+    // Commit the provider-native state first. A native-only, already-active
+    // thread needs no unarchive call before becoming a local registry entry.
+    if (typeof updates.archived === 'boolean' && (existing || native)) {
+      const nativeAlreadyMatches = native?.archived === updates.archived;
+      try {
+        if (!nativeAlreadyMatches) {
+          await this.claudeService.setSessionArchived(sessionId, cwd, updates.archived);
+        }
+      } catch (error) {
+        const response = createMessage<SessionUpdateHistoryResponsePayload>(
+          'session:update-history:response',
+          { success: false, error: error instanceof Error ? error.message : 'Native archive update failed' },
+        );
+        response.id = message.id;
+        return response;
       }
+    }
+
+    const nativeAgent = existing?.agent ?? native?.agent;
+    const isNativeArchiveProvider = nativeAgent === 'codex' || nativeAgent === 'opencode';
+    const localUpdates = isNativeArchiveProvider && updates.archived === true
+      ? { ...updates, archived: false, nativeArchived: true }
+      : isNativeArchiveProvider && updates.archived === false
+        ? { ...updates, nativeArchived: false }
+        : updates;
+    let entry = registry.updateEntry(cwd, sessionId, localUpdates);
+    if (!entry && native) {
+      const materialized = {
+        ...this.nativeSessionToRegistryEntry(native, false),
+        ...localUpdates,
+        archived: false,
+      };
+      registry.upsertEntry(materialized);
+      entry = registry.getEntry(cwd, sessionId) ?? materialized;
     }
     const response = createMessage<SessionUpdateHistoryResponsePayload>(
       'session:update-history:response',
@@ -3340,7 +3392,7 @@ export class MessageHandler {
     );
     response.id = message.id;
     if (entry) {
-      this.onHistoryUpdated?.(cwd, entry, 'upsert');
+      this.onHistoryUpdated?.(cwd, entry, isNativeArchiveProvider && updates.archived === true ? 'delete' : 'upsert');
     }
     return response;
   }
@@ -3369,7 +3421,9 @@ export class MessageHandler {
     const safeOffset = Math.max(0, offset | 0);
     const safeLimit = Math.max(0, limit | 0);
     const registry = getSessionRegistry();
-    const activeKeys = new Set(registry.getEntriesForProject(cwd).map((entry) => this.sessionEntryKey(entry.cwd, entry.sessionId)));
+    for (const entry of await this.claudeService.reconcileNativeArchiveStatuses(cwd)) {
+      this.onHistoryUpdated?.(cwd, entry, entry.nativeArchived ? 'delete' : 'upsert');
+    }
     const byKey = new Map<string, BroadcastSessionEntry>();
 
     for (const entry of registry.listArchivedEntries(cwd).map(enrichEntry)) {
@@ -3383,8 +3437,8 @@ export class MessageHandler {
 
     const nativeSessions = await this.claudeService.listNativeSessions(cwd);
     for (const native of nativeSessions) {
+      if (!native.archived) continue;
       const key = this.sessionEntryKey(native.cwd, native.sessionId);
-      if (activeKeys.has(key)) continue;
       const existing = byKey.get(key);
       if (existing) {
         existing.lastInteractionAt = Math.max(this.sessionInteractionAt(existing), native.lastInteractionAt);
@@ -3696,9 +3750,9 @@ export class MessageHandler {
    * of a still-running session re-creates the active entry and the
    * project reappears on the next project:list-summaries.
    */
-  private handleDeleteProject(
+  private async handleDeleteProject(
     message: Message<ProjectDeleteRequestPayload>,
-  ): Message<ProjectDeleteResponsePayload> {
+  ): Promise<Message<ProjectDeleteResponsePayload>> {
     const { cwd } = message.payload;
     const registry = getSessionRegistry();
 
@@ -3710,10 +3764,19 @@ export class MessageHandler {
     const active = registry.getEntriesForProject(cwd);
     let archivedCount = 0;
     for (const entry of active) {
-      const updated = registry.updateEntry(cwd, entry.sessionId, { archived: true });
+      try {
+        await this.claudeService.setSessionArchived(entry.sessionId, cwd, true);
+      } catch (error) {
+        console.error(`[project:delete] native archive failed session=${entry.sessionId}:`, error);
+        continue;
+      }
+      const isNativeArchiveProvider = entry.agent === 'codex' || entry.agent === 'opencode';
+      const updated = registry.updateEntry(cwd, entry.sessionId, isNativeArchiveProvider
+        ? { archived: false, nativeArchived: true }
+        : { archived: true });
       if (updated) {
         archivedCount++;
-        this.onHistoryUpdated?.(cwd, updated, 'upsert');
+        this.onHistoryUpdated?.(cwd, updated, isNativeArchiveProvider ? 'delete' : 'upsert');
       }
     }
 

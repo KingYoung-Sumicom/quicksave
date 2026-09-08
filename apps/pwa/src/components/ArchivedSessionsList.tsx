@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type { BroadcastSessionEntry, SessionListArchivedResponsePayload } from '@sumicom/quicksave-shared';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
+import { AGENT_LABEL } from '../lib/agentLabel';
 import { Spinner } from './ui/Spinner';
 
 const PAGE_SIZE = 20;
@@ -117,6 +118,11 @@ export function ArchivedSessionsList({ cwd, onListArchived, onRestore, defaultEx
                         <span className="min-w-0 break-all font-mono text-slate-500" title={entry.sessionId}>
                           UUID {entry.sessionId}
                         </span>
+                        {entry.agent && AGENT_LABEL[entry.agent] && (
+                          <span className="rounded bg-slate-500/15 px-1.5 py-px font-medium text-slate-300">
+                            {AGENT_LABEL[entry.agent]}
+                          </span>
+                        )}
                         {entry.origin === 'native' && (
                           <span className="rounded bg-slate-500/15 px-1.5 py-px font-medium text-slate-300">
                             Native

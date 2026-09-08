@@ -54,6 +54,7 @@ import type {
   ProviderCallbacks,
   ProviderUserInputRequest,
   CodingAgentProvider,
+  ProviderArchiveStorage,
 } from './provider.js';
 import {
   defaultPermissionLevelForAgent,
@@ -1306,9 +1307,116 @@ export class SessionManager extends EventEmitter {
     return sessions.find((session) => session.cwd === cwd && session.sessionId === sessionId);
   }
 
-  async listAvailableSessions(cwd: string): Promise<ClaudeSessionSummary[]> {
+  /**
+   * Archive through the provider's durable store. Providers without a native
+   * API deliberately fall back to the session-registry compatibility layer.
+   */
+  async setSessionArchived(
+    sessionId: string,
+    cwd: string,
+    archived: boolean,
+  ): Promise<ProviderArchiveStorage> {
     const registry = getSessionRegistry();
-    const registryEntries = registry.getEntriesForProject(cwd);
+    const agentId = this.sessionAgents.get(sessionId)
+      ?? registry.getEntry(cwd, sessionId)?.agent
+      ?? registry.readArchivedEntry(cwd, sessionId)?.agent;
+    if (!agentId) return 'registry';
+    const provider = this.getProvider(agentId);
+    if (provider.archiveStorage !== 'native') return 'registry';
+    const activeSession = this.sessions.get(sessionId);
+    if (activeSession?.agentId === agentId && activeSession.providerSession?.setArchived) {
+      await activeSession.providerSession.setArchived(archived);
+      return 'native';
+    }
+    const operation = archived ? provider.archiveSession : provider.unarchiveSession;
+    if (!operation) {
+      throw new Error(`Provider ${provider.id} advertises native archive storage without an archive operation`);
+    }
+    await operation.call(provider, sessionId, { cwd });
+    return 'native';
+  }
+
+  /**
+   * Reconcile the local rendering cache with native archive state. The
+   * registry remains the polyfill for other providers, but is never the
+   * authority for a Codex thread that native listing can see.
+   */
+  async reconcileNativeArchiveStatuses(cwd?: string): Promise<SessionRegistryEntry[]> {
+    const nativeSessions = await this.listNativeSessions(cwd);
+    const nativeByKey = new Map(
+      nativeSessions
+        .filter((session) => session.agent === 'codex' || session.agent === 'opencode')
+        .map((session) => [`${session.cwd}\u0000${session.sessionId}`, session]),
+    );
+    const registry = getSessionRegistry();
+    const entries = [
+      ...registry.getEntriesForProject(cwd),
+      ...registry.listArchivedEntries(cwd),
+    ];
+    const updated: SessionRegistryEntry[] = [];
+    for (const entry of entries) {
+      const agentId = this.sessionAgents.get(entry.sessionId) ?? entry.agent;
+      if (agentId !== 'codex' && agentId !== 'opencode') continue;
+      const native = nativeByKey.get(`${entry.cwd}\u0000${entry.sessionId}`);
+      if (!native) continue;
+      try {
+        if (entry.archived && !native.archived) {
+          await this.setSessionArchived(entry.sessionId, entry.cwd, true);
+        }
+      } catch (error) {
+        // Preserve the migration flag and retry on the next reconciliation.
+        console.warn(`[session-manager] native archive migration failed session=${entry.sessionId}:`, error);
+        continue;
+      }
+      if (!entry.archived && entry.nativeArchived === native.archived) continue;
+      const projected = registry.updateEntry(entry.cwd, entry.sessionId, {
+        archived: false,
+        nativeArchived: entry.archived ? true : native.archived,
+      });
+      if (projected) updated.push(projected);
+    }
+    return updated;
+  }
+
+  /**
+   * Merge provider-native active sessions with Quicksave metadata. Claude Code
+   * has no native session listing, so its registry entries remain authoritative;
+   * Codex and OpenCode supply existence/archive state from their own stores.
+   */
+  async listSessionHistoryEntries(cwd?: string): Promise<SessionRegistryEntry[]> {
+    await this.reconcileNativeArchiveStatuses(cwd);
+    const registry = getSessionRegistry();
+    const byKey = new Map(
+      registry.getEntriesForProject(cwd)
+        .filter((entry) => !entry.nativeArchived)
+        .map((entry) => [`${entry.cwd}\u0000${entry.sessionId}`, entry]),
+    );
+    const nativeSessions = await this.listNativeSessions(cwd);
+    for (const native of nativeSessions) {
+      if (native.archived) continue;
+      const key = `${native.cwd}\u0000${native.sessionId}`;
+      const existing = byKey.get(key);
+      byKey.set(key, {
+        ...existing,
+        sessionId: native.sessionId,
+        cwd: native.cwd,
+        agent: native.agent,
+        repoName: existing?.repoName,
+        gitBranch: native.gitBranch ?? existing?.gitBranch,
+        title: existing?.title ?? native.title,
+        firstPrompt: existing?.firstPrompt ?? native.firstPrompt,
+        createdAt: native.createdAt || existing?.createdAt || native.lastInteractionAt,
+        lastAccessedAt: Math.max(existing?.lastAccessedAt ?? 0, native.lastInteractionAt),
+        // Native identity and archive state are never overridden by cache.
+        archived: false,
+        nativeArchived: false,
+      });
+    }
+    return Array.from(byKey.values()).sort((a, b) => b.lastAccessedAt - a.lastAccessedAt);
+  }
+
+  async listAvailableSessions(cwd: string): Promise<ClaudeSessionSummary[]> {
+    const registryEntries = await this.listSessionHistoryEntries(cwd);
 
     const pendingSessionIds = new Set(
       Array.from(this.pendingInputRequests.values()).map(p => p.request.sessionId)
@@ -1403,7 +1511,7 @@ export class SessionManager extends EventEmitter {
         });
         result = {
           cards: persisted.cards,
-          total: persisted.total + streamCards.length - persisted.persistedLiveCount,
+          total: (persisted.total ?? 0) + streamCards.length - persisted.persistedLiveCount,
           hasMore: persisted.hasMore,
           ...(persisted.nextCursor ? { nextCursor: persisted.nextCursor } : {}),
         };
@@ -1417,7 +1525,7 @@ export class SessionManager extends EventEmitter {
         });
         result = {
           cards: [...persisted.cards, ...streamCards],
-          total: persisted.total + streamCards.length - persisted.persistedLiveCount,
+          total: (persisted.total ?? 0) + streamCards.length - persisted.persistedLiveCount,
           hasMore: persisted.hasMore,
           ...(persisted.nextCursor ? { nextCursor: persisted.nextCursor } : {}),
         };
@@ -1430,7 +1538,7 @@ export class SessionManager extends EventEmitter {
       const streamingCards = ps.cardBuilder.getCards();
       if (streamingCards.length > 0) {
         if (offset === 0 && !cursor) result.cards.push(...streamingCards);
-        result.total += streamingCards.length;
+        if (result.total !== undefined) result.total += streamingCards.length;
       }
     }
 
@@ -1928,7 +2036,7 @@ export class SessionManager extends EventEmitter {
       // keep the entry visible and let a follow-up prompt cold-resume it.
       // PWA uses `archived=true` as the strong "navigate away from the
       // defunct session page" signal.
-      archived: !ps && !registryEntry,
+      archived: !ps && (!registryEntry || registryEntry.nativeArchived === true),
       agent: ps?.agentId ?? this.sessionAgents.get(sessionId) ?? registryAgent,
       isStreaming: ps?.streaming ?? false,
       hasPendingInput,

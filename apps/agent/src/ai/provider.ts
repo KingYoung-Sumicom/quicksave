@@ -71,6 +71,10 @@ export function isFullAccessPermission(agentId: AgentId, level: PermissionLevel)
 
 export type ProviderHistoryMode = 'claude-jsonl' | 'memory' | 'codex-thread' | 'opencode-thread';
 
+/** Where a provider's archive flag is durably owned. Providers without a
+ * native archive API use the session registry as a compatibility polyfill. */
+export type ProviderArchiveStorage = 'native' | 'registry';
+
 /** Represents a running provider session. */
 export interface ProviderSession {
   sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void;
@@ -81,6 +85,9 @@ export interface ProviderSession {
   /** Optional provider-native permission switch. OpenCode uses this to
    * toggle client-side auto approval without restarting its server session. */
   setPermissionMode?(level: PermissionLevel): void | Promise<void>;
+  /** Optional provider-native archive operation performed through this live
+   * session's writer lease. */
+  setArchived?(archived: boolean): void | Promise<void>;
   /** Optional — `terminalManager` terminal id when this provider owns a PTY
    *  the PWA should render alongside the structured card stream. Only the
    *  `claude-terminal` provider sets this today. SessionManager copies it into
@@ -286,6 +293,11 @@ export interface CodingAgentProvider {
    *  Called when the user clicks the compact button (prompt === '/compact').
    *  `model` is the provider/model id the session was spawned with. */
   compact?(sessionId: string, opts?: { cwd?: string; model?: string }): Promise<void>;
+  /** Defaults to `registry`, preserving archive support for legacy providers. */
+  readonly archiveStorage?: ProviderArchiveStorage;
+  /** Archive or restore the provider-native durable session, when supported. */
+  archiveSession?(sessionId: string, opts?: { cwd?: string }): Promise<void>;
+  unarchiveSession?(sessionId: string, opts?: { cwd?: string }): Promise<void>;
 
   /** Optional capability probe. Providers that omit it advertise only `id`
    *  and `label` in the `availableProviders` list (with zero capabilities). */

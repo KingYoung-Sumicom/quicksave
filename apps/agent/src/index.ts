@@ -490,7 +490,7 @@ serviceCmd
         const result = await client.request<CardHistoryResponse>('get-cards', params);
 
         const pendingCount = result.pendingInputs?.length ?? 0;
-        console.log(`Cards for session ${sessionId.slice(0, 8)} (${result.total} total, ${pendingCount} pending):\n`);
+        console.log(`Cards for session ${sessionId.slice(0, 8)} (${result.total ?? 'unknown'} total, ${pendingCount} pending):\n`);
 
         for (let i = 0; i < result.cards.length; i++) {
           const c = result.cards[i];

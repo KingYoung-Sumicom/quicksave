@@ -59,6 +59,7 @@ vi.mock('./sessionRegistry.js', () => ({
     getEntry: vi.fn().mockReturnValue(null),
     readArchivedEntry: vi.fn().mockReturnValue(undefined),
     getEntriesForProject: vi.fn().mockReturnValue([]),
+    listArchivedEntries: vi.fn().mockReturnValue([]),
     findBySessionId: vi.fn().mockReturnValue(undefined),
     findArchivedBySessionId: vi.fn().mockReturnValue(undefined),
     upsertEntry: vi.fn(),
@@ -141,6 +142,117 @@ describe('SessionManager', () => {
     it('should fall back to first provider if default is not found', () => {
       const mgr = new SessionManager([provider], 'nonexistent' as any);
       expect(mgr.getSessionAgent('nonexistent')).toBe('claude-code');
+    });
+  });
+
+  describe('archive storage adapters', () => {
+    it('uses the active provider session writer before opening a separate native archive client', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex', 'memory'),
+        archiveStorage: 'native' as const,
+        archiveSession: vi.fn().mockResolvedValue(undefined),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      const liveWriter = createMockProviderSession({ setArchived: vi.fn().mockResolvedValue(undefined) });
+      (mgr as unknown as { sessions: Map<string, ManagedSession> }).sessions.set('codex-session', {
+        sessionId: 'codex-session', cwd: '/repo', agentId: 'codex', providerSession: liveWriter,
+      } as ManagedSession);
+      (getSessionRegistry().getEntry as Mock).mockReturnValue({ agent: 'codex' });
+
+      await expect(mgr.setSessionArchived('codex-session', '/repo', true)).resolves.toBe('native');
+      expect(liveWriter.setArchived).toHaveBeenCalledWith(true);
+      expect(codexProvider.archiveSession).not.toHaveBeenCalled();
+    });
+
+    it('uses Codex native archive operations while legacy providers use the registry polyfill', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex', 'memory'),
+        archiveStorage: 'native' as const,
+        archiveSession: vi.fn().mockResolvedValue(undefined),
+      };
+      const mgr = new SessionManager([provider, codexProvider]);
+      (getSessionRegistry().getEntry as Mock).mockImplementation((_cwd: string, sessionId: string) => (
+        sessionId === 'codex-session' ? { agent: 'codex' } : { agent: 'claude-code' }
+      ));
+
+      await expect(mgr.setSessionArchived('codex-session', '/repo', true)).resolves.toBe('native');
+      expect(codexProvider.archiveSession).toHaveBeenCalledWith('codex-session', { cwd: '/repo' });
+      await expect(mgr.setSessionArchived('legacy-session', '/repo', true)).resolves.toBe('registry');
+    });
+
+    it('projects a known Codex thread native archive status without reusing the local archive flag', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex', 'memory'),
+        listNativeSessions: vi.fn().mockResolvedValue([{
+          sessionId: 'codex-session', cwd: '/repo', agent: 'codex', archived: true,
+          title: 'Native thread', firstPrompt: 'hi', createdAt: 1, lastInteractionAt: 2,
+        }]),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      const entry = { sessionId: 'codex-session', cwd: '/repo', agent: 'codex' as const, archived: false };
+      (getSessionRegistry().getEntriesForProject as Mock).mockReturnValue([entry]);
+      (getSessionRegistry().updateEntry as Mock).mockImplementation(
+        (_cwd: string, _sessionId: string, update: object) => ({ ...entry, ...update }),
+      );
+
+      await expect(mgr.reconcileNativeArchiveStatuses('/repo')).resolves.toEqual([
+        expect.objectContaining({ sessionId: 'codex-session', archived: false, nativeArchived: true }),
+      ]);
+      expect(getSessionRegistry().updateEntry).toHaveBeenCalledWith('/repo', 'codex-session', {
+        archived: false,
+        nativeArchived: true,
+      });
+    });
+
+    it('migrates a legacy local Codex archive flag through the native archive RPC', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex', 'memory'),
+        archiveStorage: 'native' as const,
+        archiveSession: vi.fn().mockResolvedValue(undefined),
+        listNativeSessions: vi.fn().mockResolvedValue([{
+          sessionId: 'legacy-codex', cwd: '/repo', agent: 'codex', archived: false,
+          title: 'Legacy thread', firstPrompt: 'hi', createdAt: 1, lastInteractionAt: 2,
+        }]),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      const entry = { sessionId: 'legacy-codex', cwd: '/repo', agent: 'codex' as const, archived: true };
+      (getSessionRegistry().getEntriesForProject as Mock).mockReturnValue([]);
+      (getSessionRegistry().listArchivedEntries as Mock).mockReturnValue([entry]);
+      (getSessionRegistry().readArchivedEntry as Mock).mockReturnValue(entry);
+      (getSessionRegistry().updateEntry as Mock).mockImplementation(
+        (_cwd: string, _sessionId: string, update: object) => ({ ...entry, ...update }),
+      );
+
+      await mgr.reconcileNativeArchiveStatuses('/repo');
+
+      expect(codexProvider.archiveSession).toHaveBeenCalledWith('legacy-codex', { cwd: '/repo' });
+      expect(getSessionRegistry().updateEntry).toHaveBeenCalledWith('/repo', 'legacy-codex', {
+        archived: false,
+        nativeArchived: true,
+      });
+    });
+  });
+
+  describe('provider session aggregation', () => {
+    it('includes an untracked native OpenCode session while preserving registry metadata when present', async () => {
+      const opencodeProvider = {
+        ...createMockProvider('opencode', 'opencode-thread'),
+        archiveStorage: 'native' as const,
+        listNativeSessions: vi.fn().mockResolvedValue([{
+          sessionId: 'native-open', cwd: '/repo', agent: 'opencode', archived: false,
+          title: 'OpenCode title', firstPrompt: 'native prompt', createdAt: 10, lastInteractionAt: 20,
+        }]),
+      };
+      const mgr = new SessionManager([opencodeProvider], 'opencode' as any);
+      (getSessionRegistry().getEntriesForProject as Mock).mockReturnValue([]);
+      (getSessionRegistry().listArchivedEntries as Mock).mockReturnValue([]);
+
+      await expect(mgr.listSessionHistoryEntries('/repo')).resolves.toEqual([
+        expect.objectContaining({
+          sessionId: 'native-open', agent: 'opencode', archived: false, nativeArchived: false,
+          title: 'OpenCode title', lastAccessedAt: 20,
+        }),
+      ]);
     });
   });
 

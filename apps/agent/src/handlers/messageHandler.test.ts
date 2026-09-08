@@ -1020,6 +1020,15 @@ describe('MessageHandler', () => {
           firstPrompt: 'native prompt',
           createdAt: 3_000,
           lastInteractionAt: 8_000,
+          archived: true,
+        },
+        {
+          sessionId: 'native-active-session',
+          cwd: testRepoPath,
+          agent: 'codex',
+          firstPrompt: 'active native prompt',
+          createdAt: 3_500,
+          lastInteractionAt: 8_500,
           archived: false,
         },
       ]);
@@ -1038,6 +1047,7 @@ describe('MessageHandler', () => {
       expect(entries[0].lastInteractionAt).toBe(9_000);
       expect(entries[1].origin).toBe('native');
       expect((response.payload as any).total).toBe(3);
+      expect(entries.map((entry) => entry.sessionId)).not.toContain('native-active-session');
     });
 
     it('materializes a native-only session when restoring it', async () => {
@@ -1135,6 +1145,29 @@ describe('MessageHandler', () => {
       expect(historyEvents[0].cwd).toBe(projectDir);
       expect(historyEvents[0].action).toBe('upsert');
       expect(historyEvents[0].entry.archived).toBe(true);
+    });
+
+    it('keeps the local entry active when native Codex archiving fails', async () => {
+      const entry = { ...seedEntry('codex-archive-failure'), agent: 'codex' as const };
+      getSessionRegistry().upsertEntry(entry);
+      const claudeService = (handler as unknown as {
+        claudeService: {
+          setSessionArchived: (sessionId: string, cwd: string, archived: boolean) => Promise<unknown>;
+          closeSession: (sessionId: string) => boolean;
+        };
+      }).claudeService;
+      const nativeArchive = vi.spyOn(claudeService, 'setSessionArchived')
+        .mockRejectedValue(new Error('Codex archive rejected'));
+      const closeSpy = vi.spyOn(claudeService, 'closeSession');
+
+      const response = await handler.handleMessage(
+        createMessage('claude:end-task', { sessionId: entry.sessionId }),
+      );
+
+      expect((response.payload as any)).toMatchObject({ success: false, error: 'Codex archive rejected' });
+      expect(nativeArchive).toHaveBeenCalledWith(entry.sessionId, projectDir, true);
+      expect(closeSpy).not.toHaveBeenCalled();
+      expect(getSessionRegistry().getEntry(projectDir, entry.sessionId)?.archived).not.toBe(true);
     });
 
     it('returns success=false for an unknown sessionId with no live process and no registry entry', async () => {

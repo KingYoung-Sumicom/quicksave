@@ -30,7 +30,7 @@
 import { execSync } from 'child_process';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
-import type { Attachment, Card, CardHistoryResponse, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
+import type { Attachment, Card, CardHistoryResponse, CardStreamEnd, ContextUsageBreakdown, NativeSessionSummary } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
 import type {
   CodingAgentProvider,
@@ -330,6 +330,7 @@ export class OpencodeSession implements ProviderSession {
 export class OpenCodeProvider implements CodingAgentProvider {
   readonly id = 'opencode' as const;
   readonly historyMode = 'opencode-thread' as const;
+  readonly archiveStorage = 'native' as const;
   readonly label = 'OpenCode';
 
   constructor(private readonly server: OpenCodeServer = getOpenCodeServer()) {}
@@ -410,6 +411,32 @@ export class OpenCodeProvider implements CodingAgentProvider {
       hasMore: !!page.cursor.next,
       ...(page.cursor.next ? { nextCursor: `opencode-v2:${page.cursor.next}` } : {}),
     };
+  }
+
+  async listNativeSessions(opts?: { cwd?: string }): Promise<NativeSessionSummary[]> {
+    const sessions = await this.server.listSessions(opts?.cwd);
+    return sessions
+      .filter((session) => !opts?.cwd || session.directory === opts.cwd)
+      .map((session) => ({
+        sessionId: session.id,
+        cwd: session.directory ?? opts?.cwd ?? process.cwd(),
+        agent: 'opencode' as const,
+        archived: session.time?.archived != null,
+        title: session.title,
+        firstPrompt: session.title,
+        createdAt: session.time?.created ?? session.time?.updated ?? 0,
+        lastInteractionAt: session.time?.updated ?? session.time?.created ?? 0,
+      }));
+  }
+
+  async archiveSession(sessionId: string, opts?: { cwd?: string }): Promise<void> {
+    if (!opts?.cwd) throw new Error(`OpenCode archive requires the session directory (${sessionId})`);
+    await this.server.setSessionArchived(sessionId, opts.cwd, true);
+  }
+
+  async unarchiveSession(sessionId: string, opts?: { cwd?: string }): Promise<void> {
+    if (!opts?.cwd) throw new Error(`OpenCode unarchive requires the session directory (${sessionId})`);
+    await this.server.setSessionArchived(sessionId, opts.cwd, false);
   }
 
   // ── startSession ────────────────────────────────────────────────────────────

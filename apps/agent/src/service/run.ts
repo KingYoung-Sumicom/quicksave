@@ -125,7 +125,7 @@ function startSessionRegistryWatcher(
 
         try {
           const entry = JSON.parse(readFileSync(path, 'utf-8')) as BroadcastSessionEntry;
-          if (!entry.sessionId || !entry.cwd || entry.archived) continue;
+          if (!entry.sessionId || !entry.cwd || entry.archived || entry.nativeArchived) continue;
           registry.applyExternalActiveEntry(entry);
           const enriched = enrichEntry(entry);
           bus.publish<SessionHistoryUpdatedPayload>('/sessions/history', {
@@ -269,7 +269,11 @@ export async function runDaemon(): Promise<void> {
   // entry across all cwds; updates publish single upsert/delete events.
   bus.onSubscribe<'/sessions/history', BroadcastSessionEntry[], SessionHistoryUpdatedPayload>(
     '/sessions/history',
-    { snapshot: () => getSessionRegistry().getEntriesForProject().map(enrichEntry) },
+    {
+      snapshot: async () => {
+        return (await claudeService.listSessionHistoryEntries()).map(enrichEntry);
+      },
+    },
   );
 
   // Per-repo AI commit-summary generation state. Snapshot = every tracked

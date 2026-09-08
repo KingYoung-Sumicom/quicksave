@@ -87,4 +87,34 @@ describe('ArchivedSessionsList', () => {
 
     expect(container.textContent).toContain('Native');
   });
+
+  it('labels the archived session provider', async () => {
+    const entry: BroadcastSessionEntry = {
+      sessionId: 'codex-archived-session',
+      cwd: '/tmp/quicksave',
+      firstPrompt: 'Codex archived task',
+      createdAt: Date.now() - 60_000,
+      lastAccessedAt: Date.now(),
+      agent: 'codex',
+      archived: true,
+    };
+
+    await act(async () => {
+      root.render(
+        <ArchivedSessionsList
+          cwd="/tmp/quicksave"
+          onListArchived={vi.fn(async () => ({
+            entries: [entry],
+            total: 1,
+            offset: 0,
+            limit: 20,
+          }))}
+          onRestore={vi.fn()}
+          defaultExpanded
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain('Codex');
+  });
 });

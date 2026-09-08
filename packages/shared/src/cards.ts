@@ -288,7 +288,12 @@ export interface PendingInputWithContext extends PendingInputAttachment {
 
 export interface CardHistoryResponse {
   cards: Card[];
-  total: number;
+  /**
+   * Exact total when the backing store can provide one. Native cursor APIs do
+   * not expose it without scanning every page, so it is intentionally absent
+   * for those responses.
+   */
+  total?: number;
   hasMore: boolean;
   /**
    * Opaque cursor for the next older history page. Consumers must return this

@@ -184,6 +184,13 @@ export interface CreateSessionOpts {
   agent?: string;
 }
 
+export interface OpenCodeSessionInfo {
+  id: string;
+  title?: string;
+  directory?: string;
+  time?: { created?: number; updated?: number; archived?: number | null };
+}
+
 export interface PromptOpts {
   messageID?: string;
   text: string;
@@ -561,6 +568,22 @@ class OpenCodeServer {
       { method: 'DELETE' },
       { directory },
     );
+  }
+
+  /** OpenCode owns archive state in `session.time.archived`. */
+  async setSessionArchived(sessionID: string, directory: string, archived: boolean): Promise<void> {
+    await this.req<OpenCodeSessionInfo>(
+      `/session/${encodeURIComponent(sessionID)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ time: { archived: archived ? Date.now() : null } }),
+      },
+      { directory },
+    );
+  }
+
+  async listSessions(directory?: string): Promise<OpenCodeSessionInfo[]> {
+    return this.req<OpenCodeSessionInfo[]>('/session', {}, { directory });
   }
 
   /** Compact a session conversation (summary + prune) via opencode's v1
