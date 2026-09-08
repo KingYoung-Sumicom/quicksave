@@ -590,6 +590,8 @@ export class StreamCardBuilder {
    * replaces this token, causing the pending polling task to bail out. */
   private _pendingClearToken: symbol | null = null;
   private persistMemoryCards = false;
+  /** Codex App Server history is authoritative; its cards are derived on read. */
+  private persistenceDisabled = false;
   private cardHistoryWriteQueue: Promise<void> = Promise.resolve();
 
   constructor(sessionId: string, cwd: string) {
@@ -603,6 +605,10 @@ export class StreamCardBuilder {
 
   enableMemoryPersistence(enabled = true): void {
     this.persistMemoryCards = enabled;
+  }
+
+  disablePersistence(disabled = true): void {
+    this.persistenceDisabled = disabled;
   }
 
   /** Continue the local card id counter after persisted memory-mode history.
@@ -670,6 +676,7 @@ export class StreamCardBuilder {
    * Call before clearCards() at the end of each turn.
    */
   async persistCards(): Promise<void> {
+    if (this.persistenceDisabled) return;
     const cards = this.getCards();
     if (cards.length === 0) return;
 
@@ -688,6 +695,7 @@ export class StreamCardBuilder {
    * injects a user prompt into an already-running turn; the card must survive
    * refresh before the turn's normal end-of-turn persist runs. */
   async persistCard(card: Card): Promise<void> {
+    if (this.persistenceDisabled) return;
     if (this.persistMemoryCards) {
       this.enqueueCardHistoryEntry({ op: 'upsert', card: cleanPersistedCard(card) });
       await this.flushCardHistoryWrites();

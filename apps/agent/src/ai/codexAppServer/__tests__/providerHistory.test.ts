@@ -8,6 +8,7 @@ import {
   buildThreadStartParams,
   codexSkillsToSlashCommands,
   hydrateThreadItems,
+  projectCodexThreadCards,
   subagentThreadSnapshot,
 } from '../provider.js';
 import type { SkillsListResponse } from '../schema/generated/v2/SkillsListResponse.js';
@@ -191,5 +192,23 @@ describe('subagentThreadSnapshot', () => {
         status: 'completed',
       },
     ]);
+  });
+});
+
+describe('projectCodexThreadCards', () => {
+  it('builds final cards from durable items without relying on stream deltas', () => {
+    const thread = {
+      id: 'thr-history',
+      turns: [{ id: 'turn-1', startedAt: 1, items: [
+        { type: 'userMessage', id: 'user-1', content: [{ type: 'text', text: 'Inspect this repo' }] },
+        { type: 'commandExecution', id: 'cmd-1', command: 'git status --short', aggregatedOutput: ' M app.ts', status: 'completed' },
+        { type: 'agentMessage', id: 'message-1', text: 'The repo has one changed file.' },
+      ] }],
+    } as unknown as Thread;
+
+    const cards = projectCodexThreadCards('thr-history', '/repo', thread);
+    expect(cards.map((card) => card.type)).toEqual(['user', 'tool_call', 'assistant_text']);
+    expect(cards[0]).toMatchObject({ text: 'Inspect this repo', turnId: 'turn-1' });
+    expect(cards[2]).toMatchObject({ text: 'The repo has one changed file.', streaming: false });
   });
 });

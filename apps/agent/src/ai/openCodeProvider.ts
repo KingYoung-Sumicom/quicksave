@@ -30,7 +30,7 @@
 import { execSync } from 'child_process';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
-import type { Attachment, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
+import type { Attachment, Card, CardHistoryResponse, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
 import type {
   CodingAgentProvider,
@@ -41,7 +41,7 @@ import type {
   ProbeResult,
   PermissionLevel,
 } from './provider.js';
-import { getOpenCodeServer, type OpenCodeEvent, type OpenCodeServer } from './openCodeServer.js';
+import { getOpenCodeServer, type OpenCodeEvent, type OpenCodeServer, type OpenCodeV2Message } from './openCodeServer.js';
 import { QUICKSAVE_SESSION_ID_ARG } from './openCodeMcpPlugin.js';
 
 // ── Part types we translate (verified from opencode 1.14 OpenAPI Part union) ──
@@ -329,7 +329,7 @@ export class OpencodeSession implements ProviderSession {
 
 export class OpenCodeProvider implements CodingAgentProvider {
   readonly id = 'opencode' as const;
-  readonly historyMode = 'memory' as const;
+  readonly historyMode = 'opencode-thread' as const;
   readonly label = 'OpenCode';
 
   constructor(private readonly server: OpenCodeServer = getOpenCodeServer()) {}
@@ -380,6 +380,38 @@ export class OpenCodeProvider implements CodingAgentProvider {
     } catch { return undefined; }
   }
 
+  /** Fail early on installations that lack the v2 cursor-history contract. */
+  private async requireV2History(sessionId: string): Promise<void> {
+    await this.server.getMessagePage(sessionId, { limit: 1, order: 'desc' });
+  }
+
+  /** Read cards from OpenCode's v2 cursor API; never from Quicksave card storage. */
+  async loadCardHistory(opts: {
+    sessionId: string;
+    cwd: string;
+    offset: number;
+    limit: number;
+    cursor?: string;
+  }): Promise<CardHistoryResponse> {
+    const nativeCursor = opts.cursor?.startsWith('opencode-v2:')
+      ? opts.cursor.slice('opencode-v2:'.length)
+      : undefined;
+    const page = await this.server.getMessagePage(opts.sessionId, {
+      limit: Math.min(200, Math.max(1, opts.limit)),
+      ...(nativeCursor ? { cursor: nativeCursor } : { order: 'desc' }),
+    });
+    // v2 returns descending pages by default; cards must remain chronological.
+    const cards = projectOpenCodeMessages(opts.sessionId, opts.cwd, [...page.data].reverse());
+    return {
+      cards,
+      // v2 intentionally provides no total count. This is a lower bound; the
+      // PWA uses the opaque cursor/hasMore contract for further history.
+      total: opts.offset + cards.length + (page.cursor.next ? 1 : 0),
+      hasMore: !!page.cursor.next,
+      ...(page.cursor.next ? { nextCursor: `opencode-v2:${page.cursor.next}` } : {}),
+    };
+  }
+
   // ── startSession ────────────────────────────────────────────────────────────
 
   async startSession(
@@ -399,6 +431,12 @@ export class OpenCodeProvider implements CodingAgentProvider {
       directory: opts.cwd,
       agent: 'build',
     });
+    try {
+      await this.requireV2History(opencodeSessionId);
+    } catch (err) {
+      await server.deleteSession(opencodeSessionId, opts.cwd).catch(() => {});
+      throw new Error(`OpenCode v2 cursor history API is required: ${(err as Error).message}`);
+    }
 
     const turnConfig: TurnConfig = {
       model: parseModelId(opts.model),
@@ -472,6 +510,9 @@ export class OpenCodeProvider implements CodingAgentProvider {
     // `opts.sessionId` from SessionManager IS opencode's ses_… (we returned
     // it from startSession). Reuse it directly — no createSession.
     const opencodeSessionId = opts.sessionId;
+    await this.requireV2History(opencodeSessionId).catch((err) => {
+      throw new Error(`OpenCode v2 cursor history API is required: ${(err as Error).message}`);
+    });
 
     const turnConfig: TurnConfig = {
       model: parseModelId(opts.model),
@@ -513,6 +554,66 @@ export class OpenCodeProvider implements CodingAgentProvider {
 
     return { sessionId: opencodeSessionId, session };
   }
+}
+
+function v2ContentText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(v2ContentText).filter(Boolean).join('\n');
+  if (value && typeof value === 'object' && 'text' in value && typeof value.text === 'string') return value.text;
+  if (value === undefined || value === null) return '';
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+/** Stable final-state projection of one OpenCode v2 message page. */
+export function projectOpenCodeMessages(sessionId: string, cwd: string, messages: readonly OpenCodeV2Message[]): Card[] {
+  const builder = new StreamCardBuilder(sessionId, cwd);
+  for (const message of messages) {
+    builder.startNewTurn(message.id);
+    switch (message.type) {
+      case 'user':
+        if (message.text) builder.userMessage(message.text);
+        break;
+      case 'assistant':
+        for (const content of message.content ?? []) {
+          if (content.type === 'text' && typeof content.text === 'string') {
+            builder.assistantText(content.text);
+            builder.finalizeAssistantText();
+            continue;
+          }
+          if (content.type === 'reasoning' && typeof content.text === 'string') {
+            builder.thinkingBlock(content.text);
+            continue;
+          }
+          if (content.type !== 'tool') continue;
+          const id = typeof content.id === 'string' ? content.id : `${message.id}:tool`;
+          const state = content.state && typeof content.state === 'object'
+            ? content.state as Record<string, unknown>
+            : {};
+          const rawName = typeof content.name === 'string' ? content.name : 'unknown';
+          const input = state.input && typeof state.input === 'object' && !Array.isArray(state.input)
+            ? state.input as Record<string, unknown>
+            : {};
+          builder.toolUse(normalizeOpenCodeToolName(rawName), normalizeOpenCodeToolInput(rawName, input), id);
+          const failed = state.status === 'error';
+          const output = failed
+            ? v2ContentText(state.error)
+            : v2ContentText(state.content);
+          builder.toolResult(id, output, failed);
+        }
+        break;
+      case 'shell':
+        builder.toolUse('Bash', { command: message.command ?? '' }, message.id);
+        builder.toolResult(message.id, message.output ?? '', false);
+        break;
+      case 'compaction':
+        builder.systemMessage('Context compacted', 'compacted');
+        break;
+      default:
+        break;
+    }
+    builder.markTurnCompleted(message.id);
+  }
+  return builder.getCards();
 }
 
 // ── SSE → CardEvent router ───────────────────────────────────────────────────

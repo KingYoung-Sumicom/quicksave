@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment, ConfigValue, NativeSessionSummary, SlashCommandInfo, SubagentActivity } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, Card, CardHistoryResponse, ConfigValue, NativeSessionSummary, SlashCommandInfo, SubagentActivity } from '@sumicom/quicksave-shared';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { StreamCardBuilder } from '../cardBuilder.js';
+import { StreamCardBuilder } from '../cardBuilder.js';
 import { persistAttachments } from '../attachmentStore.js';
 import { buildSandboxMcpServerConfig, SANDBOX_MCP_NAME } from '../sandboxMcp.js';
 import type {
@@ -111,7 +111,7 @@ const CODEX_TURN_START_TIMEOUT_MS = 45_000;
  */
 export class CodexAppServerProvider implements CodingAgentProvider {
   readonly id: AgentId = 'codex';
-  readonly historyMode: ProviderHistoryMode = 'memory';
+  readonly historyMode: ProviderHistoryMode = 'codex-thread';
   readonly label = 'Codex';
 
   async probeProvider() {
@@ -245,6 +245,21 @@ export class CodexAppServerProvider implements CodingAgentProvider {
         }
       }
       return Array.from(byId.values()).sort((a, b) => b.lastInteractionAt - a.lastInteractionAt);
+    } finally {
+      await handle.shutdown().catch(() => {});
+    }
+  }
+
+  /** Read-only history path: it never resumes or takes ownership of a thread. */
+  async loadCardHistory(opts: { sessionId: string; cwd: string; offset: number; limit: number }): Promise<CardHistoryResponse> {
+    const handle = await spawnCodexNativeListAppServer();
+    try {
+      const thread = await readPersistedThread(handle, opts.sessionId);
+      const cards = projectCodexThreadCards(opts.sessionId, opts.cwd, thread);
+      const start = Math.max(0, cards.length - opts.offset - opts.limit);
+      const end = Math.max(start, cards.length - opts.offset);
+      return { cards: cards.slice(start, end), total: cards.length, hasMore: start > 0,
+        ...(start > 0 ? { nextCursor: `codex-offset:${opts.offset + (end - start)}` } : {}) };
     } finally {
       await handle.shutdown().catch(() => {});
     }
@@ -1619,6 +1634,73 @@ function codexAppServerInit() {
 
 function spawnCodexNativeListAppServer(): Promise<AppServerHandle> {
   return spawnAppServer(codexAppServerInit());
+}
+
+async function readPersistedThread(handle: AppServerHandle, threadId: string): Promise<Thread> {
+  const response = await handle.rpc.request<ThreadReadResponse>('thread/read', { threadId, includeTurns: false });
+  const turns = await readAllPersistedPages<ThreadTurnsListResponse>(handle, 'thread/turns/list',
+    { threadId, sortDirection: 'asc', itemsView: 'notLoaded' });
+  const items = await readAllPersistedPages<ThreadItemsListResponse>(handle, 'thread/items/list',
+    { threadId, sortDirection: 'asc' });
+  return hydrateThreadItems(response.thread, turns.flatMap((page) => page.data), items.flatMap((page) => page.data));
+}
+
+async function readAllPersistedPages<T extends { nextCursor: string | null }>(
+  handle: AppServerHandle,
+  method: 'thread/turns/list' | 'thread/items/list',
+  params: Record<string, unknown>,
+): Promise<T[]> {
+  const pages: T[] = [];
+  let cursor: string | null = null;
+  do {
+    const page: T = await handle.rpc.request<T>(method, { ...params, cursor });
+    pages.push(page);
+    cursor = page.nextCursor;
+  } while (cursor);
+  return pages;
+}
+
+/** Build a stable final-state UI projection from persisted Codex items. */
+export function projectCodexThreadCards(sessionId: string, cwd: string, thread: Thread): Card[] {
+  const builder = new StreamCardBuilder(sessionId, cwd);
+  for (const turn of thread.turns) {
+    builder.startNewTurn(turn.id);
+    for (const item of turn.items) projectCodexItem(builder, item);
+    for (const event of builder.markTurnCompleted(turn.id)) void event;
+  }
+  return builder.getCards();
+}
+
+function projectCodexItem(builder: StreamCardBuilder, item: ThreadItem): void {
+  const emit = (event: unknown) => { void event; };
+  switch (item.type) {
+    case 'userMessage':
+      emit(builder.userMessage(item.content.map((part: any) => part.text ?? '').filter(Boolean).join('\n')));
+      return;
+    case 'agentMessage':
+      if (item.text) emit(builder.assistantText(item.text));
+      emit(builder.finalizeAssistantText());
+      return;
+    case 'plan':
+      if (item.text) emit(builder.thinkingBlock(item.text));
+      return;
+    case 'reasoning':
+      if (item.summary.length || item.content.length) emit(builder.thinkingBlock([...item.summary, ...item.content].join('\n')));
+      return;
+    case 'commandExecution':
+      emit(builder.toolUse('Bash', { command: item.command }, item.id));
+      emit(builder.toolResult(item.id, item.aggregatedOutput ?? '', item.status === 'failed' || item.status === 'declined'));
+      return;
+    case 'mcpToolCall':
+      emit(builder.toolUse(`mcp__${item.server}__${item.tool}`, (item.arguments ?? {}) as Record<string, unknown>, item.id));
+      emit(builder.toolResult(item.id, item.error ? JSON.stringify(item.error) : JSON.stringify(item.result ?? ''), !!item.error));
+      return;
+    case 'contextCompaction':
+      emit(builder.systemMessage('Context compacted', 'compacted'));
+      return;
+    default:
+      return;
+  }
 }
 
 function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promise<AppServerHandle> {

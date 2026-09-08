@@ -36,6 +36,7 @@ import {
   _resetOpenCodeBinCache,
   normalizeOpenCodeToolInput,
   normalizeOpenCodeToolName,
+  projectOpenCodeMessages,
   type TurnConfig,
 } from './openCodeProvider.js';
 import { StreamCardBuilder } from './cardBuilder.js';
@@ -96,6 +97,7 @@ function makeMockServer(): OpenCodeServer & {
       replies.push({ requestID, directory, reply, ...(message ? { message } : {}) });
     },
     getMessages: async () => messages,
+    getMessagePage: async () => ({ data: [], cursor: {} }),
     getHealth: async () => ({ healthy: true, version: '1.18.4' }),
     listProviders: async () => ({
       all: [
@@ -1162,7 +1164,7 @@ describe('OpenCodeProvider', () => {
     const provider = new OpenCodeProvider(makeMockServer());
     expect(provider.id).toBe('opencode');
     expect(provider.label).toBe('OpenCode');
-    expect(provider.historyMode).toBe('memory');
+    expect(provider.historyMode).toBe('opencode-thread');
     const probe = await provider.probeProvider();
     expect(probe.capabilities.supportsResume).toBe(true);
     expect(probe.capabilities.supportsStreaming).toBe(true);
@@ -1177,6 +1179,41 @@ describe('OpenCodeProvider', () => {
     const ids = r.models?.map((m) => m.id).sort();
     expect(ids).toEqual(['opencode/big-pickle', 'vllm/foo/bar']);
     expect(r.models?.find((m) => m.id === 'vllm/foo/bar')?.name).toBe('Foo Bar');
+  });
+
+  it('projects v2 persisted messages into final-state cards', () => {
+    const cards = projectOpenCodeMessages('ses_history', '/workspace/a', [
+      { id: 'msg_user', type: 'user', text: 'inspect this' },
+      {
+        id: 'msg_assistant', type: 'assistant', content: [
+          { type: 'reasoning', id: 'reason_1', text: 'I will inspect it.' },
+          { type: 'tool', id: 'call_1', name: 'read', state: {
+            status: 'completed', input: { filePath: '/workspace/a/a.ts' }, content: [{ text: 'ok' }],
+          } },
+          { type: 'text', id: 'text_1', text: 'Done.' },
+        ],
+      },
+    ]);
+    expect(cards.map((card) => card.type)).toEqual(['user', 'thinking', 'tool_call', 'assistant_text']);
+    expect(cards[0]?.turnId).toBe('msg_user');
+    expect(cards[2]?.toolName).toBe('Read');
+    expect(cards[3]?.text).toBe('Done.');
+  });
+
+  it('uses the OpenCode v2 cursor directly for older card pages', async () => {
+    const server = makeMockServer();
+    const page = vi.fn().mockResolvedValue({
+      data: [{ id: 'msg_old', type: 'user', text: 'older prompt' }],
+      cursor: { next: 'native-next' },
+    });
+    (server as any).getMessagePage = page;
+    const result = await new OpenCodeProvider(server).loadCardHistory({
+      sessionId: 'ses_history', cwd: '/workspace/a', offset: 1, limit: 50, cursor: 'opencode-v2:native-current',
+    });
+    expect(page).toHaveBeenCalledWith('ses_history', { limit: 50, cursor: 'native-current' });
+    expect(result.cards.map((card) => card.type)).toEqual(['user']);
+    expect(result.hasMore).toBe(true);
+    expect(result.nextCursor).toBe('opencode-v2:native-next');
   });
 
   it('routes a new session to its directory and forwards attachments', async () => {

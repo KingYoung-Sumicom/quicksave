@@ -204,6 +204,68 @@ export interface OpenCodeProviderInfo {
   models: Record<string, { id?: string; name?: string }>;
 }
 
+/** The v2 API exposes projected messages and opaque page cursors. */
+export interface OpenCodeV2Message {
+  id: string;
+  type: string;
+  text?: string;
+  content?: Array<Record<string, unknown>>;
+  command?: string;
+  output?: string;
+  summary?: string;
+  recent?: string;
+}
+
+export interface OpenCodeV2MessagePage {
+  data: OpenCodeV2Message[];
+  cursor: { previous?: string; next?: string };
+}
+
+function v2ToolOutput(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      if (typeof item === 'string') return item;
+      if (isRecord(item) && typeof item.text === 'string') return item.text;
+      try { return JSON.stringify(item); } catch { return String(item); }
+    }).join('\n');
+  }
+  if (value === undefined) return '';
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+/** Adapter for the current streaming router, which still consumes v1-shaped parts. */
+function toLegacyMessage(message: OpenCodeV2Message): { info: Record<string, unknown>; parts: Array<Record<string, unknown>> } {
+  if (message.type === 'user') {
+    return {
+      info: { id: message.id, role: 'user' },
+      parts: typeof message.text === 'string'
+        ? [{ id: `${message.id}:text`, messageID: message.id, type: 'text', text: message.text }]
+        : [],
+    };
+  }
+  if (message.type !== 'assistant') return { info: { id: message.id, role: 'system' }, parts: [] };
+  const parts = (message.content ?? []).map((content) => {
+    if (content.type === 'tool') {
+      const state = isRecord(content.state) ? content.state : {};
+      return {
+        id: typeof content.id === 'string' ? content.id : `${message.id}:tool`,
+        messageID: message.id,
+        type: 'tool',
+        tool: typeof content.name === 'string' ? content.name : 'unknown',
+        callID: typeof content.id === 'string' ? content.id : `${message.id}:tool`,
+        state: {
+          ...state,
+          output: v2ToolOutput(state.content),
+          error: isRecord(state.error) ? String(state.error.message ?? 'tool failed') : state.error,
+        },
+      };
+    }
+    return { ...content, messageID: message.id };
+  });
+  return { info: { id: message.id, role: 'assistant' }, parts };
+}
+
 /** @internal exported for protocol-shape tests. */
 export function buildOpenCodeUrl(
   baseUrl: string,
@@ -539,7 +601,23 @@ class OpenCodeServer {
     }, { directory });
   }
 
-  /** Fetch every message + part for a session via the REST API.
+  /** Fetch a cursor page from OpenCode's v2 projected-message API.
+   *
+   * This is deliberately v2-only. The legacy `/session/.../message` route
+   * cannot provide reliable cursor paging for a long session.
+   */
+  async getMessagePage(
+    sessionID: string,
+    opts: { limit: number; cursor?: string; order?: 'asc' | 'desc' },
+  ): Promise<OpenCodeV2MessagePage> {
+    return this.req<OpenCodeV2MessagePage>(
+      `/api/session/${encodeURIComponent(sessionID)}/message`,
+      {},
+      { limit: opts.limit, ...(opts.cursor ? { cursor: opts.cursor } : { order: opts.order ?? 'desc' }) },
+    );
+  }
+
+  /** Fetch the latest v2 message page and adapt it for the live SSE router.
    *
    * Tool calls in opencode 1.14 are NOT pushed via SSE — only `message.part.delta`
    * (text/reasoning), `session.status`, `session.diff`, and `session.idle` ever
@@ -549,12 +627,9 @@ class OpenCodeServer {
    * Shape:
    *   [{ info: { id, role, ... }, parts: [{ type: 'tool'|'text'|..., ... }] }]
    */
-  async getMessages(sessionID: string, directory: string): Promise<Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>> {
-    return this.req<Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>>(
-      `/session/${encodeURIComponent(sessionID)}/message`,
-      {},
-      { directory },
-    );
+  async getMessages(sessionID: string, _directory: string): Promise<Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>> {
+    const page = await this.getMessagePage(sessionID, { limit: 200, order: 'desc' });
+    return page.data.map(toLegacyMessage);
   }
 
   async abortSession(sessionID: string, directory: string): Promise<void> {

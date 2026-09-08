@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment, CardEvent, CardStreamEnd, ConfigValue, ContextUsageBreakdown, NativeSessionSummary, SessionQueueState, SlashCommandInfo } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, CardEvent, CardHistoryResponse, CardStreamEnd, ConfigValue, ContextUsageBreakdown, NativeSessionSummary, SessionQueueState, SlashCommandInfo } from '@sumicom/quicksave-shared';
 import type { StreamCardBuilder } from './cardBuilder.js';
 
 export const CLAUDE_PERMISSION_MODES = [
@@ -69,7 +69,7 @@ export function isFullAccessPermission(agentId: AgentId, level: PermissionLevel)
     : level === 'bypassPermissions';
 }
 
-export type ProviderHistoryMode = 'claude-jsonl' | 'memory';
+export type ProviderHistoryMode = 'claude-jsonl' | 'memory' | 'codex-thread' | 'opencode-thread';
 
 /** Represents a running provider session. */
 export interface ProviderSession {
@@ -293,4 +293,13 @@ export interface CodingAgentProvider {
 
   /** Optional provider-native session discovery for sessions not yet tracked in Quicksave's registry. */
   listNativeSessions?(opts?: { cwd?: string }): Promise<NativeSessionSummary[]>;
+  /** Rebuild render cards from the provider's durable history on demand. */
+  loadCardHistory?(opts: {
+    sessionId: string;
+    cwd: string;
+    offset: number;
+    limit: number;
+    /** Provider-native opaque cursor for the next older history page. */
+    cursor?: string;
+  }): Promise<CardHistoryResponse>;
 }

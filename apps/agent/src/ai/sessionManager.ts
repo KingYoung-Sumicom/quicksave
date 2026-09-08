@@ -599,6 +599,9 @@ export class SessionManager extends EventEmitter {
     // Create cardBuilder with 'pending' sessionId — will be updated after provider returns real one
     const cardBuilder = new StreamCardBuilder('pending', opts.cwd);
     cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory');
+    cardBuilder.disablePersistence?.(
+      provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread',
+    );
 
     const callbacks = this.makeCallbacks(provider.id);
 
@@ -803,6 +806,9 @@ export class SessionManager extends EventEmitter {
 
       const cardBuilder = existing?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.cwd);
       cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory');
+      cardBuilder.disablePersistence?.(
+        provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread',
+      );
       if (provider.historyMode === 'memory') {
         cardBuilder.seedSequenceFromMax(await loadPersistedCardMaxSequence(opts.sessionId));
       }
@@ -1363,7 +1369,19 @@ export class SessionManager extends EventEmitter {
     const cutoff = ps?.cardBuilder?.jsonlCutoff ?? undefined;
     let result: CardHistoryResponse;
 
-    if (provider.historyMode === 'claude-jsonl') {
+    if (provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread') {
+      const codexOffset = cursor?.startsWith('codex-offset:')
+        ? Number(cursor.slice('codex-offset:'.length))
+        : offset;
+      if (!provider.loadCardHistory) throw new Error('Codex provider does not implement durable history loading');
+      result = await provider.loadCardHistory({
+        sessionId,
+        cwd,
+        offset: Number.isSafeInteger(codexOffset) && codexOffset >= 0 ? codexOffset : offset,
+        limit,
+        cursor,
+      });
+    } else if (provider.historyMode === 'claude-jsonl') {
       const cursorOffset = cursor?.startsWith('claude-offset:')
         ? Number(cursor.slice('claude-offset:'.length))
         : NaN;
