@@ -135,33 +135,42 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
       </div>
       <div className="flex-1 overflow-y-auto">
         {tab === 'sessions' && (
-          <div className={`${compact ? '' : 'max-w-lg mx-auto py-4'} space-y-5`}>
-            <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2 px-3">
-              <FilterPill
-                ariaLabel="Filter sessions by machine"
-                label="Machine"
-                value={machineFilter}
-                onChange={handleMachineFilterChange}
-                options={machines.map((machine) => ({ value: machine.agentId, label: machine.nickname }))}
-              />
-              <FilterPill
-                ariaLabel="Filter sessions by project"
-                label="Project"
-                value={projectFilter}
-                onChange={setProjectFilter}
-                options={filterProjects.map((project) => ({
-                  value: project.projectId,
-                  label: machineFilter ? project.displayName : `${project.machineName} · ${project.displayName}`,
-                }))}
-              />
-              <button
-                type="button"
-                onClick={clearFilters}
-                disabled={!machineFilter && !projectFilter}
-                className="rounded-full px-2.5 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-100 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-400"
-              >
-                Clear
-              </button>
+          <div className={`${compact ? '' : 'max-w-lg mx-auto py-4'} space-y-2`}>
+            <div className={`${compact ? 'grid grid-cols-[minmax(0,1fr)_auto] gap-2 pt-2' : 'grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-2'} px-3`}>
+              <div className={compact ? 'flex min-w-0 flex-col gap-2' : 'contents'}>
+                <FilterPill
+                  ariaLabel="Filter sessions by machine"
+                  label="Machine"
+                  value={machineFilter}
+                  onChange={handleMachineFilterChange}
+                  options={machines.map((machine) => ({ value: machine.agentId, label: machine.nickname }))}
+                />
+                <FilterPill
+                  ariaLabel="Filter sessions by project"
+                  label="Project"
+                  value={projectFilter}
+                  onChange={setProjectFilter}
+                  options={filterProjects.map((project) => ({
+                    value: project.projectId,
+                    label: machineFilter ? project.displayName : `${project.machineName} · ${project.displayName}`,
+                  }))}
+                />
+              </div>
+              {(machineFilter || projectFilter) && (
+                <div className={compact ? 'flex items-center justify-center' : 'flex items-center'}>
+                  <button
+                    type="button"
+                    onClick={clearFilters}
+                    aria-label="Clear session filters"
+                    title="Clear filters"
+                    className="rounded-full p-2 text-slate-400 transition-colors hover:bg-slate-700 hover:text-slate-100"
+                  >
+                    <svg aria-hidden className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m14 4 6 6m-3-1-7 7m-1-5-6 6 4 4 6-6-4-4Z" />
+                    </svg>
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Flat ticket list — filtered sessions, sorted by recency. */}
