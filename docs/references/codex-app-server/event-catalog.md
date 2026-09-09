@@ -1,8 +1,8 @@
 # Codex `app-server` — exhaustive notification catalog
 
-> **Source(s):** locally-generated `ServerNotification.ts` union (CLI 0.125.0 — authoritative wire-method catalog); locally-generated `v2/*Notification.ts` payloads; https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md (§ Events, § Turn events → § Items, § Errors, § Approvals, § Auth endpoints).
-> **Fetched:** 2026-04-26
-> **Codex CLI version verified against:** 0.125.0
+> **Source(s):** locally-generated `ServerNotification.ts` union (CLI 0.153.4 — authoritative wire-method catalog); locally-generated `v2/*Notification.ts` payloads; https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md (§ Events, § Turn events → § Items, § Errors, § Approvals, § Auth endpoints).
+> **Fetched:** 2026-09-10
+> **Codex CLI version verified against:** 0.153.4
 
 This is the lookup table to use when wiring app-server events into Quicksave's card builder. Every method in this table appears on the wire; anything that *isn't* in this table won't be emitted.
 
@@ -50,6 +50,35 @@ The README puts it concisely:
 | `model/verification` | `ModelVerificationNotification` | Backend flags additional account verification (e.g. `trustedAccessForCyber`). |
 
 > **Migration mapping**: `turn/started` / `turn/completed` are the new per-turn boundary markers (currently we infer this from SDK `started`/`completed` events). `turn/diff/updated` replaces ad-hoc diff stitching in `StreamCardBuilder`.
+
+### Quicksave native command completion continuation
+
+Quicksave's experimental Codex augmentation uses only the public, typed
+`item/started`, `item/completed`, and `turn/completed` notifications. It tracks
+a root-thread `commandExecution` only when its `source` is
+`unifiedExecStartup`; `userShell`, `agent`, and `unifiedExecInteraction`
+(`write_stdin` polling) are excluded.
+
+This covers code-mode calls only when stock Codex surfaces their native shell
+work as that typed `commandExecution` source (as it does for the observed
+`tools.exec_command` path). Shell work hidden inside another tool's opaque
+result has no verified public correlation and is intentionally unsupported.
+
+If that execution's terminal `item/completed` arrives **after** its origin turn
+has completed, Quicksave schedules a new idle-only `turn/start` with `input: []`
+and a factual `toolOutput` in the `quicksave/background_execution_completed`
+namespace. It is not a user message, a replacement result for the original tool
+call, or a host-side process poll. User prompts, pending turns, interruptions,
+archive/close, and paused/limited goal modes take precedence.
+
+This is deliberately a **post-turn native completion continuation**, not a
+claim that public event timing proves that Codex returned a live handle. A
+completion before its turn boundary is treated as ordinary execution and is not
+replayed. The feature is enabled by default only for the verified `0.153.x`
+schema line (patch `>= 0.153.4`); other stock versions retain ordinary Codex
+behavior with this augmentation disabled rather than treating a successful
+unknown field as proof of support. It can also be disabled with
+`QUICKSAVE_CODEX_BACKGROUND_COMPLETIONS=0`.
 
 ## Item lifecycle (every item type)
 
@@ -206,7 +235,7 @@ This is the meta-table — for each event class, what's the obvious mapping into
 | `fuzzyFileSearch/*`, `windowsSandbox/*`, `windows/worldWritableWarning` | **Ignore.** | Out of our use case. |
 | `error`, `warning`, `configWarning`, `deprecationNotice` | **Yes** — surface to user / log. | `configWarning` may fire during `initialize`. |
 | `command/exec/outputDelta` | **No** unless we use standalone `command/exec`. | Different surface from item-scoped `commandExecution`. |
-| `rawResponseItem/completed` | **Ignore.** | Internal; only when `experimentalRawEvents: true`. |
+| `rawResponseItem/completed` | **Ignore.** | Internal/experimental; Quicksave's native completion augmentation intentionally relies on the typed public command lifecycle instead. |
 | `model/rerouted`, `model/verification` | **Yes (banner)** — surface to user. | Edge cases that change the user's expectation of what's running. |
 
 > When a new method appears in a future CLI version that's not here, regenerate the TS bindings (`codex app-server generate-ts --out DIR`) and check `DIR/ServerNotification.ts` — that union is the source of truth, and this table is downstream.

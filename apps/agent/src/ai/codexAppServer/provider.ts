@@ -33,6 +33,11 @@ import {
 import { detectCodexVersion, spawnAppServer, type AppServerHandle } from './processManager.js';
 import { RuntimeOverrideStore, type RuntimeOverrides } from './overrideStore.js';
 import { TokenAccounting, type CumulativeUsageSeed } from './tokenAccounting.js';
+import {
+  NativeExecCompletionTracker,
+  type ReadyNativeExecCompletion,
+} from './nativeExecCompletionTracker.js';
+import { RpcError, RpcTransportClosedError } from './rpcClient.js';
 import type { AskForApproval } from './schema/generated/v2/AskForApproval.js';
 import type { SandboxMode } from './schema/generated/v2/SandboxMode.js';
 import type { ThreadStartParams } from './schema/generated/v2/ThreadStartParams.js';
@@ -53,6 +58,7 @@ import type { TurnInterruptParams } from './schema/generated/v2/TurnInterruptPar
 import type { TurnSteerParams } from './schema/generated/v2/TurnSteerParams.js';
 import type { TurnStartedNotification } from './schema/generated/v2/TurnStartedNotification.js';
 import type { TurnCompletedNotification } from './schema/generated/v2/TurnCompletedNotification.js';
+import type { TurnStatus } from './schema/generated/v2/TurnStatus.js';
 import type { ThreadTokenUsageUpdatedNotification } from './schema/generated/v2/ThreadTokenUsageUpdatedNotification.js';
 import type { ApprovalsReviewer } from './schema/generated/v2/ApprovalsReviewer.js';
 import type { SkillsListParams } from './schema/generated/v2/SkillsListParams.js';
@@ -82,6 +88,7 @@ import type { ThreadGoalUpdatedNotification } from './schema/generated/v2/Thread
 import type { JsonValue } from './schema/generated/serde_json/JsonValue.js';
 import { codexProtocolPreview } from './protocolLog.js';
 import { codexServerRequestInputId } from './serverRequestIds.js';
+import { CODEX_SCHEMA_PINNED_VERSION } from './version.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
 const __aiDir = dirname(__ownDir);
@@ -100,6 +107,102 @@ const CODEX_BUILT_IN_SLASH_COMMANDS: SlashCommandInfo[] = [
 // rejection, so timing out also releases the child process for a clean retry.
 const CODEX_THREAD_RESUME_TIMEOUT_MS = 45_000;
 const CODEX_TURN_START_TIMEOUT_MS = 45_000;
+const NATIVE_COMPLETION_BATCH_MAX = 8;
+const NATIVE_COMPLETION_OUTPUT_MAX_CHARS = 4_000;
+const NATIVE_COMPLETION_COMMAND_MAX_CHARS = 1_000;
+const NATIVE_COMPLETION_MAX_DEFINITIVE_RETRIES = 1;
+
+/** Experimental augmentation switch. Enabled by default on the schema-pinned
+ * app-server; set `QUICKSAVE_CODEX_BACKGROUND_COMPLETIONS=0` to disable only
+ * completion-driven continuation, leaving Codex and native Bash unchanged. */
+export function isNativeCompletionFeatureEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.QUICKSAVE_CODEX_BACKGROUND_COMPLETIONS?.trim() !== '0';
+}
+
+/** The `turn/start.toolOutput` semantics used here are source-verified only
+ * for the vendored schema line. Keep normal Codex sessions working on any
+ * other stock binary, but decline this augmentation rather than assuming an
+ * unknown field was honored. */
+export function supportsNativeCompletionProtocol(
+  cliVersion: string | null | undefined,
+  pinnedVersion = CODEX_SCHEMA_PINNED_VERSION,
+): boolean {
+  const cli = parseCodexSemver(cliVersion);
+  const pinned = parseCodexSemver(pinnedVersion);
+  return cli !== null
+    && pinned !== null
+    && cli.major === pinned.major
+    && cli.minor === pinned.minor
+    && cli.patch >= pinned.patch;
+}
+
+function parseCodexSemver(
+  value: string | null | undefined,
+): { major: number; minor: number; patch: number } | null {
+  if (typeof value !== "string") return null;
+  const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(value.trim());
+  if (!match) return null;
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
+}
+
+type NativeCompletionEnvelope = {
+  version: 1;
+  events: Array<{
+    eventId: string;
+    originTurnId: string;
+    commandExecutionId: string;
+    processHandle: string | null;
+    source: 'unifiedExecStartup';
+    status: 'completed' | 'failed';
+    exitCode: number | null;
+    durationMs: number | null;
+    command: string;
+    cwd: string;
+    output: {
+      text: string | null;
+      excerptTruncatedByQuicksave: boolean;
+    };
+  }>;
+};
+
+export function nativeCompletionEnvelope(
+  completions: readonly ReadyNativeExecCompletion[],
+): NativeCompletionEnvelope {
+  return {
+    version: 1,
+    events: completions.map((completion) => {
+      const output = truncateNativeCompletionText(completion.aggregatedOutput, NATIVE_COMPLETION_OUTPUT_MAX_CHARS);
+      return {
+        eventId: completion.eventId,
+        originTurnId: completion.originTurnId,
+        commandExecutionId: completion.commandExecutionId,
+        processHandle: completion.processHandle,
+        source: 'unifiedExecStartup',
+        status: completion.status,
+        exitCode: completion.exitCode,
+        durationMs: completion.durationMs,
+        command: truncateNativeCompletionText(completion.command, NATIVE_COMPLETION_COMMAND_MAX_CHARS).text ?? '',
+        cwd: completion.cwd,
+        output: {
+          text: output.text,
+          excerptTruncatedByQuicksave: output.truncated,
+        },
+      };
+    }),
+  };
+}
+
+function truncateNativeCompletionText(
+  value: string | null,
+  maxChars: number,
+): { text: string | null; truncated: boolean } {
+  if (value === null || value.length <= maxChars) return { text: value, truncated: false };
+  return { text: value.slice(0, maxChars), truncated: true };
+}
+
+function isUnsupportedToolOutputError(error: RpcError): boolean {
+  return error.code === -32601 || /(?:toolOutput|tool output).*(?:unknown|unsupported|invalid)|(?:unknown|unsupported).*(?:toolOutput|tool output)/i.test(error.message);
+}
 
 /** Codex owns the cross-application lease; callers must not retry by force. */
 export class CodexSessionLockedError extends Error {
@@ -379,6 +482,16 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   private unsubscribeTransportClose: (() => void) | null = null;
   private readonly knownSubagentThreadIds = new Set<string>();
   private readonly subagentRefreshes = new Map<string, Promise<void>>();
+  /** Public-event-only tracker. It deliberately does not subscribe to raw
+   * response items or try to infer a native handle from event timing. */
+  private readonly nativeExecCompletionTracker: NativeExecCompletionTracker;
+  private nativeCompletionFeatureEnabled: boolean;
+  private nativeCompletionSchedulerQueued = false;
+  private nativeCompletionDeliveryInFlight = false;
+  private nativeCompletionPausedByInterrupt = false;
+  private nativeCompletionSuppressedByArchiveOrClose = false;
+  private nativeCompletionGoalAllowsContinuation = true;
+  private readonly nativeCompletionRetryCounts = new Map<string, number>();
 
   constructor(args: SessionArgs) {
     this.handle = args.handle;
@@ -388,6 +501,20 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     this.cardBuilder = args.cardBuilder;
     this.callbacks = args.callbacks;
     this.cardBuilder.updateSessionId(this.threadId);
+    this.nativeCompletionFeatureEnabled = isNativeCompletionFeatureEnabled()
+      && supportsNativeCompletionProtocol(this.handle.cliVersion);
+    if (isNativeCompletionFeatureEnabled() && !this.nativeCompletionFeatureEnabled) {
+      console.warn(
+        `[codex-app] background completion continuation disabled session=${this.threadId.slice(0, 8)}: ` +
+        `requires Codex ${CODEX_SCHEMA_PINNED_VERSION} schema line (installed ${this.handle.cliVersion || 'unknown'})`,
+      );
+    }
+    this.nativeExecCompletionTracker = new NativeExecCompletionTracker({
+      threadId: this.threadId,
+      onCoverageDegraded: (reason) => {
+        console.warn(`[codex-app] background completion coverage degraded session=${this.threadId.slice(0, 8)}: ${reason}`);
+      },
+    });
 
     // Wire approval requests through the standard ProviderCallbacks bridge.
     this.handle.rpc.setServerRequestHandler(async (req) => {
@@ -404,6 +531,8 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     this.handle.child.once('exit', () => {
       if (this.exited) return;
       this.exited = true;
+      this.nativeCompletionSuppressedByArchiveOrClose = true;
+      this.nativeExecCompletionTracker.suppressAll();
       args.onExitedFire?.(this.threadId, this);
     });
   }
@@ -413,6 +542,9 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   }
 
   sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
+    // Explicit user activity resumes completion-driven continuation, but the
+    // user prompt itself remains ahead of any runtime completion inbox item.
+    this.nativeCompletionPausedByInterrupt = false;
     const activeTurnId = this.currentTurnId;
     if (activeTurnId) {
       void this.steerOrQueue(prompt, attachments, activeTurnId);
@@ -497,6 +629,14 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       archived ? 'thread/archive' : 'thread/unarchive',
       { threadId: this.threadId },
     );
+    if (archived) {
+      this.nativeCompletionSuppressedByArchiveOrClose = true;
+      this.nativeExecCompletionTracker.suppressAll();
+    } else {
+      // Unarchiving is explicit user activity. Previously suppressed events
+      // stay suppressed, while future native completions are eligible again.
+      this.nativeCompletionSuppressedByArchiveOrClose = false;
+    }
   }
 
   async listSlashCommands(opts?: { cwd?: string; forceReload?: boolean }): Promise<SlashCommandInfo[]> {
@@ -516,6 +656,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     const turnId = this.currentTurnId;
     if (!turnId) return;
     this.interruptedTurnIds.add(turnId);
+    this.nativeCompletionPausedByInterrupt = true;
     void this.handle.rpc
       .request<unknown>(
         'turn/interrupt',
@@ -530,6 +671,8 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   async kill(): Promise<void> {
     if (this.exited) return;
     this.exited = true;
+    this.nativeCompletionSuppressedByArchiveOrClose = true;
+    this.nativeExecCompletionTracker.suppressAll();
     this.pendingTurns = [];
     this.unsubscribeSessionNotifications?.();
     this.unsubscribeSessionNotifications = null;
@@ -557,7 +700,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
    * → turn/start → wait for the session-routed turn consumer to settle. */
   async runTurn(prompt: string, attachments?: readonly Attachment[]): Promise<void> {
     if (this.exited) return;
-    if (this.running) {
+    if (this.running || this.nativeCompletionDeliveryInFlight) {
       // Queue — only one turn at a time, preserving FIFO order.
       this.pendingTurns.push(makeQueuedUserPrompt(prompt, attachments));
       this.callbacks.onQueueStateChange?.(this.threadId);
@@ -573,6 +716,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       }
     } finally {
       this.running = false;
+      this.scheduleNativeCompletionDelivery();
     }
   }
 
@@ -620,7 +764,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
 
   private enqueueOrRunTurn(prompt: string, attachments?: readonly Attachment[]): void {
     if (this.exited) return;
-    if (this.running || this.currentTurnId) {
+    if (this.running || this.startingRunTurn || this.currentTurnId || this.nativeCompletionDeliveryInFlight) {
       this.pendingTurns.push(makeQueuedUserPrompt(prompt, attachments));
       this.callbacks.onQueueStateChange?.(this.threadId);
       return;
@@ -837,6 +981,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       this.cardBuilder.clearCards();
     }
     this.callbacks.onTurnSettled?.(this.threadId);
+    this.scheduleNativeCompletionDelivery();
   }
 
   private drainPendingTurnsAfterObservedTurn(): void {
@@ -846,6 +991,141 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     const next = this.pendingTurns.shift()!;
     this.callbacks.onQueueStateChange?.(this.threadId);
     void this.runTurn(next.prompt, next.attachments);
+  }
+
+  /**
+   * Use the existing session scheduler for host-originated native completion
+   * notices. This is intentionally separate from queued user prompts and never
+   * calls `turn/steer`: it may start only when no user turn is active, starting,
+   * or queued.
+   */
+  private scheduleNativeCompletionDelivery(): void {
+    if (this.nativeCompletionSchedulerQueued) return;
+    this.nativeCompletionSchedulerQueued = true;
+    queueMicrotask(() => {
+      this.nativeCompletionSchedulerQueued = false;
+      void this.drainNativeCompletionInbox();
+    });
+  }
+
+  private async drainNativeCompletionInbox(): Promise<void> {
+    if (
+      this.exited
+      || !this.nativeCompletionFeatureEnabled
+      || this.nativeCompletionPausedByInterrupt
+      || this.nativeCompletionSuppressedByArchiveOrClose
+      || !this.nativeCompletionGoalAllowsContinuation
+      || this.nativeCompletionDeliveryInFlight
+      || this.running
+      || this.startingRunTurn
+      || this.currentTurnId
+      || this.pendingTurns.length > 0
+    ) {
+      return;
+    }
+
+    const completions = this.nativeExecCompletionTracker.takeReady(NATIVE_COMPLETION_BATCH_MAX);
+    if (completions.length === 0) return;
+
+    this.nativeCompletionDeliveryInFlight = true;
+    try {
+      await this.runNativeCompletionTurn(completions);
+    } finally {
+      this.nativeCompletionDeliveryInFlight = false;
+      this.drainPendingTurnsAfterObservedTurn();
+      this.scheduleNativeCompletionDelivery();
+    }
+  }
+
+  private async runNativeCompletionTurn(completions: readonly ReadyNativeExecCompletion[]): Promise<void> {
+    const cb = this.cardBuilder;
+    const eventIds = completions.map((completion) => completion.eventId);
+    let turnId: string | null = null;
+    // Runtime completion turns inherit the same pending per-turn overrides as
+    // a user turn. Do not commit them until app-server accepts this request.
+    const drained = this.overrideStore.drain();
+    cb.startNewTurn();
+
+    try {
+      this.startingRunTurn = true;
+      this.prestartedRunTurnId = null;
+      let response: TurnStartResponse;
+      try {
+        response = await withTimeout(
+          this.handle.rpc.request<TurnStartResponse>('turn/start', {
+            threadId: this.threadId,
+            input: [],
+            toolOutput: {
+              namespace: 'quicksave',
+              name: 'background_execution_completed',
+              output: JSON.stringify(nativeCompletionEnvelope(completions)),
+            },
+            ...drained,
+          } satisfies TurnStartParams),
+          'turn/start toolOutput',
+          CODEX_TURN_START_TIMEOUT_MS,
+        );
+      } finally {
+        this.startingRunTurn = false;
+      }
+
+      // The RPC response is the only acceptance point we have. The model's
+      // later answer is intentionally not used as a delivery acknowledgement.
+      this.nativeExecCompletionTracker.markAccepted(eventIds);
+      this.overrideStore.commit();
+      for (const eventId of eventIds) this.nativeCompletionRetryCounts.delete(eventId);
+      turnId = response.turn.id;
+      this.currentTurnId = turnId;
+      cb.setCurrentTurnId(turnId);
+      await this.beginTurnConsumer(turnId, { managedByRunTurn: true }).result;
+    } catch (err) {
+      this.handleNativeCompletionDeliveryError(completions, err);
+    } finally {
+      this.startingRunTurn = false;
+      const lifecycleTurnId = turnId ?? this.prestartedRunTurnId;
+      this.prestartedRunTurnId = null;
+      await this.finishTurnLifecycle(lifecycleTurnId);
+    }
+  }
+
+  private handleNativeCompletionDeliveryError(
+    completions: readonly ReadyNativeExecCompletion[],
+    error: unknown,
+  ): void {
+    const eventIds = completions.map((completion) => completion.eventId);
+    const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof RpcError) {
+      if (isUnsupportedToolOutputError(error)) {
+        this.nativeCompletionFeatureEnabled = false;
+        this.nativeExecCompletionTracker.markSuppressed(eventIds);
+        console.warn(
+          `[codex-app] disabled background completion continuation session=${this.threadId.slice(0, 8)}: app-server does not accept turn/start.toolOutput`,
+        );
+        return;
+      }
+      // A JSON-RPC error is definitive: app-server rejected the request, so a
+      // later idle boundary may retry it without duplicating an accepted turn.
+      const retryable = eventIds.filter((eventId) => {
+        const retries = this.nativeCompletionRetryCounts.get(eventId) ?? 0;
+        if (retries >= NATIVE_COMPLETION_MAX_DEFINITIVE_RETRIES) return false;
+        this.nativeCompletionRetryCounts.set(eventId, retries + 1);
+        return true;
+      });
+      this.nativeExecCompletionTracker.requeue(retryable);
+      this.nativeExecCompletionTracker.markSuppressed(eventIds.filter((eventId) => !retryable.includes(eventId)));
+      console.warn(`[codex-app] background completion delivery rejected session=${this.threadId.slice(0, 8)}: ${message}`);
+      return;
+    }
+    if (error instanceof RpcTransportClosedError || this.exited || this.handle.rpc.isClosed) {
+      this.nativeExecCompletionTracker.markSuppressed(eventIds);
+      return;
+    }
+
+    // A local timeout or write error can race a server-side acceptance. Do not
+    // retry blindly; retaining an uncertainty is safer than creating a second
+    // autonomous turn for the same completion.
+    this.nativeExecCompletionTracker.markSuppressed(eventIds);
+    console.warn(`[codex-app] background completion delivery uncertain session=${this.threadId.slice(0, 8)}: ${message}`);
   }
 
   private maybeAutoSteerQueuedAtToolCall(notification: { method: string; params: unknown }, turnId: string | null): void {
@@ -904,6 +1184,8 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   }
 
   private handleTransportClosed(): void {
+    this.nativeCompletionSuppressedByArchiveOrClose = true;
+    this.nativeExecCompletionTracker.suppressAll();
     this.closeTurnConsumersAsInterrupted();
   }
 
@@ -921,6 +1203,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
         this.scheduleSubagentRefresh(notificationThreadId);
         return;
       }
+      this.observeNativeExecCompletionNotification(notification);
       this.observeTokenUsageNotification(notification);
       const turnId = this.ensureTurnConsumerForNotification(notification);
       this.dispatchTurnNotification(notification, turnId);
@@ -947,6 +1230,37 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       console.warn(
         `[codex-app] failed to handle session notification method=${notification.method} session=${this.threadId.slice(0, 8)} params=${codexProtocolPreview(notification.params)} error=${err instanceof Error ? err.message : String(err)}`,
       );
+    }
+  }
+
+  /** Observe only root-thread public item lifecycle notifications. This runs
+   * before per-turn card routing so a late native completion is retained even
+   * after that turn's consumer has settled. */
+  private observeNativeExecCompletionNotification(notification: { method: string; params: unknown }): void {
+    if (!this.nativeCompletionFeatureEnabled || !notificationBelongsToThread(notification.params, this.threadId)) return;
+
+    switch (notification.method) {
+      case 'item/started': {
+        const params = notification.params as { threadId: string; turnId: string; item: ThreadItem };
+        this.nativeExecCompletionTracker.observeItemStarted(params.threadId, params.turnId, params.item);
+        return;
+      }
+      case 'item/completed': {
+        const params = notification.params as { threadId: string; turnId: string; item: ThreadItem };
+        this.nativeExecCompletionTracker.observeItemCompleted(params.threadId, params.turnId, params.item);
+        this.scheduleNativeCompletionDelivery();
+        return;
+      }
+      case 'turn/completed': {
+        const params = notification.params as TurnCompletedNotification;
+        const status: TurnStatus = this.interruptedTurnIds.has(params.turn.id)
+          ? 'interrupted'
+          : params.turn.status;
+        this.nativeExecCompletionTracker.observeTurnCompleted(params.threadId, params.turn.id, status);
+        return;
+      }
+      default:
+        return;
     }
   }
 
@@ -1075,10 +1389,14 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   }
 
   private emitGoalConfig(goal: ThreadGoal): void {
+    this.nativeCompletionGoalAllowsContinuation = goal.status === 'active';
+    if (this.nativeCompletionGoalAllowsContinuation) this.scheduleNativeCompletionDelivery();
     this.callbacks.onSessionConfigPatch?.(this.threadId, codexGoalToConfigPatch(goal));
   }
 
   private emitGoalClearedConfig(): void {
+    this.nativeCompletionGoalAllowsContinuation = true;
+    this.scheduleNativeCompletionDelivery();
     this.callbacks.onSessionConfigPatch?.(this.threadId, clearedGoalConfigPatch());
   }
 

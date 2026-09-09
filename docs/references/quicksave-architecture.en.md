@@ -69,6 +69,7 @@ apps/agent/src/
 │   ├── codexMcpProvider.ts     # (legacy MCP-based codex provider; unregistered by default)
 │   ├── codexAppServer/         # Codex provider — JSON-RPC v2 client speaking `codex app-server`
 │   │   ├── provider.ts         #   CodexAppServerProvider + CodexAppServerSession (lifecycle / runTurn / interrupt)
+│   │   ├── nativeExecCompletionTracker.ts # Public native command lifecycle → post-turn continuation candidates
 │   │   ├── processManager.ts   #   Spawn `codex app-server`, run initialize handshake, version pin check
 │   │   ├── rpcClient.ts        #   JSON-RPC 2.0 dispatcher (request/response/notification/server-request)
 │   │   ├── stdioTransport.ts   #   JSONL framing on the spawned child's stdio
@@ -192,6 +193,14 @@ claude:start → MessageHandler.handleClaudeStart()
          → keep one session-scoped app-server notification subscription while
            the provider session is alive; `turn/completed` settles only that
            turn's card/stream consumer, not the thread subscription
+         → the same subscription observes root-thread public
+           `commandExecution { source: unifiedExecStartup }` lifecycle items.
+           A terminal item arriving after its origin turn completed is queued as
+           a bounded host runtime notice; only when the existing scheduler is
+           idle (and no user prompt, interruption, archive/close, or paused
+           goal blocks it) does it start `turn/start { input: [], toolOutput }`.
+           This is a Codex-specific post-turn completion continuation, not a
+           replacement shell executor or a raw-event-based handle detector.
          → cardAdapter translates `turn/started`, `item/*`, `turn/completed`,
            autonomous turns started by goal mode, and related v2 notifications into
            CardBuilder events
@@ -973,6 +982,14 @@ claudeStore.ts
 
 connectionStore.ts
   agentConnections: Record<agentId, AgentConnectionState>
+  // Runtime connection status, errors, online presence, retry counts, and
+  // handshake progress belong to each machine. Keep disconnected entries so
+  // their status remains inspectable; do not persist live connectivity across
+  // browser reloads. The top-level fields mirror only the active machine.
+  // Peer lifecycle events update their source agent; shared relay loss updates
+  // all tracked agents. A peer disconnect demotes only that agent's sessions.
+  // Session/project feedback selects its owning agent explicitly. Background
+  // reconnects never trigger the full-screen explicit-connect overlay.
   // Each AgentConnectionState owns its `codexModels` catalog. Handshake and
   // `/codex/models` snapshots update only their source machine; session model
   // pickers resolve the owning `machineAgentId`, never a global last-writer.
