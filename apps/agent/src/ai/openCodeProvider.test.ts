@@ -1216,6 +1216,30 @@ describe('OpenCodeProvider', () => {
     expect(result.nextCursor).toBe('opencode-v2:native-next');
   });
 
+  it('omits OpenCode delegated-agent child sessions from native task discovery', async () => {
+    const server = makeMockServer();
+    (server as any).listSessions = vi.fn().mockResolvedValue([
+      {
+        id: 'ses_parent',
+        directory: '/workspace/a',
+        title: 'Parent task',
+        time: { created: 100, updated: 200, archived: null },
+      },
+      {
+        id: 'ses_child',
+        parentID: 'ses_parent',
+        directory: '/workspace/a',
+        title: 'Delegated task',
+        time: { created: 110, updated: 190, archived: null },
+      },
+    ]);
+
+    const sessions = await new OpenCodeProvider(server).listNativeSessions({ cwd: '/workspace/a' });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({ sessionId: 'ses_parent', agent: 'opencode' });
+  });
+
   it('routes a new session to its directory and forwards attachments', async () => {
     const server = makeMockServer();
     const provider = new OpenCodeProvider(server);

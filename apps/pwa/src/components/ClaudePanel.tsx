@@ -350,7 +350,8 @@ export function ClaudePanel({
   // machine here would mis-gate per-machine UI (e.g. show the voice mic for a
   // machine that never advertised audio support).
   const mirrorAgentId = useConnectionStore((s) => s.agentId ?? '');
-  const agentId = agentIdProp || mirrorAgentId;
+  const sessionAgentId = sessions[urlSessionId ?? activeSessionId ?? '']?.machineAgentId;
+  const agentId = agentIdProp || sessionAgentId || mirrorAgentId;
   const availableProviders = useConnectionStore((s) => s.availableProviders);
   const selectedAgentType = getAgentProvider(selectedAgent);
   const selectedProviderInfo = availableProviders.find((p) => p.id === selectedAgent);
@@ -561,8 +562,8 @@ export function ClaudePanel({
     });
   }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const connectionState = useConnectionStore((s) => s.state);
-  const agentOnline = useConnectionStore((s) => s.agentOnline);
+  const connectionState = useConnectionStore((s) => agentId ? s.agentConnections[agentId]?.state ?? 'disconnected' : 'disconnected');
+  const agentOnline = useConnectionStore((s) => agentId ? s.agentConnections[agentId]?.online : undefined);
 
   // Load session messages when navigating to a different session (or away from one)
   useEffect(() => {
@@ -609,7 +610,7 @@ export function ClaudePanel({
       onGetSessionCards(urlSessionId);
     }
     // Initial load: no cards yet
-    if (agentOnline === true && wasOnline === null && cards.length === 0) {
+    if (agentOnline === true && wasOnline == null && cards.length === 0) {
       console.log(`[sub:panel] initial load: subscribe session=${urlSessionId.slice(0, 8)}`);
       onGetSessionCards(urlSessionId);
     }
@@ -1156,7 +1157,7 @@ export function ClaudePanel({
               if (!showDots) return null;
               const linkUncertain = connectionState !== 'connected' || agentOnline === false;
               return linkUncertain ? (
-                <StreamingReconnectIndicator />
+                <StreamingReconnectIndicator agentId={agentId} />
               ) : (
                 <div className="flex items-center gap-1.5 py-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:0ms]" />

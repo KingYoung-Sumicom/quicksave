@@ -32,6 +32,7 @@ import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import type { Attachment, Card, CardHistoryResponse, CardStreamEnd, ContextUsageBreakdown, NativeSessionSummary } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
+import { seedPersistedCards } from './cardBuilder.js';
 import type {
   CodingAgentProvider,
   ProviderSession,
@@ -330,6 +331,37 @@ export class OpencodeSession implements ProviderSession {
 export class OpenCodeProvider implements CodingAgentProvider {
   readonly id = 'opencode' as const;
   readonly historyMode = 'opencode-thread' as const;
+
+  async usesLocalCardHistory(): Promise<boolean> {
+    return this.server.usesLegacyHistoryProtocol();
+  }
+
+  async recoverLegacyCardHistory(sessionId: string, cwd: string): Promise<Card[]> {
+    const pages: Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }> = [];
+    let before: string | undefined;
+    do {
+      const page = await this.server.getLegacyMessagePage(sessionId, cwd, before);
+      pages.push(...page.data);
+      before = page.nextCursor;
+    } while (before);
+    const messages: OpenCodeV2Message[] = pages.map((message) => ({
+      id: String(message.info.id),
+      type: message.info.role === 'user' ? 'user' : 'assistant',
+      text: message.parts.find((part) => part.type === 'text')?.text as string | undefined,
+      content: message.parts.map((part) => part.type === 'tool'
+        ? { type: 'tool', id: part.callID ?? part.id, name: part.tool, state: part.state }
+        : part.type === 'text' || part.type === 'reasoning' ? { type: part.type, text: part.text } : part),
+    }));
+    const cards = projectOpenCodeMessages(sessionId, cwd, messages);
+    await seedPersistedCards(sessionId, cards);
+    return cards;
+  }
+
+  async getLegacyHistoryWatermark(sessionId: string, cwd: string): Promise<string | undefined> {
+    const page = await this.server.getLegacyMessagePage(sessionId, cwd);
+    const latest = page.data[0]?.info.id;
+    return typeof latest === 'string' ? latest : undefined;
+  }
   readonly archiveStorage = 'native' as const;
   readonly label = 'OpenCode';
 
@@ -416,6 +448,10 @@ export class OpenCodeProvider implements CodingAgentProvider {
   async listNativeSessions(opts?: { cwd?: string }): Promise<NativeSessionSummary[]> {
     const sessions = await this.server.listSessions(opts?.cwd);
     return sessions
+      // OpenCode persists delegated-agent work as child sessions. They belong
+      // to their parent conversation and must not appear as independent
+      // Quicksave tasks.
+      .filter((session) => !session.parentID)
       .filter((session) => !opts?.cwd || session.directory === opts.cwd)
       .map((session) => ({
         sessionId: session.id,

@@ -1013,7 +1013,13 @@ function AppContent() {
           <Route path="/pair" element={<JoinGroupPage />} />
         </Routes>
       )}
-      {showOverlay && <ConnectingOverlay onAbort={handleAbortConnection} onRetry={handleRetryConnection} />}
+      {showOverlay && connectingRouteAgentId && (
+        <ConnectingOverlay
+          agentId={connectingRouteAgentId}
+          onAbort={() => handleAbortConnection(connectingRouteAgentId)}
+          onRetry={() => handleRetryConnection(connectingRouteAgentId)}
+        />
+      )}
       <FilePreviewModal />
       {gitIdentityAgentId && (
         <GitIdentityModalForAgent
@@ -1401,7 +1407,16 @@ function ProjectRouteSession({
     urlSessionId && urlSessionId !== 'new' ? s.sessions[urlSessionId]?.archived === true : false
   );
 
-  const { isReady, isConnecting, cwd, agentId: targetAgentId } = useProjectConnection(projectId, onConnect, onSwitchMachine);
+  const { isReady, isConnecting, cwd: projectCwd, agentId: targetAgentId } = useProjectConnection(projectId, onConnect, onSwitchMachine);
+  // Native-provider sessions can be discovered before their cwd has made it
+  // into the machine's known-path cache. The URL hash then cannot be reversed
+  // by useProjectConnection, even though the history entry already carries
+  // the authoritative cwd. Keep the session route (and its right panel)
+  // usable in that window.
+  const sessionCwd = useClaudeStore((s) => (
+    urlSessionId && urlSessionId !== 'new' ? s.sessions[urlSessionId]?.cwd : undefined
+  ));
+  const cwd = projectCwd ?? sessionCwd;
   const voiceAgent = useVoiceAgent(
     targetAgentId ?? '',
     urlSessionId && urlSessionId !== 'new' ? urlSessionId : undefined,

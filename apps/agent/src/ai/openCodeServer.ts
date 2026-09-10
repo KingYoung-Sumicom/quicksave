@@ -186,6 +186,8 @@ export interface CreateSessionOpts {
 
 export interface OpenCodeSessionInfo {
   id: string;
+  /** Set by OpenCode when this session belongs to an agent/task sub-thread. */
+  parentID?: string;
   title?: string;
   directory?: string;
   time?: { created?: number; updated?: number; archived?: number | null };
@@ -226,6 +228,11 @@ export interface OpenCodeV2Message {
 export interface OpenCodeV2MessagePage {
   data: OpenCodeV2Message[];
   cursor: { previous?: string; next?: string };
+}
+
+export interface OpenCodeLegacyMessagePage {
+  data: Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>;
+  nextCursor?: string;
 }
 
 function v2ToolOutput(value: unknown): string {
@@ -342,6 +349,7 @@ class OpenCodeServer {
   private startPromise: Promise<void> | null = null;
   private sseAbort: AbortController | null = null;
   private shuttingDown = false;
+  private legacyHistoryProtocol: Promise<boolean> | null = null;
 
   /** Per-sessionID listeners. Each call registers; returns disposer. */
   private listeners = new Map<string, Set<(event: OpenCodeEvent) => void>>();
@@ -357,6 +365,28 @@ class OpenCodeServer {
     await this.startPromise;
     if (!this.port) throw new Error('opencode server failed to report a port');
     return { baseUrl: `http://127.0.0.1:${this.port}` };
+  }
+
+  /** Match OpenCode's own compatibility probe: a healthy legacy endpoint
+   * means this 1.x server's v2 message projection cannot be relied on. */
+  async usesLegacyHistoryProtocol(): Promise<boolean> {
+    if (!this.legacyHistoryProtocol) {
+      this.legacyHistoryProtocol = (async () => {
+        const { baseUrl } = await this.ensureRunning();
+        try {
+          const response = await fetch(new URL('/global/health', baseUrl), {
+            headers: this.requestHeaders(false),
+          });
+          if (!response.ok) return false;
+          const value: unknown = await response.json();
+          return !!value && typeof value === 'object'
+            && 'healthy' in value && (value as { healthy?: unknown }).healthy === true;
+        } catch {
+          return false;
+        }
+      })();
+    }
+    return this.legacyHistoryProtocol;
   }
 
   private spawnAndAwaitReady(): Promise<void> {
@@ -638,6 +668,21 @@ class OpenCodeServer {
       {},
       { limit: opts.limit, ...(opts.cursor ? { cursor: opts.cursor } : { order: opts.order ?? 'desc' }) },
     );
+  }
+
+  /** Legacy v1 history is cursor-paged with x-next-cursor. Kept solely to
+   * recover Quicksave's own card cache for a v1 server. */
+  async getLegacyMessagePage(sessionID: string, directory: string, before?: string): Promise<OpenCodeLegacyMessagePage> {
+    const { baseUrl } = await this.ensureRunning();
+    const url = buildOpenCodeUrl(baseUrl, `/session/${encodeURIComponent(sessionID)}/message`, {
+      directory,
+      limit: 200,
+      ...(before ? { before } : {}),
+    });
+    const response = await fetch(url, { headers: this.requestHeaders(false) });
+    if (!response.ok) throw new Error(`opencode legacy history failed: ${response.status}`);
+    const data = await response.json() as Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>;
+    return { data, ...(response.headers.get('x-next-cursor') ? { nextCursor: response.headers.get('x-next-cursor')! } : {}) };
   }
 
   /** Fetch the latest v2 message page and adapt it for the live SSE router.

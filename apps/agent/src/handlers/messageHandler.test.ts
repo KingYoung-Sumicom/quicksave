@@ -9,7 +9,7 @@ import { tmpdir } from 'os';
 import { simpleGit } from 'simple-git';
 import { getSessionRegistry, resetSessionRegistry } from '../ai/sessionRegistry.js';
 import { getEventStore } from '../storage/eventStore.js';
-import type { SessionRegistryEntry } from '@sumicom/quicksave-shared';
+import type { NativeSessionSummary, SessionRegistryEntry } from '@sumicom/quicksave-shared';
 import { setQuicksaveDir } from '../service/singleton.js';
 import { addManagedRepo } from '../config.js';
 import { PACKAGE_VERSION } from '../version.js';
@@ -1177,6 +1177,34 @@ describe('MessageHandler', () => {
       expect(response.type).toBe('claude:end-task:response');
       expect((response.payload as any).success).toBe(false);
       expect((response.payload as any).error).toBeDefined();
+    });
+
+    it.each(['codex', 'opencode'] as const)('archives a native-only discovered %s session', async (agent) => {
+      const sessionId = `native-only-${agent}`;
+      const claudeService = (handler as unknown as {
+        claudeService: {
+          listNativeSessions: () => Promise<NativeSessionSummary[]>;
+          setSessionArchived: (id: string, cwd: string, archived: boolean) => Promise<unknown>;
+        };
+      }).claudeService;
+      vi.spyOn(claudeService, 'listNativeSessions').mockResolvedValue([{
+        sessionId,
+        cwd: projectDir,
+        agent,
+        title: 'Native-only session',
+        createdAt: 1_000,
+        lastInteractionAt: 2_000,
+        archived: false,
+      }]);
+      const archive = vi.spyOn(claudeService, 'setSessionArchived').mockResolvedValue('native');
+
+      const response = await handler.handleMessage(createMessage('claude:end-task', { sessionId }));
+
+      expect((response.payload as any).success).toBe(true);
+      expect(archive).toHaveBeenCalledWith(sessionId, projectDir, true);
+      expect(getSessionRegistry().getEntry(projectDir, sessionId)).toMatchObject({
+        agent, archived: false, nativeArchived: true,
+      });
     });
 
     it('also kills the live CLI process when the session is active', async () => {

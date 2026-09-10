@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment, CardEvent, CardHistoryResponse, CardStreamEnd, ConfigValue, ContextUsageBreakdown, NativeSessionSummary, SessionQueueState, SlashCommandInfo } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, Card, CardEvent, CardHistoryResponse, CardStreamEnd, ConfigValue, ContextUsageBreakdown, NativeSessionSummary, SessionQueueState, SlashCommandInfo } from '@sumicom/quicksave-shared';
 import type { StreamCardBuilder } from './cardBuilder.js';
 
 export const CLAUDE_PERMISSION_MODES = [
@@ -272,6 +272,11 @@ export type ProbeResult = {
 export interface CodingAgentProvider {
   readonly id: AgentId;
   readonly historyMode: ProviderHistoryMode;
+  /** True when this provider's native history API is legacy/incomplete and
+   * Quicksave's persisted cards must be used instead. */
+  usesLocalCardHistory?(): Promise<boolean>;
+  recoverLegacyCardHistory?(sessionId: string, cwd: string): Promise<Card[]>;
+  getLegacyHistoryWatermark?(sessionId: string, cwd: string): Promise<string | undefined>;
   /** Display name surfaced in handshake metadata and `agent:probe` responses.
    *  Optional so providers compile without metadata; the probe path falls
    *  back to {@link DEFAULT_AGENT_LABELS} when omitted. */

@@ -35,7 +35,7 @@ import {
   SESSION_NOTE_HISTORY_CAP,
   matchAllowPattern,
 } from '@sumicom/quicksave-shared';
-import { StreamCardBuilder, buildCardsFromHistory } from './cardBuilder.js';
+import { StreamCardBuilder, buildCardsFromHistory, loadPersistedCards, loadProviderHistoryCheckpoint, saveProviderHistoryCheckpoint } from './cardBuilder.js';
 import {
   loadPersistedCardCursorPage,
   loadPersistedCardMaxSequence,
@@ -599,9 +599,10 @@ export class SessionManager extends EventEmitter {
 
     // Create cardBuilder with 'pending' sessionId — will be updated after provider returns real one
     const cardBuilder = new StreamCardBuilder('pending', opts.cwd);
-    cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory');
+    const useLocalCardHistory = await provider.usesLocalCardHistory?.() ?? false;
+    cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory' || useLocalCardHistory);
     cardBuilder.disablePersistence?.(
-      provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread',
+      (provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread') && !useLocalCardHistory,
     );
 
     const callbacks = this.makeCallbacks(provider.id);
@@ -806,11 +807,12 @@ export class SessionManager extends EventEmitter {
       );
 
       const cardBuilder = existing?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.cwd);
-      cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory');
+      const useLocalCardHistory = await provider.usesLocalCardHistory?.() ?? false;
+      cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory' || useLocalCardHistory);
       cardBuilder.disablePersistence?.(
-        provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread',
+        (provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread') && !useLocalCardHistory,
       );
-      if (provider.historyMode === 'memory') {
+      if (provider.historyMode === 'memory' || useLocalCardHistory) {
         cardBuilder.seedSequenceFromMax(await loadPersistedCardMaxSequence(opts.sessionId));
       }
       await cardBuilder.snapshotCutoff();
@@ -1473,11 +1475,39 @@ export class SessionManager extends EventEmitter {
     cursor?: string,
   ): Promise<CardHistoryResponse> {
     const ps = this.sessions.get(sessionId);
-    const provider = this.getProvider(this.resolveAgentId(sessionId, cwd));
+    let agentId = this.resolveAgentId(sessionId, cwd);
+    // A provider-native session can be discovered by history/listing before
+    // Quicksave has ever run it. In that case there is no live session,
+    // registry entry, or remembered agent, so resolving would incorrectly
+    // fall back to the default (Claude Code) provider. Resolve its native
+    // identity before choosing a durable-history loader.
+    if (
+      cwd
+      && !ps
+      && !this.sessionAgents.has(sessionId)
+      && !this.sessionConfigs.has(sessionId)
+    ) {
+      const native = await this.findNativeSession(cwd, sessionId);
+      if (native) {
+        this.sessionAgents.set(sessionId, native.agent);
+        agentId = native.agent;
+      }
+    }
+    const provider = this.getProvider(agentId);
     const cutoff = ps?.cardBuilder?.jsonlCutoff ?? undefined;
     let result: CardHistoryResponse;
 
-    if (provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread') {
+    const useLocalCardHistory = await provider.usesLocalCardHistory?.() ?? false;
+    if (useLocalCardHistory && provider.recoverLegacyCardHistory) {
+      const persisted = await loadPersistedCards(sessionId);
+      const latest = await provider.getLegacyHistoryWatermark?.(sessionId, cwd);
+      const checkpoint = await loadProviderHistoryCheckpoint(sessionId);
+      if (persisted.length === 0 || (latest !== undefined && latest !== checkpoint)) {
+        await provider.recoverLegacyCardHistory(sessionId, cwd);
+        if (latest) await saveProviderHistoryCheckpoint(sessionId, latest);
+      }
+    }
+    if ((provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread') && !useLocalCardHistory) {
       const codexOffset = cursor?.startsWith('codex-offset:')
         ? Number(cursor.slice('codex-offset:'.length))
         : offset;

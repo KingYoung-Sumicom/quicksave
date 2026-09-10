@@ -316,6 +316,27 @@ async function appendCardHistoryEntry(sessionId: string, entry: CardHistoryLogEn
   await appendFile(cardHistoryLogPath(sessionId), JSON.stringify(entry) + '\n');
 }
 
+/** Atomically add a recovered provider-native history snapshot. Card ids are
+ * deterministic for a provider session, so repeated recovery is idempotent. */
+export async function seedPersistedCards(sessionId: string, cards: readonly Card[]): Promise<void> {
+  if (cards.length === 0) return;
+  await appendCardHistoryEntry(sessionId, { op: 'seed', cards: cards.map(cleanPersistedCard) });
+}
+
+export async function loadProviderHistoryCheckpoint(sessionId: string): Promise<string | undefined> {
+  try {
+    const raw = await readFile(join(getCardHistoryDir(), `${sessionId}.provider-history.json`), 'utf-8');
+    const value = JSON.parse(raw) as { latestMessageId?: unknown };
+    return typeof value.latestMessageId === 'string' ? value.latestMessageId : undefined;
+  } catch { return undefined; }
+}
+
+export async function saveProviderHistoryCheckpoint(sessionId: string, latestMessageId: string): Promise<void> {
+  const dir = getCardHistoryDir();
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, `${sessionId}.provider-history.json`), JSON.stringify({ latestMessageId }) + '\n');
+}
+
 // ── Direct JSONL file reading (replaces SDK getSessionMessages/listSubagents) ──
 
 export function encodeCwdPath(cwd: string): string {

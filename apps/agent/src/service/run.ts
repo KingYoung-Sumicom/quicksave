@@ -245,6 +245,9 @@ export async function runDaemon(): Promise<void> {
   const claudeService = messageHandler.getClaudeService();
   const commitSummaryStore = messageHandler.getCommitSummaryStore();
   const voiceIntermediary = messageHandler.getVoiceIntermediary();
+  // Native providers enumerate every session in their own store. Only expose
+  // sessions rooted in a Quicksave-managed coding path to PWA subscribers.
+  const isManagedCodingPath = (cwd: string) => messageHandler.isManagedCodingPath(cwd);
 
   // ── MessageBus subscription paths ─────────────────────────────────────────
   // Each onSubscribe delivers the current state atomically in its `snap`
@@ -271,7 +274,9 @@ export async function runDaemon(): Promise<void> {
     '/sessions/history',
     {
       snapshot: async () => {
-        return (await claudeService.listSessionHistoryEntries()).map(enrichEntry);
+        return (await claudeService.listSessionHistoryEntries())
+          .filter((entry) => isManagedCodingPath(entry.cwd))
+          .map(enrichEntry);
       },
     },
   );
@@ -300,11 +305,20 @@ export async function runDaemon(): Promise<void> {
         const sessionId = params.sessionId;
         const liveCwd = claudeService.getSessionCwd(sessionId);
         const registry = getSessionRegistry();
-        const cwd =
+        let cwd =
           liveCwd
           ?? registry.findBySessionId(sessionId)?.cwd
           ?? registry.findArchivedBySessionId(sessionId)?.cwd
           ?? '';
+        // Native-only provider sessions are intentionally allowed to exist
+        // without a Quicksave registry entry. Their cards subscription has no
+        // cwd parameter, so recover it from provider-native discovery before
+        // delegating to the history loader.
+        if (!cwd) {
+          cwd = (await claudeService.listNativeSessions())
+            .find((session) => session.sessionId === sessionId)?.cwd
+            ?? '';
+        }
         return claudeService.getCards(sessionId, cwd, 0, 50);
       },
     },
@@ -614,6 +628,7 @@ export async function runDaemon(): Promise<void> {
   // delivered via the bus (`/sessions/:id/cards` + `/sessions/active`), so the
   // legacy per-session pubsub subscribe/unsubscribe wiring is no longer used.
   messageHandler.onHistoryUpdated = (cwd, entry, action) => {
+    if (!isManagedCodingPath(cwd)) return;
     // For deletes the entry is a tombstone — SQLite join would be noise, and
     // downstream consumers only key off `entry.sessionId` + `action`.
     const enriched = action === 'delete' ? entry : enrichEntry(entry);

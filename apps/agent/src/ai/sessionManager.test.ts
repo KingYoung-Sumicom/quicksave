@@ -2077,6 +2077,32 @@ describe('SessionManager', () => {
   // ── getCards ──
 
   describe('getCards', () => {
+    it('uses the native provider history loader for an unregistered discovered session', async () => {
+      const fallbackProvider = createMockProvider('claude-code');
+      const codexProvider = {
+        ...createMockProvider('codex', 'memory'),
+        historyMode: 'codex-thread' as const,
+        listNativeSessions: vi.fn().mockResolvedValue([{
+          sessionId: 'native-codex', cwd: '/repo', agent: 'codex', archived: false,
+          createdAt: 1, lastInteractionAt: 2,
+        }]),
+        loadCardHistory: vi.fn().mockResolvedValue({
+          cards: [{ type: 'user', id: 'native-card', text: 'hello' }],
+          total: 1,
+          hasMore: false,
+        }),
+      };
+      const mgr = new SessionManager([fallbackProvider, codexProvider], 'claude-code');
+
+      const result = await mgr.getCards('native-codex', '/repo');
+
+      expect(codexProvider.loadCardHistory).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: 'native-codex', cwd: '/repo', offset: 0, limit: 50,
+      }));
+      expect(result.cards).toHaveLength(1);
+      expect(mgr.getSessionAgent('native-codex', '/repo')).toBe('codex');
+    });
+
     it('should return cards from history for claude-jsonl provider', async () => {
       const { buildCardsFromHistory } = await import('./cardBuilder.js');
       (buildCardsFromHistory as Mock).mockResolvedValue({

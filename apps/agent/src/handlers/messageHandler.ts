@@ -470,6 +470,11 @@ export class MessageHandler {
   private repoLocks: Map<string, string> = new Map(); // repoPath -> peerAddress holding lock
   private availableRepos: Repository[];
   private codingPaths: Map<string, CodingPath> = new Map(); // path -> CodingPath
+
+  /** Whether a path is currently exposed as a Quicksave project. */
+  isManagedCodingPath(cwd: string): boolean {
+    return this.codingPaths.has(cwd);
+  }
   private aiService: CommitSummaryService | null = null;
   private aiCliService: CommitSummaryCliService | null = null;
   /** Per-repo agent-owned commit summary state. The daemon wires the
@@ -2987,16 +2992,30 @@ export class MessageHandler {
     message: Message<ClaudeEndTaskRequestPayload>
   ): Promise<Message<ClaudeEndTaskResponsePayload>> {
     const { sessionId } = message.payload;
-    const cwd = this.claudeService.getSessionCwd(sessionId)
-      ?? getSessionRegistry().findBySessionId(sessionId)?.cwd;
+    const registry = getSessionRegistry();
+    let cwd = this.claudeService.getSessionCwd(sessionId)
+      ?? registry.findBySessionId(sessionId)?.cwd;
+    // Native discovery intentionally exposes sessions that Quicksave has never
+    // started, so neither a live process nor a registry entry exists yet.
+    // Resolve that native identity before archiving; otherwise End Task cannot
+    // determine the provider or cwd and silently reports "Session not found".
+    let native: NativeSessionSummary | undefined;
+    if (!cwd) {
+      native = (await this.claudeService.listNativeSessions())
+        .find((session) => session.sessionId === sessionId);
+      cwd = native?.cwd;
+      if (native) {
+        registry.upsertEntry(this.nativeSessionToRegistryEntry(native, false));
+      }
+    }
 
     let archived = false;
     if (cwd) {
       try {
         await this.claudeService.setSessionArchived(sessionId, cwd, true);
-        const agent = this.claudeService.getSessionAgent(sessionId, cwd);
+        const agent = native?.agent ?? this.claudeService.getSessionAgent(sessionId, cwd);
         const isNativeArchiveProvider = agent === 'codex' || agent === 'opencode';
-        const updated = getSessionRegistry().updateEntry(cwd, sessionId, isNativeArchiveProvider
+        const updated = registry.updateEntry(cwd, sessionId, isNativeArchiveProvider
           ? { archived: false, nativeArchived: true }
           : { archived: true });
         if (updated) {
