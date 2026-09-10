@@ -222,4 +222,50 @@ describe('WebSocketClient reconnect lifecycle', () => {
     expect(sockets).toHaveLength(2);
     expect(sockets[0].readyState).toBe(FakeWebSocket.CLOSING);
   });
+
+  it('retries one agent handshake without replacing the socket or another peer session', async () => {
+    const h = handlers();
+    const client = new WebSocketClient('ws://relay.test', 'pwa-key', h, async () => null);
+    const connect = client.connect();
+    sockets[0].open();
+    await connect;
+
+    const retrying = completeSession(client, 'agent-a');
+    const healthy = completeSession(client, 'agent-b');
+    const healthyDek = healthy.sessionDEK;
+
+    client.retryAgent('agent-a');
+
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].readyState).toBe(FakeWebSocket.OPEN);
+    expect(sockets[0].sent).toContain(JSON.stringify({ type: 'watch-agent', agentId: 'agent-a' }));
+    expect(retrying.keyExchangeComplete).toBe(false);
+    expect(healthy.keyExchangeComplete).toBe(true);
+    expect(healthy.sessionDEK).toBe(healthyDek);
+    expect(h.onConnectionStep).toHaveBeenLastCalledWith('waiting-for-agent', undefined, 'agent-a');
+  });
+
+  it('tags key-exchange progress and exhaustion errors with their agent', async () => {
+    vi.useFakeTimers();
+    const h = handlers();
+    const client = new WebSocketClient('ws://relay.test', 'pwa-key', h, async () => null);
+    const session = (client as any).sessions.get('agent-a') ?? (addSession(client, 'agent-a'), (client as any).sessions.get('agent-a'));
+    session.keyExchangeRetries = 5;
+
+    await (client as any).initiateKeyExchange(session);
+
+    expect(h.onConnectionStep).toHaveBeenCalledWith('key-exchange', 1, 'agent-a');
+    expect(h.onError).toHaveBeenCalledWith(expect.any(Error), 'agent-a');
+  });
+
+  it('only attributes legacy peer-offline errors when the relay identifies the peer', async () => {
+    const h = handlers();
+    const client = new WebSocketClient('ws://relay.test', 'pwa-key', h, async () => null);
+
+    await (client as any).handleSignalingMessage({ type: 'peer-offline' });
+    expect(h.onError).not.toHaveBeenCalled();
+
+    await (client as any).handleSignalingMessage({ type: 'peer-offline', payload: { agentId: 'agent-a' } });
+    expect(h.onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'Agent is offline' }), 'agent-a');
+  });
 });

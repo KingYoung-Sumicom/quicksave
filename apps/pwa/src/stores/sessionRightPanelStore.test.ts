@@ -66,4 +66,16 @@ describe('sessionRightPanelStore artifact preview', () => {
 
     expect(selectPanelMode(useSessionRightPanelStore.getState())).toBe('voice');
   });
+
+  it('opens a panel for the route session even when another session is active', () => {
+    const store = useSessionRightPanelStore.getState();
+    store.setActiveSession('previous-session');
+    store.open('files');
+
+    useSessionRightPanelStore.getState().openForSession('route-session', 'settings');
+
+    const state = useSessionRightPanelStore.getState();
+    expect(state.activeSessionId).toBe('route-session');
+    expect(selectPanelMode(state)).toBe('settings');
+  });
 });

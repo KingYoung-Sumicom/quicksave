@@ -41,8 +41,10 @@ export type ConnectionEventHandler = {
   onDisconnected: (agentId?: string) => void;
   onReconnecting: (attempt: number, maxAttempts: number) => void;
   onMessage: (message: Message, fromAgentId: string) => void;
-  onError: (error: Error) => void;
-  onConnectionStep: (step: ConnectionStep, attempt?: number) => void;
+  /** `agentId` is omitted only for signaling-socket failures shared by all peers. */
+  onError: (error: Error, agentId?: string) => void;
+  /** Connection progress is emitted for the agent whose handshake is advancing. */
+  onConnectionStep: (step: ConnectionStep, attempt?: number, agentId?: string) => void;
   onAgentStatus: (agentId: string, online: boolean) => void;
 };
 
@@ -282,7 +284,7 @@ export class WebSocketClient {
       agentPublicKey = decodeBase64(publicKey);
     } catch {
       console.error(`Invalid public key for agent ${agentId}; skipping connect`);
-      this.eventHandlers.onError(new Error('Stored machine public key is invalid'));
+      this.eventHandlers.onError(new Error('Stored machine public key is invalid'), agentId);
       this.eventHandlers.onDisconnected(agentId);
       return;
     }
@@ -302,12 +304,12 @@ export class WebSocketClient {
     this.activeAgentId = agentId;
 
     // Send watch-agent to check if agent is online before starting key exchange
-    this.eventHandlers.onConnectionStep('signaling');
+    this.eventHandlers.onConnectionStep('signaling', undefined, agentId);
     const watchAgent = () => {
       if (!this.sendRaw(JSON.stringify({ type: 'watch-agent', agentId }))) {
         this.forceReconnect('watch-agent send failed', { supersedeInFlight: false });
       }
-      this.eventHandlers.onConnectionStep('waiting-for-agent');
+      this.eventHandlers.onConnectionStep('waiting-for-agent', undefined, agentId);
     };
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -468,9 +470,14 @@ export class WebSocketClient {
         console.log('Peer connected signal received');
         break;
 
-      case 'peer-offline':
-        this.eventHandlers.onError(new Error('Agent is offline'));
+      case 'peer-offline': {
+        const agentId = (message.payload as { agentId?: string } | undefined)?.agentId;
+        // Older relays did not identify legacy peer-offline frames. Do not
+        // turn an unscoped notice into a page-wide failure in multi-machine
+        // mode; `agent-status` is the authoritative keyed protocol.
+        if (agentId) this.eventHandlers.onError(new Error('Agent is offline'), agentId);
         break;
+      }
 
       case 'bye':
         this.handleDisconnection();
@@ -489,7 +496,7 @@ export class WebSocketClient {
       session.keyExchangeTimeout = null;
     }
 
-    this.eventHandlers.onConnectionStep('key-exchange', 1);
+    this.eventHandlers.onConnectionStep('key-exchange', 1, session.agentId);
 
     const signingKeyPair = await this.getSigningKeyPair();
     if (!signingKeyPair) {
@@ -535,7 +542,8 @@ export class WebSocketClient {
     if (session.keyExchangeComplete) return;
     if (session.keyExchangeRetries >= WebSocketClient.MAX_KEY_EXCHANGE_RETRIES) {
       this.eventHandlers.onError(
-        new Error(`Key exchange failed after ${WebSocketClient.MAX_KEY_EXCHANGE_RETRIES} attempts for agent ${session.agentId}`)
+        new Error(`Key exchange failed after ${WebSocketClient.MAX_KEY_EXCHANGE_RETRIES} attempts for agent ${session.agentId}`),
+        session.agentId,
       );
       return;
     }
@@ -545,7 +553,7 @@ export class WebSocketClient {
 
     session.keyExchangeTimeout = setTimeout(async () => {
       if (!session.keyExchangeComplete && this.sessions.has(session.agentId)) {
-        this.eventHandlers.onConnectionStep('key-exchange', session.keyExchangeRetries + 1);
+        this.eventHandlers.onConnectionStep('key-exchange', session.keyExchangeRetries + 1, session.agentId);
         console.log(`Retrying key exchange for agent ${session.agentId} (attempt ${session.keyExchangeRetries})`);
 
         const signingKeyPair = await this.getSigningKeyPair();
@@ -606,7 +614,7 @@ export class WebSocketClient {
             }
 
             console.log(`Key exchange complete with agent ${session.agentId}`);
-            this.eventHandlers.onConnectionStep('handshake');
+            this.eventHandlers.onConnectionStep('handshake', undefined, session.agentId);
             this.requestHandshake(session);
             return;
           }
@@ -880,7 +888,7 @@ export class WebSocketClient {
         if (!this.sendRaw(JSON.stringify({ type: 'watch-agent', agentId: session.agentId }))) {
           throw new Error('Failed to re-watch agent after reconnect');
         }
-        this.eventHandlers.onConnectionStep('waiting-for-agent');
+        this.eventHandlers.onConnectionStep('waiting-for-agent', undefined, session.agentId);
       }
 
       this.reconnectAttempts = 0;
@@ -963,6 +971,34 @@ export class WebSocketClient {
     this.eventHandlers.onReconnecting(1, this.maxReconnectAttempts);
     const generation = ++this.reconnectGeneration;
     void this.attemptReconnect(generation);
+  }
+
+  /**
+   * Retry one agent's handshake without disturbing healthy peers sharing this
+   * signaling socket. Falls back to the socket-level retry only when the
+   * socket itself is unavailable, in which case every peer is affected.
+   */
+  retryAgent(agentId: string): void {
+    const session = this.sessions.get(agentId);
+    if (!session) return;
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.retryReconnect();
+      return;
+    }
+
+    session.keyExchangeComplete = false;
+    session.sessionDEK = null;
+    session.keyExchangeRetries = 0;
+    session.keyPair = generateKeyPair();
+    if (session.keyExchangeTimeout) {
+      clearTimeout(session.keyExchangeTimeout);
+      session.keyExchangeTimeout = null;
+    }
+    this.eventHandlers.onConnectionStep('waiting-for-agent', undefined, agentId);
+    if (!this.sendRaw(JSON.stringify({ type: 'watch-agent', agentId }))) {
+      this.forceReconnect('agent retry watch send failed', { supersedeInFlight: false });
+    }
   }
 
   /**

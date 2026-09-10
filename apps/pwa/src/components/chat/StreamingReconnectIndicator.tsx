@@ -17,11 +17,14 @@ import { retryWsReconnect } from '../../lib/wsRetryRegistry';
  *   - **Connected and agent online**: render nothing; caller (ClaudePanel)
  *     falls back to the regular bounce-dots indicator.
  */
-export function StreamingReconnectIndicator() {
-  const state = useConnectionStore((s) => s.state);
-  const reconnectAttempt = useConnectionStore((s) => s.reconnectAttempt);
-  const maxReconnectAttempts = useConnectionStore((s) => s.maxReconnectAttempts);
-  const agentOnline = useConnectionStore((s) => s.agentOnline);
+export function StreamingReconnectIndicator({ agentId }: { agentId?: string | null }) {
+  // A session belongs to one machine. Reading the legacy active-agent mirror
+  // here made a reconnect on any other machine appear in this session.
+  const connection = useConnectionStore((s) => agentId ? s.agentConnections[agentId] : undefined);
+  const state = connection?.state ?? 'disconnected';
+  const agentOnline = connection?.online;
+  const reconnectAttempt = connection?.reconnectAttempt;
+  const maxReconnectAttempts = connection?.maxReconnectAttempts;
 
   const inFlight = state === 'reconnecting' || state === 'connecting' || (state === 'connected' && agentOnline === false);
   const gaveUp = state === 'disconnected' || state === 'error';
@@ -30,6 +33,8 @@ export function StreamingReconnectIndicator() {
 
   const label = state === 'reconnecting' && reconnectAttempt
     ? `重新連線中… (${reconnectAttempt}/${maxReconnectAttempts ?? '?'})`
+    : state === 'reconnecting'
+    ? '重新連線中…'
     : state === 'connecting'
     ? '連線中…'
     : state === 'connected' && agentOnline === false
@@ -46,7 +51,7 @@ export function StreamingReconnectIndicator() {
       {gaveUp && (
         <button
           type="button"
-          onClick={() => retryWsReconnect()}
+          onClick={() => retryWsReconnect(agentId ?? undefined)}
           className="ml-1 px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs"
         >
           重新連線

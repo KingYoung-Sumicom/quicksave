@@ -45,6 +45,10 @@ interface SessionRightPanelStore {
   toggle(m: 'voice' | 'subagents' | 'files' | 'git' | 'settings'): void;
   /** Open a tab without toggling it closed when it is already active. */
   open(m: 'voice' | 'subagents' | 'files' | 'git' | 'settings'): void;
+  /** Open a tab for an explicit route session. This avoids a route-transition
+   * race where the header is interactive before the panel effect has updated
+   * `activeSessionId`. */
+  openForSession(sessionId: string, m: 'voice' | 'subagents' | 'files' | 'git' | 'settings'): void;
   /** Close the panel for the current session. */
   close(): void;
   setPanelWidth(w: number): void;
@@ -116,6 +120,23 @@ export const useSessionRightPanelStore = create<SessionRightPanelStore>((set) =>
     artifactPreview: null,
     filesRelPath: m === 'files' ? getSession(s).filesRelPath : '',
   })),
+
+  openForSession: (sessionId, m) => set((s) => {
+    const current = s.sessionStates[sessionId] ?? DEFAULT_SESSION_STATE;
+    return {
+      activeSessionId: sessionId,
+      sessionStates: {
+        ...s.sessionStates,
+        [sessionId]: {
+          ...current,
+          mode: m,
+          filesPreview: null,
+          artifactPreview: null,
+          filesRelPath: m === 'files' ? current.filesRelPath : '',
+        },
+      },
+    };
+  }),
 
   close: () => set((s) => updateSession(s, {
     mode: null,

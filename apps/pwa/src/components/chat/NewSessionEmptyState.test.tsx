@@ -3,12 +3,13 @@
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { IntlProvider } from 'react-intl';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useClaudeStore } from '../../stores/claudeStore';
 import { useClaudeAuthStore } from '../../stores/claudeAuthStore';
 import { useCodexLoginStore } from '../../stores/codexLoginStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { NewSessionEmptyState } from './NewSessionEmptyState';
+import { registerAgentBusGetter } from '../../lib/busRegistry';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -23,6 +24,7 @@ describe('NewSessionEmptyState machine-scoped auth gates', () => {
     useCodexLoginStore.setState({ byAgent: {} });
     useClaudeAuthStore.setState({ byAgent: {} });
     useConnectionStore.setState({ agentId: 'machine-a', codexModels: [] });
+    registerAgentBusGetter(() => null);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -89,6 +91,30 @@ describe('NewSessionEmptyState machine-scoped auth gates', () => {
     expect(container.textContent).not.toContain('GPT-5.5');
   });
 
+  it('refreshes the selected machine’s OpenCode model list', async () => {
+    useClaudeStore.getState().setSelectedAgent('opencode');
+    useConnectionStore.getState().setAgentConnected('machine-b', '/b', false);
+    const command = vi.fn().mockResolvedValue({
+      availableProviders: [{
+        id: 'opencode', label: 'OpenCode', capabilities: {},
+        models: [{ id: 'thor/qwen3.8', name: 'Qwen 3.8', providerId: 'thor', providerName: 'Thor' }],
+      }],
+    });
+    registerAgentBusGetter((agentId) => agentId === 'machine-b' ? ({ command } as never) : null);
+
+    await renderFor('machine-b');
+    const refresh = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent?.includes('Refresh model list'));
+    expect(refresh).toBeTruthy();
+
+    await act(async () => {
+      refresh!.click();
+    });
+
+    expect(command).toHaveBeenCalledWith('agent:probe', {}, expect.objectContaining({ queueWhileDisconnected: false }));
+    expect(container.textContent).toContain('Qwen 3.8');
+  });
+
   async function renderFor(agentId: string) {
     await act(async () => {
       root.render(
@@ -98,6 +124,10 @@ describe('NewSessionEmptyState machine-scoped auth gates', () => {
             'newSession.agent': 'Agent',
             'newSession.title': 'New session',
             'newSession.hint': 'Choose settings and start chatting.',
+            'newSession.models.refresh': 'Refresh model list',
+            'newSession.models.refreshing': 'Refreshing models…',
+            'newSession.models.notConnected': 'Connect to this machine.',
+            'newSession.models.refreshFailed': 'Could not refresh models.',
             'codexLogin.banner.title': 'Codex is not signed in',
             'codexLogin.banner.body': 'Sign in on this machine.',
             'codexLogin.banner.button': 'Sign in',

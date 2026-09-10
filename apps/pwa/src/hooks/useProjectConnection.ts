@@ -16,31 +16,39 @@ export function useProjectConnection(
   _onSwitchMachine: (agentId: string) => void,
 ) {
   const agentConnections = useConnectionStore((s) => s.agentConnections);
-  const connectingRef = useRef(false);
+  // Track the in-flight target, not just whether any machine is connecting.
+  // Route switches must be able to start machine B while machine A is still
+  // completing its handshake.
+  const connectingRef = useRef<string | null>(null);
 
   const { agentId: targetAgentId } = projectId ? fromProjectId(projectId) : { agentId: '' };
   const resolved = projectId ? resolveProjectCwd(projectId) : undefined;
   const cwd = resolved?.cwd;
 
   const agentState = targetAgentId ? agentConnections[targetAgentId] : undefined;
-  const isConnectedToTarget = agentState?.state === 'connected';
-  const isConnecting = agentState?.state === 'connecting';
+  // Keep an already-mounted project usable through a transient relay retry.
+  // A cold target has no `connectedAt`, so it still waits for handshake.
+  const isConnectedToTarget = agentState?.state === 'connected'
+    || (agentState?.state === 'reconnecting' && agentState.connectedAt !== null);
+  // Reconnecting is still an in-flight connection attempt. Treating it as
+  // disconnected here starts a second connect flow for the same machine.
+  const isConnecting = agentState?.state === 'connecting' || agentState?.state === 'reconnecting';
   const isError = agentState?.state === 'error';
 
   useEffect(() => {
-    if (!targetAgentId || isConnectedToTarget || isConnecting || connectingRef.current) return;
+    if (!targetAgentId || isConnectedToTarget || isConnecting || connectingRef.current === targetAgentId) return;
 
     const machine = useMachineStore.getState().getMachine(targetAgentId);
     if (!machine) return;
 
-    connectingRef.current = true;
+    connectingRef.current = targetAgentId;
     onConnect(targetAgentId, machine.publicKey);
   }, [targetAgentId, isConnectedToTarget, isConnecting, onConnect]);
 
   // Reset connecting ref when we actually connect
   useEffect(() => {
     if (isConnectedToTarget) {
-      connectingRef.current = false;
+      if (connectingRef.current === targetAgentId) connectingRef.current = null;
     }
   }, [isConnectedToTarget]);
 

@@ -274,10 +274,9 @@ interface ClaudeStore {
    *  list atomically per agent. Scoped by `machineAgentId` so one agent's
    *  snap doesn't wipe another agent's active sessions. */
   reconcileActiveSessions: (activeSessionIds: Set<string>, machineAgentId: string) => void;
-  /** Demote every isActive=true session to closed; called on transport
-   *  disconnect so a stale green badge doesn't survive the blip. The next
-   *  /sessions/active snap on reconnect restores the truth. */
-  clearActiveOnDisconnect: () => void;
+  /** Demote active sessions to closed after a transport disconnect. When an
+   *  agent id is supplied, leave sessions on other machines untouched. */
+  clearActiveOnDisconnect: (machineAgentId?: string) => void;
 
   /** Track which session is currently being attended (visible+focused tab on
    *  its page). Pass `null` when attention is released. The attention hook
@@ -394,11 +393,12 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
       }
       return { sessions: updated };
     }),
-  clearActiveOnDisconnect: () =>
+  clearActiveOnDisconnect: (machineAgentId) =>
     set((state) => {
       const updated = { ...state.sessions };
       let changed = false;
       for (const [id, session] of Object.entries(updated)) {
+        if (machineAgentId && session.machineAgentId !== machineAgentId) continue;
         if (session.isActive) {
           updated[id] = { ...session, isActive: false, isStreaming: false, hasPendingInput: false, queueState: null };
           changed = true;
