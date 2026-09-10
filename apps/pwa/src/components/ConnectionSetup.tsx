@@ -17,8 +17,10 @@ export function ConnectionSetup({ onConnect }: Props) {
   const [agentId, setAgentId] = useState('');
   const [publicKey, setPublicKey] = useState('');
   const [mode, setMode] = useState<'scan' | 'manual'>('scan');
-  const { state, error } = useConnectionStore();
   const { addMachine } = useMachineStore();
+  const targetAgentId = agentId.trim();
+  const connection = useConnectionStore((s) => targetAgentId ? s.agentConnections[targetAgentId] : undefined);
+  const error = connection?.error ?? null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,7 +36,7 @@ export function ConnectionSetup({ onConnect }: Props) {
     }
   };
 
-  const isConnecting = state === 'connecting';
+  const isConnecting = connection?.state === 'connecting' || connection?.state === 'reconnecting';
 
   return (
     <div className="h-full min-h-0 overflow-y-auto overscroll-contain safe-area-top safe-area-bottom">
@@ -142,6 +144,8 @@ export function ConnectionSetup({ onConnect }: Props) {
               <div className="py-4">
                 <QRScanner
                   onScan={(id, pk, _name, spk) => {
+                    setAgentId(id);
+                    setPublicKey(pk);
                     // Save machine and connect
                     addMachine({
                       agentId: id,

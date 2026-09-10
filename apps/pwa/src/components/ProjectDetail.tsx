@@ -50,7 +50,7 @@ export function ProjectDetail({
   const navigate = useNavigate();
   const { projectId } = useParams<{ projectId: string }>();
   const sessions = useClaudeStore((s) => s.sessions);
-  const error = useConnectionStore((s) => s.error);
+  const error = useConnectionStore((s) => s.agentConnections[agentId]?.error ?? null);
   const removeProject = useMachineStore((s) => s.removeProject);
   const [showMenu, setShowMenu] = useState(false);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);

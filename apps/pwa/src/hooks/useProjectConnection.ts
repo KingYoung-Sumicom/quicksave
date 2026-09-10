@@ -24,8 +24,8 @@ export function useProjectConnection(
 
   const agentState = targetAgentId ? agentConnections[targetAgentId] : undefined;
   const isConnectedToTarget = agentState?.state === 'connected';
-  const isConnecting = agentState?.state === 'connecting';
-  const isError = agentState?.state === 'error';
+  const isConnecting = agentState?.state === 'connecting' || agentState?.state === 'reconnecting';
+  const isError = agentState?.state === 'error' || agentState?.state === 'disconnected';
 
   useEffect(() => {
     if (!targetAgentId || isConnectedToTarget || isConnecting || connectingRef.current) return;
@@ -37,12 +37,13 @@ export function useProjectConnection(
     onConnect(targetAgentId, machine.publicKey);
   }, [targetAgentId, isConnectedToTarget, isConnecting, onConnect]);
 
-  // Reset connecting ref when we actually connect
+  // Reset after the connection reaches a terminal state so a route can start
+  // a fresh agent session after the relay itself has recovered.
   useEffect(() => {
-    if (isConnectedToTarget) {
+    if (isConnectedToTarget || isError) {
       connectingRef.current = false;
     }
-  }, [isConnectedToTarget]);
+  }, [isConnectedToTarget, isError]);
 
   return {
     isReady: isConnectedToTarget,

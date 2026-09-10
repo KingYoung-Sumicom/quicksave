@@ -18,6 +18,7 @@ import { useProjects } from '../hooks/useProjects';
 import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { ChevronIcon } from './ui/ChevronIcon';
 import { Spinner } from './ui/Spinner';
+import { ConnectingStages } from './ConnectingOverlay';
 import { Modal } from './ui/Modal';
 import { ErrorBox } from './ui/ErrorBox';
 import { QRScanner } from './QRScanner';
@@ -72,14 +73,16 @@ export function AddNewPage({
   );
 
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
-    () => connectedMachines[0]?.agentId ?? null
+    () => connectedMachines[0]?.agentId ?? machines[0]?.agentId ?? null
   );
 
-  // If the selected machine disconnects or the list changes, fall back to the first available.
+  // Keep an explicitly selected machine during reconnects. The project tab
+  // owns its local retry/progress UI rather than silently switching work to a
+  // different agent.
   useEffect(() => {
-    if (selectedAgentId && connectedMachines.some((m) => m.agentId === selectedAgentId)) return;
-    setSelectedAgentId(connectedMachines[0]?.agentId ?? null);
-  }, [connectedMachines, selectedAgentId]);
+    if (selectedAgentId && machines.some((m) => m.agentId === selectedAgentId)) return;
+    setSelectedAgentId(connectedMachines[0]?.agentId ?? machines[0]?.agentId ?? null);
+  }, [machines, connectedMachines, selectedAgentId]);
 
   const selectedAgentBus = useCallback(
     (): MessageBusClient | null => (selectedAgentId ? getBusForAgent(selectedAgentId) : null),
@@ -142,7 +145,7 @@ export function AddNewPage({
         ))}
       </div>
 
-      {tab === 'project' && connectedMachines.length > 1 && (
+      {tab === 'project' && machines.length > 1 && (
         <div className="px-4 py-3 border-b border-slate-700 flex items-center gap-2">
           <label htmlFor="add-machine-select" className="text-xs text-slate-400 shrink-0">
             <FormattedMessage id="addNew.project.machineLabel" />
@@ -153,7 +156,7 @@ export function AddNewPage({
             onChange={(e) => setSelectedAgentId(e.target.value || null)}
             className="flex-1 min-w-0 bg-slate-700 text-slate-200 text-sm rounded-md px-2.5 py-1.5 border border-slate-600 focus:outline-none focus:border-blue-500"
           >
-            {connectedMachines.map((m) => (
+            {machines.map((m) => (
               <option key={m.agentId} value={m.agentId}>
                 {m.icon} {m.nickname}
               </option>
@@ -169,6 +172,10 @@ export function AddNewPage({
             onBrowseDirectory={boundBrowseDirectory}
             onAddCodingPath={boundAddCodingPath}
             onCloneRepo={boundCloneRepo}
+            onEnsureConnected={() => {
+              const machine = machines.find((m) => m.agentId === selectedAgentId);
+              if (machine) onConnect(machine.agentId, machine.publicKey);
+            }}
             onDone={(agentId, path) => {
               if (agentId && path) {
                 setSessionSeedProjectId(toProjectId(agentId, path));
@@ -186,10 +193,8 @@ export function AddNewPage({
         )}
         {tab === 'machine' && (
           <MachineTab
-            onConnect={(agentId, publicKey) => {
-              onConnect(agentId, publicKey);
-              navigate('/');
-            }}
+            onConnect={onConnect}
+            onConnected={() => navigate('/')}
           />
         )}
       </div>
@@ -253,12 +258,14 @@ function ProjectTab({
   onBrowseDirectory,
   onAddCodingPath,
   onCloneRepo,
+  onEnsureConnected,
   onDone,
 }: {
   selectedAgentId: string | null;
   onBrowseDirectory: (path?: string) => Promise<BrowseDirectoryResponsePayload | null>;
   onAddCodingPath: (path: string) => Promise<CodingPath | null>;
   onCloneRepo: (url: string, targetDir: string) => Promise<Repository | null>;
+  onEnsureConnected: () => void;
   onDone: (agentId: string | null, path: string | null) => void;
 }) {
   const intl = useIntl();
@@ -266,9 +273,34 @@ function ProjectTab({
     useDirectoryBrowser(selectedAgentId, onBrowseDirectory);
   const [adding, setAdding] = useState(false);
   const [showClone, setShowClone] = useState(false);
+  const connection = useConnectionStore((s) => selectedAgentId ? s.agentConnections[selectedAgentId] : undefined);
 
   if (!selectedAgentId) {
     return <EmptyAgentNotice message={intl.formatMessage({ id: 'addNew.project.empty' })} />;
+  }
+
+  if (connection?.state !== 'connected') {
+    const isConnecting = connection?.state === 'connecting' || connection?.state === 'reconnecting';
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-5 px-6 text-center">
+        {isConnecting ? (
+          <ConnectingStages agentId={selectedAgentId} />
+        ) : (
+          <>
+            <p className="text-sm text-slate-400">
+              <FormattedMessage id="addNew.project.machineUnavailable" />
+            </p>
+            <button
+              type="button"
+              onClick={onEnsureConnected}
+              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+            >
+              <FormattedMessage id="addNew.project.retryMachine" />
+            </button>
+          </>
+        )}
+      </div>
+    );
   }
 
   const handleSelect = async () => {
@@ -460,17 +492,25 @@ function CloneRepoModal({
 
 function MachineTab({
   onConnect,
+  onConnected,
 }: {
   onConnect: (agentId: string, publicKey: string) => void;
+  onConnected: () => void;
 }) {
   const intl = useIntl();
   const [mode, setMode] = useState<'scan' | 'manual'>('scan');
   const [agentId, setAgentId] = useState('');
   const [publicKey, setPublicKey] = useState('');
+  const [submittedAgentId, setSubmittedAgentId] = useState<string | null>(null);
   const { addMachine } = useMachineStore();
-  const error = useConnectionStore((s) => s.error);
-  const state = useConnectionStore((s) => s.state);
-  const isConnecting = state === 'connecting';
+  const targetAgentId = submittedAgentId ?? agentId.trim();
+  const connection = useConnectionStore((s) => targetAgentId ? s.agentConnections[targetAgentId] : undefined);
+  const error = connection?.error ?? null;
+  const isConnecting = connection?.state === 'connecting' || connection?.state === 'reconnecting';
+
+  useEffect(() => {
+    if (submittedAgentId && connection?.state === 'connected') onConnected();
+  }, [submittedAgentId, connection?.state, onConnected]);
 
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -483,6 +523,7 @@ function MachineTab({
       nickname: `Machine ${id.slice(0, 8)}`,
       icon: '',
     });
+    setSubmittedAgentId(id);
     onConnect(id, pk);
   };
 
@@ -515,6 +556,8 @@ function MachineTab({
         <>
           <QRScanner
             onScan={(id, pk, _name, spk) => {
+              setAgentId(id);
+              setPublicKey(pk);
               addMachine({
                 agentId: id,
                 publicKey: pk,
@@ -522,6 +565,7 @@ function MachineTab({
                 nickname: `Machine ${id.slice(0, 8)}`,
                 icon: '',
               });
+              setSubmittedAgentId(id);
               onConnect(id, pk);
             }}
           />
@@ -537,7 +581,7 @@ function MachineTab({
               id="add-agent-id"
               type="text"
               value={agentId}
-              onChange={(e) => setAgentId(e.target.value)}
+              onChange={(e) => { setSubmittedAgentId(null); setAgentId(e.target.value); }}
               placeholder={intl.formatMessage({ id: 'addNew.machine.agentIdPlaceholder' })}
               className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               disabled={isConnecting}
@@ -550,7 +594,7 @@ function MachineTab({
             <textarea
               id="add-public-key"
               value={publicKey}
-              onChange={(e) => setPublicKey(e.target.value)}
+              onChange={(e) => { setSubmittedAgentId(null); setPublicKey(e.target.value); }}
               placeholder={intl.formatMessage({ id: 'addNew.machine.publicKeyPlaceholder' })}
               rows={3}
               className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none font-mono text-sm"

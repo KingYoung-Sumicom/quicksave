@@ -4,18 +4,23 @@ import { FormattedMessage } from 'react-intl';
 import { useConnectionStore, type ConnectionStep } from '../stores/connectionStore';
 
 interface ConnectingOverlayProps {
+  agentId: string;
   onAbort: () => void;
   onRetry: () => void;
 }
 
 /**
  * Inline stages indicator (spinner + title/subtitle + step dots). Safe to
- * embed anywhere — reads connection progress from the global store. No
- * backdrop, no actions. For the full-screen gated overlay with cancel/retry,
- * use ConnectingOverlay.
+ * embed anywhere — reads progress for one explicit agent. No backdrop, no
+ * actions. For the full-screen QR/deep-link flow with cancel/retry, use
+ * ConnectingOverlay.
  */
-export function ConnectingStages() {
-  const { state, connectionStep, keyExchangeAttempt, agentOnline } = useConnectionStore();
+export function ConnectingStages({ agentId }: { agentId: string }) {
+  const connection = useConnectionStore((s) => s.agentConnections[agentId]);
+  const state = connection?.state ?? 'disconnected';
+  const connectionStep = connection?.connectionStep ?? null;
+  const keyExchangeAttempt = connection?.keyExchangeAttempt ?? null;
+  const agentOnline = connection?.online ?? null;
   const isAgentOffline = connectionStep === 'waiting-for-agent' && agentOnline === false;
   const stepIndex = getStepIndex(connectionStep);
 
@@ -60,8 +65,12 @@ export function ConnectingStages() {
   );
 }
 
-export function ConnectingOverlay({ onAbort, onRetry }: ConnectingOverlayProps) {
-  const { state, error, connectionStep, agentOnline } = useConnectionStore();
+export function ConnectingOverlay({ agentId, onAbort, onRetry }: ConnectingOverlayProps) {
+  const connection = useConnectionStore((s) => s.agentConnections[agentId]);
+  const state = connection?.state ?? 'disconnected';
+  const error = connection?.error ?? null;
+  const connectionStep = connection?.connectionStep ?? null;
+  const agentOnline = connection?.online ?? null;
 
   // Only show for connecting/reconnecting states
   if (state !== 'connecting' && state !== 'reconnecting' && !(state === 'error' && error)) {
@@ -97,7 +106,7 @@ export function ConnectingOverlay({ onAbort, onRetry }: ConnectingOverlayProps) 
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/90 flex flex-col items-center justify-center safe-area-top safe-area-bottom">
-      <ConnectingStages />
+      <ConnectingStages agentId={agentId} />
       <div className="mt-8 flex items-center justify-center gap-4">
         <button
           onClick={onAbort}

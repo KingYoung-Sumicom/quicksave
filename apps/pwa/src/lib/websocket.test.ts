@@ -68,12 +68,15 @@ class FakeBroadcastChannel {
 
 function handlers(): ConnectionEventHandler {
   return {
+    onRelayConnected: vi.fn(),
+    onRelayDisconnected: vi.fn(),
+    onRelayReconnecting: vi.fn(),
+    onRelayError: vi.fn(),
     onConnected: vi.fn(),
-    onDisconnected: vi.fn(),
-    onReconnecting: vi.fn(),
+    onAgentDisconnected: vi.fn(),
+    onAgentError: vi.fn(),
     onMessage: vi.fn(),
-    onError: vi.fn(),
-    onConnectionStep: vi.fn(),
+    onAgentConnectionStep: vi.fn(),
     onAgentStatus: vi.fn(),
   };
 }
@@ -132,12 +135,12 @@ describe('WebSocketClient reconnect lifecycle', () => {
     addSession(client);
 
     client.refreshAfterResume();
-    expect(h.onReconnecting).toHaveBeenCalledTimes(1);
+    expect(h.onRelayReconnecting).toHaveBeenCalledTimes(1);
     expect(sockets).toHaveLength(2);
 
     sockets[0].finishClose(4000, 'resume refresh');
-    expect(h.onReconnecting).toHaveBeenCalledTimes(1);
-    expect(h.onDisconnected).not.toHaveBeenCalled();
+    expect(h.onRelayReconnecting).toHaveBeenCalledTimes(1);
+    expect(h.onRelayDisconnected).not.toHaveBeenCalled();
 
     sockets[1].open();
     await flushMicrotasks();
@@ -163,14 +166,14 @@ describe('WebSocketClient reconnect lifecycle', () => {
 
     expect(sockets).toHaveLength(1);
     expect(sockets[0].sent).toHaveLength(1);
-    expect(h.onReconnecting).not.toHaveBeenCalled();
+    expect(h.onRelayReconnecting).not.toHaveBeenCalled();
 
     const encryptedPong = encryptWithSharedSecret('compressed-pong', session.sessionDEK);
     await (client as any).handleDataMessage(encryptedPong, session);
     await vi.advanceTimersByTimeAsync(2500);
 
     expect(sockets).toHaveLength(1);
-    expect(h.onReconnecting).not.toHaveBeenCalled();
+    expect(h.onRelayReconnecting).not.toHaveBeenCalled();
     expect(h.onMessage).not.toHaveBeenCalled();
   });
 
@@ -190,11 +193,11 @@ describe('WebSocketClient reconnect lifecycle', () => {
 
     expect(sockets).toHaveLength(1);
     expect(sockets[0].sent).toHaveLength(1);
-    expect(h.onReconnecting).not.toHaveBeenCalled();
+    expect(h.onRelayReconnecting).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(2500);
 
-    expect(h.onReconnecting).toHaveBeenCalledTimes(1);
+    expect(h.onRelayReconnecting).toHaveBeenCalledTimes(1);
     expect(sockets).toHaveLength(2);
     expect(sockets[0].readyState).toBe(FakeWebSocket.CLOSING);
   });
@@ -218,7 +221,7 @@ describe('WebSocketClient reconnect lifecycle', () => {
     await flushMicrotasks();
 
     expect(session.dekPendingMessages).toEqual([message]);
-    expect(h.onReconnecting).toHaveBeenCalledTimes(1);
+    expect(h.onRelayReconnecting).toHaveBeenCalledTimes(1);
     expect(sockets).toHaveLength(2);
     expect(sockets[0].readyState).toBe(FakeWebSocket.CLOSING);
   });

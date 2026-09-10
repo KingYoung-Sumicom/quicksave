@@ -561,8 +561,9 @@ export function ClaudePanel({
     });
   }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const connectionState = useConnectionStore((s) => s.state);
-  const agentOnline = useConnectionStore((s) => s.agentOnline);
+  const relayState = useConnectionStore((s) => s.relay.state);
+  const agentConnection = useConnectionStore((s) => agentId ? s.agentConnections[agentId] : undefined);
+  const agentOnline = agentConnection?.online ?? null;
 
   // Load session messages when navigating to a different session (or away from one)
   useEffect(() => {
@@ -596,13 +597,13 @@ export function ClaudePanel({
   // Re-subscribe after agent reconnect: the relay drops all pubsub subscriptions
   // when the agent's WebSocket disconnects. When the agent comes back online and
   // key exchange completes, we must call getCards (which re-subscribes the peer).
-  // This covers both full PWA reconnects (connectionState change) and agent-only
+  // This covers both full PWA reconnects (relayState change) and agent-only
   // relay blips (agentOnline flips false→true while connectionState stays 'connected').
   const prevOnlineRef = useRef(agentOnline);
   useEffect(() => {
     const wasOnline = prevOnlineRef.current;
     prevOnlineRef.current = agentOnline;
-    if (!urlSessionId || connectionState !== 'connected') return;
+    if (!urlSessionId || relayState !== 'connected') return;
     // Agent came back online (was offline or null → true)
     if (agentOnline === true && wasOnline === false) {
       console.log(`[sub:panel] agent reconnected: re-subscribe session=${urlSessionId.slice(0, 8)}`);
@@ -613,7 +614,7 @@ export function ClaudePanel({
       console.log(`[sub:panel] initial load: subscribe session=${urlSessionId.slice(0, 8)}`);
       onGetSessionCards(urlSessionId);
     }
-  }, [agentOnline, connectionState]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [agentOnline, relayState]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Unsubscribe when leaving session view (navigating to session list)
   useEffect(() => {
@@ -1154,9 +1155,11 @@ export function ClaudePanel({
               const sessionStreaming = isStreaming || !!activeSession?.isStreaming;
               const showDots = sessionStreaming && !isResuming && !activeSession?.hasPendingInput;
               if (!showDots) return null;
-              const linkUncertain = connectionState !== 'connected' || agentOnline === false;
+              const linkUncertain = relayState !== 'connected'
+                || agentConnection?.state !== 'connected'
+                || agentOnline === false;
               return linkUncertain ? (
-                <StreamingReconnectIndicator />
+                <StreamingReconnectIndicator agentId={agentId} />
               ) : (
                 <div className="flex items-center gap-1.5 py-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:0ms]" />
