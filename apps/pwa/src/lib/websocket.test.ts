@@ -38,6 +38,10 @@ class FakeWebSocket {
     this.onopen?.();
   }
 
+  fail(): void {
+    this.onerror?.(new Event('error'));
+  }
+
   send(data: string): void {
     if (this.throwOnSend) throw new Error('send failed');
     if (this.readyState !== FakeWebSocket.OPEN) throw new Error('not open');
@@ -123,6 +127,16 @@ describe('WebSocketClient reconnect lifecycle', () => {
     vi.useRealTimers();
     globalThis.WebSocket = originalWebSocket;
     globalThis.BroadcastChannel = originalBroadcastChannel;
+  });
+
+  it('lets the initial relay failure be handled by the lifecycle caller', async () => {
+    const client = new WebSocketClient('ws://relay.test', 'pwa-key', handlers(), async () => null);
+
+    const connect = client.connect();
+    sockets[0].fail();
+
+    await expect(connect).rejects.toThrow('Failed to connect to signaling server');
+    await flushMicrotasks();
   });
 
   it('reconnects on resume when no encrypted session can be probed', async () => {

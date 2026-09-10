@@ -267,7 +267,12 @@ export class WebSocketClient {
       };
     });
 
+    // Keep an observable promise for `connectToAgent()` to await, while also
+    // observing its rejection here. The initial `connect()` caller owns the
+    // user-visible relay lifecycle state, but this internal mirror otherwise
+    // becomes an orphaned rejected promise when the relay is unreachable.
     this.connectPromise = socketPromise.then(() => undefined);
+    void this.connectPromise.catch(() => undefined);
     return socketPromise;
   }
 
