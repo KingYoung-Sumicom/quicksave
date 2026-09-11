@@ -7,5 +7,8 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    // Relay integration files share fixed test ports and connection-quota
+    // state, so concurrent files can observe each other's server instance.
+    fileParallelism: false,
   },
 });
