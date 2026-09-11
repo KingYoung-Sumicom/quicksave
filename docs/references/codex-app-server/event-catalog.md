@@ -1,8 +1,8 @@
 # Codex `app-server` — exhaustive notification catalog
 
-> **Source(s):** locally-generated `ServerNotification.ts` union (CLI 0.125.0 — authoritative wire-method catalog); locally-generated `v2/*Notification.ts` payloads; https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md (§ Events, § Turn events → § Items, § Errors, § Approvals, § Auth endpoints).
-> **Fetched:** 2026-04-26
-> **Codex CLI version verified against:** 0.125.0
+> **Source(s):** locally-generated `ServerNotification.ts` union (CLI 0.153.4 — authoritative wire-method catalog); locally-generated `v2/*Notification.ts` payloads; https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md (§ Events, § Turn events → § Items, § Errors, § Approvals, § Auth endpoints).
+> **Fetched:** 2026-09-11
+> **Codex CLI version verified against:** 0.153.4
 
 This is the lookup table to use when wiring app-server events into Quicksave's card builder. Every method in this table appears on the wire; anything that *isn't* in this table won't be emitted.
 
@@ -73,6 +73,37 @@ The item `type` discriminator (from the README § Items) determines which deltas
 - `dynamicToolCall` → paired with the `item/tool/call` server→client request
 - `webSearch`, `imageView`, `enteredReviewMode`, `exitedReviewMode`, `contextCompaction` (no deltas)
 - `compacted` — **deprecated**, use `contextCompaction`.
+
+### Quicksave opt-in native-command completion
+
+Quicksave normally treats the public `commandExecution` lifecycle as card
+data only. It does **not** automatically wake a Codex thread for every
+native command that completes after a turn.
+
+Quicksave's per-session Codex MCP configuration exposes
+`RegisterBackgroundExecutionCompletion`. Delivery is enabled only for the
+schema-verified Codex `0.153.x` line. An agent calls the tool only after native
+`exec_command` itself returned `Process running with session ID <handle>` and
+only when the user asked to monitor that work. The tool merely submits the
+opaque handle for host validation: it does not run, poll, signal, alter, or
+approve the process.
+
+The provider correlates the registration's `mcpToolCall` with a unique,
+same-thread and same-turn `commandExecution` whose source is
+`unifiedExecStartup`. It buffers either public fact briefly when their event
+order differs. Once the registered command reaches a terminal
+`item/completed` state and the origin turn is safely settled, Quicksave starts
+one scheduler-owned `turn/start` with factual
+`quicksave/background_execution_completed` `toolOutput`.
+
+- Unregistered commands, `unifiedExecInteraction` polls, MCP command tools,
+  and nested/code-mode shell results are not eligible.
+- Ambiguous, stale, cross-thread, or replayed registrations are rejected; a
+  handle is never treated as an OS PID.
+- `rawResponseItem/completed` remains an internal experimental surface and is
+  not subscribed to for this feature.
+- Set `QUICKSAVE_CODEX_BACKGROUND_COMPLETIONS=0` to remove this augmentation
+  without changing native Bash, Guardian, approval, or sandbox behavior.
 
 ## Streaming deltas
 

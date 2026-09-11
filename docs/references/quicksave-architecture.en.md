@@ -73,6 +73,7 @@ apps/agent/src/
 │   │   ├── rpcClient.ts        #   JSON-RPC 2.0 dispatcher (request/response/notification/server-request)
 │   │   ├── stdioTransport.ts   #   JSONL framing on the spawned child's stdio
 │   │   ├── cardAdapter.ts      #   v2 notifications → StreamCardBuilder method calls
+│   │   ├── nativeExecCompletionTracker.ts # Public native lifecycle + explicit agent registrations
 │   │   ├── tokenAccounting.ts  #   Per-turn delta + cumulative usage tracking
 │   │   ├── overrideStore.ts    #   Pending/effective per-turn overrides (model/effort/permission/service tier)
 │   │   ├── approvalMapping.ts  #   tool-name + sandbox toggle → AskForApproval matrix
@@ -86,7 +87,7 @@ apps/agent/src/
 │   ├── sessionRegistry.ts      # SessionRegistry: active+archived metadata (see below)
 │   ├── enrichEntry.ts          # Decorate registry entries for /sessions/history snapshot
 │   ├── systemPrompt.ts         # `--append-system-prompt` builder
-│   ├── sandboxMcp.ts           # In-process MCP server: SandboxBash + UpdateSessionStatus tool defs
+│   ├── sandboxMcp.ts           # In-process MCP server: sandbox, status, artifact, and Codex completion-registration tool defs
 │   ├── sandboxMcpStdio.ts      # stdio adapter for the same MCP server when run as a subprocess
 │   ├── debugLogger.ts          # Per-session NDJSON debug log (QUICKSAVE_DEBUG=1)
 │   ├── asyncQueue.ts           # Single-flight async queue helper

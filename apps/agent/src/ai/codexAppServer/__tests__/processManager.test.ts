@@ -165,6 +165,8 @@ describe('buildCodexSandboxMcpConfigArgs', () => {
       '-c',
       'mcp_servers.quicksave-sandbox.tools.DisplayMarkdownReport.approval_mode="approve"',
       '-c',
+      'mcp_servers.quicksave-sandbox.tools.RegisterBackgroundExecutionCompletion.approval_mode="approve"',
+      '-c',
       'apps.quicksave-sandbox.default_tools_approval_mode="approve"',
       '-c',
       'apps.quicksave-sandbox.default_tools_enabled=true',
@@ -176,12 +178,15 @@ describe('buildCodexSandboxMcpConfigArgs', () => {
       'apps.quicksave-sandbox.tools.UpdateSessionStatus.approval_mode="approve"',
       '-c',
       'apps.quicksave-sandbox.tools.DisplayMarkdownReport.approval_mode="approve"',
+      '-c',
+      'apps.quicksave-sandbox.tools.RegisterBackgroundExecutionCompletion.approval_mode="approve"',
     ]);
     expect(args[3]).toContain('"--cwd"');
     expect(args[3]).toContain('"/tmp/project"');
     expect(args[3]).toContain('"--session-id"');
     expect(args[3]).toContain('"thr_123"');
     expect(args[3]).toContain('"--no-sandbox-bash"');
+    expect(args[3]).toContain('"--native-completion-registration"');
     expect(args.join('\n')).not.toContain('SandboxBash');
   });
 });

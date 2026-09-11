@@ -6,7 +6,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { StreamCardBuilder } from '../../cardBuilder.js';
 import type { ProviderCallbacks } from '../../provider.js';
 
-import { CodexAppServerSession } from '../provider.js';
+import {
+  CodexAppServerSession,
+  isNativeCompletionFeatureEnabled,
+  nativeCompletionEnvelope,
+  supportsNativeCompletionProtocol,
+} from '../provider.js';
+import type { ReadyNativeExecCompletion } from '../nativeExecCompletionTracker.js';
 import { CodexRpcClient, InMemoryTransport, type WireRequest, type WireResponse } from '../rpcClient.js';
 import { RuntimeOverrideStore } from '../overrideStore.js';
 import { TokenAccounting, makeBreakdown, makeUsage } from '../tokenAccounting.js';
@@ -29,7 +35,7 @@ function harness(response: { action: 'allow' | 'deny'; response?: string } = { a
   const handle: AppServerHandle = {
     rpc,
     initializeResponse: {} as AppServerHandle['initializeResponse'],
-    cliVersion: '0.139.0',
+    cliVersion: '0.153.4',
     child,
     shutdown: vi.fn(),
   };
@@ -712,6 +718,149 @@ describe('CodexAppServerSession session-scoped notification routing', () => {
   });
 });
 
+describe('CodexAppServerSession registered native completion continuation', () => {
+  it('continues only a native command explicitly registered by the agent', async () => {
+    const h = harness();
+    const run = h.session.runTurn('monitor the process');
+    const initial = await receiveClientRequest(h.serverSide);
+    await h.serverSide.send({ jsonrpc: '2.0', id: initial.id, result: { turn: makeTurn('turn_1', 'inProgress') } });
+    await flushMicrotasks();
+
+    await h.serverSide.send({
+      jsonrpc: '2.0', method: 'item/started',
+      params: { threadId: h.threadId, turnId: 'turn_1', item: runningNativeCommand('cmd_1') },
+    });
+    await h.serverSide.send({
+      jsonrpc: '2.0', method: 'item/started',
+      params: { threadId: h.threadId, turnId: 'turn_1', item: nativeCompletionRegistration('reg_1', '777') },
+    });
+    // The process can finish before final-answer streaming; an explicit
+    // registration keeps it eligible until the normal scheduler is idle.
+    await h.serverSide.send({
+      jsonrpc: '2.0', method: 'item/completed',
+      params: { threadId: h.threadId, turnId: 'turn_1', item: completedNativeCommand('cmd_1') },
+    });
+
+    const runtimeStartPromise = receiveClientRequest(h.serverSide);
+    await sendTokenUsage(h, 'turn_1');
+    await h.serverSide.send({
+      jsonrpc: '2.0', method: 'turn/completed',
+      params: { threadId: h.threadId, turn: makeTurn('turn_1', 'completed') },
+    });
+    await run;
+
+    const runtime = await runtimeStartPromise;
+    expect(runtime.method).toBe('turn/start');
+    expect(runtime.params).toMatchObject({
+      threadId: h.threadId,
+      input: [],
+      toolOutput: { namespace: 'quicksave', name: 'background_execution_completed' },
+    });
+    expect(JSON.parse((runtime.params as { toolOutput: { output: string } }).toolOutput.output)).toMatchObject({
+      events: [expect.objectContaining({
+        commandExecutionId: 'cmd_1',
+        processHandle: '777',
+        status: 'completed',
+      })],
+    });
+
+    await h.serverSide.send({ jsonrpc: '2.0', id: runtime.id, result: { turn: makeTurn('turn_runtime', 'inProgress') } });
+    await sendTokenUsage(h, 'turn_runtime');
+    await h.serverSide.send({
+      jsonrpc: '2.0', method: 'turn/completed',
+      params: { threadId: h.threadId, turn: makeTurn('turn_runtime', 'completed') },
+    });
+  });
+
+  it('does not continue an unregistered or wrongly registered native command', async () => {
+    const h = harness();
+    const recorder = recordClientRequests(h.serverSide);
+    try {
+      const run = h.session.runTurn('do not monitor');
+      const initial = await recorder.waitFor((request) => request.method === 'turn/start');
+      await h.serverSide.send({ jsonrpc: '2.0', id: initial.id, result: { turn: makeTurn('turn_1', 'inProgress') } });
+      await flushMicrotasks();
+      await h.serverSide.send({
+        jsonrpc: '2.0', method: 'item/started',
+        params: { threadId: h.threadId, turnId: 'turn_1', item: runningNativeCommand('cmd_1') },
+      });
+      await h.serverSide.send({
+        jsonrpc: '2.0', method: 'item/started',
+        params: { threadId: h.threadId, turnId: 'turn_1', item: nativeCompletionRegistration('reg_wrong', 'not-the-handle') },
+      });
+      await h.serverSide.send({
+        jsonrpc: '2.0', method: 'item/completed',
+        params: { threadId: h.threadId, turnId: 'turn_1', item: completedNativeCommand('cmd_1') },
+      });
+      await sendTokenUsage(h, 'turn_1');
+      await h.serverSide.send({
+        jsonrpc: '2.0', method: 'turn/completed',
+        params: { threadId: h.threadId, turn: makeTurn('turn_1', 'completed') },
+      });
+      await run;
+      await flushMicrotasks();
+
+      expect(recorder.requests.filter((request) => request.method === 'turn/start')).toHaveLength(1);
+    } finally {
+      recorder.unsubscribe();
+    }
+  });
+
+  it('suppresses a registered completion immediately on manual interruption', async () => {
+    const h = harness();
+    const recorder = recordClientRequests(h.serverSide);
+    try {
+      const run = h.session.runTurn('monitor then stop');
+      const initial = await recorder.waitFor((request) => request.method === 'turn/start');
+      await h.serverSide.send({ jsonrpc: '2.0', id: initial.id, result: { turn: makeTurn('turn_1', 'inProgress') } });
+      await flushMicrotasks();
+      await h.serverSide.send({
+        jsonrpc: '2.0', method: 'item/started',
+        params: { threadId: h.threadId, turnId: 'turn_1', item: runningNativeCommand('cmd_1') },
+      });
+      await h.serverSide.send({
+        jsonrpc: '2.0', method: 'item/started',
+        params: { threadId: h.threadId, turnId: 'turn_1', item: nativeCompletionRegistration('reg_1', '777') },
+      });
+      h.session.interrupt();
+      const interrupt = await recorder.waitFor((request) => request.method === 'turn/interrupt');
+      await h.serverSide.send({ jsonrpc: '2.0', id: interrupt.id, result: {} });
+      await run;
+      await h.serverSide.send({
+        jsonrpc: '2.0', method: 'item/completed',
+        params: { threadId: h.threadId, turnId: 'turn_1', item: completedNativeCommand('cmd_1') },
+      });
+      await flushMicrotasks();
+
+      expect(recorder.requests.filter((request) => request.method === 'turn/start')).toHaveLength(1);
+    } finally {
+      recorder.unsubscribe();
+    }
+  });
+});
+
+describe('native completion payload and switch', () => {
+  it('keeps completion data bounded and enables only the verified Codex schema line', () => {
+    const completion: ReadyNativeExecCompletion = {
+      eventId: 'event_1', threadId: 'thr_1', originTurnId: 'turn_1', commandExecutionId: 'cmd_1',
+      command: 'echo done', cwd: '/repo', processHandle: null, status: 'failed', exitCode: 2,
+      durationMs: 42, aggregatedOutput: 'x'.repeat(4_001),
+    };
+    expect(nativeCompletionEnvelope([completion])).toMatchObject({
+      events: [expect.objectContaining({
+        status: 'failed',
+        output: expect.objectContaining({ excerptTruncatedByQuicksave: true }),
+      })],
+    });
+    expect(isNativeCompletionFeatureEnabled({})).toBe(true);
+    expect(isNativeCompletionFeatureEnabled({ QUICKSAVE_CODEX_BACKGROUND_COMPLETIONS: '0' })).toBe(false);
+    expect(supportsNativeCompletionProtocol('0.153.4')).toBe(true);
+    expect(supportsNativeCompletionProtocol('0.153.9')).toBe(true);
+    expect(supportsNativeCompletionProtocol('0.152.9')).toBe(false);
+    expect(supportsNativeCompletionProtocol('0.154.0')).toBe(false);
+  });
+});
+
 async function sendServerRequest(
   serverSide: InMemoryTransport,
   method: string,
@@ -834,5 +983,53 @@ function makeTurn(
     startedAt: 0,
     completedAt: status === 'inProgress' ? null : 1,
     durationMs: status === 'inProgress' ? null : 1,
+  };
+}
+
+function runningNativeCommand(id: string) {
+  return {
+    type: 'commandExecution' as const,
+    id,
+    pluginId: null,
+    scriptPath: null,
+    command: 'sleep 3; printf done',
+    cwd: '/repo',
+    processId: '777',
+    source: 'unifiedExecStartup' as const,
+    status: 'inProgress' as const,
+    commandActions: [],
+    aggregatedOutput: null,
+    exitCode: null,
+    durationMs: null,
+  };
+}
+
+function completedNativeCommand(id: string) {
+  return {
+    ...runningNativeCommand(id),
+    status: 'completed' as const,
+    aggregatedOutput: 'done\n',
+    exitCode: 0,
+    durationMs: 3_000,
+  };
+}
+
+function nativeCompletionRegistration(id: string, processHandle: string) {
+  return {
+    type: 'mcpToolCall' as const,
+    id,
+    server: 'quicksave-sandbox',
+    tool: 'RegisterBackgroundExecutionCompletion',
+    status: 'inProgress' as const,
+    arguments: { processHandle },
+    appContext: null,
+    appName: null,
+    appToolName: null,
+    mcpAppResourceUri: null,
+    pluginId: null,
+    readOnlyHint: true,
+    result: null,
+    error: null,
+    durationMs: null,
   };
 }
