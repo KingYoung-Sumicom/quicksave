@@ -4,25 +4,23 @@ import { FormattedMessage } from 'react-intl';
 import { useConnectionStore, type ConnectionStep } from '../stores/connectionStore';
 
 interface ConnectingOverlayProps {
+  agentId: string;
   onAbort: () => void;
   onRetry: () => void;
-  /** Machine whose connection progress this route is displaying. */
-  agentId?: string | null;
 }
 
 /**
  * Inline stages indicator (spinner + title/subtitle + step dots). Safe to
- * embed anywhere — reads connection progress from the global store. No
- * backdrop, no actions. For the full-screen gated overlay with cancel/retry,
- * use ConnectingOverlay.
+ * embed anywhere — reads progress for one explicit agent. No backdrop, no
+ * actions. For the full-screen QR/deep-link flow with cancel/retry, use
+ * ConnectingOverlay.
  */
-export function ConnectingStages({ agentId }: { agentId?: string | null } = {}) {
-  const connection = useConnectionStore((s) => agentId ? s.agentConnections[agentId] : undefined);
-  const legacy = useConnectionStore((s) => agentId ? undefined : s);
-  const state = connection?.state ?? legacy?.state ?? 'disconnected';
-  const connectionStep = connection?.connectionStep ?? legacy?.connectionStep ?? null;
-  const keyExchangeAttempt = connection?.keyExchangeAttempt ?? legacy?.keyExchangeAttempt ?? null;
-  const agentOnline = connection?.online ?? legacy?.agentOnline ?? null;
+export function ConnectingStages({ agentId }: { agentId: string }) {
+  const connection = useConnectionStore((s) => s.agentConnections[agentId]);
+  const state = connection?.state ?? 'disconnected';
+  const connectionStep = connection?.connectionStep ?? null;
+  const keyExchangeAttempt = connection?.keyExchangeAttempt ?? null;
+  const agentOnline = connection?.online ?? null;
   const isAgentOffline = connectionStep === 'waiting-for-agent' && agentOnline === false;
   const stepIndex = getStepIndex(connectionStep);
 
@@ -67,13 +65,12 @@ export function ConnectingStages({ agentId }: { agentId?: string | null } = {}) 
   );
 }
 
-export function ConnectingOverlay({ onAbort, onRetry, agentId }: ConnectingOverlayProps) {
-  const connection = useConnectionStore((s) => agentId ? s.agentConnections[agentId] : undefined);
-  const legacy = useConnectionStore((s) => agentId ? undefined : s);
-  const state = connection?.state ?? legacy?.state ?? 'disconnected';
-  const error = connection?.error ?? legacy?.error ?? null;
-  const connectionStep = connection?.connectionStep ?? legacy?.connectionStep ?? null;
-  const agentOnline = connection?.online ?? legacy?.agentOnline ?? null;
+export function ConnectingOverlay({ agentId, onAbort, onRetry }: ConnectingOverlayProps) {
+  const connection = useConnectionStore((s) => s.agentConnections[agentId]);
+  const state = connection?.state ?? 'disconnected';
+  const error = connection?.error ?? null;
+  const connectionStep = connection?.connectionStep ?? null;
+  const agentOnline = connection?.online ?? null;
 
   // Only show for connecting/reconnecting states
   if (state !== 'connecting' && state !== 'reconnecting' && !(state === 'error' && error)) {

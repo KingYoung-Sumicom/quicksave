@@ -851,6 +851,25 @@ export class StreamCardBuilder {
       });
   }
 
+  /**
+   * Codex/OpenCode histories are normally rebuilt from their native source,
+   * so their general card persistence is disabled. A resolved optional
+   * follow-up has no durable native item, however; persist just that card as
+   * a supplemental history record so a PWA reload can restore the answer.
+   */
+  private enqueueResolvedFollowUpHistory(card: Card): void {
+    if (!this.persistenceDisabled || this.sessionId === 'pending') return;
+    const sessionId = this.sessionId;
+    this.cardHistoryWriteQueue = this.cardHistoryWriteQueue
+      .catch(() => undefined)
+      .then(() => appendCardHistoryEntry(sessionId, { op: 'upsert', card: cleanPersistedCard(card) }))
+      .catch((err) => {
+        console.warn(
+          `[card-history] follow-up append failed for session=${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+  }
+
   private nextId(): CardId {
     return `${this.sessionId}:${++this.seq}`;
   }
@@ -860,7 +879,7 @@ export class StreamCardBuilder {
     return {
       ...card,
       turnId: this.currentTurnId,
-      ...(card.type === 'user' || card.type === 'assistant_text'
+      ...(card.type === 'user' || card.type === 'assistant_text' || card.type === 'follow_up_question'
         ? {}
         : { isTurnIntermediate: true }),
     };
@@ -1066,6 +1085,9 @@ export class StreamCardBuilder {
   clearPendingInput(requestId: string, answers?: Record<string, string>): CardEvent | null {
     for (const [, card] of this.cards) {
       if (card.pendingInput?.requestId === requestId) {
+        if (card.type === 'follow_up_question') {
+          return this.resolveFollowUpQuestion(requestId);
+        }
         if (this.ephemeralCards.has(card.id)) {
           this.ephemeralCards.delete(card.id);
           return this.removeEvent(card.id);
@@ -1413,6 +1435,48 @@ export class StreamCardBuilder {
       label,
     };
     return this.addEvent(card);
+  }
+
+  /**
+   * Surface a non-blocking Codex `request_user_input` prompt. When resolved,
+   * the same card keeps the user's answer as a visible conversation record.
+   */
+  followUpQuestion(
+    question: string,
+    opts: {
+      options?: readonly string[] | null;
+      allowFreeText?: boolean;
+      pendingInput: PendingInputAttachment;
+      historyAnchorItemId?: string;
+    },
+  ): CardEvent {
+    const id = this.nextId();
+    const card: Card = {
+      type: 'follow_up_question',
+      id,
+      timestamp: Date.now(),
+      question,
+      ...(opts.options && opts.options.length > 0 ? { options: [...opts.options] } : {}),
+      ...(opts.allowFreeText ? { allowFreeText: true } : {}),
+      ...(opts.historyAnchorItemId ? { historyAnchorItemId: opts.historyAnchorItemId } : {}),
+      pendingInput: opts.pendingInput,
+    };
+    return this.addEvent(card);
+  }
+
+  /** Mark a Codex follow-up as resolved while keeping its selected answer. */
+  resolveFollowUpQuestion(requestId: string, answer?: string): CardEvent | null {
+    for (const [, card] of this.cards) {
+      if (card.type !== 'follow_up_question' || card.pendingInput?.requestId !== requestId) continue;
+      const event = this.updateEvent(card.id, {
+        pendingInput: null,
+        ...(answer ? { answer } : { dismissed: true }),
+      });
+      const resolved = this.cards.get(card.id);
+      if (resolved) this.enqueueResolvedFollowUpHistory(resolved);
+      return event;
+    }
+    return null;
   }
 
   errorMessage(text: string): CardEvent {

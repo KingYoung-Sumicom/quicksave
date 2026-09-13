@@ -79,15 +79,19 @@ function makeMockServer(): OpenCodeServer & {
   prompts: Array<{ sessionID: string; directory: string; body: any }>;
   aborts: Array<{ sessionID: string; directory: string }>;
   replies: Array<{ requestID: string; directory: string; reply: string; message?: string }>;
+  questionReplies: Array<{ requestID: string; directory: string; answers: string[][] }>;
+  questionRejections: Array<{ requestID: string; directory: string }>;
   messages: Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>;
 } {
   const creates: Array<Record<string, unknown>> = [];
   const prompts: Array<{ sessionID: string; directory: string; body: any }> = [];
   const aborts: Array<{ sessionID: string; directory: string }> = [];
   const replies: Array<{ requestID: string; directory: string; reply: string; message?: string }> = [];
+  const questionReplies: Array<{ requestID: string; directory: string; answers: string[][] }> = [];
+  const questionRejections: Array<{ requestID: string; directory: string }> = [];
   const messages: Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }> = [];
   return {
-    creates, prompts, aborts, replies, messages,
+    creates, prompts, aborts, replies, questionReplies, questionRejections, messages,
     ensureRunning: async () => ({ baseUrl: 'http://127.0.0.1:4096' }),
     createSession: async (opts) => { creates.push(opts); return { id: 'ses_mock' }; },
     deleteSession: async () => undefined,
@@ -95,6 +99,12 @@ function makeMockServer(): OpenCodeServer & {
     abortSession: async (sessionID, directory) => { aborts.push({ sessionID, directory }); },
     replyPermission: async (requestID, directory, reply, message) => {
       replies.push({ requestID, directory, reply, ...(message ? { message } : {}) });
+    },
+    replyQuestion: async (requestID, directory, answers) => {
+      questionReplies.push({ requestID, directory, answers: answers.map((answer) => [...answer]) });
+    },
+    rejectQuestion: async (requestID, directory) => {
+      questionRejections.push({ requestID, directory });
     },
     getMessages: async () => messages,
     getMessagePage: async () => ({ data: [], cursor: {} }),
@@ -164,6 +174,7 @@ describe('OpenCode Quicksave MCP injection', () => {
       'mcp__quicksave-sandbox__SandboxBash': 'allow',
       'mcp__quicksave-sandbox__UpdateSessionStatus': 'allow',
       'mcp__quicksave-sandbox__DisplayMarkdownReport': 'allow',
+      question: 'allow',
     });
   });
 
@@ -1018,6 +1029,80 @@ describe('SessionEventRouter', () => {
     expect(server.replies).toEqual([{ requestID: 'per_abc', directory: '/p', reply: 'once' }]);
   });
 
+  it('maps question.asked to one blocking question card flow and replies with structured answers', async () => {
+    const server = makeMockServer();
+    const cb = new StreamCardBuilder('ses_t', '/p');
+    const calls: any[] = [];
+    const cbs: ProviderCallbacks = {
+      ...makeCallbacks(),
+      handlePermissionRequest: async (sessionId, req) => {
+        calls.push({ sessionId, ...req });
+        return { action: 'allow', response: 'TypeScript\nFast, Safe' };
+      },
+    };
+    const router = new SessionEventRouter('ses_t', cb, cbs, server, { directory: '/p' });
+
+    router.handle(ev('question.asked', {
+      id: 'question_abc',
+      sessionID: 'ses_t',
+      tool: { messageID: 'msg_x', callID: 'call_question' },
+      questions: [
+        {
+          header: 'Language',
+          question: 'Which language?',
+          options: [{ label: 'TypeScript', description: 'Typed JavaScript' }],
+          custom: false,
+        },
+        {
+          header: 'Goals',
+          question: 'Which qualities matter?',
+          options: [{ label: 'Fast', description: 'Low latency' }, { label: 'Safe', description: 'Few regressions' }],
+          multiple: true,
+        },
+      ],
+    }));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(calls).toEqual([expect.objectContaining({
+      sessionId: 'ses_t',
+      requestId: 'question_abc',
+      inputType: 'question',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'call_question',
+      skipAutoApprove: true,
+      toolInput: {
+        questions: [
+          expect.objectContaining({ question: 'Which language?', header: 'Language', allowFreeText: false }),
+          expect.objectContaining({ question: 'Which qualities matter?', header: 'Goals', multiSelect: true }),
+        ],
+      },
+    })]);
+    expect(server.questionReplies).toEqual([{
+      requestID: 'question_abc',
+      directory: '/p',
+      answers: [['TypeScript'], ['Fast', 'Safe']],
+    }]);
+    expect(server.replies).toEqual([]);
+  });
+
+  it('rejects question.asked when the user declines or supplies no answer', async () => {
+    const server = makeMockServer();
+    const cbs: ProviderCallbacks = {
+      ...makeCallbacks(),
+      handlePermissionRequest: async () => ({ action: 'deny', response: 'Not now' }),
+    };
+    const router = new SessionEventRouter('ses_t', new StreamCardBuilder('ses_t', '/p'), cbs, server, { directory: '/p' });
+    router.handle(ev('question.asked', {
+      id: 'question_declined',
+      sessionID: 'ses_t',
+      questions: [{ header: 'Choice', question: 'Continue?', options: [{ label: 'Yes', description: 'Continue' }] }],
+    }));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(server.questionRejections).toEqual([{ requestID: 'question_declined', directory: '/p' }]);
+    expect(server.questionReplies).toEqual([]);
+  });
+
   it('normalizes external_directory into its dedicated permission card shape', async () => {
     const server = makeMockServer();
     const cb = new StreamCardBuilder('ses_t', '/p');
@@ -1179,6 +1264,37 @@ describe('OpenCodeProvider', () => {
     const ids = r.models?.map((m) => m.id).sort();
     expect(ids).toEqual(['opencode/big-pickle', 'vllm/foo/bar']);
     expect(r.models?.find((m) => m.id === 'vllm/foo/bar')?.name).toBe('Foo Bar');
+  });
+
+  it('lists only root sessions in the requested project directory', async () => {
+    const server = makeMockServer();
+    const listSessions = vi.fn().mockResolvedValue([
+      { id: 'ses_root', directory: '/workspace/app', title: 'Root', time: { created: 10, updated: 20 } },
+      { id: 'ses_child', directory: '/workspace/app', parentID: 'ses_root', title: 'Subagent', time: { created: 11, updated: 21 } },
+      { id: 'ses_other-project', directory: '/workspace/other', title: 'Elsewhere', time: { created: 12, updated: 22 } },
+    ]);
+    (server as any).listSessions = listSessions;
+
+    await expect(new OpenCodeProvider(server).listNativeSessions({ cwd: '/workspace/app' })).resolves.toEqual([
+      expect.objectContaining({ sessionId: 'ses_root', cwd: '/workspace/app' }),
+    ]);
+    expect(listSessions).toHaveBeenCalledWith('/workspace/app');
+  });
+
+  it('looks up one root session by id without listing every session', async () => {
+    const server = makeMockServer();
+    const getSession = vi.fn().mockResolvedValue({
+      id: 'ses_root', directory: '/workspace/app', title: 'Root', time: { created: 10, updated: 20 },
+    });
+    const listSessions = vi.fn();
+    (server as any).getSession = getSession;
+    (server as any).listSessions = listSessions;
+
+    await expect(new OpenCodeProvider(server).getNativeSession('ses_root')).resolves.toEqual(
+      expect.objectContaining({ sessionId: 'ses_root', cwd: '/workspace/app', agent: 'opencode' }),
+    );
+    expect(getSession).toHaveBeenCalledWith('ses_root', undefined);
+    expect(listSessions).not.toHaveBeenCalled();
   });
 
   it('projects v2 persisted messages into final-state cards', () => {

@@ -47,6 +47,7 @@ const sessionIdHint = readArg('--session-id');
  */
 const corrIdHint = readArg('--corr');
 const includeSandboxBash = !process.argv.includes('--no-sandbox-bash');
+const includeNativeCompletionRegistration = process.argv.includes('--native-completion-registration');
 const QUICKSAVE_SESSION_ID_ARG = '_quicksaveSessionId';
 const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
 
@@ -175,6 +176,34 @@ if (includeSandboxBash) {
         };
       }
     },
+  );
+}
+
+if (includeNativeCompletionRegistration) {
+  server.tool(
+    'RegisterBackgroundExecutionCompletion',
+    'Register one native Codex exec_command process for a future completion notification. ' +
+      'Call this only after native exec_command returned a `Process running with session ID <id>` result and only when the user asked to monitor, wait for, or be notified about that process. ' +
+      'Pass that exact session ID as processHandle. This tool does not execute, inspect, poll, signal, or alter the process; Quicksave validates the handle against the current native Codex turn before it can notify you.',
+    {
+      processHandle: z.string().min(1).max(256)
+        .describe('Exact opaque session ID returned by native exec_command. It is not an OS PID.'),
+    },
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false,
+    },
+    async ({ processHandle }) => ({
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          version: 1,
+          registration: 'submitted_for_host_validation',
+          processHandle,
+        }),
+      }],
+    }),
   );
 }
 

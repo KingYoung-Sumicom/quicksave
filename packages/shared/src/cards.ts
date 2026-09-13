@@ -50,6 +50,9 @@ export interface CardBase {
   turnCompleted?: boolean;
   /** Permission prompt or question attached to this card (agent-side attached). */
   pendingInput?: PendingInputAttachment;
+  /** Provider-native item that produced this card, when available. This is
+   * used to place supplemental local records beside native history on reload. */
+  nativeItemId?: string;
 }
 
 // ── Card Variants ─────────────────────────────────────────────────────────
@@ -224,6 +227,26 @@ export interface RecoverySuggestedCard extends CardBase {
   label: string;
 }
 
+/**
+ * A non-blocking `request_user_input` prompt surfaced by Codex. Its answer
+ * resolves the associated app-server request without starting another turn.
+ */
+export interface FollowUpQuestionCard extends CardBase {
+  type: 'follow_up_question';
+  /** The optional question or prompt supplied by Codex. */
+  question: string;
+  /** Suggested replies. Omitted when Codex expects an open-ended reply. */
+  options?: string[];
+  /** Whether Codex permits a reply outside of the suggested options. */
+  allowFreeText?: boolean;
+  /** The response retained after the app-server request has resolved. */
+  answer?: string;
+  /** The user resolved this optional prompt without selecting an answer. */
+  dismissed?: boolean;
+  /** Native item after which this supplemental record belongs in history. */
+  historyAnchorItemId?: string;
+}
+
 export type Card =
   | UserCard
   | AssistantTextCard
@@ -233,7 +256,8 @@ export type Card =
   | SystemCard
   | GeneratedImageCard
   | ArtifactCard
-  | RecoverySuggestedCard;
+  | RecoverySuggestedCard
+  | FollowUpQuestionCard;
 
 // ── Card Events (wire protocol: agent → PWA) ─────────────────────────────
 

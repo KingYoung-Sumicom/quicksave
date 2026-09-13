@@ -24,6 +24,9 @@ export interface SpawnAppServerOptions {
   cwd?: string;
   /** Extra environment variables. Merged into `process.env`. */
   env?: Record<string, string | undefined>;
+  /** Global Codex CLI args placed before `app-server` (for example,
+   * `--enable feature_name`). */
+  globalArgs?: string[];
   /** Extra CLI args appended after `app-server`. Stdio is the default
    * `--listen`; tests pass nothing here. */
   extraArgs?: string[];
@@ -58,6 +61,14 @@ export interface AppServerInitOptions {
 
 export function _resetCodexBinCache(): void {
   _codexBin = undefined;
+}
+
+/** Construct CLI arguments while preserving Codex's global-command ordering. */
+export function buildAppServerArgs(
+  globalArgs: readonly string[] = [],
+  extraArgs: readonly string[] = [],
+): string[] {
+  return [...globalArgs, 'app-server', ...extraArgs];
 }
 
 /**
@@ -191,7 +202,7 @@ export async function spawnAppServer(
 ): Promise<AppServerHandle> {
   const log = opts.log ?? { warn: () => {} };
   const codexBin = opts.codexBin ?? getCodexBin();
-  const args = ['app-server', ...(opts.extraArgs ?? [])];
+  const args = buildAppServerArgs(opts.globalArgs, opts.extraArgs);
   const env = buildCodexCliEnv(
     opts.env ? { ...process.env, ...filterUndefined(opts.env) } : process.env,
     codexBin,

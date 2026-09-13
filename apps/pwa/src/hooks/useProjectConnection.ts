@@ -16,9 +16,6 @@ export function useProjectConnection(
   _onSwitchMachine: (agentId: string) => void,
 ) {
   const agentConnections = useConnectionStore((s) => s.agentConnections);
-  // Track the in-flight target, not just whether any machine is connecting.
-  // Route switches must be able to start machine B while machine A is still
-  // completing its handshake.
   const connectingRef = useRef<string | null>(null);
 
   const { agentId: targetAgentId } = projectId ? fromProjectId(projectId) : { agentId: '' };
@@ -26,12 +23,10 @@ export function useProjectConnection(
   const cwd = resolved?.cwd;
 
   const agentState = targetAgentId ? agentConnections[targetAgentId] : undefined;
-  // Keep an already-mounted project usable through a transient relay retry.
-  // A cold target has no `connectedAt`, so it still waits for handshake.
+  // Keep a previously connected project usable through its own reconnect.
+  // A cold connection has no connectedAt anchor and still waits normally.
   const isConnectedToTarget = agentState?.state === 'connected'
     || (agentState?.state === 'reconnecting' && agentState.connectedAt !== null);
-  // Reconnecting is still an in-flight connection attempt. Treating it as
-  // disconnected here starts a second connect flow for the same machine.
   const isConnecting = agentState?.state === 'connecting' || agentState?.state === 'reconnecting';
   const isError = agentState?.state === 'error';
 
@@ -45,12 +40,13 @@ export function useProjectConnection(
     onConnect(targetAgentId, machine.publicKey);
   }, [targetAgentId, isConnectedToTarget, isConnecting, onConnect]);
 
-  // Reset connecting ref when we actually connect
+  // The route owns only its target's in-flight marker. Switching machines must
+  // never inherit a cold connection marker from the prior target.
   useEffect(() => {
-    if (isConnectedToTarget) {
-      if (connectingRef.current === targetAgentId) connectingRef.current = null;
+    if (isConnectedToTarget && connectingRef.current === targetAgentId) {
+      connectingRef.current = null;
     }
-  }, [isConnectedToTarget]);
+  }, [isConnectedToTarget, targetAgentId]);
 
   return {
     isReady: isConnectedToTarget,

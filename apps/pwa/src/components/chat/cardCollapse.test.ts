@@ -87,6 +87,20 @@ describe('shouldCollapseCard', () => {
     expect(shouldCollapseCard(card, true, true)).toBe(false);
   });
 
+  it('keeps optional follow-up questions visible after their source turn completes', () => {
+    const card: Card = {
+      type: 'follow_up_question',
+      id: 'follow-up-1',
+      timestamp: 123,
+      question: 'Would you like me to commit it?',
+      options: ['Commit now'],
+      turnId: 'turn-1',
+      turnCompleted: true,
+    };
+
+    expect(shouldCollapseCard(card, true, true)).toBe(false);
+  });
+
   it('folds thinking cards into preference-based tool-call groups', () => {
     const card: Card = {
       type: 'thinking',

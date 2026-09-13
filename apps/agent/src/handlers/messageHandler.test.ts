@@ -1125,6 +1125,13 @@ describe('MessageHandler', () => {
       handler.onHistoryUpdated = (cwd, entry, action) => {
         historyEvents.push({ cwd, entry, action });
       };
+      const sessionUpdates: Array<{ sessionId: string; isActive: boolean; archived: boolean }> = [];
+      const claudeService = (handler as unknown as {
+        claudeService: {
+          on(event: 'session-updated', listener: (payload: { sessionId: string; isActive: boolean; archived: boolean }) => void): void;
+        };
+      }).claudeService;
+      claudeService.on('session-updated', (payload) => sessionUpdates.push(payload));
 
       const msg = createMessage('claude:end-task', { sessionId: 'sess-end' });
       const response = await handler.handleMessage(msg);
@@ -1145,6 +1152,13 @@ describe('MessageHandler', () => {
       expect(historyEvents[0].cwd).toBe(projectDir);
       expect(historyEvents[0].action).toBe('upsert');
       expect(historyEvents[0].entry.archived).toBe(true);
+      // A registry-only session has no live process for closeSession() to
+      // update, but the PWA still needs this strong signal to leave its page.
+      expect(sessionUpdates).toContainEqual(expect.objectContaining({
+        sessionId: 'sess-end',
+        isActive: false,
+        archived: true,
+      }));
     });
 
     it('keeps the local entry active when native Codex archiving fails', async () => {
@@ -1168,6 +1182,32 @@ describe('MessageHandler', () => {
       expect(nativeArchive).toHaveBeenCalledWith(entry.sessionId, projectDir, true);
       expect(closeSpy).not.toHaveBeenCalled();
       expect(getSessionRegistry().getEntry(projectDir, entry.sessionId)?.archived).not.toBe(true);
+    });
+
+    it('archives a native-only session found by id and broadcasts its removal', async () => {
+      const nativeSession = {
+        sessionId: 'native-only-codex', cwd: projectDir, agent: 'codex' as const,
+        archived: false, createdAt: 10, lastInteractionAt: 20,
+      };
+      const historyEvents: Array<{ cwd: string; entry: SessionRegistryEntry; action: string }> = [];
+      handler.onHistoryUpdated = (cwd, entry, action) => {
+        historyEvents.push({ cwd, entry, action });
+      };
+      const claudeService = handler.getClaudeService();
+      vi.spyOn(claudeService, 'findNativeSessionById').mockResolvedValue(nativeSession);
+      const archive = vi.spyOn(claudeService, 'setSessionArchived').mockResolvedValue('native');
+
+      const response = await handler.handleMessage(
+        createMessage('claude:end-task', { sessionId: nativeSession.sessionId }),
+      );
+
+      expect((response.payload as any).success).toBe(true);
+      expect(archive).toHaveBeenCalledWith(nativeSession.sessionId, nativeSession.cwd, true);
+      expect(historyEvents).toEqual([expect.objectContaining({
+        cwd: nativeSession.cwd,
+        action: 'delete',
+        entry: expect.objectContaining({ sessionId: nativeSession.sessionId, archived: true }),
+      })]);
     });
 
     it('returns success=false for an unknown sessionId with no live process and no registry entry', async () => {

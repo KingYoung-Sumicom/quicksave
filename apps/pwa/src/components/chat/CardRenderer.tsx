@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { memo } from 'react';
-import type { Card, ToolCallCard, SubagentCard, RecoverySuggestedCard, PendingInputAttachment } from '@sumicom/quicksave-shared';
+import type { Card, ToolCallCard, SubagentCard, RecoverySuggestedCard, FollowUpQuestionCard, PendingInputAttachment } from '@sumicom/quicksave-shared';
 import type { ClaudeUserInputRequestPayload } from '@sumicom/quicksave-shared';
 import { AssistantMessage } from './AssistantMessage';
 import { ToolCallMessage } from './ToolCallMessage';
@@ -10,6 +10,7 @@ import { ThinkingMessage } from './ThinkingMessage';
 import { SystemMessage } from './SystemMessage';
 import { SubagentBlockMessage } from './SubagentBlockMessage';
 import { RecoverySuggestedMessage } from './RecoverySuggestedMessage';
+import { FollowUpQuestionMessage } from './FollowUpQuestionMessage';
 import { GeneratedImageMessage } from './GeneratedImageMessage';
 import { ArtifactMessage } from './ArtifactMessage';
 
@@ -39,8 +40,7 @@ export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId
   sessionId?: string | null;
   agentId: string;
   onRespondToInput?: (requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string, permissionMode?: string) => void;
-  /** Send a fixed prompt without using the composer input — wired for
-   *  recovery_suggested cards' one-tap actions (e.g. `/compact`). */
+  /** Send a fixed recovery prompt without changing the composer. */
   onSendQuickPrompt?: (prompt: string) => void;
 }) {
   switch (card.type) {
@@ -111,6 +111,25 @@ export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId
           label={rs.label}
           onInvoke={onSendQuickPrompt
             ? (action) => onSendQuickPrompt(action === 'compact' ? '/compact' : '')
+            : undefined}
+        />
+      );
+    }
+
+    case 'follow_up_question': {
+      const question = card as FollowUpQuestionCard;
+      return (
+        <FollowUpQuestionMessage
+          question={question.question}
+          options={question.options}
+          allowFreeText={question.allowFreeText}
+          answer={question.answer}
+          dismissed={question.dismissed}
+          onRespond={question.pendingInput && onRespondToInput
+            ? (response) => onRespondToInput(question.pendingInput!.requestId, 'allow', response)
+            : undefined}
+          onDismiss={question.pendingInput && onRespondToInput
+            ? () => onRespondToInput(question.pendingInput!.requestId, 'allow')
             : undefined}
         />
       );

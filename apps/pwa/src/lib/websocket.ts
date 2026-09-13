@@ -37,14 +37,20 @@ export type SigningKeyPairProvider = () => Promise<{
 export type ConnectionStep = 'signaling' | 'waiting-for-agent' | 'key-exchange' | 'handshake';
 
 export type ConnectionEventHandler = {
+  /** Lifecycle of the PWA's one WebSocket to the signaling relay. */
+  onRelayConnected: () => void;
+  onRelayDisconnected: () => void;
+  onRelayReconnecting: (attempt: number, maxAttempts: number) => void;
+  onRelayError: (error: Error) => void;
   onConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], preferences?: ClaudePreferences, agentVersion?: string, latestVersion?: string, devBuild?: boolean, codexModels?: CodexModelInfo[], platform?: 'linux' | 'darwin' | 'win32' | 'other', availableProviders?: AgentProviderInfo[], audio?: AgentAudioCapabilities) => void;
-  onDisconnected: (agentId?: string) => void;
-  onReconnecting: (attempt: number, maxAttempts: number) => void;
+  onAgentDisconnected: (agentId: string) => void;
+  onAgentError: (agentId: string, error: Error) => void;
+  /** Compatibility notification for callers that consume one scoped stream. */
+  onError?: (error: Error, agentId?: string) => void;
   onMessage: (message: Message, fromAgentId: string) => void;
-  /** `agentId` is omitted only for signaling-socket failures shared by all peers. */
-  onError: (error: Error, agentId?: string) => void;
-  /** Connection progress is emitted for the agent whose handshake is advancing. */
-  onConnectionStep: (step: ConnectionStep, attempt?: number, agentId?: string) => void;
+  onAgentConnectionStep: (agentId: string, step: ConnectionStep, attempt?: number) => void;
+  /** Compatibility notification for callers that consume one scoped stream. */
+  onConnectionStep?: (step: ConnectionStep, attempt?: number, agentId?: string) => void;
   onAgentStatus: (agentId: string, online: boolean) => void;
 };
 
@@ -218,6 +224,7 @@ export class WebSocketClient {
         opened = true;
         this.wasConnected = true;
         this.reconnectAttempts = 0;
+        this.eventHandlers.onRelayConnected();
         resolveOnce();
       };
 
@@ -264,8 +271,27 @@ export class WebSocketClient {
       };
     });
 
+    // Keep an observable promise for `connectToAgent()` to await, while also
+    // observing its rejection here. The initial `connect()` caller owns the
+    // user-visible relay lifecycle state, but this internal mirror otherwise
+    // becomes an orphaned rejected promise when the relay is unreachable.
     this.connectPromise = socketPromise.then(() => undefined);
+    void this.connectPromise.catch(() => undefined);
     return socketPromise;
+  }
+
+  private notifyAgentError(agentId: string, error: Error): void {
+    this.eventHandlers.onAgentError(agentId, error);
+    this.eventHandlers.onError?.(error, agentId);
+  }
+
+  private notifyAgentConnectionStep(
+    agentId: string,
+    step: ConnectionStep,
+    attempt?: number,
+  ): void {
+    this.eventHandlers.onAgentConnectionStep(agentId, step, attempt);
+    this.eventHandlers.onConnectionStep?.(step, attempt, agentId);
   }
 
   /**
@@ -284,8 +310,7 @@ export class WebSocketClient {
       agentPublicKey = decodeBase64(publicKey);
     } catch {
       console.error(`Invalid public key for agent ${agentId}; skipping connect`);
-      this.eventHandlers.onError(new Error('Stored machine public key is invalid'), agentId);
-      this.eventHandlers.onDisconnected(agentId);
+      this.notifyAgentError(agentId, new Error('Stored machine public key is invalid'));
       return;
     }
 
@@ -304,12 +329,12 @@ export class WebSocketClient {
     this.activeAgentId = agentId;
 
     // Send watch-agent to check if agent is online before starting key exchange
-    this.eventHandlers.onConnectionStep('signaling', undefined, agentId);
+    this.notifyAgentConnectionStep(agentId, 'signaling');
     const watchAgent = () => {
       if (!this.sendRaw(JSON.stringify({ type: 'watch-agent', agentId }))) {
         this.forceReconnect('watch-agent send failed', { supersedeInFlight: false });
       }
-      this.eventHandlers.onConnectionStep('waiting-for-agent', undefined, agentId);
+      this.notifyAgentConnectionStep(agentId, 'waiting-for-agent');
     };
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -472,10 +497,9 @@ export class WebSocketClient {
 
       case 'peer-offline': {
         const agentId = (message.payload as { agentId?: string } | undefined)?.agentId;
-        // Older relays did not identify legacy peer-offline frames. Do not
-        // turn an unscoped notice into a page-wide failure in multi-machine
-        // mode; `agent-status` is the authoritative keyed protocol.
-        if (agentId) this.eventHandlers.onError(new Error('Agent is offline'), agentId);
+        // Legacy relays omit the peer id. Do not attribute that global frame to
+        // whichever machine happened to be active at the time.
+        if (agentId) this.notifyAgentError(agentId, new Error('Agent is offline'));
         break;
       }
 
@@ -496,7 +520,7 @@ export class WebSocketClient {
       session.keyExchangeTimeout = null;
     }
 
-    this.eventHandlers.onConnectionStep('key-exchange', 1, session.agentId);
+    this.notifyAgentConnectionStep(session.agentId, 'key-exchange', 1);
 
     const signingKeyPair = await this.getSigningKeyPair();
     if (!signingKeyPair) {
@@ -541,9 +565,9 @@ export class WebSocketClient {
   private scheduleKeyExchangeRetry(session: AgentSession): void {
     if (session.keyExchangeComplete) return;
     if (session.keyExchangeRetries >= WebSocketClient.MAX_KEY_EXCHANGE_RETRIES) {
-      this.eventHandlers.onError(
-        new Error(`Key exchange failed after ${WebSocketClient.MAX_KEY_EXCHANGE_RETRIES} attempts for agent ${session.agentId}`),
+      this.notifyAgentError(
         session.agentId,
+        new Error(`Key exchange failed after ${WebSocketClient.MAX_KEY_EXCHANGE_RETRIES} attempts for agent ${session.agentId}`),
       );
       return;
     }
@@ -553,7 +577,7 @@ export class WebSocketClient {
 
     session.keyExchangeTimeout = setTimeout(async () => {
       if (!session.keyExchangeComplete && this.sessions.has(session.agentId)) {
-        this.eventHandlers.onConnectionStep('key-exchange', session.keyExchangeRetries + 1, session.agentId);
+        this.notifyAgentConnectionStep(session.agentId, 'key-exchange', session.keyExchangeRetries + 1);
         console.log(`Retrying key exchange for agent ${session.agentId} (attempt ${session.keyExchangeRetries})`);
 
         const signingKeyPair = await this.getSigningKeyPair();
@@ -614,7 +638,7 @@ export class WebSocketClient {
             }
 
             console.log(`Key exchange complete with agent ${session.agentId}`);
-            this.eventHandlers.onConnectionStep('handshake', undefined, session.agentId);
+            this.notifyAgentConnectionStep(session.agentId, 'handshake');
             this.requestHandshake(session);
             return;
           }
@@ -797,7 +821,7 @@ export class WebSocketClient {
 
     const generation = ++this.reconnectGeneration;
     this.reconnectAttempts = 0;
-    this.eventHandlers.onReconnecting(1, this.maxReconnectAttempts);
+    this.eventHandlers.onRelayReconnecting(1, this.maxReconnectAttempts);
     this.closeCurrentSocketForReconnect(reason);
     void this.attemptReconnect(generation);
   }
@@ -812,7 +836,7 @@ export class WebSocketClient {
     // Don't reconnect if this was a manual disconnect
     if (this.isManualDisconnect) {
       this.cleanupAllSessions();
-      this.eventHandlers.onDisconnected();
+      this.eventHandlers.onRelayDisconnected();
       return;
     }
 
@@ -829,7 +853,7 @@ export class WebSocketClient {
       this.scheduleReconnect(this.reconnectGeneration);
     } else {
       this.cleanupAllSessions();
-      this.eventHandlers.onDisconnected();
+      this.eventHandlers.onRelayDisconnected();
     }
   }
 
@@ -845,7 +869,7 @@ export class WebSocketClient {
     );
 
     console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-    this.eventHandlers.onReconnecting(this.reconnectAttempts, this.maxReconnectAttempts);
+    this.eventHandlers.onRelayReconnecting(this.reconnectAttempts, this.maxReconnectAttempts);
 
     this.reconnectTimeout = setTimeout(() => {
       this.reconnectTimeout = null;
@@ -888,7 +912,7 @@ export class WebSocketClient {
         if (!this.sendRaw(JSON.stringify({ type: 'watch-agent', agentId: session.agentId }))) {
           throw new Error('Failed to re-watch agent after reconnect');
         }
-        this.eventHandlers.onConnectionStep('waiting-for-agent', undefined, session.agentId);
+        this.notifyAgentConnectionStep(session.agentId, 'waiting-for-agent');
       }
 
       this.reconnectAttempts = 0;
@@ -898,9 +922,9 @@ export class WebSocketClient {
       if (this.reconnectAttempts < this.maxReconnectAttempts) {
         this.scheduleReconnect(generation);
       } else {
-        this.eventHandlers.onError(new Error('Failed to reconnect after multiple attempts'));
+        this.eventHandlers.onRelayError(new Error('Failed to reconnect after multiple attempts'));
         this.cleanupAllSessions();
-        this.eventHandlers.onDisconnected();
+        this.eventHandlers.onRelayDisconnected();
       }
     } finally {
       if (this.reconnectInFlightGeneration === generation) {
@@ -955,7 +979,7 @@ export class WebSocketClient {
       this.ws = null;
     }
 
-    this.eventHandlers.onDisconnected();
+    this.eventHandlers.onRelayDisconnected();
   }
 
   // Kick off a fresh round of auto-reconnect after the previous round ran
@@ -968,20 +992,15 @@ export class WebSocketClient {
     if (this.reconnectTimeout) return; // already trying — let it run
     if (this.reconnectInFlightGeneration !== null) return;
     this.reconnectAttempts = 0;
-    this.eventHandlers.onReconnecting(1, this.maxReconnectAttempts);
+    this.eventHandlers.onRelayReconnecting(1, this.maxReconnectAttempts);
     const generation = ++this.reconnectGeneration;
     void this.attemptReconnect(generation);
   }
 
-  /**
-   * Retry one agent's handshake without disturbing healthy peers sharing this
-   * signaling socket. Falls back to the socket-level retry only when the
-   * socket itself is unavailable, in which case every peer is affected.
-   */
+  /** Retry one machine's handshake while keeping healthy peer sessions live. */
   retryAgent(agentId: string): void {
     const session = this.sessions.get(agentId);
     if (!session) return;
-
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       this.retryReconnect();
       return;
@@ -995,7 +1014,7 @@ export class WebSocketClient {
       clearTimeout(session.keyExchangeTimeout);
       session.keyExchangeTimeout = null;
     }
-    this.eventHandlers.onConnectionStep('waiting-for-agent', undefined, agentId);
+    this.notifyAgentConnectionStep(agentId, 'waiting-for-agent');
     if (!this.sendRaw(JSON.stringify({ type: 'watch-agent', agentId }))) {
       this.forceReconnect('agent retry watch send failed', { supersedeInFlight: false });
     }

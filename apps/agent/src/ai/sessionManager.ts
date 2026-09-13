@@ -35,7 +35,13 @@ import {
   SESSION_NOTE_HISTORY_CAP,
   matchAllowPattern,
 } from '@sumicom/quicksave-shared';
-import { StreamCardBuilder, buildCardsFromHistory, loadPersistedCards, loadProviderHistoryCheckpoint, saveProviderHistoryCheckpoint } from './cardBuilder.js';
+import {
+  StreamCardBuilder,
+  buildCardsFromHistory,
+  loadPersistedCards,
+  loadProviderHistoryCheckpoint,
+  saveProviderHistoryCheckpoint,
+} from './cardBuilder.js';
 import {
   loadPersistedCardCursorPage,
   loadPersistedCardMaxSequence,
@@ -190,6 +196,63 @@ function buildAskUserAnswers(
   return answers;
 }
 
+/** Insert persisted optional Codex prompts beside the native item (or turn)
+ * that emitted them. Native provider history is page-based, so a prompt whose
+ * anchor is on an older page stays hidden until that page is loaded rather
+ * than being incorrectly appended beneath the newest conversation. */
+function insertSupplementalFollowUps(
+  cards: Card[],
+  supplemental: readonly Card[],
+  hasMore: boolean,
+): number {
+  const existingIds = new Set(cards.map((card) => card.id));
+  const insertedAfter = new Map<string, number>();
+  let inserted = 0;
+
+  const findLastIndex = (predicate: (card: Card) => boolean): number => {
+    for (let index = cards.length - 1; index >= 0; index--) {
+      if (predicate(cards[index]!)) return index;
+    }
+    return -1;
+  };
+
+  const ordered = supplemental
+    .filter((card): card is Extract<Card, { type: 'follow_up_question' }> =>
+      card.type === 'follow_up_question' && !existingIds.has(card.id),
+    )
+    .map((card, index) => ({ card, index }))
+    .sort((a, b) => a.card.timestamp - b.card.timestamp || a.index - b.index)
+    .map(({ card }) => card);
+
+  for (const card of ordered) {
+    const anchorKey = card.historyAnchorItemId
+      ? `item:${card.historyAnchorItemId}`
+      : card.turnId ? `turn:${card.turnId}` : undefined;
+    let anchorIndex = anchorKey ? insertedAfter.get(anchorKey) : undefined;
+
+    if (anchorIndex === undefined && card.historyAnchorItemId) {
+      anchorIndex = findLastIndex((nativeCard) => nativeCard.nativeItemId === card.historyAnchorItemId);
+    }
+    if (anchorIndex === undefined && card.turnId) {
+      anchorIndex = findLastIndex((nativeCard) => nativeCard.turnId === card.turnId);
+    }
+
+    if (anchorIndex === undefined || anchorIndex < 0) {
+      // No matching anchor in this page. A later page can place it correctly;
+      // only append once we know this is the complete native history.
+      if (hasMore) continue;
+      anchorIndex = cards.length - 1;
+    }
+
+    const insertAt = anchorIndex + 1;
+    cards.splice(insertAt, 0, card);
+    if (anchorKey) insertedAfter.set(anchorKey, insertAt);
+    existingIds.add(card.id);
+    inserted++;
+  }
+  return inserted;
+}
+
 function normalizeAgentId(value: unknown): AgentId | undefined {
   if (value === 'claude-code' || value === 'claude-cli' || value === 'claude-sdk') {
     return 'claude-code';
@@ -302,6 +365,10 @@ export class SessionManager extends EventEmitter {
   private preferences: ClaudePreferences = { model: DEFAULT_MODEL };
   private providers: Map<AgentId, CodingAgentProvider>;
   private defaultAgentId: AgentId;
+  private projectDirectories: Set<string> | null = null;
+  /** Native session identity cache populated by discovery and single-id lookups.
+   * It is intentionally runtime-only: providers remain the source of truth. */
+  private nativeSessions: Map<string, NativeSessionSummary> = new Map();
 
   /** Guards against concurrent cold resumes. Queues prompts arriving while a spawn is in flight. */
   private coldResumeInFlight: Map<string, { queuedPrompts: Array<{ prompt: string; attachments?: readonly Attachment[] }> }> = new Map();
@@ -312,6 +379,10 @@ export class SessionManager extends EventEmitter {
     this.defaultAgentId = this.providers.has(defaultAgentId)
       ? defaultAgentId
       : providers[0]?.id ?? DEFAULT_AGENT;
+  }
+
+  setProjectDirectories(directories: Iterable<string>): void {
+    this.projectDirectories = new Set(directories);
   }
 
   private getProvider(agentId?: AgentId): CodingAgentProvider {
@@ -332,6 +403,9 @@ export class SessionManager extends EventEmitter {
   ): AgentId {
     const activeAgent = this.sessions.get(sessionId)?.agentId;
     if (activeAgent) return activeAgent;
+
+    const nativeAgent = this.nativeSessions.get(sessionId)?.agent;
+    if (nativeAgent) return nativeAgent;
 
     const rememberedAgent = this.sessionAgents.get(sessionId);
     if (rememberedAgent) return rememberedAgent;
@@ -363,6 +437,9 @@ export class SessionManager extends EventEmitter {
     const activeAgent = this.sessions.get(sessionId)?.agentId;
     if (activeAgent) return activeAgent;
 
+    const nativeAgent = this.nativeSessions.get(sessionId)?.agent;
+    if (nativeAgent) return nativeAgent;
+
     const rememberedAgent = this.sessionAgents.get(sessionId);
     if (rememberedAgent) return rememberedAgent;
 
@@ -378,6 +455,19 @@ export class SessionManager extends EventEmitter {
     if (registryAgent && this.providers.has(registryAgent)) return registryAgent;
 
     return this.defaultAgentId;
+  }
+
+  private hasKnownSessionIdentity(sessionId: string, cwd: string): boolean {
+    if (this.sessions.has(sessionId) || this.sessionAgents.has(sessionId) || this.sessionConfigs.has(sessionId)) {
+      return true;
+    }
+    const registry = getSessionRegistry();
+    return !!(
+      registry.getEntry(cwd, sessionId)
+      ?? registry.readArchivedEntry(cwd, sessionId)
+      ?? registry.findBySessionId(sessionId)
+      ?? registry.findArchivedBySessionId(sessionId)
+    );
   }
 
   // ── Preferences ──
@@ -599,10 +689,9 @@ export class SessionManager extends EventEmitter {
 
     // Create cardBuilder with 'pending' sessionId — will be updated after provider returns real one
     const cardBuilder = new StreamCardBuilder('pending', opts.cwd);
-    const useLocalCardHistory = await provider.usesLocalCardHistory?.() ?? false;
-    cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory' || useLocalCardHistory);
+    cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory');
     cardBuilder.disablePersistence?.(
-      (provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread') && !useLocalCardHistory,
+      provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread',
     );
 
     const callbacks = this.makeCallbacks(provider.id);
@@ -807,12 +896,11 @@ export class SessionManager extends EventEmitter {
       );
 
       const cardBuilder = existing?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.cwd);
-      const useLocalCardHistory = await provider.usesLocalCardHistory?.() ?? false;
-      cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory' || useLocalCardHistory);
+      cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory');
       cardBuilder.disablePersistence?.(
-        (provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread') && !useLocalCardHistory,
+        provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread',
       );
-      if (provider.historyMode === 'memory' || useLocalCardHistory) {
+      if (provider.historyMode === 'memory') {
         cardBuilder.seedSequenceFromMax(await loadPersistedCardMaxSequence(opts.sessionId));
       }
       await cardBuilder.snapshotCutoff();
@@ -1205,13 +1293,18 @@ export class SessionManager extends EventEmitter {
     this.pendingInputRequests.delete(response.requestId);
     pending.resolve(response);
 
-    // Clear pending input on the card; attach rejection reason if present
+    // Clear pending input on the card; preserve a resolved Codex follow-up as
+    // a visible user answer instead of removing the interaction entirely.
     const ps = this.sessions.get(pending.request.sessionId);
     if (ps?.cardBuilder) {
-      const rejectionAnswers = (response.action === 'deny' && response.response)
-        ? { _rejection: response.response }
-        : undefined;
-      const cardEvt = ps.cardBuilder.clearPendingInput(response.requestId, rejectionAnswers);
+      const cardEvt = pending.request.presentation === 'inline_follow_up'
+        ? ps.cardBuilder.resolveFollowUpQuestion(response.requestId, response.response)
+        : ps.cardBuilder.clearPendingInput(
+          response.requestId,
+          response.action === 'deny' && response.response
+            ? { _rejection: response.response }
+            : undefined,
+        );
       if (cardEvt) this.emit('card-event', cardEvt);
     }
 
@@ -1257,7 +1350,7 @@ export class SessionManager extends EventEmitter {
   }
 
   getSessionCwd(sessionId: string): string | undefined {
-    return this.sessions.get(sessionId)?.cwd;
+    return this.sessions.get(sessionId)?.cwd ?? this.nativeSessions.get(sessionId)?.cwd;
   }
 
   /** Fetch a live context-window breakdown from the provider. Returns null if
@@ -1291,10 +1384,23 @@ export class SessionManager extends EventEmitter {
 
   async listNativeSessions(cwd?: string): Promise<NativeSessionSummary[]> {
     const results: NativeSessionSummary[] = [];
+    const projectDirectories = this.projectDirectories;
+    // A global history snapshot should not make native providers enumerate
+    // every session on the machine only for us to discard most of them below.
+    // Providers that support it receive the complete managed-path filter.
+    if (!cwd && projectDirectories?.size === 0) return results;
     for (const provider of this.providers.values()) {
       if (typeof provider.listNativeSessions !== 'function') continue;
       try {
-        results.push(...await provider.listNativeSessions({ cwd }));
+        const providerCwd = cwd ?? (
+          provider.id === 'codex' && projectDirectories ? [...projectDirectories] : undefined
+        );
+        const sessions = await provider.listNativeSessions({ cwd: providerCwd });
+        const visibleSessions = projectDirectories
+          ? sessions.filter((session) => projectDirectories.has(session.cwd))
+          : sessions;
+        for (const session of visibleSessions) this.nativeSessions.set(session.sessionId, session);
+        results.push(...visibleSessions);
       } catch (err) {
         console.warn(
           `[session-manager] native session listing failed provider=${provider.id}: ${err instanceof Error ? err.message : String(err)}`,
@@ -1305,8 +1411,34 @@ export class SessionManager extends EventEmitter {
   }
 
   async findNativeSession(cwd: string, sessionId: string): Promise<NativeSessionSummary | undefined> {
-    const sessions = await this.listNativeSessions(cwd);
-    return sessions.find((session) => session.cwd === cwd && session.sessionId === sessionId);
+    return this.findNativeSessionById(sessionId, { cwd });
+  }
+
+  /** Resolve one provider-native session without enumerating every session. */
+  async findNativeSessionById(
+    sessionId: string,
+    opts?: { cwd?: string },
+  ): Promise<NativeSessionSummary | undefined> {
+    const cached = this.nativeSessions.get(sessionId);
+    if (cached && (!opts?.cwd || cached.cwd === opts.cwd)) return cached;
+
+    for (const provider of this.providers.values()) {
+      if (typeof provider.getNativeSession !== 'function') continue;
+      try {
+        const session = opts
+          ? await provider.getNativeSession(sessionId, opts)
+          : await provider.getNativeSession(sessionId);
+        if (!session) continue;
+        if (this.projectDirectories && !this.projectDirectories.has(session.cwd)) continue;
+        this.nativeSessions.set(session.sessionId, session);
+        return session;
+      } catch (err) {
+        console.warn(
+          `[session-manager] native session lookup failed provider=${provider.id} session=${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -1319,9 +1451,14 @@ export class SessionManager extends EventEmitter {
     archived: boolean,
   ): Promise<ProviderArchiveStorage> {
     const registry = getSessionRegistry();
-    const agentId = this.sessionAgents.get(sessionId)
-      ?? registry.getEntry(cwd, sessionId)?.agent
-      ?? registry.readArchivedEntry(cwd, sessionId)?.agent;
+    let native = this.nativeSessions.get(sessionId);
+    const registryEntry = registry.getEntry(cwd, sessionId)
+      ?? registry.readArchivedEntry(cwd, sessionId);
+    let agentId = this.sessionAgents.get(sessionId) ?? registryEntry?.agent;
+    if (!agentId && !native && !registryEntry) {
+      native = await this.findNativeSessionById(sessionId, { cwd });
+    }
+    agentId ??= native?.agent;
     if (!agentId) return 'registry';
     const provider = this.getProvider(agentId);
     if (provider.archiveStorage !== 'native') return 'registry';
@@ -1335,6 +1472,7 @@ export class SessionManager extends EventEmitter {
       throw new Error(`Provider ${provider.id} advertises native archive storage without an archive operation`);
     }
     await operation.call(provider, sessionId, { cwd });
+    if (native) this.nativeSessions.set(sessionId, { ...native, archived });
     return 'native';
   }
 
@@ -1475,35 +1613,22 @@ export class SessionManager extends EventEmitter {
     cursor?: string,
   ): Promise<CardHistoryResponse> {
     const ps = this.sessions.get(sessionId);
-    let agentId = this.resolveAgentId(sessionId, cwd);
-    // A provider-native session can be discovered by history/listing before
-    // Quicksave has ever run it. In that case there is no live session,
-    // registry entry, or remembered agent, so resolving would incorrectly
-    // fall back to the default (Claude Code) provider. Resolve its native
-    // identity before choosing a durable-history loader.
-    if (
-      cwd
-      && !ps
-      && !this.sessionAgents.has(sessionId)
-      && !this.sessionConfigs.has(sessionId)
-    ) {
-      const native = await this.findNativeSession(cwd, sessionId);
-      if (native) {
-        this.sessionAgents.set(sessionId, native.agent);
-        agentId = native.agent;
-      }
+    let native = this.nativeSessions.get(sessionId);
+    if (!native && !this.hasKnownSessionIdentity(sessionId, cwd)) {
+      native = await this.findNativeSessionById(sessionId);
     }
-    const provider = this.getProvider(agentId);
+    const historyCwd = native?.cwd ?? cwd;
+    const provider = this.getProvider(native?.agent ?? this.resolveAgentId(sessionId, cwd));
     const cutoff = ps?.cardBuilder?.jsonlCutoff ?? undefined;
     let result: CardHistoryResponse;
 
     const useLocalCardHistory = await provider.usesLocalCardHistory?.() ?? false;
     if (useLocalCardHistory && provider.recoverLegacyCardHistory) {
       const persisted = await loadPersistedCards(sessionId);
-      const latest = await provider.getLegacyHistoryWatermark?.(sessionId, cwd);
+      const latest = await provider.getLegacyHistoryWatermark?.(sessionId, historyCwd);
       const checkpoint = await loadProviderHistoryCheckpoint(sessionId);
       if (persisted.length === 0 || (latest !== undefined && latest !== checkpoint)) {
-        await provider.recoverLegacyCardHistory(sessionId, cwd);
+        await provider.recoverLegacyCardHistory(sessionId, historyCwd);
         if (latest) await saveProviderHistoryCheckpoint(sessionId, latest);
       }
     }
@@ -1514,7 +1639,7 @@ export class SessionManager extends EventEmitter {
       if (!provider.loadCardHistory) throw new Error('Codex provider does not implement durable history loading');
       result = await provider.loadCardHistory({
         sessionId,
-        cwd,
+        cwd: historyCwd,
         offset: Number.isSafeInteger(codexOffset) && codexOffset >= 0 ? codexOffset : offset,
         limit,
         cursor,
@@ -1560,6 +1685,30 @@ export class SessionManager extends EventEmitter {
           ...(persisted.nextCursor ? { nextCursor: persisted.nextCursor } : {}),
         };
       }
+    }
+
+    // Native Codex/OpenCode history does not contain request_user_input cards.
+    // Keep the live prompt visible through a browser refresh, and merge the
+    // supplemental resolved follow-up record written by StreamCardBuilder
+    // after a daemon/browser restart. The native item / turn anchor restores
+    // it at its original dialogue position instead of below the latest card.
+    // Apply this to every history page: older prompts wait for their anchor
+    // turn rather than being misplaced in the newest page.
+    if ((provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread') && !useLocalCardHistory) {
+      const persistedFollowUps = (await loadPersistedCards(sessionId))
+        .filter((card) => card.type === 'follow_up_question');
+      const liveFollowUps = (ps?.cardBuilder?.getCards() ?? [])
+        .filter((card) => card.type === 'follow_up_question');
+      const supplementalById = new Map<string, Card>();
+      for (const card of persistedFollowUps) supplementalById.set(card.id, card);
+      for (const card of liveFollowUps) supplementalById.set(card.id, card);
+
+      const inserted = insertSupplementalFollowUps(
+        result.cards,
+        Array.from(supplementalById.values()),
+        result.hasMore,
+      );
+      if (inserted > 0 && result.total !== undefined) result.total += inserted;
     }
 
     // Append in-memory cards for the active turn (initial load only — pagination
@@ -1771,6 +1920,7 @@ export class SessionManager extends EventEmitter {
     const requestId = req.requestId ?? `perm-${++this.requestCounter}`;
 
     const isQuestion = req.inputType === 'question' || toolName === 'AskUserQuestion';
+    const isInlineFollowUp = req.presentation === 'inline_follow_up';
     const questions = isQuestion ? (toolInput as any).questions : undefined;
 
     const request: ClaudeUserInputRequestPayload = {
@@ -1784,6 +1934,7 @@ export class SessionManager extends EventEmitter {
       toolName,
       toolInput,
       toolUseId,
+      ...(req.presentation ? { presentation: req.presentation } : {}),
       ...(req.options ? { options: req.options } : {}),
       ...(!req.options && isQuestion && questions ? {
         options: questions.flatMap((q: any) =>
@@ -1809,7 +1960,14 @@ export class SessionManager extends EventEmitter {
         guardianMessage: request.guardianMessage,
         options: request.options,
       };
-      const cardEvt = cb.toolCallFromPermission(toolName, toolInput, toolUseId, pendingAttachment);
+      const cardEvt = isInlineFollowUp
+        ? cb.followUpQuestion(request.title, {
+          options: request.options?.map((option) => option.label),
+          allowFreeText: req.allowFreeText,
+          historyAnchorItemId: req.historyAnchorItemId,
+          pendingInput: pendingAttachment,
+        })
+        : cb.toolCallFromPermission(toolName, toolInput, toolUseId, pendingAttachment);
       this.emit('card-event', cardEvt);
     }
 
@@ -1826,15 +1984,18 @@ export class SessionManager extends EventEmitter {
     if (isQuestion && response.response) {
       const answers = buildAskUserAnswers(questions, response.response);
 
-      // Mirror the answers onto the ToolCallCard so the PWA can render the
-      // user's selections immediately — regardless of what the CLI later
-      // emits as the tool_result content.
-      if (cb && Object.keys(answers).length > 0) {
+      // Mirror regular AskUserQuestion answers onto its ToolCallCard. Inline
+      // Codex follow-ups are ephemeral and are removed when their app-server
+      // request resolves instead.
+      if (cb && !isInlineFollowUp && Object.keys(answers).length > 0) {
         const evt = cb.setToolAnswers(toolUseId, answers);
         if (evt) this.emit('card-event', evt);
       }
 
-      return { action: 'allow', updatedInput: { ...toolInput, answers } };
+      // Providers such as Codex app-server need the original raw response to
+      // construct their protocol-specific answer payload. `updatedInput` is
+      // still used by the Claude AskUserQuestion path.
+      return { action: 'allow', response: response.response, updatedInput: { ...toolInput, answers } };
     }
 
     return { action: 'allow' };
@@ -2067,7 +2228,10 @@ export class SessionManager extends EventEmitter {
       // PWA uses `archived=true` as the strong "navigate away from the
       // defunct session page" signal.
       archived: !ps && (!registryEntry || registryEntry.nativeArchived === true),
-      agent: ps?.agentId ?? this.sessionAgents.get(sessionId) ?? registryAgent,
+      agent: ps?.agentId
+        ?? this.sessionAgents.get(sessionId)
+        ?? this.nativeSessions.get(sessionId)?.agent
+        ?? registryAgent,
       isStreaming: ps?.streaming ?? false,
       hasPendingInput,
       queueState: ps?.providerSession?.getQueueState?.() ?? null,

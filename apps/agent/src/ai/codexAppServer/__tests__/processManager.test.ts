@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   _resetCodexBinCache,
+  buildAppServerArgs,
   buildCodexCliEnv,
   checkSchemaVersionCompatibility,
   getCodexBin,
@@ -98,6 +99,19 @@ describe('buildCodexCliEnv', () => {
   });
 });
 
+describe('buildAppServerArgs', () => {
+  it('places Codex global feature flags before the app-server command', () => {
+    expect(buildAppServerArgs(
+      ['--enable', 'default_mode_request_user_input'],
+      ['-c', 'foo=true'],
+    )).toEqual([
+      '--enable', 'default_mode_request_user_input',
+      'app-server',
+      '-c', 'foo=true',
+    ]);
+  });
+});
+
 describe('isStandaloneCodexInstall', () => {
   it('recognizes the official default install command', () => {
     expect(isStandaloneCodexInstall('/home/user/.local/bin/codex', { HOME: '/home/user' })).toBe(true);
@@ -165,6 +179,8 @@ describe('buildCodexSandboxMcpConfigArgs', () => {
       '-c',
       'mcp_servers.quicksave-sandbox.tools.DisplayMarkdownReport.approval_mode="approve"',
       '-c',
+      'mcp_servers.quicksave-sandbox.tools.RegisterBackgroundExecutionCompletion.approval_mode="approve"',
+      '-c',
       'apps.quicksave-sandbox.default_tools_approval_mode="approve"',
       '-c',
       'apps.quicksave-sandbox.default_tools_enabled=true',
@@ -176,12 +192,15 @@ describe('buildCodexSandboxMcpConfigArgs', () => {
       'apps.quicksave-sandbox.tools.UpdateSessionStatus.approval_mode="approve"',
       '-c',
       'apps.quicksave-sandbox.tools.DisplayMarkdownReport.approval_mode="approve"',
+      '-c',
+      'apps.quicksave-sandbox.tools.RegisterBackgroundExecutionCompletion.approval_mode="approve"',
     ]);
     expect(args[3]).toContain('"--cwd"');
     expect(args[3]).toContain('"/tmp/project"');
     expect(args[3]).toContain('"--session-id"');
     expect(args[3]).toContain('"thr_123"');
     expect(args[3]).toContain('"--no-sandbox-bash"');
+    expect(args[3]).toContain('"--native-completion-registration"');
     expect(args.join('\n')).not.toContain('SandboxBash');
   });
 });

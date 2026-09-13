@@ -26,13 +26,14 @@
 //   • `permission.asked` is forwarded to the PWA via the usual
 //     `handlePermissionRequest` callback; the reply is POSTed back to
 //     `/permission/{id}/reply`.
+//   • `question.asked` is a distinct, blocking question protocol. It uses
+//     `POST /question/{id}/reply`, not the permission endpoint.
 
 import { execSync } from 'child_process';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import type { Attachment, Card, CardHistoryResponse, CardStreamEnd, ContextUsageBreakdown, NativeSessionSummary } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
-import { seedPersistedCards } from './cardBuilder.js';
 import type {
   CodingAgentProvider,
   ProviderSession,
@@ -331,37 +332,6 @@ export class OpencodeSession implements ProviderSession {
 export class OpenCodeProvider implements CodingAgentProvider {
   readonly id = 'opencode' as const;
   readonly historyMode = 'opencode-thread' as const;
-
-  async usesLocalCardHistory(): Promise<boolean> {
-    return this.server.usesLegacyHistoryProtocol();
-  }
-
-  async recoverLegacyCardHistory(sessionId: string, cwd: string): Promise<Card[]> {
-    const pages: Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }> = [];
-    let before: string | undefined;
-    do {
-      const page = await this.server.getLegacyMessagePage(sessionId, cwd, before);
-      pages.push(...page.data);
-      before = page.nextCursor;
-    } while (before);
-    const messages: OpenCodeV2Message[] = pages.map((message) => ({
-      id: String(message.info.id),
-      type: message.info.role === 'user' ? 'user' : 'assistant',
-      text: message.parts.find((part) => part.type === 'text')?.text as string | undefined,
-      content: message.parts.map((part) => part.type === 'tool'
-        ? { type: 'tool', id: part.callID ?? part.id, name: part.tool, state: part.state }
-        : part.type === 'text' || part.type === 'reasoning' ? { type: part.type, text: part.text } : part),
-    }));
-    const cards = projectOpenCodeMessages(sessionId, cwd, messages);
-    await seedPersistedCards(sessionId, cards);
-    return cards;
-  }
-
-  async getLegacyHistoryWatermark(sessionId: string, cwd: string): Promise<string | undefined> {
-    const page = await this.server.getLegacyMessagePage(sessionId, cwd);
-    const latest = page.data[0]?.info.id;
-    return typeof latest === 'string' ? latest : undefined;
-  }
   readonly archiveStorage = 'native' as const;
   readonly label = 'OpenCode';
 
@@ -448,11 +418,9 @@ export class OpenCodeProvider implements CodingAgentProvider {
   async listNativeSessions(opts?: { cwd?: string }): Promise<NativeSessionSummary[]> {
     const sessions = await this.server.listSessions(opts?.cwd);
     return sessions
-      // OpenCode persists delegated-agent work as child sessions. They belong
-      // to their parent conversation and must not appear as independent
-      // Quicksave tasks.
-      .filter((session) => !session.parentID)
-      .filter((session) => !opts?.cwd || session.directory === opts.cwd)
+      .filter((session) =>
+        (!opts?.cwd || session.directory === opts.cwd) && !session.parentID,
+      )
       .map((session) => ({
         sessionId: session.id,
         cwd: session.directory ?? opts?.cwd ?? process.cwd(),
@@ -463,6 +431,26 @@ export class OpenCodeProvider implements CodingAgentProvider {
         createdAt: session.time?.created ?? session.time?.updated ?? 0,
         lastInteractionAt: session.time?.updated ?? session.time?.created ?? 0,
       }));
+  }
+
+  async getNativeSession(sessionId: string, opts?: { cwd?: string }): Promise<NativeSessionSummary | undefined> {
+    try {
+      const session = await this.server.getSession(sessionId, opts?.cwd);
+      if (!session.directory || session.parentID) return undefined;
+      return {
+        sessionId: session.id,
+        cwd: session.directory,
+        agent: 'opencode',
+        archived: session.time?.archived != null,
+        title: session.title,
+        firstPrompt: session.title,
+        createdAt: session.time?.created ?? session.time?.updated ?? 0,
+        lastInteractionAt: session.time?.updated ?? session.time?.created ?? 0,
+      };
+    } catch (error) {
+      if (error instanceof Error && /failed:\s*404\b/.test(error.message)) return undefined;
+      throw error;
+    }
   }
 
   async archiveSession(sessionId: string, opts?: { cwd?: string }): Promise<void> {
@@ -852,6 +840,9 @@ export class SessionEventRouter {
       case 'permission.asked':
         void this.handlePermissionAsked(ev);
         break;
+      case 'question.asked':
+        void this.handleQuestionAsked(ev);
+        break;
       case 'server.disposed':
         this.finalize(false, 'opencode server exited');
         break;
@@ -1138,6 +1129,16 @@ export class SessionEventRouter {
     };
     const requestID = req.id;
     if (!requestID) return;
+    if (req.permission === 'question') {
+      // Current Quicksave config allows the question tool so this should be a
+      // compatibility fallback only. A `question.asked` event carries the
+      // actual structured prompt; don't present a misleading approval card
+      // before it.
+      await this.server.replyPermission(requestID, this.directory, 'once').catch((err) => {
+        console.error('[openCode] question permission reply failed', err);
+      });
+      return;
+    }
     if (this.permissionLevel === 'auto') {
       // Match `opencode run --auto`: approve requests that reached "ask"
       // exactly once. Explicit deny rules are enforced by OpenCode before an
@@ -1171,6 +1172,66 @@ export class SessionEventRouter {
     } catch (err) {
       console.error('[openCode] permission handling failed', err);
       await this.server.replyPermission(requestID, this.directory, 'reject').catch(() => {});
+    }
+  }
+
+  private async handleQuestionAsked(ev: OpenCodeEvent): Promise<void> {
+    const req = ev.properties as {
+      id?: string;
+      sessionID?: string;
+      questions?: Array<{
+        question?: string;
+        header?: string;
+        options?: Array<{ label?: string; description?: string }>;
+        multiple?: boolean;
+        custom?: boolean;
+      }>;
+      tool?: { messageID?: string; callID?: string };
+    };
+    const requestID = req.id;
+    const questions = req.questions ?? [];
+    if (!requestID || questions.length === 0) return;
+
+    const toolInput = {
+      questions: questions.map((question) => ({
+        question: question.question ?? 'Question from OpenCode',
+        ...(question.header ? { header: question.header } : {}),
+        ...(question.options?.length ? {
+          options: question.options
+            .filter((option): option is { label: string; description?: string } => typeof option.label === 'string')
+            .map((option) => ({ label: option.label, ...(option.description ? { description: option.description } : {}) })),
+        } : {}),
+        ...(question.multiple ? { multiSelect: true } : {}),
+        // The shared PWA question renderer defaults to allowing a custom
+        // response. Preserve OpenCode's explicit opt-out in the tool input
+        // so its UI can respect it as that renderer evolves.
+        ...(question.custom === false ? { allowFreeText: false } : {}),
+      })),
+    };
+    const toolUseId = req.tool?.callID ?? requestID;
+
+    try {
+      const decision = await this.callbacks.handlePermissionRequest(this.sessionId, {
+        requestId: requestID,
+        inputType: 'question',
+        toolName: 'AskUserQuestion',
+        toolInput,
+        toolUseId,
+        title: questions[0]?.question ?? 'Question from OpenCode',
+        skipAutoApprove: true,
+      });
+      if (decision.action !== 'allow' || !decision.response) {
+        await this.server.rejectQuestion(requestID, this.directory);
+        return;
+      }
+      await this.server.replyQuestion(
+        requestID,
+        this.directory,
+        openCodeQuestionAnswers(questions, decision.response),
+      );
+    } catch (err) {
+      console.error('[openCode] question handling failed', err);
+      await this.server.rejectQuestion(requestID, this.directory).catch(() => {});
     }
   }
 
@@ -1229,4 +1290,20 @@ export class SessionEventRouter {
     // on the server and can be resumed. SessionManager will reuse the same
     // session reference on the next resumeSession call.
   }
+}
+
+function openCodeQuestionAnswers(
+  questions: ReadonlyArray<{ multiple?: boolean }>,
+  response: string,
+): string[][] {
+  const responses = questions.length === 1 ? [response] : response.split('\n');
+  return questions.map((question, index) => {
+    const answer = responses[index]?.trim() ?? '';
+    if (!answer) return [];
+    // The shared blocking-question UI serializes multi-select labels with a
+    // comma. Single-select custom text must remain one opaque answer.
+    return question.multiple
+      ? answer.split(',').map((value) => value.trim()).filter(Boolean)
+      : [answer];
+  });
 }

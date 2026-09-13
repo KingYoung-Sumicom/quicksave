@@ -69,11 +69,11 @@ apps/agent/src/
 │   ├── codexMcpProvider.ts     # (legacy MCP-based codex provider; unregistered by default)
 │   ├── codexAppServer/         # Codex provider — JSON-RPC v2 client speaking `codex app-server`
 │   │   ├── provider.ts         #   CodexAppServerProvider + CodexAppServerSession (lifecycle / runTurn / interrupt)
-│   │   ├── nativeExecCompletionTracker.ts # Public native command lifecycle → post-turn continuation candidates
 │   │   ├── processManager.ts   #   Spawn `codex app-server`, run initialize handshake, version pin check
 │   │   ├── rpcClient.ts        #   JSON-RPC 2.0 dispatcher (request/response/notification/server-request)
 │   │   ├── stdioTransport.ts   #   JSONL framing on the spawned child's stdio
 │   │   ├── cardAdapter.ts      #   v2 notifications → StreamCardBuilder method calls
+│   │   ├── nativeExecCompletionTracker.ts # Public native lifecycle + explicit agent registrations
 │   │   ├── tokenAccounting.ts  #   Per-turn delta + cumulative usage tracking
 │   │   ├── overrideStore.ts    #   Pending/effective per-turn overrides (model/effort/permission/service tier)
 │   │   ├── approvalMapping.ts  #   tool-name + sandbox toggle → AskForApproval matrix
@@ -87,7 +87,7 @@ apps/agent/src/
 │   ├── sessionRegistry.ts      # SessionRegistry: active+archived metadata (see below)
 │   ├── enrichEntry.ts          # Decorate registry entries for /sessions/history snapshot
 │   ├── systemPrompt.ts         # `--append-system-prompt` builder
-│   ├── sandboxMcp.ts           # In-process MCP server: SandboxBash + UpdateSessionStatus tool defs
+│   ├── sandboxMcp.ts           # In-process MCP server: sandbox, status, artifact, and Codex completion-registration tool defs
 │   ├── sandboxMcpStdio.ts      # stdio adapter for the same MCP server when run as a subprocess
 │   ├── debugLogger.ts          # Per-session NDJSON debug log (QUICKSAVE_DEBUG=1)
 │   ├── asyncQueue.ts           # Single-flight async queue helper
@@ -162,6 +162,10 @@ The architecture uses a layered design: `SessionManager` provides unified coordi
      in-memory suffix and never contribute to the persisted-history cursor.
    - Permission flow (auto-approve table, runtime allow patterns, PWA forwarding via `handlePermissionRequest` callback)
    - Preferences and per-session config
+   - Native-session identity cache: discovery records native `(sessionId → agent,
+     cwd, archive state)` only in memory. Native-only actions use that cache or
+     the provider's single-id lookup; they never require a registry entry or
+     enumerate every session as a fallback.
    - Event emission (`card-event`, `card-stream-end`, `user-input-request`, `user-input-resolved`, `session-updated`, `preferences-updated`, `session-config-updated`, `codex-turn-settled`)
    - Session registry integration; on-disk bypass-flag sentinel for CLI auto-approve hook
    - Cold-resume queueing via `coldResumeInFlight` so prompts arriving during a respawn don't get lost
@@ -186,24 +190,26 @@ claude:start → MessageHandler.handleClaudeStart()
               (also fires `callbacks.onCacheTouch` on SDK cache hit/write tokens)
               result → callbacks.emitStreamEnd
        For CodexAppServerProvider:
-         spawn('codex', ['app-server', ...sandboxMcpConfig])
+         spawn('codex', ['--enable', 'default_mode_request_user_input', 'app-server', ...sandboxMcpConfig])
          → initialize / initialized JSON-RPC handshake
          → rpc.request('thread/start' or 'thread/resume', {…}) to load the Codex thread
          → rpc.request('turn/start', { threadId, input, ...runtimeOverrides })
          → keep one session-scoped app-server notification subscription while
            the provider session is alive; `turn/completed` settles only that
            turn's card/stream consumer, not the thread subscription
-         → the same subscription observes root-thread public
-           `commandExecution { source: unifiedExecStartup }` lifecycle items.
-           A terminal item arriving after its origin turn completed is queued as
-           a bounded host runtime notice; only when the existing scheduler is
-           idle (and no user prompt, interruption, archive/close, or paused
-           goal blocks it) does it start `turn/start { input: [], toolOutput }`.
-           This is a Codex-specific post-turn completion continuation, not a
-           replacement shell executor or a raw-event-based handle detector.
          → cardAdapter translates `turn/started`, `item/*`, `turn/completed`,
            autonomous turns started by goal mode, and related v2 notifications into
            CardBuilder events
+         → an experimental `item/tool/requestUserInput` with `isBlocking: false`
+           becomes a `follow_up_question`; its reply resolves that server
+           request and never starts a new `turn/start`. The resolved card keeps
+           the selected answer (or a dismissed marker) in the live conversation
+           and as supplemental card history, because the native thread has no
+           `request_user_input` item to reconstruct after a reload. The
+           supplemental record keeps the emitting native item and turn anchor;
+           history inserts it immediately after that item (or turn fallback),
+           including when the relevant older page is loaded, rather than
+           appending it below the newest conversation.
     → SessionManager registers ManagedSession + permission table + bypass-flag sentinel
   ← sessionId
 
@@ -377,8 +383,10 @@ There is no `cancelSession` / `closeSession` on the provider interface — those
   and OpenCode sessions with any matching Quicksave registry metadata, keyed by
   `(cwd, sessionId)`. Native providers own session existence and archive state;
   the registry overlays user-facing metadata such as title, read state, and
-  saved settings. Claude Code has no native listing API, so its registry entry
-  remains the complete source for that provider.
+  saved settings. Native discovery is limited to the managed project-directory
+  allowlist; OpenCode also exposes only root sessions (`parentID` empty). Claude
+  Code has no native listing API, so its registry entry remains the complete
+  source for that provider.
 
 ### AI Provider Events
 
@@ -413,6 +421,12 @@ the daemon normalizes the legacy alias and validates the catalog id before
 `thread/start` and before a runtime `turn/start` override. The setting is
 persisted in `SessionRegistryEntry.serviceTier` so cold resumes retain it.
 
+For a global history snapshot, `SessionManager` passes every managed project
+path to Codex native discovery. The provider forwards that array to
+`thread/list.cwd`, so the app-server excludes unrelated machine sessions before
+Quicksave projects the result locally. A single-project query still passes one
+`cwd` string.
+
 **CodingAgentProvider interface** (`ai/provider.ts`):
 ```typescript
 interface CodingAgentProvider {
@@ -435,6 +449,11 @@ interface CodingAgentProvider {
   /** Probe availability without starting a session. Returns version +
    *  capabilities (hasApiKey, hasCli, hasPlugin, supportsResume, etc.). */
   probeProvider(): Promise<ProbeResult>;
+
+  /** Optional native discovery and targeted identity lookup. The latter must
+   *  fetch only the requested provider session, not enumerate all sessions. */
+  listNativeSessions?(opts?: { cwd?: string | readonly string[] }): Promise<NativeSessionSummary[]>;
+  getNativeSession?(sessionId: string, opts?: { cwd?: string }): Promise<NativeSessionSummary | undefined>;
 }
 ```
 
@@ -464,6 +483,15 @@ OpenCode permission replies use the current
 `POST /permission/{requestID}/reply` shape. A denial sends both
 `reply: "reject"` and the PWA's optional rationale as `message`, so the active
 model turn receives the user's explanation as part of the rejected tool call.
+
+OpenCode's built-in `question` tool is a separate, **blocking** user-input
+protocol, not a permission prompt and not a Codex optional follow-up. The
+injected configuration allows the tool so the server emits `question.asked`;
+the provider converts its structured questions into the normal
+`AskUserQuestion` card, waits for the PWA answer, then calls either
+`POST /question/{requestID}/reply` with one selected-label array per question
+or `POST /question/{requestID}/reject`. Its `custom: false` flag prevents the
+PWA from offering a free-text alternative.
 
 To add a new provider, implement this interface and include it in the array passed to the `SessionManager` constructor:
 ```typescript
@@ -880,6 +908,12 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 | — | Agent→PWA push | `bus.subscribe('/preferences')` | Replaces the removed `claude:get-preferences` command and `claude:preferences-updated` push |
 | — | Agent→PWA snapshot | `bus.subscribe('/claude/auth')` | Machine-local Claude login gate; contains no account identity fields |
 | — | Agent→PWA push | `bus.subscribe('/sessions/config')` | Config dict for all sessions (replaces the removed `session:get-config` command; for one-shot reads use `bus.getSnapshot('/sessions/config')`) |
+
+`ClaudeUserInputRequestPayload.presentation: 'inline_follow_up'` identifies a
+non-blocking Codex input request. The card stream carries its pending state and
+the resolved card update carries `answer` or `dismissed`; no normal chat-send
+command is emitted for either outcome. Selecting an option only changes local
+card state; the PWA resolves the request only when the user presses Send.
 | — | Agent→PWA push | `bus.subscribe('/repos/commit-summary')` | AI commit summary state for all repos (replaces the removed `ai:commit-summary:get` command) |
 | — | Agent→PWA push | `bus.subscribe('/codex/quota')` | Agent-wide Codex quota snapshot (`5h` / `7d` windows only). The agent owns the app-server query and refreshes after Codex turns or when a subscriber finds the cache older than 5 minutes |
 | `bus:frame` | Bidirectional | — | MessageBus envelope: payload is `ClientFrame` / `ServerFrame` (sub / unsub / cmd / snap / upd / result / sub-error) |
@@ -919,6 +953,8 @@ Cards are the smallest unit of display in the PWA, assembled by `StreamCardBuild
 type Card = {
   id: string;
   type: CardType;
+  // nativeItemId is provider metadata used to place supplemental cards after
+  // their original native item when a history page is reconstructed.
   // ... different fields per type
 };
 
@@ -929,12 +965,19 @@ type CardType =
   | 'tool_call'           // Tool call (with result)
   | 'subagent'            // Subagent execution block
   | 'system'              // System message
-  | 'recovery_suggested'; // One-tap recovery action (e.g. /compact) emitted
+  | 'recovery_suggested'  // One-tap recovery action (e.g. /compact) emitted
                           // when the SDK provider detects a poison pattern
                           // ("PDF too large", "Prompt is too long", …) in
                           // assistant text — not persisted to JSONL, lives
                           // only in in-memory cards so it disappears after
                           // the session unsticks
+  | 'follow_up_question'; // Optional Codex follow-up. It originates from experimental
+                          // item/tool/requestUserInput with isBlocking:false;
+                          // its selected or typed answer resolves the
+                          // app-server request without a new user turn, then
+                          // remains visible with the answer or dismissed state.
+                          // Its historyAnchorItemId (with a turn fallback)
+                          // restores its original dialogue position on reload.
 ```
 
 **PWA XSS threat model**: normal agent/model output reaching a card is not
@@ -990,9 +1033,9 @@ connectionStore.ts
   // all tracked agents. A peer disconnect demotes only that agent's sessions.
   // Session/project feedback selects its owning agent explicitly. Background
   // reconnects never trigger the full-screen explicit-connect overlay.
-  // Each AgentConnectionState owns its `codexModels` catalog. Handshake and
-  // `/codex/models` snapshots update only their source machine; session model
-  // pickers resolve the owning `machineAgentId`, never a global last-writer.
+  // Each AgentConnectionState owns its Codex and OpenCode model catalogs.
+  // Handshake and refresh snapshots update only their source machine; session
+  // model pickers resolve the owning `machineAgentId`, never a global last-writer.
 
 codexQuotaStore.ts
   byAgent: Record<agentId, CodexQuotaSnapshot | null>
@@ -1078,6 +1121,7 @@ App.tsx
     │   ├── SubagentBlockMessage # chat/SubagentBlockMessage.tsx ('subagent')
     │   ├── SystemMessage    #   chat/SystemMessage.tsx      ('system')
     │   └── RecoverySuggestedMessage # chat/RecoverySuggestedMessage.tsx ('recovery_suggested')
+    │   └── FollowUpQuestionMessage # chat/FollowUpQuestionMessage.tsx ('follow_up_question')
     └── (textarea + send)    # Inline composer inside ClaudePanel; not a separate component
 ```
 

@@ -350,8 +350,7 @@ export function ClaudePanel({
   // machine here would mis-gate per-machine UI (e.g. show the voice mic for a
   // machine that never advertised audio support).
   const mirrorAgentId = useConnectionStore((s) => s.agentId ?? '');
-  const sessionAgentId = sessions[urlSessionId ?? activeSessionId ?? '']?.machineAgentId;
-  const agentId = agentIdProp || sessionAgentId || mirrorAgentId;
+  const agentId = agentIdProp || mirrorAgentId;
   const availableProviders = useConnectionStore((s) => s.availableProviders);
   const selectedAgentType = getAgentProvider(selectedAgent);
   const selectedProviderInfo = availableProviders.find((p) => p.id === selectedAgent);
@@ -562,8 +561,9 @@ export function ClaudePanel({
     });
   }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const connectionState = useConnectionStore((s) => agentId ? s.agentConnections[agentId]?.state ?? 'disconnected' : 'disconnected');
-  const agentOnline = useConnectionStore((s) => agentId ? s.agentConnections[agentId]?.online : undefined);
+  const relayState = useConnectionStore((s) => s.relay.state);
+  const agentConnection = useConnectionStore((s) => agentId ? s.agentConnections[agentId] : undefined);
+  const agentOnline = agentConnection?.online ?? null;
 
   // Load session messages when navigating to a different session (or away from one)
   useEffect(() => {
@@ -597,24 +597,24 @@ export function ClaudePanel({
   // Re-subscribe after agent reconnect: the relay drops all pubsub subscriptions
   // when the agent's WebSocket disconnects. When the agent comes back online and
   // key exchange completes, we must call getCards (which re-subscribes the peer).
-  // This covers both full PWA reconnects (connectionState change) and agent-only
+  // This covers both full PWA reconnects (relayState change) and agent-only
   // relay blips (agentOnline flips false→true while connectionState stays 'connected').
   const prevOnlineRef = useRef(agentOnline);
   useEffect(() => {
     const wasOnline = prevOnlineRef.current;
     prevOnlineRef.current = agentOnline;
-    if (!urlSessionId || connectionState !== 'connected') return;
+    if (!urlSessionId || relayState !== 'connected') return;
     // Agent came back online (was offline or null → true)
     if (agentOnline === true && wasOnline === false) {
       console.log(`[sub:panel] agent reconnected: re-subscribe session=${urlSessionId.slice(0, 8)}`);
       onGetSessionCards(urlSessionId);
     }
     // Initial load: no cards yet
-    if (agentOnline === true && wasOnline == null && cards.length === 0) {
+    if (agentOnline === true && wasOnline === null && cards.length === 0) {
       console.log(`[sub:panel] initial load: subscribe session=${urlSessionId.slice(0, 8)}`);
       onGetSessionCards(urlSessionId);
     }
-  }, [agentOnline, connectionState]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [agentOnline, relayState]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Unsubscribe when leaving session view (navigating to session list)
   useEffect(() => {
@@ -825,9 +825,9 @@ export function ClaudePanel({
 
   /**
    * Send a fixed prompt without using the composer input. Used by inline
-   * action cards (recovery_suggested → `/compact`). Resume-only — these
-   * actions are always invoked on an active session, never to start a new
-   * one. Skips the attachment / draft / streaming-state machinery since
+   * recovery action cards (`recovery_suggested` → `/compact`).
+   * Resume-only — these actions are always invoked on an active session,
+   * never to start a new one. Skips attachment / draft machinery since
    * there's no composer state to consume.
    */
   const handleSendQuickPrompt = useCallback(async (prompt: string) => {
@@ -1155,7 +1155,9 @@ export function ClaudePanel({
               const sessionStreaming = isStreaming || !!activeSession?.isStreaming;
               const showDots = sessionStreaming && !isResuming && !activeSession?.hasPendingInput;
               if (!showDots) return null;
-              const linkUncertain = connectionState !== 'connected' || agentOnline === false;
+              const linkUncertain = relayState !== 'connected'
+                || agentConnection?.state !== 'connected'
+                || agentOnline === false;
               return linkUncertain ? (
                 <StreamingReconnectIndicator agentId={agentId} />
               ) : (

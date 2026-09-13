@@ -1,7 +1,7 @@
 # Codex `app-server` — exhaustive notification catalog
 
 > **Source(s):** locally-generated `ServerNotification.ts` union (CLI 0.153.4 — authoritative wire-method catalog); locally-generated `v2/*Notification.ts` payloads; https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md (§ Events, § Turn events → § Items, § Errors, § Approvals, § Auth endpoints).
-> **Fetched:** 2026-09-10
+> **Fetched:** 2026-09-11
 > **Codex CLI version verified against:** 0.153.4
 
 This is the lookup table to use when wiring app-server events into Quicksave's card builder. Every method in this table appears on the wire; anything that *isn't* in this table won't be emitted.
@@ -51,35 +51,6 @@ The README puts it concisely:
 
 > **Migration mapping**: `turn/started` / `turn/completed` are the new per-turn boundary markers (currently we infer this from SDK `started`/`completed` events). `turn/diff/updated` replaces ad-hoc diff stitching in `StreamCardBuilder`.
 
-### Quicksave native command completion continuation
-
-Quicksave's experimental Codex augmentation uses only the public, typed
-`item/started`, `item/completed`, and `turn/completed` notifications. It tracks
-a root-thread `commandExecution` only when its `source` is
-`unifiedExecStartup`; `userShell`, `agent`, and `unifiedExecInteraction`
-(`write_stdin` polling) are excluded.
-
-This covers code-mode calls only when stock Codex surfaces their native shell
-work as that typed `commandExecution` source (as it does for the observed
-`tools.exec_command` path). Shell work hidden inside another tool's opaque
-result has no verified public correlation and is intentionally unsupported.
-
-If that execution's terminal `item/completed` arrives **after** its origin turn
-has completed, Quicksave schedules a new idle-only `turn/start` with `input: []`
-and a factual `toolOutput` in the `quicksave/background_execution_completed`
-namespace. It is not a user message, a replacement result for the original tool
-call, or a host-side process poll. User prompts, pending turns, interruptions,
-archive/close, and paused/limited goal modes take precedence.
-
-This is deliberately a **post-turn native completion continuation**, not a
-claim that public event timing proves that Codex returned a live handle. A
-completion before its turn boundary is treated as ordinary execution and is not
-replayed. The feature is enabled by default only for the verified `0.153.x`
-schema line (patch `>= 0.153.4`); other stock versions retain ordinary Codex
-behavior with this augmentation disabled rather than treating a successful
-unknown field as proof of support. It can also be disabled with
-`QUICKSAVE_CODEX_BACKGROUND_COMPLETIONS=0`.
-
 ## Item lifecycle (every item type)
 
 These three methods fire for every item, regardless of type. `item.id` matches the `itemId` on subsequent type-specific deltas.
@@ -102,6 +73,37 @@ The item `type` discriminator (from the README § Items) determines which deltas
 - `dynamicToolCall` → paired with the `item/tool/call` server→client request
 - `webSearch`, `imageView`, `enteredReviewMode`, `exitedReviewMode`, `contextCompaction` (no deltas)
 - `compacted` — **deprecated**, use `contextCompaction`.
+
+### Quicksave opt-in native-command completion
+
+Quicksave normally treats the public `commandExecution` lifecycle as card
+data only. It does **not** automatically wake a Codex thread for every
+native command that completes after a turn.
+
+Quicksave's per-session Codex MCP configuration exposes
+`RegisterBackgroundExecutionCompletion`. Delivery is enabled only for the
+schema-verified Codex `0.153.x` line. An agent calls the tool only after native
+`exec_command` itself returned `Process running with session ID <handle>` and
+only when the user asked to monitor that work. The tool merely submits the
+opaque handle for host validation: it does not run, poll, signal, alter, or
+approve the process.
+
+The provider correlates the registration's `mcpToolCall` with a unique,
+same-thread and same-turn `commandExecution` whose source is
+`unifiedExecStartup`. It buffers either public fact briefly when their event
+order differs. Once the registered command reaches a terminal
+`item/completed` state and the origin turn is safely settled, Quicksave starts
+one scheduler-owned `turn/start` with factual
+`quicksave/background_execution_completed` `toolOutput`.
+
+- Unregistered commands, `unifiedExecInteraction` polls, MCP command tools,
+  and nested/code-mode shell results are not eligible.
+- Ambiguous, stale, cross-thread, or replayed registrations are rejected; a
+  handle is never treated as an OS PID.
+- `rawResponseItem/completed` remains an internal experimental surface and is
+  not subscribed to for this feature.
+- Set `QUICKSAVE_CODEX_BACKGROUND_COMPLETIONS=0` to remove this augmentation
+  without changing native Bash, Guardian, approval, or sandbox behavior.
 
 ## Streaming deltas
 
@@ -235,7 +237,7 @@ This is the meta-table — for each event class, what's the obvious mapping into
 | `fuzzyFileSearch/*`, `windowsSandbox/*`, `windows/worldWritableWarning` | **Ignore.** | Out of our use case. |
 | `error`, `warning`, `configWarning`, `deprecationNotice` | **Yes** — surface to user / log. | `configWarning` may fire during `initialize`. |
 | `command/exec/outputDelta` | **No** unless we use standalone `command/exec`. | Different surface from item-scoped `commandExecution`. |
-| `rawResponseItem/completed` | **Ignore.** | Internal/experimental; Quicksave's native completion augmentation intentionally relies on the typed public command lifecycle instead. |
+| `rawResponseItem/completed` | **Ignore.** | Internal; only when `experimentalRawEvents: true`. |
 | `model/rerouted`, `model/verification` | **Yes (banner)** — surface to user. | Edge cases that change the user's expectation of what's running. |
 
 > When a new method appears in a future CLI version that's not here, regenerate the TS bindings (`codex app-server generate-ts --out DIR`) and check `DIR/ServerNotification.ts` — that union is the source of truth, and this table is downstream.

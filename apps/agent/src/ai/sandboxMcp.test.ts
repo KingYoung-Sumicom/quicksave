@@ -75,6 +75,19 @@ describe('buildSandboxMcpServerConfig', () => {
     ]);
   });
 
+  it('exposes native completion registration only when the Codex provider opts in', () => {
+    const cfg = buildSandboxMcpServerConfig({
+      ownDir: __thisDir,
+      cwd: '/p',
+      includeNativeCompletionRegistration: true,
+    });
+    expect(cfg.args).toEqual([
+      join(__thisDir, 'sandboxMcpStdio.ts'),
+      '--cwd', '/p',
+      '--native-completion-registration',
+    ]);
+  });
+
   it('can inherit the MCP process cwd for workspace-scoped hosts', () => {
     const cfg = buildSandboxMcpServerConfig({
       ownDir: __thisDir,

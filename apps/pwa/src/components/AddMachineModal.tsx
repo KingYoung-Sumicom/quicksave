@@ -21,7 +21,9 @@ export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
   const [saveOnly, setSaveOnly] = useState(false);
 
   const { addMachine, hasMachine } = useMachineStore();
-  const { state, error } = useConnectionStore();
+  const targetAgentId = agentId.trim();
+  const connection = useConnectionStore((s) => targetAgentId ? s.agentConnections[targetAgentId] : undefined);
+  const error = connection?.error ?? null;
 
   const handleQRScan = (scannedAgentId: string, scannedPublicKey: string, name?: string, scannedSignPk?: string) => {
     setAgentId(scannedAgentId);
@@ -33,7 +35,7 @@ export function AddMachineModal({ onClose, onConnect }: AddMachineModalProps) {
     setMode('manual');
   };
 
-  const isConnecting = state === 'connecting';
+  const isConnecting = connection?.state === 'connecting' || connection?.state === 'reconnecting';
   const isDuplicate = Boolean(agentId.trim() && hasMachine(agentId.trim()));
   const isFormValid = Boolean(agentId.trim() && publicKey.trim());
   const isDisabled = !isFormValid || isConnecting || isDuplicate;

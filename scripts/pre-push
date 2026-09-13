@@ -46,6 +46,11 @@ if [ "$needs_full_check" = true ]; then
   git worktree add --detach "$WORKTREE_DIR" HEAD --quiet
   cd "$WORKTREE_DIR"
 
+  # Git hooks inherit GIT_DIR and related local-repository variables. The
+  # checks create independent temporary Git repos, so they must not inherit
+  # the pushed worktree as their repository context.
+  unset $(git rev-parse --local-env-vars)
+
   echo "→ pnpm install"
   pnpm install --frozen-lockfile
 

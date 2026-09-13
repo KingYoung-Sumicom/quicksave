@@ -6,10 +6,10 @@ import type { TurnStatus } from './schema/generated/v2/TurnStatus.js';
 const DEFAULT_MAX_TRACKED_EXECUTIONS = 128;
 const DEFAULT_MAX_READY_COMPLETIONS = 32;
 const MAX_REMEMBERED_IDS = 256;
+const MAX_PROCESS_HANDLE_LENGTH = 256;
 
 type NativeCommandExecution = Extract<ThreadItem, { type: 'commandExecution' }>;
 type NativeTerminalCommandExecution = NativeCommandExecution & { status: 'completed' | 'failed' };
-
 type DeliveryState = 'none' | 'pending' | 'inFlight';
 
 interface TrackedExecution {
@@ -18,16 +18,28 @@ interface TrackedExecution {
   readonly threadId: string;
   readonly originTurnId: string;
   readonly itemId: string;
+  started: NativeCommandExecution | null;
   terminal: NativeTerminalCommandExecution | null;
+  registered: boolean;
+  contradictory: boolean;
   deliveryState: DeliveryState;
 }
 
-/**
- * A completion that is safe to present to Codex as a new host-originated tool
- * output. This deliberately has a narrower contract than “background process
- * detected”: it is a native unified-exec command whose terminal item arrived
- * after its owning turn had already completed.
- */
+interface PendingRegistration {
+  readonly turnId: string;
+  readonly processHandle: string;
+}
+
+export type NativeCompletionRegistrationResult =
+  | 'registered'
+  | 'alreadyRegistered'
+  | 'pendingCorrelation'
+  | 'invalidHandle'
+  | 'unknownHandle'
+  | 'ambiguousHandle'
+  | 'settledTurn';
+
+/** A factual native completion which the agent explicitly registered to receive. */
 export interface ReadyNativeExecCompletion {
   readonly eventId: string;
   readonly threadId: string;
@@ -52,9 +64,10 @@ export interface NativeExecCompletionTrackerOptions {
 }
 
 /**
- * Correlates only public `commandExecution` lifecycle items. We intentionally
- * do not infer a running handle from elapsed time, `processId`, or a turn
- * phase; those signals are insufficient to prove native backgrounding.
+ * Correlates public native command lifecycle items with explicit agent MCP
+ * registrations. A process handle is only meaningful inside its root thread,
+ * provider generation, and origin turn; callers must never treat it as an OS
+ * PID or attach an ambiguous handle to a command.
  */
 export class NativeExecCompletionTracker {
   private readonly threadId: string;
@@ -65,6 +78,8 @@ export class NativeExecCompletionTracker {
   private readonly settledTurns = new Map<string, TurnStatus>();
   private readonly readyKeys: string[] = [];
   private readonly resolvedEventIds = new Set<string>();
+  private readonly observedRegistrationItemIds = new Set<string>();
+  private readonly pendingRegistrations = new Map<string, PendingRegistration>();
   private coverageDegraded = false;
 
   constructor(opts: NativeExecCompletionTrackerOptions) {
@@ -76,41 +91,62 @@ export class NativeExecCompletionTracker {
 
   observeItemStarted(threadId: string, turnId: string, item: ThreadItem): void {
     if (threadId !== this.threadId || !isNativeUnifiedExecStartup(item)) return;
-    // A lifecycle start received after the origin turn was already settled is
-    // replay/out-of-order data, not evidence for a newly live execution.
-    if (this.settledTurns.has(turnId)) return;
+    if (this.settledTurns.has(turnId)) return; // replay after a cold resume
 
-    const key = executionKey(turnId, item.id);
-    if (this.executions.has(key)) return;
-    if (this.executions.size >= this.maxTrackedExecutions) {
-      this.degradeCoverage('native execution tracker is full; new command completions will not auto-continue');
+    const record = this.getOrCreate(turnId, item.id);
+    if (!record || record.started) return;
+    record.started = item;
+    if (record.terminal && !sameProcessHandle(item.processId, record.terminal.processId)) {
+      record.contradictory = true;
       return;
     }
-
-    this.executions.set(key, {
-      key,
-      eventId: nativeCompletionEventId(this.threadId, turnId, item.id),
-      threadId,
-      originTurnId: turnId,
-      itemId: item.id,
-      terminal: null,
-      deliveryState: 'none',
-    });
+    this.reconcilePendingRegistrations(turnId);
+    this.enqueueIfReady(record);
   }
 
   observeItemCompleted(threadId: string, turnId: string, item: ThreadItem): void {
     if (threadId !== this.threadId || !isNativeUnifiedExecTerminal(item)) return;
-    const record = this.executions.get(executionKey(turnId, item.id));
+    const record = this.getOrCreate(turnId, item.id);
     if (!record || record.terminal) return;
-
     record.terminal = item;
-    const turnStatus = this.settledTurns.get(turnId);
-    if (turnStatus === undefined) return;
-    if (turnStatus !== 'completed') {
-      this.resolve(record);
+    if (record.started && !sameProcessHandle(record.started.processId, item.processId)) {
+      record.contradictory = true;
       return;
     }
     this.enqueueIfReady(record);
+  }
+
+  /** Register only a unique native startup from the same root turn. */
+  registerProcessHandle(
+    threadId: string,
+    registrationTurnId: string,
+    registrationItemId: string,
+    processHandle: unknown,
+  ): NativeCompletionRegistrationResult {
+    if (threadId !== this.threadId || !isOpaqueHandle(processHandle)) return 'invalidHandle';
+    if (this.settledTurns.has(registrationTurnId)) return 'settledTurn';
+    if (this.observedRegistrationItemIds.has(registrationItemId)) return 'alreadyRegistered';
+    rememberBounded(this.observedRegistrationItemIds, registrationItemId, MAX_REMEMBERED_IDS);
+
+    const candidates = this.candidatesForHandle(registrationTurnId, processHandle);
+    if (candidates.length === 0) {
+      if (this.pendingRegistrations.size >= this.maxTrackedExecutions) {
+        this.degradeCoverage('native completion registration buffer is full; a delayed command start cannot be correlated');
+        return 'unknownHandle';
+      }
+      this.pendingRegistrations.set(registrationItemId, {
+        turnId: registrationTurnId,
+        processHandle,
+      });
+      return 'pendingCorrelation';
+    }
+    if (candidates.length !== 1) return 'ambiguousHandle';
+
+    const record = candidates[0]!;
+    if (record.registered) return 'alreadyRegistered';
+    record.registered = true;
+    this.enqueueIfReady(record);
+    return 'registered';
   }
 
   observeTurnCompleted(threadId: string, turnId: string, status: TurnStatus): void {
@@ -119,11 +155,14 @@ export class NativeExecCompletionTracker {
 
     for (const record of [...this.executions.values()]) {
       if (record.originTurnId !== turnId) continue;
-      // A terminal item that preceded the turn boundary was already consumed by
-      // the originating model turn. It must never re-arm a follow-up turn.
-      if (record.terminal) {
+      if (status !== 'completed' || !record.registered || record.contradictory) {
         this.resolve(record);
+        continue;
       }
+      this.enqueueIfReady(record);
+    }
+    for (const [itemId, pending] of this.pendingRegistrations) {
+      if (pending.turnId === turnId) this.pendingRegistrations.delete(itemId);
     }
   }
 
@@ -161,24 +200,73 @@ export class NativeExecCompletionTracker {
   suppressAll(): void {
     for (const record of [...this.executions.values()]) this.resolve(record);
     this.readyKeys.length = 0;
+    this.pendingRegistrations.clear();
   }
 
-  clear(): void {
-    this.executions.clear();
-    this.settledTurns.clear();
-    this.readyKeys.length = 0;
-    this.resolvedEventIds.clear();
+  private getOrCreate(turnId: string, itemId: string): TrackedExecution | undefined {
+    const key = executionKey(turnId, itemId);
+    const existing = this.executions.get(key);
+    if (existing) return existing;
+    if (this.executions.size >= this.maxTrackedExecutions) {
+      this.degradeCoverage('native execution tracker is full; new registered command completions cannot be delivered');
+      return undefined;
+    }
+    const record: TrackedExecution = {
+      key,
+      eventId: nativeCompletionEventId(this.threadId, turnId, itemId),
+      threadId: this.threadId,
+      originTurnId: turnId,
+      itemId,
+      started: null,
+      terminal: null,
+      registered: false,
+      contradictory: false,
+      deliveryState: 'none',
+    };
+    this.executions.set(key, record);
+    return record;
   }
 
   private enqueueIfReady(record: TrackedExecution): void {
-    if (record.deliveryState !== 'none' || this.resolvedEventIds.has(record.eventId)) return;
+    if (
+      !record.registered
+      || !record.started
+      || !record.terminal
+      || record.contradictory
+      || this.settledTurns.get(record.originTurnId) !== 'completed'
+      || record.deliveryState !== 'none'
+      || this.resolvedEventIds.has(record.eventId)
+    ) return;
     if (this.readyKeys.length >= this.maxReadyCompletions) {
-      this.degradeCoverage('native completion inbox is full; completion delivery is suppressed until user activity');
+      this.degradeCoverage('native completion inbox is full; a registered completion could not be delivered');
       this.resolve(record);
       return;
     }
     record.deliveryState = 'pending';
     this.readyKeys.push(record.key);
+  }
+
+  private candidatesForHandle(turnId: string, processHandle: string): TrackedExecution[] {
+    return [...this.executions.values()].filter((record) =>
+      record.originTurnId === turnId
+      && record.started !== null
+      && record.started.processId === processHandle
+      && !record.contradictory
+      && !this.resolvedEventIds.has(record.eventId),
+    );
+  }
+
+  private reconcilePendingRegistrations(turnId: string): void {
+    for (const [itemId, pending] of this.pendingRegistrations) {
+      if (pending.turnId !== turnId) continue;
+      const candidates = this.candidatesForHandle(turnId, pending.processHandle);
+      if (candidates.length === 0) continue;
+      this.pendingRegistrations.delete(itemId);
+      if (candidates.length !== 1) continue;
+      const record = candidates[0]!;
+      record.registered = true;
+      this.enqueueIfReady(record);
+    }
   }
 
   private resolveByEventIds(eventIds: readonly string[]): void {
@@ -220,6 +308,14 @@ function isNativeUnifiedExecTerminal(item: ThreadItem): item is NativeTerminalCo
     && (item.status === 'completed' || item.status === 'failed');
 }
 
+function isOpaqueHandle(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_PROCESS_HANDLE_LENGTH;
+}
+
+function sameProcessHandle(left: string | null, right: string | null): boolean {
+  return left === null || right === null || left === right;
+}
+
 function executionKey(turnId: string, itemId: string): string {
   return `${turnId}\u0000${itemId}`;
 }
@@ -228,10 +324,7 @@ export function nativeCompletionEventId(threadId: string, turnId: string, itemId
   return `quicksave-native-exec:v1:${threadId}:${turnId}:${itemId}`;
 }
 
-function toReadyCompletion(
-  record: TrackedExecution,
-  item: NativeTerminalCommandExecution,
-): ReadyNativeExecCompletion {
+function toReadyCompletion(record: TrackedExecution, item: NativeTerminalCommandExecution): ReadyNativeExecCompletion {
   return {
     eventId: record.eventId,
     threadId: record.threadId,
@@ -249,18 +342,10 @@ function toReadyCompletion(
 
 function rememberBounded<T>(set: Set<T>, value: T, max: number): void;
 function rememberBounded<K, V>(map: Map<K, V>, key: K, value: V, max: number): void;
-function rememberBounded<T>(
-  target: Set<T> | Map<T, unknown>,
-  key: T,
-  valueOrMax: unknown,
-  maybeMax?: number,
-): void {
+function rememberBounded<T>(target: Set<T> | Map<T, unknown>, key: T, valueOrMax: unknown, maybeMax?: number): void {
   const max = maybeMax ?? valueOrMax as number;
-  if (target instanceof Map) {
-    target.set(key, valueOrMax);
-  } else {
-    target.add(key);
-  }
+  if (target instanceof Map) target.set(key, valueOrMax);
+  else target.add(key);
   while (target.size > max) {
     const oldest = target.keys().next().value;
     if (oldest === undefined) return;

@@ -5,9 +5,21 @@ import type { ConnectionState, Repository, CodingPath, CodexModelInfo, AgentProv
 
 export type ConnectionStep = 'signaling' | 'waiting-for-agent' | 'key-exchange' | 'handshake';
 
+/** The PWA's single WebSocket connection to the signaling relay.  This must
+ * never be used to infer whether a particular agent is available. */
+export interface RelayConnectionState {
+  state: ConnectionState;
+  reconnectAttempt: number | null;
+  maxReconnectAttempts: number | null;
+  error: string | null;
+}
+
 /** Per-agent connection state for multi-agent tracking */
 export interface AgentConnectionState {
   state: ConnectionState;
+  /** Progress within this agent's encrypted session setup. */
+  connectionStep: ConnectionStep | null;
+  keyExchangeAttempt: number | null;
   repoPath: string | null;
   availableRepos: Repository[];
   availableCodingPaths: CodingPath[];
@@ -15,7 +27,7 @@ export interface AgentConnectionState {
   agentVersion: string | null;
   /** Account-scoped Codex catalog advertised by this machine only. */
   codexModels: CodexModelInfo[];
-  /** Provider metadata, including OpenCode's discovered model catalog. */
+  /** Provider metadata, including the OpenCode catalog for this machine. */
   availableProviders: AgentProviderInfo[];
   devBuild: boolean;
   /** OS the agent reported in the handshake-ack. `undefined` means the agent
@@ -29,8 +41,6 @@ export interface AgentConnectionState {
   error: string | null;
   reconnectAttempt: number | null;
   maxReconnectAttempts: number | null;
-  connectionStep: ConnectionStep | null;
-  keyExchangeAttempt: number | null;
   /** Relay's view of whether the agent is reachable.
    *  undefined = unknown; true/false = last known. Flips to false when the
    *  relay loses the agent WebSocket even while this peer's WebRTC stays up. */
@@ -62,6 +72,9 @@ interface ConnectionStore {
   keyExchangeAttempt: number | null;
   agentOnline: boolean | null;
 
+  // Relay state is intentionally separate from the active-agent mirror above.
+  relay: RelayConnectionState;
+
   // Multi-agent connection tracking
   agentConnections: Record<string, AgentConnectionState>;
 
@@ -87,19 +100,25 @@ interface ConnectionStore {
   setActiveAgentConnection: (agentId: string) => void;
   reset: () => void;
 
+  // Relay lifecycle
+  setRelayConnected: () => void;
+  setRelayReconnecting: (attempt: number, maxAttempts: number) => void;
+  setRelayError: (error: string) => void;
+  setRelayDisconnected: () => void;
+
   // Multi-agent actions
   setAgentConnecting: (agentId: string) => void;
   setAgentConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string, devBuild?: boolean, platform?: 'linux' | 'darwin' | 'win32' | 'other', audio?: AgentAudioCapabilities) => void;
   setAgentCodexModels: (agentId: string, models: CodexModelInfo[]) => void;
   setAgentAvailableProviders: (agentId: string, providers: AgentProviderInfo[]) => void;
   setAgentDisconnected: (agentId: string) => void;
-  setAllAgentsDisconnected: () => void;
   setAgentReconnecting: (agentId: string, attempt: number, maxAttempts: number) => void;
-  setAllAgentsReconnecting: (attempt: number, maxAttempts: number) => void;
   setAgentError: (agentId: string, error: string) => void;
   setAllAgentsError: (error: string) => void;
-  setAgentConnectionStep: (agentId: string, step: ConnectionStep, attempt?: number) => void;
   setAgentOnlineFor: (agentId: string, online: boolean) => void;
+  setAgentConnectionStep: (agentId: string, step: ConnectionStep, attempt?: number) => void;
+  setAllAgentsReconnecting: (attempt?: number, maxAttempts?: number) => void;
+  setAllAgentsDisconnected: () => void;
   addAgentCodingPath: (agentId: string, codingPath: CodingPath) => void;
   addAgentRepo: (agentId: string, repo: Repository) => void;
   getAgentState: (agentId: string) => AgentConnectionState | undefined;
@@ -162,6 +181,12 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
   connectionStep: null,
   keyExchangeAttempt: null,
   agentOnline: null,
+  relay: {
+    state: 'connecting',
+    reconnectAttempt: null,
+    maxReconnectAttempts: null,
+    error: null,
+  },
   agentConnections: {},
 
   // Active-agent actions
@@ -230,7 +255,6 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       connectionStep: null,
       keyExchangeAttempt: null,
       agentOnline: null,
-      agentConnections: {},
     }),
 
   setReconnecting: (attempt, maxAttempts) =>
@@ -283,6 +307,45 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       };
     }),
 
+  setRelayConnected: () =>
+    set({
+      relay: {
+        state: 'connected',
+        reconnectAttempt: null,
+        maxReconnectAttempts: null,
+        error: null,
+      },
+    }),
+
+  setRelayReconnecting: (attempt, maxAttempts) =>
+    set({
+      relay: {
+        state: 'reconnecting',
+        reconnectAttempt: attempt,
+        maxReconnectAttempts: maxAttempts,
+        error: null,
+      },
+    }),
+
+  setRelayError: (error) =>
+    set((state) => ({
+      relay: {
+        ...state.relay,
+        state: 'error',
+        error,
+      },
+    })),
+
+  setRelayDisconnected: () =>
+    set((state) => ({
+      relay: {
+        ...state.relay,
+        state: 'disconnected',
+        reconnectAttempt: null,
+        maxReconnectAttempts: null,
+      },
+    })),
+
   reset: () =>
     set({
       state: 'disconnected',
@@ -304,32 +367,45 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       connectionStep: null,
       keyExchangeAttempt: null,
       agentOnline: null,
+      relay: {
+        state: 'connecting',
+        reconnectAttempt: null,
+        maxReconnectAttempts: null,
+        error: null,
+      },
     }),
 
   // Multi-agent actions
   setAgentConnecting: (agentId) =>
-    set((state) => ({
-      agentConnections: {
-        ...state.agentConnections,
-        [agentId]: {
-          state: 'connecting',
-          repoPath: null,
-          availableRepos: [],
-          availableCodingPaths: [],
-          isPro: false,
-          agentVersion: null,
-          codexModels: [],
-          availableProviders: [],
-          devBuild: false,
-          connectedAt: null,
-          error: null,
-          reconnectAttempt: null,
-          maxReconnectAttempts: null,
-          connectionStep: null,
-          keyExchangeAttempt: null,
+    set((state) => {
+      const existing = state.agentConnections[agentId];
+      return {
+        agentConnections: {
+          ...state.agentConnections,
+          [agentId]: {
+            ...(existing || {
+              repoPath: null,
+              availableRepos: [],
+              availableCodingPaths: [],
+              isPro: false,
+              agentVersion: null,
+              codexModels: [],
+              availableProviders: [],
+              devBuild: false,
+              connectedAt: null,
+              reconnectAttempt: null,
+              maxReconnectAttempts: null,
+            }),
+            state: 'connecting',
+            connectionStep: 'signaling',
+            keyExchangeAttempt: null,
+            error: null,
+            reconnectAttempt: null,
+            maxReconnectAttempts: null,
+          },
         },
-      },
-    })),
+      };
+    }),
 
   setAgentConnected: (agentId, repoPath, isPro, availableRepos, availableCodingPaths, agentVersion, devBuild, platform, audio) =>
     set((state) => ({
@@ -337,6 +413,8 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
         ...state.agentConnections,
         [agentId]: {
           state: 'connected',
+          connectionStep: null,
+          keyExchangeAttempt: null,
           repoPath: repoPath || null,
           availableRepos: availableRepos || [],
           availableCodingPaths: availableCodingPaths || [],
@@ -351,8 +429,6 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
           error: null,
           reconnectAttempt: null,
           maxReconnectAttempts: null,
-          connectionStep: null,
-          keyExchangeAttempt: null,
           online: true,
         },
       },
@@ -384,10 +460,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
           [agentId]: { ...existing, availableProviders: providers },
         },
         ...(state.agentId === agentId
-          ? {
-              availableProviders: providers,
-              opencodeModels: opencode?.models ?? [],
-            }
+          ? { availableProviders: providers, opencodeModels: opencode?.models ?? [] }
           : {}),
       };
     }),
@@ -401,9 +474,6 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
           ...state.agentConnections,
           [agentId]: {
             ...existing,
-            // A handshake error is more useful than the following cleanup
-            // notice. Keep it visible so the scoped /connect screen can
-            // offer recovery instead of rendering blank.
             state: existing.error ? 'error' : 'disconnected',
             connectedAt: null,
             reconnectAttempt: null,
@@ -414,21 +484,6 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
           },
         },
       };
-    }),
-
-  setAllAgentsDisconnected: () =>
-    set((state) => {
-      const agentConnections = Object.fromEntries(Object.entries(state.agentConnections).map(([agentId, existing]) => [agentId, {
-        ...existing,
-        state: existing.error ? 'error' as ConnectionState : 'disconnected' as ConnectionState,
-        connectedAt: null,
-        reconnectAttempt: null,
-        maxReconnectAttempts: null,
-        connectionStep: null,
-        keyExchangeAttempt: null,
-        online: false,
-      }]));
-      return { agentConnections };
     }),
 
   setAgentReconnecting: (agentId, attempt, maxAttempts) =>
@@ -449,17 +504,6 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       };
     }),
 
-  setAllAgentsReconnecting: (attempt, maxAttempts) =>
-    set((state) => ({
-      agentConnections: Object.fromEntries(Object.entries(state.agentConnections).map(([agentId, existing]) => [agentId, {
-        ...existing,
-        state: 'reconnecting' as ConnectionState,
-        reconnectAttempt: attempt,
-        maxReconnectAttempts: maxAttempts,
-        error: null,
-      }])),
-    })),
-
   setAgentError: (agentId, error) =>
     set((state) => ({
       agentConnections: {
@@ -468,8 +512,7 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
           ...(state.agentConnections[agentId] || {
             state: 'error', repoPath: null, availableRepos: [],
             availableCodingPaths: [], isPro: false, agentVersion: null, devBuild: false, connectedAt: null,
-            codexModels: [], reconnectAttempt: null, maxReconnectAttempts: null,
-            availableProviders: [],
+            codexModels: [], availableProviders: [], reconnectAttempt: null, maxReconnectAttempts: null,
             connectionStep: null, keyExchangeAttempt: null,
           }),
           state: 'error',
@@ -487,7 +530,30 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       }])),
     })),
 
-  setAgentConnectionStep: (agentId, step, attempt) =>
+  setAgentOnlineFor: (agentId, online) =>
+    set((state) => {
+      const existing = state.agentConnections[agentId];
+      if (!existing) return state;
+      return {
+        agentConnections: {
+          ...state.agentConnections,
+          [agentId]: online
+            ? { ...existing, online }
+            : {
+              ...existing,
+              // The relay is still healthy, but this peer is not. Surface it
+              // only on routes that belong to this agent and wait for its
+              // normal watch/key-exchange recovery path.
+              state: 'reconnecting',
+              connectionStep: 'waiting-for-agent',
+              keyExchangeAttempt: null,
+              online,
+            },
+        },
+      };
+    }),
+
+  setAgentConnectionStep: (agentId, connectionStep, attempt) =>
     set((state) => {
       const existing = state.agentConnections[agentId];
       if (!existing) return state;
@@ -497,26 +563,49 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
           [agentId]: {
             ...existing,
             ...(existing.state === 'error' || existing.state === 'disconnected'
-              ? { state: 'connecting' as ConnectionState, error: null, reconnectAttempt: null, maxReconnectAttempts: null }
+              ? {
+                  state: 'connecting' as ConnectionState,
+                  error: null,
+                  reconnectAttempt: null,
+                  maxReconnectAttempts: null,
+                }
               : {}),
-            connectionStep: step,
+            connectionStep,
             ...(attempt !== undefined ? { keyExchangeAttempt: attempt } : { keyExchangeAttempt: null }),
           },
         },
       };
     }),
 
-  setAgentOnlineFor: (agentId, online) =>
-    set((state) => {
-      const existing = state.agentConnections[agentId];
-      if (!existing) return state;
-      return {
-        agentConnections: {
-          ...state.agentConnections,
-          [agentId]: { ...existing, online },
-        },
-      };
-    }),
+  setAllAgentsReconnecting: (attempt, maxAttempts) =>
+    set((state) => ({
+      agentConnections: Object.fromEntries(
+        Object.entries(state.agentConnections).map(([agentId, connection]) => [agentId, {
+          ...connection,
+          state: 'reconnecting',
+          reconnectAttempt: attempt ?? connection.reconnectAttempt,
+          maxReconnectAttempts: maxAttempts ?? connection.maxReconnectAttempts,
+          error: null,
+          connectionStep: 'signaling',
+          keyExchangeAttempt: null,
+        }]),
+      ),
+    })),
+
+  setAllAgentsDisconnected: () =>
+    set((state) => ({
+      agentConnections: Object.fromEntries(
+        Object.entries(state.agentConnections).map(([agentId, connection]) => [agentId, {
+          ...connection,
+          state: connection.error ? 'error' : 'disconnected',
+          connectionStep: null,
+          keyExchangeAttempt: null,
+          reconnectAttempt: null,
+          maxReconnectAttempts: null,
+          online: false,
+        }]),
+      ),
+    })),
 
   addAgentCodingPath: (agentId, codingPath) =>
     set((state) => {

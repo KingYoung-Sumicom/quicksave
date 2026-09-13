@@ -49,11 +49,12 @@ function OptionRow({ label, description, isSelected, isLocked, isMulti, onClick 
  * For single-select: clicking an option immediately returns the answer.
  * When locked: shows all options with selected highlighted, all disabled.
  */
-function QuestionBlock({ question, header, options, multiSelect, lockedAnswer, hideSubmit, onAnswer, onSelectionChange }: {
+function QuestionBlock({ question, header, options, multiSelect, allowFreeText = true, lockedAnswer, hideSubmit, onAnswer, onSelectionChange }: {
   question: string;
   header?: string;
   options?: Array<{ label: string; description?: string }>;
   multiSelect?: boolean;
+  allowFreeText?: boolean;
   lockedAnswer?: string;
   hideSubmit?: boolean;
   onAnswer: (answer: string) => void;
@@ -120,7 +121,7 @@ function QuestionBlock({ question, header, options, multiSelect, lockedAnswer, h
             </span>
           )}
           {/* "Other" option — label + textbox always visible, click anywhere to select */}
-          {!isLocked && (() => {
+          {!isLocked && allowFreeText && (() => {
             const isOtherSelected = showTextInput;
             const selectOther = () => {
               if (!isOtherSelected) {
@@ -221,6 +222,7 @@ export function InteractiveQuestionView({ request, parsedInput, onRespond }: {
     header?: string;
     options?: Array<{ label: string; description?: string }>;
     multiSelect?: boolean;
+    allowFreeText?: boolean;
   }>) || [];
 
   // Live selections (not yet submitted) — separate from locked (submitted) answers
@@ -234,6 +236,7 @@ export function InteractiveQuestionView({ request, parsedInput, onRespond }: {
         header: undefined as string | undefined,
         options: request.options?.map((o) => ({ label: o.label, description: o.description })),
         multiSelect: false,
+        allowFreeText: true,
       }];
 
   const isMultiPage = effectiveQuestions.length > 1;
@@ -270,6 +273,7 @@ export function InteractiveQuestionView({ request, parsedInput, onRespond }: {
           header={q.header}
           options={q.options}
           multiSelect={q.multiSelect}
+          allowFreeText={q.allowFreeText}
           lockedAnswer={submitted ? selections[i] : undefined}
           hideSubmit={isMultiPage}
           onAnswer={(answer) => handleAnswer(i, answer)}

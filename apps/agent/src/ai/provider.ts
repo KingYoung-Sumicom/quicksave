@@ -71,6 +71,11 @@ export function isFullAccessPermission(agentId: AgentId, level: PermissionLevel)
 
 export type ProviderHistoryMode = 'claude-jsonl' | 'memory' | 'codex-thread' | 'opencode-thread';
 
+/** A provider-native session list can be narrowed to one or more project paths. */
+export interface NativeSessionListOptions {
+  cwd?: string | readonly string[];
+}
+
 /** Where a provider's archive flag is durably owned. Providers without a
  * native archive API use the session registry as a compatibility polyfill. */
 export type ProviderArchiveStorage = 'native' | 'registry';
@@ -137,6 +142,14 @@ export interface ProviderUserInputRequest {
   title?: string;
   message?: string;
   options?: Array<{ key: string; label: string; description?: string }>;
+  /** Render a non-blocking Codex user-input request as an inline question
+   * instead of a generic tool-call permission card. */
+  presentation?: 'inline_follow_up';
+  /** Codex's request_user_input `isOther` flag. */
+  allowFreeText?: boolean;
+  /** Native item after which a supplemental user-input card belongs when
+   * history is reconstructed from the provider's own store. */
+  historyAnchorItemId?: string;
   /** Interactive prompts such as Codex request_user_input must always reach
    * the user even in permissive modes. */
   skipAutoApprove?: boolean;
@@ -309,7 +322,9 @@ export interface CodingAgentProvider {
   probeProvider?(): Promise<ProbeResult>;
 
   /** Optional provider-native session discovery for sessions not yet tracked in Quicksave's registry. */
-  listNativeSessions?(opts?: { cwd?: string }): Promise<NativeSessionSummary[]>;
+  listNativeSessions?(opts?: NativeSessionListOptions): Promise<NativeSessionSummary[]>;
+  /** Look up one native session without enumerating the provider's full session list. */
+  getNativeSession?(sessionId: string, opts?: { cwd?: string }): Promise<NativeSessionSummary | undefined>;
   /** Rebuild render cards from the provider's durable history on demand. */
   loadCardHistory?(opts: {
     sessionId: string;

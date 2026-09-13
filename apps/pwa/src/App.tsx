@@ -16,6 +16,7 @@ import { BusClientTransport } from './lib/busClientTransport';
 import { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { ConnectionSetup } from './components/ConnectionSetup';
 import { ConnectingOverlay, ConnectingStages } from './components/ConnectingOverlay';
+import { RelayConnectionBanner } from './components/RelayConnectionBanner';
 import { SessionAppBar } from './components/SessionAppBar';
 import { NewSessionAppBar } from './components/NewSessionAppBar';
 import { RepoView } from './components/RepoView';
@@ -239,18 +240,14 @@ function AppContent() {
   const location = useLocation();
   const intentionalDisconnectRef = useRef(false);
   const {
+    // Legacy active-agent mirror. Route-scoped UI must use agentConnections.
     state,
     repoPath,
     signalingServer,
     pendingRepoPath,
-    setConnecting,
-    setSignaling,
     setConnected,
     setDisconnected,
-    setReconnecting,
-    setError,
     setPendingRepoPath,
-    setConnectionStep,
     setAgentOnline,
   } = useConnectionStore();
   const agentConnections = useConnectionStore((s) => s.agentConnections);
@@ -298,9 +295,8 @@ function AppContent() {
     clientRef.current?.setActiveAgent(agentId);
     const connState = useConnectionStore.getState();
     const perAgent = connState.agentConnections[agentId];
-    // The flat store fields are a compatibility mirror only. Switch them for
-    // every selection, including an offline machine, so global consumers
-    // cannot keep showing a healthy machine's state for the selected one.
+    // Keep the compatibility mirror scoped to the selected machine, even
+    // while it is offline; otherwise it can show another machine's last state.
     connState.setActiveAgentConnection(agentId);
     if (perAgent?.state === 'connected') {
       useGitStore.getState().setCurrentRepoPath(perAgent.repoPath);
@@ -461,9 +457,6 @@ function AppContent() {
     recordConnection,
     navigate,
     setDisconnected,
-    setReconnecting,
-    setError,
-    setConnectionStep,
     setAgentOnline,
     setActiveAgent,
   });
@@ -474,9 +467,6 @@ function AppContent() {
       recordConnection,
       navigate,
       setDisconnected,
-      setReconnecting,
-      setError,
-      setConnectionStep,
       setAgentOnline,
       setActiveAgent,
     };
@@ -504,7 +494,7 @@ function AppContent() {
         const { transport } = ensureBusForAgent(connectedAgentId);
         transport.notifyConnected();
       }
-      registerWsRetry((agentId) => agentId ? hmrClient.retryAgent(agentId) : hmrClient.retryReconnect());
+      registerWsRetry(() => hmrClient.retryReconnect());
       if (typeof window !== 'undefined') {
         (window as unknown as { __wsClient?: WebSocketClient }).__wsClient = hmrClient;
       }
@@ -580,31 +570,27 @@ function AppContent() {
         // Project route components (/p/) manage their own navigation after connection.
         // No need to navigate on connect — the home page and project routes handle it.
       },
-      onDisconnected: (disconnectedAgentId) => {
-        if (disconnectedAgentId) {
-          busesRef.current.get(disconnectedAgentId)?.transport.notifyDisconnected();
-          useConnectionStore.getState().setAgentDisconnected(disconnectedAgentId);
-          // A peer can disappear while other machines remain usable. Only
-          // demote that machine's sessions and only update the legacy mirror
-          // when it is the selected active peer.
-          useClaudeStore.getState().clearActiveOnDisconnect(disconnectedAgentId);
-          if (clientRef.current?.getActiveAgentId() === disconnectedAgentId) {
-            handlersRef.current.setDisconnected();
-          }
-        } else {
-          // Blanket disconnect (WebSocket itself dropped) — flag every bus.
-          for (const { transport } of busesRef.current.values()) transport.notifyDisconnected();
-          useConnectionStore.getState().setAllAgentsDisconnected();
-          handlersRef.current.setDisconnected();
-          useClaudeStore.getState().clearActiveOnDisconnect();
-        }
+      onRelayConnected: () => {
+        useConnectionStore.getState().setRelayConnected();
       },
-      onReconnecting: (attempt, maxAttempts) => {
+      onRelayDisconnected: () => {
+        // The relay is the shared transport for every agent. Keep the cached
+        // per-agent records so route-scoped UI can say which machine is
+        // unavailable instead of collapsing into one global error.
+        for (const { transport } of busesRef.current.values()) transport.notifyDisconnected();
+        useConnectionStore.getState().setRelayDisconnected();
+        useConnectionStore.getState().setAllAgentsDisconnected();
+        handlersRef.current.setDisconnected();
+        // Demote any isActive=true sessions to closed. We can't trust the
+        // pre-disconnect snapshot across the blip, and letting stale green
+        // badges persist causes a "flash green then gray" on reconnect when
+        // the fresh /sessions/active snap finally corrects them.
+        useClaudeStore.getState().clearActiveOnDisconnect();
+      },
+      onRelayReconnecting: (attempt, maxAttempts) => {
         if (!intentionalDisconnectRef.current) {
-          handlersRef.current.setReconnecting(attempt, maxAttempts);
-          // Relay socket retries affect every active agent session. This is
-          // distinct from a single peer becoming offline, handled above.
-          useConnectionStore.getState().setAllAgentsReconnecting(attempt, maxAttempts);
+          useConnectionStore.getState().setRelayReconnecting(attempt, maxAttempts);
+          useConnectionStore.getState().setAllAgentsReconnecting();
         }
       },
       onMessage: (message, fromAgentId) => {
@@ -613,35 +599,27 @@ function AppContent() {
         // the matching transport so subscriptions stay isolated per peer.
         busesRef.current.get(fromAgentId)?.transport.notifyMessage(message, fromAgentId);
       },
-      onError: (error, erroredAgentId) => {
+      onRelayError: (error) => {
         // Don't show errors during intentional disconnect
         if (!intentionalDisconnectRef.current) {
-          if (erroredAgentId) {
-            useConnectionStore.getState().setAgentError(erroredAgentId, error.message);
-            if (clientRef.current?.getActiveAgentId() === erroredAgentId) {
-              handlersRef.current.setError(error.message);
-            }
-          } else {
-            useConnectionStore.getState().setAllAgentsError(error.message);
-            handlersRef.current.setError(error.message);
-          }
+          useConnectionStore.getState().setRelayError(error.message);
         }
       },
-      onConnectionStep: (step, attempt, progressingAgentId) => {
-        if (progressingAgentId) {
-          useConnectionStore.getState().setAgentConnectionStep(progressingAgentId, step, attempt);
-          if (clientRef.current?.getActiveAgentId() === progressingAgentId) {
-            handlersRef.current.setConnectionStep(step, attempt);
-          }
-        } else {
-          handlersRef.current.setConnectionStep(step, attempt);
-        }
+      onAgentDisconnected: (agentId) => {
+        busesRef.current.get(agentId)?.transport.notifyDisconnected();
+        useConnectionStore.getState().setAgentDisconnected(agentId);
+      },
+      onAgentError: (agentId, error) => {
+        useConnectionStore.getState().setAgentError(agentId, error.message);
+      },
+      onAgentConnectionStep: (agentId, step, attempt) => {
+        useConnectionStore.getState().setAgentConnectionStep(agentId, step, attempt);
       },
       onAgentStatus: (agentId, online) => {
-        useConnectionStore.getState().setAgentOnlineFor(agentId, online);
         if (clientRef.current?.getActiveAgentId() === agentId) {
           handlersRef.current.setAgentOnline(online);
         }
+        useConnectionStore.getState().setAgentOnlineFor(agentId, online);
         // Keep the bus transport's connected state in sync with the agent's
         // session. Without this, a command issued while the agent is offline
         // hits a dead socket and waits out its 10–30s timeout instead of
@@ -670,7 +648,7 @@ function AppContent() {
     clientRef.current = client;
     // Per-agent buses are created lazily in `onConnected`; nothing to wire
     // up at client-creation time beyond the client itself.
-    registerWsRetry((agentId) => agentId ? client.retryAgent(agentId) : client.retryReconnect());
+    registerWsRetry(() => client.retryReconnect());
     if (typeof window !== 'undefined') {
       (window as unknown as { __wsClient?: WebSocketClient }).__wsClient = client;
       (window as unknown as { __buses?: Map<string, AgentBus> }).__buses = busesRef.current;
@@ -678,7 +656,7 @@ function AppContent() {
 
     client.connect().catch((error) => {
       console.error('Failed to connect WebSocket:', error);
-      handlersRef.current.setError('Failed to connect to signaling server');
+      useConnectionStore.getState().setRelayError('Failed to connect to signaling server');
     });
 
     return () => {
@@ -707,55 +685,43 @@ function AppContent() {
       }
 
       agentIdRef.current = newAgentId;
-      setConnecting(newAgentId);
       useConnectionStore.getState().setAgentConnecting(newAgentId);
 
       if (!clientRef.current) {
-        setError('WebSocket not connected yet');
+        useConnectionStore.getState().setAgentError(newAgentId, 'Relay connection is not ready yet');
         return;
       }
 
-      setSignaling();
       clientRef.current.connectToAgent(newAgentId, publicKey);
     },
-    [setConnecting, setSignaling, setError, setActiveAgent]
+    [setActiveAgent]
   );
 
-  const handleAbortConnection = useCallback((targetAgentId?: string) => {
-    const agentId = targetAgentId ?? agentIdRef.current;
+  const handleAbortConnection = useCallback(() => {
     if (clientRef.current) {
-      if (agentId) {
-        clientRef.current.disconnectFromAgent(agentId);
-        useConnectionStore.getState().setAgentDisconnected(agentId);
+      if (agentIdRef.current) {
+        clientRef.current.disconnectFromAgent(agentIdRef.current);
+        useConnectionStore.getState().setAgentDisconnected(agentIdRef.current);
       }
     }
-    if (agentIdRef.current === agentId) agentIdRef.current = null;
-    // The relay connection and other peer sessions are shared. Cancelling one
-    // machine's setup must not clear their state or stop their reconnect loop.
-    if (useConnectionStore.getState().agentId === agentId) {
-      setDisconnected();
-    }
+    agentIdRef.current = null;
     resetGit();
     navigate('/', { replace: true });
-  }, [setDisconnected, resetGit, navigate]);
+  }, [resetGit, navigate]);
 
-  const handleRetryConnection = useCallback((targetAgentId?: string) => {
-    const currentAgentId = targetAgentId ?? agentIdRef.current;
+  const handleRetryConnection = useCallback(() => {
+    const currentAgentId = agentIdRef.current;
     if (!currentAgentId) return;
 
     if (clientRef.current) {
       clientRef.current.disconnectFromAgent(currentAgentId);
-    }
-    useConnectionStore.getState().setAgentDisconnected(currentAgentId);
-    if (useConnectionStore.getState().agentId === currentAgentId) {
-      setDisconnected();
     }
 
     const machine = useMachineStore.getState().getMachine(currentAgentId);
     if (machine) {
       handleConnect(currentAgentId, machine.publicKey);
     }
-  }, [setDisconnected, handleConnect]);
+  }, [handleConnect]);
 
   const handleSwitchMachine = useCallback((targetAgentId: string) => {
     // In multi-agent mode, we keep existing connections alive and just add the new one
@@ -910,28 +876,18 @@ function AppContent() {
     }
   }, [agentConnections]);
 
-  const connectingRouteAgentId = useMemo(() => {
-    const match = location.pathname.match(/^\/connect\/([^/]+)$/);
-    if (!match) return null;
-    try {
-      return decodeURIComponent(match[1]);
-    } catch {
-      return null;
-    }
-  }, [location.pathname]);
-  const routeConnection = connectingRouteAgentId ? agentConnections[connectingRouteAgentId] : undefined;
-  // A connection link owns its own full-screen status. Project pages use the
-  // target machine's map directly and must remain interactive for other peers.
-  const showOverlay = !!connectingRouteAgentId && !!routeConnection && (
-    routeConnection.state === 'connecting' || routeConnection.state === 'reconnecting'
-      || (routeConnection.state === 'error' && !!routeConnection.error)
+  // QR/deep links deliberately own a full-screen agent connection flow. All
+  // other routes render their agent status locally, while relay reconnects use
+  // the non-blocking global banner below.
+  const connectRouteAgentId = location.pathname.startsWith('/connect/')
+    ? location.pathname.split('/')[2] || null
+    : null;
+  const connectRouteConnection = connectRouteAgentId ? agentConnections[connectRouteAgentId] : undefined;
+  const showOverlay = !!connectRouteAgentId && (
+    connectRouteConnection?.state === 'connecting'
+    || connectRouteConnection?.state === 'reconnecting'
+    || connectRouteConnection?.state === 'error'
   );
-
-  useEffect(() => {
-    if (connectingRouteAgentId && routeConnection?.state === 'connected') {
-      navigate('/', { replace: true });
-    }
-  }, [connectingRouteAgentId, routeConnection?.state, navigate]);
 
   const projectRepoElement = (
     <ProjectRouteRepo
@@ -997,6 +953,7 @@ function AppContent() {
       className="flex flex-col bg-slate-900 text-slate-100 overflow-hidden h-full transition-[padding] duration-200"
       style={rightPad ? { paddingRight: rightPad } : undefined}
     >
+      <RelayConnectionBanner />
       {isConnected && <NotificationPrompt onOffer={handlePushOffer} />}
       {isDesktop ? (
         machines.length === 0 ? (
@@ -1058,12 +1015,8 @@ function AppContent() {
           <Route path="/pair" element={<JoinGroupPage />} />
         </Routes>
       )}
-      {showOverlay && connectingRouteAgentId && (
-        <ConnectingOverlay
-          agentId={connectingRouteAgentId}
-          onAbort={() => handleAbortConnection(connectingRouteAgentId)}
-          onRetry={() => handleRetryConnection(connectingRouteAgentId)}
-        />
+      {showOverlay && connectRouteAgentId && (
+        <ConnectingOverlay agentId={connectRouteAgentId} onAbort={handleAbortConnection} onRetry={handleRetryConnection} />
       )}
       <FilePreviewModal />
       {gitIdentityAgentId && (
@@ -1452,16 +1405,7 @@ function ProjectRouteSession({
     urlSessionId && urlSessionId !== 'new' ? s.sessions[urlSessionId]?.archived === true : false
   );
 
-  const { isReady, isConnecting, cwd: projectCwd, agentId: targetAgentId } = useProjectConnection(projectId, onConnect, onSwitchMachine);
-  // Native-provider sessions can be discovered before their cwd has made it
-  // into the machine's known-path cache. The URL hash then cannot be reversed
-  // by useProjectConnection, even though the history entry already carries
-  // the authoritative cwd. Keep the session route (and its right panel)
-  // usable in that window.
-  const sessionCwd = useClaudeStore((s) => (
-    urlSessionId && urlSessionId !== 'new' ? s.sessions[urlSessionId]?.cwd : undefined
-  ));
-  const cwd = projectCwd ?? sessionCwd;
+  const { isReady, isConnecting, cwd, agentId: targetAgentId } = useProjectConnection(projectId, onConnect, onSwitchMachine);
   const voiceAgent = useVoiceAgent(
     targetAgentId ?? '',
     urlSessionId && urlSessionId !== 'new' ? urlSessionId : undefined,
@@ -1595,17 +1539,18 @@ function ProjectRouteSession({
     }
   }, [activeSessionId, urlSessionId, projectBasePath, navigate]);
 
-  // Archived session bounce: desktop always returns to the project root so
-  // its workspace layout cannot retain a defunct session route. Mobile keeps
-  // the cleaner back-stack behavior, falling back to replace for deep links.
+  // Archived session bounce: if the session on this page gets archived on
+  // the daemon, navigate back. Prefer `navigate(-1)` so the defunct entry
+  // is popped (cleaner mobile back-stack). Fall back to replace when there's
+  // no prior entry (deep-link / refresh — `location.key === 'default'`).
   useEffect(() => {
     if (!viewedArchived) return;
-    if (isDesktop || location.key === 'default') {
-      navigate(projectBasePath, { replace: true });
-    } else {
+    if (location.key !== 'default') {
       navigate(-1);
+    } else {
+      navigate(projectBasePath, { replace: true });
     }
-  }, [viewedArchived, isDesktop, location.key, navigate, projectBasePath]);
+  }, [viewedArchived, location.key, navigate, projectBasePath]);
 
   const getSessionId = () => useClaudeStore.getState().activeSessionId || urlSessionId;
 
@@ -1628,7 +1573,9 @@ function ProjectRouteSession({
       <div className="flex flex-col h-full overflow-hidden">
         <NewSessionAppBar cwd={cwd} onOpenMenu={() => {}} backTo={projectBasePath} />
         <div className="flex-1 flex items-center justify-center">
-          {isConnecting ? <ConnectingStages agentId={targetAgentId} /> : <Spinner size="w-8 h-8" color="border-blue-500" />}
+          {isConnecting && targetAgentId
+            ? <ConnectingStages agentId={targetAgentId} />
+            : <Spinner size="w-8 h-8" color="border-blue-500" />}
         </div>
       </div>
     );
@@ -1727,14 +1674,16 @@ function ProjectRouteSession({
   );
 }
 
-// Lightweight handler for QR code / shared link connections (/connect/:agentId?pk=...&name=...)
-// Adds machine if new, triggers connection, and redirects — no UI of its own.
+// QR/shared-link connection entry point. The shell renders the dedicated
+// AgentConnectScreen while this route stays mounted, then returns home only
+// after this specific agent has completed its handshake.
 function ConnectHandler({ onConnect }: { onConnect: (agentId: string, publicKey: string) => void }) {
   const { agentId } = useParams<{ agentId: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { addMachine, getMachine } = useMachineStore();
   const { setPendingRepoPath } = useConnectionStore();
+  const connection = useConnectionStore((s) => agentId ? s.agentConnections[agentId] : undefined);
   const initiated = useRef(false);
 
   useEffect(() => {
@@ -1759,11 +1708,16 @@ function ConnectHandler({ onConnect }: { onConnect: (agentId: string, publicKey:
       const machine = getMachine(agentId);
       if (machine) {
         onConnect(machine.agentId, machine.publicKey);
-      } else {
-        navigate('/', { replace: true });
       }
     }
+
   }, [agentId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (connection?.state === 'connected') {
+      navigate('/', { replace: true });
+    }
+  }, [connection?.state, navigate]);
 
   return null;
 }

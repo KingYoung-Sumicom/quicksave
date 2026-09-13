@@ -81,6 +81,47 @@ describe('connectionStore', () => {
     });
   });
 
+  describe('separate relay and agent lifecycles', () => {
+    it('tracks a relay reconnect without overwriting either agent record', () => {
+      const store = useConnectionStore.getState();
+      store.setAgentConnecting('agent-a');
+      store.setAgentConnected('agent-a', '/repo-a', false);
+      store.setAgentConnected('agent-b', '/repo-b', false);
+
+      store.setRelayReconnecting(2, 5);
+      store.setAllAgentsReconnecting();
+
+      const state = useConnectionStore.getState();
+      expect(state.relay).toMatchObject({ state: 'reconnecting', reconnectAttempt: 2, maxReconnectAttempts: 5 });
+      expect(state.agentConnections['agent-a']).toMatchObject({ state: 'reconnecting', connectionStep: 'signaling' });
+      expect(state.agentConnections['agent-b']).toMatchObject({ state: 'reconnecting', connectionStep: 'signaling' });
+    });
+
+    it('stores handshake progress on the intended agent only', () => {
+      const store = useConnectionStore.getState();
+      store.setAgentConnecting('agent-a');
+      store.setAgentConnecting('agent-b');
+
+      store.setAgentConnectionStep('agent-b', 'key-exchange', 3);
+
+      const state = useConnectionStore.getState();
+      expect(state.agentConnections['agent-a']).toMatchObject({ connectionStep: 'signaling', keyExchangeAttempt: null });
+      expect(state.agentConnections['agent-b']).toMatchObject({ connectionStep: 'key-exchange', keyExchangeAttempt: 3 });
+    });
+
+    it('marks only the offline agent as reconnecting', () => {
+      const store = useConnectionStore.getState();
+      store.setAgentConnected('agent-a', '/repo-a', false);
+      store.setAgentConnected('agent-b', '/repo-b', false);
+
+      store.setAgentOnlineFor('agent-a', false);
+
+      const state = useConnectionStore.getState();
+      expect(state.agentConnections['agent-a']).toMatchObject({ state: 'reconnecting', connectionStep: 'waiting-for-agent', online: false });
+      expect(state.agentConnections['agent-b']).toMatchObject({ state: 'connected' });
+    });
+  });
+
   describe('setAgentOnline', () => {
     it('only sets the agentOnline flag without changing state', () => {
       useConnectionStore.getState().setConnecting('agent-123');

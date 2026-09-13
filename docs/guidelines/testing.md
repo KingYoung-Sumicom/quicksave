@@ -46,6 +46,11 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
    - Race conditions (e.g., clearCards before snapshotCutoff)
    - State after reconnect (e.g., pubsub subscriptions lost)
    - Missing or out-of-order events
+   - Session lifecycle actions on registry-only sessions (no live process):
+     assert the same terminal state update reaches the PWA as for live sessions.
+   - Provider-native sessions with no Quicksave registry entry: assert targeted
+     id lookup supplies the provider and cwd for both history loading and
+     archive; the fallback must not enumerate the provider's complete list.
    - Streaming providers that emit both deltas and final snapshots: assert the
      same text/reasoning part is rendered once, user-role parts are ignored,
      and pending tool calls are patched when later snapshots populate inputs
@@ -68,6 +73,10 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
    - Multi-machine selectors: seed conflicting per-agent state and assert the
      selected project or machine wins over the mutable active-agent fallback,
      especially for machine-local authentication and capability gates.
+   - Multi-machine reconnects: keep one machine connected while another retries,
+     errors, or goes offline. Assert the healthy machine's state and session
+     indicators remain unchanged, and distinguish a shared relay disconnect
+     from a single-machine disconnect.
    - Put these in a dedicated `edgeCases.test.ts` or alongside the relevant module
 
 3. **Integration tests** — Cross-module flows with real filesystem.
