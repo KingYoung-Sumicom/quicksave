@@ -47,6 +47,7 @@ const sessionIdHint = readArg('--session-id');
  */
 const corrIdHint = readArg('--corr');
 const includeSandboxBash = !process.argv.includes('--no-sandbox-bash');
+const includeNativeCompletionRegistration = process.argv.includes('--native-completion-registration');
 const QUICKSAVE_SESSION_ID_ARG = '_quicksaveSessionId';
 const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
 
@@ -175,6 +176,34 @@ if (includeSandboxBash) {
         };
       }
     },
+  );
+}
+
+if (includeNativeCompletionRegistration) {
+  server.tool(
+    'RegisterBackgroundExecutionCompletion',
+    'Register one native Codex exec_command process for a future completion notification. ' +
+      'Call this only after native exec_command returned a `Process running with session ID <id>` result and only when the user asked to monitor, wait for, or be notified about that process. ' +
+      'Pass that exact session ID as processHandle. This tool does not execute, inspect, poll, signal, or alter the process; Quicksave validates the handle against the current native Codex turn before it can notify you.',
+    {
+      processHandle: z.string().min(1).max(256)
+        .describe('Exact opaque session ID returned by native exec_command. It is not an OS PID.'),
+    },
+    {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false,
+    },
+    async ({ processHandle }) => ({
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          version: 1,
+          registration: 'submitted_for_host_validation',
+          processHandle,
+        }),
+      }],
+    }),
   );
 }
 
@@ -415,51 +444,13 @@ function writeStoredStatus(args: {
 
 server.tool(
   'UpdateSessionStatus',
-  'Update the ticket-style status for the current session, shown to the user on the home screen.\n' +
+  'Update session status shown on the user\'s home screen. MUST call on first response of every session.\n' +
     '\n' +
-    'Call at the START of every session (first response), and again whenever stage changes, ' +
-    'work gets blocked/unblocked, or progress is worth surfacing.\n' +
+    'Fields: subject (required on first call), stage (investigating|working|verifying|done), blocked (bool), note (~12 words, appended), pendingMissionLabel, pendingMissionUntil, clearPendingMission.\n' +
     '\n' +
-    'Call with NO fields to read the current stored status without mutating ' +
-    '(dry-run). Useful on resume to check whether subject/stage already match the work.\n' +
+    'Dry-run: call with NO fields to read current status without changing it. Use on resume to check if subject/stage match.\n' +
     '\n' +
-    'Fields:\n' +
-    '  subject — What this session is solving, from the user\'s perspective.\n' +
-    '            Good: "Fix auth token expiring early"   Bad: "Debugging jwt.ts"\n' +
-    '  stage   — Ticket lifecycle stage:\n' +
-    '            investigating  reading code, finding root cause, understanding problem, designing\n' +
-    '            working        actively writing or changing code\n' +
-    '            verifying      running tests, confirming the fix, waiting on CI\n' +
-    '            done           user-visible deliverable is complete\n' +
-    '  blocked — Orthogonal flag. Set true when stuck (waiting on user decision, ' +
-    'permission request, external service). Set false when unblocked. Do not change stage.\n' +
-    '  note    — One progress/finding entry, max ~12 words. APPENDED to the session\'s event log ' +
-    '(not overwritten). Emit one on meaningful state changes: ruling out a hypothesis, ' +
-    'completing a sub-goal, hitting a blocker, starting verification, etc. ' +
-    'Examples: "handler done, writing tests" / "permission pending on git push" / ' +
-    '"ruled out jwt.ts — secret looks right".\n' +
-    '  pendingMissionLabel — Short label for a long-running task that should sit lower in session lists.\n' +
-    '  pendingMissionUntil — Expected completion time as epoch ms or ISO date string.\n' +
-    '  clearPendingMission — Clear the long-running task marker when finished or cancelled.\n' +
-    '\n' +
-    'Typical flows:\n' +
-    '  Bug / debug:    investigating → working → verifying → (loop or done)\n' +
-    '  Feature:        investigating → working → verifying → done\n' +
-    '  Question:       investigating → done\n' +
-    '  Chore:          working → verifying → done\n' +
-    '\n' +
-    'Rules:\n' +
-    '- Always call on the first response of a new session to set `subject` and `stage`.\n' +
-    '- On resume, if you cannot see a prior UpdateSessionStatus tool call in conversation ' +
-    'history, do a no-args dry-run first; then set/correct subject or stage if blank or ' +
-    'drifted from the current work.\n' +
-    '- For long-running tasks (research, large refactors), emit a `note` every time you ' +
-    'cross a sub-goal or learn something — the user opens the session to skim recent notes ' +
-    'as progress signal.\n' +
-    '- Do not skip `verifying` if you ran tests / build / repro.\n' +
-    '- Do not declare `done` until the user\'s problem is fully resolved.\n' +
-    '- For long refactors, prefer proposing to split into per-phase sub-sessions ' +
-    'over keeping one session in `investigating` for a long time.',
+    'Flows: Bug=investigating→working→verifying→done. Feature=same. Question=investigating→done. Chore=working→verifying→done.',
   {
     subject: z.string().optional().describe('Subject line — what this session is solving'),
     stage: z.enum(['investigating', 'working', 'verifying', 'done']).optional()

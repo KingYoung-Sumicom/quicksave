@@ -31,7 +31,7 @@ const fileCache = createBlobCache<FilesReadRequestPayload, FilesReadResponsePayl
   l2MaxBytes: 100 * 1024 * 1024,
   keyFn: (req) => `${req.cwd} ${req.path} ${req.maxBytes ?? ''} ${req.allowImage ? '1' : '0'}`,
   bytesFn: (res) => entryBytesOf(res),
-  shouldCache: (res) => res.success,
+  shouldCache: (res) => res.success && res.kind !== 'oversized' && !res.transferError,
 });
 
 export function cacheKeyFor(req: FilesReadRequestPayload): string {
@@ -51,6 +51,15 @@ export async function readWithCache(
   fetcher: (req: FilesReadRequestPayload) => Promise<FilesReadResponsePayload>,
 ): Promise<FilesReadResponsePayload> {
   const cached = await fileCache.peek(req);
+  // Metadata-only oversized/binary entries from older builds must not
+  // suppress a fresh attempt to fetch the body through WebRTC. In
+  // particular, revalidating an old binary entry with ifNoneMatch would make
+  // the agent return notModified before the direct-transfer fallback runs.
+  if (cached?.kind === 'oversized'
+    || (cached?.kind === 'binary'
+      && (cached.encoding !== 'base64' || typeof cached.content !== 'string'))) {
+    return fetcher(req);
+  }
   const etag = etagFor(cached);
   if (cached && etag) {
     // Conditional revalidation — send the etag, expect 304 or full body.

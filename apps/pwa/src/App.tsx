@@ -16,6 +16,7 @@ import { BusClientTransport } from './lib/busClientTransport';
 import { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { ConnectionSetup } from './components/ConnectionSetup';
 import { ConnectingOverlay, ConnectingStages } from './components/ConnectingOverlay';
+import { RelayConnectionBanner } from './components/RelayConnectionBanner';
 import { SessionAppBar } from './components/SessionAppBar';
 import { NewSessionAppBar } from './components/NewSessionAppBar';
 import { RepoView } from './components/RepoView';
@@ -25,6 +26,7 @@ import { ClaudePanel } from './components/ClaudePanel';
 import {
   type ClaudePreferences,
   type CodexLoginState,
+  type ClaudeAuthState,
   type CodexModelInfo,
   type CodexQuotaSnapshot,
   type CommitSummaryState,
@@ -40,8 +42,10 @@ import {
   type ProjectListSummariesResponsePayload,
   type TerminalSummary,
   type TerminalsUpdate,
+  type OpenCodeConfigSnapshotResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { useCodexLoginStore } from './stores/codexLoginStore';
+import { useClaudeAuthStore } from './stores/claudeAuthStore';
 import { useCodexQuotaStore } from './stores/codexQuotaStore';
 import { useTerminalStore } from './stores/terminalStore';
 import { registerAgentBusGetter, getBusForAgent } from './lib/busRegistry';
@@ -53,6 +57,7 @@ import { buildOfferMessage, getCurrentSubscription, notificationPermission } fro
 import { GitIdentityModal } from './components/GitIdentityModal';
 import { SettingsPage } from './components/SettingsPage';
 import { MachineInfoPage } from './components/MachineInfoPage';
+import { OpenCodeConfigPage } from './components/OpenCodeConfigPage';
 import { ArchivedSessionsPage } from './components/ArchivedSessionsPage';
 import { AddNewPage } from './components/AddNewPage';
 import { JoinGroupPage } from './routes/JoinGroupPage';
@@ -148,6 +153,12 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
     onError: (err) => console.warn('[bus] /codex/login error:', err),
   });
 
+  bus.subscribe<ClaudeAuthState, never>('/claude/auth', {
+    onSnapshot: (state) => useClaudeAuthStore.getState().set(agentId, state),
+    onUpdate: () => {},
+    onError: (err) => console.warn('[bus] /claude/auth error:', err),
+  });
+
   // Live local Codex model list. Daemon's fs.watch on ~/.codex/models_cache.json
   // pushes here whenever the codex CLI updates its cache (binary upgrade,
   // first login, etc.) — keeps the picker fresh without re-issuing the
@@ -155,10 +166,10 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
   // populated list during a transient daemon-side load.
   bus.subscribe<CodexModelInfo[], CodexModelInfo[]>('/codex/models', {
     onSnapshot: (models) => {
-      if (models.length > 0) useConnectionStore.getState().setCodexModels(models);
+      if (models.length > 0) useConnectionStore.getState().setAgentCodexModels(agentId, models);
     },
     onUpdate: (models) => {
-      if (models.length > 0) useConnectionStore.getState().setCodexModels(models);
+      if (models.length > 0) useConnectionStore.getState().setAgentCodexModels(agentId, models);
     },
     onError: (err) => console.warn('[bus] /codex/models error:', err),
   });
@@ -229,20 +240,15 @@ function AppContent() {
   const location = useLocation();
   const intentionalDisconnectRef = useRef(false);
   const {
+    // Legacy active-agent mirror. Route-scoped UI must use agentConnections.
     state,
     repoPath,
     signalingServer,
     pendingRepoPath,
-    setConnecting,
-    setSignaling,
     setConnected,
     setDisconnected,
-    setReconnecting,
-    setError,
     setPendingRepoPath,
-    setConnectionStep,
     setAgentOnline,
-    reset,
   } = useConnectionStore();
   const agentConnections = useConnectionStore((s) => s.agentConnections);
 
@@ -289,15 +295,10 @@ function AppContent() {
     clientRef.current?.setActiveAgent(agentId);
     const connState = useConnectionStore.getState();
     const perAgent = connState.agentConnections[agentId];
+    // Keep the compatibility mirror scoped to the selected machine, even
+    // while it is offline; otherwise it can show another machine's last state.
+    connState.setActiveAgentConnection(agentId);
     if (perAgent?.state === 'connected') {
-      connState.setConnected(
-        perAgent.repoPath ?? '',
-        perAgent.isPro,
-        perAgent.availableRepos,
-        perAgent.availableCodingPaths,
-        perAgent.agentVersion ?? undefined,
-        connState.latestVersion ?? undefined,
-      );
       useGitStore.getState().setCurrentRepoPath(perAgent.repoPath);
     }
   }, []);
@@ -456,9 +457,6 @@ function AppContent() {
     recordConnection,
     navigate,
     setDisconnected,
-    setReconnecting,
-    setError,
-    setConnectionStep,
     setAgentOnline,
     setActiveAgent,
   });
@@ -469,9 +467,6 @@ function AppContent() {
       recordConnection,
       navigate,
       setDisconnected,
-      setReconnecting,
-      setError,
-      setConnectionStep,
       setAgentOnline,
       setActiveAgent,
     };
@@ -525,12 +520,6 @@ function AppContent() {
           // so codex prefs aren't clobbered when the user is on Codex.
           useClaudeStore.getState().setAgentPref('claude-code', 'model', preferences.model);
         }
-        if (codexModels?.length) {
-          useConnectionStore.getState().setCodexModels(codexModels);
-        }
-        if (availableProviders?.length) {
-          useConnectionStore.getState().setAvailableProviders(availableProviders);
-        }
         // Update the single-agent mirror only when this agent is the one
         // the client treats as active (or no active has been chosen yet).
         // Without this gate, two machines reconnecting in parallel after a
@@ -544,6 +533,12 @@ function AppContent() {
         }
         // Update multi-agent connection map (authoritative per-agent state)
         useConnectionStore.getState().setAgentConnected(agentId, path, pro, availableRepos, availableCodingPaths, agentVersion, devBuild, platform, audio);
+        if (availableProviders?.length) {
+          useConnectionStore.getState().setAgentAvailableProviders(agentId, availableProviders);
+        }
+        if (codexModels?.length) {
+          useConnectionStore.getState().setAgentCodexModels(agentId, codexModels);
+        }
         const repoPaths = availableRepos?.map((r) => r.path);
         const codingPaths = availableCodingPaths?.map((p) => p.path);
         handlersRef.current.recordConnection(agentId, path, pro, repoPaths, codingPaths);
@@ -575,14 +570,16 @@ function AppContent() {
         // Project route components (/p/) manage their own navigation after connection.
         // No need to navigate on connect — the home page and project routes handle it.
       },
-      onDisconnected: (disconnectedAgentId) => {
-        if (disconnectedAgentId) {
-          busesRef.current.get(disconnectedAgentId)?.transport.notifyDisconnected();
-          useConnectionStore.getState().setAgentDisconnected(disconnectedAgentId);
-        } else {
-          // Blanket disconnect (WebSocket itself dropped) — flag every bus.
-          for (const { transport } of busesRef.current.values()) transport.notifyDisconnected();
-        }
+      onRelayConnected: () => {
+        useConnectionStore.getState().setRelayConnected();
+      },
+      onRelayDisconnected: () => {
+        // The relay is the shared transport for every agent. Keep the cached
+        // per-agent records so route-scoped UI can say which machine is
+        // unavailable instead of collapsing into one global error.
+        for (const { transport } of busesRef.current.values()) transport.notifyDisconnected();
+        useConnectionStore.getState().setRelayDisconnected();
+        useConnectionStore.getState().setAllAgentsDisconnected();
         handlersRef.current.setDisconnected();
         // Demote any isActive=true sessions to closed. We can't trust the
         // pre-disconnect snapshot across the blip, and letting stale green
@@ -590,9 +587,10 @@ function AppContent() {
         // the fresh /sessions/active snap finally corrects them.
         useClaudeStore.getState().clearActiveOnDisconnect();
       },
-      onReconnecting: (attempt, maxAttempts) => {
+      onRelayReconnecting: (attempt, maxAttempts) => {
         if (!intentionalDisconnectRef.current) {
-          handlersRef.current.setReconnecting(attempt, maxAttempts);
+          useConnectionStore.getState().setRelayReconnecting(attempt, maxAttempts);
+          useConnectionStore.getState().setAllAgentsReconnecting();
         }
       },
       onMessage: (message, fromAgentId) => {
@@ -601,17 +599,26 @@ function AppContent() {
         // the matching transport so subscriptions stay isolated per peer.
         busesRef.current.get(fromAgentId)?.transport.notifyMessage(message, fromAgentId);
       },
-      onError: (error) => {
+      onRelayError: (error) => {
         // Don't show errors during intentional disconnect
         if (!intentionalDisconnectRef.current) {
-          handlersRef.current.setError(error.message);
+          useConnectionStore.getState().setRelayError(error.message);
         }
       },
-      onConnectionStep: (step, attempt) => {
-        handlersRef.current.setConnectionStep(step, attempt);
+      onAgentDisconnected: (agentId) => {
+        busesRef.current.get(agentId)?.transport.notifyDisconnected();
+        useConnectionStore.getState().setAgentDisconnected(agentId);
+      },
+      onAgentError: (agentId, error) => {
+        useConnectionStore.getState().setAgentError(agentId, error.message);
+      },
+      onAgentConnectionStep: (agentId, step, attempt) => {
+        useConnectionStore.getState().setAgentConnectionStep(agentId, step, attempt);
       },
       onAgentStatus: (agentId, online) => {
-        handlersRef.current.setAgentOnline(online);
+        if (clientRef.current?.getActiveAgentId() === agentId) {
+          handlersRef.current.setAgentOnline(online);
+        }
         useConnectionStore.getState().setAgentOnlineFor(agentId, online);
         // Keep the bus transport's connected state in sync with the agent's
         // session. Without this, a command issued while the agent is offline
@@ -649,7 +656,7 @@ function AppContent() {
 
     client.connect().catch((error) => {
       console.error('Failed to connect WebSocket:', error);
-      handlersRef.current.setError('Failed to connect to signaling server');
+      useConnectionStore.getState().setRelayError('Failed to connect to signaling server');
     });
 
     return () => {
@@ -678,32 +685,29 @@ function AppContent() {
       }
 
       agentIdRef.current = newAgentId;
-      setConnecting(newAgentId);
       useConnectionStore.getState().setAgentConnecting(newAgentId);
 
       if (!clientRef.current) {
-        setError('WebSocket not connected yet');
+        useConnectionStore.getState().setAgentError(newAgentId, 'Relay connection is not ready yet');
         return;
       }
 
-      setSignaling();
       clientRef.current.connectToAgent(newAgentId, publicKey);
     },
-    [setConnecting, setSignaling, setError, setActiveAgent]
+    [setActiveAgent]
   );
 
   const handleAbortConnection = useCallback(() => {
     if (clientRef.current) {
       if (agentIdRef.current) {
         clientRef.current.disconnectFromAgent(agentIdRef.current);
+        useConnectionStore.getState().setAgentDisconnected(agentIdRef.current);
       }
-      clientRef.current.stopReconnecting();
     }
     agentIdRef.current = null;
-    reset();
     resetGit();
     navigate('/', { replace: true });
-  }, [reset, resetGit, navigate]);
+  }, [resetGit, navigate]);
 
   const handleRetryConnection = useCallback(() => {
     const currentAgentId = agentIdRef.current;
@@ -712,13 +716,12 @@ function AppContent() {
     if (clientRef.current) {
       clientRef.current.disconnectFromAgent(currentAgentId);
     }
-    reset();
 
     const machine = useMachineStore.getState().getMachine(currentAgentId);
     if (machine) {
       handleConnect(currentAgentId, machine.publicKey);
     }
-  }, [reset, handleConnect]);
+  }, [handleConnect]);
 
   const handleSwitchMachine = useCallback((targetAgentId: string) => {
     // In multi-agent mode, we keep existing connections alive and just add the new one
@@ -873,9 +876,17 @@ function AppContent() {
     }
   }, [agentConnections]);
 
-  // Show connecting overlay only for /connect routes (QR/deep link) — not for project routes
-  const showOverlay = !location.pathname.startsWith('/p/') && (
-    state === 'connecting' || state === 'reconnecting' || (state === 'error' && !!useConnectionStore.getState().error)
+  // QR/deep links deliberately own a full-screen agent connection flow. All
+  // other routes render their agent status locally, while relay reconnects use
+  // the non-blocking global banner below.
+  const connectRouteAgentId = location.pathname.startsWith('/connect/')
+    ? location.pathname.split('/')[2] || null
+    : null;
+  const connectRouteConnection = connectRouteAgentId ? agentConnections[connectRouteAgentId] : undefined;
+  const showOverlay = !!connectRouteAgentId && (
+    connectRouteConnection?.state === 'connecting'
+    || connectRouteConnection?.state === 'reconnecting'
+    || connectRouteConnection?.state === 'error'
   );
 
   const projectRepoElement = (
@@ -942,6 +953,7 @@ function AppContent() {
       className="flex flex-col bg-slate-900 text-slate-100 overflow-hidden h-full transition-[padding] duration-200"
       style={rightPad ? { paddingRight: rightPad } : undefined}
     >
+      <RelayConnectionBanner />
       {isConnected && <NotificationPrompt onOffer={handlePushOffer} />}
       {isDesktop ? (
         machines.length === 0 ? (
@@ -974,6 +986,7 @@ function AppContent() {
                 <Route path="/p/:projectId/files/*" element={<FileBrowserPage />} />
                 <Route path="/add" element={<AddNewPage clientRef={clientRef} onConnect={handleConnect} />} />
                 <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={hasConnectedAgent ? sendApiKeyToConnectedAgents : undefined} onPushOffer={handlePushOffer} />} />
+                <Route path="/settings/m/:agentId/opencode" element={<OpenCodeConfigRoute />} />
                 <Route path="/settings/m/:agentId" element={<MachineInfoRoute clientRef={clientRef} />} />
                 <Route path="/settings/m/:agentId/p/:projectId/archived" element={<ArchivedSessionsPage />} />
                 <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
@@ -995,13 +1008,16 @@ function AppContent() {
           <Route path="/p/:projectId/files/*" element={<FileBrowserPage />} />
           <Route path="/add" element={<AddNewPage clientRef={clientRef} onConnect={handleConnect} />} />
           <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={hasConnectedAgent ? sendApiKeyToConnectedAgents : undefined} onPushOffer={handlePushOffer} />} />
+          <Route path="/settings/m/:agentId/opencode" element={<OpenCodeConfigRoute />} />
           <Route path="/settings/m/:agentId" element={<MachineInfoRoute clientRef={clientRef} />} />
           <Route path="/settings/m/:agentId/p/:projectId/archived" element={<ArchivedSessionsPage />} />
           <Route path="/connect/:agentId" element={<ConnectHandler onConnect={handleConnect} />} />
           <Route path="/pair" element={<JoinGroupPage />} />
         </Routes>
       )}
-      {showOverlay && <ConnectingOverlay onAbort={handleAbortConnection} onRetry={handleRetryConnection} />}
+      {showOverlay && connectRouteAgentId && (
+        <ConnectingOverlay agentId={connectRouteAgentId} onAbort={handleAbortConnection} onRetry={handleRetryConnection} />
+      )}
       <FilePreviewModal />
       {gitIdentityAgentId && (
         <GitIdentityModalForAgent
@@ -1248,6 +1264,7 @@ function MachineInfoRoute({
   clientRef: React.RefObject<WebSocketClient | null>;
 }) {
   const { agentId } = useParams<{ agentId: string }>();
+  const navigate = useNavigate();
   const agentBus = useCallback(
     (): MessageBusClient | null => (agentId ? getBusForAgent(agentId) : null),
     [agentId],
@@ -1259,13 +1276,14 @@ function MachineInfoRoute({
   const {
     checkAgentUpdate,
     updateAgent,
+    checkCodexUpdate,
+    updateCodex,
     restartAgent,
     getSystemdStatus,
     installSystemdUnit,
     uninstallSystemdUnit,
   } = useGitOperations(clientRef, agentBus, getTargetAgentId);
   const { deleteProject, listProjectSummaries } = useClaudeOperations(agentBus);
-
   const handleDeleteProject = useCallback(async (cwd: string): Promise<ProjectDeleteResponsePayload | null> => {
     const result = await deleteProject(cwd);
     if (result?.success && agentId) {
@@ -1285,13 +1303,38 @@ function MachineInfoRoute({
     <MachineInfoPage
       onCheckAgentUpdate={checkAgentUpdate}
       onUpdateAgent={updateAgent}
+      onCheckCodexUpdate={checkCodexUpdate}
+      onUpdateCodex={updateCodex}
       onRestartAgent={restartAgent}
       onDeleteProject={handleDeleteProject}
       onGetSystemdStatus={getSystemdStatus}
       onInstallSystemdUnit={installSystemdUnit}
       onUninstallSystemdUnit={uninstallSystemdUnit}
+      onOpenOpenCodeConfig={() => navigate(`/settings/m/${agentId}/opencode`)}
     />
   );
+}
+
+function OpenCodeConfigRoute() {
+  const { agentId } = useParams<{ agentId: string }>();
+  const getSnapshot = useCallback(async (): Promise<OpenCodeConfigSnapshotResponsePayload> => {
+    const bus = agentId ? getBusForAgent(agentId) : null;
+    if (!bus) throw new Error('Not connected');
+    return bus.command<OpenCodeConfigSnapshotResponsePayload>(
+      'opencode:config-snapshot', {}, { timeoutMs: 30_000, queueWhileDisconnected: false },
+    );
+  }, [agentId]);
+  const upsertMcp = useCallback(async (name: string, config: { type: 'local' | 'remote'; command?: string[]; url?: string; headers?: Record<string, string> }) => {
+    const bus = agentId ? getBusForAgent(agentId) : null;
+    if (!bus) throw new Error('Not connected');
+    return bus.command<{ success: boolean; error?: string }>('opencode:mcp-upsert', { name, config }, { timeoutMs: 30_000, queueWhileDisconnected: false });
+  }, [agentId]);
+  const setWebSearch = useCallback(async (exaEnabled: boolean) => {
+    const bus = agentId ? getBusForAgent(agentId) : null;
+    if (!bus) throw new Error('Not connected');
+    return bus.command<{ success: boolean; error?: string }>('opencode:websearch-update', { exaEnabled }, { timeoutMs: 30_000, queueWhileDisconnected: false });
+  }, [agentId]);
+  return <OpenCodeConfigPage onGetSnapshot={getSnapshot} onUpsertMcp={upsertMcp} onSetWebSearch={setWebSearch} />;
 }
 
 function GitIdentityModalForAgent({
@@ -1530,7 +1573,9 @@ function ProjectRouteSession({
       <div className="flex flex-col h-full overflow-hidden">
         <NewSessionAppBar cwd={cwd} onOpenMenu={() => {}} backTo={projectBasePath} />
         <div className="flex-1 flex items-center justify-center">
-          {isConnecting ? <ConnectingStages /> : <Spinner size="w-8 h-8" color="border-blue-500" />}
+          {isConnecting && targetAgentId
+            ? <ConnectingStages agentId={targetAgentId} />
+            : <Spinner size="w-8 h-8" color="border-blue-500" />}
         </div>
       </div>
     );
@@ -1629,14 +1674,16 @@ function ProjectRouteSession({
   );
 }
 
-// Lightweight handler for QR code / shared link connections (/connect/:agentId?pk=...&name=...)
-// Adds machine if new, triggers connection, and redirects — no UI of its own.
+// QR/shared-link connection entry point. The shell renders the dedicated
+// AgentConnectScreen while this route stays mounted, then returns home only
+// after this specific agent has completed its handshake.
 function ConnectHandler({ onConnect }: { onConnect: (agentId: string, publicKey: string) => void }) {
   const { agentId } = useParams<{ agentId: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { addMachine, getMachine } = useMachineStore();
   const { setPendingRepoPath } = useConnectionStore();
+  const connection = useConnectionStore((s) => agentId ? s.agentConnections[agentId] : undefined);
   const initiated = useRef(false);
 
   useEffect(() => {
@@ -1664,9 +1711,13 @@ function ConnectHandler({ onConnect }: { onConnect: (agentId: string, publicKey:
       }
     }
 
-    // Redirect to home (overlay will show connecting)
-    navigate('/', { replace: true });
   }, [agentId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (connection?.state === 'connected') {
+      navigate('/', { replace: true });
+    }
+  }, [connection?.state, navigate]);
 
   return null;
 }

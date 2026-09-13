@@ -34,10 +34,6 @@ import type {
 const DEFAULT_PREVIEW_BYTES = 1024 * 1024;
 /** Absolute ceiling on `maxBytes` regardless of what the PWA asks for. */
 const HARD_PREVIEW_BYTES = 4 * 1024 * 1024;
-/** Larger ceiling when the caller opts in to image inlining (`allowImage`).
- *  Base64 inflates by ~33%, so 16 MiB of source pixels is ~21 MiB before
- *  transport compression. */
-const HARD_IMAGE_BYTES = 16 * 1024 * 1024;
 /** Bytes to sniff when classifying a file as text vs binary (NUL byte = binary). */
 const SNIFF_BYTES = 8 * 1024;
 
@@ -54,10 +50,28 @@ const IMAGE_EXT_TO_MIME: Record<string, string> = {
   ico: 'image/x-icon',
 };
 
+const AUDIO_EXT_TO_MIME: Record<string, string> = {
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  oga: 'audio/ogg',
+  opus: 'audio/ogg',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  flac: 'audio/flac',
+  webm: 'audio/webm',
+};
+
 function imageMimeFor(absPath: string): string | undefined {
   const dot = absPath.lastIndexOf('.');
   if (dot < 0) return undefined;
   return IMAGE_EXT_TO_MIME[absPath.slice(dot + 1).toLowerCase()];
+}
+
+function audioMimeFor(absPath: string): string | undefined {
+  const dot = absPath.lastIndexOf('.');
+  if (dot < 0) return undefined;
+  return AUDIO_EXT_TO_MIME[absPath.slice(dot + 1).toLowerCase()];
 }
 
 /** Weak ETag built from stat metadata. Same shape that the PWA produces
@@ -132,13 +146,12 @@ export class FileBrowser {
         return { success: true, ...meta, notModified: true };
       }
 
-      // Image branch — opt-in via `allowImage`. We use a separate, larger
-      // cap because images legitimately exceed the text preview
-      // budget, but we still bound it so a stray multi-MB asset can't
-      // saturate the channel.
+      // Image branch — opt-in via `allowImage`. Keep inline bus payloads under
+      // the same 1 MiB ceiling as text; larger previewable images are fetched
+      // through the file WebRTC DataChannel without base64 on the wire.
       const imageMime = payload.allowImage ? imageMimeFor(targetAbs) : undefined;
       if (imageMime) {
-        if (stats.size > HARD_IMAGE_BYTES) {
+        if (stats.size > DEFAULT_PREVIEW_BYTES) {
           return { success: true, ...meta, kind: 'oversized' };
         }
         const buf = await readFile(targetAbs);
@@ -150,6 +163,15 @@ export class FileBrowser {
           encoding: 'base64',
           mimeType: imageMime,
         };
+      }
+
+      // Audio bytes never ride the normal message bus, even when the file is
+      // small or its initial bytes happen to look textual. Returning metadata
+      // as binary makes the PWA upgrade to the direct WebRTC transfer, where
+      // the MIME type enables the native audio player.
+      const audioMime = audioMimeFor(targetAbs);
+      if (audioMime) {
+        return { success: true, ...meta, kind: 'binary', mimeType: audioMime };
       }
 
       const requested = payload.maxBytes ?? DEFAULT_PREVIEW_BYTES;

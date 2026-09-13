@@ -10,7 +10,7 @@ import {
 } from '@sumicom/quicksave-shared';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
 import { useClaudeStore } from '../../stores/claudeStore';
-import { useConnectionStore } from '../../stores/connectionStore';
+import { selectCodexModelsForAgent, useConnectionStore } from '../../stores/connectionStore';
 import { AGENT_TYPES, getAgentProvider } from '../../lib/agentProvider';
 import {
   getCodexFastServiceTierId,
@@ -33,7 +33,8 @@ interface ClaudeSettingsSectionProps {
 export function ClaudeSettingsSection({ sessionId, onSetConfig, agentLocked, hideFields = [] }: ClaudeSettingsSectionProps) {
   const hide = new Set(hideFields);
   const config = useSessionConfig(sessionId);
-  const codexModels = useConnectionStore((s) => s.codexModels);
+  const sessionAgentId = useClaudeStore((s) => sessionId ? s.sessions[sessionId]?.machineAgentId : undefined);
+  const codexModels = useConnectionStore((s) => selectCodexModelsForAgent(s, sessionAgentId));
   const allow1mForBilledModels = useClaudeStore((s) => s.allow1mForBilledModels);
 
   const rawAgent = (config['agent'] as string | undefined) ?? (config['provider'] as string | undefined);

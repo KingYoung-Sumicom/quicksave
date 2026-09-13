@@ -25,8 +25,8 @@ class FakeSocket implements RealtimeSocket {
 let socket: FakeSocket;
 let factoryArgs: { url: string; headers: Record<string, string> };
 
-function newTranscriber(cb = makeCb()) {
-  return new RealtimeTranscriber(config, 24_000, cb, (url, headers) => {
+function newTranscriber(cb = makeCb(), configOverride: VoiceConfig = config) {
+  return new RealtimeTranscriber(configOverride, 24_000, cb, (url, headers) => {
     factoryArgs = { url, headers };
     socket = new FakeSocket();
     return socket;
@@ -77,6 +77,31 @@ describe('RealtimeTranscriber', () => {
       type: 'server_vad',
       silence_duration_ms: 2000,
     });
+  });
+
+  it('adds a Traditional Chinese regional hint and prompt for zh-TW', () => {
+    const t = newTranscriber(makeCb(), { ...config, transcriptionLocale: 'zh-TW' });
+    t.start();
+    socket.emit('open');
+
+    const transcription = JSON.parse(socket.sent[0]).session.audio.input.transcription;
+    expect(transcription.language).toBe('zh-tw');
+    expect(transcription.prompt).toContain('繁體中文');
+    expect(transcription.languages).toBeUndefined();
+  });
+
+  it('uses the plural languages field required by gpt-live-transcribe', () => {
+    const t = newTranscriber(makeCb(), {
+      ...config,
+      streamModel: 'gpt-live-transcribe',
+      transcriptionLocale: 'zh-TW',
+    });
+    t.start();
+    socket.emit('open');
+
+    const transcription = JSON.parse(socket.sent[0]).session.audio.input.transcription;
+    expect(transcription.languages).toEqual(['zh-tw']);
+    expect(transcription.language).toBeUndefined();
   });
 
   it('buffers audio sent before open, then flushes after open', () => {

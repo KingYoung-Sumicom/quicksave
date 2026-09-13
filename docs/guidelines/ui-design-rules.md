@@ -6,6 +6,17 @@ General rules derived from past fixes. Each rule includes the reason so future d
 
 ## Mobile Layout
 
+### Connection feedback must belong to the viewed machine
+
+Session and project connection indicators must read the owning machine's
+connection state, including retry counts, handshake progress, and online status.
+Background reconnects must not show a blocking overlay over the home page or
+unrelated machines. Reserve the full-screen connection overlay for an explicit
+connection flow.
+
+**Why:** Machines reconnect independently; one unavailable machine must not
+make healthy sessions appear disconnected or prevent navigation to them.
+
 ### Root container must use `overflow-hidden`
 
 The root app container (`App.tsx`) and `#root` (in `index.css`) must use `overflow-hidden`, not `overflow-auto` or `overflow-scroll`. `html, body` are also pinned to `overflow: hidden`.
@@ -116,6 +127,19 @@ mobile full-screen preview.
 Folding it with the tool invocation makes completed work appear to be missing,
 while rendering the full report inline overwhelms the conversation and adds a
 nested scroll surface.
+
+---
+
+### Local Markdown images must use the file-read pipeline
+
+Markdown renderers and image-view cards must load local image paths through the
+shared `LocalFileImage` component and `files:read`, including the PWA file cache.
+Do not assign filesystem paths or `file://` URLs directly to browser `<img>`
+elements, and do not embed image bytes in card snapshots.
+
+**Why:** Browser/PWA security rules cannot directly read the agent machine's
+filesystem. Fetching on demand keeps cards metadata-only, works across remote
+agents, and lets every local-image surface share cache and error behavior.
 
 ---
 

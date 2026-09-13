@@ -30,6 +30,7 @@ function base64ToBytes(base64: string): Uint8Array {
 function textDownloadMime(fileName: string): string {
   const lower = fileName.toLowerCase();
   if (lower.endsWith('.svg')) return 'image/svg+xml;charset=utf-8';
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'text/html;charset=utf-8';
   if (lower.endsWith('.csv')) return 'text/csv;charset=utf-8';
   if (lower.endsWith('.json')) return 'application/json;charset=utf-8';
   if (lower.endsWith('.md') || lower.endsWith('.markdown') || lower.endsWith('.mdx')) {
@@ -38,12 +39,33 @@ function textDownloadMime(fileName: string): string {
   return 'text/plain;charset=utf-8';
 }
 
+const HTML_PREVIEW_CSP = "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; font-src data:";
+
+export function buildSafeHtmlPreviewDocument(source: string): string {
+  const policy = `<meta http-equiv="Content-Security-Policy" content="${HTML_PREVIEW_CSP}">`;
+  if (/<head(?:\s[^>]*)?>/i.test(source)) {
+    return source.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${policy}`);
+  }
+  if (/<html(?:\s[^>]*)?>/i.test(source)) {
+    return source.replace(/<html(?:\s[^>]*)?>/i, (html) => `${html}<head>${policy}</head>`);
+  }
+  return `${policy}${source}`;
+}
+
 export function createPreviewDownload(
   data: FilesReadResponsePayload | null,
   fileName: string,
 ): { blob: Blob; fileName: string } | null {
   if (!data?.success || typeof data.content !== 'string') return null;
   if (data.kind === 'image') {
+    return {
+      blob: new Blob([base64ToBytes(data.content) as BlobPart], {
+        type: data.mimeType || 'application/octet-stream',
+      }),
+      fileName,
+    };
+  }
+  if (data.kind === 'binary' && data.encoding === 'base64') {
     return {
       blob: new Blob([base64ToBytes(data.content) as BlobPart], {
         type: data.mimeType || 'application/octet-stream',
@@ -119,14 +141,25 @@ export function FileViewerPane({
   const { readFile } = useFileOps(getBus, { queueWhileDisconnected: false });
   const [data, setData] = useState<FilesReadResponsePayload | null>(null);
   const [loading, setLoading] = useState(true);
+  const [transferProgress, setTransferProgress] = useState<{ receivedBytes: number; totalBytes: number } | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const reqIdRef = useRef(0);
 
   useEffect(() => {
     setLoading(true);
     setData(null);
+    setTransferProgress(null);
     const myId = ++reqIdRef.current;
-    readFile({ cwd: request.cwd, path: request.path, maxBytes: request.maxBytes, allowImage: true })
+    const controller = new AbortController();
+    readFile(
+      { cwd: request.cwd, path: request.path, maxBytes: request.maxBytes, allowImage: true },
+      {
+        signal: controller.signal,
+        onProgress: (progress) => {
+          if (myId === reqIdRef.current) setTransferProgress(progress);
+        },
+      },
+    )
       .then((res) => {
         if (myId !== reqIdRef.current) return;
         setData(res);
@@ -143,6 +176,7 @@ export function FileViewerPane({
       .finally(() => {
         if (myId === reqIdRef.current) setLoading(false);
       });
+    return () => controller.abort();
   }, [request.cwd, request.path, request.maxBytes, readFile, reloadNonce]);
 
   const refresh = useCallback(() => {
@@ -153,21 +187,45 @@ export function FileViewerPane({
   const displayPath = data?.absolutePath ?? request.path;
   const fileName = displayPath.split('/').pop() || displayPath;
   const isMarkdown = useMemo(() => isMarkdownPath(displayPath), [displayPath]);
+  const isHtml = useMemo(() => isHtmlPath(displayPath), [displayPath]);
   const isSvg = useMemo(() => isSvgPath(displayPath), [displayPath]);
   const isCsv = useMemo(() => isCsvPath(displayPath), [displayPath]);
   const [renderMarkdown, setRenderMarkdown] = useState(true);
+  const [renderHtml, setRenderHtml] = useState(true);
   const [renderSvg, setRenderSvg] = useState(true);
   const [renderCsv, setRenderCsv] = useState(true);
   const [showLineNumbers, setShowLineNumbers] = useState(false);
+  const canRichRender = (data?.size ?? 0) <= 4 * 1024 * 1024;
   const showsRawText = data?.kind === 'text'
-    && !(isMarkdown && renderMarkdown)
-    && !(isSvg && renderSvg)
-    && !(isCsv && renderCsv);
+    && !(isMarkdown && renderMarkdown && canRichRender)
+    && !(isHtml && renderHtml && canRichRender)
+    && !(isSvg && renderSvg && canRichRender)
+    && !(isCsv && renderCsv && canRichRender);
   const canDownload = data?.success === true
     && typeof data.content === 'string'
-    && (data.kind === 'text' || data.kind === 'image');
+    && (data.kind === 'text'
+      || data.kind === 'image'
+      || (data.kind === 'binary' && data.encoding === 'base64'));
   const showsZoomImage = data?.success === true
-    && (data.kind === 'image' || (data.kind === 'text' && isSvg && renderSvg));
+    && (data.kind === 'image' || (data.kind === 'text' && isSvg && renderSvg && canRichRender));
+  const showsRenderedHtml = data?.success === true
+    && data.kind === 'text'
+    && isHtml
+    && renderHtml
+    && canRichRender;
+  const downloadFile = useCallback(() => {
+    const download = createPreviewDownload(data, fileName);
+    if (!download) return;
+    const url = URL.createObjectURL(download.blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = download.fileName;
+    anchor.rel = 'noopener';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4_000);
+  }, [data, fileName]);
 
   useEffect(() => {
     setShowLineNumbers(false);
@@ -184,7 +242,7 @@ export function FileViewerPane({
           <p className="text-sm font-medium text-slate-100 truncate">{fileName}</p>
           <p className="text-[11px] text-slate-500 truncate">{displayPath}</p>
         </div>
-        {isMarkdown && data?.kind === 'text' && (
+        {isMarkdown && data?.kind === 'text' && canRichRender && (
           <button
             onClick={() => setRenderMarkdown((v) => !v)}
             className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
@@ -193,7 +251,16 @@ export function FileViewerPane({
             {renderMarkdown ? 'Raw' : 'Rendered'}
           </button>
         )}
-        {isSvg && data?.kind === 'text' && (
+        {isHtml && data?.kind === 'text' && canRichRender && (
+          <button
+            onClick={() => setRenderHtml((value) => !value)}
+            className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
+            title={renderHtml ? 'Show raw source' : 'Render HTML'}
+          >
+            {renderHtml ? 'Raw' : 'Rendered'}
+          </button>
+        )}
+        {isSvg && data?.kind === 'text' && canRichRender && (
           <button
             onClick={() => setRenderSvg((v) => !v)}
             className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
@@ -202,7 +269,7 @@ export function FileViewerPane({
             {renderSvg ? 'Raw' : 'Rendered'}
           </button>
         )}
-        {isCsv && data?.kind === 'text' && (
+        {isCsv && data?.kind === 'text' && canRichRender && (
           <button
             onClick={() => setRenderCsv((v) => !v)}
             className="px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 rounded-md transition-colors shrink-0 border border-slate-600"
@@ -211,7 +278,7 @@ export function FileViewerPane({
             {renderCsv ? 'Raw' : 'Table'}
           </button>
         )}
-        {showsRawText && (
+        {showsRawText && canRichRender && (
           <button
             type="button"
             onClick={() => setShowLineNumbers((visible) => !visible)}
@@ -227,19 +294,7 @@ export function FileViewerPane({
         )}
         <button
           type="button"
-          onClick={() => {
-            const download = createPreviewDownload(data, fileName);
-            if (!download) return;
-            const url = URL.createObjectURL(download.blob);
-            const anchor = document.createElement('a');
-            anchor.href = url;
-            anchor.download = download.fileName;
-            anchor.rel = 'noopener';
-            document.body.appendChild(anchor);
-            anchor.click();
-            anchor.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 4_000);
-          }}
+          onClick={downloadFile}
           disabled={!canDownload}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-300 transition-colors hover:bg-slate-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
           aria-label="Download file"
@@ -277,10 +332,15 @@ export function FileViewerPane({
       </div>
 
       {/* Body */}
-      <div className={`flex-1 min-h-0 ${showsZoomImage ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+      <div className={`flex-1 min-h-0 ${showsZoomImage || showsRenderedHtml ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {loading && (
-          <div className="flex items-center justify-center py-12">
+          <div className="flex flex-col items-center justify-center gap-3 py-12">
             <Spinner size="w-5 h-5" color="border-blue-400" />
+            {transferProgress && (
+              <div className="text-center text-xs text-slate-400">
+                Direct WebRTC · {formatSize(transferProgress.receivedBytes)} / {formatSize(transferProgress.totalBytes)}
+              </div>
+            )}
           </div>
         )}
 
@@ -296,10 +356,13 @@ export function FileViewerPane({
             displayPath={displayPath}
             cwd={request.cwd}
             agentId={request.agentId ?? ''}
-            renderMarkdown={isMarkdown && renderMarkdown}
-            renderSvg={isSvg && renderSvg}
-            renderCsv={isCsv && renderCsv}
+            renderMarkdown={isMarkdown && renderMarkdown && canRichRender}
+            renderHtml={isHtml && renderHtml && canRichRender}
+            renderSvg={isSvg && renderSvg && canRichRender}
+            renderCsv={isCsv && renderCsv && canRichRender}
             showLineNumbers={showLineNumbers}
+            canDownload={canDownload}
+            onDownload={downloadFile}
           />
         )}
       </div>
@@ -377,28 +440,34 @@ function DesktopSidePanel({
   );
 }
 
-function PreviewContent({
+export function PreviewContent({
   data,
   displayPath,
   cwd,
   agentId,
   renderMarkdown,
+  renderHtml,
   renderSvg,
   renderCsv,
   showLineNumbers,
+  canDownload,
+  onDownload,
 }: {
   data: FilesReadResponsePayload;
   displayPath: string;
   cwd: string;
   agentId: string;
   renderMarkdown: boolean;
+  renderHtml: boolean;
   renderSvg: boolean;
   renderCsv: boolean;
   showLineNumbers: boolean;
+  canDownload: boolean;
+  onDownload: () => void;
 }) {
   const lang = useMemo(() => detectLanguage(displayPath), [displayPath]);
   const highlighted = useMemo(() => {
-    if (data.kind !== 'text' || !lang) return null;
+    if (data.kind !== 'text' || !lang || (data.size ?? 0) > 4 * 1024 * 1024) return null;
     const content = data.content ?? '';
     if (!content) return null;
     try {
@@ -408,17 +477,42 @@ function PreviewContent({
     }
   }, [data.kind, data.content, lang]);
 
+  if (data.kind === 'binary'
+    && data.encoding === 'base64'
+    && data.mimeType?.startsWith('audio/')) {
+    return <AudioPreview data={data} />;
+  }
+
   if (data.kind === 'binary') {
     return (
-      <div className="px-4 py-12 text-center text-sm text-slate-500">
-        Binary file — preview not shown.
+      <div className="flex flex-col items-center px-4 py-12 text-center text-sm text-slate-500">
+        <p>Preview isn't available for this file format.</p>
+        {canDownload ? (
+          <>
+            <p className="mt-2 text-xs text-slate-400">The file was received over the direct connection.</p>
+            <button
+              type="button"
+              onClick={onDownload}
+              className="mt-4 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-500"
+            >
+              Download file
+            </button>
+          </>
+        ) : (
+          <p className="mt-2 text-xs text-amber-400">
+            {data.transferError ? `Download unavailable: ${data.transferError}` : 'Download unavailable.'}
+          </p>
+        )}
       </div>
     );
   }
   if (data.kind === 'oversized') {
     return (
       <div className="px-4 py-12 text-center text-sm text-slate-500">
-        File is larger than the preview cap.
+        <p>File is larger than the preview cap.</p>
+        {data.transferError && (
+          <p className="mt-2 text-xs text-amber-400">Direct transfer unavailable: {data.transferError}</p>
+        )}
       </div>
     );
   }
@@ -445,6 +539,17 @@ function PreviewContent({
       />
     );
   }
+  if (renderHtml && data.kind === 'text' && typeof data.content === 'string') {
+    return (
+      <iframe
+        title={`Rendered preview of ${displayPath.split('/').pop() ?? 'HTML file'}`}
+        srcDoc={buildSafeHtmlPreviewDocument(data.content)}
+        sandbox=""
+        referrerPolicy="no-referrer"
+        className="h-full min-h-[20rem] w-full border-0 bg-white"
+      />
+    );
+  }
   if (renderSvg && data.kind === 'text' && typeof data.content === 'string') {
     const src = `data:image/svg+xml;utf8,${encodeURIComponent(data.content)}`;
     return (
@@ -468,6 +573,36 @@ function PreviewContent({
   }
   return (
     <RawTextPreview content={data.content ?? ''} showLineNumbers={showLineNumbers} />
+  );
+}
+
+function AudioPreview({ data }: { data: FilesReadResponsePayload }) {
+  const objectUrl = useMemo(() => {
+    if (typeof URL.createObjectURL !== 'function') return null;
+    const download = createPreviewDownload(data, 'audio');
+    return download ? URL.createObjectURL(download.blob) : null;
+  }, [data]);
+
+  useEffect(() => () => {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  }, [objectUrl]);
+
+  if (!objectUrl) {
+    return <div className="px-4 py-12 text-center text-sm text-amber-400">Audio playback unavailable.</div>;
+  }
+
+  return (
+    <div className="flex h-full min-h-48 items-center justify-center bg-slate-900 px-6 py-12">
+      <audio
+        controls
+        preload="metadata"
+        src={objectUrl}
+        className="w-full max-w-xl"
+        aria-label="Audio player"
+      >
+        Your browser does not support audio playback.
+      </audio>
+    </div>
   );
 }
 
@@ -518,6 +653,11 @@ export function buildLineNumberText(content: string): string {
 function isMarkdownPath(filePath: string): boolean {
   const name = (filePath.split('/').pop() ?? '').toLowerCase();
   return name.endsWith('.md') || name.endsWith('.markdown') || name.endsWith('.mdx');
+}
+
+function isHtmlPath(filePath: string): boolean {
+  const name = (filePath.split('/').pop() ?? '').toLowerCase();
+  return name.endsWith('.html') || name.endsWith('.htm');
 }
 
 function isSvgPath(filePath: string): boolean {

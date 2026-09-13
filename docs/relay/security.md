@@ -72,7 +72,8 @@ The sync store holds encrypted pairing backups so PWAs can restore state across 
 
 ## Licensing
 
-Licenses are verified at the agent layer, not by the relay server:
+The relay does not verify licenses. A legacy, PWA-key-scoped license schema
+still exists in `packages/shared/src/types.ts`:
 
 ```typescript
 interface License {
@@ -84,7 +85,16 @@ interface License {
 }
 ```
 
-The license is sent in the `HandshakePayload` from PWA to agent. The agent calls `verifyLicense()` to validate the Ed25519 signature against Quicksave's public key.
+This is not currently an active enforcement path. `AgentConfig` can store the
+legacy value and `MessageHandler` still accepts it as an unused constructor
+argument, but the handshake acknowledgement does not return a license. The PWA
+retains compatibility code that would verify a license if one appeared in the
+acknowledgement.
+
+The proposed hardware-appliance licensing model is deliberately separate: it
+uses a device-scoped, locally cached signed entitlement for hosted services.
+See
+[`../plans/2026-08-29-appliance-deployment-model-design.zh-TW.md`](../plans/2026-08-29-appliance-deployment-model-design.zh-TW.md).
 
 ## What the Server Does NOT Do
 

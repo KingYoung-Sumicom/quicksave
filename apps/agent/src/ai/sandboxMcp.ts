@@ -15,6 +15,10 @@ export const SANDBOX_MCP_PREFIX = `mcp__${SANDBOX_MCP_NAME}__`;
 export const SANDBOX_BASH_TOOL = `${SANDBOX_MCP_PREFIX}SandboxBash`;
 export const UPDATE_SESSION_STATUS_TOOL = `${SANDBOX_MCP_PREFIX}UpdateSessionStatus`;
 export const DISPLAY_MARKDOWN_REPORT_TOOL = `${SANDBOX_MCP_PREFIX}DisplayMarkdownReport`;
+/** Codex-only opt-in for a native exec_command completion notification. */
+export const REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME = 'RegisterBackgroundExecutionCompletion';
+export const REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL =
+  `${SANDBOX_MCP_PREFIX}${REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME}`;
 
 export interface SandboxMcpServerConfig {
   type: 'stdio';
@@ -65,6 +69,8 @@ export function buildSandboxMcpServerConfig(opts: {
   /** Hide SandboxBash from the MCP inventory. Codex has native shell execution
    *  and only needs UpdateSessionStatus from this server. */
   includeSandboxBash?: boolean;
+  /** Expose the Codex-only native completion registration tool. */
+  includeNativeCompletionRegistration?: boolean;
 }): SandboxMcpServerConfig {
   const tsPath = join(opts.ownDir, 'sandboxMcpStdio.ts');
   const jsPath = join(opts.ownDir, 'sandboxMcpStdio.js');
@@ -83,6 +89,7 @@ export function buildSandboxMcpServerConfig(opts: {
   if (opts.sessionId) args.push('--session-id', opts.sessionId);
   if (opts.corrId) args.push('--corr', opts.corrId);
   if (opts.includeSandboxBash === false) args.push('--no-sandbox-bash');
+  if (opts.includeNativeCompletionRegistration === true) args.push('--native-completion-registration');
 
   return { type: 'stdio', command, args };
 }

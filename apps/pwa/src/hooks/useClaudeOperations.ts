@@ -40,7 +40,7 @@ import {
 } from '@sumicom/quicksave-shared';
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { useClaudeStore } from '../stores/claudeStore';
-import { useConnectionStore } from '../stores/connectionStore';
+import { selectCodexModelsForAgent, useConnectionStore } from '../stores/connectionStore';
 import { applySessionCardsSnapshot, applySessionCardsUpdate } from '../lib/applySessionCards';
 import { primeUploadedAttachment } from '../lib/attachmentUploader';
 import { getCodexFastServiceTierId } from '../lib/claudePresets';
@@ -280,13 +280,14 @@ export function useClaudeOperations(
   );
 
   const startSession = useCallback(
-    async (prompt: string, opts?: { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string; sandboxed?: boolean; reasoningEffort?: string; fastMode?: boolean; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] }) => {
+    async (prompt: string, opts?: { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; cwd?: string; machineAgentId?: string; sandboxed?: boolean; reasoningEffort?: string; fastMode?: boolean; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] }) => {
       clearCards();
       setStreaming(true);
       setStreamError(null);
       const fastServiceTier = opts?.fastMode
         ? getCodexFastServiceTierId(
-          useConnectionStore.getState().codexModels.find((model) => model.id === opts.model),
+          selectCodexModelsForAgent(useConnectionStore.getState(), opts?.machineAgentId)
+            .find((model) => model.id === opts.model),
         ) ?? 'fast'
         : undefined;
       try {

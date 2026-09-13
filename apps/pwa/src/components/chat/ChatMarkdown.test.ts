@@ -28,12 +28,32 @@ describe('previewPathFromMarkdownHref', () => {
     );
   });
 
+  it('routes arbitrary absolute Unix paths to file preview paths', () => {
+    const path = '/private/tmp/orin-eco2-replay.xAbghh/render-root/I30V11-CVM connector 3 of 3.png';
+
+    expect(previewPathFromMarkdownHref(encodeURI(path))).toBe(path);
+    expect(previewPathFromMarkdownHref('/custom/mount/with spaces/report.pdf')).toBe(
+      '/custom/mount/with spaces/report.pdf',
+    );
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      children: `[I30V11-CVM connector 3 of 3.png](${encodeURI(path)})`,
+    }));
+    expect(html).toContain('<button');
+    expect(html).toContain('I30V11-CVM connector 3 of 3.png');
+    expect(html).toContain(`title="${path}"`);
+  });
+
   it('does not capture external or anchor-only links', () => {
     expect(previewPathFromMarkdownHref('https://example.com/README.md')).toBeNull();
     expect(previewPathFromMarkdownHref('example.com')).toBeNull();
-    expect(previewPathFromMarkdownHref('/p/project/s/session')).toBeNull();
-    expect(previewPathFromMarkdownHref(`${window.location.origin}/p/project/s/session`)).toBeNull();
     expect(previewPathFromMarkdownHref('#readme')).toBeNull();
+  });
+
+  it('treats app-shaped absolute paths as files too', () => {
+    expect(previewPathFromMarkdownHref('/p/project/s/session')).toBe('/p/project/s/session');
+    expect(previewPathFromMarkdownHref(`${window.location.origin}/p/project/s/session`)).toBe(
+      '/p/project/s/session',
+    );
   });
 });
 
@@ -115,5 +135,35 @@ describe('ChatMarkdown file links', () => {
     expect(html).toContain('Source · P3768_A04_OrCAD_schematics(base_version).pdf');
     expect(html).toContain(`title="${path}"`);
     expect(html).not.toContain(':codex-file-citation');
+  });
+});
+
+describe('ChatMarkdown images', () => {
+  it('routes local filesystem images through the file loader', () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      children: '![diagram](/tmp/render%20output.png)',
+    }));
+
+    expect(html).toContain('loading image');
+    expect(html).toContain('title="/tmp/render output.png"');
+    expect(html).not.toContain('<img src="/tmp');
+  });
+
+  it('routes local file URLs through the file loader without browser file access', () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      children: '![diagram](file:///tmp/render%20output.png)',
+    }));
+
+    expect(html).toContain('loading image');
+    expect(html).toContain('title="/tmp/render output.png"');
+    expect(html).not.toContain('<img src="file:');
+  });
+
+  it('renders network images directly', () => {
+    const remote = renderToStaticMarkup(createElement(ChatMarkdown, {
+      children: '![remote](https://example.com/image.png)',
+    }));
+
+    expect(remote).toContain('<img src="https://example.com/image.png"');
   });
 });

@@ -156,6 +156,32 @@ describe('cardAdapter — agentMessage streaming', () => {
       .join('');
     expect(concatenated).toBe('standalone reply');
   });
+
+  it('does not infer an input request from agentMessage questions', async () => {
+    const h = harness();
+    await h.send('item/completed', {
+      threadId: 'thr_test',
+      turnId: 'turn_1',
+      item: {
+        type: 'agentMessage',
+        id: 'msg_follow_up',
+        text: 'The implementation is ready.',
+        phase: null,
+        memoryCitation: null,
+        questions: [{ title: 'Would you like me to commit it?', options: ['Commit now', 'Keep reviewing'] }],
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: 'thr_test',
+      turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const followUp = h.events.find(
+      (event) => event.type === 'add' && event.card.type === 'follow_up_question',
+    );
+    expect(followUp).toBeUndefined();
+  });
 });
 
 describe('cardAdapter — commandExecution', () => {
@@ -1927,6 +1953,75 @@ describe('cardAdapter — surfaced ThreadItem variants', () => {
     expect((subagentAdds[0].card as { prompt?: string }).prompt).toBe('investigate the bug');
   });
 
+  it('replaces a provisional spawn tool card when the child id arrives on completion', async () => {
+    const h = harness();
+    const base = {
+      type: 'collabAgentToolCall' as const,
+      id: 'collab_late_child',
+      tool: 'spawnAgent' as const,
+      senderThreadId: h.sessionId,
+      prompt: 'inspect the sidebar',
+      model: null,
+      reasoningEffort: null,
+      agentsStates: {},
+    };
+    await h.send('item/started', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: { ...base, status: 'inProgress', receiverThreadIds: [] },
+    });
+    await h.send('item/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: { ...base, status: 'completed', receiverThreadIds: ['child_late'] },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    expect(h.events.some((event) => event.type === 'remove')).toBe(true);
+    expect(h.cb.getCards().some((card) => card.type === 'tool_call' && card.toolUseId === base.id)).toBe(false);
+    expect(h.cb.getCards()).toContainEqual(expect.objectContaining({
+      type: 'subagent',
+      agentId: 'child_late',
+      prompt: 'inspect the sidebar',
+    }));
+  });
+
+  it('creates a structured sub-agent card when wait is the first event carrying the child id', async () => {
+    const h = harness();
+    await h.send('item/completed', {
+      threadId: h.sessionId,
+      turnId: h.turnId,
+      item: {
+        type: 'collabAgentToolCall',
+        id: 'collab_wait',
+        tool: 'wait',
+        status: 'completed',
+        senderThreadId: h.sessionId,
+        receiverThreadIds: ['child_from_wait'],
+        prompt: null,
+        model: null,
+        reasoningEffort: null,
+        agentsStates: { child_from_wait: { status: 'completed', message: 'Finished inspection' } },
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: h.sessionId,
+      turn: { id: h.turnId, items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    expect(h.cb.getCards()).toContainEqual(expect.objectContaining({
+      type: 'subagent',
+      agentId: 'child_from_wait',
+      status: 'completed',
+      statusMessage: 'Finished inspection',
+    }));
+  });
+
   it('subAgentActivity updates one structured sub-agent card across the item lifecycle', async () => {
     const h = harness();
     const item = {
@@ -1998,11 +2093,11 @@ describe('cardAdapter — turn id isolation (R6)', () => {
 });
 
 describe('cardAdapter — warning notifications', () => {
-  it('warning/configWarning/deprecationNotice all map to system warning cards', async () => {
+  it('warning/configWarning/deprecationNotice all map to system warning cards with their details', async () => {
     const h = harness();
     await h.send('warning', { threadId: 'thr_test', message: 'soft warning' });
     await h.send('configWarning', { summary: 'config thing', details: null, path: null, range: null });
-    await h.send('deprecationNotice', { message: 'method X is deprecated' });
+    await h.send('deprecationNotice', { summary: 'method X is deprecated', details: 'Use method Y instead.' });
     await h.send('turn/completed', {
       threadId: 'thr_test',
       turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
@@ -2014,9 +2109,33 @@ describe('cardAdapter — warning notifications', () => {
         (e.card as { type?: string }).type === 'system' &&
         (e.card as { subtype?: string }).subtype === 'warning',
     );
-    // configWarning has `summary` not `message`, so we expect 2 warnings carrying `message`.
-    // The dispatcher reads `params.message` only — so configWarning falls back to the method name.
-    expect(warnings.length).toBeGreaterThanOrEqual(2);
+    const texts = warnings.map((e) => (e as { card: { text: string } }).card.text);
+    expect(texts).toContain('soft warning');
+    expect(texts).toContain('config thing');
+    expect(texts).toContain('method X is deprecated\n\nUse method Y instead.');
+  });
+
+  it('surfaces actionable current-protocol review and auth-recovery notifications', async () => {
+    const h = harness();
+    await h.send('modelProvider/authRecoveryStarted', {
+      threadId: 'thr_test', turnId: 'turn_1', provider: 'openai', message: 'Refresh your login.',
+    });
+    await h.send('autoApprovalReview/strictReviewRequired', {
+      threadId: 'thr_test', turnId: 'turn_1', startedAtMs: 0,
+    });
+    await h.send('thread/reverted', { threadId: 'thr_test' });
+    await h.send('turn/completed', {
+      threadId: 'thr_test',
+      turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const texts = h.events
+      .filter((e) => e.type === 'add' && (e.card as { type?: string }).type === 'system')
+      .map((e) => (e as { card: { text: string } }).card.text);
+    expect(texts).toContain('Authentication recovery (openai): Refresh your login.');
+    expect(texts).toContain('Additional approval review is required before this action can continue.');
+    expect(texts).toContain('Thread reverted to an earlier state.');
   });
 
   it('unknown notifications surface as warning cards', async () => {

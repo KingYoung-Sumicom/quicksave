@@ -65,6 +65,15 @@ describe('transcribeAudio', () => {
     expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer sk-test');
   });
 
+  it('requests Traditional Chinese output for the zh-TW runtime locale', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ text: '繁體中文' }));
+    await transcribeAudio(audio, 'audio/webm', { ...fullConfig, transcriptionLocale: 'zh-TW' });
+
+    const form = fetchSpy.mock.calls[0][1]?.body as FormData;
+    expect(form.get('language')).toBe('zh');
+    expect(form.get('prompt')).toContain('繁體中文');
+  });
+
   it('normalizes a trailing slash on the base URL', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ text: 'x' }));
     await transcribeAudio(audio, 'audio/webm', { ...fullConfig, baseUrl: 'https://whisper.example.com/v1/' });

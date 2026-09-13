@@ -17,11 +17,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { VoiceConfig } from '@sumicom/quicksave-shared';
 import { useConnectionStore } from '../stores/connectionStore';
+import { useLocaleStore } from '../stores/localeStore';
 import { getVoiceConfig } from '../lib/secureStorage';
 import { transcribeViaAgent, isVoiceConfigUsable } from '../lib/voiceTranscription';
 import { logVoiceEvent } from '../lib/voiceAgentClient';
+import {
+  getVoiceRecoveryDraft,
+  listVoiceRecoveryDrafts,
+  removeVoiceRecoveryDraft,
+  saveVoiceRecoveryDraft,
+  type VoiceRecoveryKind,
+  type VoiceRecoverySummary,
+} from '../lib/voiceRecoveryStore';
 import { useVoiceRecorder } from './useVoiceRecorder';
 import { useVoiceStream } from './useVoiceStream';
+import type { VoiceRtcDebugEvent } from '../lib/voiceStreamClient';
 
 export interface UseComposerVoice {
   /** Whether to render the mic button at all (browser can capture + machine
@@ -60,6 +70,10 @@ export interface UseComposerVoice {
   /** Streaming mode only: P2P couldn't be established on this network (no
    *  TURN). The mic is shown but disabled, since there is no fallback. */
   unavailable: boolean;
+  /** Audio retained locally after a failed transcription for explicit retry. */
+  recoveryDrafts: VoiceRecoverySummary[];
+  retryRecoveryDraft: (id: string) => Promise<void>;
+  discardRecoveryDraft: (id: string) => Promise<void>;
 }
 
 export interface UseComposerVoiceOptions {
@@ -79,6 +93,9 @@ export interface UseComposerVoiceOptions {
   streamingConnectionEnabled?: boolean;
   streamTransportId?: string;
   streamVoiceSessionId?: string;
+  /** Stable owner of locally retained voice recordings. Use a session id for
+   * existing sessions and a project id for a New Session composer. */
+  recoveryKey?: string;
 }
 
 // Browser capabilities required to capture mic audio (both modes use
@@ -109,6 +126,7 @@ export function useComposerVoice(
   const agentAudio = useConnectionStore((s) => (agentId ? s.agentConnections[agentId]?.audio : undefined));
   const streamingSupported = !!agentAudio?.streaming;
   const batchSupported = !!agentAudio?.transcription;
+  const transcriptionLocale = useLocaleStore((s) => s.active === 'zh-TW' ? 'zh-TW' as const : undefined);
 
   const recorder = useVoiceRecorder();
 
@@ -123,6 +141,7 @@ export function useComposerVoice(
   // prewarm can't grab the mic so it always fails, and surfacing that would
   // wrongly disable the button before the user ever taps.
   const [liveUnavailable, setLiveUnavailable] = useState(false);
+  const [recoveryDrafts, setRecoveryDrafts] = useState<VoiceRecoverySummary[]>([]);
 
   // Latest onError without re-subscribing effects on every parent render.
   const onErrorRef = useRef(onError);
@@ -135,8 +154,13 @@ export function useComposerVoice(
   const streamTranscriptionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transcriptionKindRef = useRef<'streaming' | 'batch' | null>(null);
   const pendingBatchRef = useRef<{ blob: Blob; config: VoiceConfig } | null>(null);
+  const capturedStreamingFramesRef = useRef<ArrayBuffer[]>([]);
+  const activeRecoveryIdRef = useRef<string | null>(null);
+  const activeRecoveryKeyRef = useRef<string | null>(null);
+  const replayingRecoveryIdRef = useRef<string | null>(null);
   const sessionIdForLogsRef = useRef(resolvedOptions?.sessionIdForLogs);
   sessionIdForLogsRef.current = resolvedOptions?.sessionIdForLogs;
+  const captureAttemptIdRef = useRef<string | null>(null);
   const cueCallbacksRef = useRef({
     onGraceStarted: resolvedOptions?.onGraceStarted,
     onIntentCommitted: resolvedOptions?.onIntentCommitted,
@@ -171,9 +195,112 @@ export function useComposerVoice(
       event,
       phase: 'intent',
       turnId: ctx?.turnId,
-      data: { ...(ctx?.data ?? {}), ...data },
+      data: {
+        ...(ctx?.data ?? {}),
+        ...(captureAttemptIdRef.current ? { captureAttemptId: captureAttemptIdRef.current } : {}),
+        ...data,
+      },
     });
   }, [agentId]);
+
+  const logCaptureDebug = useCallback((debugEvent: VoiceRtcDebugEvent) => {
+    // ICE candidate strings can contain private network addresses. Candidate
+    // type is sufficient for the persisted lifecycle log; the Settings debug
+    // panel still receives the full in-memory event for interactive diagnosis.
+    const { candidate: _candidate, ...safeData } = debugEvent.data ?? {};
+    const ctx = cueCallbacksRef.current.getLogContext?.();
+    logVoiceEvent(agentId, {
+      sessionId: sessionIdForLogsRef.current,
+      event: `capture.${debugEvent.kind}`,
+      phase: 'capture',
+      turnId: ctx?.turnId,
+      data: {
+        ...(ctx?.data ?? {}),
+        ...(captureAttemptIdRef.current ? { captureAttemptId: captureAttemptIdRef.current } : {}),
+        elapsedMs: debugEvent.t,
+        detail: debugEvent.detail,
+        ...safeData,
+      },
+    });
+  }, [agentId]);
+
+  const refreshRecoveryDrafts = useCallback(async (key = resolvedOptions?.recoveryKey) => {
+    if (!key) {
+      setRecoveryDrafts([]);
+      return;
+    }
+    setRecoveryDrafts(await listVoiceRecoveryDrafts(key));
+  }, [resolvedOptions?.recoveryKey]);
+
+  useEffect(() => {
+    void refreshRecoveryDrafts();
+  }, [refreshRecoveryDrafts]);
+
+  const persistRecovery = useCallback(async (
+    audio: Blob,
+    kind: VoiceRecoveryKind,
+    error?: string,
+  ): Promise<string | null> => {
+    const id = activeRecoveryIdRef.current;
+    const composerKey = activeRecoveryKeyRef.current;
+    if (!id || !composerKey || audio.size === 0) return null;
+    try {
+      await saveVoiceRecoveryDraft({
+        id,
+        composerKey,
+        kind,
+        audio,
+        ...(kind === 'streaming-pcm' ? { sampleRate: 24_000 } : {}),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        ...(error ? { error } : {}),
+      });
+      if (composerKey === resolvedOptions?.recoveryKey) await refreshRecoveryDrafts(composerKey);
+    } catch {
+      // The in-memory copy retained by voiceRecoveryStore still covers the
+      // current tab. Do not sacrifice a live transcription because durable
+      // browser storage happens to be unavailable.
+    }
+    return id;
+  }, [refreshRecoveryDrafts, resolvedOptions?.recoveryKey]);
+
+  const discardRecoveryDraft = useCallback(async (id: string) => {
+    await removeVoiceRecoveryDraft(id);
+    if (activeRecoveryIdRef.current === id) {
+      activeRecoveryIdRef.current = null;
+      activeRecoveryKeyRef.current = null;
+      capturedStreamingFramesRef.current = [];
+    }
+    await refreshRecoveryDrafts();
+  }, [refreshRecoveryDrafts]);
+
+  const finishCurrentRecovery = useCallback(() => {
+    const id = replayingRecoveryIdRef.current ?? activeRecoveryIdRef.current;
+    replayingRecoveryIdRef.current = null;
+    activeRecoveryIdRef.current = null;
+    activeRecoveryKeyRef.current = null;
+    capturedStreamingFramesRef.current = [];
+    if (id) void removeVoiceRecoveryDraft(id).then(() => refreshRecoveryDrafts());
+  }, [refreshRecoveryDrafts]);
+
+  const beginLocalRecoveryCapture = useCallback(() => {
+    activeRecoveryIdRef.current = crypto.randomUUID();
+    activeRecoveryKeyRef.current = resolvedOptions?.recoveryKey ?? null;
+    replayingRecoveryIdRef.current = null;
+    capturedStreamingFramesRef.current = [];
+  }, [resolvedOptions?.recoveryKey]);
+
+  const retainStreamingFrame = useCallback((pcm: ArrayBuffer) => {
+    // VoiceStreamSession makes a copy before handing it here. Keep chunks
+    // separate while recording so the AudioWorklet path never blocks on IDB.
+    capturedStreamingFramesRef.current.push(pcm);
+  }, []);
+
+  const persistStreamingRecovery = useCallback(async (error?: string) => {
+    const frames = capturedStreamingFramesRef.current;
+    if (frames.length === 0) return null;
+    return persistRecovery(new Blob(frames, { type: 'audio/pcm;rate=24000;channels=1' }), 'streaming-pcm', error);
+  }, [persistRecovery]);
 
   const finishStreamingTranscription = useCallback(() => {
     if (streamTranscriptionTimerRef.current) {
@@ -194,8 +321,9 @@ export function useComposerVoice(
       streamTranscriptionTimerRef.current = null;
       logStreamingEvent('asr.final_timeout', { timeoutMs: STREAM_TRANSCRIPTION_TIMEOUT_MS });
       setTranscriptionError('Transcription timed out.');
+      void persistStreamingRecovery('Transcription timed out.');
     }, STREAM_TRANSCRIPTION_TIMEOUT_MS);
-  }, [logStreamingEvent]);
+  }, [logStreamingEvent, persistStreamingRecovery]);
 
   const clearStreamingEndpointTimers = useCallback(() => {
     if (streamSilenceTimerRef.current) {
@@ -221,9 +349,10 @@ export function useComposerVoice(
         logStreamingEvent('voice_agent.utterance.sent', { textChars: text.length });
       }
     } finally {
+      finishCurrentRecovery();
       finishStreamingTranscription();
     }
-  }, [clearStreamingEndpointTimers, finishStreamingTranscription, logStreamingEvent]);
+  }, [clearStreamingEndpointTimers, finishCurrentRecovery, finishStreamingTranscription, logStreamingEvent]);
 
   const scheduleStreamingEndpoint = useCallback((delayMs = STREAM_INTENT_SILENCE_MS) => {
     if (streamFragmentsRef.current.length === 0) return;
@@ -303,11 +432,14 @@ export function useComposerVoice(
     handleStreamingFinalFragment,
     handleStreamingSpeechActivity,
     handleStreamingPartial,
+    retainStreamingFrame,
     (active, streamId) => cueCallbacksRef.current.onRemotePlayback?.(active, streamId),
     {
       transportSessionId: resolvedOptions?.streamTransportId ?? resolvedOptions?.sessionIdForLogs,
       voiceSessionId: resolvedOptions?.streamVoiceSessionId,
       enabled: resolvedOptions?.streamingConnectionEnabled ?? true,
+      transcriptionLocale,
+      onDebug: logCaptureDebug,
     },
   );
 
@@ -335,9 +467,10 @@ export function useComposerVoice(
 
   useEffect(() => {
     if (!voiceStream.error) return;
+    void persistStreamingRecovery(voiceStream.error);
     finishStreamingTranscription();
     onErrorRef.current(voiceStream.error);
-  }, [finishStreamingTranscription, voiceStream.error]);
+  }, [finishStreamingTranscription, persistStreamingRecovery, voiceStream.error]);
 
   useEffect(() => () => {
     if (streamTranscriptionTimerRef.current) clearTimeout(streamTranscriptionTimerRef.current);
@@ -354,23 +487,27 @@ export function useComposerVoice(
     setTranscriptionError(null);
     setTranscribing(true);
     try {
-      const text = await transcribeViaAgent(blob, config, agentId);
+      const localizedConfig = transcriptionLocale ? { ...config, transcriptionLocale } : config;
+      const text = await transcribeViaAgent(blob, localizedConfig, agentId);
       if (text) onTranscriptRef.current(text);
+      finishCurrentRecovery();
       pendingBatchRef.current = null;
       transcriptionKindRef.current = null;
       setTranscribing(false);
     } catch (err) {
       if (isTimeoutError(err)) {
         setTranscriptionError('Transcription timed out.');
+        void persistRecovery(blob, 'batch-blob', 'Transcription timed out.');
         return;
       }
+      void persistRecovery(blob, 'batch-blob', err instanceof Error ? err.message : 'Transcription failed.');
       pendingBatchRef.current = null;
       transcriptionKindRef.current = null;
       setTranscribing(false);
       if (err instanceof DOMException && err.name === 'AbortError') return;
       onErrorRef.current(err instanceof Error ? err.message : 'Transcription failed.');
     }
-  }, [agentId]);
+  }, [agentId, finishCurrentRecovery, persistRecovery, transcriptionLocale]);
 
   const batchStopAndTranscribe = useCallback(async () => {
     transcriptionKindRef.current = 'batch';
@@ -383,6 +520,7 @@ export function useComposerVoice(
         setTranscribing(false);
         return;
       }
+      void persistRecovery(blob, 'batch-blob');
       const config = await getVoiceConfig();
       if (!isVoiceConfigUsable(config)) {
         setConfigured(false);
@@ -397,24 +535,28 @@ export function useComposerVoice(
       setTranscribing(false);
       onErrorRef.current(err instanceof Error ? err.message : 'Transcription failed.');
     }
-  }, [recorder, runBatchTranscription]);
+  }, [persistRecovery, recorder, runBatchTranscription]);
 
   const stopListening = useCallback(() => {
     if (voiceStream.recording) {
+      logStreamingEvent('capture.stop_requested', { mode: 'streaming' });
       beginStreamingTranscription();
+      void persistStreamingRecovery();
       voiceStream.stop({ releaseMic: !cueCallbacksRef.current.keepStreamingMicAlive });
       scheduleStreamingEndpoint(0);
       return;
     }
     if (recorder.state === 'recording') {
+      logStreamingEvent('capture.stop_requested', { mode: 'batch' });
       void batchStopAndTranscribe();
     }
-  }, [voiceStream, recorder.state, batchStopAndTranscribe, beginStreamingTranscription, scheduleStreamingEndpoint]);
+  }, [voiceStream, recorder.state, batchStopAndTranscribe, beginStreamingTranscription, logStreamingEvent, persistStreamingRecovery, scheduleStreamingEndpoint]);
 
   const cancelListening = useCallback(() => {
     clearStreamingEndpointTimers();
     streamFragmentsRef.current = [];
     finishStreamingTranscription();
+    finishCurrentRecovery();
     if (voiceStream.recording) {
       voiceStream.stop({
         releaseMic: !cueCallbacksRef.current.keepStreamingMicAlive,
@@ -425,7 +567,7 @@ export function useComposerVoice(
       return;
     }
     if (recorder.state === 'recording') recorder.cancel();
-  }, [clearStreamingEndpointTimers, finishStreamingTranscription, logStreamingEvent, recorder, voiceStream]);
+  }, [clearStreamingEndpointTimers, finishCurrentRecovery, finishStreamingTranscription, logStreamingEvent, recorder, voiceStream]);
 
   const retryTranscription = useCallback(() => {
     if (transcriptionKindRef.current === 'streaming') {
@@ -439,6 +581,38 @@ export function useComposerVoice(
     if (pending) void runBatchTranscription(pending.blob, pending.config);
   }, [beginStreamingTranscription, logStreamingEvent, runBatchTranscription, voiceStream]);
 
+  const retryRecoveryDraft = useCallback(async (id: string) => {
+    const draft = await getVoiceRecoveryDraft(id);
+    if (!draft) {
+      await refreshRecoveryDrafts();
+      return;
+    }
+    const config = await getVoiceConfig();
+    if (!isVoiceConfigUsable(config)) {
+      onErrorRef.current('Voice transcription is not configured. Set it up in Settings.');
+      return;
+    }
+    activeRecoveryIdRef.current = draft.id;
+    activeRecoveryKeyRef.current = draft.composerKey;
+    replayingRecoveryIdRef.current = draft.id;
+    if (draft.kind === 'batch-blob') {
+      await runBatchTranscription(draft.audio, config);
+      return;
+    }
+    const bytes = await draft.audio.arrayBuffer();
+    const frameBytes = 16 * 1024;
+    const frames: ArrayBuffer[] = [];
+    for (let offset = 0; offset < bytes.byteLength; offset += frameBytes) {
+      frames.push(bytes.slice(offset, Math.min(bytes.byteLength, offset + frameBytes)));
+    }
+    beginStreamingTranscription();
+    const ok = await voiceStream.replayTranscription(frames);
+    if (!ok) {
+      setTranscriptionError('Could not reconnect to live voice.');
+      await persistRecovery(draft.audio, 'streaming-pcm', 'Could not reconnect to live voice.');
+    }
+  }, [beginStreamingTranscription, persistRecovery, refreshRecoveryDrafts, runBatchTranscription, voiceStream]);
+
   const cancelTranscription = useCallback(() => {
     clearStreamingEndpointTimers();
     streamFragmentsRef.current = [];
@@ -447,8 +621,9 @@ export function useComposerVoice(
       voiceStream.stop({ releaseMic: false, discard: true });
       logStreamingEvent('asr.retry_cancelled');
     }
+    finishCurrentRecovery();
     finishStreamingTranscription();
-  }, [clearStreamingEndpointTimers, finishStreamingTranscription, logStreamingEvent, voiceStream]);
+  }, [clearStreamingEndpointTimers, finishCurrentRecovery, finishStreamingTranscription, logStreamingEvent, voiceStream]);
 
   const startListening = useCallback(async (): Promise<boolean> => {
     if (resolvedOptions?.streamingConnectionEnabled === false) return false;
@@ -458,9 +633,29 @@ export function useComposerVoice(
     // first PCM frame reaches the DataChannel; batch start resolves only after
     // MediaRecorder has entered its recording state.
     setArming(true);
+    captureAttemptIdRef.current = crypto.randomUUID();
+    logStreamingEvent('capture.attempt_started', {
+      mode,
+      visibilityState: document.visibilityState,
+      userAgent: navigator.userAgent,
+      maxTouchPoints: navigator.maxTouchPoints,
+      standalone: window.matchMedia?.('(display-mode: standalone)').matches ?? false,
+    });
+    beginLocalRecoveryCapture();
+    // Begin the streaming gesture path before any storage await. iOS Home
+    // Screen PWAs can otherwise lose transient activation while IndexedDB is
+    // loading and leave getUserMedia pending without showing its dialog.
+    const streamingStart = mode === 'streaming' ? voiceStream.start() : null;
+    const batchStart = mode === 'batch' ? recorder.start() : null;
     try {
       const config = await getVoiceConfig();
       if (!isVoiceConfigUsable(config)) {
+        logStreamingEvent('capture.config_unavailable', { mode });
+        if (streamingStart) await streamingStart.catch(() => false);
+        if (batchStart) {
+          await batchStart.catch(() => false);
+          recorder.cancel();
+        }
         setConfigured(false);
         onErrorRef.current('Voice transcription is not configured. Set it up in Settings.');
         return false;
@@ -471,23 +666,34 @@ export function useComposerVoice(
         // permission grab is what unlocks Safari's host ICE candidates — then
         // start recording. start() resolves false if the link can't be made.
         setLiveUnavailable(false);
-        const ok = await voiceStream.start();
+        if (!streamingStart) return false;
+        const ok = await streamingStart;
         if (!ok) {
+          logStreamingEvent('capture.attempt_failed', { mode, reason: 'streaming_session_unavailable' });
           setLiveUnavailable(true);
           onErrorRef.current('Live voice couldn’t connect on this network.');
         }
+        if (ok) logStreamingEvent('capture.attempt_recording', { mode });
         return ok;
       } else {
-        await recorder.start();
-        return true;
+        const ok = batchStart ? await batchStart : false;
+        logStreamingEvent(ok ? 'capture.attempt_recording' : 'capture.attempt_failed', {
+          mode,
+          ...(!ok ? { reason: 'media_recorder_start_failed' } : {}),
+        });
+        return ok;
       }
     } catch (err) {
+      logStreamingEvent('capture.attempt_failed', {
+        mode,
+        reason: err instanceof Error ? err.message : String(err),
+      });
       onErrorRef.current(err instanceof Error ? err.message : 'Could not start voice input.');
       return false;
     } finally {
       stopArming();
     }
-  }, [transcribing, arming, mode, voiceStream, recorder.state, recorder, stopArming, resolvedOptions?.streamingConnectionEnabled]);
+  }, [transcribing, arming, mode, voiceStream, recorder.state, recorder, stopArming, beginLocalRecoveryCapture, logStreamingEvent, resolvedOptions?.streamingConnectionEnabled]);
 
   const onMicPress = useCallback(async () => {
     if (transcribing || arming) return;
@@ -519,5 +725,8 @@ export function useComposerVoice(
     configured,
     streaming: voiceStream.recording,
     unavailable: mode === 'streaming' && streamingSupported && liveUnavailable,
+    recoveryDrafts,
+    retryRecoveryDraft,
+    discardRecoveryDraft,
   };
 }

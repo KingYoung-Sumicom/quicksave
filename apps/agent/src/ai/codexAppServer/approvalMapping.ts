@@ -114,9 +114,9 @@ export function codexApprovalResponse(
     case 'item/fileChange/requestApproval':
       return { decision: allowed ? 'accept' : 'decline' };
     case 'execCommandApproval':
-      return { decision: allowed ? 'approved' : 'denied' };
+      return { decision: allowed ? 'approved' : { denied: { rejection: 'User declined approval' } } };
     case 'applyPatchApproval':
-      return { decision: allowed ? 'approved' : 'denied' };
+      return { decision: allowed ? 'approved' : { denied: { rejection: 'User declined approval' } } };
     case 'item/permissions/requestApproval':
       return {
         scope: 'session',

@@ -9,7 +9,7 @@ import { tmpdir } from 'os';
 import { simpleGit } from 'simple-git';
 import { getSessionRegistry, resetSessionRegistry } from '../ai/sessionRegistry.js';
 import { getEventStore } from '../storage/eventStore.js';
-import type { SessionRegistryEntry } from '@sumicom/quicksave-shared';
+import type { NativeSessionSummary, SessionRegistryEntry } from '@sumicom/quicksave-shared';
 import { setQuicksaveDir } from '../service/singleton.js';
 import { addManagedRepo } from '../config.js';
 import { PACKAGE_VERSION } from '../version.js';
@@ -1020,6 +1020,15 @@ describe('MessageHandler', () => {
           firstPrompt: 'native prompt',
           createdAt: 3_000,
           lastInteractionAt: 8_000,
+          archived: true,
+        },
+        {
+          sessionId: 'native-active-session',
+          cwd: testRepoPath,
+          agent: 'codex',
+          firstPrompt: 'active native prompt',
+          createdAt: 3_500,
+          lastInteractionAt: 8_500,
           archived: false,
         },
       ]);
@@ -1038,6 +1047,7 @@ describe('MessageHandler', () => {
       expect(entries[0].lastInteractionAt).toBe(9_000);
       expect(entries[1].origin).toBe('native');
       expect((response.payload as any).total).toBe(3);
+      expect(entries.map((entry) => entry.sessionId)).not.toContain('native-active-session');
     });
 
     it('materializes a native-only session when restoring it', async () => {
@@ -1115,6 +1125,13 @@ describe('MessageHandler', () => {
       handler.onHistoryUpdated = (cwd, entry, action) => {
         historyEvents.push({ cwd, entry, action });
       };
+      const sessionUpdates: Array<{ sessionId: string; isActive: boolean; archived: boolean }> = [];
+      const claudeService = (handler as unknown as {
+        claudeService: {
+          on(event: 'session-updated', listener: (payload: { sessionId: string; isActive: boolean; archived: boolean }) => void): void;
+        };
+      }).claudeService;
+      claudeService.on('session-updated', (payload) => sessionUpdates.push(payload));
 
       const msg = createMessage('claude:end-task', { sessionId: 'sess-end' });
       const response = await handler.handleMessage(msg);
@@ -1135,6 +1152,62 @@ describe('MessageHandler', () => {
       expect(historyEvents[0].cwd).toBe(projectDir);
       expect(historyEvents[0].action).toBe('upsert');
       expect(historyEvents[0].entry.archived).toBe(true);
+      // A registry-only session has no live process for closeSession() to
+      // update, but the PWA still needs this strong signal to leave its page.
+      expect(sessionUpdates).toContainEqual(expect.objectContaining({
+        sessionId: 'sess-end',
+        isActive: false,
+        archived: true,
+      }));
+    });
+
+    it('keeps the local entry active when native Codex archiving fails', async () => {
+      const entry = { ...seedEntry('codex-archive-failure'), agent: 'codex' as const };
+      getSessionRegistry().upsertEntry(entry);
+      const claudeService = (handler as unknown as {
+        claudeService: {
+          setSessionArchived: (sessionId: string, cwd: string, archived: boolean) => Promise<unknown>;
+          closeSession: (sessionId: string) => boolean;
+        };
+      }).claudeService;
+      const nativeArchive = vi.spyOn(claudeService, 'setSessionArchived')
+        .mockRejectedValue(new Error('Codex archive rejected'));
+      const closeSpy = vi.spyOn(claudeService, 'closeSession');
+
+      const response = await handler.handleMessage(
+        createMessage('claude:end-task', { sessionId: entry.sessionId }),
+      );
+
+      expect((response.payload as any)).toMatchObject({ success: false, error: 'Codex archive rejected' });
+      expect(nativeArchive).toHaveBeenCalledWith(entry.sessionId, projectDir, true);
+      expect(closeSpy).not.toHaveBeenCalled();
+      expect(getSessionRegistry().getEntry(projectDir, entry.sessionId)?.archived).not.toBe(true);
+    });
+
+    it('archives a native-only session found by id and broadcasts its removal', async () => {
+      const nativeSession = {
+        sessionId: 'native-only-codex', cwd: projectDir, agent: 'codex' as const,
+        archived: false, createdAt: 10, lastInteractionAt: 20,
+      };
+      const historyEvents: Array<{ cwd: string; entry: SessionRegistryEntry; action: string }> = [];
+      handler.onHistoryUpdated = (cwd, entry, action) => {
+        historyEvents.push({ cwd, entry, action });
+      };
+      const claudeService = handler.getClaudeService();
+      vi.spyOn(claudeService, 'findNativeSessionById').mockResolvedValue(nativeSession);
+      const archive = vi.spyOn(claudeService, 'setSessionArchived').mockResolvedValue('native');
+
+      const response = await handler.handleMessage(
+        createMessage('claude:end-task', { sessionId: nativeSession.sessionId }),
+      );
+
+      expect((response.payload as any).success).toBe(true);
+      expect(archive).toHaveBeenCalledWith(nativeSession.sessionId, nativeSession.cwd, true);
+      expect(historyEvents).toEqual([expect.objectContaining({
+        cwd: nativeSession.cwd,
+        action: 'delete',
+        entry: expect.objectContaining({ sessionId: nativeSession.sessionId, archived: true }),
+      })]);
     });
 
     it('returns success=false for an unknown sessionId with no live process and no registry entry', async () => {
@@ -1144,6 +1217,34 @@ describe('MessageHandler', () => {
       expect(response.type).toBe('claude:end-task:response');
       expect((response.payload as any).success).toBe(false);
       expect((response.payload as any).error).toBeDefined();
+    });
+
+    it.each(['codex', 'opencode'] as const)('archives a native-only discovered %s session', async (agent) => {
+      const sessionId = `native-only-${agent}`;
+      const claudeService = (handler as unknown as {
+        claudeService: {
+          listNativeSessions: () => Promise<NativeSessionSummary[]>;
+          setSessionArchived: (id: string, cwd: string, archived: boolean) => Promise<unknown>;
+        };
+      }).claudeService;
+      vi.spyOn(claudeService, 'listNativeSessions').mockResolvedValue([{
+        sessionId,
+        cwd: projectDir,
+        agent,
+        title: 'Native-only session',
+        createdAt: 1_000,
+        lastInteractionAt: 2_000,
+        archived: false,
+      }]);
+      const archive = vi.spyOn(claudeService, 'setSessionArchived').mockResolvedValue('native');
+
+      const response = await handler.handleMessage(createMessage('claude:end-task', { sessionId }));
+
+      expect((response.payload as any).success).toBe(true);
+      expect(archive).toHaveBeenCalledWith(sessionId, projectDir, true);
+      expect(getSessionRegistry().getEntry(projectDir, sessionId)).toMatchObject({
+        agent, archived: false, nativeArchived: true,
+      });
     });
 
     it('also kills the live CLI process when the session is active', async () => {

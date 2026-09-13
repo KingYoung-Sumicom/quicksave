@@ -5,6 +5,7 @@ import { FormattedMessage, useIntl } from 'react-intl';
 import { Spinner } from '../ui/Spinner';
 import { ErrorBox } from '../ui/ErrorBox';
 import { saveApiKey as saveApiKeyToStorage, hasApiKey } from '../../lib/secureStorage';
+import { MaskedSecretInput } from '../ui/MaskedSecretInput';
 
 interface ApiKeySectionProps {
   isOpen: boolean;
@@ -89,14 +90,7 @@ export function ApiKeySection({ isOpen, onSendApiKeyToAgent }: ApiKeySectionProp
         )}
       </div>
 
-      <input
-        type="password"
-        value={apiKey}
-        onChange={(e) => setApiKey(e.target.value)}
-        placeholder={placeholder}
-        className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-        disabled={isSavingKey}
-      />
+      <MaskedSecretInput value={apiKey} onChange={setApiKey} placeholder={placeholder} disabled={isSavingKey} autoComplete="new-password" />
 
       <p className="text-xs text-slate-400">
         <FormattedMessage id="settings.apiKey.storageNote" />

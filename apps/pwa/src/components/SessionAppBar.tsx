@@ -48,6 +48,13 @@ export function SessionAppBar({
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const panelMode = useSessionRightPanelStore(selectPanelMode);
   const togglePanel = useSessionRightPanelStore((s) => s.toggle);
+  const openPanelForSession = useSessionRightPanelStore((s) => s.openForSession);
+  const openSettingsPanel = () => {
+    const targetSessionId = sessionId && sessionId !== 'new'
+      ? sessionId
+      : useClaudeStore.getState().activeSessionId;
+    if (targetSessionId) openPanelForSession(targetSessionId, 'settings');
+  };
 
   // Desktop right area: three panel-toggle icons when panel is closed, nothing
   // extra when it's open (panel tab bar handles mode switching).
@@ -86,7 +93,7 @@ export function SessionAppBar({
           </svg>
         </button>
         <button
-          onClick={() => togglePanel('settings')}
+          onClick={openSettingsPanel}
           className="p-1.5 rounded transition-colors text-slate-400 hover:text-slate-200 hover:bg-slate-700/60"
           aria-label="Open settings panel"
           title="Settings"

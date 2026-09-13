@@ -61,6 +61,9 @@ export function shouldCollapseCard(
   // Provider and runtime failures need to remain visible after a turn ends;
   // otherwise they get mistaken for an item inside the collapsed tool run.
   if (isVisibleSystemAlert(card)) return false;
+  // Codex's optional follow-up prompts are user-facing next steps, not turn
+  // internals. Keep them visible after the source turn has completed.
+  if (card.type === 'follow_up_question') return false;
   if (collapseIntermediate) return true;
   return hideToolCalls
     && (

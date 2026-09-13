@@ -36,6 +36,7 @@ import {
   _resetOpenCodeBinCache,
   normalizeOpenCodeToolInput,
   normalizeOpenCodeToolName,
+  projectOpenCodeMessages,
   type TurnConfig,
 } from './openCodeProvider.js';
 import { StreamCardBuilder } from './cardBuilder.js';
@@ -78,15 +79,19 @@ function makeMockServer(): OpenCodeServer & {
   prompts: Array<{ sessionID: string; directory: string; body: any }>;
   aborts: Array<{ sessionID: string; directory: string }>;
   replies: Array<{ requestID: string; directory: string; reply: string; message?: string }>;
+  questionReplies: Array<{ requestID: string; directory: string; answers: string[][] }>;
+  questionRejections: Array<{ requestID: string; directory: string }>;
   messages: Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>;
 } {
   const creates: Array<Record<string, unknown>> = [];
   const prompts: Array<{ sessionID: string; directory: string; body: any }> = [];
   const aborts: Array<{ sessionID: string; directory: string }> = [];
   const replies: Array<{ requestID: string; directory: string; reply: string; message?: string }> = [];
+  const questionReplies: Array<{ requestID: string; directory: string; answers: string[][] }> = [];
+  const questionRejections: Array<{ requestID: string; directory: string }> = [];
   const messages: Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }> = [];
   return {
-    creates, prompts, aborts, replies, messages,
+    creates, prompts, aborts, replies, questionReplies, questionRejections, messages,
     ensureRunning: async () => ({ baseUrl: 'http://127.0.0.1:4096' }),
     createSession: async (opts) => { creates.push(opts); return { id: 'ses_mock' }; },
     deleteSession: async () => undefined,
@@ -95,7 +100,14 @@ function makeMockServer(): OpenCodeServer & {
     replyPermission: async (requestID, directory, reply, message) => {
       replies.push({ requestID, directory, reply, ...(message ? { message } : {}) });
     },
+    replyQuestion: async (requestID, directory, answers) => {
+      questionReplies.push({ requestID, directory, answers: answers.map((answer) => [...answer]) });
+    },
+    rejectQuestion: async (requestID, directory) => {
+      questionRejections.push({ requestID, directory });
+    },
     getMessages: async () => messages,
+    getMessagePage: async () => ({ data: [], cursor: {} }),
     getHealth: async () => ({ healthy: true, version: '1.18.4' }),
     listProviders: async () => ({
       all: [
@@ -162,6 +174,7 @@ describe('OpenCode Quicksave MCP injection', () => {
       'mcp__quicksave-sandbox__SandboxBash': 'allow',
       'mcp__quicksave-sandbox__UpdateSessionStatus': 'allow',
       'mcp__quicksave-sandbox__DisplayMarkdownReport': 'allow',
+      question: 'allow',
     });
   });
 
@@ -184,6 +197,16 @@ describe('OpenCode Quicksave MCP injection', () => {
     expect(config.mcp.existing.url).toBe('https://example.com/mcp');
     expect(config.permission['*']).toBe('ask');
     expect(config.permission['mcp__quicksave-sandbox__UpdateSessionStatus']).toBe('allow');
+  });
+
+  it('enables built-in Exa only when the persistent machine setting asks for it', () => {
+    const enabled = buildOpenCodeServerEnv({}, __testDir, true);
+    const enabledConfig = JSON.parse(enabled.OPENCODE_CONFIG_CONTENT!) as Record<string, any>;
+    expect(enabled.OPENCODE_ENABLE_EXA).toBe('1');
+    expect(enabledConfig.permission.websearch).toBe('ask');
+
+    const disabled = buildOpenCodeServerEnv({ OPENCODE_ENABLE_EXA: '1' }, __testDir, false);
+    expect(disabled.OPENCODE_ENABLE_EXA).toBeUndefined();
   });
 });
 
@@ -687,6 +710,43 @@ describe('SessionEventRouter', () => {
     expect(call).toBeTruthy();
   });
 
+  it('mirrors OpenCode task tools into the provider-neutral sub-agent registry', () => {
+    const { router, cb, cbs } = makeRouter();
+    const part = {
+      id: 'prt_task', sessionID: 'ses_t', messageID: 'm', type: 'tool' as const,
+      tool: 'task', callID: 'call_task',
+    };
+    router.handle(ev('message.part.updated', {
+      part: {
+        ...part,
+        state: {
+          status: 'running',
+          input: { prompt: 'Inspect the test suite', agent: 'explore', model: 'openai/gpt-5' },
+        },
+      },
+    }));
+
+    expect(cb.getCards().find((card) => card.type === 'subagent')).toMatchObject({
+      agentId: 'call_task',
+      toolUseId: 'call_task',
+      description: 'Inspect the test suite',
+      prompt: 'Inspect the test suite',
+      subagentType: 'explore',
+      requestedModel: 'openai/gpt-5',
+      status: 'running',
+    });
+
+    router.handle(ev('message.part.updated', {
+      part: { ...part, state: { status: 'completed', input: { prompt: 'Inspect the test suite' }, output: 'All clear.' } },
+    }));
+
+    expect(cb.getCards().find((card) => card.type === 'subagent')).toMatchObject({
+      status: 'completed',
+      summary: 'All clear.',
+    });
+    expect(cbs.cards.filter((event: any) => event.card?.type === 'subagent')).toHaveLength(1);
+  });
+
   it('patches a tool card when the completed snapshot supplies its input', () => {
     const { router, cb, cbs } = makeRouter();
     const base = {
@@ -969,6 +1029,80 @@ describe('SessionEventRouter', () => {
     expect(server.replies).toEqual([{ requestID: 'per_abc', directory: '/p', reply: 'once' }]);
   });
 
+  it('maps question.asked to one blocking question card flow and replies with structured answers', async () => {
+    const server = makeMockServer();
+    const cb = new StreamCardBuilder('ses_t', '/p');
+    const calls: any[] = [];
+    const cbs: ProviderCallbacks = {
+      ...makeCallbacks(),
+      handlePermissionRequest: async (sessionId, req) => {
+        calls.push({ sessionId, ...req });
+        return { action: 'allow', response: 'TypeScript\nFast, Safe' };
+      },
+    };
+    const router = new SessionEventRouter('ses_t', cb, cbs, server, { directory: '/p' });
+
+    router.handle(ev('question.asked', {
+      id: 'question_abc',
+      sessionID: 'ses_t',
+      tool: { messageID: 'msg_x', callID: 'call_question' },
+      questions: [
+        {
+          header: 'Language',
+          question: 'Which language?',
+          options: [{ label: 'TypeScript', description: 'Typed JavaScript' }],
+          custom: false,
+        },
+        {
+          header: 'Goals',
+          question: 'Which qualities matter?',
+          options: [{ label: 'Fast', description: 'Low latency' }, { label: 'Safe', description: 'Few regressions' }],
+          multiple: true,
+        },
+      ],
+    }));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(calls).toEqual([expect.objectContaining({
+      sessionId: 'ses_t',
+      requestId: 'question_abc',
+      inputType: 'question',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'call_question',
+      skipAutoApprove: true,
+      toolInput: {
+        questions: [
+          expect.objectContaining({ question: 'Which language?', header: 'Language', allowFreeText: false }),
+          expect.objectContaining({ question: 'Which qualities matter?', header: 'Goals', multiSelect: true }),
+        ],
+      },
+    })]);
+    expect(server.questionReplies).toEqual([{
+      requestID: 'question_abc',
+      directory: '/p',
+      answers: [['TypeScript'], ['Fast', 'Safe']],
+    }]);
+    expect(server.replies).toEqual([]);
+  });
+
+  it('rejects question.asked when the user declines or supplies no answer', async () => {
+    const server = makeMockServer();
+    const cbs: ProviderCallbacks = {
+      ...makeCallbacks(),
+      handlePermissionRequest: async () => ({ action: 'deny', response: 'Not now' }),
+    };
+    const router = new SessionEventRouter('ses_t', new StreamCardBuilder('ses_t', '/p'), cbs, server, { directory: '/p' });
+    router.handle(ev('question.asked', {
+      id: 'question_declined',
+      sessionID: 'ses_t',
+      questions: [{ header: 'Choice', question: 'Continue?', options: [{ label: 'Yes', description: 'Continue' }] }],
+    }));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(server.questionRejections).toEqual([{ requestID: 'question_declined', directory: '/p' }]);
+    expect(server.questionReplies).toEqual([]);
+  });
+
   it('normalizes external_directory into its dedicated permission card shape', async () => {
     const server = makeMockServer();
     const cb = new StreamCardBuilder('ses_t', '/p');
@@ -1115,7 +1249,7 @@ describe('OpenCodeProvider', () => {
     const provider = new OpenCodeProvider(makeMockServer());
     expect(provider.id).toBe('opencode');
     expect(provider.label).toBe('OpenCode');
-    expect(provider.historyMode).toBe('memory');
+    expect(provider.historyMode).toBe('opencode-thread');
     const probe = await provider.probeProvider();
     expect(probe.capabilities.supportsResume).toBe(true);
     expect(probe.capabilities.supportsStreaming).toBe(true);
@@ -1130,6 +1264,96 @@ describe('OpenCodeProvider', () => {
     const ids = r.models?.map((m) => m.id).sort();
     expect(ids).toEqual(['opencode/big-pickle', 'vllm/foo/bar']);
     expect(r.models?.find((m) => m.id === 'vllm/foo/bar')?.name).toBe('Foo Bar');
+  });
+
+  it('lists only root sessions in the requested project directory', async () => {
+    const server = makeMockServer();
+    const listSessions = vi.fn().mockResolvedValue([
+      { id: 'ses_root', directory: '/workspace/app', title: 'Root', time: { created: 10, updated: 20 } },
+      { id: 'ses_child', directory: '/workspace/app', parentID: 'ses_root', title: 'Subagent', time: { created: 11, updated: 21 } },
+      { id: 'ses_other-project', directory: '/workspace/other', title: 'Elsewhere', time: { created: 12, updated: 22 } },
+    ]);
+    (server as any).listSessions = listSessions;
+
+    await expect(new OpenCodeProvider(server).listNativeSessions({ cwd: '/workspace/app' })).resolves.toEqual([
+      expect.objectContaining({ sessionId: 'ses_root', cwd: '/workspace/app' }),
+    ]);
+    expect(listSessions).toHaveBeenCalledWith('/workspace/app');
+  });
+
+  it('looks up one root session by id without listing every session', async () => {
+    const server = makeMockServer();
+    const getSession = vi.fn().mockResolvedValue({
+      id: 'ses_root', directory: '/workspace/app', title: 'Root', time: { created: 10, updated: 20 },
+    });
+    const listSessions = vi.fn();
+    (server as any).getSession = getSession;
+    (server as any).listSessions = listSessions;
+
+    await expect(new OpenCodeProvider(server).getNativeSession('ses_root')).resolves.toEqual(
+      expect.objectContaining({ sessionId: 'ses_root', cwd: '/workspace/app', agent: 'opencode' }),
+    );
+    expect(getSession).toHaveBeenCalledWith('ses_root', undefined);
+    expect(listSessions).not.toHaveBeenCalled();
+  });
+
+  it('projects v2 persisted messages into final-state cards', () => {
+    const cards = projectOpenCodeMessages('ses_history', '/workspace/a', [
+      { id: 'msg_user', type: 'user', text: 'inspect this' },
+      {
+        id: 'msg_assistant', type: 'assistant', content: [
+          { type: 'reasoning', id: 'reason_1', text: 'I will inspect it.' },
+          { type: 'tool', id: 'call_1', name: 'read', state: {
+            status: 'completed', input: { filePath: '/workspace/a/a.ts' }, content: [{ text: 'ok' }],
+          } },
+          { type: 'text', id: 'text_1', text: 'Done.' },
+        ],
+      },
+    ]);
+    expect(cards.map((card) => card.type)).toEqual(['user', 'thinking', 'tool_call', 'assistant_text']);
+    expect(cards[0]?.turnId).toBe('msg_user');
+    expect(cards[2]?.toolName).toBe('Read');
+    expect(cards[3]?.text).toBe('Done.');
+  });
+
+  it('uses the OpenCode v2 cursor directly for older card pages', async () => {
+    const server = makeMockServer();
+    const page = vi.fn().mockResolvedValue({
+      data: [{ id: 'msg_old', type: 'user', text: 'older prompt' }],
+      cursor: { next: 'native-next' },
+    });
+    (server as any).getMessagePage = page;
+    const result = await new OpenCodeProvider(server).loadCardHistory({
+      sessionId: 'ses_history', cwd: '/workspace/a', offset: 1, limit: 50, cursor: 'opencode-v2:native-current',
+    });
+    expect(page).toHaveBeenCalledWith('ses_history', { limit: 50, cursor: 'native-current' });
+    expect(result.cards.map((card) => card.type)).toEqual(['user']);
+    expect(result.hasMore).toBe(true);
+    expect(result.nextCursor).toBe('opencode-v2:native-next');
+  });
+
+  it('omits OpenCode delegated-agent child sessions from native task discovery', async () => {
+    const server = makeMockServer();
+    (server as any).listSessions = vi.fn().mockResolvedValue([
+      {
+        id: 'ses_parent',
+        directory: '/workspace/a',
+        title: 'Parent task',
+        time: { created: 100, updated: 200, archived: null },
+      },
+      {
+        id: 'ses_child',
+        parentID: 'ses_parent',
+        directory: '/workspace/a',
+        title: 'Delegated task',
+        time: { created: 110, updated: 190, archived: null },
+      },
+    ]);
+
+    const sessions = await new OpenCodeProvider(server).listNativeSessions({ cwd: '/workspace/a' });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({ sessionId: 'ses_parent', agent: 'opencode' });
   });
 
   it('routes a new session to its directory and forwards attachments', async () => {

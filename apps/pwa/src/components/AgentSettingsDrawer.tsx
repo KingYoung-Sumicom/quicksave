@@ -59,7 +59,11 @@ export function SettingsPanelContent({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [showControlPalette, setShowControlPalette] = useState(false);
   const storeSessionId = useClaudeStore((s) => s.activeSessionId);
-  const activeSessionId = storeSessionId || sessionIdProp || null;
+  // The drawer is rendered for a URL-bound session. During route changes the
+  // global active id can briefly still name the previous task; that must not
+  // replace the explicit route identity or the panel can render no utilities
+  // for the session the user is viewing.
+  const activeSessionId = sessionIdProp ?? storeSessionId ?? null;
   const localIsStreaming = useClaudeStore((s) => s.isStreaming);
   const sessions = useClaudeStore((s) => s.sessions);
   const activeSession = activeSessionId ? sessions[activeSessionId] : undefined;

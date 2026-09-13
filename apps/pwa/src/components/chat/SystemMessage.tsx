@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 import { useState } from 'react';
 import type { SystemCard } from '@sumicom/quicksave-shared';
+import { LocalFileImage } from './LocalFileImage';
 
 const URL_PATTERN = /https?:\/\/[^\s)]+/g;
 
@@ -37,8 +38,23 @@ function formatDuration(ms: number): string {
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
-export function SystemMessage({ card }: { card: SystemCard }) {
+export function imagePathFromSystemText(text: string): string | null {
+  const match = text.match(/^\[image:\s*(.+?)\]\s*$/s);
+  return match?.[1]?.trim() || null;
+}
+
+export function SystemMessage({ card, agentId }: { card: SystemCard; agentId?: string }) {
   const meta = card.meta;
+  const imagePath = imagePathFromSystemText(card.text);
+
+  if (imagePath) {
+    return (
+      <div className="my-1.5 mr-auto w-full max-w-2xl overflow-hidden rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-left">
+        <div className="mb-1 truncate text-[11px] text-slate-400" title={imagePath}>{imagePath}</div>
+        <LocalFileImage src={imagePath} alt={imagePath.split('/').pop() || imagePath} agentId={agentId} className="max-h-[60vh] w-full object-contain" />
+      </div>
+    );
+  }
 
   if (meta?.kind === 'turn_duration') {
     return (

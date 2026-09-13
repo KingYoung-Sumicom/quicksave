@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import type { ChildProcess } from 'node:child_process';
-import { createInterface } from 'node:readline';
 
 import type { RpcTransport, WireMessage } from './rpcClient.js';
 
@@ -19,6 +18,10 @@ export class StdioTransport implements RpcTransport {
   private readonly messageListeners = new Set<(m: WireMessage) => void>();
   private readonly closeListeners = new Set<(reason: Error | null) => void>();
   private closed = false;
+  private frame = '';
+  private frameDepth = 0;
+  private frameInString = false;
+  private frameEscaped = false;
   /** Logger for parse failures and stderr lines. The default no-ops so
    * tests stay quiet; real users should pass a console-bound logger. */
   private readonly log: { warn: (msg: string) => void };
@@ -30,9 +33,8 @@ export class StdioTransport implements RpcTransport {
     this.child = child;
     this.log = opts.log ?? { warn: () => {} };
 
-    const rl = createInterface({ input: child.stdout });
-    rl.on('line', (line) => this.handleLine(line));
-    rl.on('close', () => this.handleClose(null));
+    child.stdout.on('data', (chunk: Buffer) => this.handleChunk(chunk.toString('utf8')));
+    child.stdout.on('end', () => this.handleClose(null));
 
     child.on('exit', (code, signal) => {
       const reason =
@@ -78,14 +80,50 @@ export class StdioTransport implements RpcTransport {
     }
   }
 
-  private handleLine(line: string): void {
-    if (line.length === 0) return;
+  /**
+   * Codex normally emits JSONL, but 0.149 can emit an old thread's very long
+   * history with literal newlines inside a JSON string. Frame by JSON nesting
+   * rather than by line, then repair only those illegal control characters.
+   */
+  private handleChunk(chunk: string): void {
+    for (const char of chunk) {
+      if (this.frameDepth === 0) {
+        if (char === '{' || char === '[') {
+          this.frame = char;
+          this.frameDepth = 1;
+          this.frameInString = false;
+          this.frameEscaped = false;
+        }
+        continue;
+      }
+
+      this.frame += char;
+      if (this.frameInString) {
+        if (this.frameEscaped) this.frameEscaped = false;
+        else if (char === '\\') this.frameEscaped = true;
+        else if (char === '"') this.frameInString = false;
+        continue;
+      }
+      if (char === '"') this.frameInString = true;
+      else if (char === '{' || char === '[') this.frameDepth += 1;
+      else if (char === '}' || char === ']') {
+        this.frameDepth -= 1;
+        if (this.frameDepth === 0) {
+          const frame = this.frame;
+          this.frame = '';
+          this.handleFrame(frame);
+        }
+      }
+    }
+  }
+
+  private handleFrame(frame: string): void {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(line);
+      parsed = JSON.parse(sanitizeJsonStringControls(frame));
     } catch (err) {
       this.log.warn(
-        `codex app-server: failed to parse JSON-RPC line: ${err instanceof Error ? err.message : String(err)}`,
+        `codex app-server: failed to parse JSON-RPC frame: ${err instanceof Error ? err.message : String(err)}`,
       );
       return;
     }
@@ -115,4 +153,25 @@ export class StdioTransport implements RpcTransport {
     this.messageListeners.clear();
     this.closeListeners.clear();
   }
+}
+
+function sanitizeJsonStringControls(value: string): string {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (const char of value) {
+    if (inString && !escaped && char.charCodeAt(0) < 0x20) {
+      out += char === '\n' ? '\\n' : char === '\r' ? '\\r' : char === '\t' ? '\\t' : `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`;
+      continue;
+    }
+    out += char;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+    } else if (char === '"') {
+      inString = true;
+    }
+  }
+  return out;
 }

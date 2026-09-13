@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import type { ReactNode } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeHighlight from 'rehype-highlight';
@@ -11,13 +11,12 @@ import 'katex/dist/katex.min.css';
 import { normalizeLatexDelimiters } from '../../lib/markdownMath';
 import { normalizeCodexFileCitations } from '../../lib/codexCitations';
 import { FilePathLink } from './FilePathLink';
+import { isDirectImageSource, isLocalFileUrl, LocalFileImage } from './LocalFileImage';
 import { CodeBlock } from '../ui/CodeBlock';
 
 /** File-shaped hrefs explicitly supplied by Markdown links. */
 const SINGLE_PATH_RE = /^((?:\.{1,2}\/|\/)?[\w@.~-]+(?:\/[\w@.~-]+)+)(?::\d+(?:[-:]\d+)?)?$/;
 const SINGLE_MARKDOWN_FILE_RE = /^((?:\.{1,2}\/)?[\w@.~-]+\.(?:md|markdown|mdx))(?::\d+(?:[-:]\d+)?)?$/i;
-const ABSOLUTE_FILESYSTEM_PATH_RE = /^\/(?:home|Users|tmp|var|opt|workspace|mnt|Volumes)\//;
-const APP_ROUTE_RE = /^\/(?:p|settings|pair|add)(?:\/|$)/;
 const LINE_SUFFIX_RE = /:\d+(?:[-:]\d+)?$/;
 
 /** Schemes we treat as "external" — open in a new tab. Anything else with
@@ -34,7 +33,7 @@ export function previewPathFromMarkdownHref(href: string): string | null {
   const absoluteFilesystemPath = decodeAbsoluteFilesystemPath(path);
   if (absoluteFilesystemPath) return absoluteFilesystemPath;
   const decodedPath = decodePath(path);
-  if (!decodedPath || APP_ROUTE_RE.test(decodedPath)) return null;
+  if (!decodedPath) return null;
   if (isRelativePathCandidate(decodedPath)) return stripLineSuffix(decodedPath);
   return decodedPath.match(SINGLE_PATH_RE)?.[1] ?? decodedPath.match(SINGLE_MARKDOWN_FILE_RE)?.[1] ?? null;
 }
@@ -60,8 +59,8 @@ function pathFromSameOriginUrl(href: string): string | null {
 
 function decodeAbsoluteFilesystemPath(path: string): string | null {
   const decoded = decodePath(path);
-  if (!decoded) return null;
-  return ABSOLUTE_FILESYSTEM_PATH_RE.test(decoded) ? stripLineSuffix(decoded) : null;
+  if (!decoded || !decoded.startsWith('/')) return null;
+  return stripLineSuffix(decoded);
 }
 
 function decodePath(path: string): string | null {
@@ -91,11 +90,26 @@ function stripQueryAndHash(url: string): string {
   return idx < 0 ? url : url.slice(0, idx);
 }
 
-export function ChatMarkdown({ children }: { children: string }) {
+export function ChatMarkdown({
+  children,
+  cwd,
+  baseDir,
+  agentId,
+}: {
+  children: string;
+  cwd?: string;
+  baseDir?: string;
+  agentId?: string;
+}) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
       rehypePlugins={[[rehypeKatex, { strict: false }], rehypeHighlight]}
+      urlTransform={(url, key, node) => (
+        key === 'src' && node.tagName === 'img' && isLocalFileUrl(url)
+          ? url
+          : defaultUrlTransform(url)
+      )}
       components={{
         table: ({ children }: { children?: ReactNode }) => (
           <div className="overflow-x-auto my-2">
@@ -131,6 +145,23 @@ export function ChatMarkdown({ children }: { children: string }) {
             >
               {children}
             </a>
+          );
+        },
+        img: ({ src, alt, title }) => {
+          const url = typeof src === 'string' ? src : '';
+          if (!url) return <span className="text-slate-500 italic">[image]</span>;
+          if (isDirectImageSource(url)) {
+            return <img src={url} alt={alt ?? ''} title={title} className="max-w-full h-auto rounded my-2" />;
+          }
+          return (
+            <LocalFileImage
+              src={url}
+              alt={alt ?? ''}
+              title={title}
+              cwd={cwd}
+              baseDir={baseDir}
+              agentId={agentId}
+            />
           );
         },
       }}

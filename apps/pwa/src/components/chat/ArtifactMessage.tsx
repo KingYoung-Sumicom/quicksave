@@ -68,6 +68,9 @@ export function ArtifactPreviewPane({
   const [copied, setCopied] = useState(false);
 
   const markdown = state.status === 'ready' ? state.markdown : '';
+  const artifactBaseDir = artifact.sourcePath
+    ? artifact.sourcePath.slice(0, artifact.sourcePath.lastIndexOf('/')) || '/'
+    : artifact.cwd;
 
   async function copyMarkdown(): Promise<void> {
     if (!markdown) return;
@@ -153,7 +156,7 @@ export function ArtifactPreviewPane({
             </pre>
           ) : (
             <div className="chat-markdown p-4 text-sm">
-              <ChatMarkdown>{markdown}</ChatMarkdown>
+              <ChatMarkdown cwd={artifact.cwd} baseDir={artifactBaseDir}>{markdown}</ChatMarkdown>
             </div>
           )
         )}

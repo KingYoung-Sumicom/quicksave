@@ -16,6 +16,16 @@
 import WS from 'ws';
 import type { VoiceConfig } from '@sumicom/quicksave-shared';
 
+const TRADITIONAL_CHINESE_PROMPT = '臺灣繁體中文語音，使用繁體中文字形，並保留原本的英文技術名詞。';
+
+function transcriptionContext(config: VoiceConfig): Record<string, unknown> {
+  if (config.transcriptionLocale !== 'zh-TW') return {};
+  const model = config.streamModel.trim();
+  return /^gpt-live-transcribe(?:$|-)/i.test(model)
+    ? { languages: ['zh-tw'], prompt: TRADITIONAL_CHINESE_PROMPT }
+    : { language: 'zh-tw', prompt: TRADITIONAL_CHINESE_PROMPT };
+}
+
 export interface RealtimeCallbacks {
   onPartial(text: string): void;
   onFinal(text: string): void;
@@ -87,7 +97,10 @@ export class RealtimeTranscriber {
             audio: {
               input: {
                 format: { type: 'audio/pcm', rate: this.sampleRate },
-                transcription: { model: this.config.streamModel.trim() },
+                transcription: {
+                  model: this.config.streamModel.trim(),
+                  ...transcriptionContext(this.config),
+                },
                 turn_detection: {
                   type: 'server_vad',
                   threshold: 0.5,

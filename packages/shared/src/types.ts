@@ -92,8 +92,20 @@ export type MessageType =
   | 'agent:update:response'
   | 'agent:restart'
   | 'agent:restart:response'
+  | 'codex:check-update'
+  | 'codex:check-update:response'
+  | 'codex:update'
+  | 'codex:update:response'
   | 'agent:probe'
   | 'agent:probe:response'
+  | 'opencode:config-snapshot'
+  | 'opencode:config-snapshot:response'
+  | 'opencode:mcp-upsert'
+  | 'opencode:mcp-upsert:response'
+  | 'opencode:mcp-remove'
+  | 'opencode:mcp-remove:response'
+  | 'opencode:websearch-update'
+  | 'opencode:websearch-update:response'
   // systemd user-unit (auto-start at login) — Linux only
   | 'systemd:status'
   | 'systemd:status:response'
@@ -165,6 +177,8 @@ export type MessageType =
   | 'codex:login-cancel'          // pwa-request: cancel an in-progress login attempt
   | 'codex:login-cancel:response'
   | 'codex:login-updated'         // agent-push: login state changed (success, failure, cancel)
+  | 'claude:auth-status'          // pwa-request: current Claude CLI authentication state
+  | 'claude:auth-status:response'
   // Project summaries
   | 'project:list-summaries'
   | 'project:list-summaries:response'
@@ -188,6 +202,12 @@ export type MessageType =
   | 'files:list:response'
   | 'files:read'             // pwa-request: read a text file (binary / oversized return a placeholder)
   | 'files:read:response'
+  | 'files:rtc-connect'      // pwa-request: negotiate a direct large-file DataChannel
+  | 'files:rtc-connect:response'
+  | 'files:rtc-ice'
+  | 'files:rtc-ice:response'
+  | 'files:rtc-cancel'
+  | 'files:rtc-cancel:response'
   // Attachments — chunked upload of files / long-pasted text the user attaches
   // to a chat message. Bytes are staged on the agent until consumed by a
   // `claude:start` / `claude:resume` whose payload references their ids.
@@ -504,6 +524,8 @@ export interface SessionRegistryEntry {
   messageCount?: number;
   totalCostUsd?: number;
   pinned?: boolean;
+  /** Cached display projection of a provider-native archive state. */
+  nativeArchived?: boolean;
   archived?: boolean;
   // Ticket-model metadata — set via the UpdateSessionStatus MCP tool
   stage?: SessionStage;
@@ -752,6 +774,62 @@ export interface AgentProbePayload {
   availableProviders: AgentProviderInfo[];
 }
 
+// OpenCode machine configuration (read-only snapshot). This intentionally
+// contains summaries only: credential values and raw config documents never
+// cross the agent/PWA boundary.
+export interface OpenCodeConfigSnapshotPayload {
+  available: boolean;
+  version?: string;
+  schema?: 'v1' | 'v2' | 'unknown';
+  defaultModel?: string;
+  smallModel?: string;
+  websearch: { exaEnabled: boolean; permission: 'ask' | 'allow' | 'deny' | 'unknown' };
+  mcp: Array<{
+    name: string;
+    type?: 'local' | 'remote';
+    enabled?: boolean;
+    status?: string;
+    toolCount?: number;
+    managed?: boolean;
+  }>;
+  providers: Array<{
+    id: string;
+    name: string;
+    connected: boolean;
+    modelCount: number;
+    /** Provider-exposed model metadata; does not contain credentials. */
+    models: Array<{ id: string; name: string }>;
+  }>;
+  agents: Array<{
+    name: string;
+    description?: string;
+    mode?: string;
+    model?: string;
+  }>;
+  skills: Array<{ name: string; location?: string }>;
+  commands: Array<{ name: string; description?: string }>;
+  plugins: Array<{ name: string; managed?: boolean }>;
+  error?: string;
+}
+
+export type OpenCodeConfigSnapshotRequestPayload = Record<string, never>;
+export type OpenCodeConfigSnapshotResponsePayload = OpenCodeConfigSnapshotPayload;
+
+export interface OpenCodeMcpConfigInput {
+  type: 'local' | 'remote';
+  command?: string[];
+  url?: string;
+  environment?: Record<string, string>;
+  headers?: Record<string, string>;
+  enabled?: boolean;
+  timeout?: number;
+}
+export interface OpenCodeMcpUpsertRequestPayload { name: string; config: OpenCodeMcpConfigInput; }
+export interface OpenCodeMcpRemoveRequestPayload { name: string; }
+export interface OpenCodeMcpMutationResponsePayload { success: boolean; error?: string; }
+export interface OpenCodeWebSearchUpdateRequestPayload { exaEnabled: boolean; }
+export interface OpenCodeWebSearchUpdateResponsePayload { success: boolean; error?: string; }
+
 /**
  * Machine-level voice capability the agent advertises in the handshake ack.
  * Positive list: when this field is absent (older agents, or a build without
@@ -897,6 +975,19 @@ export interface CodexLoginCancelResponsePayload {
 }
 
 export type CodexLoginUpdatedPayload = CodexLoginState;
+
+/** Sanitized result of `claude auth status --json` for one daemon machine. */
+export interface ClaudeAuthState {
+  loggedIn: boolean;
+  /** Authentication source reported by Claude Code, e.g. `claude.ai`. */
+  method?: string;
+  /** Subscription tier without account identity fields. */
+  subscriptionType?: string;
+  /** Machine-local detection failure. Email/org/account ids are never exposed. */
+  error?: 'claude-cli-not-found' | 'auth-status-unavailable';
+}
+
+export type ClaudeAuthStatusResponsePayload = ClaudeAuthState;
 
 // Status
 export interface StatusRequestPayload {
@@ -1175,6 +1266,28 @@ export type AgentRestartRequestPayload = Record<string, never>;
 
 export interface AgentRestartResponsePayload {
   success: boolean;
+  error?: string;
+}
+
+// Codex CLI update check
+export type CodexCheckUpdateRequestPayload = Record<string, never>;
+
+export interface CodexCheckUpdateResponsePayload {
+  currentVersion: string;
+  latestVersion?: string;
+  updateAvailable: boolean;
+  /** Whether Quicksave can update this npm or official standalone installation. */
+  canUpdate: boolean;
+  error?: string;
+}
+
+// Codex CLI self-update (npm global or official standalone installations)
+export type CodexUpdateRequestPayload = Record<string, never>;
+
+export interface CodexUpdateResponsePayload {
+  success: boolean;
+  previousVersion: string;
+  newVersion?: string;
   error?: string;
 }
 
@@ -1488,6 +1601,10 @@ export interface VoiceConfig {
    *  `gpt-4o-transcribe`). Realtime requires a realtime-capable model;
    *  `whisper-1` is batch-only. */
   streamModel: string;
+  /** Runtime transcription hint supplied by the PWA locale. This is not a
+   * persisted voice setting; `zh-TW` asks supported ASR providers to prefer
+   * Traditional Chinese output while retaining English technical terms. */
+  transcriptionLocale?: 'zh-TW';
   /** Model for the voice intermediary agent's brain — POST
    *  `{baseUrl}/responses` (OpenAI-compatible, reasoning/tool-calling). Optional;
    *  the voice agent stays disabled while empty. */
@@ -1986,6 +2103,8 @@ export interface ClaudeResumeResponsePayload {
   success: boolean;
   sessionId?: string;
   queueState?: SessionQueueState | null;
+  /** A machine-readable reason for a rejected resume attempt. */
+  errorCode?: 'session_locked';
   error?: string;
 }
 
@@ -2119,6 +2238,9 @@ export interface ClaudeUserInputRequestPayload {
   /** Codex auto-review / Guardian rationale attached to this pending prompt. */
   guardianMessage?: string;
   options?: ClaudeUserInputOption[];
+  /** A non-blocking Codex input is rendered as a follow-up card rather than a
+   * generic tool-call permission prompt. */
+  presentation?: 'inline_follow_up';
   // Permission-specific fields
   toolName?: string;
   toolInput?: Record<string, unknown>;
@@ -2338,10 +2460,11 @@ export interface FilesReadResponsePayload {
    *  placeholder. Absent only on failures (see `error`). */
   kind?: FileReadKind;
   /** File body. UTF-8 string for `kind === 'text'`; base64 string for
-   *  `kind === 'image'`. Absent for `binary` / `oversized`. */
+   *  `kind === 'image'`, or for `binary` after a direct WebRTC transfer.
+   *  Absent for bus-only binary metadata and `oversized`. */
   content?: string;
   encoding?: 'utf-8' | 'base64';
-  /** MIME type — populated alongside base64 content for `kind === 'image'`. */
+  /** MIME type — populated for inline images and direct-transfer audio files. */
   mimeType?: string;
   /** File size in bytes — present for every successful read (including
    *  binary/oversized) so the UI can show "3.2 MB binary file". */
@@ -2351,5 +2474,57 @@ export interface FilesReadResponsePayload {
    *  should keep using its cached body; `content`/`kind` are omitted in
    *  this case but `size`/`mtime` are still echoed. */
   notModified?: boolean;
+  /** Set by the PWA when an oversized preview could not be upgraded to the
+   * direct WebRTC transport. The metadata response remains usable. */
+  transferError?: string;
   error?: string;
 }
+
+// Large previews and binary downloads use an ephemeral, file-specific WebRTC
+// DataChannel. Signaling stays on the authenticated bus; file bytes never do.
+export interface FilesRtcConnectRequestPayload {
+  transferId: string;
+  cwd: string;
+  path: string;
+  sdp: string;
+  allowImage?: boolean;
+}
+
+export interface FilesRtcConnectResponsePayload {
+  sdp?: string;
+  error?: string;
+}
+
+export interface FilesRtcIceRequestPayload {
+  transferId: string;
+  candidate: string | null;
+}
+
+export interface FilesRtcIceResponsePayload {
+  ok: boolean;
+  error?: string;
+}
+
+export interface FilesRtcCancelRequestPayload {
+  transferId: string;
+}
+
+export type FilesRtcCancelResponsePayload = FilesRtcIceResponsePayload;
+
+export interface FilesRtcIceUpdate {
+  candidate: string | null;
+}
+
+export type FilesRtcDataMessage =
+  | {
+      t: 'header';
+      kind: FileReadKind;
+      cwd: string;
+      path: string;
+      absolutePath: string;
+      size: number;
+      mtime: number;
+      mimeType?: string;
+    }
+  | { t: 'complete'; bytes: number; sha256?: string }
+  | { t: 'error'; message: string };

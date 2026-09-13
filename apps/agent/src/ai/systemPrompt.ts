@@ -5,37 +5,60 @@ import type { AgentId } from '@sumicom/quicksave-shared';
 import { SANDBOX_BASH_TOOL, UPDATE_SESSION_STATUS_TOOL } from './sandboxMcp.js';
 
 const STATUS_PROMPT = [
-  'Treat each session as a ticket. The session status tool is already loaded and available. On your FIRST response in a new session, call it with at minimum `subject` and `stage` before doing other work. `subject` is what the user is trying to solve (e.g. "Fix auth token expiring early"), not what you are doing (not "Debugging jwt.ts"). On RESUME, if you do not see a prior status tool call in conversation history, call it ONCE with no arguments as a dry-run to read the current stored status; if the returned subject is empty OR does not match what the user is now asking for, follow up with a real call to set/correct it.',
-  'Re-call the session status tool whenever the stage changes (investigating -> working -> verifying -> done), whenever work becomes blocked or unblocked (set `blocked` true/false without changing `stage`), or when a one-line `note` would give the user useful progress signal. `note` is an append-only event log, so for long-running tasks emit a fresh `note` every time you rule out an approach, cross a sub-goal, or hit a blocker. Do not skip `verifying` when you have tests/build/repro running. Do not declare `done` until the user\'s problem is fully resolved.',
-  'For long-running work that can safely sit lower in the session list (training, large evaluations, multi-hour scripts), set `pendingMissionLabel` and `pendingMissionUntil` on the status tool. Clear it with `clearPendingMission: true` when the work finishes or is cancelled; setting `stage: "done"` also clears it.',
-].join('\n\n');
+  '## Session Status Tool — MUST use every session',
+  'The session status tool is pre-loaded. You MUST call it before doing any other work.',
+  '',
+  '### New session (first response)',
+  '- Call immediately with `subject` + `stage`. Do NOT start coding or researching first.',
+  '- `subject`: what the user is solving (e.g. "Fix auth token expiring early"). NOT what you are doing (NOT "Debugging jwt.ts").',
+  '- `stage`: one of `investigating`, `working`, `verifying`, `done`.',
+  '',
+  '### Resume (existing session)',
+  '- If you do NOT see a prior status tool call in conversation history: call with NO fields first (dry-run).',
+  '- If dry-run returns empty subject OR a subject that does not match the current request: follow up with a real call to set/correct it.',
+  '',
+  '### Stage transitions',
+  '- Re-call whenever stage changes: `investigating` → `working` → `verifying` → `done`.',
+  '- Set `blocked: true` when stuck (waiting on user, permission, external service). Set `blocked: false` when unblocked. Do NOT change stage when toggling blocked.',
+  '- Emit a one-line `note` (~12 words) on meaningful state changes: ruling out an approach, completing a sub-goal, hitting a blocker. Notes are APPENDED, never overwritten.',
+  '',
+  '### Rules',
+  '- Do NOT skip `verifying` when you ran tests / build / repro.',
+  '- Do NOT declare `done` until the user\'s problem is fully resolved.',
+  '- For long-running tasks, set `pendingMissionLabel` + `pendingMissionUntil`. Clear with `clearPendingMission: true` when finished. `stage: "done"` also clears it.',
+  '- For long refactors, prefer proposing per-phase sub-sessions over staying in `investigating` indefinitely.',
+].join('\n');
 
 const COMMIT_TRAILER_PROMPT =
   'When you create git commits in a quicksave session, add `Co-Authored-By: Quicksave AI <save@quicksave.dev>` as a co-author trailer alongside whatever your platform default already adds (e.g. `Co-Authored-By: Claude ...`). Quicksave is the spawning context and should be credited in addition to — not instead of — the underlying model. Both trailers, one per line, after a blank line below the body.';
 
 const PLATFORM_PROMPTS: Partial<Record<AgentId, string[]>> = {
   'claude-code': [
-    `For non-destructive shell commands (ls, cat, find, git log, git status, git diff, etc.), prefer \`${SANDBOX_BASH_TOOL}\` over Bash. SandboxBash runs in a sandboxed environment. Use Bash only for commands that modify state.`,
-    `The session status tool name is \`${UPDATE_SESSION_STATUS_TOOL}\`.`,
+    `# Required tools`,
+    `## 1. Session status tool: \`${UPDATE_SESSION_STATUS_TOOL}\` — MUST call on first response`,
+    `## 2. SandboxBash: prefer over Bash for read-only commands (ls, cat, find, git log, git status, git diff).`,
     STATUS_PROMPT,
     COMMIT_TRAILER_PROMPT,
   ],
   codex: [
-    `For non-destructive shell commands (ls, cat, find, git log, git status, git diff, etc.), prefer the \`${SANDBOX_BASH_TOOL}\` MCP tool when it is available. Use Bash when the command does not fit that tool or requires normal Codex sandbox/approval handling.`,
-    `The session status tool name is \`${UPDATE_SESSION_STATUS_TOOL}\`.`,
+    `# Required tools`,
+    `## 1. Session status tool: \`${UPDATE_SESSION_STATUS_TOOL}\` — MUST call on first response`,
+    `## 2. SandboxBash: prefer the \`${SANDBOX_BASH_TOOL}\` MCP tool for read-only commands.`,
     STATUS_PROMPT,
     COMMIT_TRAILER_PROMPT,
   ],
   opencode: [
-    `For non-destructive shell commands (ls, cat, find, git log, git status, git diff, etc.), prefer the \`${SANDBOX_BASH_TOOL}\` MCP tool when it is available. Use Bash when the command does not fit that tool.`,
-    `The session status tool name is \`${UPDATE_SESSION_STATUS_TOOL}\`.`,
+    `# Required tools`,
+    `## 1. Session status tool: \`${UPDATE_SESSION_STATUS_TOOL}\` — MUST call on first response`,
+    `## 2. SandboxBash: prefer the \`${SANDBOX_BASH_TOOL}\` MCP tool for read-only commands.`,
     STATUS_PROMPT,
     COMMIT_TRAILER_PROMPT,
   ],
 };
 
 const FALLBACK_PROMPTS = [
-  `The session status tool name is \`${UPDATE_SESSION_STATUS_TOOL}\`.`,
+  `# Required tools`,
+  `## 1. Session status tool: \`${UPDATE_SESSION_STATUS_TOOL}\` — MUST call on first response`,
   STATUS_PROMPT,
   COMMIT_TRAILER_PROMPT,
 ];

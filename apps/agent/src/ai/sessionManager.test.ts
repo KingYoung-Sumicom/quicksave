@@ -27,11 +27,32 @@ vi.mock('./cardBuilder.js', () => {
     seedSequenceFromMax: vi.fn(),
     getCards: vi.fn().mockReturnValue([]),
     userMessage: vi.fn().mockReturnValue({ type: 'add', card: { type: 'user', id: 'u1', text: 'hi' } }),
-    clearPendingInput: vi.fn().mockReturnValue(null),
+    clearPendingInput: vi.fn().mockImplementation((requestId: string) => (
+      requestId === 'codex:thread:srv-follow-up'
+        ? { type: 'remove', cardId: 'follow-up-1' }
+        : null
+    )),
     toolCallFromPermission: vi.fn().mockReturnValue({
       type: 'add',
       card: { type: 'tool_call', id: 'tc1', toolName: 'Bash', toolUseId: 'tu1' },
     }),
+    followUpQuestion: vi.fn().mockImplementation((question: string, opts: { options?: string[]; allowFreeText?: boolean; pendingInput: unknown }) => ({
+      type: 'add',
+      card: {
+        type: 'follow_up_question',
+        id: 'follow-up-1',
+        question,
+        ...opts,
+      },
+    })),
+    resolveFollowUpQuestion: vi.fn().mockImplementation((requestId: string, answer?: string) => ({
+      type: 'update',
+      cardId: 'follow-up-1',
+      patch: {
+        pendingInput: null,
+        ...(answer ? { answer } : { dismissed: true }),
+      },
+    })),
     setToolAnswers: vi.fn().mockImplementation((toolUseId: string, answers: Record<string, string>) => ({
       type: 'update',
       cardId: `tc:${toolUseId}`,
@@ -59,6 +80,7 @@ vi.mock('./sessionRegistry.js', () => ({
     getEntry: vi.fn().mockReturnValue(null),
     readArchivedEntry: vi.fn().mockReturnValue(undefined),
     getEntriesForProject: vi.fn().mockReturnValue([]),
+    listArchivedEntries: vi.fn().mockReturnValue([]),
     findBySessionId: vi.fn().mockReturnValue(undefined),
     findArchivedBySessionId: vi.fn().mockReturnValue(undefined),
     upsertEntry: vi.fn(),
@@ -141,6 +163,164 @@ describe('SessionManager', () => {
     it('should fall back to first provider if default is not found', () => {
       const mgr = new SessionManager([provider], 'nonexistent' as any);
       expect(mgr.getSessionAgent('nonexistent')).toBe('claude-code');
+    });
+  });
+
+  describe('archive storage adapters', () => {
+    it('uses the active provider session writer before opening a separate native archive client', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex', 'memory'),
+        archiveStorage: 'native' as const,
+        archiveSession: vi.fn().mockResolvedValue(undefined),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      const liveWriter = createMockProviderSession({ setArchived: vi.fn().mockResolvedValue(undefined) });
+      (mgr as unknown as { sessions: Map<string, ManagedSession> }).sessions.set('codex-session', {
+        sessionId: 'codex-session', cwd: '/repo', agentId: 'codex', providerSession: liveWriter,
+      } as ManagedSession);
+      (getSessionRegistry().getEntry as Mock).mockReturnValue({ agent: 'codex' });
+
+      await expect(mgr.setSessionArchived('codex-session', '/repo', true)).resolves.toBe('native');
+      expect(liveWriter.setArchived).toHaveBeenCalledWith(true);
+      expect(codexProvider.archiveSession).not.toHaveBeenCalled();
+    });
+
+    it('uses Codex native archive operations while legacy providers use the registry polyfill', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex', 'memory'),
+        archiveStorage: 'native' as const,
+        archiveSession: vi.fn().mockResolvedValue(undefined),
+      };
+      const mgr = new SessionManager([provider, codexProvider]);
+      (getSessionRegistry().getEntry as Mock).mockImplementation((_cwd: string, sessionId: string) => (
+        sessionId === 'codex-session' ? { agent: 'codex' } : { agent: 'claude-code' }
+      ));
+
+      await expect(mgr.setSessionArchived('codex-session', '/repo', true)).resolves.toBe('native');
+      expect(codexProvider.archiveSession).toHaveBeenCalledWith('codex-session', { cwd: '/repo' });
+      await expect(mgr.setSessionArchived('legacy-session', '/repo', true)).resolves.toBe('registry');
+    });
+
+    it('projects a known Codex thread native archive status without reusing the local archive flag', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex', 'memory'),
+        listNativeSessions: vi.fn().mockResolvedValue([{
+          sessionId: 'codex-session', cwd: '/repo', agent: 'codex', archived: true,
+          title: 'Native thread', firstPrompt: 'hi', createdAt: 1, lastInteractionAt: 2,
+        }]),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      const entry = { sessionId: 'codex-session', cwd: '/repo', agent: 'codex' as const, archived: false };
+      (getSessionRegistry().getEntriesForProject as Mock).mockReturnValue([entry]);
+      (getSessionRegistry().updateEntry as Mock).mockImplementation(
+        (_cwd: string, _sessionId: string, update: object) => ({ ...entry, ...update }),
+      );
+
+      await expect(mgr.reconcileNativeArchiveStatuses('/repo')).resolves.toEqual([
+        expect.objectContaining({ sessionId: 'codex-session', archived: false, nativeArchived: true }),
+      ]);
+      expect(getSessionRegistry().updateEntry).toHaveBeenCalledWith('/repo', 'codex-session', {
+        archived: false,
+        nativeArchived: true,
+      });
+    });
+
+    it('migrates a legacy local Codex archive flag through the native archive RPC', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex', 'memory'),
+        archiveStorage: 'native' as const,
+        archiveSession: vi.fn().mockResolvedValue(undefined),
+        listNativeSessions: vi.fn().mockResolvedValue([{
+          sessionId: 'legacy-codex', cwd: '/repo', agent: 'codex', archived: false,
+          title: 'Legacy thread', firstPrompt: 'hi', createdAt: 1, lastInteractionAt: 2,
+        }]),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      const entry = { sessionId: 'legacy-codex', cwd: '/repo', agent: 'codex' as const, archived: true };
+      (getSessionRegistry().getEntriesForProject as Mock).mockReturnValue([]);
+      (getSessionRegistry().listArchivedEntries as Mock).mockReturnValue([entry]);
+      (getSessionRegistry().readArchivedEntry as Mock).mockReturnValue(entry);
+      (getSessionRegistry().updateEntry as Mock).mockImplementation(
+        (_cwd: string, _sessionId: string, update: object) => ({ ...entry, ...update }),
+      );
+
+      await mgr.reconcileNativeArchiveStatuses('/repo');
+
+      expect(codexProvider.archiveSession).toHaveBeenCalledWith('legacy-codex', { cwd: '/repo' });
+      expect(getSessionRegistry().updateEntry).toHaveBeenCalledWith('/repo', 'legacy-codex', {
+        archived: false,
+        nativeArchived: true,
+      });
+    });
+  });
+
+  describe('provider session aggregation', () => {
+    it('caches a native session looked up by id and uses its provider and cwd for history', async () => {
+      (getSessionRegistry().getEntry as Mock).mockReturnValue(null);
+      (getSessionRegistry().readArchivedEntry as Mock).mockReturnValue(undefined);
+      (getSessionRegistry().findBySessionId as Mock).mockReturnValue(undefined);
+      (getSessionRegistry().findArchivedBySessionId as Mock).mockReturnValue(undefined);
+      const nativeSession = {
+        sessionId: 'native-only-codex', cwd: '/repo', agent: 'codex' as const,
+        archived: false, createdAt: 10, lastInteractionAt: 20,
+      };
+      const codexProvider = {
+        ...createMockProvider('codex', 'memory'),
+        historyMode: 'codex-thread' as const,
+        getNativeSession: vi.fn().mockResolvedValue(nativeSession),
+        loadCardHistory: vi.fn().mockResolvedValue({ cards: [], total: 0, hasMore: false }),
+      };
+      const mgr = new SessionManager([provider, codexProvider], 'claude-code' as any);
+      mgr.setProjectDirectories(['/repo']);
+
+      await mgr.getCards(nativeSession.sessionId, '/incorrect-cwd');
+      await mgr.getCards(nativeSession.sessionId, '/incorrect-cwd');
+
+      expect(codexProvider.getNativeSession).toHaveBeenCalledTimes(1);
+      expect(codexProvider.getNativeSession).toHaveBeenCalledWith(nativeSession.sessionId);
+      expect(codexProvider.loadCardHistory).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: nativeSession.sessionId,
+        cwd: nativeSession.cwd,
+      }));
+      expect(mgr.getSessionAgent(nativeSession.sessionId)).toBe('codex');
+      expect(mgr.getSessionCwd(nativeSession.sessionId)).toBe(nativeSession.cwd);
+    });
+
+    it('keeps native sessions within configured project directories only', async () => {
+      const opencodeProvider = {
+        ...createMockProvider('opencode', 'opencode-thread'),
+        listNativeSessions: vi.fn().mockResolvedValue([
+          { sessionId: 'in-project', cwd: '/repo', agent: 'opencode', archived: false, createdAt: 10, lastInteractionAt: 20 },
+          { sessionId: 'outside-project', cwd: '/elsewhere', agent: 'opencode', archived: false, createdAt: 11, lastInteractionAt: 21 },
+        ]),
+      };
+      const mgr = new SessionManager([opencodeProvider], 'opencode' as any);
+      mgr.setProjectDirectories(['/repo']);
+
+      await expect(mgr.listNativeSessions()).resolves.toEqual([
+        expect.objectContaining({ sessionId: 'in-project', cwd: '/repo' }),
+      ]);
+    });
+
+    it('includes an untracked native OpenCode session while preserving registry metadata when present', async () => {
+      const opencodeProvider = {
+        ...createMockProvider('opencode', 'opencode-thread'),
+        archiveStorage: 'native' as const,
+        listNativeSessions: vi.fn().mockResolvedValue([{
+          sessionId: 'native-open', cwd: '/repo', agent: 'opencode', archived: false,
+          title: 'OpenCode title', firstPrompt: 'native prompt', createdAt: 10, lastInteractionAt: 20,
+        }]),
+      };
+      const mgr = new SessionManager([opencodeProvider], 'opencode' as any);
+      (getSessionRegistry().getEntriesForProject as Mock).mockReturnValue([]);
+      (getSessionRegistry().listArchivedEntries as Mock).mockReturnValue([]);
+
+      await expect(mgr.listSessionHistoryEntries('/repo')).resolves.toEqual([
+        expect.objectContaining({
+          sessionId: 'native-open', agent: 'opencode', archived: false, nativeArchived: false,
+          title: 'OpenCode title', lastAccessedAt: 20,
+        }),
+      ]);
     });
   });
 
@@ -1479,6 +1659,7 @@ describe('SessionManager', () => {
 
       const result = await permPromise;
       expect(result.action).toBe('allow');
+      expect(result.response).toBe('Blue');
       expect(result.updatedInput).toBeDefined();
       expect((result.updatedInput as any).answers['What color?']).toBe('Blue');
 
@@ -1487,6 +1668,58 @@ describe('SessionManager', () => {
       const answerPatches = cardEvents.filter(e => e.type === 'update' && e.patch?.answers);
       expect(answerPatches).toHaveLength(1);
       expect(answerPatches[0].patch.answers['What color?']).toBe('Blue');
+    });
+
+    it('keeps the selected answer on a resolved non-blocking Codex follow-up card', async () => {
+      const cardEvents: any[] = [];
+      manager.on('card-event', (event) => cardEvents.push(event));
+
+      const request = callbacks.handlePermissionRequest(sessionId, {
+        requestId: 'codex:thread:srv-follow-up',
+        inputType: 'question',
+        toolName: 'AskUserQuestion',
+        toolInput: {
+          questions: [{ question: 'How detailed?', options: [{ label: 'Concise' }, { label: 'Detailed' }] }],
+        },
+        toolUseId: 'call_follow_up',
+        title: 'How detailed?',
+        options: [
+          { key: 'Concise', label: 'Concise' },
+          { key: 'Detailed', label: 'Detailed' },
+        ],
+        presentation: 'inline_follow_up',
+        allowFreeText: true,
+        skipAutoApprove: true,
+      });
+
+      expect(cardEvents).toContainEqual(expect.objectContaining({
+        type: 'add',
+        card: expect.objectContaining({
+          type: 'follow_up_question',
+          question: 'How detailed?',
+          options: ['Concise', 'Detailed'],
+          allowFreeText: true,
+          pendingInput: expect.objectContaining({ requestId: 'codex:thread:srv-follow-up' }),
+        }),
+      }));
+
+      manager.resolveUserInput({
+        sessionId,
+        requestId: 'codex:thread:srv-follow-up',
+        action: 'respond',
+        response: 'Detailed',
+      });
+
+      await expect(request).resolves.toMatchObject({
+        action: 'allow',
+        response: 'Detailed',
+        updatedInput: { answers: { 'How detailed?': 'Detailed' } },
+      });
+      expect(cardEvents).toContainEqual(expect.objectContaining({
+        type: 'update',
+        cardId: 'follow-up-1',
+        patch: { pendingInput: null, answer: 'Detailed' },
+      }));
     });
 
     it('should map multi-question answers to each question text', async () => {
@@ -1965,6 +2198,72 @@ describe('SessionManager', () => {
   // ── getCards ──
 
   describe('getCards', () => {
+    it('restores resolved Codex follow-up cards at their native dialogue anchor after a reload', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex'),
+        historyMode: 'codex-thread' as const,
+        loadCardHistory: vi.fn().mockResolvedValue({
+          cards: [
+            { type: 'assistant_text', id: 'native-1', timestamp: 1, text: 'Native answer', streaming: false, turnId: 'turn-1', nativeItemId: 'item-question-source' },
+            { type: 'assistant_text', id: 'native-2', timestamp: 2, text: 'Later turn', streaming: false, turnId: 'turn-2', nativeItemId: 'item-later' },
+          ],
+          total: 2,
+          hasMore: false,
+        }),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      const { loadPersistedCards } = await import('./cardBuilder.js');
+      (loadPersistedCards as Mock).mockResolvedValue([
+        {
+          type: 'follow_up_question',
+          id: 'follow-up-1',
+          timestamp: 2,
+          question: 'How detailed?',
+          answer: 'Detailed',
+          turnId: 'turn-1',
+          historyAnchorItemId: 'item-question-source',
+        },
+      ]);
+
+      const result = await mgr.getCards('codex-history', '/tmp/test');
+
+      expect(result.cards).toMatchObject([
+        { id: 'native-1' },
+        { id: 'follow-up-1', type: 'follow_up_question', answer: 'Detailed' },
+        { id: 'native-2' },
+      ]);
+      expect(result.total).toBe(3);
+    });
+
+    it('waits for the history page containing a follow-up anchor instead of appending it below newer cards', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex'),
+        historyMode: 'codex-thread' as const,
+        loadCardHistory: vi.fn()
+          .mockResolvedValueOnce({
+            cards: [{ type: 'assistant_text', id: 'newest', timestamp: 3, text: 'Newest', streaming: false, turnId: 'turn-new' }],
+            hasMore: true,
+            nextCursor: 'codex-offset:older',
+          })
+          .mockResolvedValueOnce({
+            cards: [{ type: 'assistant_text', id: 'anchored', timestamp: 1, text: 'Original', streaming: false, turnId: 'turn-old', nativeItemId: 'item-old' }],
+            hasMore: false,
+          }),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      const { loadPersistedCards } = await import('./cardBuilder.js');
+      (loadPersistedCards as Mock).mockResolvedValue([{
+        type: 'follow_up_question', id: 'follow-up-old', timestamp: 2,
+        question: 'Original choice?', answer: 'Yes', turnId: 'turn-old', historyAnchorItemId: 'item-old',
+      }]);
+
+      const newest = await mgr.getCards('codex-history', '/tmp/test');
+      expect(newest.cards.map((card) => card.id)).toEqual(['newest']);
+
+      const older = await mgr.getCards('codex-history', '/tmp/test', 1, 50, 'codex-offset:older');
+      expect(older.cards.map((card) => card.id)).toEqual(['anchored', 'follow-up-old']);
+    });
+
     it('should return cards from history for claude-jsonl provider', async () => {
       const { buildCardsFromHistory } = await import('./cardBuilder.js');
       (buildCardsFromHistory as Mock).mockResolvedValue({
@@ -2443,6 +2742,25 @@ describe('SessionManager', () => {
           contextWindow: archivedEntry.contextWindow,
           mcpCorrId: archivedEntry.mcpCorrId,
         });
+      } finally {
+        (getSessionRegistry().getEntry as Mock).mockReturnValue(null);
+        (getSessionRegistry().readArchivedEntry as Mock).mockReturnValue(undefined);
+      }
+    });
+
+    it('does not apply the Claude default model to a legacy Codex session without one', async () => {
+      const sessionId = 'legacy-codex-no-model';
+      const entry = { sessionId, cwd: '/tmp/codex', agent: 'codex', archived: true };
+      (getSessionRegistry().getEntry as Mock).mockReturnValue(null);
+      (getSessionRegistry().readArchivedEntry as Mock).mockReturnValue(entry);
+      (codexProvider.resumeSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+
+      try {
+        await multiManager.resumeSession({ sessionId, prompt: 'Continue', cwd: entry.cwd });
+        expect((codexProvider.resumeSession as Mock).mock.calls[0][0].model).toBeUndefined();
       } finally {
         (getSessionRegistry().getEntry as Mock).mockReturnValue(null);
         (getSessionRegistry().readArchivedEntry as Mock).mockReturnValue(undefined);

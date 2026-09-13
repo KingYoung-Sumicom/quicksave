@@ -4,16 +4,23 @@ import { useState } from 'react';
 import { clsx } from 'clsx';
 import { FormattedMessage, useIntl } from 'react-intl';
 import { useClaudeStore } from '../../stores/claudeStore';
-import { useConnectionStore } from '../../stores/connectionStore';
+import { selectCodexModelsForAgent, selectOpenCodeModelsForAgent, useConnectionStore } from '../../stores/connectionStore';
 import { AGENT_TYPES, getAgentProvider } from '../../lib/agentProvider';
 import { ButtonGroup } from '../ui/ButtonGroup';
+import { Spinner } from '../ui/Spinner';
 import type { ProjectEntry } from '../../hooks/useProjects';
+import type { AgentProbePayload } from '@sumicom/quicksave-shared';
+import { getBusForAgent } from '../../lib/busRegistry';
 import { MachineIcon } from '../icons/MachineIcon';
 import { CodexLoginBanner } from './CodexLogin';
 import { useCodexLogin } from '../../hooks/useCodexLogin';
+import { ClaudeAuthBanner } from './ClaudeAuth';
+import { useClaudeAuth } from '../../hooks/useClaudeAuth';
 
 export interface NewSessionEmptyStateProps {
   cwd?: string;
+  /** Machine that owns the selected project. Defaults to the active machine. */
+  agentId?: string | null;
   /** When provided, replaces the static cwd line with a project dropdown. */
   projectSelector?: {
     projects: ProjectEntry[];
@@ -22,14 +29,18 @@ export interface NewSessionEmptyStateProps {
   };
 }
 
-export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptyStateProps) {
+export function NewSessionEmptyState({ cwd, agentId, projectSelector }: NewSessionEmptyStateProps) {
   const intl = useIntl();
   const { selectedAgent, selectedModel, agentPrefs, allow1mForBilledModels, setSelectedAgent, setAgentSetting, lastChosenProviders, recordProviderChoice } = useClaudeStore();
-  const codexModels = useConnectionStore((s) => s.codexModels);
-  const { loginState } = useCodexLogin();
+  const codexModels = useConnectionStore((s) => selectCodexModelsForAgent(s, agentId));
+  const opencodeModels = useConnectionStore((s) => selectOpenCodeModelsForAgent(s, agentId));
+  const setAgentAvailableProviders = useConnectionStore((s) => s.setAgentAvailableProviders);
+  const { loginState } = useCodexLogin(agentId);
+  const { authState: claudeAuthState } = useClaudeAuth(agentId);
 
   const provider = getAgentProvider(selectedAgent);
-  const opencodeModels = useConnectionStore((s) => s.opencodeModels);
+  const [refreshingModels, setRefreshingModels] = useState(false);
+  const [modelRefreshError, setModelRefreshError] = useState<string | null>(null);
   const dynamic = { codexModels, opencodeModels, lastChosenProviders, recordProviderChoice };
   // Spread settings FIRST so `model:` from the agent bucket always wins.
   // (Old persisted state sometimes carries a stale `settings.model = ''`
@@ -39,6 +50,32 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
     model: selectedModel,
   };
   const showCodexLoginGate = selectedAgent === 'codex' && loginState?.loggedIn === false;
+  const showClaudeAuthGate = (selectedAgent === 'claude-code' || selectedAgent === 'claude-terminal')
+    && claudeAuthState?.loggedIn === false;
+
+  const refreshOpenCodeModels = async () => {
+    if (!agentId) return;
+    const bus = getBusForAgent(agentId);
+    if (!bus) {
+      setModelRefreshError(intl.formatMessage({ id: 'newSession.models.notConnected' }));
+      return;
+    }
+    setRefreshingModels(true);
+    setModelRefreshError(null);
+    try {
+      const result = await bus.command<AgentProbePayload>(
+        'agent:probe',
+        {},
+        { timeoutMs: 15_000, queueWhileDisconnected: false },
+      );
+      setAgentAvailableProviders(agentId, result.availableProviders);
+    } catch (error) {
+      console.warn('[new-session] OpenCode model refresh failed:', error);
+      setModelRefreshError(intl.formatMessage({ id: 'newSession.models.refreshFailed' }));
+    } finally {
+      setRefreshingModels(false);
+    }
+  };
 
   const selected = projectSelector
     ? projectSelector.projects.find((p) => p.projectId === projectSelector.selectedProjectId) ?? null
@@ -84,10 +121,25 @@ export function NewSessionEmptyState({ cwd, projectSelector }: NewSessionEmptySt
           onSelect={(agent) => setSelectedAgent(agent.value as Parameters<typeof setSelectedAgent>[0])}
           size="sm"
         />
-        {showCodexLoginGate && <CodexLoginBanner />}
+        {showCodexLoginGate && <CodexLoginBanner agentId={agentId} />}
+        {showClaudeAuthGate && <ClaudeAuthBanner agentId={agentId} />}
 
         {/* Provider-owned settings — model + all knobs */}
         {provider.renderSettings(values, setAgentSetting, { mode: 'new-session', dynamic, allow1mForBilledModels })}
+        {selectedAgent === 'opencode' && (
+          <div className="space-y-1.5">
+            <button
+              type="button"
+              onClick={() => void refreshOpenCodeModels()}
+              disabled={refreshingModels || !agentId}
+              className="flex items-center gap-1.5 rounded-md border border-slate-600 px-2.5 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {refreshingModels && <Spinner size="w-3 h-3" />}
+              <FormattedMessage id={refreshingModels ? 'newSession.models.refreshing' : 'newSession.models.refresh'} />
+            </button>
+            {modelRefreshError && <p className="text-xs text-amber-400">{modelRefreshError}</p>}
+          </div>
+        )}
 
         {/* Hint */}
         <p className="text-xs text-slate-600">

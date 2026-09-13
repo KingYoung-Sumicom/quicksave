@@ -4,6 +4,8 @@ export { CodexAppServerProvider } from './provider.js';
 export {
   spawnAppServer,
   detectCodexVersion,
+  getCodexBin,
+  isStandaloneCodexInstall,
   checkSchemaVersionCompatibility,
   type AppServerHandle,
   type AppServerInitOptions,

@@ -12,6 +12,8 @@ export interface AskQuestion {
   header?: string;
   options?: AskOption[];
   multiSelect?: boolean;
+  /** Whether a custom answer is permitted in addition to listed options. */
+  allowFreeText?: boolean;
 }
 
 export interface AskUserQuestionOutput {

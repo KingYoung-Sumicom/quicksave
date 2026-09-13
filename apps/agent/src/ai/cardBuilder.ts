@@ -316,6 +316,27 @@ async function appendCardHistoryEntry(sessionId: string, entry: CardHistoryLogEn
   await appendFile(cardHistoryLogPath(sessionId), JSON.stringify(entry) + '\n');
 }
 
+/** Atomically add a recovered provider-native history snapshot. Card ids are
+ * deterministic for a provider session, so repeated recovery is idempotent. */
+export async function seedPersistedCards(sessionId: string, cards: readonly Card[]): Promise<void> {
+  if (cards.length === 0) return;
+  await appendCardHistoryEntry(sessionId, { op: 'seed', cards: cards.map(cleanPersistedCard) });
+}
+
+export async function loadProviderHistoryCheckpoint(sessionId: string): Promise<string | undefined> {
+  try {
+    const raw = await readFile(join(getCardHistoryDir(), `${sessionId}.provider-history.json`), 'utf-8');
+    const value = JSON.parse(raw) as { latestMessageId?: unknown };
+    return typeof value.latestMessageId === 'string' ? value.latestMessageId : undefined;
+  } catch { return undefined; }
+}
+
+export async function saveProviderHistoryCheckpoint(sessionId: string, latestMessageId: string): Promise<void> {
+  const dir = getCardHistoryDir();
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, `${sessionId}.provider-history.json`), JSON.stringify({ latestMessageId }) + '\n');
+}
+
 // ── Direct JSONL file reading (replaces SDK getSessionMessages/listSubagents) ──
 
 export function encodeCwdPath(cwd: string): string {
@@ -590,6 +611,8 @@ export class StreamCardBuilder {
    * replaces this token, causing the pending polling task to bail out. */
   private _pendingClearToken: symbol | null = null;
   private persistMemoryCards = false;
+  /** Codex App Server history is authoritative; its cards are derived on read. */
+  private persistenceDisabled = false;
   private cardHistoryWriteQueue: Promise<void> = Promise.resolve();
 
   constructor(sessionId: string, cwd: string) {
@@ -603,6 +626,10 @@ export class StreamCardBuilder {
 
   enableMemoryPersistence(enabled = true): void {
     this.persistMemoryCards = enabled;
+  }
+
+  disablePersistence(disabled = true): void {
+    this.persistenceDisabled = disabled;
   }
 
   /** Continue the local card id counter after persisted memory-mode history.
@@ -670,6 +697,7 @@ export class StreamCardBuilder {
    * Call before clearCards() at the end of each turn.
    */
   async persistCards(): Promise<void> {
+    if (this.persistenceDisabled) return;
     const cards = this.getCards();
     if (cards.length === 0) return;
 
@@ -688,6 +716,7 @@ export class StreamCardBuilder {
    * injects a user prompt into an already-running turn; the card must survive
    * refresh before the turn's normal end-of-turn persist runs. */
   async persistCard(card: Card): Promise<void> {
+    if (this.persistenceDisabled) return;
     if (this.persistMemoryCards) {
       this.enqueueCardHistoryEntry({ op: 'upsert', card: cleanPersistedCard(card) });
       await this.flushCardHistoryWrites();
@@ -822,6 +851,25 @@ export class StreamCardBuilder {
       });
   }
 
+  /**
+   * Codex/OpenCode histories are normally rebuilt from their native source,
+   * so their general card persistence is disabled. A resolved optional
+   * follow-up has no durable native item, however; persist just that card as
+   * a supplemental history record so a PWA reload can restore the answer.
+   */
+  private enqueueResolvedFollowUpHistory(card: Card): void {
+    if (!this.persistenceDisabled || this.sessionId === 'pending') return;
+    const sessionId = this.sessionId;
+    this.cardHistoryWriteQueue = this.cardHistoryWriteQueue
+      .catch(() => undefined)
+      .then(() => appendCardHistoryEntry(sessionId, { op: 'upsert', card: cleanPersistedCard(card) }))
+      .catch((err) => {
+        console.warn(
+          `[card-history] follow-up append failed for session=${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+  }
+
   private nextId(): CardId {
     return `${this.sessionId}:${++this.seq}`;
   }
@@ -831,7 +879,7 @@ export class StreamCardBuilder {
     return {
       ...card,
       turnId: this.currentTurnId,
-      ...(card.type === 'user' || card.type === 'assistant_text'
+      ...(card.type === 'user' || card.type === 'assistant_text' || card.type === 'follow_up_question'
         ? {}
         : { isTurnIntermediate: true }),
     };
@@ -1037,6 +1085,9 @@ export class StreamCardBuilder {
   clearPendingInput(requestId: string, answers?: Record<string, string>): CardEvent | null {
     for (const [, card] of this.cards) {
       if (card.pendingInput?.requestId === requestId) {
+        if (card.type === 'follow_up_question') {
+          return this.resolveFollowUpQuestion(requestId);
+        }
         if (this.ephemeralCards.has(card.id)) {
           this.ephemeralCards.delete(card.id);
           return this.removeEvent(card.id);
@@ -1185,6 +1236,15 @@ export class StreamCardBuilder {
     return this.toolUseIdToCardId.has(toolUseId);
   }
 
+  /** Remove a provisional tool card once a richer structured card supersedes it. */
+  removeToolCard(toolUseId: string): CardEvent | null {
+    const cardId = this.toolUseIdToCardId.get(toolUseId);
+    if (!cardId) return null;
+    this.toolUseIdToCardId.delete(toolUseId);
+    this.ephemeralCards.delete(cardId);
+    return this.removeEvent(cardId);
+  }
+
   /** Return all live cards (insertion order). Cards carry pendingInput if set. */
   getCards(): Card[] {
     return Array.from(this.cards.values());
@@ -1235,7 +1295,7 @@ export class StreamCardBuilder {
     description: string,
     agentId: string,
     toolUseId?: string,
-    extras?: { prompt?: string; subagentType?: string; requestedModel?: string },
+    extras?: { prompt?: string; subagentType?: string; requestedModel?: string; nestToolCalls?: boolean },
   ): CardEvent {
     this.currentTextCardId = null;
     const existingCardId = this.agentIdToCardId.get(agentId);
@@ -1271,7 +1331,7 @@ export class StreamCardBuilder {
       ...(prompt ? { prompt } : {}),
     };
     this.agentIdToCardId.set(agentId, id);
-    this.activeSubagentCardId = id;
+    if (extras?.nestToolCalls !== false) this.activeSubagentCardId = id;
     const afterCardId = toolUseId ? this.toolUseIdToCardId.get(toolUseId) : undefined;
     return this.addEvent(card, afterCardId);
   }
@@ -1375,6 +1435,48 @@ export class StreamCardBuilder {
       label,
     };
     return this.addEvent(card);
+  }
+
+  /**
+   * Surface a non-blocking Codex `request_user_input` prompt. When resolved,
+   * the same card keeps the user's answer as a visible conversation record.
+   */
+  followUpQuestion(
+    question: string,
+    opts: {
+      options?: readonly string[] | null;
+      allowFreeText?: boolean;
+      pendingInput: PendingInputAttachment;
+      historyAnchorItemId?: string;
+    },
+  ): CardEvent {
+    const id = this.nextId();
+    const card: Card = {
+      type: 'follow_up_question',
+      id,
+      timestamp: Date.now(),
+      question,
+      ...(opts.options && opts.options.length > 0 ? { options: [...opts.options] } : {}),
+      ...(opts.allowFreeText ? { allowFreeText: true } : {}),
+      ...(opts.historyAnchorItemId ? { historyAnchorItemId: opts.historyAnchorItemId } : {}),
+      pendingInput: opts.pendingInput,
+    };
+    return this.addEvent(card);
+  }
+
+  /** Mark a Codex follow-up as resolved while keeping its selected answer. */
+  resolveFollowUpQuestion(requestId: string, answer?: string): CardEvent | null {
+    for (const [, card] of this.cards) {
+      if (card.type !== 'follow_up_question' || card.pendingInput?.requestId !== requestId) continue;
+      const event = this.updateEvent(card.id, {
+        pendingInput: null,
+        ...(answer ? { answer } : { dismissed: true }),
+      });
+      const resolved = this.cards.get(card.id);
+      if (resolved) this.enqueueResolvedFollowUpHistory(resolved);
+      return event;
+    }
+    return null;
   }
 
   errorMessage(text: string): CardEvent {

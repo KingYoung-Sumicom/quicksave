@@ -38,6 +38,8 @@ export interface AgentConfig {
   anthropicApiKey?: string;
   managedRepos?: string[];
   managedCodingPaths?: string[];
+  /** Enable OpenCode's built-in websearch tool (backed by Exa). */
+  openCodeEnableExa?: boolean;
 }
 
 const DEFAULT_SIGNALING_SERVER = 'wss://signal.quicksave.dev';
@@ -144,6 +146,17 @@ export function setAnthropicApiKey(apiKey: string): void {
 
 export function hasAnthropicApiKey(): boolean {
   return !!loadConfig()?.anthropicApiKey;
+}
+
+/** Whether this machine starts OpenCode with its built-in Exa web search tool. */
+export function getOpenCodeEnableExa(): boolean {
+  return loadConfig()?.openCodeEnableExa === true;
+}
+
+export function setOpenCodeEnableExa(enabled: boolean): void {
+  const config = loadConfig() ?? getOrCreateConfig(DEFAULT_SIGNALING_SERVER);
+  config.openCodeEnableExa = enabled;
+  saveConfig(config);
 }
 
 // Managed repos helpers

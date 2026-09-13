@@ -507,7 +507,7 @@ export function signalingServerPlugin(): Plugin {
               sendMessage(extWs, { type: 'peer-connected' });
             } else {
               console.log(`[signaling] Agent ${id} is offline`);
-              sendMessage(extWs, { type: 'peer-offline' });
+              sendMessage(extWs, { type: 'peer-offline', payload: { agentId: id } });
             }
           }
 
@@ -587,7 +587,7 @@ export function signalingServerPlugin(): Plugin {
               connections!.removeAgent(extWs.agentId);
               const pwa = connections!.getPwa(extWs.agentId);
               if (pwa) {
-                sendMessage(pwa, { type: 'peer-offline' });
+                sendMessage(pwa, { type: 'peer-offline', payload: { agentId: extWs.agentId } });
               }
             } else if (extWs.role === 'pwa' && extWs.agentId) {
               console.log(`[signaling] ${extWs.role} disconnected for agent ${extWs.agentId}`);

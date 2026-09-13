@@ -22,8 +22,9 @@ import { getBusForAgent } from '../lib/busRegistry';
  * and a post-login model refresh that re-hydrates the model picker once
  * credentials appear.
  */
-export function useCodexLogin() {
-  const agentId = useConnectionStore((s) => s.agentId);
+export function useCodexLogin(targetAgentId?: string | null) {
+  const activeAgentId = useConnectionStore((s) => s.agentId);
+  const agentId = targetAgentId === undefined ? activeAgentId : targetAgentId;
   const loginState = useCodexLoginStore((s) => (agentId ? s.byAgent[agentId] : undefined));
 
   const start = useCallback(async (): Promise<CodexLoginState | null> => {

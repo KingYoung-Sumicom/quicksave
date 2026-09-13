@@ -5,14 +5,30 @@ import type { ConnectionState, Repository, CodingPath, CodexModelInfo, AgentProv
 
 export type ConnectionStep = 'signaling' | 'waiting-for-agent' | 'key-exchange' | 'handshake';
 
+/** The PWA's single WebSocket connection to the signaling relay.  This must
+ * never be used to infer whether a particular agent is available. */
+export interface RelayConnectionState {
+  state: ConnectionState;
+  reconnectAttempt: number | null;
+  maxReconnectAttempts: number | null;
+  error: string | null;
+}
+
 /** Per-agent connection state for multi-agent tracking */
 export interface AgentConnectionState {
   state: ConnectionState;
+  /** Progress within this agent's encrypted session setup. */
+  connectionStep: ConnectionStep | null;
+  keyExchangeAttempt: number | null;
   repoPath: string | null;
   availableRepos: Repository[];
   availableCodingPaths: CodingPath[];
   isPro: boolean;
   agentVersion: string | null;
+  /** Account-scoped Codex catalog advertised by this machine only. */
+  codexModels: CodexModelInfo[];
+  /** Provider metadata, including the OpenCode catalog for this machine. */
+  availableProviders: AgentProviderInfo[];
   devBuild: boolean;
   /** OS the agent reported in the handshake-ack. `undefined` means the agent
    *  is older than the platform-aware build; treat as "unknown — hide
@@ -23,6 +39,8 @@ export interface AgentConnectionState {
   audio?: AgentAudioCapabilities;
   connectedAt: number | null;
   error: string | null;
+  reconnectAttempt: number | null;
+  maxReconnectAttempts: number | null;
   /** Relay's view of whether the agent is reachable.
    *  undefined = unknown; true/false = last known. Flips to false when the
    *  relay loses the agent WebSocket even while this peer's WebRTC stays up. */
@@ -54,6 +72,9 @@ interface ConnectionStore {
   keyExchangeAttempt: number | null;
   agentOnline: boolean | null;
 
+  // Relay state is intentionally separate from the active-agent mirror above.
+  relay: RelayConnectionState;
+
   // Multi-agent connection tracking
   agentConnections: Record<string, AgentConnectionState>;
 
@@ -75,18 +96,53 @@ interface ConnectionStore {
   setSignalingServer: (server: string) => void;
   setConnectionStep: (step: ConnectionStep, attempt?: number) => void;
   setAgentOnline: (online: boolean) => void;
+  /** Make the legacy flat fields mirror this machine, even while offline. */
+  setActiveAgentConnection: (agentId: string) => void;
   reset: () => void;
+
+  // Relay lifecycle
+  setRelayConnected: () => void;
+  setRelayReconnecting: (attempt: number, maxAttempts: number) => void;
+  setRelayError: (error: string) => void;
+  setRelayDisconnected: () => void;
 
   // Multi-agent actions
   setAgentConnecting: (agentId: string) => void;
   setAgentConnected: (agentId: string, repoPath: string, isPro: boolean, availableRepos?: Repository[], availableCodingPaths?: CodingPath[], agentVersion?: string, devBuild?: boolean, platform?: 'linux' | 'darwin' | 'win32' | 'other', audio?: AgentAudioCapabilities) => void;
+  setAgentCodexModels: (agentId: string, models: CodexModelInfo[]) => void;
+  setAgentAvailableProviders: (agentId: string, providers: AgentProviderInfo[]) => void;
   setAgentDisconnected: (agentId: string) => void;
+  setAgentReconnecting: (agentId: string, attempt: number, maxAttempts: number) => void;
   setAgentError: (agentId: string, error: string) => void;
+  setAllAgentsError: (error: string) => void;
   setAgentOnlineFor: (agentId: string, online: boolean) => void;
+  setAgentConnectionStep: (agentId: string, step: ConnectionStep, attempt?: number) => void;
+  setAllAgentsReconnecting: (attempt?: number, maxAttempts?: number) => void;
+  setAllAgentsDisconnected: () => void;
   addAgentCodingPath: (agentId: string, codingPath: CodingPath) => void;
   addAgentRepo: (agentId: string, repo: Repository) => void;
   getAgentState: (agentId: string) => AgentConnectionState | undefined;
   isAgentConnected: (agentId: string) => boolean;
+}
+
+/** Return the account-specific Codex catalog for one machine. */
+export function selectCodexModelsForAgent(
+  state: Pick<ConnectionStore, 'agentId' | 'agentConnections' | 'codexModels'>,
+  agentId?: string | null,
+): CodexModelInfo[] {
+  const target = agentId ?? state.agentId;
+  return target ? state.agentConnections[target]?.codexModels ?? [] : state.codexModels;
+}
+
+/** Return one machine's OpenCode catalog, never another machine's last result. */
+export function selectOpenCodeModelsForAgent(
+  state: Pick<ConnectionStore, 'agentId' | 'agentConnections' | 'opencodeModels'>,
+  agentId?: string | null,
+): Array<{ id: string; name: string; providerId: string; providerName: string }> {
+  const target = agentId ?? state.agentId;
+  if (!target) return state.opencodeModels;
+  return state.agentConnections[target]?.availableProviders
+    .find((provider) => provider.id === 'opencode')?.models ?? [];
 }
 
 // In dev mode, use the same host as the page (signaling is embedded in Vite dev server)
@@ -125,6 +181,12 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
   connectionStep: null,
   keyExchangeAttempt: null,
   agentOnline: null,
+  relay: {
+    state: 'connecting',
+    reconnectAttempt: null,
+    maxReconnectAttempts: null,
+    error: null,
+  },
   agentConnections: {},
 
   // Active-agent actions
@@ -220,6 +282,70 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
   setAgentOnline: (online) =>
     set({ agentOnline: online }),
 
+  setActiveAgentConnection: (agentId) =>
+    set((state) => {
+      const agent = state.agentConnections[agentId];
+      if (!agent) return { agentId };
+      return {
+        agentId,
+        state: agent.state,
+        repoPath: agent.repoPath,
+        availableRepos: agent.availableRepos,
+        availableCodingPaths: agent.availableCodingPaths,
+        connectedAt: agent.connectedAt,
+        error: agent.error,
+        isPro: agent.isPro,
+        agentVersion: agent.agentVersion,
+        codexModels: agent.codexModels,
+        availableProviders: agent.availableProviders,
+        opencodeModels: agent.availableProviders.find((provider) => provider.id === 'opencode')?.models ?? [],
+        reconnectAttempt: agent.reconnectAttempt,
+        maxReconnectAttempts: agent.maxReconnectAttempts,
+        connectionStep: agent.connectionStep,
+        keyExchangeAttempt: agent.keyExchangeAttempt,
+        agentOnline: agent.online ?? null,
+      };
+    }),
+
+  setRelayConnected: () =>
+    set({
+      relay: {
+        state: 'connected',
+        reconnectAttempt: null,
+        maxReconnectAttempts: null,
+        error: null,
+      },
+    }),
+
+  setRelayReconnecting: (attempt, maxAttempts) =>
+    set({
+      relay: {
+        state: 'reconnecting',
+        reconnectAttempt: attempt,
+        maxReconnectAttempts: maxAttempts,
+        error: null,
+      },
+    }),
+
+  setRelayError: (error) =>
+    set((state) => ({
+      relay: {
+        ...state.relay,
+        state: 'error',
+        error,
+      },
+    })),
+
+  setRelayDisconnected: () =>
+    set((state) => ({
+      relay: {
+        ...state.relay,
+        state: 'disconnected',
+        reconnectAttempt: null,
+        maxReconnectAttempts: null,
+      },
+    })),
+
   reset: () =>
     set({
       state: 'disconnected',
@@ -241,26 +367,45 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       connectionStep: null,
       keyExchangeAttempt: null,
       agentOnline: null,
+      relay: {
+        state: 'connecting',
+        reconnectAttempt: null,
+        maxReconnectAttempts: null,
+        error: null,
+      },
     }),
 
   // Multi-agent actions
   setAgentConnecting: (agentId) =>
-    set((state) => ({
-      agentConnections: {
-        ...state.agentConnections,
-        [agentId]: {
-          state: 'connecting',
-          repoPath: null,
-          availableRepos: [],
-          availableCodingPaths: [],
-          isPro: false,
-          agentVersion: null,
-          devBuild: false,
-          connectedAt: null,
-          error: null,
+    set((state) => {
+      const existing = state.agentConnections[agentId];
+      return {
+        agentConnections: {
+          ...state.agentConnections,
+          [agentId]: {
+            ...(existing || {
+              repoPath: null,
+              availableRepos: [],
+              availableCodingPaths: [],
+              isPro: false,
+              agentVersion: null,
+              codexModels: [],
+              availableProviders: [],
+              devBuild: false,
+              connectedAt: null,
+              reconnectAttempt: null,
+              maxReconnectAttempts: null,
+            }),
+            state: 'connecting',
+            connectionStep: 'signaling',
+            keyExchangeAttempt: null,
+            error: null,
+            reconnectAttempt: null,
+            maxReconnectAttempts: null,
+          },
         },
-      },
-    })),
+      };
+    }),
 
   setAgentConnected: (agentId, repoPath, isPro, availableRepos, availableCodingPaths, agentVersion, devBuild, platform, audio) =>
     set((state) => ({
@@ -268,24 +413,95 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
         ...state.agentConnections,
         [agentId]: {
           state: 'connected',
+          connectionStep: null,
+          keyExchangeAttempt: null,
           repoPath: repoPath || null,
           availableRepos: availableRepos || [],
           availableCodingPaths: availableCodingPaths || [],
           isPro,
           agentVersion: agentVersion || null,
+          codexModels: state.agentConnections[agentId]?.codexModels ?? [],
+          availableProviders: state.agentConnections[agentId]?.availableProviders ?? [],
           devBuild: devBuild || false,
           platform,
           audio,
           connectedAt: Date.now(),
           error: null,
+          reconnectAttempt: null,
+          maxReconnectAttempts: null,
+          online: true,
         },
       },
     })),
 
+  setAgentCodexModels: (agentId, models) =>
+    set((state) => {
+      const existing = state.agentConnections[agentId];
+      if (!existing) return state;
+      return {
+        agentConnections: {
+          ...state.agentConnections,
+          [agentId]: { ...existing, codexModels: models },
+        },
+        // Preserve the legacy active-agent mirror for callers that do not
+        // have an agent id. Per-session UI must use agentConnections instead.
+        ...(state.agentId === agentId ? { codexModels: models } : {}),
+      };
+    }),
+
+  setAgentAvailableProviders: (agentId, providers) =>
+    set((state) => {
+      const existing = state.agentConnections[agentId];
+      if (!existing) return state;
+      const opencode = providers.find((provider) => provider.id === 'opencode');
+      return {
+        agentConnections: {
+          ...state.agentConnections,
+          [agentId]: { ...existing, availableProviders: providers },
+        },
+        ...(state.agentId === agentId
+          ? { availableProviders: providers, opencodeModels: opencode?.models ?? [] }
+          : {}),
+      };
+    }),
+
   setAgentDisconnected: (agentId) =>
     set((state) => {
-      const { [agentId]: _, ...rest } = state.agentConnections;
-      return { agentConnections: rest };
+      const existing = state.agentConnections[agentId];
+      if (!existing) return state;
+      return {
+        agentConnections: {
+          ...state.agentConnections,
+          [agentId]: {
+            ...existing,
+            state: existing.error ? 'error' : 'disconnected',
+            connectedAt: null,
+            reconnectAttempt: null,
+            maxReconnectAttempts: null,
+            connectionStep: null,
+            keyExchangeAttempt: null,
+            online: false,
+          },
+        },
+      };
+    }),
+
+  setAgentReconnecting: (agentId, attempt, maxAttempts) =>
+    set((state) => {
+      const existing = state.agentConnections[agentId];
+      if (!existing) return state;
+      return {
+        agentConnections: {
+          ...state.agentConnections,
+          [agentId]: {
+            ...existing,
+            state: 'reconnecting',
+            reconnectAttempt: attempt,
+            maxReconnectAttempts: maxAttempts,
+            error: null,
+          },
+        },
+      };
     }),
 
   setAgentError: (agentId, error) =>
@@ -296,11 +512,22 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
           ...(state.agentConnections[agentId] || {
             state: 'error', repoPath: null, availableRepos: [],
             availableCodingPaths: [], isPro: false, agentVersion: null, devBuild: false, connectedAt: null,
+            codexModels: [], availableProviders: [], reconnectAttempt: null, maxReconnectAttempts: null,
+            connectionStep: null, keyExchangeAttempt: null,
           }),
           state: 'error',
           error,
         },
       },
+    })),
+
+  setAllAgentsError: (error) =>
+    set((state) => ({
+      agentConnections: Object.fromEntries(Object.entries(state.agentConnections).map(([agentId, existing]) => [agentId, {
+        ...existing,
+        state: 'error' as ConnectionState,
+        error,
+      }])),
     })),
 
   setAgentOnlineFor: (agentId, online) =>
@@ -310,10 +537,75 @@ export const useConnectionStore = create<ConnectionStore>((set, get) => ({
       return {
         agentConnections: {
           ...state.agentConnections,
-          [agentId]: { ...existing, online },
+          [agentId]: online
+            ? { ...existing, online }
+            : {
+              ...existing,
+              // The relay is still healthy, but this peer is not. Surface it
+              // only on routes that belong to this agent and wait for its
+              // normal watch/key-exchange recovery path.
+              state: 'reconnecting',
+              connectionStep: 'waiting-for-agent',
+              keyExchangeAttempt: null,
+              online,
+            },
         },
       };
     }),
+
+  setAgentConnectionStep: (agentId, connectionStep, attempt) =>
+    set((state) => {
+      const existing = state.agentConnections[agentId];
+      if (!existing) return state;
+      return {
+        agentConnections: {
+          ...state.agentConnections,
+          [agentId]: {
+            ...existing,
+            ...(existing.state === 'error' || existing.state === 'disconnected'
+              ? {
+                  state: 'connecting' as ConnectionState,
+                  error: null,
+                  reconnectAttempt: null,
+                  maxReconnectAttempts: null,
+                }
+              : {}),
+            connectionStep,
+            ...(attempt !== undefined ? { keyExchangeAttempt: attempt } : { keyExchangeAttempt: null }),
+          },
+        },
+      };
+    }),
+
+  setAllAgentsReconnecting: (attempt, maxAttempts) =>
+    set((state) => ({
+      agentConnections: Object.fromEntries(
+        Object.entries(state.agentConnections).map(([agentId, connection]) => [agentId, {
+          ...connection,
+          state: 'reconnecting',
+          reconnectAttempt: attempt ?? connection.reconnectAttempt,
+          maxReconnectAttempts: maxAttempts ?? connection.maxReconnectAttempts,
+          error: null,
+          connectionStep: 'signaling',
+          keyExchangeAttempt: null,
+        }]),
+      ),
+    })),
+
+  setAllAgentsDisconnected: () =>
+    set((state) => ({
+      agentConnections: Object.fromEntries(
+        Object.entries(state.agentConnections).map(([agentId, connection]) => [agentId, {
+          ...connection,
+          state: connection.error ? 'error' : 'disconnected',
+          connectionStep: null,
+          keyExchangeAttempt: null,
+          reconnectAttempt: null,
+          maxReconnectAttempts: null,
+          online: false,
+        }]),
+      ),
+    })),
 
   addAgentCodingPath: (agentId, codingPath) =>
     set((state) => {

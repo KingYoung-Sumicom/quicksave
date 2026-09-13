@@ -17,22 +17,24 @@ import { retryWsReconnect } from '../../lib/wsRetryRegistry';
  *   - **Connected and agent online**: render nothing; caller (ClaudePanel)
  *     falls back to the regular bounce-dots indicator.
  */
-export function StreamingReconnectIndicator() {
-  const state = useConnectionStore((s) => s.state);
-  const reconnectAttempt = useConnectionStore((s) => s.reconnectAttempt);
-  const maxReconnectAttempts = useConnectionStore((s) => s.maxReconnectAttempts);
-  const agentOnline = useConnectionStore((s) => s.agentOnline);
-
-  const inFlight = state === 'reconnecting' || state === 'connecting' || (state === 'connected' && agentOnline === false);
+export function StreamingReconnectIndicator({ agentId }: { agentId: string }) {
+  // A session belongs to exactly one machine. Global relay state or another
+  // machine's reconnect must not replace this session's streaming indicator.
+  const agent = useConnectionStore((s) => s.agentConnections[agentId]);
+  const state = agent?.state ?? 'disconnected';
+  const inFlight = state === 'reconnecting' || state === 'connecting'
+    || (state === 'connected' && agent?.online === false);
   const gaveUp = state === 'disconnected' || state === 'error';
 
   if (!inFlight && !gaveUp) return null;
 
-  const label = state === 'reconnecting' && reconnectAttempt
-    ? `重新連線中… (${reconnectAttempt}/${maxReconnectAttempts ?? '?'})`
+  const label = state === 'reconnecting' && agent?.reconnectAttempt
+    ? `重新連線中… (${agent.reconnectAttempt}/${agent.maxReconnectAttempts ?? '?'})`
+    : state === 'reconnecting'
+    ? '重新連線中…'
     : state === 'connecting'
     ? '連線中…'
-    : state === 'connected' && agentOnline === false
+    : state === 'connected' && agent?.online === false
     ? '等待 agent 回應…'
     : '連線中斷';
 

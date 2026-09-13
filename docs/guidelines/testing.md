@@ -46,6 +46,11 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
    - Race conditions (e.g., clearCards before snapshotCutoff)
    - State after reconnect (e.g., pubsub subscriptions lost)
    - Missing or out-of-order events
+   - Session lifecycle actions on registry-only sessions (no live process):
+     assert the same terminal state update reaches the PWA as for live sessions.
+   - Provider-native sessions with no Quicksave registry entry: assert targeted
+     id lookup supplies the provider and cwd for both history loading and
+     archive; the fallback must not enumerate the provider's complete list.
    - Streaming providers that emit both deltas and final snapshots: assert the
      same text/reasoning part is rendered once, user-role parts are ignored,
      and pending tool calls are patched when later snapshots populate inputs
@@ -62,6 +67,16 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
      next page uses an agent-issued source cursor, not rendered `cards.length`.
      Include one-source-to-many-card expansion, partially persisted active
      turns, and append/remove activity above an existing cursor.
+   - Connection admission limits: repeatedly exercise every rejected handshake
+     path under a deliberately small quota and assert each rejected socket
+     releases its slot before the next attempt.
+   - Multi-machine selectors: seed conflicting per-agent state and assert the
+     selected project or machine wins over the mutable active-agent fallback,
+     especially for machine-local authentication and capability gates.
+   - Multi-machine reconnects: keep one machine connected while another retries,
+     errors, or goes offline. Assert the healthy machine's state and session
+     indicators remain unchanged, and distinguish a shared relay disconnect
+     from a single-machine disconnect.
    - Put these in a dedicated `edgeCases.test.ts` or alongside the relevant module
 
 3. **Integration tests** — Cross-module flows with real filesystem.
@@ -101,6 +116,13 @@ cd apps/pwa && npm run test:e2e           # Playwright end-to-end
 
 Vitest runs in a `jsdom` environment with globals enabled. Test files
 follow `src/**/*.test.ts` and `src/**/*.test.tsx`.
+
+For browser permission or media startup paths, include a test where the browser
+promise never settles. Assert a bounded timeout returns the UI to a retryable
+state and that a resource resolving after the timeout is immediately released.
+For iOS PWA media changes, also model a background freeze where the first
+foreground `AudioContext.resume()` never settles while `getUserMedia` succeeds;
+assert the same user gesture recovers without requiring a second tap.
 
 ## Continuous Process Refinement
 

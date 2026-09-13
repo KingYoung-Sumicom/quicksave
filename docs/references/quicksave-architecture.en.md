@@ -73,6 +73,7 @@ apps/agent/src/
 │   │   ├── rpcClient.ts        #   JSON-RPC 2.0 dispatcher (request/response/notification/server-request)
 │   │   ├── stdioTransport.ts   #   JSONL framing on the spawned child's stdio
 │   │   ├── cardAdapter.ts      #   v2 notifications → StreamCardBuilder method calls
+│   │   ├── nativeExecCompletionTracker.ts # Public native lifecycle + explicit agent registrations
 │   │   ├── tokenAccounting.ts  #   Per-turn delta + cumulative usage tracking
 │   │   ├── overrideStore.ts    #   Pending/effective per-turn overrides (model/effort/permission/service tier)
 │   │   ├── approvalMapping.ts  #   tool-name + sandbox toggle → AskForApproval matrix
@@ -86,7 +87,7 @@ apps/agent/src/
 │   ├── sessionRegistry.ts      # SessionRegistry: active+archived metadata (see below)
 │   ├── enrichEntry.ts          # Decorate registry entries for /sessions/history snapshot
 │   ├── systemPrompt.ts         # `--append-system-prompt` builder
-│   ├── sandboxMcp.ts           # In-process MCP server: SandboxBash + UpdateSessionStatus tool defs
+│   ├── sandboxMcp.ts           # In-process MCP server: sandbox, status, artifact, and Codex completion-registration tool defs
 │   ├── sandboxMcpStdio.ts      # stdio adapter for the same MCP server when run as a subprocess
 │   ├── debugLogger.ts          # Per-session NDJSON debug log (QUICKSAVE_DEBUG=1)
 │   ├── asyncQueue.ts           # Single-flight async queue helper
@@ -103,7 +104,7 @@ apps/agent/src/
 
 > **Terminal subsystem**: `TerminalManager` (above) is a standalone EventEmitter that does not share state with AI sessions. It uses `node-pty` to open a shell (default `$SHELL -l`) and retains the raw output of each PTY (including ANSI codes) in a ring buffer capped at 256 KiB. The PWA reconstructs the terminal screen by subscribing to two buses, `/terminals` and `/terminals/:id/output`; on offline reconnect the snapshot brings back the entire scrollback so the screen returns to its pre-disconnect state immediately.
 
-> **File browser subsystem**: `FileBrowser` (`apps/agent/src/files/fileBrowser.ts`) is a pure request-response, stateless, read-only module — no EventEmitter, no bus subscription, because file content is fetched on-demand rather than streamed. It is intentionally not root-confined after PWA/agent pairing: absolute `path` values are read as-is, and relative paths resolve against `realpath(cwd)` without an inside-root assertion. Binary detection uses a NUL-byte sniff over the first 8 KiB; the default text preview cap is 1 MiB (`maxBytes` can override but is hard-clamped at 4 MiB). Inline image reads use a separate 16 MiB cap.
+> **File browser subsystem**: `FileBrowser` (`apps/agent/src/files/fileBrowser.ts`) is a read-only, metadata-first module. It is intentionally not root-confined after PWA/agent pairing: absolute `path` values are read as-is, and relative paths resolve against `realpath(cwd)` without an inside-root assertion. Binary detection uses a NUL-byte sniff over the first 8 KiB. Text and image bodies up to 1 MiB use the normal `files:read` response (`maxBytes` can raise the text inline cap, hard-clamped at 4 MiB). An oversized response or binary file makes the PWA attempt an ephemeral ordered/reliable WebRTC DataChannel through `fileRtcStream.ts`: signaling stays on the authenticated bus, raw 64 KiB chunks bypass the relay, sender backpressure is capped at 4 MiB, and the receiver verifies byte count plus SHA-256. Direct transfers are limited to 64 MiB and two concurrent transfers per paired peer. Common audio extensions (`mp3`, `wav`, `ogg`/`oga`/`opus`, `m4a`, `aac`, `flac`, and `webm`) receive an audio MIME type and render in the browser's native player. Other binary formats remain unpreviewed but become downloadable after a successful direct transfer; ICE failure or missing `@roamhq/wrtc` leaves the original metadata placeholder available.
 
 ### Startup Sequence (`service/run.ts → runDaemon()`)
 
@@ -161,6 +162,10 @@ The architecture uses a layered design: `SessionManager` provides unified coordi
      in-memory suffix and never contribute to the persisted-history cursor.
    - Permission flow (auto-approve table, runtime allow patterns, PWA forwarding via `handlePermissionRequest` callback)
    - Preferences and per-session config
+   - Native-session identity cache: discovery records native `(sessionId → agent,
+     cwd, archive state)` only in memory. Native-only actions use that cache or
+     the provider's single-id lookup; they never require a registry entry or
+     enumerate every session as a fallback.
    - Event emission (`card-event`, `card-stream-end`, `user-input-request`, `user-input-resolved`, `session-updated`, `preferences-updated`, `session-config-updated`, `codex-turn-settled`)
    - Session registry integration; on-disk bypass-flag sentinel for CLI auto-approve hook
    - Cold-resume queueing via `coldResumeInFlight` so prompts arriving during a respawn don't get lost
@@ -185,7 +190,7 @@ claude:start → MessageHandler.handleClaudeStart()
               (also fires `callbacks.onCacheTouch` on SDK cache hit/write tokens)
               result → callbacks.emitStreamEnd
        For CodexAppServerProvider:
-         spawn('codex', ['app-server', ...sandboxMcpConfig])
+         spawn('codex', ['--enable', 'default_mode_request_user_input', 'app-server', ...sandboxMcpConfig])
          → initialize / initialized JSON-RPC handshake
          → rpc.request('thread/start' or 'thread/resume', {…}) to load the Codex thread
          → rpc.request('turn/start', { threadId, input, ...runtimeOverrides })
@@ -195,6 +200,16 @@ claude:start → MessageHandler.handleClaudeStart()
          → cardAdapter translates `turn/started`, `item/*`, `turn/completed`,
            autonomous turns started by goal mode, and related v2 notifications into
            CardBuilder events
+         → an experimental `item/tool/requestUserInput` with `isBlocking: false`
+           becomes a `follow_up_question`; its reply resolves that server
+           request and never starts a new `turn/start`. The resolved card keeps
+           the selected answer (or a dismissed marker) in the live conversation
+           and as supplemental card history, because the native thread has no
+           `request_user_input` item to reconstruct after a reload. The
+           supplemental record keeps the emitting native item and turn anchor;
+           history inserts it immediately after that item (or turn fallback),
+           including when the relevant older page is loaded, rather than
+           appending it below the newest conversation.
     → SessionManager registers ManagedSession + permission table + bypass-flag sentinel
   ← sessionId
 
@@ -235,8 +250,10 @@ claude:end-task → MessageHandler.handleClaudeEndTask
   → 1. SessionManager.getSessionCwd(sessionId) (while alive); fall back to
        getSessionRegistry().findBySessionId so cold sessions can also be archived.
   → 2. SessionManager.closeSession(sessionId) — kill the live process if any
-  → 3. registry.updateEntry(cwd, sessionId, { archived: true })
-       + onHistoryUpdated(cwd, entry, 'upsert') broadcasts /sessions/history
+  → 3. Local/polyfill providers write `registry.archived: true`. Codex calls
+       native `thread/archive`; its registry metadata is retained with
+       `{ archived: false, nativeArchived: true }`, then a history delete
+       event removes it from the active projection.
   The PWA's End Task button takes this path; the session disappears from the active list and moves to archived.
 
 session:list-slash-commands → MessageHandler.handleListSlashCommands()
@@ -354,6 +371,22 @@ There is no `cancelSession` / `closeSession` on the provider interface — those
 - `upsertEntry(entry)` automatically routes to the correct subtree based on `entry.archived` and deletes the stale file on the other side; `updateEntry()` can locate an entry in memory or on the archived disk subtree, and automatically migrates it when the `archived` flag flips
 - `loadAll()` ignores the `archived/` subdirectory; if it encounters a legacy file with `archived: true` in the active subtree, it auto-migrates it to the archived subtree (one-time migration)
 - For reading archived metadata (e.g. an unarchive UI): `readArchivedEntry(cwd, id)` / `listArchivedEntries(cwd?)` both read on-demand from disk
+- **Native archive ownership (Codex and OpenCode):** Their native session APIs
+  are the only archive authority. For either provider, local `archived: true`
+  is a legacy migration flag, not a
+  durable archive decision. Reconciliation retries `thread/archive` while the
+  flag remains set, then clears it to `false` and caches native display state
+  as `nativeArchived: true`. Active-history projections exclude that cached
+  state; native session listing supplies the archived UI entry. Non-Codex
+  providers continue to use local `archived` as their archive polyfill.
+- **Session-list aggregation:** active/history lists merge native active Codex
+  and OpenCode sessions with any matching Quicksave registry metadata, keyed by
+  `(cwd, sessionId)`. Native providers own session existence and archive state;
+  the registry overlays user-facing metadata such as title, read state, and
+  saved settings. Native discovery is limited to the managed project-directory
+  allowlist; OpenCode also exposes only root sessions (`parentID` empty). Claude
+  Code has no native listing API, so its registry entry remains the complete
+  source for that provider.
 
 ### AI Provider Events
 
@@ -388,6 +421,12 @@ the daemon normalizes the legacy alias and validates the catalog id before
 `thread/start` and before a runtime `turn/start` override. The setting is
 persisted in `SessionRegistryEntry.serviceTier` so cold resumes retain it.
 
+For a global history snapshot, `SessionManager` passes every managed project
+path to Codex native discovery. The provider forwards that array to
+`thread/list.cwd`, so the app-server excludes unrelated machine sessions before
+Quicksave projects the result locally. A single-project query still passes one
+`cwd` string.
+
 **CodingAgentProvider interface** (`ai/provider.ts`):
 ```typescript
 interface CodingAgentProvider {
@@ -410,6 +449,11 @@ interface CodingAgentProvider {
   /** Probe availability without starting a session. Returns version +
    *  capabilities (hasApiKey, hasCli, hasPlugin, supportsResume, etc.). */
   probeProvider(): Promise<ProbeResult>;
+
+  /** Optional native discovery and targeted identity lookup. The latter must
+   *  fetch only the requested provider session, not enumerate all sessions. */
+  listNativeSessions?(opts?: { cwd?: string | readonly string[] }): Promise<NativeSessionSummary[]>;
+  getNativeSession?(sessionId: string, opts?: { cwd?: string }): Promise<NativeSessionSummary | undefined>;
 }
 ```
 
@@ -439,6 +483,15 @@ OpenCode permission replies use the current
 `POST /permission/{requestID}/reply` shape. A denial sends both
 `reply: "reject"` and the PWA's optional rationale as `message`, so the active
 model turn receives the user's explanation as part of the rejected tool call.
+
+OpenCode's built-in `question` tool is a separate, **blocking** user-input
+protocol, not a permission prompt and not a Codex optional follow-up. The
+injected configuration allows the tool so the server emits `question.asked`;
+the provider converts its structured questions into the normal
+`AskUserQuestion` card, waits for the PWA answer, then calls either
+`POST /question/{requestID}/reply` with one selected-label array per question
+or `POST /question/{requestID}/reject`. Its `custom: false` flag prevents the
+PWA from offering a free-text alternative.
 
 To add a new provider, implement this interface and include it in the array passed to the `SessionManager` constructor:
 ```typescript
@@ -649,12 +702,13 @@ All request-response, state subscribe, and server push between PWA and Agent go 
 | `/sessions/config` | `Record<sessionId, Record<key, ConfigValue>>` | `SessionConfigUpdatedPayload` | `claudeService.getAllSessionConfigs()` + `session-config-updated` event |
 | `/sessions/:sessionId/cards` | `CardHistoryResponse` (initial page, opaque `nextCursor`, pendingInput overlay + title) | `SessionCardsUpdate` (`{ kind: 'card', event }` or `{ kind: 'stream-end', result }`) | `claudeService.getCards()` + `card-event` / `card-stream-end` events |
 | `/sessions/:sessionId/attention` | `null` (presence-only) | — | The PWA only subscribes when on the session page and the tab is visible+focused; `subscriberCount === 0` acts as the push gate |
+| `/claude/auth` | `ClaudeAuthState` | — | Sanitized machine-local `claude auth status --json`; email, organization, and account ids never leave the daemon |
 | `/codex/quota` | `CodexQuotaSnapshot \| null` | `CodexQuotaSnapshot` | Agent-wide `CodexQuotaService`; includes reset-credit summaries when app-server provides them; stale-on-subscribe refreshes after 5 minutes, and `codex-turn-settled` force-refreshes after each Codex prompt |
 | `/terminals` | `TerminalSummary[]` | `TerminalsUpdate` (`{ kind: 'upsert', terminal }` or `{ kind: 'remove', terminalId }`) | `terminalManager.listSummaries()` + `terminals-updated` / `terminal-updated` events |
 | `/terminals/:terminalId/output` | `TerminalOutputSnapshot \| null` (scrollback + seq + size + exit status) | `TerminalOutputChunk` (next chunk of output, monotonic `seq`) | `terminalManager.outputSnapshot()` + PTY `'data'` event |
 
 **Command adapter** (`handlers/legacyBusAdapter.ts` — `LEGACY_BUS_VERBS` + `wireLegacyBusVerbs`):
-`service/run.ts` calls `wireLegacyBusVerbs(bus, messageHandler)` at startup. Every request-response verb in the `LEGACY_BUS_VERBS` array (`git:*`, `ai:*`, `agent:*`, `claude:*`, `session:*`, `project:*`, `push:*`, `codex:*`, `terminal:*`, `files:*`, plus `ping`) is registered as `bus.onCommand(verb, ...)`. The adapter wraps the payload back into a `Message` envelope, dispatches it to the existing `messageHandler.handleMessage`, then translates the result back into a resolved payload or a rejected Error. Structured errors are encoded as `"CODE: message"` strings.
+`service/run.ts` calls `wireLegacyBusVerbs(bus, messageHandler)` at startup. Every request-response verb in the `LEGACY_BUS_VERBS` array (`git:*`, `ai:*`, `agent:*`, `opencode:*`, `claude:*`, `session:*`, `project:*`, `push:*`, `codex:*`, `terminal:*`, `files:list`, `files:read`, plus `ping`) is registered as `bus.onCommand(verb, ...)`. The adapter wraps the payload back into a `Message` envelope, dispatches it to the existing `messageHandler.handleMessage`, then translates the result back into a resolved payload or a rejected Error. Structured errors are encoded as `"CODE: message"` strings. `files:rtc-*` is wired directly by `wireFileRtcStream`, like streaming voice, because it publishes trickled ICE asynchronously.
 
 > ⚠️ **Gotcha — adding a new request/response verb requires updates in three places**: `LEGACY_BUS_VERBS` is an explicit allowlist; a verb not in it will not be registered as a bus handler even if `messageHandler`'s `switch` has a case, and the PWA will receive a `"Unknown command: <verb>"` reject. When adding any PWA→Agent command, three places must be touched: (1) the `MessageType` union in `packages/shared/src/types.ts` and the request→response mapping in `protocol.ts`; (2) the switch case + handler in `messageHandler.ts`; (3) the `LEGACY_BUS_VERBS` array in `handlers/legacyBusAdapter.ts`.
 
@@ -810,14 +864,15 @@ interface Message {
 | `session:` | Session config + history + active provider control (`set-config`, `control-request`, `list-slash-commands`, `update-history`, `delete-history`, `list-archived`, `history-updated`, `config-updated`) |
 | `git:` | Git operations (status/diff/stage/commit/...) |
 | `agent:` | Daemon management (list-repos/add-repo/clone-repo/check-update/update/restart/...) |
+| `opencode:` | Machine-local OpenCode management. `config-snapshot` is a read-only, sanitized summary of OpenCode version/schema plus MCP, provider/model, agent, skill/command, plugin, and built-in Exa web-search metadata. `mcp-upsert` and `mcp-remove` persist global MCP configuration on the paired machine; secret values are write-only in the UI and snapshots remain redacted. `websearch-update` persists the per-agent Exa opt-in and restarts only its OpenCode child; the injected `websearch` permission remains `ask`. |
 | `ai:` | AI utilities (generate-commit-summary, commit-summary:clear, commit-summary:updated, set-api-key, get-api-key-status) |
-| `codex:` | Codex model list + device-auth login flow (`list-models`, `login-start/-status/-cancel`, `login-updated`); quota is exposed through the `/codex/quota` bus subscription, not a request/response verb |
+| `codex:` | Codex model list, device-auth login flow, and CLI update controls. `list-models`, `login-start/-status/-cancel`, and `check-update`/`update` are request-response verbs. The update action supports a resolved npm global package (using its sibling npm executable) or the documented Codex standalone-install location (using OpenAI's non-interactive installer); other installation methods remain manual to avoid overwriting an unrelated package manager's install. Quota is exposed through the `/codex/quota` bus subscription, not a request/response verb. |
 | `project:` | Project summaries (`list-summaries`, `list-repos`, `delete`) |
 | `push:` | Web Push subscription handoff (`push:subscription-offer`) |
 | `terminal:` | PTY terminal (create/input/resize/rename/close) |
-| `files:` | Read-only file browser (list / read; pure request-response, no bus subscription) |
+| `files:` | Read-only file browser. `list` / `read` are normal request-response commands. Oversized previewable files upgrade to `rtc-connect` / `rtc-ice` / `rtc-cancel`; agent ICE is pushed on `/files/rtc/{transferId}` and raw chunks use an ephemeral DataChannel. |
 | `attachment:` | Chunked upload + cancel for files and long-pasted text (see "Attachment Staging" in §三) |
-| `voice:` | Voice input. **Batch**: `voice:transcribe` (audio bytes + `VoiceConfig` in, text out), `voice:list-models` (lists `{baseUrl}/models` for the Settings dropdown), and `voice:log-event` (PWA-side voice intent/endpoint events sent back to the agent's JSONL voice log). **Streaming (WebRTC)**: `voice:rtc-connect` (SDP offer→answer) and `voice:rtc-ice` (PWA→agent trickle ICE); the agent pushes its own ICE candidates on the `/voice/rtc/{sessionId}` subscription. The agent proxies a Whisper-compatible API (no browser CORS limit; OpenAI works). `VoiceConfig` (key/baseUrl + separate `transcribeModel` for batch and `streamModel` for realtime) is the PWA's synced single source of truth and travels in each request; the agent persists nothing. A recvonly audio transceiver carries daemon TTS PCM to the browser. Streaming ASR retains the proven AudioWorklet path: the PWA downsamples mic input to 24 kHz mono PCM16 and sends binary frames over the ordered **DataChannel**. JSON `VoiceDcMessage` frames carry `start`/`stop`, the selected `audioTransport`, transcript-confirmed `interrupt-playback`, server-VAD `speech`, `transcript`, TTS `playback`, and `error`. The daemon can also ingest `media-track` frames when explicitly selected, without mixing both transports. The PWA treats streaming `transcript.final` as ASR fragments and waits for an intent endpoint before sending one combined `voice-agent:utterance`. The `voice:rtc-*` verbs are wired directly via `bus.onCommand` in `service/run.ts` (`wireVoiceStream`), **not** through `LEGACY_BUS_VERBS`, because they push ICE asynchronously. `@roamhq/wrtc` is an optional, lazily-loaded native dep. **The input mode is user-selected** (`VoiceConfig.mode`: `streaming` | `batch`) — there is no automatic fallback between them. `streaming` needs `audio.streaming` (wrtc) + the P2P link (STUN-only, no TURN). The link is established **mic-first on the user's first tap** — acquiring the mic before the SDP offer is what makes Safari/iOS expose real host ICE candidates (the passive prewarm can't, since iOS gates `getUserMedia` on a user gesture; non-iOS browsers still prewarm for an instant first utterance). If a tapped attempt still can't connect (e.g. no TURN across NAT/CGNAT), the mic shows a "live voice unavailable" tooltip after that attempt; `batch` needs `audio.transcription`. The composer hides the mic when the selected mode isn't supported on that machine. |
+| `voice:` | Voice input. **Batch**: `voice:transcribe` (audio bytes + `VoiceConfig` in, text out), `voice:list-models` (lists `{baseUrl}/models` for the Settings dropdown), and `voice:log-event` (PWA-side voice intent/endpoint events sent back to the agent's JSONL voice log). **Streaming (WebRTC)**: `voice:rtc-connect` (SDP offer→answer) and `voice:rtc-ice` (PWA→agent trickle ICE); the agent pushes its own ICE candidates on the `/voice/rtc/{sessionId}` subscription. The agent proxies a Whisper-compatible API (no browser CORS limit; OpenAI works). `VoiceConfig` (key/baseUrl + separate `transcribeModel` for batch and `streamModel` for realtime) is the PWA's synced single source of truth and travels in each request; the agent persists nothing. The PWA may add the runtime-only `transcriptionLocale=zh-TW` hint when its active locale is Traditional Chinese; batch ASR sends `language=zh` plus a Traditional Chinese prompt, while realtime ASR sends the regional `zh-tw` hint and the same style context. A recvonly audio transceiver carries daemon TTS PCM to the browser. Streaming ASR downsamples mic input to 24 kHz mono PCM16 and sends binary frames over the ordered **DataChannel**. Chromium and desktop Safari use AudioWorklet; Firefox and iOS/iPadOS use the ScriptProcessor fallback because those engines can expose a live mic track without pulling the Worklet graph or producing PCM frames. The PWA copies PCM frames into a per-composer recovery buffer before transport; when an utterance stops it persists the raw PCM (or the batch Blob) in a local-only IndexedDB `voice-recovery` store. Failed utterances stay as explicit retry/discard cards and streaming retries replay the retained chunks in their original order; successful transcription or user discard removes the draft. Recovery drafts are keyed by session id (or project id for Add New), never synced between PWAs, and are distinct from the LRU blob cache. JSON `VoiceDcMessage` frames carry `start`/`stop`, the selected `audioTransport`, transcript-confirmed `interrupt-playback`, server-VAD `speech`, `transcript`, TTS `playback`, and `error`. The daemon can also ingest `media-track` frames when explicitly selected, without mixing both transports. The PWA treats streaming `transcript.final` as ASR fragments and waits for an intent endpoint before sending one combined `voice-agent:utterance`. The `voice:rtc-*` verbs are wired directly via `bus.onCommand` in `service/run.ts` (`wireVoiceStream`), **not** through `LEGACY_BUS_VERBS`, because they push ICE asynchronously. `@roamhq/wrtc` is an optional, lazily-loaded native dep. **The input mode is user-selected** (`VoiceConfig.mode`: `streaming` | `batch`) — there is no automatic fallback between them. `streaming` needs `audio.streaming` (wrtc) + the P2P link (STUN-only, no TURN). The link is established **mic-first on the user's first tap** — the PWA invokes `getUserMedia` synchronously in the tap stack, before IndexedDB/prewarm/signaling awaits, and acquiring the mic before the SDP offer makes Safari/iOS expose real host ICE candidates. A stuck media-permission promise times out and its late stream is stopped so the same composer can retry without navigation. If a tapped attempt still can't connect (e.g. no TURN across NAT/CGNAT), the mic shows a "live voice unavailable" tooltip after that attempt; `batch` needs `audio.transcription`. The composer hides the mic when the selected mode isn't supported on that machine. |
 | `voice-agent:` | Voice intermediary ("AI coworker"). `voice-agent:attach` (bring up the reloadable brain worker for a session + `VoiceConfig`), `voice-agent:detach`, `voice-agent:utterance` (final STT transcript in; the spoken reply streams back asynchronously), `voice-agent:fetch-audio` (fallback synthesized audio by id — metadata-first, never inlined in the push), and `voice-agent:reload` (restart only the intermediary child, then restore attached sessions). Wired through `LEGACY_BUS_VERBS` + the `MessageHandler` switch. The agent pushes `VoiceAgentEvent` (`state`/`speak`/`action`/`trace`/`runtime`/`error`) on `/sessions/:sessionId/voice-agent`; `speak.streamed` tells a new PWA that audio was already delivered by the WebRTC track so it must not fetch/play the fallback. Trace entries expose observable model inputs/outputs and tool execution, not private chain-of-thought. See section two "Voice Intermediary". |
 | `systemd:` | Linux-only `quicksave.service` user-unit install/uninstall/status (see `docs/references/agent-cli.md`) |
 | `bus:frame` | MessageBus envelope (transports opaque bus frames; see `packages/message-bus`) |
@@ -831,6 +886,7 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 | Type | Direction | Bus Equivalent | Description |
 |---|---|---|---|
 | — | Agent→PWA push | `bus.subscribe('/sessions/history')` | Full snapshot of historical sessions + incremental updates (replaces the now-removed `claude:list-sessions` command, avoiding races with `/sessions/active`) |
+| `claude:auth-status` | PWA→Agent | `bus.command('claude:auth-status', {})` | Re-run the selected machine's sanitized Claude CLI authentication check |
 | `claude:start` | PWA→Agent | `bus.command('claude:start', …)` | Start a new session. `attachmentIds?` resolved from staging |
 | `claude:resume` | PWA→Agent | `bus.command('claude:resume', …)` | Resume a session. `attachmentIds?` resolved from staging; `interruptCurrentTurn?` interrupts the active turn before sending |
 | `claude:steer-queued` | PWA→Agent | `bus.command('claude:steer-queued', …)` | Steer or expedite the first queued prompt; `interruptCurrentTurn?` cancels the active turn so the queued prompt runs next |
@@ -850,7 +906,14 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 | — | Agent→PWA push | `bus.subscribe('/sessions/:id/cards')` → `{kind: 'card', event}` / `{kind: 'stream-end', result}` | The old `claude:card-event` / `claude:card-stream-end` / `claude:user-input-request` have all moved to this path (CardBuilder carries the input request inside the pendingInput overlay) |
 | — | Agent→PWA push | `bus.subscribe('/sessions/active')` | Replaces the removed `claude:active-sessions` command and `claude:session-updated` push |
 | — | Agent→PWA push | `bus.subscribe('/preferences')` | Replaces the removed `claude:get-preferences` command and `claude:preferences-updated` push |
+| — | Agent→PWA snapshot | `bus.subscribe('/claude/auth')` | Machine-local Claude login gate; contains no account identity fields |
 | — | Agent→PWA push | `bus.subscribe('/sessions/config')` | Config dict for all sessions (replaces the removed `session:get-config` command; for one-shot reads use `bus.getSnapshot('/sessions/config')`) |
+
+`ClaudeUserInputRequestPayload.presentation: 'inline_follow_up'` identifies a
+non-blocking Codex input request. The card stream carries its pending state and
+the resolved card update carries `answer` or `dismissed`; no normal chat-send
+command is emitted for either outcome. Selecting an option only changes local
+card state; the PWA resolves the request only when the user presses Send.
 | — | Agent→PWA push | `bus.subscribe('/repos/commit-summary')` | AI commit summary state for all repos (replaces the removed `ai:commit-summary:get` command) |
 | — | Agent→PWA push | `bus.subscribe('/codex/quota')` | Agent-wide Codex quota snapshot (`5h` / `7d` windows only). The agent owns the app-server query and refreshes after Codex turns or when a subscriber finds the cache older than 5 minutes |
 | `bus:frame` | Bidirectional | — | MessageBus envelope: payload is `ClientFrame` / `ServerFrame` (sub / unsub / cmd / snap / upd / result / sub-error) |
@@ -890,6 +953,8 @@ Cards are the smallest unit of display in the PWA, assembled by `StreamCardBuild
 type Card = {
   id: string;
   type: CardType;
+  // nativeItemId is provider metadata used to place supplemental cards after
+  // their original native item when a history page is reconstructed.
   // ... different fields per type
 };
 
@@ -900,12 +965,19 @@ type CardType =
   | 'tool_call'           // Tool call (with result)
   | 'subagent'            // Subagent execution block
   | 'system'              // System message
-  | 'recovery_suggested'; // One-tap recovery action (e.g. /compact) emitted
+  | 'recovery_suggested'  // One-tap recovery action (e.g. /compact) emitted
                           // when the SDK provider detects a poison pattern
                           // ("PDF too large", "Prompt is too long", …) in
                           // assistant text — not persisted to JSONL, lives
                           // only in in-memory cards so it disappears after
                           // the session unsticks
+  | 'follow_up_question'; // Optional Codex follow-up. It originates from experimental
+                          // item/tool/requestUserInput with isBlocking:false;
+                          // its selected or typed answer resolves the
+                          // app-server request without a new user turn, then
+                          // remains visible with the answer or dismissed state.
+                          // Its historyAnchorItemId (with a turn fallback)
+                          // restores its original dialogue position on reload.
 ```
 
 **PWA XSS threat model**: normal agent/model output reaching a card is not
@@ -951,6 +1023,20 @@ claudeStore.ts
   sandboxEnabled / contextWindow
   sessionConfigs: Record<sessionId, Record<key, ConfigValue>>
 
+connectionStore.ts
+  agentConnections: Record<agentId, AgentConnectionState>
+  // Runtime connection status, errors, online presence, retry counts, and
+  // handshake progress belong to each machine. Keep disconnected entries so
+  // their status remains inspectable; do not persist live connectivity across
+  // browser reloads. The top-level fields mirror only the active machine.
+  // Peer lifecycle events update their source agent; shared relay loss updates
+  // all tracked agents. A peer disconnect demotes only that agent's sessions.
+  // Session/project feedback selects its owning agent explicitly. Background
+  // reconnects never trigger the full-screen explicit-connect overlay.
+  // Each AgentConnectionState owns its Codex and OpenCode model catalogs.
+  // Handshake and refresh snapshots update only their source machine; session
+  // model pickers resolve the owning `machineAgentId`, never a global last-writer.
+
 codexQuotaStore.ts
   byAgent: Record<agentId, CodexQuotaSnapshot | null>
   // Mirrors `/codex/quota` snapshots per connected machine. The PWA composer
@@ -987,6 +1073,10 @@ For the detailed threat model and key derivation see `docs/guidelines/sync-secur
 expect a bus getter that is already scoped to the intended agent. `getAgentId`
 lets git operations compare in-flight responses against the same owner agent
 even if `WebSocketClient.activeAgentId` changes while the command is pending.
+`useCodexLogin(agentId?)` likewise accepts the selected project's owner agent;
+when omitted, it falls back to the active agent for single-machine views.
+`useClaudeAuth(agentId?)` follows the same rule and mirrors the sanitized
+`/claude/auth` snapshot. Account identity fields never leave the daemon.
 
 ```typescript
 // Session operations
@@ -1031,6 +1121,7 @@ App.tsx
     │   ├── SubagentBlockMessage # chat/SubagentBlockMessage.tsx ('subagent')
     │   ├── SystemMessage    #   chat/SystemMessage.tsx      ('system')
     │   └── RecoverySuggestedMessage # chat/RecoverySuggestedMessage.tsx ('recovery_suggested')
+    │   └── FollowUpQuestionMessage # chat/FollowUpQuestionMessage.tsx ('follow_up_question')
     └── (textarea + send)    # Inline composer inside ClaudePanel; not a separate component
 ```
 

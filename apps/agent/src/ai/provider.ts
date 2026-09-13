@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment, CardEvent, CardStreamEnd, ConfigValue, ContextUsageBreakdown, NativeSessionSummary, SessionQueueState, SlashCommandInfo } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, Card, CardEvent, CardHistoryResponse, CardStreamEnd, ConfigValue, ContextUsageBreakdown, NativeSessionSummary, SessionQueueState, SlashCommandInfo } from '@sumicom/quicksave-shared';
 import type { StreamCardBuilder } from './cardBuilder.js';
 
 export const CLAUDE_PERMISSION_MODES = [
@@ -69,7 +69,16 @@ export function isFullAccessPermission(agentId: AgentId, level: PermissionLevel)
     : level === 'bypassPermissions';
 }
 
-export type ProviderHistoryMode = 'claude-jsonl' | 'memory';
+export type ProviderHistoryMode = 'claude-jsonl' | 'memory' | 'codex-thread' | 'opencode-thread';
+
+/** A provider-native session list can be narrowed to one or more project paths. */
+export interface NativeSessionListOptions {
+  cwd?: string | readonly string[];
+}
+
+/** Where a provider's archive flag is durably owned. Providers without a
+ * native archive API use the session registry as a compatibility polyfill. */
+export type ProviderArchiveStorage = 'native' | 'registry';
 
 /** Represents a running provider session. */
 export interface ProviderSession {
@@ -81,6 +90,9 @@ export interface ProviderSession {
   /** Optional provider-native permission switch. OpenCode uses this to
    * toggle client-side auto approval without restarting its server session. */
   setPermissionMode?(level: PermissionLevel): void | Promise<void>;
+  /** Optional provider-native archive operation performed through this live
+   * session's writer lease. */
+  setArchived?(archived: boolean): void | Promise<void>;
   /** Optional — `terminalManager` terminal id when this provider owns a PTY
    *  the PWA should render alongside the structured card stream. Only the
    *  `claude-terminal` provider sets this today. SessionManager copies it into
@@ -130,6 +142,14 @@ export interface ProviderUserInputRequest {
   title?: string;
   message?: string;
   options?: Array<{ key: string; label: string; description?: string }>;
+  /** Render a non-blocking Codex user-input request as an inline question
+   * instead of a generic tool-call permission card. */
+  presentation?: 'inline_follow_up';
+  /** Codex's request_user_input `isOther` flag. */
+  allowFreeText?: boolean;
+  /** Native item after which a supplemental user-input card belongs when
+   * history is reconstructed from the provider's own store. */
+  historyAnchorItemId?: string;
   /** Interactive prompts such as Codex request_user_input must always reach
    * the user even in permissive modes. */
   skipAutoApprove?: boolean;
@@ -265,6 +285,11 @@ export type ProbeResult = {
 export interface CodingAgentProvider {
   readonly id: AgentId;
   readonly historyMode: ProviderHistoryMode;
+  /** True when this provider's native history API is legacy/incomplete and
+   * Quicksave's persisted cards must be used instead. */
+  usesLocalCardHistory?(): Promise<boolean>;
+  recoverLegacyCardHistory?(sessionId: string, cwd: string): Promise<Card[]>;
+  getLegacyHistoryWatermark?(sessionId: string, cwd: string): Promise<string | undefined>;
   /** Display name surfaced in handshake metadata and `agent:probe` responses.
    *  Optional so providers compile without metadata; the probe path falls
    *  back to {@link DEFAULT_AGENT_LABELS} when omitted. */
@@ -286,11 +311,27 @@ export interface CodingAgentProvider {
    *  Called when the user clicks the compact button (prompt === '/compact').
    *  `model` is the provider/model id the session was spawned with. */
   compact?(sessionId: string, opts?: { cwd?: string; model?: string }): Promise<void>;
+  /** Defaults to `registry`, preserving archive support for legacy providers. */
+  readonly archiveStorage?: ProviderArchiveStorage;
+  /** Archive or restore the provider-native durable session, when supported. */
+  archiveSession?(sessionId: string, opts?: { cwd?: string }): Promise<void>;
+  unarchiveSession?(sessionId: string, opts?: { cwd?: string }): Promise<void>;
 
   /** Optional capability probe. Providers that omit it advertise only `id`
    *  and `label` in the `availableProviders` list (with zero capabilities). */
   probeProvider?(): Promise<ProbeResult>;
 
   /** Optional provider-native session discovery for sessions not yet tracked in Quicksave's registry. */
-  listNativeSessions?(opts?: { cwd?: string }): Promise<NativeSessionSummary[]>;
+  listNativeSessions?(opts?: NativeSessionListOptions): Promise<NativeSessionSummary[]>;
+  /** Look up one native session without enumerating the provider's full session list. */
+  getNativeSession?(sessionId: string, opts?: { cwd?: string }): Promise<NativeSessionSummary | undefined>;
+  /** Rebuild render cards from the provider's durable history on demand. */
+  loadCardHistory?(opts: {
+    sessionId: string;
+    cwd: string;
+    offset: number;
+    limit: number;
+    /** Provider-native opaque cursor for the next older history page. */
+    cursor?: string;
+  }): Promise<CardHistoryResponse>;
 }

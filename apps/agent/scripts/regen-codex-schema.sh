@@ -72,6 +72,7 @@ TOP_LEVEL=(
   "ForcedLoginMethod.ts"
   "ParsedCommand.ts"
   "PlanType.ts"
+  "PathUri.ts"
   "RealtimeConversationVersion.ts"
   "RealtimeOutputModality.ts"
   "RealtimeVoice.ts"
@@ -81,8 +82,10 @@ TOP_LEVEL=(
   "Resource.ts"
   "ResourceContent.ts"
   "ResourceTemplate.ts"
+  "ResponseItemId.ts"
   "ReviewDecision.ts"
   "SessionSource.ts"
+  "SleepItem.ts"
   "InternalSessionSource.ts"
   "Settings.ts"
   "SubAgentSource.ts"
@@ -103,11 +106,12 @@ TOP_LEVEL=(
   "McpServerInfo.ts"
   "ModeKind.ts"
   "NetworkPolicyRuleAction.ts"
-  "AmazonBedrockCredentialSource.ts"
   "ImageGenerationItem.ts"
+  "ImageGenerationFailure.ts"
   "InternalChatMessageMetadataPassthrough.ts"
   "LegacyAppPathString.ts"
   "WebSearchItem.ts"
+  "ConversationTextRole.ts"
 )
 
 if ! command -v codex >/dev/null; then

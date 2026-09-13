@@ -75,6 +75,12 @@ describe('StreamCardBuilder', () => {
       const assistant = builder.assistantText('reply') as CardAddEvent;
       const thinking = builder.thinkingBlock('reasoning') as CardAddEvent;
       const tool = builder.toolUse('Bash', { command: 'ls' }, 'tu-turn') as CardAddEvent;
+      const followUp = builder.followUpQuestion('What should I do next?', {
+      options: ['Commit'],
+      allowFreeText: true,
+      historyAnchorItemId: 'item-follow-up-source',
+      pendingInput: makePendingInput('req-follow-up'),
+      }) as CardAddEvent;
 
       expect(turnId).toBeTruthy();
       expect(user.card.turnId).toBe(turnId);
@@ -85,6 +91,16 @@ describe('StreamCardBuilder', () => {
       expect(thinking.card.isTurnIntermediate).toBe(true);
       expect(tool.card.turnId).toBe(turnId);
       expect(tool.card.isTurnIntermediate).toBe(true);
+      expect(followUp.card).toMatchObject({
+        type: 'follow_up_question',
+        question: 'What should I do next?',
+        options: ['Commit'],
+        allowFreeText: true,
+        historyAnchorItemId: 'item-follow-up-source',
+        turnId,
+      });
+      expect(followUp.card.isTurnIntermediate).toBeUndefined();
+      expect(followUp.card.pendingInput).toMatchObject({ requestId: 'req-follow-up' });
     });
 
     it('uses an explicit provider turn id for subsequent cards', () => {
@@ -520,6 +536,21 @@ describe('StreamCardBuilder', () => {
     });
   });
 
+  describe('followUpQuestion()', () => {
+    it('keeps the selected answer after the app-server reply resolves', () => {
+      builder.followUpQuestion('How detailed?', {
+        options: ['Concise', 'Detailed'],
+        pendingInput: makePendingInput('req-follow-up-remove'),
+      });
+
+      const event = builder.resolveFollowUpQuestion('req-follow-up-remove', 'Detailed') as CardUpdateEvent;
+      expect(event).toMatchObject({
+        type: 'update',
+        patch: { pendingInput: null, answer: 'Detailed' },
+      });
+    });
+  });
+
   // ── clearPendingInput ────────────────────────────────────────────────────
 
   describe('clearPendingInput()', () => {
@@ -623,6 +654,15 @@ describe('StreamCardBuilder', () => {
       expect(card.toolUseId).toBe('tu-agent');
       expect(card.status).toBe('running');
       expect(card.toolUseCount).toBe(0);
+    });
+
+    it('can keep subsequent parent tool calls outside a concurrent subagent', () => {
+      builder.subagentStart('Concurrent child', 'agent-concurrent', undefined, { nestToolCalls: false });
+      const toolEvent = builder.toolUse('Bash', { command: 'pwd' }, 'parent-tool') as CardAddEvent;
+
+      expect(toolEvent.card).toMatchObject({ type: 'tool_call', toolUseId: 'parent-tool' });
+      const subagent = builder.getCards().find((card) => card.type === 'subagent') as SubagentCard;
+      expect(subagent.toolCalls).toBeUndefined();
     });
 
     it('uses agentId as toolUseId when toolUseId is undefined', () => {

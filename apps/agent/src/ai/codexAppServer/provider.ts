@@ -1,12 +1,16 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment, ConfigValue, NativeSessionSummary, SlashCommandInfo, SubagentActivity } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, Card, CardHistoryResponse, ConfigValue, NativeSessionSummary, SlashCommandInfo, SubagentActivity } from '@sumicom/quicksave-shared';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { StreamCardBuilder } from '../cardBuilder.js';
+import { StreamCardBuilder } from '../cardBuilder.js';
 import { persistAttachments } from '../attachmentStore.js';
-import { buildSandboxMcpServerConfig, SANDBOX_MCP_NAME } from '../sandboxMcp.js';
+import {
+  buildSandboxMcpServerConfig,
+  REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME,
+  SANDBOX_MCP_NAME,
+} from '../sandboxMcp.js';
 import type {
   CodexPermissionPreset,
   AgentCapabilities,
@@ -16,6 +20,7 @@ import type {
   ProviderSession,
   ResumeSessionOpts,
   StartSessionOpts,
+  NativeSessionListOptions,
 } from '../provider.js';
 import { normalizePermissionLevelForAgent } from '../provider.js';
 import { makeQueuedUserPrompt, queueStateFor, type QueuedUserPrompt } from '../queuedUserPrompts.js';
@@ -32,6 +37,11 @@ import {
 } from './approvalMapping.js';
 import { detectCodexVersion, spawnAppServer, type AppServerHandle } from './processManager.js';
 import { RuntimeOverrideStore, type RuntimeOverrides } from './overrideStore.js';
+import {
+  NativeExecCompletionTracker,
+  type ReadyNativeExecCompletion,
+} from './nativeExecCompletionTracker.js';
+import { RpcError, RpcTransportClosedError } from './rpcClient.js';
 import { TokenAccounting, type CumulativeUsageSeed } from './tokenAccounting.js';
 import type { AskForApproval } from './schema/generated/v2/AskForApproval.js';
 import type { SandboxMode } from './schema/generated/v2/SandboxMode.js';
@@ -40,6 +50,9 @@ import type { ThreadStartResponse } from './schema/generated/v2/ThreadStartRespo
 import type { Thread } from './schema/generated/v2/Thread.js';
 import type { ThreadItem } from './schema/generated/v2/ThreadItem.js';
 import type { ThreadReadResponse } from './schema/generated/v2/ThreadReadResponse.js';
+import type { ThreadTurnsListResponse } from './schema/generated/v2/ThreadTurnsListResponse.js';
+import type { ThreadItemsListResponse } from './schema/generated/v2/ThreadItemsListResponse.js';
+import type { ThreadItemEntry } from './schema/generated/v2/ThreadItemEntry.js';
 import type { ThreadListParams } from './schema/generated/v2/ThreadListParams.js';
 import type { ThreadListResponse } from './schema/generated/v2/ThreadListResponse.js';
 import type { ThreadResumeParams } from './schema/generated/v2/ThreadResumeParams.js';
@@ -50,6 +63,7 @@ import type { TurnInterruptParams } from './schema/generated/v2/TurnInterruptPar
 import type { TurnSteerParams } from './schema/generated/v2/TurnSteerParams.js';
 import type { TurnStartedNotification } from './schema/generated/v2/TurnStartedNotification.js';
 import type { TurnCompletedNotification } from './schema/generated/v2/TurnCompletedNotification.js';
+import type { TurnStatus } from './schema/generated/v2/TurnStatus.js';
 import type { ThreadTokenUsageUpdatedNotification } from './schema/generated/v2/ThreadTokenUsageUpdatedNotification.js';
 import type { ApprovalsReviewer } from './schema/generated/v2/ApprovalsReviewer.js';
 import type { SkillsListParams } from './schema/generated/v2/SkillsListParams.js';
@@ -79,6 +93,7 @@ import type { ThreadGoalUpdatedNotification } from './schema/generated/v2/Thread
 import type { JsonValue } from './schema/generated/serde_json/JsonValue.js';
 import { codexProtocolPreview } from './protocolLog.js';
 import { codexServerRequestInputId } from './serverRequestIds.js';
+import { CODEX_SCHEMA_PINNED_VERSION } from './version.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
 const __aiDir = dirname(__ownDir);
@@ -90,6 +105,112 @@ const CODEX_BUILT_IN_SLASH_COMMANDS: SlashCommandInfo[] = [
   },
 ];
 
+// `thread/resume` normally completes immediately after the app-server
+// handshake.  Without a bound here, a single malformed or temporarily locked
+// thread leaves SessionManager's cold-resume flight in memory forever and the
+// PWA can only appear to be loading.  The caller shuts the handle down on
+// rejection, so timing out also releases the child process for a clean retry.
+const CODEX_THREAD_RESUME_TIMEOUT_MS = 45_000;
+const CODEX_TURN_START_TIMEOUT_MS = 45_000;
+const NATIVE_COMPLETION_BATCH_MAX = 8;
+const NATIVE_COMPLETION_OUTPUT_MAX_CHARS = 4_000;
+const NATIVE_COMPLETION_COMMAND_MAX_CHARS = 1_000;
+const NATIVE_COMPLETION_MAX_DEFINITIVE_RETRIES = 1;
+
+/** Experimental augmentation switch. It changes only completion delivery;
+ * native Bash, approvals, Guardian, and sandbox settings remain untouched. */
+export function isNativeCompletionFeatureEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.QUICKSAVE_CODEX_BACKGROUND_COMPLETIONS?.trim() !== '0';
+}
+
+/** `turn/start.toolOutput` is source-verified for this schema line only. */
+export function supportsNativeCompletionProtocol(
+  cliVersion: string | null | undefined,
+  pinnedVersion = CODEX_SCHEMA_PINNED_VERSION,
+): boolean {
+  const cli = parseCodexSemver(cliVersion);
+  const pinned = parseCodexSemver(pinnedVersion);
+  return cli !== null
+    && pinned !== null
+    && cli.major === pinned.major
+    && cli.minor === pinned.minor
+    && cli.patch >= pinned.patch;
+}
+
+function parseCodexSemver(value: string | null | undefined): { major: number; minor: number; patch: number } | null {
+  if (typeof value !== 'string') return null;
+  const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(value.trim());
+  if (!match) return null;
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
+}
+
+type NativeCompletionEnvelope = {
+  version: 1;
+  events: Array<{
+    eventId: string;
+    originTurnId: string;
+    commandExecutionId: string;
+    processHandle: string | null;
+    source: 'unifiedExecStartup';
+    status: 'completed' | 'failed';
+    exitCode: number | null;
+    durationMs: number | null;
+    command: string;
+    cwd: string;
+    output: { text: string | null; excerptTruncatedByQuicksave: boolean };
+  }>;
+};
+
+export function nativeCompletionEnvelope(completions: readonly ReadyNativeExecCompletion[]): NativeCompletionEnvelope {
+  return {
+    version: 1,
+    events: completions.map((completion) => {
+      const output = truncateNativeCompletionText(completion.aggregatedOutput, NATIVE_COMPLETION_OUTPUT_MAX_CHARS);
+      return {
+        eventId: completion.eventId,
+        originTurnId: completion.originTurnId,
+        commandExecutionId: completion.commandExecutionId,
+        processHandle: completion.processHandle,
+        source: 'unifiedExecStartup',
+        status: completion.status,
+        exitCode: completion.exitCode,
+        durationMs: completion.durationMs,
+        command: truncateNativeCompletionText(completion.command, NATIVE_COMPLETION_COMMAND_MAX_CHARS).text ?? '',
+        cwd: completion.cwd,
+        output: { text: output.text, excerptTruncatedByQuicksave: output.truncated },
+      };
+    }),
+  };
+}
+
+function truncateNativeCompletionText(value: string | null, maxChars: number): { text: string | null; truncated: boolean } {
+  if (value === null || value.length <= maxChars) return { text: value, truncated: false };
+  return { text: value.slice(0, maxChars), truncated: true };
+}
+
+function isUnsupportedToolOutputError(error: RpcError): boolean {
+  return error.code === -32601 || /(?:toolOutput|tool output).*(?:unknown|unsupported|invalid)|(?:unknown|unsupported).*(?:toolOutput|tool output)/i.test(error.message);
+}
+
+/** Codex owns the cross-application lease; callers must not retry by force. */
+export class CodexSessionLockedError extends Error {
+  readonly code = 'session_locked';
+  constructor() {
+    super('This Codex session is already open in another application. Close it there, then try again.');
+    this.name = 'CodexSessionLockedError';
+  }
+}
+
+function isCodexSessionLockedError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return /(?:already\s+(?:open|opened|in use).*application|application.{0,40}(?:already\s+)?(?:open|opened|in use)|another application|(?:session|thread).{0,40}(?:locked|in use))/i.test(text);
+}
+
+function isCodexSessionNotFoundError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return /(?:no rollout found|thread .* not found|unknown thread|no such thread|invalid thread id)/i.test(text);
+}
+
 /**
  * Codex provider driving the JSON-RPC v2 `app-server` protocol.
  * Phase 2 of the migration — see
@@ -100,7 +221,8 @@ const CODEX_BUILT_IN_SLASH_COMMANDS: SlashCommandInfo[] = [
  */
 export class CodexAppServerProvider implements CodingAgentProvider {
   readonly id: AgentId = 'codex';
-  readonly historyMode: ProviderHistoryMode = 'memory';
+  readonly historyMode: ProviderHistoryMode = 'codex-thread';
+  readonly archiveStorage = 'native' as const;
   readonly label = 'Codex';
 
   async probeProvider() {
@@ -139,6 +261,7 @@ export class CodexAppServerProvider implements CodingAgentProvider {
       response = await handle.rpc.request<ThreadStartResponse>('thread/start', threadStartParams);
     } catch (err) {
       await handle.shutdown();
+      if (isCodexSessionLockedError(err)) throw new CodexSessionLockedError();
       throw err;
     }
 
@@ -180,12 +303,16 @@ export class CodexAppServerProvider implements CodingAgentProvider {
     const resumeParams = buildThreadResumeParams(opts);
     let response: ThreadResumeResponse;
     try {
-      response = await handle.rpc.request<ThreadResumeResponse>('thread/resume', resumeParams);
+      response = await withTimeout(
+        handle.rpc.request<ThreadResumeResponse>('thread/resume', resumeParams),
+        'thread/resume',
+        CODEX_THREAD_RESUME_TIMEOUT_MS,
+      );
     } catch (err) {
       await handle.shutdown();
+      if (isCodexSessionLockedError(err)) throw new CodexSessionLockedError();
       throw err;
     }
-
     const tokens = new TokenAccounting();
     tokens.seedFromLastTurn(loadCumulativeSeed(opts.sessionId));
     const overrideStore = new RuntimeOverrideStore();
@@ -213,7 +340,7 @@ export class CodexAppServerProvider implements CodingAgentProvider {
     return { sessionId: response.thread.id, session };
   }
 
-  async listNativeSessions(opts?: { cwd?: string }): Promise<NativeSessionSummary[]> {
+  async listNativeSessions(opts?: NativeSessionListOptions): Promise<NativeSessionSummary[]> {
     const handle = await spawnCodexNativeListAppServer();
     try {
       const [activeThreads, archivedThreads] = await Promise.all([
@@ -235,6 +362,63 @@ export class CodexAppServerProvider implements CodingAgentProvider {
       await handle.shutdown().catch(() => {});
     }
   }
+
+  async getNativeSession(sessionId: string): Promise<NativeSessionSummary | undefined> {
+    const handle = await spawnCodexNativeListAppServer();
+    try {
+      const response = await handle.rpc.request<ThreadReadResponse>(
+        'thread/read',
+        { threadId: sessionId, includeTurns: false },
+      );
+      if (response.thread.ephemeral || response.thread.parentThreadId !== null) return undefined;
+      return codexThreadToNativeSession(response.thread, false);
+    } catch (error) {
+      if (isCodexSessionNotFoundError(error)) return undefined;
+      throw error;
+    } finally {
+      await handle.shutdown().catch(() => {});
+    }
+  }
+
+  async archiveSession(sessionId: string): Promise<void> {
+    const handle = await spawnCodexNativeListAppServer();
+    try {
+      await handle.rpc.request('thread/archive', { threadId: sessionId });
+    } finally {
+      await handle.shutdown().catch(() => {});
+    }
+  }
+
+  async unarchiveSession(sessionId: string): Promise<void> {
+    const handle = await spawnCodexNativeListAppServer();
+    try {
+      await handle.rpc.request('thread/unarchive', { threadId: sessionId });
+    } finally {
+      await handle.shutdown().catch(() => {});
+    }
+  }
+
+  /** Read-only history path: it never resumes or takes ownership of a thread. */
+  async loadCardHistory(opts: { sessionId: string; cwd: string; offset: number; limit: number; cursor?: string }): Promise<CardHistoryResponse> {
+    const handle = await spawnCodexNativeListAppServer();
+    try {
+      return await readCodexHistoryPage(handle, opts);
+    } finally {
+      await handle.shutdown().catch(() => {});
+    }
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, operation: string, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${operation} timed out after ${Math.ceil(timeoutMs / 1000)}s`));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
 }
 
 function scheduleInitialTurn(
@@ -283,6 +467,8 @@ export interface CodexAppServerProviderSession extends ProviderSession {
   sendControlRequest(subtype: string, params?: Record<string, unknown>): Promise<unknown>;
   /** Re-read Codex thread goal state and mirror it into session config. */
   refreshGoalConfig(): Promise<void>;
+  /** Archive through the app-server instance that already owns this thread. */
+  setArchived(archived: boolean): Promise<void>;
 }
 
 export class CodexAppServerSession implements CodexAppServerProviderSession {
@@ -306,6 +492,16 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   private unsubscribeTransportClose: (() => void) | null = null;
   private readonly knownSubagentThreadIds = new Set<string>();
   private readonly subagentRefreshes = new Map<string, Promise<void>>();
+  /** Public-event-only tracker. A native command must also be explicitly
+   * registered through Quicksave's MCP tool before it can wake the agent. */
+  private readonly nativeExecCompletionTracker: NativeExecCompletionTracker;
+  private nativeCompletionFeatureEnabled: boolean;
+  private nativeCompletionSchedulerQueued = false;
+  private nativeCompletionDeliveryInFlight = false;
+  private nativeCompletionPausedByInterrupt = false;
+  private nativeCompletionSuppressedByArchiveOrClose = false;
+  private nativeCompletionGoalAllowsContinuation = true;
+  private readonly nativeCompletionRetryCounts = new Map<string, number>();
 
   constructor(args: SessionArgs) {
     this.handle = args.handle;
@@ -315,6 +511,20 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     this.cardBuilder = args.cardBuilder;
     this.callbacks = args.callbacks;
     this.cardBuilder.updateSessionId(this.threadId);
+    this.nativeCompletionFeatureEnabled = isNativeCompletionFeatureEnabled()
+      && supportsNativeCompletionProtocol(this.handle.cliVersion);
+    if (isNativeCompletionFeatureEnabled() && !this.nativeCompletionFeatureEnabled) {
+      console.warn(
+        `[codex-app] background completion registration disabled session=${this.threadId.slice(0, 8)}: ` +
+        `requires Codex ${CODEX_SCHEMA_PINNED_VERSION} schema line (installed ${this.handle.cliVersion || 'unknown'})`,
+      );
+    }
+    this.nativeExecCompletionTracker = new NativeExecCompletionTracker({
+      threadId: this.threadId,
+      onCoverageDegraded: (reason) => {
+        console.warn(`[codex-app] background completion coverage degraded session=${this.threadId.slice(0, 8)}: ${reason}`);
+      },
+    });
 
     // Wire approval requests through the standard ProviderCallbacks bridge.
     this.handle.rpc.setServerRequestHandler(async (req) => {
@@ -331,6 +541,8 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     this.handle.child.once('exit', () => {
       if (this.exited) return;
       this.exited = true;
+      this.nativeCompletionSuppressedByArchiveOrClose = true;
+      this.nativeExecCompletionTracker.suppressAll();
       args.onExitedFire?.(this.threadId, this);
     });
   }
@@ -340,6 +552,9 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   }
 
   sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
+    // Explicit user activity resumes completion-driven continuation; a user
+    // prompt still always has priority over the runtime completion inbox.
+    this.nativeCompletionPausedByInterrupt = false;
     const activeTurnId = this.currentTurnId;
     if (activeTurnId) {
       void this.steerOrQueue(prompt, attachments, activeTurnId);
@@ -350,6 +565,9 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
 
   interruptThenSendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
     if (this.currentTurnId) this.interrupt();
+    // This user-authored follow-up is explicit activity. Registrations from
+    // the interrupted turn were already suppressed by interrupt().
+    this.nativeCompletionPausedByInterrupt = false;
     this.enqueueOrRunTurn(prompt, attachments);
   }
 
@@ -419,6 +637,21 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     await this.refreshGoalConfigAndReturn();
   }
 
+  async setArchived(archived: boolean): Promise<void> {
+    await this.handle.rpc.request(
+      archived ? 'thread/archive' : 'thread/unarchive',
+      { threadId: this.threadId },
+    );
+    if (archived) {
+      this.nativeCompletionSuppressedByArchiveOrClose = true;
+      this.nativeExecCompletionTracker.suppressAll();
+    } else {
+      // Previously suppressed events remain suppressed. Future registrations
+      // can become eligible after this explicit user action.
+      this.nativeCompletionSuppressedByArchiveOrClose = false;
+    }
+  }
+
   async listSlashCommands(opts?: { cwd?: string; forceReload?: boolean }): Promise<SlashCommandInfo[]> {
     const response = await this.handle.rpc.request<SkillsListResponse>(
       'skills/list',
@@ -436,6 +669,10 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     const turnId = this.currentTurnId;
     if (!turnId) return;
     this.interruptedTurnIds.add(turnId);
+    this.nativeCompletionPausedByInterrupt = true;
+    // Do not wait for a best-effort later turn/completed notification: a
+    // manual interruption must never leave a registered completion eligible.
+    this.nativeExecCompletionTracker.observeTurnCompleted(this.threadId, turnId, 'interrupted');
     void this.handle.rpc
       .request<unknown>(
         'turn/interrupt',
@@ -450,6 +687,8 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   async kill(): Promise<void> {
     if (this.exited) return;
     this.exited = true;
+    this.nativeCompletionSuppressedByArchiveOrClose = true;
+    this.nativeExecCompletionTracker.suppressAll();
     this.pendingTurns = [];
     this.unsubscribeSessionNotifications?.();
     this.unsubscribeSessionNotifications = null;
@@ -477,7 +716,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
    * → turn/start → wait for the session-routed turn consumer to settle. */
   async runTurn(prompt: string, attachments?: readonly Attachment[]): Promise<void> {
     if (this.exited) return;
-    if (this.running) {
+    if (this.running || this.nativeCompletionDeliveryInFlight) {
       // Queue — only one turn at a time, preserving FIFO order.
       this.pendingTurns.push(makeQueuedUserPrompt(prompt, attachments));
       this.callbacks.onQueueStateChange?.(this.threadId);
@@ -493,6 +732,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       }
     } finally {
       this.running = false;
+      this.scheduleNativeCompletionDelivery();
     }
   }
 
@@ -540,7 +780,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
 
   private enqueueOrRunTurn(prompt: string, attachments?: readonly Attachment[]): void {
     if (this.exited) return;
-    if (this.running || this.currentTurnId) {
+    if (this.running || this.startingRunTurn || this.currentTurnId || this.nativeCompletionDeliveryInFlight) {
       this.pendingTurns.push(makeQueuedUserPrompt(prompt, attachments));
       this.callbacks.onQueueStateChange?.(this.threadId);
       return;
@@ -622,7 +862,11 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       this.prestartedRunTurnId = null;
       let response: TurnStartResponse;
       try {
-        response = await this.handle.rpc.request<TurnStartResponse>('turn/start', params);
+        response = await withTimeout(
+          this.handle.rpc.request<TurnStartResponse>('turn/start', params),
+          'turn/start',
+          CODEX_TURN_START_TIMEOUT_MS,
+        );
       } finally {
         this.startingRunTurn = false;
       }
@@ -644,6 +888,9 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       // Adapter wasn't able to settle (e.g., turn/start itself failed).
       // Emit a synthetic failure stream-end matching the SDK behavior.
       const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('turn/start timed out')) {
+        await this.handle.shutdown().catch(() => {});
+      }
       this.callbacks.emitStreamEnd({
         sessionId: this.threadId,
         success: false,
@@ -750,6 +997,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       this.cardBuilder.clearCards();
     }
     this.callbacks.onTurnSettled?.(this.threadId);
+    this.scheduleNativeCompletionDelivery();
   }
 
   private drainPendingTurnsAfterObservedTurn(): void {
@@ -759,6 +1007,127 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     const next = this.pendingTurns.shift()!;
     this.callbacks.onQueueStateChange?.(this.threadId);
     void this.runTurn(next.prompt, next.attachments);
+  }
+
+  /**
+   * Uses the existing session scheduler for explicit host-originated native
+   * completion notices. It never sends a user prompt or calls turn/steer.
+   */
+  private scheduleNativeCompletionDelivery(): void {
+    if (this.nativeCompletionSchedulerQueued) return;
+    this.nativeCompletionSchedulerQueued = true;
+    queueMicrotask(() => {
+      this.nativeCompletionSchedulerQueued = false;
+      void this.drainNativeCompletionInbox();
+    });
+  }
+
+  private async drainNativeCompletionInbox(): Promise<void> {
+    if (
+      this.exited
+      || !this.nativeCompletionFeatureEnabled
+      || this.nativeCompletionPausedByInterrupt
+      || this.nativeCompletionSuppressedByArchiveOrClose
+      || !this.nativeCompletionGoalAllowsContinuation
+      || this.nativeCompletionDeliveryInFlight
+      || this.running
+      || this.startingRunTurn
+      || this.currentTurnId
+      || this.pendingTurns.length > 0
+    ) return;
+
+    const completions = this.nativeExecCompletionTracker.takeReady(NATIVE_COMPLETION_BATCH_MAX);
+    if (completions.length === 0) return;
+
+    this.nativeCompletionDeliveryInFlight = true;
+    try {
+      await this.runNativeCompletionTurn(completions);
+    } finally {
+      this.nativeCompletionDeliveryInFlight = false;
+      this.drainPendingTurnsAfterObservedTurn();
+      this.scheduleNativeCompletionDelivery();
+    }
+  }
+
+  private async runNativeCompletionTurn(completions: readonly ReadyNativeExecCompletion[]): Promise<void> {
+    const cb = this.cardBuilder;
+    const eventIds = completions.map((completion) => completion.eventId);
+    let turnId: string | null = null;
+    const drained = this.overrideStore.drain();
+    cb.startNewTurn();
+
+    try {
+      this.startingRunTurn = true;
+      this.prestartedRunTurnId = null;
+      let response: TurnStartResponse;
+      try {
+        response = await withTimeout(
+          this.handle.rpc.request<TurnStartResponse>('turn/start', {
+            threadId: this.threadId,
+            input: [],
+            toolOutput: {
+              namespace: 'quicksave',
+              name: 'background_execution_completed',
+              output: JSON.stringify(nativeCompletionEnvelope(completions)),
+            },
+            ...drained,
+          } satisfies TurnStartParams),
+          'turn/start toolOutput',
+          CODEX_TURN_START_TIMEOUT_MS,
+        );
+      } finally {
+        this.startingRunTurn = false;
+      }
+      this.nativeExecCompletionTracker.markAccepted(eventIds);
+      this.overrideStore.commit();
+      for (const eventId of eventIds) this.nativeCompletionRetryCounts.delete(eventId);
+      turnId = response.turn.id;
+      this.currentTurnId = turnId;
+      cb.setCurrentTurnId(turnId);
+      await this.beginTurnConsumer(turnId, { managedByRunTurn: true }).result;
+    } catch (error) {
+      this.handleNativeCompletionDeliveryError(completions, error);
+    } finally {
+      this.startingRunTurn = false;
+      const lifecycleTurnId = turnId ?? this.prestartedRunTurnId;
+      this.prestartedRunTurnId = null;
+      await this.finishTurnLifecycle(lifecycleTurnId);
+    }
+  }
+
+  private handleNativeCompletionDeliveryError(
+    completions: readonly ReadyNativeExecCompletion[],
+    error: unknown,
+  ): void {
+    const eventIds = completions.map((completion) => completion.eventId);
+    const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof RpcError) {
+      if (isUnsupportedToolOutputError(error)) {
+        this.nativeCompletionFeatureEnabled = false;
+        this.nativeExecCompletionTracker.markSuppressed(eventIds);
+        console.warn(
+          `[codex-app] disabled background completion delivery session=${this.threadId.slice(0, 8)}: app-server rejected turn/start.toolOutput`,
+        );
+        return;
+      }
+      const retryable = eventIds.filter((eventId) => {
+        const retries = this.nativeCompletionRetryCounts.get(eventId) ?? 0;
+        if (retries >= NATIVE_COMPLETION_MAX_DEFINITIVE_RETRIES) return false;
+        this.nativeCompletionRetryCounts.set(eventId, retries + 1);
+        return true;
+      });
+      this.nativeExecCompletionTracker.requeue(retryable);
+      this.nativeExecCompletionTracker.markSuppressed(eventIds.filter((eventId) => !retryable.includes(eventId)));
+      console.warn(`[codex-app] background completion delivery rejected session=${this.threadId.slice(0, 8)}: ${message}`);
+      return;
+    }
+    if (error instanceof RpcTransportClosedError || this.exited || this.handle.rpc.isClosed) {
+      this.nativeExecCompletionTracker.markSuppressed(eventIds);
+      return;
+    }
+    // A timeout can race server-side acceptance. Do not duplicate a turn.
+    this.nativeExecCompletionTracker.markSuppressed(eventIds);
+    console.warn(`[codex-app] background completion delivery uncertain session=${this.threadId.slice(0, 8)}: ${message}`);
   }
 
   private maybeAutoSteerQueuedAtToolCall(notification: { method: string; params: unknown }, turnId: string | null): void {
@@ -817,6 +1186,8 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   }
 
   private handleTransportClosed(): void {
+    this.nativeCompletionSuppressedByArchiveOrClose = true;
+    this.nativeExecCompletionTracker.suppressAll();
     this.closeTurnConsumersAsInterrupted();
   }
 
@@ -834,6 +1205,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
         this.scheduleSubagentRefresh(notificationThreadId);
         return;
       }
+      this.observeNativeExecCompletionNotification(notification);
       this.observeTokenUsageNotification(notification);
       const turnId = this.ensureTurnConsumerForNotification(notification);
       this.dispatchTurnNotification(notification, turnId);
@@ -863,6 +1235,56 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     }
   }
 
+  /**
+   * Observe root-thread public events before per-turn card routing. Native
+   * completion delivery stays dormant unless the agent invoked the dedicated
+   * Quicksave MCP registration tool for the exact process handle.
+   */
+  private observeNativeExecCompletionNotification(notification: { method: string; params: unknown }): void {
+    if (!this.nativeCompletionFeatureEnabled || !notificationBelongsToThread(notification.params, this.threadId)) return;
+
+    switch (notification.method) {
+      case 'item/started': {
+        const params = notification.params as { threadId: string; turnId: string; item: ThreadItem };
+        this.nativeExecCompletionTracker.observeItemStarted(params.threadId, params.turnId, params.item);
+        this.observeNativeCompletionRegistration(params.threadId, params.turnId, params.item);
+        return;
+      }
+      case 'item/completed': {
+        const params = notification.params as { threadId: string; turnId: string; item: ThreadItem };
+        this.nativeExecCompletionTracker.observeItemCompleted(params.threadId, params.turnId, params.item);
+        // Some app-server releases can coalesce quick MCP lifecycle events;
+        // accepting the completed item as well avoids depending on item/started
+        // delivery while tracker-level item-id deduplication prevents repeats.
+        this.observeNativeCompletionRegistration(params.threadId, params.turnId, params.item);
+        this.scheduleNativeCompletionDelivery();
+        return;
+      }
+      case 'turn/completed': {
+        const params = notification.params as TurnCompletedNotification;
+        const status: TurnStatus = this.interruptedTurnIds.has(params.turn.id)
+          ? 'interrupted'
+          : params.turn.status;
+        this.nativeExecCompletionTracker.observeTurnCompleted(params.threadId, params.turn.id, status);
+        this.scheduleNativeCompletionDelivery();
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  private observeNativeCompletionRegistration(threadId: string, turnId: string, item: ThreadItem): void {
+    const handle = nativeCompletionRegistrationHandle(item);
+    if (handle === undefined) return;
+    const result = this.nativeExecCompletionTracker.registerProcessHandle(threadId, turnId, item.id, handle);
+    if (result !== 'registered' && result !== 'alreadyRegistered' && result !== 'pendingCorrelation') {
+      console.warn(
+        `[codex-app] ignored background completion registration session=${this.threadId.slice(0, 8)} reason=${result}`,
+      );
+    }
+  }
+
   private observeSubagentThreads(notification: { method: string; params: unknown }): void {
     if (notification.method !== 'item/started' && notification.method !== 'item/completed') return;
     const item = (notification.params as { item?: ThreadItem }).item;
@@ -882,8 +1304,8 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     if (this.subagentRefreshes.has(threadId)) return;
     const refresh = new Promise<void>((resolve) => setTimeout(resolve, 200))
       .then(async () => {
-        const response = await this.handle.rpc.request<ThreadReadResponse>('thread/read', { threadId, includeTurns: true });
-        const event = this.cardBuilder.subagentDetails(threadId, subagentThreadSnapshot(response.thread));
+        const thread = await this.readSubagentThread(threadId);
+        const event = this.cardBuilder.subagentDetails(threadId, subagentThreadSnapshot(thread));
         if (event) this.callbacks.emitCardEvent(event);
       })
       .catch((err) => {
@@ -891,6 +1313,50 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       })
       .finally(() => this.subagentRefreshes.delete(threadId));
     this.subagentRefreshes.set(threadId, refresh);
+  }
+
+  /** Paginated threads reject `thread/read { includeTurns: true }`. Hydrate
+   * sub-agent activity through the dedicated cursored endpoints instead. */
+  private async readSubagentThread(threadId: string): Promise<Thread> {
+    const response = await this.handle.rpc.request<ThreadReadResponse>('thread/read', { threadId, includeTurns: false });
+    const turns = await this.readAllThreadPages<ThreadTurnsListResponse>(
+      'thread/turns/list',
+      { threadId, sortDirection: 'asc', itemsView: 'notLoaded' },
+    );
+    let entries: ThreadItemEntry[];
+    try {
+      entries = (await this.readAllThreadPages<ThreadItemsListResponse>(
+        'thread/items/list',
+        { threadId, sortDirection: 'asc' },
+      )).flatMap((page) => page.data);
+    } catch (error) {
+      if (!isUnsupportedCodexMethod(error)) throw error;
+      return this.readLegacyThread(threadId);
+    }
+    return hydrateThreadItems(response.thread, turns.flatMap((page) => page.data), entries);
+  }
+
+  /** Compatibility path for pre-pagination app-server versions. */
+  private async readLegacyThread(threadId: string): Promise<Thread> {
+    const response = await this.handle.rpc.request<ThreadReadResponse>(
+      'thread/read',
+      { threadId, includeTurns: true },
+    );
+    return response.thread;
+  }
+
+  private async readAllThreadPages<T extends { nextCursor: string | null }>(
+    method: 'thread/turns/list' | 'thread/items/list',
+    params: Record<string, unknown>,
+  ): Promise<T[]> {
+    const pages: T[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: T = await this.handle.rpc.request<T>(method, { ...params, cursor });
+      pages.push(page);
+      cursor = page.nextCursor;
+    } while (cursor);
+    return pages;
   }
 
   private observeTokenUsageNotification(notification: { method: string; params: unknown }): void {
@@ -944,10 +1410,14 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   }
 
   private emitGoalConfig(goal: ThreadGoal): void {
+    this.nativeCompletionGoalAllowsContinuation = goal.status === 'active';
+    if (this.nativeCompletionGoalAllowsContinuation) this.scheduleNativeCompletionDelivery();
     this.callbacks.onSessionConfigPatch?.(this.threadId, codexGoalToConfigPatch(goal));
   }
 
   private emitGoalClearedConfig(): void {
+    this.nativeCompletionGoalAllowsContinuation = true;
+    this.scheduleNativeCompletionDelivery();
     this.callbacks.onSessionConfigPatch?.(this.threadId, clearedGoalConfigPatch());
   }
 
@@ -1002,6 +1472,10 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     requestId: string,
   ): Promise<ToolRequestUserInputResponse> {
     const questions = params.questions ?? [];
+    // Codex emits this request for the CLI's optional bottom-of-screen prompt.
+    // It still expects a serverRequest/resolved response; `isBlocking` only
+    // means the model may keep working while the request remains pending.
+    const isInlineFollowUp = params.isBlocking === false && questions.length === 1;
     const decision = await this.callbacks.handlePermissionRequest(this.threadId, {
       requestId,
       inputType: 'question',
@@ -1010,8 +1484,18 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
         questions: questions.map(codexToolQuestionToPromptQuestion),
       },
       toolUseId: params.itemId,
+      historyAnchorItemId: params.itemId,
       title: questions[0]?.question ?? 'Codex needs input',
       message: questions.length > 1 ? 'Codex needs answers before it can continue.' : undefined,
+      ...(isInlineFollowUp ? {
+        presentation: 'inline_follow_up' as const,
+        allowFreeText: questions[0]?.isOther,
+        options: questions[0]?.options?.map((option) => ({
+          key: option.label,
+          label: option.label,
+          description: option.description || undefined,
+        })),
+      } : {}),
       skipAutoApprove: true,
     });
     if (decision.action === 'deny') return { answers: {} };
@@ -1083,7 +1567,36 @@ function threadIdFromParams(params: unknown): string | null {
   return typeof candidate === 'string' ? candidate : null;
 }
 
-function subagentThreadSnapshot(thread: Thread): {
+function nativeCompletionRegistrationHandle(item: ThreadItem): unknown | undefined {
+  if (
+    item.type !== 'mcpToolCall'
+    || item.server !== SANDBOX_MCP_NAME
+    || item.tool !== REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME
+    || typeof item.arguments !== 'object'
+    || item.arguments === null
+    || Array.isArray(item.arguments)
+  ) return undefined;
+  return (item.arguments as Record<string, unknown>).processHandle;
+}
+
+export function hydrateThreadItems(thread: Thread, turns: readonly Thread['turns'][number][], entries: readonly ThreadItemEntry[]): Thread {
+  const itemsByTurn = new Map<string, ThreadItem[]>();
+  for (const { turnId, item } of entries) {
+    const items = itemsByTurn.get(turnId) ?? [];
+    items.push(item);
+    itemsByTurn.set(turnId, items);
+  }
+  return {
+    ...thread,
+    turns: turns.map((turn) => ({
+      ...turn,
+      items: itemsByTurn.get(turn.id) ?? turn.items,
+      itemsView: 'full',
+    })),
+  };
+}
+
+export function subagentThreadSnapshot(thread: Thread): {
   description: string;
   status: 'running' | 'completed' | 'failed' | 'stopped';
   summary?: string;
@@ -1123,6 +1636,30 @@ function subagentThreadSnapshot(thread: Thread): {
           detail: item.error?.message ?? undefined,
           status: item.status === 'failed' ? 'failed' : item.status === 'completed' ? 'completed' : 'running',
         });
+      } else if (item.type === 'dynamicToolCall') {
+        const output = (item.contentItems ?? [])
+          .flatMap((content: { type: string; text?: string }) => content.type === 'inputText' && content.text ? [content.text] : [])
+          .join('\n')
+          .trim();
+        activities.push({
+          id: item.id,
+          type: 'tool',
+          title: item.namespace ? `${item.namespace}:${item.tool}` : item.tool,
+          detail: truncateSubagentActivityDetail(output || JSON.stringify(item.arguments)),
+          status: item.status === 'failed' || item.success === false
+            ? 'failed'
+            : item.status === 'completed'
+              ? 'completed'
+              : 'running',
+        });
+      } else if (item.type === 'webSearch') {
+        activities.push({
+          id: item.id,
+          type: 'tool',
+          title: 'Web search',
+          detail: truncateSubagentActivityDetail(webSearchActivityDetail(item)),
+          status: 'completed',
+        });
       }
     }
   }
@@ -1138,6 +1675,29 @@ function subagentThreadSnapshot(thread: Thread): {
     statusMessage: thread.status.type,
     activities: activities.slice(-80),
   };
+}
+
+function truncateSubagentActivityDetail(detail: string): string | undefined {
+  const normalized = detail.trim();
+  if (!normalized) return undefined;
+  const maxLength = 4_000;
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
+function webSearchActivityDetail(item: Extract<ThreadItem, { type: 'webSearch' }>): string {
+  if (item.query) return item.query;
+  if (!item.action) return '';
+  switch (item.action.type) {
+    case 'search':
+      return item.action.query ?? item.action.queries?.join(', ') ?? '';
+    case 'openPage':
+      return item.action.url ?? '';
+    case 'findInPage':
+      return [item.action.pattern, item.action.url].filter(Boolean).join(' in ');
+    case 'other':
+      return '';
+  }
+  return '';
 }
 
 function notificationBelongsToThread(params: unknown, threadId: string): boolean {
@@ -1213,6 +1773,7 @@ interface PromptQuestion {
   header?: string;
   options?: Array<{ label: string; description?: string }>;
   multiSelect?: boolean;
+  isOther?: boolean;
   isSecret?: boolean;
 }
 
@@ -1233,6 +1794,7 @@ function codexToolQuestionToPromptQuestion(question: ToolRequestUserInputQuestio
       label: option.label,
       description: option.description || undefined,
     })),
+    isOther: question.isOther || undefined,
     isSecret: question.isSecret || undefined,
   };
 }
@@ -1495,10 +2057,241 @@ function spawnCodexNativeListAppServer(): Promise<AppServerHandle> {
   return spawnAppServer(codexAppServerInit());
 }
 
+const CODEX_HISTORY_CURSOR_PREFIX = 'codex-turn-page:';
+const CODEX_HISTORY_TURN_PAGE_MAX = 20;
+const unsupportedHistoryMethods = new Set<string>();
+
+type CodexHistoryCursor = {
+  v: 1;
+  turnCursor: string;
+};
+
+/**
+ * Read one bounded native turn page. A page is deliberately turn-based rather
+ * than card-based: one persisted item can fan out into multiple UI cards, so
+ * calculating an exact card total would require scanning the whole thread.
+ */
+export async function readCodexHistoryPage(
+  handle: AppServerHandle,
+  opts: { sessionId: string; cwd: string; offset: number; limit: number; cursor?: string },
+): Promise<CardHistoryResponse> {
+  const metadata = await handle.rpc.request<ThreadReadResponse>(
+    'thread/read',
+    { threadId: opts.sessionId, includeTurns: false },
+  );
+  const cursor = parseCodexHistoryCursor(opts.cursor);
+  const turnCursor = cursor?.turnCursor ?? null;
+  const turnLimit = Math.max(1, Math.min(CODEX_HISTORY_TURN_PAGE_MAX, Math.ceil(Math.max(1, opts.limit) / 4)));
+  const mode = metadata.thread.historyMode;
+
+  if (unsupportedHistoryMethods.has(historyCapabilityKey(handle, mode, 'thread/turns/list'))) {
+    const legacy = await handle.rpc.request<ThreadReadResponse>(
+      'thread/read',
+      { threadId: opts.sessionId, includeTurns: true },
+    );
+    const cards = projectCodexThreadCards(opts.sessionId, opts.cwd, legacy.thread);
+    return { cards, total: cards.length, hasMore: false };
+  }
+
+  let page: ThreadTurnsListResponse;
+  try {
+    page = await readCodexTurnPage(handle, opts.sessionId, mode, turnCursor, turnLimit);
+  } catch (error) {
+    if (!isUnsupportedCodexMethod(error)) throw error;
+    unsupportedHistoryMethods.add(historyCapabilityKey(handle, mode, 'thread/turns/list'));
+    // Extremely old app-server / thread combinations have no cursored turn
+    // API. This is the sole remaining full-history compatibility path.
+    const legacy = await handle.rpc.request<ThreadReadResponse>(
+      'thread/read',
+      { threadId: opts.sessionId, includeTurns: true },
+    );
+    const cards = projectCodexThreadCards(opts.sessionId, opts.cwd, legacy.thread);
+    return { cards, total: cards.length, hasMore: false };
+  }
+
+  let turns = page.data;
+  if (mode === 'paginated') {
+    try {
+      const entries = (await Promise.all(turns.map(async (turn) => (
+        readAllPersistedPages<ThreadItemsListResponse>(handle, 'thread/items/list', {
+          threadId: opts.sessionId,
+          turnId: turn.id,
+          sortDirection: 'asc',
+        })
+      )))).flatMap((turnPages) => turnPages.flatMap((itemPage) => itemPage.data));
+      turns = hydrateThreadItems(metadata.thread, turns, entries).turns;
+    } catch (error) {
+      if (!isUnsupportedCodexMethod(error)) throw error;
+      unsupportedHistoryMethods.add(historyCapabilityKey(handle, mode, 'thread/items/list'));
+      // A partially upgraded server can paginate turns but not items. Ask for
+      // full items on this bounded turn page instead of hydrating the thread.
+      page = await handle.rpc.request<ThreadTurnsListResponse>('thread/turns/list', {
+        threadId: opts.sessionId,
+        cursor: turnCursor,
+        limit: turnLimit,
+        sortDirection: 'desc',
+        itemsView: 'full',
+      });
+      turns = page.data;
+    }
+  }
+
+  const cards = projectCodexThreadCards(opts.sessionId, opts.cwd, {
+    ...metadata.thread,
+    turns: [...turns].reverse(),
+  });
+  const nextCursor = page.nextCursor ? encodeCodexHistoryCursor(page.nextCursor) : undefined;
+  return {
+    cards,
+    // Exact card totals are intentionally unknown until every native turn has
+    // been read, which we deliberately never do merely to populate a counter.
+    hasMore: !!nextCursor,
+    ...(nextCursor ? { nextCursor } : {}),
+  };
+}
+
+async function readCodexTurnPage(
+  handle: AppServerHandle,
+  threadId: string,
+  historyMode: Thread['historyMode'],
+  cursor: string | null,
+  limit: number,
+): Promise<ThreadTurnsListResponse> {
+  const itemsView = historyMode === 'legacy'
+    || unsupportedHistoryMethods.has(historyCapabilityKey(handle, historyMode, 'thread/items/list'))
+    ? 'full'
+    : 'notLoaded';
+  return handle.rpc.request<ThreadTurnsListResponse>('thread/turns/list', {
+    threadId,
+    cursor,
+    limit,
+    sortDirection: 'desc',
+    itemsView,
+  });
+}
+
+function historyCapabilityKey(
+  handle: AppServerHandle,
+  historyMode: Thread['historyMode'],
+  method: 'thread/turns/list' | 'thread/items/list',
+): string {
+  return `${handle.cliVersion}\u0000${historyMode}\u0000${method}`;
+}
+
+function parseCodexHistoryCursor(cursor: string | undefined): CodexHistoryCursor | undefined {
+  if (!cursor?.startsWith(CODEX_HISTORY_CURSOR_PREFIX)) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor.slice(CODEX_HISTORY_CURSOR_PREFIX.length), 'base64url').toString('utf8')) as Partial<CodexHistoryCursor>;
+    return parsed.v === 1 && typeof parsed.turnCursor === 'string' ? { v: 1, turnCursor: parsed.turnCursor } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function encodeCodexHistoryCursor(turnCursor: string): string {
+  return `${CODEX_HISTORY_CURSOR_PREFIX}${Buffer.from(JSON.stringify({ v: 1, turnCursor } satisfies CodexHistoryCursor)).toString('base64url')}`;
+}
+
+/** JSON-RPC -32601 means this Codex app-server predates a method. */
+export function isUnsupportedCodexMethod(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && (error as { code?: unknown }).code === -32601;
+}
+
+async function readAllPersistedPages<T extends { nextCursor: string | null }>(
+  handle: AppServerHandle,
+  method: 'thread/turns/list' | 'thread/items/list',
+  params: Record<string, unknown>,
+): Promise<T[]> {
+  const pages: T[] = [];
+  let cursor: string | null = null;
+  do {
+    const page: T = await handle.rpc.request<T>(method, { ...params, cursor });
+    pages.push(page);
+    cursor = page.nextCursor;
+  } while (cursor);
+  return pages;
+}
+
+/** Build a stable final-state UI projection from persisted Codex items. */
+export function projectCodexThreadCards(sessionId: string, cwd: string, thread: Thread): Card[] {
+  const builder = new StreamCardBuilder(sessionId, cwd);
+  const nativeItemByCardId = new Map<string, string>();
+  for (const turn of thread.turns) {
+    builder.startNewTurn(turn.id);
+    for (const item of turn.items) {
+      const before = new Set(builder.getCards().map((card) => card.id));
+      projectCodexItem(builder, item);
+      // One native item can render several visual cards (for example a file
+      // change with multiple paths). Keep all of them as an anchor target for
+      // supplemental user-input records; the merge picks the final one.
+      for (const card of builder.getCards()) {
+        if (!before.has(card.id)) nativeItemByCardId.set(card.id, item.id);
+      }
+    }
+    for (const event of builder.markTurnCompleted(turn.id)) void event;
+  }
+  // StreamCardBuilder sequence IDs are intentionally ephemeral. A history
+  // page begins a fresh builder, so retain the same visual projection but
+  // derive page-independent IDs from the native turn and its card position.
+  const cardIndexByTurn = new Map<string, number>();
+  return builder.getCards().map((card) => {
+    const turnKey = card.turnId ?? 'thread';
+    const index = (cardIndexByTurn.get(turnKey) ?? 0) + 1;
+    cardIndexByTurn.set(turnKey, index);
+    return {
+      ...card,
+      id: `${sessionId}:codex:${turnKey}:${index}`,
+      ...(nativeItemByCardId.get(card.id) ? { nativeItemId: nativeItemByCardId.get(card.id) } : {}),
+    } as Card;
+  });
+}
+
+function projectCodexItem(builder: StreamCardBuilder, item: ThreadItem): void {
+  const emit = (event: unknown) => { void event; };
+  switch (item.type) {
+    case 'userMessage':
+      emit(builder.userMessage(item.content.map((part: any) => part.text ?? '').filter(Boolean).join('\n')));
+      return;
+    case 'agentMessage':
+      if (item.text) emit(builder.assistantText(item.text));
+      emit(builder.finalizeAssistantText());
+      return;
+    case 'plan':
+      if (item.text) emit(builder.thinkingBlock(item.text));
+      return;
+    case 'reasoning':
+      if (item.summary.length || item.content.length) emit(builder.thinkingBlock([...item.summary, ...item.content].join('\n')));
+      return;
+    case 'commandExecution':
+      emit(builder.toolUse('Bash', { command: item.command }, item.id));
+      emit(builder.toolResult(item.id, item.aggregatedOutput ?? '', item.status === 'failed' || item.status === 'declined'));
+      return;
+    case 'mcpToolCall':
+      emit(builder.toolUse(`mcp__${item.server}__${item.tool}`, (item.arguments ?? {}) as Record<string, unknown>, item.id));
+      emit(builder.toolResult(item.id, item.error ? JSON.stringify(item.error) : JSON.stringify(item.result ?? ''), !!item.error));
+      return;
+    case 'contextCompaction':
+      emit(builder.systemMessage('Context compacted', 'compacted'));
+      return;
+    default:
+      return;
+  }
+}
+
 function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promise<AppServerHandle> {
   return spawnAppServer(
     codexAppServerInit(),
     {
+      // Codex resolves project config and plugins before handling
+      // thread/resume. Keep its process CWD aligned with the thread CWD;
+      // passing `cwd` only in the RPC params is too late for that setup.
+      cwd: opts.cwd,
+      // This experimental feature enables request_user_input in Default mode.
+      // It is intentionally per-process, so Quicksave does not mutate the
+      // user's persistent Codex configuration.
+      globalArgs: ['--enable', 'default_mode_request_user_input'],
       extraArgs: buildCodexSandboxMcpConfigArgs({
         cwd: opts.cwd,
         sessionId: 'sessionId' in opts ? opts.sessionId : undefined,
@@ -1510,7 +2303,7 @@ function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promis
 
 async function listCodexThreads(
   handle: AppServerHandle,
-  cwd: string | undefined,
+  cwd: string | readonly string[] | undefined,
   archived: boolean,
 ): Promise<Thread[]> {
   const threads: Thread[] = [];
@@ -1521,20 +2314,27 @@ async function listCodexThreads(
       limit: 100,
       sortKey: 'updated_at',
       sortDirection: 'desc',
-      cwd: cwd ?? null,
+      cwd: typeof cwd === 'string' ? cwd : cwd ? [...cwd] : null,
       archived,
     };
     const response = await handle.rpc.request<ThreadListResponse>('thread/list', params);
     threads.push(
-      ...response.data.filter((thread) =>
-        !thread.ephemeral &&
-        thread.parentThreadId === null &&
-        (!cwd || thread.cwd === cwd)
-      ),
+      ...response.data.filter((thread) => isListableCodexThread(thread, cwd)),
     );
     cursor = response.nextCursor;
   } while (cursor);
   return threads;
+}
+
+/** Only root threads in the requested project paths belong in session history. */
+export function isListableCodexThread(
+  thread: Pick<Thread, 'ephemeral' | 'parentThreadId' | 'cwd'>,
+  cwd?: string | readonly string[],
+): boolean {
+  const matchesCwd = typeof cwd === 'string'
+    ? thread.cwd === cwd
+    : !cwd || cwd.includes(thread.cwd);
+  return !thread.ephemeral && thread.parentThreadId === null && matchesCwd;
 }
 
 function codexThreadToNativeSession(thread: Thread, archived: boolean): NativeSessionSummary {
@@ -1566,6 +2366,7 @@ export function buildCodexSandboxMcpConfigArgs(opts: {
     sessionId: opts.sessionId,
     corrId: opts.corrId,
     includeSandboxBash: false,
+    includeNativeCompletionRegistration: isNativeCompletionFeatureEnabled(),
   });
   return [
     '-c',
@@ -1579,6 +2380,8 @@ export function buildCodexSandboxMcpConfigArgs(opts: {
     '-c',
     `mcp_servers.${SANDBOX_MCP_NAME}.tools.DisplayMarkdownReport.approval_mode="approve"`,
     '-c',
+    `mcp_servers.${SANDBOX_MCP_NAME}.tools.${REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME}.approval_mode="approve"`,
+    '-c',
     `apps.${SANDBOX_MCP_NAME}.default_tools_approval_mode="approve"`,
     '-c',
     `apps.${SANDBOX_MCP_NAME}.default_tools_enabled=true`,
@@ -1590,6 +2393,8 @@ export function buildCodexSandboxMcpConfigArgs(opts: {
     `apps.${SANDBOX_MCP_NAME}.tools.UpdateSessionStatus.approval_mode="approve"`,
     '-c',
     `apps.${SANDBOX_MCP_NAME}.tools.DisplayMarkdownReport.approval_mode="approve"`,
+    '-c',
+    `apps.${SANDBOX_MCP_NAME}.tools.${REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME}.approval_mode="approve"`,
   ];
 }
 

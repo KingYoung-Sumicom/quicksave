@@ -571,6 +571,19 @@ describe('claudeStore', () => {
       expect(s.isActive).toBe(true);
       expect(s.summary).toBe('old');
     });
+
+    it('only demotes sessions for the disconnected machine when scoped', () => {
+      useClaudeStore.getState().setSessions([
+        { sessionId: 'a', summary: 'A', lastModified: 1, isActive: true, isStreaming: true, machineAgentId: 'machine-a' } as any,
+        { sessionId: 'b', summary: 'B', lastModified: 2, isActive: true, isStreaming: true, machineAgentId: 'machine-b' } as any,
+      ]);
+
+      useClaudeStore.getState().clearActiveOnDisconnect('machine-a');
+
+      expect(useClaudeStore.getState().sessions.a.isActive).toBe(false);
+      expect(useClaudeStore.getState().sessions.b.isActive).toBe(true);
+      expect(useClaudeStore.getState().sessions.b.isStreaming).toBe(true);
+    });
   });
 
   // ── attended-session tracking ─────────────────────────────────────────

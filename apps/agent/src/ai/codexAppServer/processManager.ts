@@ -24,6 +24,9 @@ export interface SpawnAppServerOptions {
   cwd?: string;
   /** Extra environment variables. Merged into `process.env`. */
   env?: Record<string, string | undefined>;
+  /** Global Codex CLI args placed before `app-server` (for example,
+   * `--enable feature_name`). */
+  globalArgs?: string[];
   /** Extra CLI args appended after `app-server`. Stdio is the default
    * `--listen`; tests pass nothing here. */
   extraArgs?: string[];
@@ -60,6 +63,14 @@ export function _resetCodexBinCache(): void {
   _codexBin = undefined;
 }
 
+/** Construct CLI arguments while preserving Codex's global-command ordering. */
+export function buildAppServerArgs(
+  globalArgs: readonly string[] = [],
+  extraArgs: readonly string[] = [],
+): string[] {
+  return [...globalArgs, 'app-server', ...extraArgs];
+}
+
 /**
  * Resolve the Codex CLI path once. Background daemons, especially systemd
  * user units, often start with a smaller PATH than the user's shell.
@@ -88,6 +99,26 @@ export function getCodexBin(): string {
 
   _codexBin = 'codex';
   return _codexBin;
+}
+
+/**
+ * Whether `codexBin` is the user-facing command maintained by Codex's
+ * standalone installer. The installer keeps its package cache under
+ * `CODEX_HOME/packages/standalone` and exposes the command from
+ * `CODEX_INSTALL_DIR` (both locations are documented public behavior).
+ */
+export function isStandaloneCodexInstall(
+  codexBin = getCodexBin(),
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const home = env.HOME;
+  if (!home || !isAbsolute(codexBin)) return false;
+
+  const installDir = env.CODEX_INSTALL_DIR ?? join(home, '.local', 'bin');
+  if (codexBin === join(installDir, 'codex')) return true;
+
+  const codexHome = env.CODEX_HOME ?? join(home, '.codex');
+  return codexBin.startsWith(`${join(codexHome, 'packages', 'standalone')}/`);
 }
 
 /**
@@ -171,7 +202,7 @@ export async function spawnAppServer(
 ): Promise<AppServerHandle> {
   const log = opts.log ?? { warn: () => {} };
   const codexBin = opts.codexBin ?? getCodexBin();
-  const args = ['app-server', ...(opts.extraArgs ?? [])];
+  const args = buildAppServerArgs(opts.globalArgs, opts.extraArgs);
   const env = buildCodexCliEnv(
     opts.env ? { ...process.env, ...filterUndefined(opts.env) } : process.env,
     codexBin,

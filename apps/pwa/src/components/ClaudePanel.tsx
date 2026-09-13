@@ -35,10 +35,11 @@ import { useComposerAttachments } from '../hooks/useComposerAttachments';
 import { VoiceTranscriptionOverlay } from './VoiceTranscriptionOverlay';
 import { VoiceRecordingOverlay } from './VoiceRecordingOverlay';
 import { VoiceCapturePreparingOverlay } from './VoiceCapturePreparingOverlay';
+import { VoiceRecoveryDrafts } from './VoiceRecoveryDrafts';
 import type { UseVoiceAgent } from '../hooks/useVoiceAgent';
 import { selectPanelMode, type SessionPanelMode, useSessionRightPanelStore } from '../stores/sessionRightPanelStore';
 
-type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; sandboxed?: boolean; reasoningEffort?: string; fastMode?: boolean; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
+type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; machineAgentId?: string; sandboxed?: boolean; reasoningEffort?: string; fastMode?: boolean; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
 type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean };
 
 interface ClaudePanelProps {
@@ -97,6 +98,15 @@ const DISABLED_VOICE_AGENT: UseVoiceAgent = {
 
 export function shouldReplaceComposerWithVoice(enabled: boolean, panelMode: SessionPanelMode): boolean {
   return enabled && panelMode === 'voice';
+}
+
+export function scrollTopAfterPrepend(
+  previousScrollTop: number,
+  previousScrollHeight: number,
+  nextScrollHeight: number,
+): number | null {
+  const addedHeight = nextScrollHeight - previousScrollHeight;
+  return addedHeight > 0 ? previousScrollTop + addedHeight : null;
 }
 
 function formatMissionTime(ts: number): string {
@@ -551,8 +561,9 @@ export function ClaudePanel({
     });
   }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const connectionState = useConnectionStore((s) => s.state);
-  const agentOnline = useConnectionStore((s) => s.agentOnline);
+  const relayState = useConnectionStore((s) => s.relay.state);
+  const agentConnection = useConnectionStore((s) => agentId ? s.agentConnections[agentId] : undefined);
+  const agentOnline = agentConnection?.online ?? null;
 
   // Load session messages when navigating to a different session (or away from one)
   useEffect(() => {
@@ -586,13 +597,13 @@ export function ClaudePanel({
   // Re-subscribe after agent reconnect: the relay drops all pubsub subscriptions
   // when the agent's WebSocket disconnects. When the agent comes back online and
   // key exchange completes, we must call getCards (which re-subscribes the peer).
-  // This covers both full PWA reconnects (connectionState change) and agent-only
+  // This covers both full PWA reconnects (relayState change) and agent-only
   // relay blips (agentOnline flips false→true while connectionState stays 'connected').
   const prevOnlineRef = useRef(agentOnline);
   useEffect(() => {
     const wasOnline = prevOnlineRef.current;
     prevOnlineRef.current = agentOnline;
-    if (!urlSessionId || connectionState !== 'connected') return;
+    if (!urlSessionId || relayState !== 'connected') return;
     // Agent came back online (was offline or null → true)
     if (agentOnline === true && wasOnline === false) {
       console.log(`[sub:panel] agent reconnected: re-subscribe session=${urlSessionId.slice(0, 8)}`);
@@ -603,7 +614,7 @@ export function ClaudePanel({
       console.log(`[sub:panel] initial load: subscribe session=${urlSessionId.slice(0, 8)}`);
       onGetSessionCards(urlSessionId);
     }
-  }, [agentOnline, connectionState]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [agentOnline, relayState]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Unsubscribe when leaving session view (navigating to session list)
   useEffect(() => {
@@ -773,6 +784,7 @@ export function ClaudePanel({
       } else {
         acknowledged = await onStartSession(isTerminalNewSession ? '' : prompt, {
           agent: selectedAgent,
+          machineAgentId: agentId,
           model: selectedModel,
           permissionMode: selectedPermissionMode,
           sandboxed: sandboxEnabled || undefined,
@@ -813,9 +825,9 @@ export function ClaudePanel({
 
   /**
    * Send a fixed prompt without using the composer input. Used by inline
-   * action cards (recovery_suggested → `/compact`). Resume-only — these
-   * actions are always invoked on an active session, never to start a new
-   * one. Skips the attachment / draft / streaming-state machinery since
+   * recovery action cards (`recovery_suggested` → `/compact`).
+   * Resume-only — these actions are always invoked on an active session,
+   * never to start a new one. Skips attachment / draft machinery since
    * there's no composer state to consume.
    */
   const handleSendQuickPrompt = useCallback(async (prompt: string) => {
@@ -848,12 +860,22 @@ export function ClaudePanel({
     if (!activeSessionId || useClaudeStore.getState().isLoadingHistory || !historyHasMore) return;
     const container = chatContainerRef.current;
     const prevScrollHeight = container?.scrollHeight ?? 0;
+    const prevScrollTop = container?.scrollTop ?? 0;
     // cards.length is only the compatibility offset. The operation hook sends
     // the agent-issued history cursor when the current server supports it.
     await onGetSessionCards(activeSessionId, cards.length);
-    // Restore scroll position so the viewport doesn't jump to top
+    // Preserve the visible content after older cards are inserted above it.
+    // A collapsed page can add no height; in that case, do not touch scrollTop.
     if (container) {
-      container.scrollTop = container.scrollHeight - prevScrollHeight;
+      requestAnimationFrame(() => {
+        if (chatContainerRef.current !== container) return;
+        const nextScrollTop = scrollTopAfterPrepend(
+          prevScrollTop,
+          prevScrollHeight,
+          container.scrollHeight,
+        );
+        if (nextScrollTop !== null) container.scrollTop = nextScrollTop;
+      });
     }
   }, [activeSessionId, historyHasMore, cards.length, onGetSessionCards]);
 
@@ -1027,7 +1049,9 @@ export function ClaudePanel({
 
   // Voice input (streaming-first, batch fallback) — shared with the new-session
   // composer. Transcripts append to the prompt; errors surface as the toast.
-  const voice = useComposerVoice(agentId, commitTranscript, setAttachmentToast);
+  const voice = useComposerVoice(agentId, commitTranscript, setAttachmentToast, {
+    recoveryKey: viewedSessionId ? `session:${viewedSessionId}` : 'new-session:default',
+  });
   const voiceCoworker = voiceAgentProp ?? DISABLED_VOICE_AGENT;
   const sessionPanelMode = useSessionRightPanelStore(selectPanelMode);
   const voiceWorkspaceOpen = shouldReplaceComposerWithVoice(voiceCoworker.enabled, sessionPanelMode);
@@ -1131,9 +1155,11 @@ export function ClaudePanel({
               const sessionStreaming = isStreaming || !!activeSession?.isStreaming;
               const showDots = sessionStreaming && !isResuming && !activeSession?.hasPendingInput;
               if (!showDots) return null;
-              const linkUncertain = connectionState !== 'connected' || agentOnline === false;
+              const linkUncertain = relayState !== 'connected'
+                || agentConnection?.state !== 'connected'
+                || agentOnline === false;
               return linkUncertain ? (
-                <StreamingReconnectIndicator />
+                <StreamingReconnectIndicator agentId={agentId} />
               ) : (
                 <div className="flex items-center gap-1.5 py-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-bounce [animation-delay:0ms]" />
@@ -1144,7 +1170,7 @@ export function ClaudePanel({
             })()}
             {/* New session empty state — inside scrollable container */}
             {newSession && cards.length === 0 && (
-              <NewSessionEmptyState cwd={cwd} />
+              <NewSessionEmptyState cwd={cwd} agentId={agentId} />
             )}
             <div ref={messagesEndRef} />
           </div>
@@ -1403,6 +1429,14 @@ export function ClaudePanel({
                 )
               )}
               {!voiceWorkspaceOpen && voice.arming && <VoiceCapturePreparingOverlay />}
+              {!voiceWorkspaceOpen && (
+                <VoiceRecoveryDrafts
+                  drafts={voice.recoveryDrafts ?? []}
+                  busy={voice.busy}
+                  onRetry={(id) => { void voice.retryRecoveryDraft(id); }}
+                  onDiscard={(id) => { void voice.discardRecoveryDraft(id); }}
+                />
+              )}
               {!voiceWorkspaceOpen && voice.recording && (
                 <VoiceRecordingOverlay onStop={voice.stopListening} onCancel={voice.cancelListening} />
               )}

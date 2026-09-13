@@ -1,6 +1,6 @@
 {
   "name": "quicksave-monorepo",
-  "version": "0.8.24",
+  "version": "0.8.38",
   "private": true,
   "description": "Remote git control PWA with E2E encryption",
   "scripts": {
@@ -14,7 +14,7 @@
     "build:relay": "pnpm --filter quicksave-relay build",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test",
+    "test": "pnpm -r --workspace-concurrency=1 test",
     "test:unit": "pnpm -r test:unit",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "prepare": "git config core.hooksPath scripts"
@@ -46,6 +46,9 @@
     "ws": "^8.18.0"
   },
   "pnpm": {
+    "patchedDependencies": {
+      "@sumicom/ws-relay@0.1.1": "patches/@sumicom__ws-relay@0.1.1.patch"
+    },
     "onlyBuiltDependencies": [
       "better-sqlite3",
       "esbuild",

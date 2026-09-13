@@ -25,6 +25,7 @@ import { MessageBusServer } from '@sumicom/quicksave-message-bus';
 import { MessageHandler } from '../handlers/messageHandler.js';
 import { wireLegacyBusVerbs } from '../handlers/legacyBusAdapter.js';
 import { wireVoiceStream } from '../ai/voiceStream.js';
+import { wireFileRtcStream } from '../files/fileRtcStream.js';
 import { GitOperations } from '../git/operations.js';
 import { IpcServer } from './ipcServer.js';
 import { DebugHttpServer } from './debugHttpServer.js';
@@ -67,6 +68,7 @@ import {
   type SessionHistoryUpdatedPayload,
   type SessionUpdatePayload,
   type CodexLoginState,
+  type ClaudeAuthState,
   type CodexModelInfo,
   type CodexQuotaSnapshot,
   type TerminalSummary,
@@ -123,7 +125,7 @@ function startSessionRegistryWatcher(
 
         try {
           const entry = JSON.parse(readFileSync(path, 'utf-8')) as BroadcastSessionEntry;
-          if (!entry.sessionId || !entry.cwd || entry.archived) continue;
+          if (!entry.sessionId || !entry.cwd || entry.archived || entry.nativeArchived) continue;
           registry.applyExternalActiveEntry(entry);
           const enriched = enrichEntry(entry);
           bus.publish<SessionHistoryUpdatedPayload>('/sessions/history', {
@@ -243,6 +245,9 @@ export async function runDaemon(): Promise<void> {
   const claudeService = messageHandler.getClaudeService();
   const commitSummaryStore = messageHandler.getCommitSummaryStore();
   const voiceIntermediary = messageHandler.getVoiceIntermediary();
+  // Native providers enumerate every session in their own store. Only expose
+  // sessions rooted in a Quicksave-managed coding path to PWA subscribers.
+  const isManagedCodingPath = (cwd: string) => messageHandler.isManagedCodingPath(cwd);
 
   // ── MessageBus subscription paths ─────────────────────────────────────────
   // Each onSubscribe delivers the current state atomically in its `snap`
@@ -267,7 +272,13 @@ export async function runDaemon(): Promise<void> {
   // entry across all cwds; updates publish single upsert/delete events.
   bus.onSubscribe<'/sessions/history', BroadcastSessionEntry[], SessionHistoryUpdatedPayload>(
     '/sessions/history',
-    { snapshot: () => getSessionRegistry().getEntriesForProject().map(enrichEntry) },
+    {
+      snapshot: async () => {
+        return (await claudeService.listSessionHistoryEntries())
+          .filter((entry) => isManagedCodingPath(entry.cwd))
+          .map(enrichEntry);
+      },
+    },
   );
 
   // Per-repo AI commit-summary generation state. Snapshot = every tracked
@@ -294,11 +305,20 @@ export async function runDaemon(): Promise<void> {
         const sessionId = params.sessionId;
         const liveCwd = claudeService.getSessionCwd(sessionId);
         const registry = getSessionRegistry();
-        const cwd =
+        let cwd =
           liveCwd
           ?? registry.findBySessionId(sessionId)?.cwd
           ?? registry.findArchivedBySessionId(sessionId)?.cwd
           ?? '';
+        // Native-only provider sessions are intentionally allowed to exist
+        // without a Quicksave registry entry. Their cards subscription has no
+        // cwd parameter, so recover it from provider-native discovery before
+        // delegating to the history loader.
+        if (!cwd) {
+          cwd = (await claudeService.listNativeSessions())
+            .find((session) => session.sessionId === sessionId)?.cwd
+            ?? '';
+        }
         return claudeService.getCards(sessionId, cwd, 0, 50);
       },
     },
@@ -522,6 +542,15 @@ export async function runDaemon(): Promise<void> {
     bus.publish<CommitSummaryState>('/repos/commit-summary', state);
   });
 
+  // Claude authentication is machine-local. The snapshot runs the official
+  // `claude auth status --json` command and strips account identity fields
+  // before publishing the result to connected PWAs.
+  const claudeAuthManager = messageHandler.getClaudeAuthManager();
+  bus.onSubscribe<'/claude/auth', ClaudeAuthState, never>(
+    '/claude/auth',
+    { snapshot: () => claudeAuthManager.getStatus() },
+  );
+
   // Codex OAuth device-auth state. The PWA subscribes while the login
   // modal is open; `snap` delivers the current state (idle, in-progress,
   // or logged-in) and every subsequent `upd` reflects a transition. The
@@ -583,6 +612,7 @@ export async function runDaemon(): Promise<void> {
   // if it can't load, these verbs return an error and the PWA falls back to the
   // batch `voice:transcribe` path.
   const voiceStream = wireVoiceStream(bus);
+  wireFileRtcStream(bus);
   voiceIntermediary.setSpeechSynthesizer(
     (sessionId, config, text) => voiceStream.synthesizeSpeech(sessionId, config, text),
   );
@@ -598,6 +628,7 @@ export async function runDaemon(): Promise<void> {
   // delivered via the bus (`/sessions/:id/cards` + `/sessions/active`), so the
   // legacy per-session pubsub subscribe/unsubscribe wiring is no longer used.
   messageHandler.onHistoryUpdated = (cwd, entry, action) => {
+    if (!isManagedCodingPath(cwd)) return;
     // For deletes the entry is a tombstone — SQLite join would be noise, and
     // downstream consumers only key off `entry.sessionId` + `action`.
     const enriched = action === 'delete' ? entry : enrichEntry(entry);

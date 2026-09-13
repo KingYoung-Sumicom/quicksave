@@ -27,6 +27,7 @@ const STUN_URL = 'stun:stun.l.google.com:19302';
 const CONNECT_TIMEOUT_MS = 8_000;
 const CAPTURE_FIRST_FRAME_TIMEOUT_MS = 2_500;
 const MICROPHONE_CLAIM_TIMEOUT_MS = 3_000;
+export const MICROPHONE_START_TIMEOUT_MS = 12_000;
 
 // Mic capture constraints (mono + light DSP), shared by the connect-time
 // permission grab (Safari ICE gate) and per-utterance capture.
@@ -34,11 +35,41 @@ const MIC_CONSTRAINTS: MediaStreamConstraints = {
   audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
 };
 
+export function requestVoiceMicrophone(): Promise<MediaStream> {
+  return navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+}
+
+export function stopVoiceMicrophoneWhenReady(streamPromise: Promise<MediaStream>): void {
+  void streamPromise.then((stream) => {
+    stream.getTracks().forEach((track) => track.stop());
+  }).catch(() => undefined);
+}
+
+export async function acquireVoiceMicrophone(
+  streamPromise: Promise<MediaStream> = requestVoiceMicrophone(),
+): Promise<MediaStream> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const timed = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      stopVoiceMicrophoneWhenReady(streamPromise);
+      reject(new Error('Microphone permission request timed out. Please tap the microphone again.'));
+    }, MICROPHONE_START_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([streamPromise, timed]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 export type VoiceStreamState = 'connecting' | 'ready' | 'recording' | 'unavailable' | 'closed';
 
 export interface VoiceStreamCallbacks {
   onPartial(text: string): void;
   onFinal(text: string): void;
+  /** PCM accepted by the local capture graph, before transport. This lets the
+   * caller retain a recovery copy even if the P2P link later fails. */
+  onAudioFrame?(pcm: ArrayBuffer): void;
   onSpeechActivity?(active: boolean): void;
   onRemotePlayback?(active: boolean, streamId: string): void;
   onError(message: string): void;
@@ -69,8 +100,14 @@ export function classifyIceCandidate(candidate: string): IceCandidateType {
   }
 }
 
-export function shouldUseLegacyPcmCapture(userAgent: string): boolean {
-  return /Firefox\//i.test(userAgent);
+export function shouldUseLegacyPcmCapture(userAgent: string, maxTouchPoints = 0): boolean {
+  // Firefox can leave the Worklet graph unpulled. iOS/iPadOS WebKit has a
+  // separate intermittent failure where getUserMedia succeeds and the track
+  // stays live, but AudioWorklet never processes a frame. ScriptProcessor is
+  // deprecated but remains the reliable realtime PCM path on both engines.
+  const ios = /iP(?:hone|ad|od)/i.test(userAgent);
+  const ipadDesktopUa = /Macintosh/i.test(userAgent) && maxTouchPoints > 1;
+  return /Firefox\//i.test(userAgent) || ios || ipadDesktopUa;
 }
 
 function downsampleFloatPcm(input: Float32Array, sourceRate: number): ArrayBuffer {
@@ -81,6 +118,27 @@ function downsampleFloatPcm(input: Float32Array, sourceRate: number): ArrayBuffe
     output[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
   }
   return output.buffer;
+}
+
+function microphoneTrackDebugData(track: MediaStreamTrack): Record<string, unknown> {
+  let settings: MediaTrackSettings = {};
+  try {
+    settings = track.getSettings?.() ?? {};
+  } catch {
+    // Some WebKit versions can throw while a newly granted track settles.
+  }
+  return {
+    readyState: track.readyState,
+    enabled: track.enabled,
+    muted: track.muted,
+    settings: {
+      sampleRate: settings.sampleRate,
+      channelCount: settings.channelCount,
+      echoCancellation: settings.echoCancellation,
+      noiseSuppression: settings.noiseSuppression,
+      autoGainControl: settings.autoGainControl,
+    },
+  };
 }
 
 export interface VoiceRtcDebugEvent {
@@ -173,6 +231,11 @@ export class VoiceStreamSession {
     return this.state;
   }
 
+  isReadyForCapture(): boolean {
+    return (this.state === 'ready' || this.state === 'recording')
+      && this.dc?.readyState === 'open';
+  }
+
   private setState(s: VoiceStreamState) {
     if (this.state === s) return;
     this.state = s;
@@ -218,7 +281,7 @@ export class VoiceStreamSession {
 
   /** Establish the WebRTC connection. Resolves true if ready, false if P2P
    *  could not be established (caller should fall back to batch). */
-  async connect(opts: { acquireMic?: boolean } = {}): Promise<boolean> {
+  async connect(opts: { acquireMic?: boolean; preparedMicrophone?: Promise<MediaStream> } = {}): Promise<boolean> {
     this.debugStart = performance.now();
     this.dbg('info', `connect start (acquireMic=${!!opts.acquireMic})`);
     const bus = getBusForAgent(this.agentId);
@@ -246,11 +309,15 @@ export class VoiceStreamSession {
       }
       this.dbg('info', 'requesting mic (getUserMedia) before building the offer');
       try {
-        this.mediaStream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
-        this.dbg('info', 'mic granted');
-      } catch {
+        this.mediaStream = await acquireVoiceMicrophone(opts.preparedMicrophone);
+        const track = this.mediaStream.getAudioTracks()[0];
+        this.dbg('info', 'mic granted', track ? microphoneTrackDebugData(track) : { audioTrack: 'missing' });
+      } catch (error) {
         this.releaseMicrophone();
-        this.dbg('result', 'unavailable: mic permission denied/unavailable');
+        this.dbg('result', 'unavailable: mic permission denied/unavailable', {
+          errorName: error instanceof DOMException ? error.name : undefined,
+          reason: error instanceof Error ? error.message : String(error),
+        });
         this.setState('unavailable');
         return false;
       }
@@ -392,10 +459,13 @@ export class VoiceStreamSession {
     }
   }
 
-  /** Begin an utterance and send proven Worklet PCM frames for ASR. */
-  startUtterance(preparedContext?: AudioContext): Promise<void> {
+  /** Begin an utterance and send Web Audio PCM frames for ASR. */
+  startUtterance(
+    preparedContext?: AudioContext,
+    preparedMicrophone?: Promise<MediaStream>,
+  ): Promise<void> {
     if (this.startUtterancePromise) return this.startUtterancePromise;
-    const starting = this.startUtteranceOnce(preparedContext);
+    const starting = this.startUtteranceOnce(preparedContext, preparedMicrophone);
     this.startUtterancePromise = starting;
     void starting.then(
       () => { if (this.startUtterancePromise === starting) this.startUtterancePromise = null; },
@@ -404,8 +474,24 @@ export class VoiceStreamSession {
     return starting;
   }
 
-  private async startUtteranceOnce(preparedContext?: AudioContext): Promise<void> {
-    if (this.state !== 'ready' || !this.dc) return;
+  private async startUtteranceOnce(
+    preparedContext?: AudioContext,
+    preparedMicrophone?: Promise<MediaStream>,
+  ): Promise<void> {
+    this.dbg('info', 'capture setup started', {
+      sessionState: this.state,
+      dataChannelState: this.dc?.readyState ?? 'missing',
+      reusedMediaStream: !!this.mediaStream,
+      preparedAudioContext: !!preparedContext,
+      preparedMicrophone: !!preparedMicrophone,
+    });
+    if (!this.isReadyForCapture()) {
+      this.dbg('error', 'capture rejected because session is stale', {
+        sessionState: this.state,
+        dataChannelState: this.dc?.readyState ?? 'missing',
+      });
+      throw new Error('Voice connection is no longer ready. Please try again.');
+    }
     if (this.voiceSessionId) {
       const claim = await this.claimMicrophone();
       if (!claim.granted) {
@@ -414,10 +500,11 @@ export class VoiceStreamSession {
     }
     // Reuse a stream already grabbed at connect() (the Safari ICE-gate path);
     // otherwise acquire it now (the prewarmed path that didn't need it up front).
-    const stream = this.mediaStream ?? (await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS));
+    const stream = this.mediaStream ?? (await acquireVoiceMicrophone(preparedMicrophone));
     const track = stream.getAudioTracks()[0];
     if (!track) throw new Error('Microphone audio track is unavailable.');
     if (track.readyState === 'ended') throw new Error('Microphone audio track ended before capture started.');
+    this.dbg('info', 'microphone stream ready', microphoneTrackDebugData(track));
 
     let startSent = false;
     let firstFrameTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -431,6 +518,12 @@ export class VoiceStreamSession {
       if (ctx.state !== 'running') {
         throw new Error(`Microphone audio context did not start (state: ${ctx.state}).`);
       }
+      this.dbg('info', 'capture AudioContext running', {
+        state: ctx.state,
+        sampleRate: ctx.sampleRate,
+        baseLatency: ctx.baseLatency,
+        outputLatency: ctx.outputLatency,
+      });
       const source = ctx.createMediaStreamSource(stream);
       const sink = ctx.createGain();
       sink.gain.value = 1;
@@ -438,31 +531,57 @@ export class VoiceStreamSession {
       this.captureSource = source;
       this.captureSink = sink;
       this.mediaStream = stream;
+      this.dbg('info', 'MediaStreamAudioSource and silent sink connected');
 
       const firstFrame = new Promise<void>((resolve, reject) => {
         let received = false;
+        let frameCount = 0;
         const acceptFrame = (pcm: ArrayBuffer) => {
+          frameCount++;
+          // Keep a caller-owned copy before sending. DataChannel delivery is
+          // reliable while open, but it is not a durable local buffer.
+          this.cb.onAudioFrame?.(pcm.slice(0));
           if (this.dc?.readyState === 'open') this.dc.send(pcm);
           if (received) return;
           received = true;
           if (firstFrameTimeout) clearTimeout(firstFrameTimeout);
           firstFrameTimeout = null;
+          this.dbg('result', 'first PCM frame received', {
+            frameBytes: pcm.byteLength,
+            frameCount,
+            dataChannelState: this.dc?.readyState ?? 'missing',
+            ...microphoneTrackDebugData(track),
+          });
           resolve();
         };
         firstFrameTimeout = setTimeout(() => {
           if (received) return;
           received = true;
+          this.dbg('error', 'first PCM frame timed out', {
+            timeoutMs: CAPTURE_FIRST_FRAME_TIMEOUT_MS,
+            frameCount,
+            contextState: ctx.state,
+            sampleRate: ctx.sampleRate,
+            dataChannelState: this.dc?.readyState ?? 'missing',
+            ...microphoneTrackDebugData(track),
+          });
           reject(new Error(
             `Microphone started but produced no audio frames `
             + `(context=${ctx.state}, track=${track.readyState}, enabled=${track.enabled}, muted=${track.muted}, sampleRate=${ctx.sampleRate}).`,
           ));
         }, CAPTURE_FIRST_FRAME_TIMEOUT_MS);
 
-        if (shouldUseLegacyPcmCapture(navigator.userAgent)) {
-          // Firefox can leave a live MediaStreamAudioSource -> AudioWorklet
-          // graph unpulled. ScriptProcessor is deprecated but remains the most
-          // reliable realtime PCM fallback there; it exists only while capture
-          // is active and still emits the same 24 kHz PCM DataChannel frames.
+        if (shouldUseLegacyPcmCapture(navigator.userAgent, navigator.maxTouchPoints)) {
+          this.dbg('info', 'capture processor selected', {
+            processor: 'ScriptProcessor',
+            bufferSize: 2048,
+            userAgent: navigator.userAgent,
+            maxTouchPoints: navigator.maxTouchPoints,
+          });
+          // Firefox can leave the Worklet graph unpulled, while iOS WebKit can
+          // expose a healthy live track without ever running the processor.
+          // The legacy node exists only during capture and emits identical
+          // 24 kHz PCM DataChannel frames.
           const legacy = ctx.createScriptProcessor(2048, 1, 1);
           legacy.onaudioprocess = (event) => {
             const output = event.outputBuffer.getChannelData(0);
@@ -476,9 +595,15 @@ export class VoiceStreamSession {
           return;
         }
 
+        this.dbg('info', 'capture processor selected', {
+          processor: 'AudioWorklet',
+          userAgent: navigator.userAgent,
+          maxTouchPoints: navigator.maxTouchPoints,
+        });
         this.workletUrl = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'application/javascript' }));
         void ctx.audioWorklet.addModule(this.workletUrl).then(() => {
           if (received) return;
+          this.dbg('info', 'AudioWorklet module loaded');
           const node = new AudioWorkletNode(ctx, 'pcm-capture', {
             processorOptions: { targetRate: VOICE_PCM_SAMPLE_RATE },
             numberOfInputs: 1,
@@ -492,6 +617,7 @@ export class VoiceStreamSession {
             received = true;
             if (firstFrameTimeout) clearTimeout(firstFrameTimeout);
             firstFrameTimeout = null;
+            this.dbg('error', 'AudioWorklet processor error before first frame');
             reject(new Error('Microphone AudioWorklet processor failed.'));
           };
           node.port.onmessage = (event) => acceptFrame(event.data as ArrayBuffer);
@@ -503,6 +629,9 @@ export class VoiceStreamSession {
           received = true;
           if (firstFrameTimeout) clearTimeout(firstFrameTimeout);
           firstFrameTimeout = null;
+          this.dbg('error', 'AudioWorklet module failed to load', {
+            reason: error instanceof Error ? error.message : String(error),
+          });
           reject(error);
         });
       });
@@ -514,6 +643,7 @@ export class VoiceStreamSession {
         audioTransport: 'datachannel',
       });
       startSent = true;
+      this.dbg('info', 'ASR start message sent', { dataChannelState: this.dc?.readyState ?? 'missing' });
       await firstFrame;
     } catch (error) {
       if (firstFrameTimeout) clearTimeout(firstFrameTimeout);
@@ -525,6 +655,27 @@ export class VoiceStreamSession {
       throw new Error(`Could not start microphone capture: ${reason}`);
     }
     this.setState('recording');
+    this.dbg('result', 'microphone capture recording');
+  }
+
+  /** Re-send a locally retained PCM utterance through a fresh/live ASR
+   * session. The ordered DataChannel preserves the original audio order. */
+  replayUtterance(frames: ArrayBuffer[]): boolean {
+    if (this.state !== 'ready' || this.dc?.readyState !== 'open' || frames.length === 0) return false;
+    this.dcSend({
+      t: 'start',
+      config: this.config,
+      sampleRate: VOICE_PCM_SAMPLE_RATE,
+      audioTransport: 'datachannel',
+    });
+    for (const frame of frames) this.dc.send(frame);
+    this.dcSend({ t: 'stop', releaseMicrophone: true });
+    // A retry may have acquired the microphone solely to expose Safari host
+    // ICE candidates. Replay itself has no local capture graph, so release it
+    // immediately rather than leaving the browser mic indicator active.
+    this.teardownCapture({ releaseMic: true });
+    this.releaseMicrophone(false);
+    return true;
   }
 
   /** End the current utterance: stop capture and ask the agent to finalize.
@@ -532,6 +683,12 @@ export class VoiceStreamSession {
    *  next utterance can start during assistant speech without a permission gap. */
   stopUtterance(opts: { releaseMic?: boolean; discard?: boolean } = {}): void {
     const releaseMic = opts.releaseMic ?? true;
+    this.dbg('info', 'capture stop requested', {
+      releaseMic,
+      discard: !!opts.discard,
+      sessionState: this.state,
+      dataChannelState: this.dc?.readyState ?? 'missing',
+    });
     this.dcSend({ t: 'stop', releaseMicrophone: releaseMic, discard: opts.discard });
     this.teardownCapture({ releaseMic });
     if (releaseMic) this.releaseMicrophone(false);
@@ -586,6 +743,12 @@ export class VoiceStreamSession {
   }
 
   private teardownCapture(opts: { releaseMic?: boolean } = {}): void {
+    this.dbg('info', 'capture teardown', {
+      releaseMic: opts.releaseMic !== false,
+      contextState: this.audioCtx?.state ?? 'missing',
+      hasStream: !!this.mediaStream,
+      processor: this.captureLegacyNode ? 'ScriptProcessor' : this.captureNode ? 'AudioWorklet' : 'none',
+    });
     if (this.captureNode) this.captureNode.port.onmessage = null;
     if (this.captureNode) this.captureNode.onprocessorerror = null;
     if (this.captureLegacyNode) this.captureLegacyNode.onaudioprocess = null;

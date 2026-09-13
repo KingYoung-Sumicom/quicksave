@@ -21,6 +21,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import type { Attachment } from '@sumicom/quicksave-shared';
 import { getOpenCodeBin } from './openCodeProvider.js';
+import { getOpenCodeEnableExa } from '../config.js';
 import {
   DISPLAY_MARKDOWN_REPORT_TOOL,
   SANDBOX_BASH_TOOL,
@@ -43,7 +44,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Parse the JSONC accepted by OPENCODE_CONFIG_CONTENT without executing it. */
-function parseOpenCodeConfigContent(content: string): Record<string, unknown> {
+export function parseOpenCodeConfigContent(content: string): Record<string, unknown> {
   let stripped = '';
   let inString = false;
   let escaped = false;
@@ -110,6 +111,7 @@ function parseOpenCodeConfigContent(content: string): Record<string, unknown> {
 export function buildOpenCodeQuicksaveConfig(
   existingContent: string | undefined,
   ownDir = __aiDir,
+  enableExa = false,
 ): Record<string, unknown> {
   const existing = existingContent?.trim()
     ? parseOpenCodeConfigContent(existingContent)
@@ -147,6 +149,11 @@ export function buildOpenCodeQuicksaveConfig(
       [SANDBOX_BASH_TOOL]: 'allow',
       [UPDATE_SESSION_STATUS_TOOL]: 'allow',
       [DISPLAY_MARKDOWN_REPORT_TOOL]: 'allow',
+      // A question is its own user-input interaction, not an action that
+      // needs a second approval. Let OpenCode emit `question.asked`, which
+      // the provider translates into Quicksave's blocking question UI.
+      question: 'allow',
+      ...(enableExa ? { websearch: 'ask' } : {}),
     },
   };
 }
@@ -154,11 +161,16 @@ export function buildOpenCodeQuicksaveConfig(
 export function buildOpenCodeServerEnv(
   env: NodeJS.ProcessEnv = process.env,
   ownDir = __aiDir,
+  enableExa = getOpenCodeEnableExa(),
 ): NodeJS.ProcessEnv {
+  // Do not inherit an unrelated shell's opt-in: this per-agent setting is
+  // authoritative and must be able to turn Exa off as well as on.
+  const { OPENCODE_ENABLE_EXA: _ignoredExa, ...baseEnv } = env;
   return {
-    ...env,
+    ...baseEnv,
+    ...(enableExa ? { OPENCODE_ENABLE_EXA: '1' } : {}),
     OPENCODE_CONFIG_CONTENT: JSON.stringify(
-      buildOpenCodeQuicksaveConfig(env.OPENCODE_CONFIG_CONTENT, ownDir),
+      buildOpenCodeQuicksaveConfig(env.OPENCODE_CONFIG_CONTENT, ownDir, enableExa),
     ),
   };
 }
@@ -174,6 +186,15 @@ export interface CreateSessionOpts {
   directory: string;
   title?: string;
   agent?: string;
+}
+
+export interface OpenCodeSessionInfo {
+  id: string;
+  /** Set by OpenCode when this session belongs to an agent/task sub-thread. */
+  parentID?: string | null;
+  title?: string;
+  directory?: string;
+  time?: { created?: number; updated?: number; archived?: number | null };
 }
 
 export interface PromptOpts {
@@ -194,6 +215,73 @@ export interface OpenCodeProviderInfo {
   id: string;
   name: string;
   models: Record<string, { id?: string; name?: string }>;
+}
+
+/** The v2 API exposes projected messages and opaque page cursors. */
+export interface OpenCodeV2Message {
+  id: string;
+  type: string;
+  text?: string;
+  content?: Array<Record<string, unknown>>;
+  command?: string;
+  output?: string;
+  summary?: string;
+  recent?: string;
+}
+
+export interface OpenCodeV2MessagePage {
+  data: OpenCodeV2Message[];
+  cursor: { previous?: string; next?: string };
+}
+
+export interface OpenCodeLegacyMessagePage {
+  data: Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>;
+  nextCursor?: string;
+}
+
+function v2ToolOutput(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      if (typeof item === 'string') return item;
+      if (isRecord(item) && typeof item.text === 'string') return item.text;
+      try { return JSON.stringify(item); } catch { return String(item); }
+    }).join('\n');
+  }
+  if (value === undefined) return '';
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+/** Adapter for the current streaming router, which still consumes v1-shaped parts. */
+function toLegacyMessage(message: OpenCodeV2Message): { info: Record<string, unknown>; parts: Array<Record<string, unknown>> } {
+  if (message.type === 'user') {
+    return {
+      info: { id: message.id, role: 'user' },
+      parts: typeof message.text === 'string'
+        ? [{ id: `${message.id}:text`, messageID: message.id, type: 'text', text: message.text }]
+        : [],
+    };
+  }
+  if (message.type !== 'assistant') return { info: { id: message.id, role: 'system' }, parts: [] };
+  const parts = (message.content ?? []).map((content) => {
+    if (content.type === 'tool') {
+      const state = isRecord(content.state) ? content.state : {};
+      return {
+        id: typeof content.id === 'string' ? content.id : `${message.id}:tool`,
+        messageID: message.id,
+        type: 'tool',
+        tool: typeof content.name === 'string' ? content.name : 'unknown',
+        callID: typeof content.id === 'string' ? content.id : `${message.id}:tool`,
+        state: {
+          ...state,
+          output: v2ToolOutput(state.content),
+          error: isRecord(state.error) ? String(state.error.message ?? 'tool failed') : state.error,
+        },
+      };
+    }
+    return { ...content, messageID: message.id };
+  });
+  return { info: { id: message.id, role: 'assistant' }, parts };
 }
 
 /** @internal exported for protocol-shape tests. */
@@ -265,6 +353,7 @@ class OpenCodeServer {
   private startPromise: Promise<void> | null = null;
   private sseAbort: AbortController | null = null;
   private shuttingDown = false;
+  private legacyHistoryProtocol: Promise<boolean> | null = null;
 
   /** Per-sessionID listeners. Each call registers; returns disposer. */
   private listeners = new Map<string, Set<(event: OpenCodeEvent) => void>>();
@@ -280,6 +369,28 @@ class OpenCodeServer {
     await this.startPromise;
     if (!this.port) throw new Error('opencode server failed to report a port');
     return { baseUrl: `http://127.0.0.1:${this.port}` };
+  }
+
+  /** Match OpenCode's own compatibility probe: a healthy legacy endpoint
+   * means this 1.x server's v2 message projection cannot be relied on. */
+  async usesLegacyHistoryProtocol(): Promise<boolean> {
+    if (!this.legacyHistoryProtocol) {
+      this.legacyHistoryProtocol = (async () => {
+        const { baseUrl } = await this.ensureRunning();
+        try {
+          const response = await fetch(new URL('/global/health', baseUrl), {
+            headers: this.requestHeaders(false),
+          });
+          if (!response.ok) return false;
+          const value: unknown = await response.json();
+          return !!value && typeof value === 'object'
+            && 'healthy' in value && (value as { healthy?: unknown }).healthy === true;
+        } catch {
+          return false;
+        }
+      })();
+    }
+    return this.legacyHistoryProtocol;
   }
 
   private spawnAndAwaitReady(): Promise<void> {
@@ -493,6 +604,30 @@ class OpenCodeServer {
     );
   }
 
+  /** OpenCode owns archive state in `session.time.archived`. */
+  async setSessionArchived(sessionID: string, directory: string, archived: boolean): Promise<void> {
+    await this.req<OpenCodeSessionInfo>(
+      `/session/${encodeURIComponent(sessionID)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ time: { archived: archived ? Date.now() : null } }),
+      },
+      { directory },
+    );
+  }
+
+  async getSession(sessionID: string, directory?: string): Promise<OpenCodeSessionInfo> {
+    return this.req<OpenCodeSessionInfo>(
+      `/session/${encodeURIComponent(sessionID)}`,
+      {},
+      { directory },
+    );
+  }
+
+  async listSessions(directory?: string): Promise<OpenCodeSessionInfo[]> {
+    return this.req<OpenCodeSessionInfo[]>('/session', {}, { directory });
+  }
+
   /** Compact a session conversation (summary + prune) via opencode's v1
    *  `POST /session/{id}/summarize`. The v2 `POST /api/session/{id}/compact`
    *  endpoint is a server-side stub that always returns 503 "Session compact
@@ -531,7 +666,38 @@ class OpenCodeServer {
     }, { directory });
   }
 
-  /** Fetch every message + part for a session via the REST API.
+  /** Fetch a cursor page from OpenCode's v2 projected-message API.
+   *
+   * This is deliberately v2-only. The legacy `/session/.../message` route
+   * cannot provide reliable cursor paging for a long session.
+   */
+  async getMessagePage(
+    sessionID: string,
+    opts: { limit: number; cursor?: string; order?: 'asc' | 'desc' },
+  ): Promise<OpenCodeV2MessagePage> {
+    return this.req<OpenCodeV2MessagePage>(
+      `/api/session/${encodeURIComponent(sessionID)}/message`,
+      {},
+      { limit: opts.limit, ...(opts.cursor ? { cursor: opts.cursor } : { order: opts.order ?? 'desc' }) },
+    );
+  }
+
+  /** Legacy v1 history is cursor-paged with x-next-cursor. Kept solely to
+   * recover Quicksave's own card cache for a v1 server. */
+  async getLegacyMessagePage(sessionID: string, directory: string, before?: string): Promise<OpenCodeLegacyMessagePage> {
+    const { baseUrl } = await this.ensureRunning();
+    const url = buildOpenCodeUrl(baseUrl, `/session/${encodeURIComponent(sessionID)}/message`, {
+      directory,
+      limit: 200,
+      ...(before ? { before } : {}),
+    });
+    const response = await fetch(url, { headers: this.requestHeaders(false) });
+    if (!response.ok) throw new Error(`opencode legacy history failed: ${response.status}`);
+    const data = await response.json() as Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>;
+    return { data, ...(response.headers.get('x-next-cursor') ? { nextCursor: response.headers.get('x-next-cursor')! } : {}) };
+  }
+
+  /** Fetch the latest v2 message page and adapt it for the live SSE router.
    *
    * Tool calls in opencode 1.14 are NOT pushed via SSE — only `message.part.delta`
    * (text/reasoning), `session.status`, `session.diff`, and `session.idle` ever
@@ -541,12 +707,9 @@ class OpenCodeServer {
    * Shape:
    *   [{ info: { id, role, ... }, parts: [{ type: 'tool'|'text'|..., ... }] }]
    */
-  async getMessages(sessionID: string, directory: string): Promise<Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>> {
-    return this.req<Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>>(
-      `/session/${encodeURIComponent(sessionID)}/message`,
-      {},
-      { directory },
-    );
+  async getMessages(sessionID: string, _directory: string): Promise<Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>> {
+    const page = await this.getMessagePage(sessionID, { limit: 200, order: 'desc' });
+    return page.data.map(toLegacyMessage);
   }
 
   async abortSession(sessionID: string, directory: string): Promise<void> {
@@ -577,6 +740,27 @@ class OpenCodeServer {
     }, { directory });
   }
 
+  /** Resolve OpenCode's blocking `question` tool with one answer array per
+   * question. Each inner array contains the selected labels (or one custom
+   * free-text response). */
+  async replyQuestion(
+    requestID: string,
+    directory: string,
+    answers: readonly (readonly string[])[],
+  ): Promise<void> {
+    await this.req<unknown>(`/question/${encodeURIComponent(requestID)}/reply`, {
+      method: 'POST',
+      body: JSON.stringify({ answers }),
+    }, { directory });
+  }
+
+  /** Dismiss OpenCode's blocking `question` tool without supplying answers. */
+  async rejectQuestion(requestID: string, directory: string): Promise<void> {
+    await this.req<unknown>(`/question/${encodeURIComponent(requestID)}/reject`, {
+      method: 'POST',
+    }, { directory });
+  }
+
   async getHealth(): Promise<{ healthy: boolean; version: string }> {
     return this.req<{ healthy: boolean; version: string }>('/global/health');
   }
@@ -591,6 +775,31 @@ class OpenCodeServer {
       default: Record<string, string>;
       connected: string[];
     }>('/provider', {}, { directory });
+  }
+
+  /** Read-only configuration endpoints. The caller is responsible for
+   * reducing these raw server payloads to a safe PWA-facing snapshot. */
+  async getConfig(directory: string): Promise<Record<string, unknown>> {
+    return this.req<Record<string, unknown>>('/config', {}, { directory });
+  }
+
+  async listMcp(directory: string): Promise<Record<string, Record<string, unknown>>> {
+    return this.req<Record<string, Record<string, unknown>>>('/mcp', {}, { directory });
+  }
+
+  async addMcp(name: string, config: Record<string, unknown>, directory: string): Promise<Record<string, unknown>> {
+    return this.req<Record<string, unknown>>('/mcp', {
+      method: 'POST',
+      body: JSON.stringify({ name, config }),
+    }, { directory });
+  }
+
+  async listAgents(directory: string): Promise<Array<Record<string, unknown>>> {
+    return this.req<Array<Record<string, unknown>>>('/agent', {}, { directory });
+  }
+
+  async listCommands(directory: string): Promise<Array<Record<string, unknown>>> {
+    return this.req<Array<Record<string, unknown>>>('/command', {}, { directory });
   }
 
   /** Shutdown the server. Idempotent.
@@ -632,6 +841,22 @@ class OpenCodeServer {
     }, 3_000);
     await exited;
     clearTimeout(killer);
+  }
+
+  /** Restart only the OpenCode child after a server-start environment change.
+   * Active OpenCode turns cannot survive this boundary, so notify their
+   * consumers just as an unexpected child exit would. */
+  async restart(): Promise<void> {
+    const hadServer = !!this.proc || !!this.port;
+    if (hadServer) {
+      this.broadcast({
+        id: `local-${Date.now()}`,
+        type: 'server.disposed',
+        properties: {},
+      });
+    }
+    await this.shutdown();
+    this.shuttingDown = false;
   }
 
   /** @internal for tests */

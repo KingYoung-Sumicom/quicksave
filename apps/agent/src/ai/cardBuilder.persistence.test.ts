@@ -55,6 +55,31 @@ describe('memory-mode card history persistence', () => {
     expect((cards[1] as { streaming?: boolean }).streaming).toBe(false);
   });
 
+  it('persists a resolved follow-up when native provider history is otherwise disabled', async () => {
+    const builder = new StreamCardBuilder('codex-follow-up', '/cwd');
+    builder.disablePersistence();
+    builder.followUpQuestion('How detailed?', {
+      options: ['Concise', 'Detailed'],
+      pendingInput: {
+        sessionId: 'codex-follow-up',
+        requestId: 'req-follow-up',
+        inputType: 'question',
+        title: 'How detailed?',
+      },
+    });
+    builder.resolveFollowUpQuestion('req-follow-up', 'Detailed');
+
+    await builder.flushCardHistoryWrites();
+
+    await expect(loadPersistedCards('codex-follow-up')).resolves.toEqual([
+      expect.objectContaining({
+        type: 'follow_up_question',
+        question: 'How detailed?',
+        answer: 'Detailed',
+      }),
+    ]);
+  });
+
   it('migrates the legacy JSON array snapshot to append-only JSONL on read', async () => {
     mkdirSync(cardHistoryDir(), { recursive: true });
     const legacyCards: Card[] = [

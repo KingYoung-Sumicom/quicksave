@@ -196,4 +196,8 @@ describe('REQUEST_RESPONSE_MAP', () => {
   it('should contain ping/pong mapping', () => {
     expect(REQUEST_RESPONSE_MAP['ping']).toBe('pong');
   });
+
+  it('should map Claude auth refresh to its response', () => {
+    expect(REQUEST_RESPONSE_MAP['claude:auth-status']).toBe('claude:auth-status:response');
+  });
 });

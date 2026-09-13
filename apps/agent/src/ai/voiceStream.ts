@@ -116,7 +116,7 @@ export async function probeAudioSupport(): Promise<{ transcription: boolean; str
 }
 
 /** STUN servers from env (comma-separated) or a public default. No TURN. */
-function iceServers(): { urls: string }[] {
+export function iceServers(): { urls: string }[] {
   const env = process.env.QUICKSAVE_VOICE_STUN?.trim();
   const urls = env ? env.split(',').map((s) => s.trim()).filter(Boolean) : ['stun:stun.l.google.com:19302'];
   return urls.map((u) => ({ urls: u }));
@@ -143,7 +143,7 @@ interface RtcAudioSourceLike {
 }
 
 // Lazy, cached optional load of the native WebRTC implementation.
-type WrtcModule = {
+export type WrtcModule = {
   RTCPeerConnection: new (cfg: unknown) => RTCPeerConnectionLike;
   nonstandard: {
     RTCAudioSink: new (track: RtcMediaStreamTrackLike) => RtcAudioSinkLike;
@@ -151,7 +151,7 @@ type WrtcModule = {
   };
 };
 let wrtcCache: WrtcModule | null | undefined;
-async function loadWrtc(): Promise<WrtcModule | null> {
+export async function loadWrtc(): Promise<WrtcModule | null> {
   if (wrtcCache !== undefined) return wrtcCache;
   try {
     const mod = (await import('@roamhq/wrtc')) as unknown as { default?: WrtcModule } & WrtcModule;
@@ -163,7 +163,7 @@ async function loadWrtc(): Promise<WrtcModule | null> {
 }
 
 /** Minimal WebRTC surface we use (subset of the standard API). */
-interface RTCPeerConnectionLike {
+export interface RTCPeerConnectionLike {
   onicecandidate: ((e: { candidate: unknown | null }) => void) | null;
   ondatachannel: ((e: { channel: RTCDataChannelLike }) => void) | null;
   onconnectionstatechange: (() => void) | null;
@@ -176,10 +176,17 @@ interface RTCPeerConnectionLike {
   addTrack(track: RtcMediaStreamTrackLike): unknown;
   close(): void;
 }
-interface RTCDataChannelLike {
+export interface RTCDataChannelLike {
   onmessage: ((e: { data: unknown }) => void) | null;
+  onopen?: (() => void) | null;
   onclose: (() => void) | null;
-  send(data: string): void;
+  onerror?: (() => void) | null;
+  onbufferedamountlow?: (() => void) | null;
+  bufferedAmount?: number;
+  bufferedAmountLowThreshold?: number;
+  readyState?: string;
+  send(data: string | Buffer | Uint8Array | ArrayBuffer): void;
+  close?(): void;
 }
 
 interface VoicePeer {

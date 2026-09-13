@@ -26,11 +26,13 @@
 //   • `permission.asked` is forwarded to the PWA via the usual
 //     `handlePermissionRequest` callback; the reply is POSTed back to
 //     `/permission/{id}/reply`.
+//   • `question.asked` is a distinct, blocking question protocol. It uses
+//     `POST /question/{id}/reply`, not the permission endpoint.
 
 import { execSync } from 'child_process';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
-import type { Attachment, CardStreamEnd, ContextUsageBreakdown } from '@sumicom/quicksave-shared';
+import type { Attachment, Card, CardHistoryResponse, CardStreamEnd, ContextUsageBreakdown, NativeSessionSummary } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
 import type {
   CodingAgentProvider,
@@ -41,7 +43,7 @@ import type {
   ProbeResult,
   PermissionLevel,
 } from './provider.js';
-import { getOpenCodeServer, type OpenCodeEvent, type OpenCodeServer } from './openCodeServer.js';
+import { getOpenCodeServer, type OpenCodeEvent, type OpenCodeServer, type OpenCodeV2Message } from './openCodeServer.js';
 import { QUICKSAVE_SESSION_ID_ARG } from './openCodeMcpPlugin.js';
 
 // ── Part types we translate (verified from opencode 1.14 OpenAPI Part union) ──
@@ -170,6 +172,14 @@ export function normalizeOpenCodeToolInput(
     normalized.skill = normalized.name;
   }
   return normalized;
+}
+
+function firstTaskString(input: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = input[key];
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return undefined;
 }
 
 // ── Binary resolution (still needed for the `opencode models` probe + serve spawn) ──
@@ -321,7 +331,8 @@ export class OpencodeSession implements ProviderSession {
 
 export class OpenCodeProvider implements CodingAgentProvider {
   readonly id = 'opencode' as const;
-  readonly historyMode = 'memory' as const;
+  readonly historyMode = 'opencode-thread' as const;
+  readonly archiveStorage = 'native' as const;
   readonly label = 'OpenCode';
 
   constructor(private readonly server: OpenCodeServer = getOpenCodeServer()) {}
@@ -372,6 +383,86 @@ export class OpenCodeProvider implements CodingAgentProvider {
     } catch { return undefined; }
   }
 
+  /** Fail early on installations that lack the v2 cursor-history contract. */
+  private async requireV2History(sessionId: string): Promise<void> {
+    await this.server.getMessagePage(sessionId, { limit: 1, order: 'desc' });
+  }
+
+  /** Read cards from OpenCode's v2 cursor API; never from Quicksave card storage. */
+  async loadCardHistory(opts: {
+    sessionId: string;
+    cwd: string;
+    offset: number;
+    limit: number;
+    cursor?: string;
+  }): Promise<CardHistoryResponse> {
+    const nativeCursor = opts.cursor?.startsWith('opencode-v2:')
+      ? opts.cursor.slice('opencode-v2:'.length)
+      : undefined;
+    const page = await this.server.getMessagePage(opts.sessionId, {
+      limit: Math.min(200, Math.max(1, opts.limit)),
+      ...(nativeCursor ? { cursor: nativeCursor } : { order: 'desc' }),
+    });
+    // v2 returns descending pages by default; cards must remain chronological.
+    const cards = projectOpenCodeMessages(opts.sessionId, opts.cwd, [...page.data].reverse());
+    return {
+      cards,
+      // v2 intentionally provides no total count. This is a lower bound; the
+      // PWA uses the opaque cursor/hasMore contract for further history.
+      total: opts.offset + cards.length + (page.cursor.next ? 1 : 0),
+      hasMore: !!page.cursor.next,
+      ...(page.cursor.next ? { nextCursor: `opencode-v2:${page.cursor.next}` } : {}),
+    };
+  }
+
+  async listNativeSessions(opts?: { cwd?: string }): Promise<NativeSessionSummary[]> {
+    const sessions = await this.server.listSessions(opts?.cwd);
+    return sessions
+      .filter((session) =>
+        (!opts?.cwd || session.directory === opts.cwd) && !session.parentID,
+      )
+      .map((session) => ({
+        sessionId: session.id,
+        cwd: session.directory ?? opts?.cwd ?? process.cwd(),
+        agent: 'opencode' as const,
+        archived: session.time?.archived != null,
+        title: session.title,
+        firstPrompt: session.title,
+        createdAt: session.time?.created ?? session.time?.updated ?? 0,
+        lastInteractionAt: session.time?.updated ?? session.time?.created ?? 0,
+      }));
+  }
+
+  async getNativeSession(sessionId: string, opts?: { cwd?: string }): Promise<NativeSessionSummary | undefined> {
+    try {
+      const session = await this.server.getSession(sessionId, opts?.cwd);
+      if (!session.directory || session.parentID) return undefined;
+      return {
+        sessionId: session.id,
+        cwd: session.directory,
+        agent: 'opencode',
+        archived: session.time?.archived != null,
+        title: session.title,
+        firstPrompt: session.title,
+        createdAt: session.time?.created ?? session.time?.updated ?? 0,
+        lastInteractionAt: session.time?.updated ?? session.time?.created ?? 0,
+      };
+    } catch (error) {
+      if (error instanceof Error && /failed:\s*404\b/.test(error.message)) return undefined;
+      throw error;
+    }
+  }
+
+  async archiveSession(sessionId: string, opts?: { cwd?: string }): Promise<void> {
+    if (!opts?.cwd) throw new Error(`OpenCode archive requires the session directory (${sessionId})`);
+    await this.server.setSessionArchived(sessionId, opts.cwd, true);
+  }
+
+  async unarchiveSession(sessionId: string, opts?: { cwd?: string }): Promise<void> {
+    if (!opts?.cwd) throw new Error(`OpenCode unarchive requires the session directory (${sessionId})`);
+    await this.server.setSessionArchived(sessionId, opts.cwd, false);
+  }
+
   // ── startSession ────────────────────────────────────────────────────────────
 
   async startSession(
@@ -391,6 +482,12 @@ export class OpenCodeProvider implements CodingAgentProvider {
       directory: opts.cwd,
       agent: 'build',
     });
+    try {
+      await this.requireV2History(opencodeSessionId);
+    } catch (err) {
+      await server.deleteSession(opencodeSessionId, opts.cwd).catch(() => {});
+      throw new Error(`OpenCode v2 cursor history API is required: ${(err as Error).message}`);
+    }
 
     const turnConfig: TurnConfig = {
       model: parseModelId(opts.model),
@@ -464,6 +561,9 @@ export class OpenCodeProvider implements CodingAgentProvider {
     // `opts.sessionId` from SessionManager IS opencode's ses_… (we returned
     // it from startSession). Reuse it directly — no createSession.
     const opencodeSessionId = opts.sessionId;
+    await this.requireV2History(opencodeSessionId).catch((err) => {
+      throw new Error(`OpenCode v2 cursor history API is required: ${(err as Error).message}`);
+    });
 
     const turnConfig: TurnConfig = {
       model: parseModelId(opts.model),
@@ -505,6 +605,66 @@ export class OpenCodeProvider implements CodingAgentProvider {
 
     return { sessionId: opencodeSessionId, session };
   }
+}
+
+function v2ContentText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(v2ContentText).filter(Boolean).join('\n');
+  if (value && typeof value === 'object' && 'text' in value && typeof value.text === 'string') return value.text;
+  if (value === undefined || value === null) return '';
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+/** Stable final-state projection of one OpenCode v2 message page. */
+export function projectOpenCodeMessages(sessionId: string, cwd: string, messages: readonly OpenCodeV2Message[]): Card[] {
+  const builder = new StreamCardBuilder(sessionId, cwd);
+  for (const message of messages) {
+    builder.startNewTurn(message.id);
+    switch (message.type) {
+      case 'user':
+        if (message.text) builder.userMessage(message.text);
+        break;
+      case 'assistant':
+        for (const content of message.content ?? []) {
+          if (content.type === 'text' && typeof content.text === 'string') {
+            builder.assistantText(content.text);
+            builder.finalizeAssistantText();
+            continue;
+          }
+          if (content.type === 'reasoning' && typeof content.text === 'string') {
+            builder.thinkingBlock(content.text);
+            continue;
+          }
+          if (content.type !== 'tool') continue;
+          const id = typeof content.id === 'string' ? content.id : `${message.id}:tool`;
+          const state = content.state && typeof content.state === 'object'
+            ? content.state as Record<string, unknown>
+            : {};
+          const rawName = typeof content.name === 'string' ? content.name : 'unknown';
+          const input = state.input && typeof state.input === 'object' && !Array.isArray(state.input)
+            ? state.input as Record<string, unknown>
+            : {};
+          builder.toolUse(normalizeOpenCodeToolName(rawName), normalizeOpenCodeToolInput(rawName, input), id);
+          const failed = state.status === 'error';
+          const output = failed
+            ? v2ContentText(state.error)
+            : v2ContentText(state.content);
+          builder.toolResult(id, output, failed);
+        }
+        break;
+      case 'shell':
+        builder.toolUse('Bash', { command: message.command ?? '' }, message.id);
+        builder.toolResult(message.id, message.output ?? '', false);
+        break;
+      case 'compaction':
+        builder.systemMessage('Context compacted', 'compacted');
+        break;
+      default:
+        break;
+    }
+    builder.markTurnCompleted(message.id);
+  }
+  return builder.getCards();
 }
 
 // ── SSE → CardEvent router ───────────────────────────────────────────────────
@@ -679,6 +839,9 @@ export class SessionEventRouter {
       }
       case 'permission.asked':
         void this.handlePermissionAsked(ev);
+        break;
+      case 'question.asked':
+        void this.handleQuestionAsked(ev);
         break;
       case 'server.disposed':
         this.finalize(false, 'opencode server exited');
@@ -900,6 +1063,15 @@ export class SessionEventRouter {
       const evt = this.cb.updateToolUse(callID, toolName, input);
       if (evt) this.callbacks.emitCardEvent(evt);
     }
+
+    // OpenCode's `task` tool runs an agent independently, but exposes it as
+    // an ordinary ToolPart rather than the dedicated lifecycle events used by
+    // Claude and Codex. Mirror that lifecycle into a SubagentCard so the
+    // provider-neutral Agents sidebar can show OpenCode tasks as well.
+    if (rawToolName === 'task') {
+      this.emitOpenCodeTask(callID, input, state);
+    }
+
     if ((state.status === 'completed' || state.status === 'error') && !this.toolResults.has(callID)) {
       this.toolResults.add(callID);
       const isError = state.status === 'error';
@@ -907,6 +1079,35 @@ export class SessionEventRouter {
         ? (state.error || state.output || 'Tool failed')
         : (state.output ?? '');
       const evt = this.cb.toolResult(callID, content, isError);
+      if (evt) this.callbacks.emitCardEvent(evt);
+    }
+  }
+
+  private emitOpenCodeTask(
+    callID: string,
+    input: Record<string, unknown>,
+    state: { status?: string; output?: string; error?: string },
+  ): void {
+    const prompt = firstTaskString(input, 'prompt', 'description', 'task');
+    const subagentType = firstTaskString(input, 'subagent_type', 'subagentType', 'agent');
+    const requestedModel = firstTaskString(input, 'model');
+    if (!this.cb.hasSubagent(callID)) {
+      this.callbacks.emitCardEvent(this.cb.subagentStart(
+        prompt || subagentType || 'OpenCode task',
+        callID,
+        callID,
+        { prompt, subagentType, requestedModel, nestToolCalls: false },
+      ));
+    }
+
+    if (state.status === 'completed' || state.status === 'error') {
+      const summary = (state.status === 'error' ? state.error : state.output)?.trim() || undefined;
+      const evt = this.cb.subagentEnd(
+        callID,
+        callID,
+        state.status === 'completed' ? 'completed' : 'failed',
+        summary,
+      );
       if (evt) this.callbacks.emitCardEvent(evt);
     }
   }
@@ -928,6 +1129,16 @@ export class SessionEventRouter {
     };
     const requestID = req.id;
     if (!requestID) return;
+    if (req.permission === 'question') {
+      // Current Quicksave config allows the question tool so this should be a
+      // compatibility fallback only. A `question.asked` event carries the
+      // actual structured prompt; don't present a misleading approval card
+      // before it.
+      await this.server.replyPermission(requestID, this.directory, 'once').catch((err) => {
+        console.error('[openCode] question permission reply failed', err);
+      });
+      return;
+    }
     if (this.permissionLevel === 'auto') {
       // Match `opencode run --auto`: approve requests that reached "ask"
       // exactly once. Explicit deny rules are enforced by OpenCode before an
@@ -961,6 +1172,66 @@ export class SessionEventRouter {
     } catch (err) {
       console.error('[openCode] permission handling failed', err);
       await this.server.replyPermission(requestID, this.directory, 'reject').catch(() => {});
+    }
+  }
+
+  private async handleQuestionAsked(ev: OpenCodeEvent): Promise<void> {
+    const req = ev.properties as {
+      id?: string;
+      sessionID?: string;
+      questions?: Array<{
+        question?: string;
+        header?: string;
+        options?: Array<{ label?: string; description?: string }>;
+        multiple?: boolean;
+        custom?: boolean;
+      }>;
+      tool?: { messageID?: string; callID?: string };
+    };
+    const requestID = req.id;
+    const questions = req.questions ?? [];
+    if (!requestID || questions.length === 0) return;
+
+    const toolInput = {
+      questions: questions.map((question) => ({
+        question: question.question ?? 'Question from OpenCode',
+        ...(question.header ? { header: question.header } : {}),
+        ...(question.options?.length ? {
+          options: question.options
+            .filter((option): option is { label: string; description?: string } => typeof option.label === 'string')
+            .map((option) => ({ label: option.label, ...(option.description ? { description: option.description } : {}) })),
+        } : {}),
+        ...(question.multiple ? { multiSelect: true } : {}),
+        // The shared PWA question renderer defaults to allowing a custom
+        // response. Preserve OpenCode's explicit opt-out in the tool input
+        // so its UI can respect it as that renderer evolves.
+        ...(question.custom === false ? { allowFreeText: false } : {}),
+      })),
+    };
+    const toolUseId = req.tool?.callID ?? requestID;
+
+    try {
+      const decision = await this.callbacks.handlePermissionRequest(this.sessionId, {
+        requestId: requestID,
+        inputType: 'question',
+        toolName: 'AskUserQuestion',
+        toolInput,
+        toolUseId,
+        title: questions[0]?.question ?? 'Question from OpenCode',
+        skipAutoApprove: true,
+      });
+      if (decision.action !== 'allow' || !decision.response) {
+        await this.server.rejectQuestion(requestID, this.directory);
+        return;
+      }
+      await this.server.replyQuestion(
+        requestID,
+        this.directory,
+        openCodeQuestionAnswers(questions, decision.response),
+      );
+    } catch (err) {
+      console.error('[openCode] question handling failed', err);
+      await this.server.rejectQuestion(requestID, this.directory).catch(() => {});
     }
   }
 
@@ -1019,4 +1290,20 @@ export class SessionEventRouter {
     // on the server and can be resumed. SessionManager will reuse the same
     // session reference on the next resumeSession call.
   }
+}
+
+function openCodeQuestionAnswers(
+  questions: ReadonlyArray<{ multiple?: boolean }>,
+  response: string,
+): string[][] {
+  const responses = questions.length === 1 ? [response] : response.split('\n');
+  return questions.map((question, index) => {
+    const answer = responses[index]?.trim() ?? '';
+    if (!answer) return [];
+    // The shared blocking-question UI serializes multi-select labels with a
+    // comma. Single-select custom text must remain one opaque answer.
+    return question.multiple
+      ? answer.split(',').map((value) => value.trim()).filter(Boolean)
+      : [answer];
+  });
 }

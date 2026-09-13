@@ -66,6 +66,8 @@ import {
   AgentCheckUpdateResponsePayload,
   AgentUpdateResponsePayload,
   AgentRestartResponsePayload,
+  CodexCheckUpdateResponsePayload,
+  CodexUpdateResponsePayload,
   AgentProbePayload,
   ClaudeStartRequestPayload,
   ClaudeStartResponsePayload,
@@ -141,6 +143,7 @@ import {
   CodexLoginStartResponsePayload,
   CodexLoginStatusResponsePayload,
   CodexLoginCancelResponsePayload,
+  ClaudeAuthStatusResponsePayload,
   CodexQuotaSnapshot,
   ProjectListSummariesResponsePayload,
   ProjectSummary,
@@ -168,6 +171,12 @@ import {
   SystemdStatusResponsePayload,
   SystemdInstallResponsePayload,
   SystemdUninstallResponsePayload,
+  OpenCodeConfigSnapshotResponsePayload,
+  OpenCodeMcpUpsertRequestPayload,
+  OpenCodeMcpRemoveRequestPayload,
+  OpenCodeMcpMutationResponsePayload,
+  OpenCodeWebSearchUpdateRequestPayload,
+  OpenCodeWebSearchUpdateResponsePayload,
 } from '@sumicom/quicksave-shared';
 import {
   getSystemdStatus,
@@ -177,7 +186,7 @@ import {
 } from '../service/systemdUnit.js';
 import { GitOperations } from '../git/operations.js';
 import type { PushClient } from '../service/pushClient.js';
-import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, removeManagedRepo, addManagedCodingPath, removeManagedCodingPath } from '../config.js';
+import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, removeManagedRepo, addManagedCodingPath, removeManagedCodingPath, getOpenCodeEnableExa, setOpenCodeEnableExa } from '../config.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';
 import { CommitSummaryCliService, CommitSummaryCliError } from '../ai/commitSummaryCli.js';
 import { CommitSummaryStateStore } from '../ai/commitSummaryStore.js';
@@ -194,6 +203,7 @@ import { probeAudioSupport } from '../ai/voiceStream.js';
 import { voiceEventLogger } from '../ai/voiceLog.js';
 import { CodexAppServerProvider } from '../ai/codexAppServer/index.js';
 import { CodexLoginManager } from '../ai/codexLogin.js';
+import { ClaudeAuthManager } from '../ai/claudeAuth.js';
 import { CodexQuotaService } from '../ai/codexQuota.js';
 import { PACKAGE_VERSION } from '../version.js';
 import { getTerminalManager } from '../terminal/terminalManager.js';
@@ -201,19 +211,174 @@ import { getFileBrowser } from '../files/fileBrowser.js';
 import { getSessionRegistry } from '../ai/sessionRegistry.js';
 import { enrichEntry } from '../ai/enrichEntry.js';
 import { getEventStore } from '../storage/eventStore.js';
-import { readdir, stat, readFile } from 'fs/promises';
+import { readdir, stat, readFile, mkdir, writeFile, rename } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { homedir, platform as osPlatform } from 'os';
-import { spawnAppServer } from '../ai/codexAppServer/index.js';
+import {
+  detectCodexVersion,
+  getCodexBin,
+  isStandaloneCodexInstall,
+  spawnAppServer,
+} from '../ai/codexAppServer/index.js';
 import type { Model as CodexAppServerModel } from '../ai/codexAppServer/schema/generated/v2/Model.js';
 
 const VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
+const CODEX_VERSION_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000; // 12 hours
 // model/list reflects the current authenticated account's available models.
 // 30 min strikes a balance: long enough to avoid spawning a fresh app-server
 // every PWA reload; short enough that plan upgrades / model rollouts surface
 // within the same session day. Force-refreshes still bypass the TTL.
 const CODEX_MODELS_TTL_MS = 30 * 60 * 1000;
+
+function openCodeGlobalConfigPath(): string {
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode', 'opencode.json');
+}
+
+async function updateOpenCodeMcpConfig(name: string, next: Record<string, unknown> | null): Promise<void> {
+  const path = openCodeGlobalConfigPath();
+  const { parseOpenCodeConfigContent } = await import('../ai/openCodeServer.js');
+  let document: Record<string, unknown> = {};
+  try { document = parseOpenCodeConfigContent(await readFile(path, 'utf8')); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  const mcp = isRecord(document.mcp) ? { ...document.mcp } : {};
+  // Current deployed OpenCode is V1. Preserve V2's nested `servers` shape
+  // when a newer agent uses it.
+  if (isRecord(mcp.servers)) {
+    const servers = { ...mcp.servers };
+    if (next) servers[name] = next; else delete servers[name];
+    mcp.servers = servers;
+  } else if (next) mcp[name] = next; else delete mcp[name];
+  document.mcp = mcp;
+  await mkdir(dirname(path), { recursive: true });
+  const temp = `${path}.quicksave-${process.pid}-${Date.now()}`;
+  await writeFile(temp, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 });
+  await rename(temp, path);
+}
+
+type OpenCodeSnapshotInput = {
+  version: string;
+  config: Record<string, unknown>;
+  mcpStatus: Record<string, Record<string, unknown>>;
+  providers: {
+    all: Array<{ id: string; name: string; models: Record<string, unknown> }>;
+    default: Record<string, string>;
+    connected: string[];
+  };
+  agents: Array<Record<string, unknown>>;
+  commands: Array<Record<string, unknown>>;
+  exaEnabled: boolean;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const asString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() ? value : undefined;
+
+function configDocument(config: Record<string, unknown>): Record<string, unknown> {
+  return isRecord(config.config) ? config.config : config;
+}
+
+function configEntries(value: unknown): Array<[string, Record<string, unknown>]> {
+  if (isRecord(value)) return Object.entries(value).filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1]));
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => {
+      if (!isRecord(item)) return [];
+      const name = asString(item.name) ?? asString(item.id);
+      return name ? [[name, item] as [string, Record<string, unknown>]] : [];
+    });
+  }
+  return [];
+}
+
+function emptyOpenCodeSnapshot(error?: string): OpenCodeConfigSnapshotResponsePayload {
+  return { available: false, websearch: { exaEnabled: getOpenCodeEnableExa(), permission: getOpenCodeEnableExa() ? 'ask' : 'unknown' }, mcp: [], providers: [], agents: [], skills: [], commands: [], plugins: [], error };
+}
+
+/** Convert version-skewed OpenCode server/config responses into safe display
+ * data. In particular we omit local commands, URLs, headers, prompts and all
+ * arbitrary config values: they may include secrets or sensitive paths. */
+function summarizeOpenCodeConfig(input: OpenCodeSnapshotInput): OpenCodeConfigSnapshotResponsePayload {
+  const document = configDocument(input.config);
+  const schema: 'v1' | 'v2' | 'unknown' =
+    document.providers || document.agents || document.permissions ? 'v2'
+      : document.provider || document.agent || document.permission ? 'v1'
+        : 'unknown';
+  const mcpConfig = isRecord(document.mcp) && isRecord(document.mcp.servers)
+    ? document.mcp.servers
+    : document.mcp;
+  const mcpByName = new Map(configEntries(mcpConfig));
+  const mcpNames = new Set([...Object.keys(input.mcpStatus), ...mcpByName.keys()]);
+  const mcp = [...mcpNames].sort().map((name) => {
+    const config = mcpByName.get(name);
+    const status = input.mcpStatus[name] ?? {};
+    const typeValue = asString(config?.type);
+    const rawStatus = asString(status.status) ?? asString(status.state);
+    const toolList = Array.isArray(status.tools) ? status.tools : undefined;
+    return {
+      name,
+      ...(typeValue === 'local' || typeValue === 'remote' ? { type: typeValue as 'local' | 'remote' } : {}),
+      ...(typeof config?.enabled === 'boolean' ? { enabled: config.enabled } : typeof config?.disabled === 'boolean' ? { enabled: !config.disabled } : {}),
+      ...(rawStatus ? { status: rawStatus } : {}),
+      ...(toolList ? { toolCount: toolList.length } : typeof status.toolCount === 'number' ? { toolCount: status.toolCount } : {}),
+      ...(name.toLowerCase().includes('quicksave') ? { managed: true } : {}),
+    };
+  });
+  const providers = input.providers.all.map((provider) => ({
+    id: provider.id,
+    name: provider.name,
+    connected: input.providers.connected.includes(provider.id),
+    modelCount: Object.keys(provider.models ?? {}).length,
+    models: Object.entries(provider.models ?? {}).map(([id, model]) => ({
+      id,
+      name: isRecord(model) ? asString(model.name) ?? id : id,
+    })).sort((a, b) => a.name.localeCompare(b.name)),
+  }));
+  const agentEntries: Array<Record<string, unknown>> = input.agents.length > 0
+    ? input.agents
+    : configEntries(document.agents ?? document.agent).map(([name, value]) => ({ name, ...value }));
+  const agents = agentEntries.flatMap((agent) => {
+    const name = asString(agent.name) ?? asString(agent.id);
+    if (!name) return [];
+    return [{
+      name,
+      ...(asString(agent.description) ? { description: asString(agent.description) } : {}),
+      ...(asString(agent.mode) ? { mode: asString(agent.mode) } : {}),
+      ...(asString(agent.model) ? { model: asString(agent.model) } : {}),
+    }];
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  const skillsValue = document.skills ?? document.skill;
+  const skills = Array.isArray(skillsValue)
+    ? skillsValue.flatMap((skill) => typeof skill === 'string' ? [{ name: skill }] : isRecord(skill) && asString(skill.name) ? [{ name: asString(skill.name)!, ...(asString(skill.location) ? { location: asString(skill.location) } : {}) }] : [])
+    : configEntries(skillsValue).map(([name, value]) => ({ name, ...(asString(value.location) ? { location: asString(value.location) } : {}) }));
+  const commandEntries: Array<Record<string, unknown>> = input.commands.length > 0
+    ? input.commands
+    : configEntries(document.commands ?? document.command).map(([name, value]) => ({ name, ...value }));
+  const commands = commandEntries.flatMap((command) => {
+    const name = asString(command.name) ?? asString(command.id);
+    return name ? [{ name, ...(asString(command.description) ? { description: asString(command.description) } : {}) }] : [];
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  const pluginValue = document.plugin ?? document.plugins;
+  const plugins = (Array.isArray(pluginValue) ? pluginValue : []).flatMap((plugin) => {
+    const name = typeof plugin === 'string' ? plugin : isRecord(plugin) ? asString(plugin.name) : undefined;
+    return name ? [{ name, ...(name.toLowerCase().includes('quicksave') ? { managed: true } : {}) }] : [];
+  });
+  return {
+    available: true,
+    websearch: { exaEnabled: input.exaEnabled, permission: input.exaEnabled ? 'ask' : 'unknown' },
+    version: input.version,
+    schema,
+    ...(asString(document.model) ? { defaultModel: asString(document.model) } : {}),
+    ...(asString(document.small_model) ? { smallModel: asString(document.small_model) } : asString(document.smallModel) ? { smallModel: asString(document.smallModel) } : {}),
+    mcp,
+    providers,
+    agents,
+    skills,
+    commands,
+    plugins,
+  };
+}
 
 /** Coerce `os.platform()` into the narrow union the PWA expects. Anything
  *  outside the three first-class platforms gets `'other'` so the field is
@@ -305,6 +470,12 @@ export class MessageHandler {
   private repoLocks: Map<string, string> = new Map(); // repoPath -> peerAddress holding lock
   private availableRepos: Repository[];
   private codingPaths: Map<string, CodingPath> = new Map(); // path -> CodingPath
+
+  /** Whether a path is currently exposed as a Quicksave project. */
+  isManagedCodingPath(cwd: string): boolean {
+    return this.codingPaths.has(cwd);
+  }
+
   private aiService: CommitSummaryService | null = null;
   private aiCliService: CommitSummaryCliService | null = null;
   /** Per-repo agent-owned commit summary state. The daemon wires the
@@ -319,6 +490,8 @@ export class MessageHandler {
   private pushClient: PushClient | null = null;
   private latestVersionCache: { version: string; checkedAt: number } | null = null;
   private versionCheckInFlight: Promise<string | null> | null = null;
+  private latestCodexVersionCache: { version: string; checkedAt: number } | null = null;
+  private codexVersionCheckInFlight: Promise<string | null> | null = null;
   private codexModelsCache: { models: CodexModelInfo[]; checkedAt: number } | null = null;
   private codexModelsCheckInFlight: Promise<CodexModelInfo[] | null> | null = null;
   private codexModelsUpdateHandler: ((models: CodexModelInfo[]) => void) | null = null;
@@ -329,6 +502,7 @@ export class MessageHandler {
    *  app-server instance). */
   private readonly codexCacheDir: string;
   private codexLoginManager = new CodexLoginManager();
+  private claudeAuthManager = new ClaudeAuthManager();
   onHistoryUpdated?: (cwd: string, entry: SessionRegistryEntry, action: 'upsert' | 'delete') => void;
 
   private productionBuild: boolean;
@@ -372,11 +546,16 @@ export class MessageHandler {
         this.codingPaths.set(p, { path: p, name: basename(p) });
       }
     }
+    this.syncProjectDirectories();
 
     this.attachmentGcTimer = setInterval(() => this.attachmentStaging.gc(), 60_000);
     if (typeof (this.attachmentGcTimer as { unref?: () => void }).unref === 'function') {
       (this.attachmentGcTimer as { unref?: () => void }).unref!();
     }
+  }
+
+  private syncProjectDirectories(): void {
+    this.claudeService.setProjectDirectories(this.codingPaths.keys());
   }
 
   /**
@@ -413,6 +592,45 @@ export class MessageHandler {
     })();
 
     return this.versionCheckInFlight;
+  }
+
+  /** Check npm for the latest Codex CLI version, with the same 12h dedupe as the agent check. */
+  private async checkLatestCodexVersion(force = false): Promise<string | null> {
+    if (!force && this.latestCodexVersionCache &&
+        Date.now() - this.latestCodexVersionCache.checkedAt < CODEX_VERSION_CHECK_INTERVAL_MS) {
+      return this.latestCodexVersionCache.version;
+    }
+    if (this.codexVersionCheckInFlight) return this.codexVersionCheckInFlight;
+
+    this.codexVersionCheckInFlight = (async () => {
+      try {
+        const res = await fetch('https://registry.npmjs.org/@openai/codex/latest');
+        if (!res.ok) return null;
+        const data = await res.json() as { version?: string };
+        if (!data.version) return null;
+        this.latestCodexVersionCache = { version: data.version, checkedAt: Date.now() };
+        return data.version;
+      } catch {
+        return null;
+      } finally {
+        this.codexVersionCheckInFlight = null;
+      }
+    })();
+
+    return this.codexVersionCheckInFlight;
+  }
+
+  /** Select a safe updater for the resolved Codex installation. */
+  private getCodexUpdateMethod(): 'npm' | 'standalone-installer' | null {
+    const codexBin = getCodexBin();
+    const npmBin = join(dirname(codexBin), 'npm');
+    if (existsSync(npmBin)) return 'npm';
+    return isStandaloneCodexInstall(codexBin) ? 'standalone-installer' : null;
+  }
+
+  private getCodexNpmBin(): string | null {
+    const npmBin = join(dirname(getCodexBin()), 'npm');
+    return existsSync(npmBin) ? npmBin : null;
   }
 
   /**
@@ -838,6 +1056,14 @@ export class MessageHandler {
           return this.handleAgentRestart(message);
         case 'agent:probe':
           return this.handleAgentProbe();
+        case 'opencode:config-snapshot':
+          return this.handleOpenCodeConfigSnapshot(message);
+        case 'opencode:mcp-upsert':
+          return this.handleOpenCodeMcpUpsert(message as Message<OpenCodeMcpUpsertRequestPayload>);
+        case 'opencode:mcp-remove':
+          return this.handleOpenCodeMcpRemove(message as Message<OpenCodeMcpRemoveRequestPayload>);
+        case 'opencode:websearch-update':
+          return this.handleOpenCodeWebSearchUpdate(message as Message<OpenCodeWebSearchUpdateRequestPayload>);
         case 'systemd:status':
           return this.handleSystemdStatus(message);
         case 'systemd:install':
@@ -846,12 +1072,18 @@ export class MessageHandler {
           return this.handleSystemdUninstall(message);
         case 'codex:list-models':
           return this.handleCodexListModels(message);
+        case 'codex:check-update':
+          return this.handleCodexCheckUpdate(message);
+        case 'codex:update':
+          return this.handleCodexUpdate(message);
         case 'codex:login-start':
           return this.handleCodexLoginStart(message);
         case 'codex:login-status':
           return this.handleCodexLoginStatus(message);
         case 'codex:login-cancel':
           return this.handleCodexLoginCancel(message);
+        case 'claude:auth-status':
+          return this.handleClaudeAuthStatus(message);
         // Claude Code SDK
         case 'claude:start':
           return this.handleClaudeStart(message as Message<ClaudeStartRequestPayload>, peerAddress);
@@ -868,7 +1100,7 @@ export class MessageHandler {
         case 'claude:close':
           return this.handleClaudeClose(message as Message<ClaudeCloseRequestPayload>);
         case 'claude:end-task':
-          return this.handleClaudeEndTask(message as Message<ClaudeEndTaskRequestPayload>);
+          return await this.handleClaudeEndTask(message as Message<ClaudeEndTaskRequestPayload>);
         case 'claude:user-input-response':
           return this.handleClaudeUserInputResponse(message as Message<ClaudeUserInputResponsePayload>);
         case 'claude:set-preferences':
@@ -910,7 +1142,7 @@ export class MessageHandler {
         case 'project:list-repos':
           return await this.handleListProjectRepos(message as Message<ProjectListReposRequestPayload>);
         case 'project:delete':
-          return this.handleDeleteProject(message as Message<ProjectDeleteRequestPayload>);
+          return await this.handleDeleteProject(message as Message<ProjectDeleteRequestPayload>);
         case 'push:subscription-offer':
           return this.handlePushSubscriptionOffer(message as Message<PushSubscriptionOfferPayload>);
         case 'terminal:create':
@@ -1913,6 +2145,7 @@ export class MessageHandler {
 
       const newPath: CodingPath = { path: codingPath, name: basename(codingPath) };
       this.codingPaths.set(codingPath, newPath);
+      this.syncProjectDirectories();
       addManagedCodingPath(codingPath);
 
       const response = createMessage<AddCodingPathResponsePayload>(
@@ -1946,6 +2179,7 @@ export class MessageHandler {
     }
 
     this.codingPaths.delete(codingPath);
+    this.syncProjectDirectories();
     removeManagedCodingPath(codingPath);
 
     const response = createMessage<RemoveCodingPathResponsePayload>(
@@ -2004,10 +2238,26 @@ export class MessageHandler {
 
       // Use npm to install the latest global package
       const { stdout, stderr } = await execFileAsync('npm', [
-        'install', '-g', '@sumicom/quicksave@latest',
+        'install', '-g',
+        // npm 11 blocks lifecycle scripts unless explicitly allow-listed.
+        // These two native modules are required by the agent (SQLite history
+        // and PTY terminals); scope consent to this invocation rather than
+        // changing the user's global npm config.
+        '--allow-scripts=better-sqlite3,node-pty',
+        '@sumicom/quicksave@latest',
       ], { timeout: 120_000 });
 
-      const output = (stdout + '\n' + stderr).trim();
+      // npm can retain an already-installed native dependency while replacing
+      // the package itself. Rebuild explicitly so better-sqlite3 and node-pty
+      // match the Node ABI that will load the updated daemon.
+      const { stdout: rebuildStdout, stderr: rebuildStderr } = await execFileAsync('npm', [
+        'rebuild', '-g',
+        '--foreground-scripts',
+        '--allow-scripts=better-sqlite3,node-pty',
+        'better-sqlite3', 'node-pty',
+      ], { timeout: 120_000 });
+
+      const output = (stdout + '\n' + stderr + '\n' + rebuildStdout + '\n' + rebuildStderr).trim();
 
       // Parse the installed version from npm output
       // npm output typically contains lines like: + @sumicom/quicksave@0.5.3
@@ -2114,6 +2364,119 @@ export class MessageHandler {
     );
   }
 
+  /**
+   * A deliberately reduced, read-only OpenCode configuration view. Raw config
+   * may contain API keys or header values, so it must never be returned to the
+   * PWA. This snapshot is also schema-tolerant while agents transition from
+   * OpenCode v1 to v2.
+   */
+  private async handleOpenCodeConfigSnapshot(
+    message: Message,
+  ): Promise<Message<OpenCodeConfigSnapshotResponsePayload>> {
+    try {
+      const { getOpenCodeServer } = await import('../ai/openCodeServer.js');
+      const server = getOpenCodeServer();
+      const directory = process.cwd();
+      const [health, config, mcpStatus, providerResult, agents, commands] = await Promise.all([
+        server.getHealth(),
+        server.getConfig(directory),
+        server.listMcp(directory),
+        server.listProviders(directory),
+        server.listAgents(directory),
+        server.listCommands(directory),
+      ]);
+      const snapshot = summarizeOpenCodeConfig({
+        version: health.version,
+        config,
+        mcpStatus,
+        providers: providerResult,
+        agents,
+        commands,
+        exaEnabled: getOpenCodeEnableExa(),
+      });
+      const response = createMessage<OpenCodeConfigSnapshotResponsePayload>(
+        'opencode:config-snapshot:response', snapshot,
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<OpenCodeConfigSnapshotResponsePayload>(
+        'opencode:config-snapshot:response',
+        emptyOpenCodeSnapshot(error instanceof Error ? error.message : 'Failed to load OpenCode configuration'),
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleOpenCodeMcpUpsert(
+    message: Message<OpenCodeMcpUpsertRequestPayload>,
+  ): Promise<Message<OpenCodeMcpMutationResponsePayload>> {
+    try {
+      const name = message.payload.name.trim();
+      const config = message.payload.config;
+      if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new Error('MCP name may only contain letters, numbers, dot, underscore, and dash');
+      if (config.type === 'local' && (!config.command || config.command.length === 0)) throw new Error('Local MCP requires a command');
+      if (config.type === 'remote' && !config.url) throw new Error('Remote MCP requires a URL');
+      await updateOpenCodeMcpConfig(name, config as unknown as Record<string, unknown>);
+      // Apply additions/updates to the already-running server immediately.
+      const { getOpenCodeServer } = await import('../ai/openCodeServer.js');
+      await getOpenCodeServer().addMcp(name, config as unknown as Record<string, unknown>, process.cwd());
+      const response = createMessage<OpenCodeMcpMutationResponsePayload>('opencode:mcp-upsert:response', { success: true });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<OpenCodeMcpMutationResponsePayload>('opencode:mcp-upsert:response', { success: false, error: error instanceof Error ? error.message : 'Failed to save MCP' });
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleOpenCodeMcpRemove(
+    message: Message<OpenCodeMcpRemoveRequestPayload>,
+  ): Promise<Message<OpenCodeMcpMutationResponsePayload>> {
+    try {
+      const name = message.payload.name.trim();
+      if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new Error('Invalid MCP name');
+      if (name.toLowerCase().includes('quicksave')) throw new Error('Quicksave-managed MCP cannot be removed');
+      await updateOpenCodeMcpConfig(name, null);
+      const response = createMessage<OpenCodeMcpMutationResponsePayload>('opencode:mcp-remove:response', { success: true });
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<OpenCodeMcpMutationResponsePayload>('opencode:mcp-remove:response', { success: false, error: error instanceof Error ? error.message : 'Failed to remove MCP' });
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  /** Persist the built-in Exa switch before restarting the OpenCode child.
+   * It is deliberately agent-owned rather than part of the OpenCode JSONC,
+   * so it remains per-machine and does not expose a raw config editor. */
+  private async handleOpenCodeWebSearchUpdate(
+    message: Message<OpenCodeWebSearchUpdateRequestPayload>,
+  ): Promise<Message<OpenCodeWebSearchUpdateResponsePayload>> {
+    try {
+      const enabled = message.payload.exaEnabled;
+      if (typeof enabled !== 'boolean') throw new Error('exaEnabled must be a boolean');
+      setOpenCodeEnableExa(enabled);
+      const { getOpenCodeServer } = await import('../ai/openCodeServer.js');
+      await getOpenCodeServer().restart();
+      const response = createMessage<OpenCodeWebSearchUpdateResponsePayload>(
+        'opencode:websearch-update:response', { success: true },
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<OpenCodeWebSearchUpdateResponsePayload>(
+        'opencode:websearch-update:response',
+        { success: false, error: error instanceof Error ? error.message : 'Failed to update web search' },
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
   // ==========================================================================
   // systemd user-unit (Linux auto-start at login)
   //
@@ -2186,6 +2549,86 @@ export class MessageHandler {
     });
     response.id = message.id;
     return response;
+  }
+
+  private async handleCodexCheckUpdate(
+    message: Message,
+  ): Promise<Message<CodexCheckUpdateResponsePayload>> {
+    let currentVersion = 'unknown';
+    try {
+      currentVersion = await detectCodexVersion();
+      const latestVersion = await this.checkLatestCodexVersion(/* force */ true);
+      const response = createMessage<CodexCheckUpdateResponsePayload>(
+        'codex:check-update:response',
+        {
+          currentVersion,
+          latestVersion: latestVersion || undefined,
+          updateAvailable: !!latestVersion && latestVersion !== currentVersion,
+          canUpdate: !!this.getCodexUpdateMethod(),
+        },
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<CodexCheckUpdateResponsePayload>(
+        'codex:check-update:response',
+        {
+          currentVersion,
+          updateAvailable: false,
+          canUpdate: false,
+          error: error instanceof Error ? error.message : 'Failed to check Codex updates',
+        },
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleCodexUpdate(
+    message: Message,
+  ): Promise<Message<CodexUpdateResponsePayload>> {
+    let previousVersion = 'unknown';
+    try {
+      previousVersion = await detectCodexVersion();
+      const updateMethod = this.getCodexUpdateMethod();
+      if (!updateMethod) throw new Error('This Codex installation is not managed by npm or the official standalone installer.');
+
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+      if (updateMethod === 'npm') {
+        const npmBin = this.getCodexNpmBin();
+        if (!npmBin) throw new Error('Could not locate the npm executable for this Codex installation.');
+        await execFileAsync(npmBin, ['install', '-g', '@openai/codex@latest'], { timeout: 120_000 });
+      } else {
+        await execFileAsync('sh', [
+          '-c',
+          'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh',
+        ], { timeout: 120_000 });
+      }
+      const newVersion = await detectCodexVersion();
+      this.latestCodexVersionCache = { version: newVersion, checkedAt: Date.now() };
+
+      const response = createMessage<CodexUpdateResponsePayload>(
+        'codex:update:response',
+        { success: true, previousVersion, newVersion },
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<CodexUpdateResponsePayload>(
+        'codex:update:response',
+        {
+          success: false,
+          previousVersion,
+          error: error instanceof Error
+            ? (error.message.includes('EACCES') ? 'Permission denied. Update Codex with the same npm installation that installed it.' : error.message)
+            : 'Failed to update Codex',
+        },
+      );
+      response.id = message.id;
+      return response;
+    }
   }
 
   private async handleCodexListModels(
@@ -2261,6 +2704,22 @@ export class MessageHandler {
   /** Expose for the daemon to wire login-state updates into bus broadcasts. */
   getCodexLoginManager(): CodexLoginManager {
     return this.codexLoginManager;
+  }
+
+  private async handleClaudeAuthStatus(
+    message: Message,
+  ): Promise<Message<ClaudeAuthStatusResponsePayload>> {
+    const response = createMessage<ClaudeAuthStatusResponsePayload>(
+      'claude:auth-status:response',
+      await this.claudeAuthManager.getStatus(),
+    );
+    response.id = message.id;
+    return response;
+  }
+
+  /** Expose the machine-local auth detector for the bus snapshot. */
+  getClaudeAuthManager(): ClaudeAuthManager {
+    return this.claudeAuthManager;
   }
 
   // ============================================================================
@@ -2443,9 +2902,14 @@ export class MessageHandler {
       return response;
     } catch (error) {
       console.error(`[agent:resume] error:`, error);
+      const locked = (error as { code?: unknown })?.code === 'session_locked';
       const response = createMessage<ClaudeResumeResponsePayload>(
         'claude:resume:response',
-        { success: false, error: error instanceof Error ? error.message : 'Failed to resume session' }
+        {
+          success: false,
+          ...(locked ? { errorCode: 'session_locked' as const } : {}),
+          error: error instanceof Error ? error.message : 'Failed to resume session',
+        }
       );
       response.id = message.id;
       return response;
@@ -2522,33 +2986,91 @@ export class MessageHandler {
   }
 
   /**
-   * End Task: archive the session's registry entry, then terminate the live
-   * CLI process. Order matters — closeSession emits a session-updated whose
+   * End Task: archive the provider's durable session, project that result into
+   * the local registry, then terminate the live CLI process. Order matters — closeSession emits a session-updated whose
    * `archived` flag is derived from "no in-memory entry AND no active
    * registry entry". Archiving first ensures that emit carries archived=true,
    * which the PWA reads as the "navigate away" signal.
    *
-   * cwd lookup: prefer the live in-memory entry; fall back to the registry
-   * so users can still archive a stale active entry whose CLI has already
-   * exited (cold-closed sessions still appear in the drawer).
+   * cwd lookup: prefer the live in-memory entry, then registry metadata, then
+   * a single provider-native lookup for sessions Quicksave did not create.
    */
-  private handleClaudeEndTask(
+  private async handleClaudeEndTask(
     message: Message<ClaudeEndTaskRequestPayload>
-  ): Message<ClaudeEndTaskResponsePayload> {
+  ): Promise<Message<ClaudeEndTaskResponsePayload>> {
     const { sessionId } = message.payload;
-    const cwd = this.claudeService.getSessionCwd(sessionId)
-      ?? getSessionRegistry().findBySessionId(sessionId)?.cwd;
+    const registry = getSessionRegistry();
+    let native = undefined as NativeSessionSummary | undefined;
+    let cwd = this.claudeService.getSessionCwd(sessionId)
+      ?? registry.findBySessionId(sessionId)?.cwd;
+    if (!cwd) {
+      native = await this.claudeService.findNativeSessionById(sessionId);
+      // Older provider adapters only expose the bulk native-session listing.
+      // Use it as a compatibility fallback for a task Quicksave never started.
+      if (!native) {
+        native = (await this.claudeService.listNativeSessions())
+          .find((session) => session.sessionId === sessionId);
+      }
+      cwd = native?.cwd;
+      if (native) registry.upsertEntry(this.nativeSessionToRegistryEntry(native, false));
+    }
 
     let archived = false;
     if (cwd) {
-      const updated = getSessionRegistry().updateEntry(cwd, sessionId, { archived: true });
-      if (updated) {
-        archived = true;
-        this.onHistoryUpdated?.(cwd, updated, 'upsert');
+      try {
+        const archiveStorage = await this.claudeService.setSessionArchived(sessionId, cwd, true);
+        const agent = native?.agent ?? this.claudeService.getSessionAgent(sessionId, cwd);
+        const isNativeArchiveProvider = archiveStorage === 'native';
+        const updated = registry.updateEntry(cwd, sessionId, isNativeArchiveProvider
+          ? { archived: false, nativeArchived: true }
+          : { archived: true });
+        if (updated) {
+          archived = true;
+          // Native providers retain the registry record as a cache, but the
+          // browser must receive an archived entry so it removes the session.
+          this.onHistoryUpdated?.(
+            cwd,
+            isNativeArchiveProvider ? { ...updated, archived: true } : updated,
+            isNativeArchiveProvider ? 'delete' : 'upsert',
+          );
+        } else if (isNativeArchiveProvider) {
+          archived = true;
+          const entry = native
+            ? this.nativeSessionToRegistryEntry({ ...native, archived: true }, true)
+            : {
+              sessionId,
+              cwd,
+              agent,
+              repoName: basename(cwd),
+              createdAt: Date.now(),
+              lastAccessedAt: Date.now(),
+              archived: true,
+            };
+          this.onHistoryUpdated?.(cwd, entry, 'delete');
+        }
+      } catch (error) {
+        console.error(`[agent:end-task] native archive failed session=${sessionId}:`, error);
+        const response = createMessage<ClaudeEndTaskResponsePayload>(
+          'claude:end-task:response',
+          {
+            success: false,
+            error: error instanceof Error ? error.message : 'Native archive update failed',
+          },
+        );
+        response.id = message.id;
+        return response;
       }
     }
 
     const closed = this.claudeService.closeSession(sessionId);
+
+    // closeSession() emits this state transition for a live process. A
+    // registry-only session has no process to close, but after a successful
+    // archive the PWA still needs the same `archived: true` update to leave
+    // its now-defunct session page.
+    if (!closed && archived) {
+      this.claudeService.emitSessionUpdate(sessionId);
+    }
 
     // Drop persisted attachment bytes for this session — fire-and-forget;
     // a stuck rm shouldn't block the response.
@@ -2875,18 +3397,47 @@ export class MessageHandler {
   ): Promise<Message<SessionUpdateHistoryResponsePayload>> {
     const { sessionId, cwd, updates } = message.payload;
     const registry = getSessionRegistry();
-    let entry = registry.updateEntry(cwd, sessionId, updates);
-    if (!entry && updates.archived === false) {
-      const native = await this.claudeService.findNativeSession(cwd, sessionId);
-      if (native) {
-        const materialized = {
-          ...this.nativeSessionToRegistryEntry(native, false),
-          ...updates,
-          archived: false,
-        };
-        registry.upsertEntry(materialized);
-        entry = registry.getEntry(cwd, sessionId) ?? materialized;
+    const existing = registry.getEntry(cwd, sessionId)
+      ?? registry.readArchivedEntry(cwd, sessionId);
+    let native: NativeSessionSummary | undefined;
+    if (!existing && updates.archived === false) {
+      native = await this.claudeService.findNativeSession(cwd, sessionId);
+    }
+
+    // Commit the provider-native state first. A native-only, already-active
+    // thread needs no unarchive call before becoming a local registry entry.
+    if (typeof updates.archived === 'boolean' && (existing || native)) {
+      const nativeAlreadyMatches = native?.archived === updates.archived;
+      try {
+        if (!nativeAlreadyMatches) {
+          await this.claudeService.setSessionArchived(sessionId, cwd, updates.archived);
+        }
+      } catch (error) {
+        const response = createMessage<SessionUpdateHistoryResponsePayload>(
+          'session:update-history:response',
+          { success: false, error: error instanceof Error ? error.message : 'Native archive update failed' },
+        );
+        response.id = message.id;
+        return response;
       }
+    }
+
+    const nativeAgent = existing?.agent ?? native?.agent;
+    const isNativeArchiveProvider = nativeAgent === 'codex' || nativeAgent === 'opencode';
+    const localUpdates = isNativeArchiveProvider && updates.archived === true
+      ? { ...updates, archived: false, nativeArchived: true }
+      : isNativeArchiveProvider && updates.archived === false
+        ? { ...updates, nativeArchived: false }
+        : updates;
+    let entry = registry.updateEntry(cwd, sessionId, localUpdates);
+    if (!entry && native) {
+      const materialized = {
+        ...this.nativeSessionToRegistryEntry(native, false),
+        ...localUpdates,
+        archived: false,
+      };
+      registry.upsertEntry(materialized);
+      entry = registry.getEntry(cwd, sessionId) ?? materialized;
     }
     const response = createMessage<SessionUpdateHistoryResponsePayload>(
       'session:update-history:response',
@@ -2894,7 +3445,7 @@ export class MessageHandler {
     );
     response.id = message.id;
     if (entry) {
-      this.onHistoryUpdated?.(cwd, entry, 'upsert');
+      this.onHistoryUpdated?.(cwd, entry, isNativeArchiveProvider && updates.archived === true ? 'delete' : 'upsert');
     }
     return response;
   }
@@ -2923,7 +3474,9 @@ export class MessageHandler {
     const safeOffset = Math.max(0, offset | 0);
     const safeLimit = Math.max(0, limit | 0);
     const registry = getSessionRegistry();
-    const activeKeys = new Set(registry.getEntriesForProject(cwd).map((entry) => this.sessionEntryKey(entry.cwd, entry.sessionId)));
+    for (const entry of await this.claudeService.reconcileNativeArchiveStatuses(cwd)) {
+      this.onHistoryUpdated?.(cwd, entry, entry.nativeArchived ? 'delete' : 'upsert');
+    }
     const byKey = new Map<string, BroadcastSessionEntry>();
 
     for (const entry of registry.listArchivedEntries(cwd).map(enrichEntry)) {
@@ -2937,8 +3490,8 @@ export class MessageHandler {
 
     const nativeSessions = await this.claudeService.listNativeSessions(cwd);
     for (const native of nativeSessions) {
+      if (!native.archived) continue;
       const key = this.sessionEntryKey(native.cwd, native.sessionId);
-      if (activeKeys.has(key)) continue;
       const existing = byKey.get(key);
       if (existing) {
         existing.lastInteractionAt = Math.max(this.sessionInteractionAt(existing), native.lastInteractionAt);
@@ -3250,9 +3803,9 @@ export class MessageHandler {
    * of a still-running session re-creates the active entry and the
    * project reappears on the next project:list-summaries.
    */
-  private handleDeleteProject(
+  private async handleDeleteProject(
     message: Message<ProjectDeleteRequestPayload>,
-  ): Message<ProjectDeleteResponsePayload> {
+  ): Promise<Message<ProjectDeleteResponsePayload>> {
     const { cwd } = message.payload;
     const registry = getSessionRegistry();
 
@@ -3264,16 +3817,26 @@ export class MessageHandler {
     const active = registry.getEntriesForProject(cwd);
     let archivedCount = 0;
     for (const entry of active) {
-      const updated = registry.updateEntry(cwd, entry.sessionId, { archived: true });
+      try {
+        await this.claudeService.setSessionArchived(entry.sessionId, cwd, true);
+      } catch (error) {
+        console.error(`[project:delete] native archive failed session=${entry.sessionId}:`, error);
+        continue;
+      }
+      const isNativeArchiveProvider = entry.agent === 'codex' || entry.agent === 'opencode';
+      const updated = registry.updateEntry(cwd, entry.sessionId, isNativeArchiveProvider
+        ? { archived: false, nativeArchived: true }
+        : { archived: true });
       if (updated) {
         archivedCount++;
-        this.onHistoryUpdated?.(cwd, updated, 'upsert');
+        this.onHistoryUpdated?.(cwd, updated, isNativeArchiveProvider ? 'delete' : 'upsert');
       }
     }
 
     const hadCodingPath = this.codingPaths.has(cwd);
     if (hadCodingPath) {
       this.codingPaths.delete(cwd);
+      this.syncProjectDirectories();
       removeManagedCodingPath(cwd);
     }
 
