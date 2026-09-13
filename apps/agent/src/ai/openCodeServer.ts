@@ -149,6 +149,10 @@ export function buildOpenCodeQuicksaveConfig(
       [SANDBOX_BASH_TOOL]: 'allow',
       [UPDATE_SESSION_STATUS_TOOL]: 'allow',
       [DISPLAY_MARKDOWN_REPORT_TOOL]: 'allow',
+      // A question is its own user-input interaction, not an action that
+      // needs a second approval. Let OpenCode emit `question.asked`, which
+      // the provider translates into Quicksave's blocking question UI.
+      question: 'allow',
       ...(enableExa ? { websearch: 'ask' } : {}),
     },
   };
@@ -188,6 +192,7 @@ export interface OpenCodeSessionInfo {
   id: string;
   title?: string;
   directory?: string;
+  parentID?: string | null;
   time?: { created?: number; updated?: number; archived?: number | null };
 }
 
@@ -582,6 +587,14 @@ class OpenCodeServer {
     );
   }
 
+  async getSession(sessionID: string, directory?: string): Promise<OpenCodeSessionInfo> {
+    return this.req<OpenCodeSessionInfo>(
+      `/session/${encodeURIComponent(sessionID)}`,
+      {},
+      { directory },
+    );
+  }
+
   async listSessions(directory?: string): Promise<OpenCodeSessionInfo[]> {
     return this.req<OpenCodeSessionInfo[]>('/session', {}, { directory });
   }
@@ -680,6 +693,27 @@ class OpenCodeServer {
         reply,
         ...(message ? { message } : {}),
       }),
+    }, { directory });
+  }
+
+  /** Resolve OpenCode's blocking `question` tool with one answer array per
+   * question. Each inner array contains the selected labels (or one custom
+   * free-text response). */
+  async replyQuestion(
+    requestID: string,
+    directory: string,
+    answers: readonly (readonly string[])[],
+  ): Promise<void> {
+    await this.req<unknown>(`/question/${encodeURIComponent(requestID)}/reply`, {
+      method: 'POST',
+      body: JSON.stringify({ answers }),
+    }, { directory });
+  }
+
+  /** Dismiss OpenCode's blocking `question` tool without supplying answers. */
+  async rejectQuestion(requestID: string, directory: string): Promise<void> {
+    await this.req<unknown>(`/question/${encodeURIComponent(requestID)}/reject`, {
+      method: 'POST',
     }, { directory });
   }
 

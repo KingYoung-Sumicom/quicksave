@@ -91,6 +91,39 @@ describe('CodexAppServerSession server-initiated requests', () => {
     }));
   });
 
+  it('marks a single non-blocking request_user_input call as an inline follow-up', async () => {
+    const h = harness({ action: 'allow', response: 'Detailed' });
+
+    const res = await sendServerRequest(h.serverSide, 'item/tool/requestUserInput', {
+      threadId: h.threadId,
+      turnId: 'turn_1',
+      itemId: 'item_optional_question',
+      isBlocking: false,
+      autoResolutionMs: null,
+      questions: [{
+        id: 'detail_level',
+        header: 'Detail level',
+        question: 'How much detail would you prefer?',
+        isOther: true,
+        isSecret: false,
+        options: [{ label: 'Concise', description: 'Keep it short.' }],
+      }],
+    }, 'srv-optional');
+
+    expect(res).toEqual({
+      jsonrpc: '2.0',
+      id: 'srv-optional',
+      result: { answers: { detail_level: { answers: ['Detailed'] } } },
+    });
+    expect(h.callbacks.handlePermissionRequest).toHaveBeenCalledWith(h.threadId, expect.objectContaining({
+      requestId: codexServerRequestInputId(h.threadId, 'srv-optional'),
+      presentation: 'inline_follow_up',
+      allowFreeText: true,
+      options: [{ key: 'Concise', label: 'Concise', description: 'Keep it short.' }],
+      toolUseId: 'item_optional_question',
+    }));
+  });
+
   it('answers mcpServer/elicitation/request form prompts with structured content', async () => {
     const h = harness({ action: 'allow', response: 'user@example.com\nYes\nAlpha' });
 

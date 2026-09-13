@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   _resetCodexBinCache,
+  buildAppServerArgs,
   buildCodexCliEnv,
   checkSchemaVersionCompatibility,
   getCodexBin,
@@ -95,6 +96,19 @@ describe('buildCodexCliEnv', () => {
     const env = buildCodexCliEnv({ PATH: `${dirname(codex)}${delimiter}/usr/bin` }, codex);
 
     expect(env.PATH.split(delimiter).filter((part) => part === dirname(codex))).toHaveLength(1);
+  });
+});
+
+describe('buildAppServerArgs', () => {
+  it('places Codex global feature flags before the app-server command', () => {
+    expect(buildAppServerArgs(
+      ['--enable', 'default_mode_request_user_input'],
+      ['-c', 'foo=true'],
+    )).toEqual([
+      '--enable', 'default_mode_request_user_input',
+      'app-server',
+      '-c', 'foo=true',
+    ]);
   });
 });
 

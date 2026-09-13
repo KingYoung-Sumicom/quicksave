@@ -6,6 +6,17 @@ General rules derived from past fixes. Each rule includes the reason so future d
 
 ## Mobile Layout
 
+### Connection feedback must belong to the viewed machine
+
+Session and project connection indicators must read the owning machine's
+connection state, including retry counts, handshake progress, and online status.
+Background reconnects must not show a blocking overlay over the home page or
+unrelated machines. Reserve the full-screen connection overlay for an explicit
+connection flow.
+
+**Why:** Machines reconnect independently; one unavailable machine must not
+make healthy sessions appear disconnected or prevent navigation to them.
+
 ### Root container must use `overflow-hidden`
 
 The root app container (`App.tsx`) and `#root` (in `index.css`) must use `overflow-hidden`, not `overflow-auto` or `overflow-scroll`. `html, body` are also pinned to `overflow: hidden`.

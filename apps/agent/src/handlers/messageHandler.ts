@@ -540,11 +540,16 @@ export class MessageHandler {
         this.codingPaths.set(p, { path: p, name: basename(p) });
       }
     }
+    this.syncProjectDirectories();
 
     this.attachmentGcTimer = setInterval(() => this.attachmentStaging.gc(), 60_000);
     if (typeof (this.attachmentGcTimer as { unref?: () => void }).unref === 'function') {
       (this.attachmentGcTimer as { unref?: () => void }).unref!();
     }
+  }
+
+  private syncProjectDirectories(): void {
+    this.claudeService.setProjectDirectories(this.codingPaths.keys());
   }
 
   /**
@@ -2134,6 +2139,7 @@ export class MessageHandler {
 
       const newPath: CodingPath = { path: codingPath, name: basename(codingPath) };
       this.codingPaths.set(codingPath, newPath);
+      this.syncProjectDirectories();
       addManagedCodingPath(codingPath);
 
       const response = createMessage<AddCodingPathResponsePayload>(
@@ -2167,6 +2173,7 @@ export class MessageHandler {
     }
 
     this.codingPaths.delete(codingPath);
+    this.syncProjectDirectories();
     removeManagedCodingPath(codingPath);
 
     const response = createMessage<RemoveCodingPathResponsePayload>(
@@ -2979,29 +2986,47 @@ export class MessageHandler {
    * registry entry". Archiving first ensures that emit carries archived=true,
    * which the PWA reads as the "navigate away" signal.
    *
-   * cwd lookup: prefer the live in-memory entry; fall back to the registry
-   * so users can still archive a stale active entry whose CLI has already
-   * exited (cold-closed sessions still appear in the drawer).
+   * cwd lookup: prefer the live in-memory entry, then registry metadata, then
+   * a single provider-native lookup for sessions Quicksave did not create.
    */
   private async handleClaudeEndTask(
     message: Message<ClaudeEndTaskRequestPayload>
   ): Promise<Message<ClaudeEndTaskResponsePayload>> {
     const { sessionId } = message.payload;
-    const cwd = this.claudeService.getSessionCwd(sessionId)
+    let native = undefined as NativeSessionSummary | undefined;
+    let cwd = this.claudeService.getSessionCwd(sessionId)
       ?? getSessionRegistry().findBySessionId(sessionId)?.cwd;
+    if (!cwd) {
+      native = await this.claudeService.findNativeSessionById(sessionId);
+      cwd = native?.cwd;
+    }
 
     let archived = false;
     if (cwd) {
       try {
-        await this.claudeService.setSessionArchived(sessionId, cwd, true);
-        const agent = this.claudeService.getSessionAgent(sessionId, cwd);
-        const isNativeArchiveProvider = agent === 'codex' || agent === 'opencode';
+        const archiveStorage = await this.claudeService.setSessionArchived(sessionId, cwd, true);
+        const agent = native?.agent ?? this.claudeService.getSessionAgent(sessionId, cwd);
+        const isNativeArchiveProvider = archiveStorage === 'native';
         const updated = getSessionRegistry().updateEntry(cwd, sessionId, isNativeArchiveProvider
           ? { archived: false, nativeArchived: true }
           : { archived: true });
         if (updated) {
           archived = true;
           this.onHistoryUpdated?.(cwd, updated, isNativeArchiveProvider ? 'delete' : 'upsert');
+        } else if (isNativeArchiveProvider) {
+          archived = true;
+          const entry = native
+            ? this.nativeSessionToRegistryEntry({ ...native, archived: true }, true)
+            : {
+              sessionId,
+              cwd,
+              agent,
+              repoName: basename(cwd),
+              createdAt: Date.now(),
+              lastAccessedAt: Date.now(),
+              archived: true,
+            };
+          this.onHistoryUpdated?.(cwd, entry, 'delete');
         }
       } catch (error) {
         console.error(`[agent:end-task] native archive failed session=${sessionId}:`, error);
@@ -3018,6 +3043,14 @@ export class MessageHandler {
     }
 
     const closed = this.claudeService.closeSession(sessionId);
+
+    // closeSession() emits this state transition for a live process. A
+    // registry-only session has no process to close, but after a successful
+    // archive the PWA still needs the same `archived: true` update to leave
+    // its now-defunct session page.
+    if (!closed && archived) {
+      this.claudeService.emitSessionUpdate(sessionId);
+    }
 
     // Drop persisted attachment bytes for this session — fire-and-forget;
     // a stuck rm shouldn't block the response.
@@ -3783,6 +3816,7 @@ export class MessageHandler {
     const hadCodingPath = this.codingPaths.has(cwd);
     if (hadCodingPath) {
       this.codingPaths.delete(cwd);
+      this.syncProjectDirectories();
       removeManagedCodingPath(cwd);
     }
 

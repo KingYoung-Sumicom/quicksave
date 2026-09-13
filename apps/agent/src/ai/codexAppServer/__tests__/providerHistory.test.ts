@@ -2,13 +2,22 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it, vi } from 'vitest';
 
+const { spawnAppServerMock } = vi.hoisted(() => ({ spawnAppServerMock: vi.fn() }));
+
+vi.mock('../processManager.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../processManager.js')>();
+  return { ...actual, spawnAppServer: spawnAppServerMock };
+});
+
 import type { ResumeSessionOpts, StartSessionOpts } from '../../provider.js';
 import {
   buildThreadResumeParams,
   buildThreadStartParams,
+  CodexAppServerProvider,
   codexSkillsToSlashCommands,
   hydrateThreadItems,
   isUnsupportedCodexMethod,
+  isListableCodexThread,
   projectCodexThreadCards,
   readCodexHistoryPage,
   subagentThreadSnapshot,
@@ -17,6 +26,44 @@ import type { SkillsListResponse } from '../schema/generated/v2/SkillsListRespon
 import type { Thread } from '../schema/generated/v2/Thread.js';
 
 describe('CodexAppServerProvider history persistence', () => {
+  it('passes every managed project path to Codex native discovery', async () => {
+    const rootThread = {
+      id: 'thread-in-project',
+      cwd: '/repo',
+      ephemeral: false,
+      parentThreadId: null,
+      name: 'In project',
+      preview: 'Work here',
+      createdAt: 1,
+      updatedAt: 2,
+      gitInfo: null,
+    } as Thread;
+    const unrelatedThread = { ...rootThread, id: 'thread-unmanaged', cwd: '/unmanaged' };
+    const request = vi.fn(async () => ({ data: [rootThread, unrelatedThread], nextCursor: null }));
+    const shutdown = vi.fn().mockResolvedValue(undefined);
+    spawnAppServerMock.mockResolvedValue({ rpc: { request }, shutdown });
+
+    await expect(new CodexAppServerProvider().listNativeSessions({ cwd: ['/repo', '/other-repo'] }))
+      .resolves.toEqual([
+        expect.objectContaining({ sessionId: 'thread-in-project', cwd: '/repo' }),
+      ]);
+
+    expect(request).toHaveBeenCalledWith('thread/list', expect.objectContaining({
+      cwd: ['/repo', '/other-repo'],
+    }));
+  });
+
+  it('keeps native discovery within the requested project paths', () => {
+    const rootThread = {
+      ephemeral: false,
+      parentThreadId: null,
+      cwd: '/repo',
+    } satisfies Pick<Thread, 'ephemeral' | 'parentThreadId' | 'cwd'>;
+
+    expect(isListableCodexThread(rootThread, ['/repo', '/other-repo'])).toBe(true);
+    expect(isListableCodexThread({ ...rootThread, cwd: '/unmanaged' }, ['/repo', '/other-repo'])).toBe(false);
+  });
+
   it('uses the legacy history path only for a missing app-server method', () => {
     expect(isUnsupportedCodexMethod({ code: -32601 })).toBe(true);
     expect(isUnsupportedCodexMethod({ code: -32000 })).toBe(false);
@@ -284,7 +331,25 @@ describe('projectCodexThreadCards', () => {
 
     const cards = projectCodexThreadCards('thr-history', '/repo', thread);
     expect(cards.map((card) => card.type)).toEqual(['user', 'tool_call', 'assistant_text']);
-    expect(cards[0]).toMatchObject({ text: 'Inspect this repo', turnId: 'turn-1' });
-    expect(cards[2]).toMatchObject({ text: 'The repo has one changed file.', streaming: false });
+    expect(cards[0]).toMatchObject({ text: 'Inspect this repo', turnId: 'turn-1', nativeItemId: 'user-1' });
+    expect(cards[2]).toMatchObject({ text: 'The repo has one changed file.', streaming: false, nativeItemId: 'message-1' });
+  });
+
+  it('does not project agentMessage questions as pending app-server input', () => {
+    const thread = {
+      id: 'thr-history',
+      turns: [{ id: 'turn-1', startedAt: 1, items: [
+        {
+          type: 'agentMessage',
+          id: 'message-1',
+          text: 'The implementation is ready.',
+          questions: [{ title: 'Would you like me to commit it?', options: ['Commit now'] }],
+        },
+      ] }],
+    } as unknown as Thread;
+
+    const cards = projectCodexThreadCards('thr-history', '/repo', thread);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ type: 'assistant_text', text: 'The implementation is ready.' });
   });
 });

@@ -2238,6 +2238,9 @@ export interface ClaudeUserInputRequestPayload {
   /** Codex auto-review / Guardian rationale attached to this pending prompt. */
   guardianMessage?: string;
   options?: ClaudeUserInputOption[];
+  /** A non-blocking Codex input is rendered as a follow-up card rather than a
+   * generic tool-call permission prompt. */
+  presentation?: 'inline_follow_up';
   // Permission-specific fields
   toolName?: string;
   toolInput?: Record<string, unknown>;

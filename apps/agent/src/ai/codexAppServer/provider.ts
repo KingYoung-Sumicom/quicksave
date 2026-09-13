@@ -20,6 +20,7 @@ import type {
   ProviderSession,
   ResumeSessionOpts,
   StartSessionOpts,
+  NativeSessionListOptions,
 } from '../provider.js';
 import { normalizePermissionLevelForAgent } from '../provider.js';
 import { makeQueuedUserPrompt, queueStateFor, type QueuedUserPrompt } from '../queuedUserPrompts.js';
@@ -205,6 +206,11 @@ function isCodexSessionLockedError(error: unknown): boolean {
   return /(?:already\s+(?:open|opened|in use).*application|application.{0,40}(?:already\s+)?(?:open|opened|in use)|another application|(?:session|thread).{0,40}(?:locked|in use))/i.test(text);
 }
 
+function isCodexSessionNotFoundError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return /(?:no rollout found|thread .* not found|unknown thread|no such thread|invalid thread id)/i.test(text);
+}
+
 /**
  * Codex provider driving the JSON-RPC v2 `app-server` protocol.
  * Phase 2 of the migration — see
@@ -334,7 +340,7 @@ export class CodexAppServerProvider implements CodingAgentProvider {
     return { sessionId: response.thread.id, session };
   }
 
-  async listNativeSessions(opts?: { cwd?: string }): Promise<NativeSessionSummary[]> {
+  async listNativeSessions(opts?: NativeSessionListOptions): Promise<NativeSessionSummary[]> {
     const handle = await spawnCodexNativeListAppServer();
     try {
       const [activeThreads, archivedThreads] = await Promise.all([
@@ -352,6 +358,23 @@ export class CodexAppServerProvider implements CodingAgentProvider {
         }
       }
       return Array.from(byId.values()).sort((a, b) => b.lastInteractionAt - a.lastInteractionAt);
+    } finally {
+      await handle.shutdown().catch(() => {});
+    }
+  }
+
+  async getNativeSession(sessionId: string): Promise<NativeSessionSummary | undefined> {
+    const handle = await spawnCodexNativeListAppServer();
+    try {
+      const response = await handle.rpc.request<ThreadReadResponse>(
+        'thread/read',
+        { threadId: sessionId, includeTurns: false },
+      );
+      if (response.thread.ephemeral || response.thread.parentThreadId !== null) return undefined;
+      return codexThreadToNativeSession(response.thread, false);
+    } catch (error) {
+      if (isCodexSessionNotFoundError(error)) return undefined;
+      throw error;
     } finally {
       await handle.shutdown().catch(() => {});
     }
@@ -1449,6 +1472,10 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     requestId: string,
   ): Promise<ToolRequestUserInputResponse> {
     const questions = params.questions ?? [];
+    // Codex emits this request for the CLI's optional bottom-of-screen prompt.
+    // It still expects a serverRequest/resolved response; `isBlocking` only
+    // means the model may keep working while the request remains pending.
+    const isInlineFollowUp = params.isBlocking === false && questions.length === 1;
     const decision = await this.callbacks.handlePermissionRequest(this.threadId, {
       requestId,
       inputType: 'question',
@@ -1457,8 +1484,18 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
         questions: questions.map(codexToolQuestionToPromptQuestion),
       },
       toolUseId: params.itemId,
+      historyAnchorItemId: params.itemId,
       title: questions[0]?.question ?? 'Codex needs input',
       message: questions.length > 1 ? 'Codex needs answers before it can continue.' : undefined,
+      ...(isInlineFollowUp ? {
+        presentation: 'inline_follow_up' as const,
+        allowFreeText: questions[0]?.isOther,
+        options: questions[0]?.options?.map((option) => ({
+          key: option.label,
+          label: option.label,
+          description: option.description || undefined,
+        })),
+      } : {}),
       skipAutoApprove: true,
     });
     if (decision.action === 'deny') return { answers: {} };
@@ -1736,6 +1773,7 @@ interface PromptQuestion {
   header?: string;
   options?: Array<{ label: string; description?: string }>;
   multiSelect?: boolean;
+  isOther?: boolean;
   isSecret?: boolean;
 }
 
@@ -1756,6 +1794,7 @@ function codexToolQuestionToPromptQuestion(question: ToolRequestUserInputQuestio
       label: option.label,
       description: option.description || undefined,
     })),
+    isOther: question.isOther || undefined,
     isSecret: question.isSecret || undefined,
   };
 }
@@ -2178,9 +2217,19 @@ async function readAllPersistedPages<T extends { nextCursor: string | null }>(
 /** Build a stable final-state UI projection from persisted Codex items. */
 export function projectCodexThreadCards(sessionId: string, cwd: string, thread: Thread): Card[] {
   const builder = new StreamCardBuilder(sessionId, cwd);
+  const nativeItemByCardId = new Map<string, string>();
   for (const turn of thread.turns) {
     builder.startNewTurn(turn.id);
-    for (const item of turn.items) projectCodexItem(builder, item);
+    for (const item of turn.items) {
+      const before = new Set(builder.getCards().map((card) => card.id));
+      projectCodexItem(builder, item);
+      // One native item can render several visual cards (for example a file
+      // change with multiple paths). Keep all of them as an anchor target for
+      // supplemental user-input records; the merge picks the final one.
+      for (const card of builder.getCards()) {
+        if (!before.has(card.id)) nativeItemByCardId.set(card.id, item.id);
+      }
+    }
     for (const event of builder.markTurnCompleted(turn.id)) void event;
   }
   // StreamCardBuilder sequence IDs are intentionally ephemeral. A history
@@ -2191,7 +2240,11 @@ export function projectCodexThreadCards(sessionId: string, cwd: string, thread: 
     const turnKey = card.turnId ?? 'thread';
     const index = (cardIndexByTurn.get(turnKey) ?? 0) + 1;
     cardIndexByTurn.set(turnKey, index);
-    return { ...card, id: `${sessionId}:codex:${turnKey}:${index}` } as Card;
+    return {
+      ...card,
+      id: `${sessionId}:codex:${turnKey}:${index}`,
+      ...(nativeItemByCardId.get(card.id) ? { nativeItemId: nativeItemByCardId.get(card.id) } : {}),
+    } as Card;
   });
 }
 
@@ -2235,6 +2288,10 @@ function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promis
       // thread/resume. Keep its process CWD aligned with the thread CWD;
       // passing `cwd` only in the RPC params is too late for that setup.
       cwd: opts.cwd,
+      // This experimental feature enables request_user_input in Default mode.
+      // It is intentionally per-process, so Quicksave does not mutate the
+      // user's persistent Codex configuration.
+      globalArgs: ['--enable', 'default_mode_request_user_input'],
       extraArgs: buildCodexSandboxMcpConfigArgs({
         cwd: opts.cwd,
         sessionId: 'sessionId' in opts ? opts.sessionId : undefined,
@@ -2246,7 +2303,7 @@ function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promis
 
 async function listCodexThreads(
   handle: AppServerHandle,
-  cwd: string | undefined,
+  cwd: string | readonly string[] | undefined,
   archived: boolean,
 ): Promise<Thread[]> {
   const threads: Thread[] = [];
@@ -2257,20 +2314,27 @@ async function listCodexThreads(
       limit: 100,
       sortKey: 'updated_at',
       sortDirection: 'desc',
-      cwd: cwd ?? null,
+      cwd: typeof cwd === 'string' ? cwd : cwd ? [...cwd] : null,
       archived,
     };
     const response = await handle.rpc.request<ThreadListResponse>('thread/list', params);
     threads.push(
-      ...response.data.filter((thread) =>
-        !thread.ephemeral &&
-        thread.parentThreadId === null &&
-        (!cwd || thread.cwd === cwd)
-      ),
+      ...response.data.filter((thread) => isListableCodexThread(thread, cwd)),
     );
     cursor = response.nextCursor;
   } while (cursor);
   return threads;
+}
+
+/** Only root threads in the requested project paths belong in session history. */
+export function isListableCodexThread(
+  thread: Pick<Thread, 'ephemeral' | 'parentThreadId' | 'cwd'>,
+  cwd?: string | readonly string[],
+): boolean {
+  const matchesCwd = typeof cwd === 'string'
+    ? thread.cwd === cwd
+    : !cwd || cwd.includes(thread.cwd);
+  return !thread.ephemeral && thread.parentThreadId === null && matchesCwd;
 }
 
 function codexThreadToNativeSession(thread: Thread, archived: boolean): NativeSessionSummary {

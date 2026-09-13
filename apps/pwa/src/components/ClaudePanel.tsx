@@ -825,9 +825,9 @@ export function ClaudePanel({
 
   /**
    * Send a fixed prompt without using the composer input. Used by inline
-   * action cards (recovery_suggested → `/compact`). Resume-only — these
-   * actions are always invoked on an active session, never to start a new
-   * one. Skips the attachment / draft / streaming-state machinery since
+   * recovery action cards (`recovery_suggested` → `/compact`).
+   * Resume-only — these actions are always invoked on an active session,
+   * never to start a new one. Skips attachment / draft machinery since
    * there's no composer state to consume.
    */
   const handleSendQuickPrompt = useCallback(async (prompt: string) => {

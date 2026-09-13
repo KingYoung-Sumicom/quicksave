@@ -156,6 +156,32 @@ describe('cardAdapter — agentMessage streaming', () => {
       .join('');
     expect(concatenated).toBe('standalone reply');
   });
+
+  it('does not infer an input request from agentMessage questions', async () => {
+    const h = harness();
+    await h.send('item/completed', {
+      threadId: 'thr_test',
+      turnId: 'turn_1',
+      item: {
+        type: 'agentMessage',
+        id: 'msg_follow_up',
+        text: 'The implementation is ready.',
+        phase: null,
+        memoryCitation: null,
+        questions: [{ title: 'Would you like me to commit it?', options: ['Commit now', 'Keep reviewing'] }],
+      },
+    });
+    await h.send('turn/completed', {
+      threadId: 'thr_test',
+      turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const followUp = h.events.find(
+      (event) => event.type === 'add' && event.card.type === 'follow_up_question',
+    );
+    expect(followUp).toBeUndefined();
+  });
 });
 
 describe('cardAdapter — commandExecution', () => {
