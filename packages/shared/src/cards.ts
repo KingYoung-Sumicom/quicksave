@@ -313,6 +313,12 @@ export interface PendingInputWithContext extends PendingInputAttachment {
 export interface CardHistoryResponse {
   cards: Card[];
   /**
+   * Native-provider time window represented by this page. The daemon uses it
+   * to query only locally persisted supplemental cards that can belong here.
+   * It is intentionally advisory: native item ids remain the ordering key.
+   */
+  nativeTimeRange?: { startMs: number; endMs: number };
+  /**
    * Exact total when the backing store can provide one. Native cursor APIs do
    * not expose it without scanning every page, so it is intentionally absent
    * for those responses.

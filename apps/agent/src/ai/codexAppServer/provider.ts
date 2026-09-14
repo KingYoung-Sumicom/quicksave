@@ -2090,7 +2090,13 @@ export async function readCodexHistoryPage(
       { threadId: opts.sessionId, includeTurns: true },
     );
     const cards = projectCodexThreadCards(opts.sessionId, opts.cwd, legacy.thread);
-    return { cards, total: cards.length, hasMore: false };
+    const nativeTimeRange = codexHistoryTimeRange(legacy.thread.turns);
+    return {
+      cards,
+      total: cards.length,
+      hasMore: false,
+      ...(nativeTimeRange ? { nativeTimeRange } : {}),
+    };
   }
 
   let page: ThreadTurnsListResponse;
@@ -2106,7 +2112,13 @@ export async function readCodexHistoryPage(
       { threadId: opts.sessionId, includeTurns: true },
     );
     const cards = projectCodexThreadCards(opts.sessionId, opts.cwd, legacy.thread);
-    return { cards, total: cards.length, hasMore: false };
+    const nativeTimeRange = codexHistoryTimeRange(legacy.thread.turns);
+    return {
+      cards,
+      total: cards.length,
+      hasMore: false,
+      ...(nativeTimeRange ? { nativeTimeRange } : {}),
+    };
   }
 
   let turns = page.data;
@@ -2140,6 +2152,7 @@ export async function readCodexHistoryPage(
     ...metadata.thread,
     turns: [...turns].reverse(),
   });
+  const nativeTimeRange = codexHistoryTimeRange(turns);
   const nextCursor = page.nextCursor ? encodeCodexHistoryCursor(page.nextCursor) : undefined;
   return {
     cards,
@@ -2147,6 +2160,33 @@ export async function readCodexHistoryPage(
     // been read, which we deliberately never do merely to populate a counter.
     hasMore: !!nextCursor,
     ...(nextCursor ? { nextCursor } : {}),
+    ...(nativeTimeRange ? { nativeTimeRange } : {}),
+  };
+}
+
+/** Turn timestamps are the only durable native time information available for
+ * history items. Pad the second-precision provider values so a local card
+ * emitted inside the turn cannot fall just outside the SQLite range. */
+function codexHistoryTimeRange(
+  turns: readonly Thread['turns'][number][],
+): { startMs: number; endMs: number } | undefined {
+  let earliest = Number.POSITIVE_INFINITY;
+  let latest = Number.NEGATIVE_INFINITY;
+  const now = Date.now();
+
+  for (const turn of turns) {
+    const startedAt = turn.startedAt == null ? undefined : turn.startedAt * 1_000;
+    const completedAt = turn.completedAt == null ? undefined : turn.completedAt * 1_000;
+    const first = startedAt ?? completedAt;
+    const last = completedAt ?? (startedAt == null ? undefined : now);
+    if (first !== undefined && Number.isFinite(first)) earliest = Math.min(earliest, first);
+    if (last !== undefined && Number.isFinite(last)) latest = Math.max(latest, last);
+  }
+
+  if (!Number.isFinite(earliest) || !Number.isFinite(latest)) return undefined;
+  return {
+    startMs: Math.floor(earliest) - 1_000,
+    endMs: Math.ceil(latest) + 1_000,
   };
 }
 

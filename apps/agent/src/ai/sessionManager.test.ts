@@ -71,6 +71,7 @@ vi.mock('./cardHistoryIndex.js', () => ({
   loadPersistedCardCursorPage: vi.fn().mockResolvedValue({
     cards: [], total: 0, hasMore: false, persistedLiveCount: 0,
   }),
+  loadPersistedCardsInTimeRange: vi.fn().mockResolvedValue([]),
   loadPersistedCardMaxSequence: vi.fn().mockResolvedValue(0),
   loadPersistedCardPage: vi.fn().mockResolvedValue({ cards: [], total: 0, hasMore: false }),
 }));
@@ -2209,11 +2210,13 @@ describe('SessionManager', () => {
           ],
           total: 2,
           hasMore: false,
+          nativeTimeRange: { startMs: 1, endMs: 3 },
         }),
       };
       const mgr = new SessionManager([codexProvider], 'codex' as any);
       const { loadPersistedCards } = await import('./cardBuilder.js');
-      (loadPersistedCards as Mock).mockResolvedValue([
+      const { loadPersistedCardsInTimeRange } = await import('./cardHistoryIndex.js');
+      (loadPersistedCardsInTimeRange as Mock).mockResolvedValue([
         {
           type: 'follow_up_question',
           id: 'follow-up-1',
@@ -2233,6 +2236,8 @@ describe('SessionManager', () => {
         { id: 'native-2' },
       ]);
       expect(result.total).toBe(3);
+      expect(loadPersistedCardsInTimeRange).toHaveBeenCalledWith('codex-history', { startMs: 1, endMs: 3 });
+      expect(loadPersistedCards).not.toHaveBeenCalled();
     });
 
     it('waits for the history page containing a follow-up anchor instead of appending it below newer cards', async () => {
@@ -2262,6 +2267,30 @@ describe('SessionManager', () => {
 
       const older = await mgr.getCards('codex-history', '/tmp/test', 1, 50, 'codex-offset:older');
       expect(older.cards.map((card) => card.id)).toEqual(['anchored', 'follow-up-old']);
+    });
+
+    it('keeps an unresolved item anchor hidden instead of placing it at its turn tail', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex'),
+        historyMode: 'codex-thread' as const,
+        loadCardHistory: vi.fn().mockResolvedValue({
+          cards: [
+            { type: 'assistant_text', id: 'same-turn', timestamp: 1, text: 'Native answer', streaming: false, turnId: 'turn-1', nativeItemId: 'item-other' },
+            { type: 'assistant_text', id: 'later-turn', timestamp: 2, text: 'Later turn', streaming: false, turnId: 'turn-2', nativeItemId: 'item-later' },
+          ],
+          hasMore: false,
+        }),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      const { loadPersistedCards } = await import('./cardBuilder.js');
+      (loadPersistedCards as Mock).mockResolvedValue([{
+        type: 'follow_up_question', id: 'orphaned-follow-up', timestamp: 1,
+        question: 'Original choice?', answer: 'Yes', turnId: 'turn-1', historyAnchorItemId: 'missing-native-item',
+      }]);
+
+      const result = await mgr.getCards('codex-history', '/tmp/test');
+
+      expect(result.cards.map((card) => card.id)).toEqual(['same-turn', 'later-turn']);
     });
 
     it('should return cards from history for claude-jsonl provider', async () => {
