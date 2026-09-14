@@ -11,6 +11,7 @@ import { setQuicksaveDir } from '../service/singleton.js';
 import { loadPersistedCards, StreamCardBuilder } from './cardBuilder.js';
 import {
   closeCardHistoryIndexForTests,
+  loadPersistedCardsInTimeRange,
   loadPersistedCardCursorPage,
   loadPersistedCardPage,
 } from './cardHistoryIndex.js';
@@ -202,6 +203,22 @@ describe('memory-mode card history persistence', () => {
     const second = await loadPersistedCardPage('indexed', 0, 10);
     expect(second.total).toBe(81);
     expect(second.cards.at(-1)).toMatchObject({ id: 'indexed:81', text: 'msg-80' });
+  });
+
+  it('uses the timestamp index to load only cards within a native history page', async () => {
+    mkdirSync(cardHistoryDir(), { recursive: true });
+    const logPath = join(cardHistoryDir(), 'timestamp-range.jsonl');
+    writeFileSync(logPath, [
+      JSON.stringify({ op: 'upsert', card: { type: 'user', id: 'old', timestamp: 1_000, text: 'old' } }),
+      JSON.stringify({ op: 'upsert', card: { type: 'follow_up_question', id: 'in-range', timestamp: 2_000, question: 'Question?' } }),
+      JSON.stringify({ op: 'upsert', card: { type: 'user', id: 'new', timestamp: 3_000, text: 'new' } }),
+      '',
+    ].join('\n'));
+
+    await expect(loadPersistedCardsInTimeRange('timestamp-range', {
+      startMs: 1_500,
+      endMs: 2_500,
+    })).resolves.toMatchObject([{ id: 'in-range' }]);
   });
 
   it('places cursor history before the persisted prefix of an active turn', async () => {

@@ -44,6 +44,7 @@ import {
 } from './cardBuilder.js';
 import {
   loadPersistedCardCursorPage,
+  loadPersistedCardsInTimeRange,
   loadPersistedCardMaxSequence,
   loadPersistedCardPage,
 } from './cardHistoryIndex.js';
@@ -198,12 +199,11 @@ function buildAskUserAnswers(
 
 /** Insert persisted optional Codex prompts beside the native item (or turn)
  * that emitted them. Native provider history is page-based, so a prompt whose
- * anchor is on an older page stays hidden until that page is loaded rather
- * than being incorrectly appended beneath the newest conversation. */
+ * anchor is absent stays hidden rather than being incorrectly appended beneath
+ * the newest conversation. */
 function insertSupplementalFollowUps(
   cards: Card[],
   supplemental: readonly Card[],
-  hasMore: boolean,
 ): number {
   const existingIds = new Set(cards.map((card) => card.id));
   const insertedAfter = new Map<string, number>();
@@ -233,15 +233,19 @@ function insertSupplementalFollowUps(
     if (anchorIndex === undefined && card.historyAnchorItemId) {
       anchorIndex = findLastIndex((nativeCard) => nativeCard.nativeItemId === card.historyAnchorItemId);
     }
-    if (anchorIndex === undefined && card.turnId) {
+    // An item id is an exact native-history anchor. Do not silently degrade an
+    // unresolved item anchor to the end of its turn: that produces a plausible
+    // but incorrect dialogue order after a reload. Turn anchoring is reserved
+    // for legacy cards that predate item-level anchors.
+    if (anchorIndex === undefined && !card.historyAnchorItemId && card.turnId) {
       anchorIndex = findLastIndex((nativeCard) => nativeCard.turnId === card.turnId);
     }
 
     if (anchorIndex === undefined || anchorIndex < 0) {
-      // No matching anchor in this page. A later page can place it correctly;
-      // only append once we know this is the complete native history.
-      if (hasMore) continue;
-      anchorIndex = cards.length - 1;
+      // No matching anchor in this page. Keep the supplemental card deferred
+      // even after native history is exhausted: a misleading tail placement is
+      // worse than temporarily hiding an orphaned native-provider prompt.
+      continue;
     }
 
     const insertAt = anchorIndex + 1;
@@ -1695,7 +1699,13 @@ export class SessionManager extends EventEmitter {
     // Apply this to every history page: older prompts wait for their anchor
     // turn rather than being misplaced in the newest page.
     if ((provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread') && !useLocalCardHistory) {
-      const persistedFollowUps = (await loadPersistedCards(sessionId))
+      // Native Codex pages carry their turn-time window. Query the local card
+      // index only for records that could belong to this page; item ids still
+      // decide the exact insertion point below.
+      const persistedCards = result.nativeTimeRange
+        ? await loadPersistedCardsInTimeRange(sessionId, result.nativeTimeRange)
+        : await loadPersistedCards(sessionId);
+      const persistedFollowUps = persistedCards
         .filter((card) => card.type === 'follow_up_question');
       const liveFollowUps = (ps?.cardBuilder?.getCards() ?? [])
         .filter((card) => card.type === 'follow_up_question');
@@ -1706,7 +1716,6 @@ export class SessionManager extends EventEmitter {
       const inserted = insertSupplementalFollowUps(
         result.cards,
         Array.from(supplementalById.values()),
-        result.hasMore,
       );
       if (inserted > 0 && result.total !== undefined) result.total += inserted;
     }

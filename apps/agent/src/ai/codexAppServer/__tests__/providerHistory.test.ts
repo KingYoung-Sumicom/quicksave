@@ -224,6 +224,7 @@ describe('readCodexHistoryPage', () => {
     expect(page.total).toBeUndefined();
     expect(page.hasMore).toBe(true);
     expect(page.nextCursor).toMatch(/^codex-turn-page:/);
+    expect(page.nativeTimeRange).toEqual({ startMs: 0, endMs: 3_000 });
     expect(request.mock.calls.map(([method]) => method)).toEqual([
       'thread/read', 'thread/turns/list', 'thread/items/list',
     ]);

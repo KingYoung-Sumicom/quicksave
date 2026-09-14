@@ -37,6 +37,7 @@ interface DbHandle {
   deleteCards: Database.Statement;
   countCards: Database.Statement;
   pageCards: Database.Statement;
+  cardsInTimeRange: Database.Statement;
   pageCardsBeforeOrdinal: Database.Statement;
   hasCardsBeforeOrdinal: Database.Statement;
   allCardIds: Database.Statement;
@@ -113,6 +114,12 @@ function getDb(): DbHandle {
       ORDER BY timestamp ASC, ordinal ASC, card_id ASC
       LIMIT ? OFFSET ?
     `) as DbHandle['pageCards'],
+    cardsInTimeRange: db.prepare(`
+      SELECT card_id, timestamp, ordinal, card_json
+      FROM card_history_cards
+      WHERE session_id = ? AND timestamp >= ? AND timestamp <= ?
+      ORDER BY timestamp ASC, ordinal ASC, card_id ASC
+    `) as DbHandle['cardsInTimeRange'],
     pageCardsBeforeOrdinal: db.prepare(`
       SELECT card_id, timestamp, ordinal, card_json
       FROM card_history_cards
@@ -355,6 +362,27 @@ export async function loadPersistedCardPage(
     total,
     hasMore: start > 0,
   };
+}
+
+/** Read only the locally persisted cards whose timestamps overlap a native
+ * provider history page. The composite `(session_id, timestamp, ...)` index
+ * makes this bounded even for long-lived native threads. */
+export async function loadPersistedCardsInTimeRange(
+  sessionId: string,
+  range: { startMs: number; endMs: number },
+): Promise<Card[]> {
+  const startMs = Number.isFinite(range.startMs) ? range.startMs : Number.NEGATIVE_INFINITY;
+  const endMs = Number.isFinite(range.endMs) ? range.endMs : Number.POSITIVE_INFINITY;
+  if (endMs < startMs) return [];
+
+  if (!syncIndex(sessionId)) {
+    return (await loadPersistedCards(sessionId)).filter((card) => (
+      Number.isFinite(card.timestamp) && card.timestamp >= startMs && card.timestamp <= endMs
+    ));
+  }
+
+  const rows = getDb().cardsInTimeRange.all(sessionId, startMs, endMs) as CardRow[];
+  return rows.map((row) => JSON.parse(row.card_json) as Card);
 }
 
 const MEMORY_ORDINAL_CURSOR_PREFIX = 'memory-ordinal:';
