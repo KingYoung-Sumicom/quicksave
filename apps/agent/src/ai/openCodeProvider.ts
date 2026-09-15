@@ -109,7 +109,10 @@ type AnyPart = TextPart | ReasoningPart | ToolPart | StepFinishPart | BasePart;
 // server has no concept of a default fallback per request — the provider
 // must be named explicitly — so we surface the failure up-front rather than
 // silently sending nothing.
-const OPENCODE_MODEL_RE = /^[^/\s]+\/[^\s]+$/;
+// Provider IDs cannot contain whitespace, but configured model IDs may (for
+// example, vLLM model names such as `Qwen3.8 27B`). Keep boundary whitespace
+// invalid so accidental padding is not persisted as part of the model ID.
+const OPENCODE_MODEL_RE = /^[^/\s]+\/\S(?:.*\S)?$/;
 
 export function isValidOpenCodeModelId(model: string | undefined | null): model is string {
   return typeof model === 'string' && OPENCODE_MODEL_RE.test(model);

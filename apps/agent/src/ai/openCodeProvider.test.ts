@@ -217,6 +217,9 @@ describe('isValidOpenCodeModelId', () => {
     expect(isValidOpenCodeModelId('opencode/big-pickle')).toBe(true);
     expect(isValidOpenCodeModelId('anthropic/claude-3-sonnet')).toBe(true);
   });
+  it('accepts spaces inside model IDs', () => {
+    expect(isValidOpenCodeModelId('thor-vllm/Qwen3.8 27B')).toBe(true);
+  });
   it('accepts multi-segment paths', () => {
     expect(isValidOpenCodeModelId('vllm/palmfuture/Qwen3.6-35B')).toBe(true);
   });
@@ -226,6 +229,8 @@ describe('isValidOpenCodeModelId', () => {
     expect(isValidOpenCodeModelId(null)).toBe(false);
     expect(isValidOpenCodeModelId('')).toBe(false);
     expect(isValidOpenCodeModelId('   ')).toBe(false);
+    expect(isValidOpenCodeModelId('thor-vllm/ Qwen3.8 27B')).toBe(false);
+    expect(isValidOpenCodeModelId('thor-vllm/Qwen3.8 27B ')).toBe(false);
   });
 });
 

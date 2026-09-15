@@ -182,7 +182,7 @@ const savedPrefs = loadPrefs();
 // format so the agent falls through to opencode's configured default.
 {
   const ocPrefs = savedPrefs.agentPrefs['opencode'];
-  if (ocPrefs.model && !/^[^/\s]+\/[^\s]+$/.test(ocPrefs.model)) {
+  if (ocPrefs.model && !/^[^/\s]+\/\S(?:.*\S)?$/.test(ocPrefs.model)) {
     ocPrefs.model = '';
   }
 }
