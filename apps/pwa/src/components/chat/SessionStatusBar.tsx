@@ -13,7 +13,7 @@ import {
   normalizeAgentId,
 } from '../../lib/claudePresets';
 import { useClaudeStore } from '../../stores/claudeStore';
-import { selectCodexModelsForAgent, useConnectionStore } from '../../stores/connectionStore';
+import { selectCodexModelsForAgent, selectOpenCodeModelsForAgent, useConnectionStore } from '../../stores/connectionStore';
 import { CodexGoalBadge } from './CodexGoalBadge';
 
 interface SessionStatusBarProps {
@@ -65,7 +65,7 @@ export function SessionStatusBar({
   const rawAgent = (config.agent as string) ?? 'claude-code';
   const agentId = normalizeAgentId(rawAgent);
   const provider = getAgentProvider(agentId);
-  const opencodeModels = useConnectionStore((s) => s.opencodeModels);
+  const opencodeModels = useConnectionStore((s) => selectOpenCodeModelsForAgent(s, sessionMachineAgentId));
   const dynamic = { codexModels, opencodeModels };
   const selectedCodexModel = codexModels.find((model) => model.id === config.model);
   const fastServiceTierId = getCodexFastServiceTierId(selectedCodexModel);
