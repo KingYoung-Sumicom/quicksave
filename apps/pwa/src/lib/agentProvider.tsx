@@ -390,27 +390,13 @@ abstract class BaseAgentProvider implements AgentProvider {
     onChange: (key: string, value: unknown) => void,
     opts: RenderChipsOpts,
   ): React.ReactNode[] {
-    const { openPopover, onOpenPopover, dynamic } = opts;
+    const { dynamic } = opts;
     const nodes: React.ReactNode[] = [];
 
-    // Model chip
+    // Model chip (provider + model when the catalog is grouped)
     const models = this.getModels(dynamic);
     if (models.length > 0) {
-      const modelLabel = models.find((m) => m.value === values['model'])?.label
-        ?? (values['model'] as string | undefined)
-        ?? 'Unknown';
-      nodes.push(
-        <StatusChipButton
-          key="model"
-          chipKey="model"
-          label={modelLabel}
-          open={openPopover === 'model'}
-          onOpen={() => onOpenPopover(openPopover === 'model' ? null : 'model')}
-          options={models}
-          currentValue={values['model'] as string}
-          onSelect={(v) => { onChange('model', v); onOpenPopover(null); }}
-        />,
-      );
+      nodes.push(...this.renderModelChips(models, values, onChange, opts));
     }
 
     for (const desc of this.getSettings(dynamic)) {
@@ -418,6 +404,62 @@ abstract class BaseAgentProvider implements AgentProvider {
     }
 
     return nodes;
+  }
+
+  /** One model chip, or a provider chip + model chip when every model is
+   *  grouped under a provider (OpenCode) — keeps each dropdown short. */
+  protected renderModelChips(
+    models: ReadonlyArray<Option>,
+    values: Record<string, unknown>,
+    onChange: (key: string, value: unknown) => void,
+    { openPopover, onOpenPopover }: RenderChipsOpts,
+  ): React.ReactNode[] {
+    const selected = models.find((m) => m.value === values['model']);
+    const grouped = models.every((m) => m.providerId);
+    const providerIds = grouped ? [...new Set(models.map((m) => m.providerId!))] : [];
+
+    const chip = (
+      key: string,
+      label: string,
+      options: ReadonlyArray<Option>,
+      currentValue: string,
+      onSelect: (value: string) => void,
+    ): React.ReactNode => (
+      <StatusChipButton
+        key={key}
+        chipKey={key}
+        label={label}
+        open={openPopover === key}
+        onOpen={() => onOpenPopover(openPopover === key ? null : key)}
+        options={options}
+        currentValue={currentValue}
+        onSelect={onSelect}
+      />
+    );
+
+    if (providerIds.length <= 1) {
+      const modelLabel = selected?.label ?? (values['model'] as string | undefined) ?? 'Unknown';
+      return [chip('model', modelLabel, models, values['model'] as string, (v) => { onChange('model', v); onOpenPopover(null); })];
+    }
+
+    const providers = providerIds
+      .map((id) => models.find((m) => m.providerId === id)!)
+      .map((m) => ({ value: m.providerId!, label: m.providerName ?? m.providerId! }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    const providerId = selected?.providerId ?? providers[0].value;
+    const providerLabel = providers.find((p) => p.value === providerId)?.label
+      ?? (values['model'] as string | undefined)
+      ?? 'Unknown';
+    const providerModels = models.filter((m) => m.providerId === providerId);
+
+    return [
+      chip('modelProvider', providerLabel, providers, providerId, (v) => {
+        const first = models.find((m) => m.providerId === v);
+        if (first) onChange('model', first.value);
+        onOpenPopover(null);
+      }),
+      chip('model', selected?.label ?? (values['model'] as string | undefined) ?? 'Unknown', providerModels, values['model'] as string, (v) => { onChange('model', v); onOpenPopover(null); }),
+    ];
   }
 
   protected renderSettingChip(
