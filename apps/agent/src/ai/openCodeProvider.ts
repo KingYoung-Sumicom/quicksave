@@ -391,7 +391,7 @@ export class OpenCodeProvider implements CodingAgentProvider {
     await this.server.getMessagePage(sessionId, { limit: 1, order: 'desc' });
   }
 
-  /** Read cards from OpenCode's v2 cursor API; never from Quicksave card storage. */
+  /** Read cards from Quicksave's seekable local history after recovery. */
   async loadCardHistory(opts: {
     sessionId: string;
     cwd: string;
@@ -404,10 +404,11 @@ export class OpenCodeProvider implements CodingAgentProvider {
       : undefined;
     const page = await this.server.getMessagePage(opts.sessionId, {
       limit: Math.min(200, Math.max(1, opts.limit)),
+      directory: opts.cwd,
       ...(nativeCursor ? { cursor: nativeCursor } : { order: 'desc' }),
     });
     // v2 returns descending pages by default; cards must remain chronological.
-    const cards = projectOpenCodeMessages(opts.sessionId, opts.cwd, [...page.data].reverse());
+    const cards = projectOpenCodeMessages(opts.sessionId, opts.cwd, [...page.items].reverse());
     return {
       cards,
       // v2 intentionally provides no total count. This is a lower bound; the
@@ -416,6 +417,29 @@ export class OpenCodeProvider implements CodingAgentProvider {
       hasMore: !!page.cursor.next,
       ...(page.cursor.next ? { nextCursor: `opencode-v2:${page.cursor.next}` } : {}),
     };
+  }
+
+  /** Recover provider history once into Quicksave's local card index. */
+  async usesLocalCardHistory(): Promise<boolean> {
+    return true;
+  }
+
+  async recoverLegacyCardHistory(sessionId: string, cwd: string): Promise<Card[]> {
+    const messages: OpenCodeV2Message[] = [];
+    let cursor: string | undefined;
+    const seenCursors = new Set<string>();
+    do {
+      const page = await this.server.getMessagePage(sessionId, {
+        limit: 200,
+        directory: cwd,
+        ...(cursor ? { cursor } : { order: 'desc' }),
+      });
+      messages.unshift(...page.items);
+      cursor = page.cursor.next;
+      if (cursor && seenCursors.has(cursor)) break;
+      if (cursor) seenCursors.add(cursor);
+    } while (cursor);
+    return projectOpenCodeMessages(sessionId, cwd, messages);
   }
 
   async listNativeSessions(opts?: { cwd?: string }): Promise<NativeSessionSummary[]> {

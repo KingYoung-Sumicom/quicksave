@@ -40,6 +40,7 @@ import {
   buildCardsFromHistory,
   loadPersistedCards,
   loadProviderHistoryCheckpoint,
+  seedPersistedCards,
   saveProviderHistoryCheckpoint,
 } from './cardBuilder.js';
 import {
@@ -693,9 +694,9 @@ export class SessionManager extends EventEmitter {
 
     // Create cardBuilder with 'pending' sessionId — will be updated after provider returns real one
     const cardBuilder = new StreamCardBuilder('pending', opts.cwd);
-    cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory');
+    cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory' || provider.id === 'opencode');
     cardBuilder.disablePersistence?.(
-      provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread',
+      provider.historyMode === 'codex-thread',
     );
 
     const callbacks = this.makeCallbacks(provider.id);
@@ -900,11 +901,11 @@ export class SessionManager extends EventEmitter {
       );
 
       const cardBuilder = existing?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.cwd);
-      cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory');
+      cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory' || provider.id === 'opencode');
       cardBuilder.disablePersistence?.(
-        provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread',
+        provider.historyMode === 'codex-thread',
       );
-      if (provider.historyMode === 'memory') {
+      if (provider.historyMode === 'memory' || provider.id === 'opencode') {
         cardBuilder.seedSequenceFromMax(await loadPersistedCardMaxSequence(opts.sessionId));
       }
       await cardBuilder.snapshotCutoff();
@@ -1632,7 +1633,8 @@ export class SessionManager extends EventEmitter {
       const latest = await provider.getLegacyHistoryWatermark?.(sessionId, historyCwd);
       const checkpoint = await loadProviderHistoryCheckpoint(sessionId);
       if (persisted.length === 0 || (latest !== undefined && latest !== checkpoint)) {
-        await provider.recoverLegacyCardHistory(sessionId, historyCwd);
+        const recovered = await provider.recoverLegacyCardHistory(sessionId, historyCwd);
+        await seedPersistedCards(sessionId, recovered);
         if (latest) await saveProviderHistoryCheckpoint(sessionId, latest);
       }
     }

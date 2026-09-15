@@ -50,6 +50,7 @@ import {
   buildOpenCodeUrl,
   getOpenCodeServer,
   getOpenCodeEventSessionId,
+  normalizeOpenCodeMessagePage,
   OPENCODE_SANDBOX_MCP_NAME,
   _resetOpenCodeServer,
 } from './openCodeServer.js';
@@ -107,7 +108,7 @@ function makeMockServer(): OpenCodeServer & {
       questionRejections.push({ requestID, directory });
     },
     getMessages: async () => messages,
-    getMessagePage: async () => ({ data: [], cursor: {} }),
+    getMessagePage: async () => ({ items: [], cursor: {} }),
     getHealth: async () => ({ healthy: true, version: '1.18.4' }),
     listProviders: async () => ({
       all: [
@@ -246,6 +247,17 @@ describe('parseModelId', () => {
 });
 
 describe('OpenCode HTTP protocol helpers', () => {
+  it('normalizes current, legacy, and nested message page responses', () => {
+    const message = { id: 'msg_1', type: 'user', text: 'hello' };
+    expect(normalizeOpenCodeMessagePage({ items: [message], cursor: { next: 'n1' } })).toEqual({
+      items: [message], cursor: { next: 'n1' },
+    });
+    expect(normalizeOpenCodeMessagePage({ data: [message], cursor: {} }).items).toEqual([message]);
+    expect(normalizeOpenCodeMessagePage({ items: { data: [message], cursor: { previous: 'p1' } } })).toEqual({
+      items: [message], cursor: { previous: 'p1' },
+    });
+  });
+
   it('routes directory as a query parameter', () => {
     const url = buildOpenCodeUrl('http://127.0.0.1:4096', '/session/ses_1/message', {
       directory: '/workspace/a b',
@@ -1324,14 +1336,16 @@ describe('OpenCodeProvider', () => {
   it('uses the OpenCode v2 cursor directly for older card pages', async () => {
     const server = makeMockServer();
     const page = vi.fn().mockResolvedValue({
-      data: [{ id: 'msg_old', type: 'user', text: 'older prompt' }],
+      items: [{ id: 'msg_old', type: 'user', text: 'older prompt' }],
       cursor: { next: 'native-next' },
     });
     (server as any).getMessagePage = page;
     const result = await new OpenCodeProvider(server).loadCardHistory({
       sessionId: 'ses_history', cwd: '/workspace/a', offset: 1, limit: 50, cursor: 'opencode-v2:native-current',
     });
-    expect(page).toHaveBeenCalledWith('ses_history', { limit: 50, cursor: 'native-current' });
+    expect(page).toHaveBeenCalledWith('ses_history', {
+      limit: 50, cursor: 'native-current', directory: '/workspace/a',
+    });
     expect(result.cards.map((card) => card.type)).toEqual(['user']);
     expect(result.hasMore).toBe(true);
     expect(result.nextCursor).toBe('opencode-v2:native-next');

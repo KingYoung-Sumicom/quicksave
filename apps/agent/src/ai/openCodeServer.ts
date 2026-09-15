@@ -230,8 +230,41 @@ export interface OpenCodeV2Message {
 }
 
 export interface OpenCodeV2MessagePage {
-  data: OpenCodeV2Message[];
+  /** Current v2 API field (OpenCode 1.18+). */
+  items: OpenCodeV2Message[];
   cursor: { previous?: string; next?: string };
+}
+
+/** Normalize the message-page shapes emitted by OpenCode server revisions.
+ *
+ * The v2 SDK documents `{ items, cursor }`, while some installed builds have
+ * returned `{ data, cursor }` or nested the page under `items`. Keep this
+ * compatibility boundary here so the provider never spreads a non-array.
+ */
+export function normalizeOpenCodeMessagePage(value: unknown): OpenCodeV2MessagePage {
+  if (Array.isArray(value)) return { items: value as OpenCodeV2Message[], cursor: {} };
+  if (!isRecord(value)) return { items: [], cursor: {} };
+
+  const nested = isRecord(value.items) ? value.items : undefined;
+  const rawItems = Array.isArray(value.items)
+    ? value.items
+    : Array.isArray(value.data)
+      ? value.data
+      : nested && (Array.isArray(nested.items) || Array.isArray(nested.data))
+        ? (nested.items ?? nested.data)
+        : [];
+  const rawCursor = isRecord(value.cursor)
+    ? value.cursor
+    : nested && isRecord(nested.cursor)
+      ? nested.cursor
+      : {};
+  return {
+    items: rawItems as OpenCodeV2Message[],
+    cursor: {
+      ...(typeof rawCursor.previous === 'string' ? { previous: rawCursor.previous } : {}),
+      ...(typeof rawCursor.next === 'string' ? { next: rawCursor.next } : {}),
+    },
+  };
 }
 
 export interface OpenCodeLegacyMessagePage {
@@ -250,6 +283,41 @@ function v2ToolOutput(value: unknown): string {
   }
   if (value === undefined) return '';
   try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+/** Adapt the working v1 message response to the projected v2 shape. */
+function legacyMessagesToV2(messages: OpenCodeLegacyMessagePage['data']): OpenCodeV2Message[] {
+  return messages.map((message) => {
+    const info = message.info;
+    const id = typeof info.id === 'string' ? info.id : `legacy-${Date.now()}`;
+    if (info.role === 'user') {
+      return {
+        id,
+        type: 'user',
+        text: message.parts
+          .filter((part) => part.type === 'text' && typeof part.text === 'string')
+          .map((part) => part.text as string)
+          .join(''),
+      };
+    }
+    const content: Array<Record<string, unknown>> = message.parts.flatMap((part, index): Array<Record<string, unknown>> => {
+      if (part.type === 'text' && typeof part.text === 'string') {
+        return [{ type: 'text', text: part.text }];
+      }
+      if (part.type === 'reasoning' && typeof part.text === 'string') {
+        return [{ type: 'reasoning', id: String(part.id ?? `${id}:reasoning:${index}`), text: part.text }];
+      }
+      if (part.type !== 'tool') return [];
+      const state = isRecord(part.state) ? part.state : {};
+      return [{
+        type: 'tool',
+        id: String(part.callID ?? part.id ?? `${id}:tool:${index}`),
+        name: String(part.tool ?? 'unknown'),
+        state: { ...state, content: state.content ?? state.output ?? [] },
+      }];
+    });
+    return { id, type: 'assistant', content };
+  });
 }
 
 /** Adapter for the current streaming router, which still consumes v1-shaped parts. */
@@ -673,13 +741,25 @@ class OpenCodeServer {
    */
   async getMessagePage(
     sessionID: string,
-    opts: { limit: number; cursor?: string; order?: 'asc' | 'desc' },
+    opts: { limit: number; cursor?: string; order?: 'asc' | 'desc'; directory?: string },
   ): Promise<OpenCodeV2MessagePage> {
-    return this.req<OpenCodeV2MessagePage>(
+    const response = await this.req<unknown>(
       `/api/session/${encodeURIComponent(sessionID)}/message`,
       {},
       { limit: opts.limit, ...(opts.cursor ? { cursor: opts.cursor } : { order: opts.order ?? 'desc' }) },
     );
+    const page = normalizeOpenCodeMessagePage(response);
+    // OpenCode 1.18.x can expose the v2 route while returning an empty page
+    // for sessions stored in legacy message tables. The legacy route still
+    // returns those messages, so use it as a compatibility fallback.
+    if (page.items.length === 0 && opts.directory) {
+      const legacy = await this.getLegacyMessagePage(sessionID, opts.directory, opts.cursor);
+      return {
+        items: legacyMessagesToV2(legacy.data),
+        cursor: legacy.nextCursor ? { next: legacy.nextCursor } : {},
+      };
+    }
+    return page;
   }
 
   /** Legacy v1 history is cursor-paged with x-next-cursor. Kept solely to
@@ -708,8 +788,8 @@ class OpenCodeServer {
    *   [{ info: { id, role, ... }, parts: [{ type: 'tool'|'text'|..., ... }] }]
    */
   async getMessages(sessionID: string, _directory: string): Promise<Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>> {
-    const page = await this.getMessagePage(sessionID, { limit: 200, order: 'desc' });
-    return page.data.map(toLegacyMessage);
+    const page = await this.getMessagePage(sessionID, { limit: 200, order: 'desc', directory: _directory });
+    return page.items.map(toLegacyMessage);
   }
 
   async abortSession(sessionID: string, directory: string): Promise<void> {
