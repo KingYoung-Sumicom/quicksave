@@ -9,8 +9,7 @@ export function BashToolView({ input, headerSuffix, isPending, expanded, label, 
   headerSuffix?: ReactNode;
   isPending?: boolean;
   expanded?: boolean;
-  /** Optional pill rendered at the start of the header — used by sandbox
-   *  variants (e.g. SandboxBash) to identify themselves. */
+  /** Optional pill rendered at the start of the header. */
   label?: string;
   /** Tailwind classes for the label pill. Defaults to a cyan tone matching
    *  the sandbox accent color. */
@@ -53,8 +52,7 @@ export function BashToolView({ input, headerSuffix, isPending, expanded, label, 
   );
 }
 
-/** Bash run inside Quicksave's sandboxed MCP. Visually tagged so it's
- *  unmistakable from a regular Bash invocation. */
+/** Display compatibility for SandboxBash calls stored by older sessions. */
 export function SandboxBashToolView(props: {
   input: Record<string, unknown>;
   headerSuffix?: ReactNode;

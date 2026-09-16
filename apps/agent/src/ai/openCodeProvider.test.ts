@@ -51,7 +51,7 @@ import {
   getOpenCodeServer,
   getOpenCodeEventSessionId,
   normalizeOpenCodeMessagePage,
-  OPENCODE_SANDBOX_MCP_NAME,
+  OPENCODE_QUICKSAVE_MCP_NAME,
   _resetOpenCodeServer,
 } from './openCodeServer.js';
 
@@ -155,9 +155,9 @@ describe('OpenCode Quicksave MCP injection', () => {
       enabled: boolean;
       timeout: number;
     }>;
-    const command = mcp[OPENCODE_SANDBOX_MCP_NAME]?.command ?? [];
+    const command = mcp[OPENCODE_QUICKSAVE_MCP_NAME]?.command ?? [];
 
-    expect(OPENCODE_SANDBOX_MCP_NAME).toBe('mcp__quicksave-sandbox_');
+    expect(OPENCODE_QUICKSAVE_MCP_NAME).toBe('mcp__quicksave-tools_');
     expect(command[0]).toBe(join(
       __testDir,
       '..',
@@ -166,17 +166,17 @@ describe('OpenCode Quicksave MCP injection', () => {
       '.bin',
       'tsx',
     ));
-    expect(command[1]).toBe(join(__testDir, 'sandboxMcpStdio.ts'));
+    expect(command[1]).toBe(join(__testDir, 'quicksaveToolsMcpStdio.ts'));
     expect(command).not.toContain('--cwd');
     expect(config.plugin).toEqual([
       expect.stringMatching(/openCodeMcpPlugin\.ts$/),
     ]);
     expect(config.permission).toMatchObject({
-      'mcp__quicksave-sandbox__SandboxBash': 'allow',
-      'mcp__quicksave-sandbox__UpdateSessionStatus': 'allow',
-      'mcp__quicksave-sandbox__DisplayMarkdownReport': 'allow',
+      'mcp__quicksave-tools__UpdateSessionStatus': 'allow',
+      'mcp__quicksave-tools__DisplayMarkdownReport': 'allow',
       question: 'allow',
     });
+    expect(config.permission).not.toHaveProperty('mcp__quicksave-tools__SandboxBash');
   });
 
   it('preserves JSONC config content while overriding only Quicksave keys', () => {
@@ -197,7 +197,7 @@ describe('OpenCode Quicksave MCP injection', () => {
     expect(config.plugin[0]).toBe('existing-plugin');
     expect(config.mcp.existing.url).toBe('https://example.com/mcp');
     expect(config.permission['*']).toBe('ask');
-    expect(config.permission['mcp__quicksave-sandbox__UpdateSessionStatus']).toBe('allow');
+    expect(config.permission['mcp__quicksave-tools__UpdateSessionStatus']).toBe('allow');
   });
 
   it('enables built-in Exa only when the persistent machine setting asks for it', () => {
@@ -1252,7 +1252,7 @@ describe('OpenCode tool normalization', () => {
 
   it('hides the host-injected MCP session id from tool cards', () => {
     expect(normalizeOpenCodeToolInput(
-      'mcp__quicksave-sandbox__UpdateSessionStatus',
+      'mcp__quicksave-tools__UpdateSessionStatus',
       { stage: 'working', _quicksaveSessionId: 'ses_123' },
     )).toEqual({ stage: 'working' });
   });

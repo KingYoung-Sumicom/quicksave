@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import type { Attachment, CardEvent, CardStreamEnd, ContextUsageBreakdown, SlashCommandInfo } from '@sumicom/quicksave-shared';
 import type { ClaudeUsageRawResponse } from './claudeUsage.js';
 import { StreamCardBuilder, localCommandDisplayText } from './cardBuilder.js';
-import { SANDBOX_MCP_NAME, SANDBOX_BASH_TOOL, buildSandboxMcpServerConfig } from './sandboxMcp.js';
+import { QUICKSAVE_MCP_NAME, buildQuicksaveToolsMcpServerConfig } from './quicksaveToolsMcp.js';
 import { DebugLogger } from './debugLogger.js';
 import { attachmentsToContentBlocks } from './contentBlocks.js';
 import { persistAttachments } from './attachmentStore.js';
@@ -124,13 +124,6 @@ export function buildClaudeCliArgs(opts: {
   }
 
   const permissionRequestHooks: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }> = [];
-  const sandboxAllowHook = {
-    type: 'command',
-    command: `printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'`,
-  };
-  if (opts.sandboxed) {
-    permissionRequestHooks.push({ matcher: SANDBOX_BASH_TOOL, hooks: [sandboxAllowHook] });
-  }
   if (opts.bypassFlagPath) {
     // Universal hook: if the sentinel file exists, approve the tool; otherwise
     // emit nothing so the CLI continues to the permission-prompt-tool (which
@@ -150,7 +143,7 @@ export function buildClaudeCliArgs(opts: {
 
   const mcpConfig = {
     mcpServers: {
-      [SANDBOX_MCP_NAME]: buildSandboxMcpServerConfig({
+      [QUICKSAVE_MCP_NAME]: buildQuicksaveToolsMcpServerConfig({
         ownDir: opts.ownDir,
         cwd: opts.cwd,
         sessionId: opts.resumeSessionId,

@@ -265,20 +265,20 @@ const sessionManager = new SessionManager(new MyCustomProvider());
 
 Codex (`CodexPermissionPreset`) 使用 `read-only`、`default`、`auto-review`、`full-access`。新 session 預設刻意採 `auto-review` 且 `sandboxed=false`：Codex 會以 `danger-full-access` 執行，並由 auto-review 處理 approval prompt；若需要受限模式，使用 `read-only`。舊 Claude-only 值的相容映射：`bypassPermissions` → `full-access`、`plan` → `read-only`、`auto` → `auto-review`、`acceptEdits` → `default`。
 
-**Sandbox MCP 工具權限：**
+**Quicksave tools MCP 工具權限：**
 - `UpdateSessionStatus` — 永遠自動核准，在 `sessionManager.shouldAutoApprove` 中處理，把
   `subject` / `stage` / `blocked` / `note` 寫回 session config 與 `SessionRegistryEntry`，
   並觸發 `session-config-updated` 事件。`note` 欄位採 append-only：每次呼叫附帶非空 `note`
   時，會附加一筆 `{ts, text}` 到 `SessionRegistryEntry.noteHistory`，超過
   `SESSION_NOTE_HISTORY_CAP`（50）時由舊至新裁切；同時把最新一行鏡射到 `note` 供 home
   screen 快速顯示。`noteHistory` 透過既有的 `/sessions/history` bus 頻道廣播。
-- `SandboxBash`（sandbox ON）— 自動核准，在 kernel sandbox 內執行
-- `SandboxBash`（sandbox OFF）— 視為 `Bash`，依 permissionMode 的 auto-approve 規則處理
+
+共享 MCP server 刻意不提供 shell execution tool。各 provider 使用自己的權限審核系統；
+Codex 另外把 `sandboxed` 映射到 app-server 原生 sandbox policy。
 
 ### System Prompt
 
 透過 `--append-system-prompt` CLI 參數注入，start 和 resume 都帶。固定內容：
-- 引導 Claude 偏好 `SandboxBash` 做 read-only commands
 - 要求 Claude 在每個新 session 的第一回合呼叫 `UpdateSessionStatus`（ticket model：
   `subject` + `stage ∈ {investigating, working, verifying, done}` + `blocked` flag + `note`），
   並在 stage 變化 / 卡住解除 / 有值得回報的進度時再次更新。`note` 會寫入 session 的 append-only

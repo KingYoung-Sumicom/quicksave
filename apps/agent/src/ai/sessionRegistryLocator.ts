@@ -3,7 +3,7 @@
 /**
  * Pure helper for locating a session's registry file by correlation id.
  *
- * Lives in its own side-effect-free module (not `sandboxMcpStdio.ts`, which
+ * Lives in its own side-effect-free module (not `quicksaveToolsMcpStdio.ts`, which
  * connects a stdio transport at import time) so it can be unit-tested.
  */
 import { existsSync, readdirSync, readFileSync, type Dirent } from 'fs';

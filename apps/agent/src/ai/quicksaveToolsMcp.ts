@@ -1,26 +1,25 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 /**
- * Sandbox MCP constants and spawn-config helper.
+ * Quicksave tools MCP constants and spawn-config helper.
  *
- * The actual MCP server is in `sandboxMcpStdio.ts`.
+ * The actual MCP server is in `quicksaveToolsMcpStdio.ts`.
  */
 
 import { existsSync } from 'fs';
 import { join } from 'path';
 
-/** MCP server name — tool names appear as `mcp__quicksave-sandbox__<tool>` in canUseTool. */
-export const SANDBOX_MCP_NAME = 'quicksave-sandbox';
-export const SANDBOX_MCP_PREFIX = `mcp__${SANDBOX_MCP_NAME}__`;
-export const SANDBOX_BASH_TOOL = `${SANDBOX_MCP_PREFIX}SandboxBash`;
-export const UPDATE_SESSION_STATUS_TOOL = `${SANDBOX_MCP_PREFIX}UpdateSessionStatus`;
-export const DISPLAY_MARKDOWN_REPORT_TOOL = `${SANDBOX_MCP_PREFIX}DisplayMarkdownReport`;
+/** MCP server name — tool names appear as `mcp__quicksave-tools__<tool>` in canUseTool. */
+export const QUICKSAVE_MCP_NAME = 'quicksave-tools';
+export const QUICKSAVE_MCP_PREFIX = `mcp__${QUICKSAVE_MCP_NAME}__`;
+export const UPDATE_SESSION_STATUS_TOOL = `${QUICKSAVE_MCP_PREFIX}UpdateSessionStatus`;
+export const DISPLAY_MARKDOWN_REPORT_TOOL = `${QUICKSAVE_MCP_PREFIX}DisplayMarkdownReport`;
 /** Codex-only opt-in for a native exec_command completion notification. */
 export const REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME = 'RegisterBackgroundExecutionCompletion';
 export const REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL =
-  `${SANDBOX_MCP_PREFIX}${REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME}`;
+  `${QUICKSAVE_MCP_PREFIX}${REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME}`;
 
-export interface SandboxMcpServerConfig {
+export interface QuicksaveToolsMcpServerConfig {
   type: 'stdio';
   command: string;
   args: string[];
@@ -38,9 +37,9 @@ export interface SandboxMcpServerConfig {
  *      upward from cwd for `.bin/tsx`, so from the project root it falls
  *      through to fetching from the npm registry — which in practice exits
  *      with `sh: 1: tsx: not found`, and Claude CLI marks the server
- *      `mcp_servers[quicksave-sandbox].status = "failed"`. The MCP tools then
- *      never reach the model's tool surface and neither `SandboxBash` nor
- *      `UpdateSessionStatus` are callable.
+ *      `mcp_servers[quicksave-tools].status = "failed"`. The MCP tools then
+ *      never reach the model's tool surface and `UpdateSessionStatus` is not
+ *      callable.
  *
  *   2. Even if tsx were resolvable, running through `npx` pulls npm's warning
  *      output (e.g. the `.npmrc` "Unknown project config" warning) onto stdout.
@@ -48,12 +47,12 @@ export interface SandboxMcpServerConfig {
  *      handshake reply corrupts the stream and the CLI tears the server down.
  *
  * So: resolve `tsx` by absolute path relative to the agent package. Behavior
- * is pinned by `sandboxMcp.test.ts`; break it and tests fail.
+ * is pinned by `quicksaveToolsMcp.test.ts`; break it and tests fail.
  */
-export function buildSandboxMcpServerConfig(opts: {
+export function buildQuicksaveToolsMcpServerConfig(opts: {
   /** The provider's own dir — `dirname(fileURLToPath(import.meta.url))`.
    * Expected to be `apps/agent/src/ai` (dev, tsx) or `apps/agent/dist/ai` (prod, node).
-   * Used to locate `sandboxMcpStdio.{ts,js}` and the agent package's node_modules. */
+   * Used to locate `quicksaveToolsMcpStdio.{ts,js}` and the agent package's node_modules. */
   ownDir: string;
   /** Project directory the MCP server operates in — becomes `--cwd`. */
   cwd: string;
@@ -64,16 +63,13 @@ export function buildSandboxMcpServerConfig(opts: {
   sessionId?: string;
   /** Correlation id for fresh sessions, where `sessionId` isn't known yet at
    *  spawn. Becomes `--corr`; the stdio server resolves its registry file by
-   *  matching this against each entry's `mcpCorrId`. See `sandboxMcpStdio.ts`. */
+   *  matching this against each entry's `mcpCorrId`. See `quicksaveToolsMcpStdio.ts`. */
   corrId?: string;
-  /** Hide SandboxBash from the MCP inventory. Codex has native shell execution
-   *  and only needs UpdateSessionStatus from this server. */
-  includeSandboxBash?: boolean;
   /** Expose the Codex-only native completion registration tool. */
   includeNativeCompletionRegistration?: boolean;
-}): SandboxMcpServerConfig {
-  const tsPath = join(opts.ownDir, 'sandboxMcpStdio.ts');
-  const jsPath = join(opts.ownDir, 'sandboxMcpStdio.js');
+}): QuicksaveToolsMcpServerConfig {
+  const tsPath = join(opts.ownDir, 'quicksaveToolsMcpStdio.ts');
+  const jsPath = join(opts.ownDir, 'quicksaveToolsMcpStdio.js');
   const hasTs = existsSync(tsPath);
 
   // Dev: invoke tsx directly by absolute path. See header comment for why
@@ -88,7 +84,6 @@ export function buildSandboxMcpServerConfig(opts: {
   if (!opts.inheritCwd) args.push('--cwd', opts.cwd);
   if (opts.sessionId) args.push('--session-id', opts.sessionId);
   if (opts.corrId) args.push('--corr', opts.corrId);
-  if (opts.includeSandboxBash === false) args.push('--no-sandbox-bash');
   if (opts.includeNativeCompletionRegistration === true) args.push('--native-completion-registration');
 
   return { type: 'stdio', command, args };

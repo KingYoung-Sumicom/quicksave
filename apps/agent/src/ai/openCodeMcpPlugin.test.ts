@@ -10,7 +10,7 @@ describe('OpenCode Quicksave MCP plugin', () => {
   it('injects the OpenCode session id into Quicksave MCP calls', async () => {
     const output = { args: { stage: 'working' } };
     await injectQuicksaveSessionId({
-      tool: 'mcp__quicksave-sandbox__UpdateSessionStatus',
+      tool: 'mcp__quicksave-tools__UpdateSessionStatus',
       sessionID: 'ses_123',
       callID: 'call_1',
     }, output);

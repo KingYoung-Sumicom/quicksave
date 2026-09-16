@@ -119,7 +119,7 @@ export function resolveHookCommand(): { interpreter: string; handlerPath: string
   // lives at `apps/agent/node_modules/.bin/tsx` (not hoisted to the workspace
   // root), so `npx tsx` searches upward from the wrong cwd, falls through to a
   // registry fetch, and dies with `sh: 1: tsx: not found` — exactly the Stop
-  // hook failure this guards against. See sandboxMcp.ts for the same fix.
+  // hook failure this guards against. See quicksaveToolsMcp.ts for the same fix.
   // __ownDir is apps/agent/src/ai/claudeTerminal → three levels up is apps/agent.
   const tsHandler = join(__ownDir, 'hookHandler.ts');
   const tsxBin = join(__ownDir, '..', '..', '..', 'node_modules', '.bin', 'tsx');

@@ -87,8 +87,8 @@ apps/agent/src/
 │   ├── sessionRegistry.ts      # SessionRegistry: active+archived metadata (see below)
 │   ├── enrichEntry.ts          # Decorate registry entries for /sessions/history snapshot
 │   ├── systemPrompt.ts         # `--append-system-prompt` builder
-│   ├── sandboxMcp.ts           # In-process MCP server: sandbox, status, artifact, and Codex completion-registration tool defs
-│   ├── sandboxMcpStdio.ts      # stdio adapter for the same MCP server when run as a subprocess
+│   ├── quicksaveToolsMcp.ts           # MCP names/config: status, artifact, and Codex completion-registration tools
+│   ├── quicksaveToolsMcpStdio.ts      # stdio adapter for the same MCP server when run as a subprocess
 │   ├── debugLogger.ts          # Per-session NDJSON debug log (QUICKSAVE_DEBUG=1)
 │   ├── asyncQueue.ts           # Single-flight async queue helper
 │   ├── commitSummary.ts        # CommitSummaryService: commit message via Anthropic SDK (requires API key)
@@ -190,7 +190,7 @@ claude:start → MessageHandler.handleClaudeStart()
               (also fires `callbacks.onCacheTouch` on SDK cache hit/write tokens)
               result → callbacks.emitStreamEnd
        For CodexAppServerProvider:
-         spawn('codex', ['--enable', 'default_mode_request_user_input', 'app-server', ...sandboxMcpConfig])
+         spawn('codex', ['--enable', 'default_mode_request_user_input', 'app-server', ...quicksaveToolsMcpConfig])
          → initialize / initialized JSON-RPC handshake
          → rpc.request('thread/start' or 'thread/resume', {…}) to load the Codex thread
          → rpc.request('turn/start', { threadId, input, ...runtimeOverrides })
@@ -463,7 +463,7 @@ interface CodingAgentProvider {
 - `cwd` — project directory
 - `model?` — model override
 - `permissionLevel` — `PermissionLevel` (Claude: `default` / `acceptEdits` / `bypassPermissions` / `plan` / `auto`; Codex: `read-only` / `default` / `auto-review` / `full-access`)
-- `sandboxed` — enable sandbox
+- `sandboxed` — request a provider-native sandbox (currently consumed by Codex)
 - `systemPrompt?` — custom system prompt (fixed contents are always prepended)
 - `reasoningEffort?` — per-session reasoning depth; Codex maps to SDK `modelReasoningEffort` (`minimal/low/medium/high/xhigh`), Claude to CLI `--effort` (`low/medium/high/xhigh/max`)
 - `contextWindow?` — auto-compact ceiling for Claude Code (200k / 500k / 1M); Claude CLI sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` on spawn and appends `[1m]` model suffix when >200k; Codex ignores
@@ -524,16 +524,18 @@ Codex (`CodexPermissionPreset`): `read-only`, `default`, `auto-review`, `full-ac
   appends an entry `{ts, text}` to `SessionRegistryEntry.noteHistory`; when the list exceeds
   `SESSION_NOTE_HISTORY_CAP` (50) it is trimmed oldest-first. The latest line is also mirrored to `note` for quick display
   on the home screen. `noteHistory` is broadcast via the existing `/sessions/history` bus channel.
-- `SandboxBash` (sandbox ON) — auto-approved, executed inside the kernel sandbox
-- `SandboxBash` (sandbox OFF) — treated as `Bash`, subject to the auto-approve rules of the current permissionMode
+
+The shared MCP server intentionally exposes no shell execution tool. Providers
+use their own permission review systems; Codex additionally maps `sandboxed`
+to its native app-server sandbox policy.
 
 **Reading status back from the stdio server (correlation id):** `UpdateSessionStatus`'s
-*returned snapshot* comes from the stdio MCP process (`sandboxMcpStdio.ts`) reading the
+*returned snapshot* comes from the stdio MCP process (`quicksaveToolsMcpStdio.ts`) reading the
 `SessionRegistryEntry` file itself — separate from the authoritative write done by the daemon's
 `onToolUse` interception. To locate that file the stdio server needs to know its session id, but on a
 **fresh (non-resume) session the id doesn't exist yet at MCP spawn time** (Claude assigns it after the
 first turn). So the daemon mints a per-session `mcpCorrId` up front (`SessionManager.startSession`),
-bakes it into the spawn args as `--corr` (`buildSandboxMcpServerConfig`), and stamps it onto the
+bakes it into the spawn args as `--corr` (`buildQuicksaveToolsMcpServerConfig`), and stamps it onto the
 `SessionRegistryEntry`. The stdio server resolves its file by scanning the project's registry entries
 for the one whose `mcpCorrId` matches (`sessionRegistryLocator.findRegistryPathByCorr`) — exact and 1:1
 with the process, so it's safe even when multiple sessions share a cwd. On resume the server still gets
@@ -542,7 +544,6 @@ with the process, so it's safe even when multiple sessions share a cwd. On resum
 ### System Prompt
 
 Injected via the `--append-system-prompt` CLI argument; passed on both start and resume. Fixed contents:
-- Steers Claude to prefer `SandboxBash` for read-only commands
 - Requires Claude to call `UpdateSessionStatus` on the first turn of every new session (ticket model:
   `subject` + `stage ∈ {investigating, working, verifying, done}` + `blocked` flag + `note`),
   and to update again when the stage changes, when a block clears, or when there is reportable progress. The `note` is written

@@ -13,7 +13,7 @@ import {
   getCodexBin,
   isStandaloneCodexInstall,
 } from '../processManager.js';
-import { buildCodexSandboxMcpConfigArgs } from '../provider.js';
+import { buildCodexQuicksaveToolsMcpConfigArgs } from '../provider.js';
 
 const originalEnv = { ...process.env };
 const tmpRoots: string[] = [];
@@ -164,42 +164,41 @@ describe('checkSchemaVersionCompatibility', () => {
   });
 });
 
-describe('buildCodexSandboxMcpConfigArgs', () => {
+describe('buildCodexQuicksaveToolsMcpConfigArgs', () => {
   it('emits codex -c overrides for the quicksave MCP server', () => {
-    const args = buildCodexSandboxMcpConfigArgs({ cwd: '/tmp/project', sessionId: 'thr_123' });
+    const args = buildCodexQuicksaveToolsMcpConfigArgs({ cwd: '/tmp/project', sessionId: 'thr_123' });
     expect(args).toEqual([
       '-c',
-      expect.stringMatching(/^mcp_servers\.quicksave-sandbox\.command="/),
+      expect.stringMatching(/^mcp_servers\.quicksave-tools\.command="/),
       '-c',
-      expect.stringContaining('mcp_servers.quicksave-sandbox.args='),
+      expect.stringContaining('mcp_servers.quicksave-tools.args='),
       '-c',
-      'mcp_servers.quicksave-sandbox.default_tools_approval_mode="approve"',
+      'mcp_servers.quicksave-tools.default_tools_approval_mode="approve"',
       '-c',
-      'mcp_servers.quicksave-sandbox.tools.UpdateSessionStatus.approval_mode="approve"',
+      'mcp_servers.quicksave-tools.tools.UpdateSessionStatus.approval_mode="approve"',
       '-c',
-      'mcp_servers.quicksave-sandbox.tools.DisplayMarkdownReport.approval_mode="approve"',
+      'mcp_servers.quicksave-tools.tools.DisplayMarkdownReport.approval_mode="approve"',
       '-c',
-      'mcp_servers.quicksave-sandbox.tools.RegisterBackgroundExecutionCompletion.approval_mode="approve"',
+      'mcp_servers.quicksave-tools.tools.RegisterBackgroundExecutionCompletion.approval_mode="approve"',
       '-c',
-      'apps.quicksave-sandbox.default_tools_approval_mode="approve"',
+      'apps.quicksave-tools.default_tools_approval_mode="approve"',
       '-c',
-      'apps.quicksave-sandbox.default_tools_enabled=true',
+      'apps.quicksave-tools.default_tools_enabled=true',
       '-c',
-      'apps.quicksave-sandbox.destructive_enabled=true',
+      'apps.quicksave-tools.destructive_enabled=true',
       '-c',
-      'apps.quicksave-sandbox.open_world_enabled=true',
+      'apps.quicksave-tools.open_world_enabled=true',
       '-c',
-      'apps.quicksave-sandbox.tools.UpdateSessionStatus.approval_mode="approve"',
+      'apps.quicksave-tools.tools.UpdateSessionStatus.approval_mode="approve"',
       '-c',
-      'apps.quicksave-sandbox.tools.DisplayMarkdownReport.approval_mode="approve"',
+      'apps.quicksave-tools.tools.DisplayMarkdownReport.approval_mode="approve"',
       '-c',
-      'apps.quicksave-sandbox.tools.RegisterBackgroundExecutionCompletion.approval_mode="approve"',
+      'apps.quicksave-tools.tools.RegisterBackgroundExecutionCompletion.approval_mode="approve"',
     ]);
     expect(args[3]).toContain('"--cwd"');
     expect(args[3]).toContain('"/tmp/project"');
     expect(args[3]).toContain('"--session-id"');
     expect(args[3]).toContain('"thr_123"');
-    expect(args[3]).toContain('"--no-sandbox-bash"');
     expect(args[3]).toContain('"--native-completion-registration"');
     expect(args.join('\n')).not.toContain('SandboxBash');
   });

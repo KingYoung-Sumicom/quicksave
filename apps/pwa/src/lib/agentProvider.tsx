@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import React, { useState } from 'react';
-import { FormattedMessage } from 'react-intl';
+import React from 'react';
 import type { AgentId, AgentCapabilities, CodexModelInfo } from '@sumicom/quicksave-shared';
 import { DEFAULT_CODEX_MODEL, DEFAULT_CONTEXT_WINDOW } from '@sumicom/quicksave-shared';
 import {
@@ -202,59 +201,6 @@ function StatusChipButton({
         </div>
       )}
     </>
-  );
-}
-
-function SandboxSettingControl({
-  enabled,
-  onChange,
-  compact,
-}: {
-  enabled: boolean;
-  onChange: (v: boolean) => void;
-  compact?: boolean;
-}) {
-  const [helpOpen, setHelpOpen] = useState(false);
-  return (
-    <div className="space-y-2">
-      <ToggleSwitch
-        label={compact ? 'Sandbox' : undefined}
-        description={compact ? undefined : 'Restrict writes to project directory'}
-        enabled={enabled}
-        onChange={onChange}
-        compact={compact}
-      />
-      <button
-        type="button"
-        onClick={() => setHelpOpen((v) => !v)}
-        aria-expanded={helpOpen}
-        className="text-[11px] text-slate-500 hover:text-slate-300 transition-colors flex items-center gap-1"
-      >
-        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-        </svg>
-        <FormattedMessage id="newSession.sandbox.help.toggle" defaultMessage="What does this do?" />
-      </button>
-      {helpOpen && (
-        <div className="text-[11px] text-slate-400 space-y-1.5 rounded-md border border-slate-700/60 bg-slate-900/40 p-2.5">
-          <p className="font-semibold text-slate-300">
-            <FormattedMessage id="newSession.sandbox.help.title" defaultMessage="About sandbox mode" />
-          </p>
-          <p>
-            <span className="text-emerald-400 font-medium">
-              <FormattedMessage id="newSession.sandbox.help.onLabel" defaultMessage="On (recommended):" />
-            </span>{' '}
-            <FormattedMessage id="newSession.sandbox.help.onBody" defaultMessage="Adds a SandboxBash MCP tool." />
-          </p>
-          <p>
-            <span className="text-amber-400 font-medium">
-              <FormattedMessage id="newSession.sandbox.help.offLabel" defaultMessage="Off:" />
-            </span>{' '}
-            <FormattedMessage id="newSession.sandbox.help.offBody" defaultMessage="Removes SandboxBash." />
-          </p>
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -550,11 +496,11 @@ class ClaudeCodeAgentProvider extends BaseAgentProvider {
   readonly description: string = 'Full tool access — reads, edits, runs code';
   readonly capabilities: AgentCapabilities = {
     hasApiKey: true, hasCli: true, hasPlugin: true,
-    supportsResume: true, supportsSandbox: true, supportsStreaming: true,
+    supportsResume: true, supportsSandbox: false, supportsStreaming: true,
     supportsAttachments: true,
     supportedAttachmentKinds: ['image', 'pdf', 'text'],
   };
-  readonly features = ['controlPalette', 'git', 'sandbox'] as const;
+  readonly features = ['controlPalette', 'git'] as const;
   readonly defaultModel = CLAUDE_MODELS[CLAUDE_MODELS.length - 1].value;
   readonly defaultPermissionMode = 'auto';
   readonly defaultReasoningEffort = 'high';
@@ -581,12 +527,6 @@ class ClaudeCodeAgentProvider extends BaseAgentProvider {
         setting: { kind: 'preset', options: CLAUDE_CONTEXT_WINDOWS.map((o) => ({ value: String(o.value), label: o.label })) },
         default: DEFAULT_CONTEXT_WINDOW,
       },
-      {
-        key: 'sandbox',
-        label: 'Sandbox',
-        setting: { kind: 'boolean' },
-        default: true,
-      },
     ];
   }
 
@@ -610,17 +550,6 @@ class ClaudeCodeAgentProvider extends BaseAgentProvider {
     onChange: (key: string, value: unknown) => void,
     mode: 'new-session' | 'active-session',
   ): React.ReactNode {
-    if (desc.key === 'sandbox') {
-      return (
-        <SandboxSettingControl
-          key="sandbox"
-          enabled={(value as boolean) ?? true}
-          onChange={(v) => onChange('sandbox', v)}
-          compact={mode === 'new-session'}
-        />
-      );
-    }
-
     // Context window: hide if only one option (Haiku locked to 200k)
     if (desc.key === 'contextWindow') {
       // We don't have `model` here directly, so we use a fallback
@@ -850,9 +779,9 @@ class PiAgentProvider extends BaseAgentProvider {
   readonly description = 'Pi agent for quicksave sessions';
   readonly capabilities: AgentCapabilities = {
     hasApiKey: false, hasCli: true, hasPlugin: false,
-    supportsResume: true, supportsSandbox: true, supportsStreaming: true,
+    supportsResume: true, supportsSandbox: false, supportsStreaming: true,
   };
-  readonly features = ['git', 'sandbox'] as const;
+  readonly features = ['git'] as const;
   readonly defaultModel = '';
   readonly defaultPermissionMode = 'auto';
   readonly defaultReasoningEffort = '';
@@ -867,34 +796,7 @@ class PiAgentProvider extends BaseAgentProvider {
         setting: { kind: 'preset', options: PERMISSION_MODES },
         default: 'auto',
       },
-      {
-        key: 'sandbox',
-        label: 'Sandbox',
-        setting: { kind: 'boolean' },
-        default: true,
-      },
     ];
-  }
-
-  protected renderSettingControl(
-    desc: SettingDescriptor,
-    value: unknown,
-    onChange: (key: string, value: unknown) => void,
-    mode: 'new-session' | 'active-session',
-  ): React.ReactNode {
-    if (desc.key === 'sandbox') {
-      return (
-        <ToggleSwitch
-          key="sandbox"
-          label="Sandbox"
-          description="Restrict writes to project directory"
-          enabled={(value as boolean) ?? true}
-          onChange={(v) => onChange('sandbox', v)}
-          compact={mode === 'new-session'}
-        />
-      );
-    }
-    return super.renderSettingControl(desc, value, onChange, mode);
   }
 }
 

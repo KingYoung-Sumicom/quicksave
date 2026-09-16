@@ -231,7 +231,7 @@ export interface StartSessionOpts {
   bypassFlagPath?: string;
   /** Correlation id minted by the daemon at spawn. Threaded into the sandbox
    *  MCP server's `--corr` so it can locate this session's registry entry
-   *  before the real sessionId exists. See `sandboxMcp.ts` / `sandboxMcpStdio.ts`. */
+   *  before the real sessionId exists. See `quicksaveToolsMcp.ts` / `quicksaveToolsMcpStdio.ts`. */
   mcpCorrId?: string;
 }
 

@@ -93,7 +93,7 @@ See `docs/guidelines/testing.md` for full testing guidelines.
 
 ## Session Management
 
-You have access to `mcp__quicksave-sandbox__UpdateSessionStatus` — a ticket-style status tool that tracks what you're working on. **Always use it.** It is the user's primary signal of progress.
+You have access to `mcp__quicksave-tools__UpdateSessionStatus` — a ticket-style status tool that tracks what you're working on. **Always use it.** It is the user's primary signal of progress.
 
 - **First response of every session:** call it with `subject` (what the user is solving, e.g. "Fix auth token expiring early") and `stage` (investigating / working / verifying / done). Do not wait for the user to ask.
 - **On resume:** if you cannot see a prior status call in conversation, do a dry-run first (no args), then set/correct if blank or drifted.

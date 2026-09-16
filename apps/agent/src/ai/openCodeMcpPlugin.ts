@@ -6,7 +6,7 @@
 // sessionID, so inject it into Quicksave MCP calls immediately before
 // execution. The MCP schema accepts this private host-only argument.
 
-export const OPENCODE_QUICKSAVE_MCP_PREFIX = 'mcp__quicksave-sandbox__';
+export const OPENCODE_QUICKSAVE_MCP_PREFIX = 'mcp__quicksave-tools__';
 export const QUICKSAVE_SESSION_ID_ARG = '_quicksaveSessionId';
 
 export interface OpenCodeToolHookInput {

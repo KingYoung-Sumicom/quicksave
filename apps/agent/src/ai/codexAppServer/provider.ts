@@ -7,10 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { StreamCardBuilder } from '../cardBuilder.js';
 import { persistAttachments } from '../attachmentStore.js';
 import {
-  buildSandboxMcpServerConfig,
+  buildQuicksaveToolsMcpServerConfig,
   REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME,
-  SANDBOX_MCP_NAME,
-} from '../sandboxMcp.js';
+  QUICKSAVE_MCP_NAME,
+} from '../quicksaveToolsMcp.js';
 import type {
   CodexPermissionPreset,
   AgentCapabilities,
@@ -1570,7 +1570,7 @@ function threadIdFromParams(params: unknown): string | null {
 function nativeCompletionRegistrationHandle(item: ThreadItem): unknown | undefined {
   if (
     item.type !== 'mcpToolCall'
-    || item.server !== SANDBOX_MCP_NAME
+    || item.server !== QUICKSAVE_MCP_NAME
     || item.tool !== REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME
     || typeof item.arguments !== 'object'
     || item.arguments === null
@@ -2332,7 +2332,7 @@ function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promis
       // It is intentionally per-process, so Quicksave does not mutate the
       // user's persistent Codex configuration.
       globalArgs: ['--enable', 'default_mode_request_user_input'],
-      extraArgs: buildCodexSandboxMcpConfigArgs({
+      extraArgs: buildCodexQuicksaveToolsMcpConfigArgs({
         cwd: opts.cwd,
         sessionId: 'sessionId' in opts ? opts.sessionId : undefined,
         corrId: opts.mcpCorrId,
@@ -2403,46 +2403,45 @@ function codexSecondsToMs(value: number): number {
   return value < 10_000_000_000 ? value * 1000 : value;
 }
 
-export function buildCodexSandboxMcpConfigArgs(opts: {
+export function buildCodexQuicksaveToolsMcpConfigArgs(opts: {
   cwd: string;
   sessionId?: string;
   corrId?: string;
 }): string[] {
-  const config = buildSandboxMcpServerConfig({
+  const config = buildQuicksaveToolsMcpServerConfig({
     ownDir: __aiDir,
     cwd: opts.cwd,
     sessionId: opts.sessionId,
     corrId: opts.corrId,
-    includeSandboxBash: false,
     includeNativeCompletionRegistration: isNativeCompletionFeatureEnabled(),
   });
   return [
     '-c',
-    `mcp_servers.${SANDBOX_MCP_NAME}.command=${toTomlString(config.command)}`,
+    `mcp_servers.${QUICKSAVE_MCP_NAME}.command=${toTomlString(config.command)}`,
     '-c',
-    `mcp_servers.${SANDBOX_MCP_NAME}.args=${toTomlStringArray(config.args)}`,
+    `mcp_servers.${QUICKSAVE_MCP_NAME}.args=${toTomlStringArray(config.args)}`,
     '-c',
-    `mcp_servers.${SANDBOX_MCP_NAME}.default_tools_approval_mode="approve"`,
+    `mcp_servers.${QUICKSAVE_MCP_NAME}.default_tools_approval_mode="approve"`,
     '-c',
-    `mcp_servers.${SANDBOX_MCP_NAME}.tools.UpdateSessionStatus.approval_mode="approve"`,
+    `mcp_servers.${QUICKSAVE_MCP_NAME}.tools.UpdateSessionStatus.approval_mode="approve"`,
     '-c',
-    `mcp_servers.${SANDBOX_MCP_NAME}.tools.DisplayMarkdownReport.approval_mode="approve"`,
+    `mcp_servers.${QUICKSAVE_MCP_NAME}.tools.DisplayMarkdownReport.approval_mode="approve"`,
     '-c',
-    `mcp_servers.${SANDBOX_MCP_NAME}.tools.${REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME}.approval_mode="approve"`,
+    `mcp_servers.${QUICKSAVE_MCP_NAME}.tools.${REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME}.approval_mode="approve"`,
     '-c',
-    `apps.${SANDBOX_MCP_NAME}.default_tools_approval_mode="approve"`,
+    `apps.${QUICKSAVE_MCP_NAME}.default_tools_approval_mode="approve"`,
     '-c',
-    `apps.${SANDBOX_MCP_NAME}.default_tools_enabled=true`,
+    `apps.${QUICKSAVE_MCP_NAME}.default_tools_enabled=true`,
     '-c',
-    `apps.${SANDBOX_MCP_NAME}.destructive_enabled=true`,
+    `apps.${QUICKSAVE_MCP_NAME}.destructive_enabled=true`,
     '-c',
-    `apps.${SANDBOX_MCP_NAME}.open_world_enabled=true`,
+    `apps.${QUICKSAVE_MCP_NAME}.open_world_enabled=true`,
     '-c',
-    `apps.${SANDBOX_MCP_NAME}.tools.UpdateSessionStatus.approval_mode="approve"`,
+    `apps.${QUICKSAVE_MCP_NAME}.tools.UpdateSessionStatus.approval_mode="approve"`,
     '-c',
-    `apps.${SANDBOX_MCP_NAME}.tools.DisplayMarkdownReport.approval_mode="approve"`,
+    `apps.${QUICKSAVE_MCP_NAME}.tools.DisplayMarkdownReport.approval_mode="approve"`,
     '-c',
-    `apps.${SANDBOX_MCP_NAME}.tools.${REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME}.approval_mode="approve"`,
+    `apps.${QUICKSAVE_MCP_NAME}.tools.${REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME}.approval_mode="approve"`,
   ];
 }
 

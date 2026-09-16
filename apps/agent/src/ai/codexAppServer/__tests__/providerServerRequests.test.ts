@@ -1051,7 +1051,7 @@ function nativeCompletionRegistration(id: string, processHandle: string) {
   return {
     type: 'mcpToolCall' as const,
     id,
-    server: 'quicksave-sandbox',
+    server: 'quicksave-tools',
     tool: 'RegisterBackgroundExecutionCompletion',
     status: 'inProgress' as const,
     arguments: { processHandle },

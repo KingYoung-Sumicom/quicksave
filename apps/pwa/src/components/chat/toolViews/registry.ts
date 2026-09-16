@@ -27,9 +27,12 @@ import {
 } from './McpResourceToolView';
 
 /** Canonical tool names exposed by Quicksave's own MCP server.
- *  Mirrors the constants in apps/agent/src/ai/sandboxMcp.ts. */
-export const SANDBOX_BASH_TOOL = 'mcp__quicksave-sandbox__SandboxBash';
-export const UPDATE_SESSION_STATUS_TOOL = 'mcp__quicksave-sandbox__UpdateSessionStatus';
+ *  Mirrors the constants in apps/agent/src/ai/quicksaveToolsMcp.ts. */
+export const UPDATE_SESSION_STATUS_TOOL = 'mcp__quicksave-tools__UpdateSessionStatus';
+/** Historical display-only alias for status calls stored before the MCP rename. */
+export const LEGACY_UPDATE_SESSION_STATUS_TOOL = 'mcp__quicksave-sandbox__UpdateSessionStatus';
+/** Historical display-only alias. New sessions never receive this tool. */
+export const LEGACY_SANDBOX_BASH_TOOL = 'mcp__quicksave-sandbox__SandboxBash';
 export const LIST_MCP_RESOURCES_TOOL = 'list_mcp_resources';
 export const LIST_MCP_RESOURCE_TEMPLATES_TOOL = 'list_mcp_resource_templates';
 export const READ_MCP_RESOURCE_TOOL = 'read_mcp_resource';
@@ -90,8 +93,9 @@ export const TOOL_VIEWS: Record<string, ComponentType<ToolViewProps>> = {
   [CODEX_LIST_MCP_RESOURCES_TOOL]: ListMcpResourcesToolView,
   [CODEX_LIST_MCP_RESOURCE_TEMPLATES_TOOL]: ListMcpResourceTemplatesToolView,
   [CODEX_READ_MCP_RESOURCE_TOOL]: ReadMcpResourceToolView,
-  [SANDBOX_BASH_TOOL]: SandboxBashToolView,
+  [LEGACY_SANDBOX_BASH_TOOL]: SandboxBashToolView,
   [UPDATE_SESSION_STATUS_TOOL]: SessionStatusToolView,
+  [LEGACY_UPDATE_SESSION_STATUS_TOOL]: SessionStatusToolView,
 };
 
 /** Tool-specific accent colors for the left border */
@@ -121,6 +125,7 @@ export const TOOL_COLORS: Record<string, string> = {
   [CODEX_LIST_MCP_RESOURCES_TOOL]: 'border-cyan-500/60',
   [CODEX_LIST_MCP_RESOURCE_TEMPLATES_TOOL]: 'border-cyan-500/60',
   [CODEX_READ_MCP_RESOURCE_TOOL]: 'border-cyan-500/60',
-  [SANDBOX_BASH_TOOL]: 'border-cyan-500/60',
+  [LEGACY_SANDBOX_BASH_TOOL]: 'border-cyan-500/60',
   [UPDATE_SESSION_STATUS_TOOL]: 'border-teal-500/60',
+  [LEGACY_UPDATE_SESSION_STATUS_TOOL]: 'border-teal-500/60',
 };

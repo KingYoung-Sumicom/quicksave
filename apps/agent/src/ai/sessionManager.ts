@@ -50,7 +50,7 @@ import {
   loadPersistedCardPage,
 } from './cardHistoryIndex.js';
 import { persistAttachments } from './attachmentStore.js';
-import { SANDBOX_BASH_TOOL, UPDATE_SESSION_STATUS_TOOL } from './sandboxMcp.js';
+import { UPDATE_SESSION_STATUS_TOOL } from './quicksaveToolsMcp.js';
 import { getSessionRegistry } from './sessionRegistry.js';
 import { getEventStore } from '../storage/eventStore.js';
 import { buildSystemPrompt } from './systemPrompt.js';
@@ -689,7 +689,7 @@ export class SessionManager extends EventEmitter {
 
     // Mint a correlation id up front so the sandbox MCP server (spawned by the
     // provider before the real sessionId exists) can find this session's
-    // registry entry by matching `mcpCorrId`. See `sandboxMcpStdio.ts`.
+    // registry entry by matching `mcpCorrId`. See `quicksaveToolsMcpStdio.ts`.
     const mcpCorrId = randomUUID();
 
     // Create cardBuilder with 'pending' sessionId — will be updated after provider returns real one
@@ -2032,12 +2032,6 @@ export class SessionManager extends EventEmitter {
       return true;
     }
 
-    // SandboxBash: auto-approve when sandboxed, otherwise check as Bash
-    if (toolName === SANDBOX_BASH_TOOL) {
-      if (this.sessions.get(sessionId)?.sandboxed) return true;
-      toolName = 'Bash';  // fall through to permission check as Bash
-    }
-
     // Check permission level auto-approve set
     const agentId = this.resolveKnownSessionAgentId(sessionId);
     const level = this.sessions.get(sessionId)?.permissionLevel
@@ -2046,7 +2040,7 @@ export class SessionManager extends EventEmitter {
 
     // In full-access (bypass) mode the PermissionRequest hook handles built-in
     // tools via the sentinel file.  MCP tools (full names like
-    // "mcp__quicksave-sandbox__TaskCreate") bypass the hook entirely in default
+    // "mcp__quicksave-tools__TaskCreate") bypass the hook entirely in default
     // CLI mode and ALWAYS send can_use_tool to the daemon.  Rather than keeping
     // a fragile explicit list, approve everything here except the three tools
     // that must always reach the user (matching the hook's own exclusion list).

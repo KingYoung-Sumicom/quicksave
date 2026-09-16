@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 import type { AgentId } from '@sumicom/quicksave-shared';
 
-import { SANDBOX_BASH_TOOL, UPDATE_SESSION_STATUS_TOOL } from './sandboxMcp.js';
+import { UPDATE_SESSION_STATUS_TOOL } from './quicksaveToolsMcp.js';
 
 const STATUS_PROMPT = [
   '## Session Status Tool — MUST use every session',
@@ -36,21 +36,18 @@ const PLATFORM_PROMPTS: Partial<Record<AgentId, string[]>> = {
   'claude-code': [
     `# Required tools`,
     `## 1. Session status tool: \`${UPDATE_SESSION_STATUS_TOOL}\` — MUST call on first response`,
-    `## 2. SandboxBash: prefer over Bash for read-only commands (ls, cat, find, git log, git status, git diff).`,
     STATUS_PROMPT,
     COMMIT_TRAILER_PROMPT,
   ],
   codex: [
     `# Required tools`,
     `## 1. Session status tool: \`${UPDATE_SESSION_STATUS_TOOL}\` — MUST call on first response`,
-    `## 2. SandboxBash: prefer the \`${SANDBOX_BASH_TOOL}\` MCP tool for read-only commands.`,
     STATUS_PROMPT,
     COMMIT_TRAILER_PROMPT,
   ],
   opencode: [
     `# Required tools`,
     `## 1. Session status tool: \`${UPDATE_SESSION_STATUS_TOOL}\` — MUST call on first response`,
-    `## 2. SandboxBash: prefer the \`${SANDBOX_BASH_TOOL}\` MCP tool for read-only commands.`,
     STATUS_PROMPT,
     COMMIT_TRAILER_PROMPT,
   ],

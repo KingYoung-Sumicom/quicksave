@@ -1261,7 +1261,7 @@ describe('cardAdapter — mcpToolCall cards', () => {
       item: {
         type: 'mcpToolCall',
         id: 'mcp_status_1',
-        server: 'quicksave-sandbox',
+        server: 'quicksave-tools',
         tool: 'UpdateSessionStatus',
         status: 'inProgress',
         arguments: { subject: 'Port status cards', stage: 'working', note: 'testing' },
@@ -1276,7 +1276,7 @@ describe('cardAdapter — mcpToolCall cards', () => {
       item: {
         type: 'mcpToolCall',
         id: 'mcp_status_1',
-        server: 'quicksave-sandbox',
+        server: 'quicksave-tools',
         tool: 'UpdateSessionStatus',
         status: 'completed',
         arguments: { subject: 'Port status cards', stage: 'working', note: 'testing' },
@@ -1295,13 +1295,13 @@ describe('cardAdapter — mcpToolCall cards', () => {
       (e) =>
         e.type === 'add' &&
         (e.card as { type?: string }).type === 'tool_call' &&
-        (e.card as { toolName?: string }).toolName === 'mcp__quicksave-sandbox__UpdateSessionStatus',
+        (e.card as { toolName?: string }).toolName === 'mcp__quicksave-tools__UpdateSessionStatus',
     );
     expect(statusCard).toBeTruthy();
     expect(h.callbacks.onToolUse).toHaveBeenCalledTimes(1);
     expect(h.callbacks.onToolUse).toHaveBeenCalledWith(
       h.sessionId,
-      'mcp__quicksave-sandbox__UpdateSessionStatus',
+      'mcp__quicksave-tools__UpdateSessionStatus',
       { subject: 'Port status cards', stage: 'working', note: 'testing' },
     );
     const resultUpdate = h.events.find(
@@ -1318,7 +1318,7 @@ describe('cardAdapter — mcpToolCall cards', () => {
       item: {
         type: 'mcpToolCall',
         id: 'mcp_status_completed_only',
-        server: 'quicksave-sandbox',
+        server: 'quicksave-tools',
         tool: 'UpdateSessionStatus',
         status: 'completed',
         arguments: { stage: 'done', note: 'completed-only' },
@@ -1337,11 +1337,11 @@ describe('cardAdapter — mcpToolCall cards', () => {
       (e) =>
         e.type === 'add' &&
         (e.card as { type?: string }).type === 'tool_call' &&
-        (e.card as { toolName?: string }).toolName === 'mcp__quicksave-sandbox__UpdateSessionStatus',
+        (e.card as { toolName?: string }).toolName === 'mcp__quicksave-tools__UpdateSessionStatus',
     )).toBe(true);
     expect(h.callbacks.onToolUse).toHaveBeenCalledWith(
       h.sessionId,
-      'mcp__quicksave-sandbox__UpdateSessionStatus',
+      'mcp__quicksave-tools__UpdateSessionStatus',
       { stage: 'done', note: 'completed-only' },
     );
   });

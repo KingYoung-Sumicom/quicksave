@@ -89,11 +89,10 @@ vi.mock('./sessionRegistry.js', () => ({
   }),
 }));
 
-vi.mock('./sandboxMcp.js', () => ({
-  SANDBOX_MCP_NAME: 'quicksave-sandbox',
-  SANDBOX_MCP_PREFIX: 'mcp__quicksave-sandbox__',
-  SANDBOX_BASH_TOOL: 'mcp__quicksave-sandbox__SandboxBash',
-  UPDATE_SESSION_STATUS_TOOL: 'mcp__quicksave-sandbox__UpdateSessionStatus',
+vi.mock('./quicksaveToolsMcp.js', () => ({
+  QUICKSAVE_MCP_NAME: 'quicksave-tools',
+  QUICKSAVE_MCP_PREFIX: 'mcp__quicksave-tools__',
+  UPDATE_SESSION_STATUS_TOOL: 'mcp__quicksave-tools__UpdateSessionStatus',
 }));
 
 // ── Helpers ──
@@ -1217,7 +1216,7 @@ describe('SessionManager', () => {
 
     it('should auto-approve UpdateSessionStatus tool', async () => {
       const result = await callbacks.handlePermissionRequest(sessionId, {
-        toolName: 'mcp__quicksave-sandbox__UpdateSessionStatus',
+        toolName: 'mcp__quicksave-tools__UpdateSessionStatus',
         toolInput: { subject: 'My Task', stage: 'working' },
         toolUseId: 'tu-status',
       });
@@ -1352,18 +1351,18 @@ describe('SessionManager', () => {
     it('should auto-approve MCP tool full names in bypassPermissions mode', async () => {
       // In default CLI mode, MCP tools always send can_use_tool to the daemon
       // regardless of the PermissionRequest hook decision.  The daemon receives
-      // full MCP names like "mcp__quicksave-sandbox__TaskCreate", not plain names.
+      // full MCP names like "mcp__quicksave-tools__TaskCreate", not plain names.
       // Previously the explicit CLAUDE_AUTO_APPROVE set used plain names, so
       // every MCP tool fell through and showed a dialog even in bypass mode.
       manager.setPermissionLevel(sessionId, 'bypassPermissions');
 
       const fullMcpNames = [
-        'mcp__quicksave-sandbox__TaskCreate',
-        'mcp__quicksave-sandbox__TaskGet',
-        'mcp__quicksave-sandbox__TaskList',
-        'mcp__quicksave-sandbox__TaskUpdate',
-        'mcp__quicksave-sandbox__TaskOutput',
-        'mcp__quicksave-sandbox__TaskStop',
+        'mcp__quicksave-tools__TaskCreate',
+        'mcp__quicksave-tools__TaskGet',
+        'mcp__quicksave-tools__TaskList',
+        'mcp__quicksave-tools__TaskUpdate',
+        'mcp__quicksave-tools__TaskOutput',
+        'mcp__quicksave-tools__TaskStop',
         'mcp__some-external-server__AnyTool',
       ];
       for (const toolName of fullMcpNames) {
@@ -1391,52 +1390,6 @@ describe('SessionManager', () => {
       expect(req).toBeDefined();
 
       manager.resolveUserInput({ sessionId, requestId: req!.requestId, action: 'allow', response: 'yes' });
-      const result = await promise;
-      expect(result.action).toBe('allow');
-    });
-
-    it('should auto-approve SandboxBash when session is sandboxed', async () => {
-      // Start a sandboxed session
-      const sandboxSessionId = 'sandbox-session';
-      (provider.startSession as Mock).mockResolvedValue({
-        sessionId: sandboxSessionId,
-        session: createMockProviderSession(),
-      });
-
-      await manager.startSession({
-        prompt: 'Hello',
-        cwd: '/tmp/test',
-                sandboxed: true,
-      });
-
-      const result = await callbacks.handlePermissionRequest(sandboxSessionId, {
-        toolName: 'mcp__quicksave-sandbox__SandboxBash',
-        toolInput: { command: 'ls' },
-        toolUseId: 'tu-sandbox',
-      });
-      expect(result.action).toBe('allow');
-    });
-
-    it('should NOT auto-approve SandboxBash with empty sessionId (pre-init race)', async () => {
-      // Simulates the SDK calling canUseTool before the session is registered
-      const promise = callbacks.handlePermissionRequest('', {
-        toolName: 'mcp__quicksave-sandbox__SandboxBash',
-        toolInput: { command: 'ls' },
-        toolUseId: 'tu-sandbox-race',
-      });
-
-      // Should fall through to user prompt (not auto-approve)
-      const pendingInputs = manager.getPendingInputRequests();
-      expect(pendingInputs.length).toBeGreaterThanOrEqual(1);
-      const req = pendingInputs.find(p => p.toolUseId === 'tu-sandbox-race');
-      expect(req).toBeDefined();
-
-      // Resolve it to unblock the promise
-      manager.resolveUserInput({
-        sessionId: '',
-        requestId: req!.requestId,
-        action: 'allow',
-      });
       const result = await promise;
       expect(result.action).toBe('allow');
     });

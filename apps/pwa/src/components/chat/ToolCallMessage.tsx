@@ -8,7 +8,8 @@ import {
   TOOL_VIEWS,
   TOOL_COLORS,
   MCP_RESOURCE_TOOLS,
-  SANDBOX_BASH_TOOL,
+  LEGACY_SANDBOX_BASH_TOOL,
+  LEGACY_UPDATE_SESSION_STATUS_TOOL,
   UPDATE_SESSION_STATUS_TOOL,
 } from './toolViews/registry';
 import { AskUserQuestionToolView } from './toolViews/AskUserQuestionToolView';
@@ -37,11 +38,16 @@ const INLINE_RESULT_BORDER: Record<string, string> = {
   Bash:  'border-orange-500/20',
   Glob:  'border-purple-500/20',
   Grep:  'border-purple-500/20',
-  [SANDBOX_BASH_TOOL]: 'border-cyan-500/20',
+  [LEGACY_SANDBOX_BASH_TOOL]: 'border-cyan-500/20',
 };
 
 // Tools where result text is implied by the tool call itself (suppress unless error)
-const TOOLS_SUPPRESS_RESULT_CONTENT = new Set(['Edit', 'Write', UPDATE_SESSION_STATUS_TOOL]);
+const TOOLS_SUPPRESS_RESULT_CONTENT = new Set([
+  'Edit',
+  'Write',
+  UPDATE_SESSION_STATUS_TOOL,
+  LEGACY_UPDATE_SESSION_STATUS_TOOL,
+]);
 
 function InlineToolResult({ content, toolName, suppressContent, expanded }: {
   content: string;
@@ -169,10 +175,10 @@ export function ToolCallMessage({ toolName, toolInput, content, toolResultConten
   const resultError = isInlineResultTool ? parseToolUseError(resultContent) : null;
   const resultIsCollapsible = isInlineResultTool && !resultAutoExpand && resultError === null && !resultSuppressed;
 
-  // Bash (and our sandboxed Bash) get a unified left-side chevron that toggles
+  // Bash (including historical SandboxBash cards) gets one left-side chevron that toggles
   // BOTH command truncation and result visibility. Other tools keep the
   // right-side "{N} lines" chevron.
-  const isBash = toolName === 'Bash' || toolName === SANDBOX_BASH_TOOL;
+  const isBash = toolName === 'Bash' || toolName === LEGACY_SANDBOX_BASH_TOOL;
   const bashCommandLong = isBash && !hasPending
     && ((parsedInput.command as string) ?? '').length > LONG_BASH_COMMAND_THRESHOLD;
   const showRightChevron = resultIsCollapsible && !isBash;

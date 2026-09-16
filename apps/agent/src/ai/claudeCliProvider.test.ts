@@ -9,7 +9,6 @@ import {
   CliProviderSession,
   ClaudeCliProvider,
 } from './claudeCliProvider.js';
-import { SANDBOX_BASH_TOOL } from './sandboxMcp.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
 
@@ -98,14 +97,13 @@ describe('buildClaudeCliArgs', () => {
       expect(cmd).toContain('/tmp/qs\\"weird/tok');
     });
 
-    it('injects the sandbox hook when sandboxed (without bypassFlagPath)', () => {
+    it('does not inject a permission hook solely because sandboxed is true', () => {
       const args = buildClaudeCliArgs({ cwd: '/p', ownDir: __ownDir, sandboxed: true, permissionMode: 'default' });
       const entries = hookSettings(args)?.hooks?.PermissionRequest ?? [];
-      expect(entries).toHaveLength(1);
-      expect(entries[0].matcher).toBe(SANDBOX_BASH_TOOL);
+      expect(entries).toHaveLength(0);
     });
 
-    it('merges sandbox + bypass-sentinel hooks into a single --settings payload', () => {
+    it('keeps only the bypass-sentinel hook when sandboxed is true', () => {
       const args = buildClaudeCliArgs({
         cwd: '/p',
         ownDir: __ownDir,
@@ -113,9 +111,8 @@ describe('buildClaudeCliArgs', () => {
         bypassFlagPath: '/run/quicksave/bypass/tok-2',
       });
       const entries = hookSettings(args)?.hooks?.PermissionRequest ?? [];
-      expect(entries).toHaveLength(2);
+      expect(entries).toHaveLength(1);
       const matchers = entries.map(e => e.matcher);
-      expect(matchers).toContain(SANDBOX_BASH_TOOL);
       expect(matchers).toContain('*');
       expect(args.filter(a => a === '--settings')).toHaveLength(1);
     });

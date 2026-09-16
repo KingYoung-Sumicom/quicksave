@@ -2,20 +2,20 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
 
-import { SANDBOX_BASH_TOOL, UPDATE_SESSION_STATUS_TOOL } from './sandboxMcp.js';
+import { UPDATE_SESSION_STATUS_TOOL } from './quicksaveToolsMcp.js';
 import { buildSystemPrompt } from './systemPrompt.js';
 
 describe('buildSystemPrompt', () => {
-  it('uses Claude-specific direct MCP wording', () => {
+  it('requires the renamed session status MCP tool for Claude', () => {
     const prompt = buildSystemPrompt('claude-code');
-    expect(prompt).toContain(`prefer over Bash for read-only commands`);
     expect(prompt).toContain(`Session status tool: \`${UPDATE_SESSION_STATUS_TOOL}\` — MUST call on first response`);
+    expect(prompt).not.toContain('SandboxBash');
   });
 
-  it('uses Codex-specific availability-aware MCP wording', () => {
+  it('requires the renamed session status MCP tool for Codex', () => {
     const prompt = buildSystemPrompt('codex');
-    expect(prompt).toContain(`prefer the \`${SANDBOX_BASH_TOOL}\` MCP tool for read-only commands`);
     expect(prompt).toContain(`Session status tool: \`${UPDATE_SESSION_STATUS_TOOL}\` — MUST call on first response`);
+    expect(prompt).not.toContain('SandboxBash');
   });
 
   it('appends caller-provided instructions', () => {

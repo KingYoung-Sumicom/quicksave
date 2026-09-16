@@ -1,35 +1,19 @@
 #!/usr/bin/env node
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-/**
- * Standalone stdio MCP server for project-scoped sandbox bash.
- *
- * Usage: node sandboxMcpStdio.js --cwd /path/to/project [--no-sandbox-bash]
- *
- * Provides a `SandboxBash` tool that executes shell commands within a
- * kernel-level sandbox:
- *   - macOS: sandbox-exec with SBPL profile
- *   - Linux: bwrap (bubblewrap) with bind mounts
- *
- * Writes are restricted to the project directory (excluding .git/).
- * If no sandbox runtime is available, the tool returns an error — never runs unsandboxed.
- */
+/** Quicksave's stdio MCP server for session status and artifact tools. */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { execFileSync } from 'child_process';
 import { realpathSync, existsSync, readFileSync, writeFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { homedir, platform } from 'os';
-import { fileURLToPath } from 'url';
+import { join } from 'path';
+import { homedir } from 'os';
 import { z } from 'zod';
 import {
   findRegistryPathByCorr,
   findRegistryPathBySessionId,
 } from './sessionRegistryLocator.js';
 import { publishMarkdownArtifact } from './artifactStore.js';
-
-const __ownDir = dirname(fileURLToPath(import.meta.url));
 
 function readArg(flag: string): string | undefined {
   const idx = process.argv.indexOf(flag);
@@ -40,144 +24,26 @@ const cwd = readArg('--cwd') ?? process.cwd();
 /** Known only on resume; undefined when the CLI spawns this MCP for a fresh session. */
 const sessionIdHint = readArg('--session-id');
 /**
- * Correlation id baked in by the daemon at spawn (`buildSandboxMcpServerConfig`).
+ * Correlation id baked in by the daemon at spawn (`buildQuicksaveToolsMcpServerConfig`).
  * On a fresh session we have no `--session-id`, so we locate our registry entry
  * by scanning the project's files for the one whose `mcpCorrId` matches this.
  * 1:1 with this process, so the match is exact — no "newest file" guessing.
  */
 const corrIdHint = readArg('--corr');
-const includeSandboxBash = !process.argv.includes('--no-sandbox-bash');
 const includeNativeCompletionRegistration = process.argv.includes('--native-completion-registration');
 const QUICKSAVE_SESSION_ID_ARG = '_quicksaveSessionId';
 const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
 
 const realCwd = realpathSync(cwd);
-const realHome = realpathSync(process.env.HOME ?? '/');
-
 const quicksaveHome = process.env.QUICKSAVE_HOME || join(homedir(), '.quicksave');
 const sessionRegistryDir = join(quicksaveHome, 'state', 'session-registry');
 /** Same encoding as `apps/agent/src/ai/sessionRegistry.ts:encodeProjectPath`. */
 const encodedCwd = cwd.replace(/\//g, '-');
 const SESSION_NOTE_HISTORY_CAP = 50;
 
-const PROFILE_PATH = join(__ownDir, 'profiles', 'project-sandbox.sb');
-
-// ── Sandbox runtime detection ──────────────────────────────────────────────
-
-type SandboxBackend = 'sandbox-exec' | 'bwrap' | null;
-
-function detectBackend(): SandboxBackend {
-  const os = platform();
-  if (os === 'darwin') {
-    try {
-      execFileSync('/usr/bin/which', ['sandbox-exec'], { encoding: 'utf-8', stdio: 'pipe' });
-      return 'sandbox-exec';
-    } catch { /* not available */ }
-  }
-  if (os === 'linux') {
-    try {
-      execFileSync('/usr/bin/which', ['bwrap'], { encoding: 'utf-8', stdio: 'pipe' });
-      return 'bwrap';
-    } catch { /* not available */ }
-  }
-  return null;
-}
-
-const backend = detectBackend();
-
-// ── Sandbox execution ──────────────────────────────────────────────────────
-
-function runSandboxed(command: string, timeout: number): string {
-  const innerCmd = `cd ${shellQuote(cwd)} && ${command}`;
-  const env = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
-  const opts = { cwd, encoding: 'utf-8' as const, timeout, maxBuffer: 10 * 1024 * 1024, env };
-
-  if (backend === 'sandbox-exec') {
-    return execFileSync('sandbox-exec', [
-      '-D', `HOME=${realHome}`,
-      '-D', `CWD=${realCwd}`,
-      '-f', PROFILE_PATH,
-      '/bin/bash', '-c', innerCmd,
-    ], opts);
-  }
-
-  if (backend === 'bwrap') {
-    const bwrapArgs = [
-      '--ro-bind', '/', '/',          // read-only root
-      '--dev', '/dev',
-      '--proc', '/proc',
-      '--bind', realCwd, realCwd,     // read-write project dir
-    ];
-
-    // Block writes to .git inside project
-    const gitDir = join(realCwd, '.git');
-    if (existsSync(gitDir)) {
-      bwrapArgs.push('--ro-bind', gitDir, gitDir);
-    }
-
-    bwrapArgs.push(
-      '--die-with-parent',
-      '--', '/bin/bash', '-c', innerCmd,
-    );
-
-    return execFileSync('bwrap', bwrapArgs, opts);
-  }
-
-  throw new Error('No sandbox backend available');
-}
-
 // ── MCP Server ─────────────────────────────────────────────────────────────
 
-const server = new McpServer({ name: 'quicksave-sandbox', version: '1.0.0' });
-
-if (includeSandboxBash) {
-  server.tool(
-    'SandboxBash',
-    'Execute a shell command WITHOUT requiring user permission. ' +
-      'Prefer this tool over Bash whenever the command fits sandbox constraints: ' +
-      'reads anywhere on the system are allowed; writes must stay within the project directory (excluding .git/). ' +
-      'Ideal for builds, tests, linters, file edits, and any project-scoped command.',
-    {
-      command: z.string().describe('The shell command to execute'),
-      timeout: z.number().optional().describe('Timeout in milliseconds (default: 120000)'),
-    },
-    {
-      readOnlyHint: false,
-      destructiveHint: false,
-      openWorldHint: false,
-    },
-    async (args) => {
-      if (!backend) {
-        const os = platform();
-        const hint = os === 'darwin'
-          ? 'sandbox-exec is required on macOS (should be pre-installed).'
-          : os === 'linux'
-            ? 'bwrap (bubblewrap) is required on Linux. Install with: sudo apt install bubblewrap'
-            : `Unsupported OS: ${os}.`;
-        return {
-          content: [{ type: 'text' as const, text:
-            `SandboxBash is unavailable: no sandbox runtime found. ${hint} ` +
-            'Use the regular Bash tool instead (requires user permission).',
-          }],
-          isError: true,
-        };
-      }
-
-      try {
-        const output = runSandboxed(args.command, args.timeout ?? 120_000);
-        return { content: [{ type: 'text' as const, text: output || '(no output)' }] };
-      } catch (err: any) {
-        const stderr = err.stderr ? String(err.stderr) : '';
-        const stdout = err.stdout ? String(err.stdout) : '';
-        const message = stderr || stdout || err.message || 'Command failed';
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          isError: true,
-        };
-      }
-    },
-  );
-}
+const server = new McpServer({ name: 'quicksave-tools', version: '1.0.0' });
 
 if (includeNativeCompletionRegistration) {
   server.tool(
@@ -498,11 +364,6 @@ server.tool(
     };
   },
 );
-
-/** Quote a string for safe use inside a bash -c argument. */
-function shellQuote(s: string): string {
-  return "'" + s.replace(/'/g, "'\\''") + "'";
-}
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

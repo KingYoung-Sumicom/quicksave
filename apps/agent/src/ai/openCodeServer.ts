@@ -24,20 +24,19 @@ import { getOpenCodeBin } from './openCodeProvider.js';
 import { getOpenCodeEnableExa } from '../config.js';
 import {
   DISPLAY_MARKDOWN_REPORT_TOOL,
-  SANDBOX_BASH_TOOL,
-  SANDBOX_MCP_PREFIX,
+  QUICKSAVE_MCP_PREFIX,
   UPDATE_SESSION_STATUS_TOOL,
-  buildSandboxMcpServerConfig,
-} from './sandboxMcp.js';
+  buildQuicksaveToolsMcpServerConfig,
+} from './quicksaveToolsMcp.js';
 
 const __aiDir = dirname(fileURLToPath(import.meta.url));
 
 /**
  * OpenCode exposes MCP tools as `<server>_<tool>`. This deliberately ends in
  * one underscore so its separator produces the canonical Quicksave tool name:
- * `mcp__quicksave-sandbox__UpdateSessionStatus`.
+ * `mcp__quicksave-tools__UpdateSessionStatus`.
  */
-export const OPENCODE_SANDBOX_MCP_NAME = SANDBOX_MCP_PREFIX.slice(0, -1);
+export const OPENCODE_QUICKSAVE_MCP_NAME = QUICKSAVE_MCP_PREFIX.slice(0, -1);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -116,7 +115,7 @@ export function buildOpenCodeQuicksaveConfig(
   const existing = existingContent?.trim()
     ? parseOpenCodeConfigContent(existingContent)
     : {};
-  const mcp = buildSandboxMcpServerConfig({
+  const mcp = buildQuicksaveToolsMcpServerConfig({
     ownDir,
     cwd: '.',
     inheritCwd: true,
@@ -137,7 +136,7 @@ export function buildOpenCodeQuicksaveConfig(
     plugin: Array.from(new Set([...existingPlugins, pluginUrl])),
     mcp: {
       ...existingMcp,
-      [OPENCODE_SANDBOX_MCP_NAME]: {
+      [OPENCODE_QUICKSAVE_MCP_NAME]: {
         type: 'local',
         command: [mcp.command, ...mcp.args],
         enabled: true,
@@ -146,7 +145,6 @@ export function buildOpenCodeQuicksaveConfig(
     },
     permission: {
       ...existingPermission,
-      [SANDBOX_BASH_TOOL]: 'allow',
       [UPDATE_SESSION_STATUS_TOOL]: 'allow',
       [DISPLAY_MARKDOWN_REPORT_TOOL]: 'allow',
       // A question is its own user-input interaction, not an action that

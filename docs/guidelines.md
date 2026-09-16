@@ -91,16 +91,15 @@ Before designing or implementing any feature, check the relevant guidelines belo
 
 ---
 
-## Sandbox Mode
+## Sandbox Policy
 
-**`docs/guidelines/sandbox-mode.md`** — Kernel-level sandbox that coding-agent sessions run under by default. Covers:
-- `DEFAULT_SANDBOXED = true`, per-session override persisted on `SessionRegistryEntry`
-- Filesystem write confinement to the project `cwd` + `SandboxBash` auto-approval
-- Runtimes (`sandbox-exec` on macOS, `bwrap` on Linux) and the SBPL profile location
-- When to turn sandbox OFF and the associated trade-offs
-- Pointers to the default, the stdio MCP server, the provider wiring, and the PWA toggles
+**`docs/guidelines/sandbox-mode.md`** — Provider-native sandbox behavior and the boundary of the shared `quicksave-tools` MCP. Covers:
+- Codex's native `sandboxPolicy` mapping from the persisted `sandboxed` field
+- Providers that rely on permission review without a Quicksave shell sandbox
+- The rule that `quicksave-tools` exposes utilities, not shell execution
+- Canonical MCP implementation files and rename synchronization points
 
-**Maintenance rule**: update this doc when changing `DEFAULT_SANDBOXED`, the supported sandbox backends, the `SandboxBash` tool name / parameters / auto-approval hook, the SBPL profile strategy, or the location of the PWA sandbox toggle.
+**Maintenance rule**: update this doc when changing provider sandbox mappings, the `quicksave-tools` server name, or shared MCP command-execution capabilities.
 
 ---
 

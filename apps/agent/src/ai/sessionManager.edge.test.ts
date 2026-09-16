@@ -62,11 +62,10 @@ vi.mock('./sessionRegistry.js', () => ({
   }),
 }));
 
-vi.mock('./sandboxMcp.js', () => ({
-  SANDBOX_MCP_NAME: 'quicksave-sandbox',
-  SANDBOX_MCP_PREFIX: 'mcp__quicksave-sandbox__',
-  SANDBOX_BASH_TOOL: 'mcp__quicksave-sandbox__SandboxBash',
-  UPDATE_SESSION_STATUS_TOOL: 'mcp__quicksave-sandbox__UpdateSessionStatus',
+vi.mock('./quicksaveToolsMcp.js', () => ({
+  QUICKSAVE_MCP_NAME: 'quicksave-tools',
+  QUICKSAVE_MCP_PREFIX: 'mcp__quicksave-tools__',
+  UPDATE_SESSION_STATUS_TOOL: 'mcp__quicksave-tools__UpdateSessionStatus',
 }));
 
 // ── Helpers ──
