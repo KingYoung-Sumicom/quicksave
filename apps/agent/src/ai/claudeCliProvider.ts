@@ -6,6 +6,7 @@ import { join, dirname } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import type { Attachment, CardEvent, CardStreamEnd, ContextUsageBreakdown, SlashCommandInfo } from '@sumicom/quicksave-shared';
+import type { ClaudeUsageRawResponse } from './claudeUsage.js';
 import { StreamCardBuilder, localCommandDisplayText } from './cardBuilder.js';
 import { SANDBOX_MCP_NAME, SANDBOX_BASH_TOOL, buildSandboxMcpServerConfig } from './sandboxMcp.js';
 import { DebugLogger } from './debugLogger.js';
@@ -492,6 +493,21 @@ export class CliProviderSession implements ProviderSession {
     try {
       const response = await this.sendControlRequest('get_context_usage', undefined, 10_000, 10_000);
       return (response as ContextUsageBreakdown | null) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Raw `get_usage` response (session cost/usage + claude.ai plan rate-limit
+   *  utilization). Marked experimental by the CLI itself — projected into our
+   *  stable `ClaudeQuotaSnapshot` shape by `ClaudeQuotaCache.ingest` at the
+   *  call site rather than here, so a future upstream shape change only needs
+   *  updating claudeUsage.ts. See docs/references/claude-code-cli-control-requests.md#get_usage. */
+  async getUsage(): Promise<ClaudeUsageRawResponse | null> {
+    if (!this.process || this.process.killed) return null;
+    try {
+      const response = await this.sendControlRequest('get_usage', undefined, 10_000, 10_000);
+      return (response as ClaudeUsageRawResponse | null) ?? null;
     } catch {
       return null;
     }

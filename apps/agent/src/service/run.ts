@@ -71,6 +71,7 @@ import {
   type ClaudeAuthState,
   type CodexModelInfo,
   type CodexQuotaSnapshot,
+  type ClaudeQuotaSnapshot,
   type TerminalSummary,
   type TerminalsUpdate,
   type TerminalOutputSnapshot,
@@ -432,6 +433,11 @@ export async function runDaemon(): Promise<void> {
           cachedInputTokens: cacheReadTokens,
         });
 
+      // Best-effort claude.ai subscription quota probe — piggybacks on the
+      // same turn-end hook since `get_usage` also requires a live provider
+      // session. No-op for Codex/API-key sessions.
+      void messageHandler.probeClaudeUsage(result.sessionId);
+
       getEventStore().record({
         type: 'turn_ended',
         sessionId: result.sessionId,
@@ -597,6 +603,19 @@ export async function runDaemon(): Promise<void> {
   claudeService.on('codex-turn-settled', () => {
     void messageHandler.refreshCodexQuota(true);
   });
+
+  // Agent-wide claude.ai subscription quota snapshot. Unlike Codex quota,
+  // there is no standalone poll path — the cache only updates when an active
+  // Claude Code CLI session answers `get_usage` at turn end (see the
+  // probeClaudeUsage call above). Subscribers just get whatever was last
+  // observed; `stale` in the snapshot tells the PWA how old that is.
+  messageHandler.setClaudeQuotaUpdateHandler((snapshot) => {
+    bus.publish<ClaudeQuotaSnapshot>('/claude/usage', snapshot);
+  });
+  bus.onSubscribe<'/claude/usage', ClaudeQuotaSnapshot | null, ClaudeQuotaSnapshot>(
+    '/claude/usage',
+    { snapshot: () => messageHandler.getCachedClaudeQuota() },
+  );
 
   // ── MessageBus command adapter ────────────────────────────────────────────
   // Every request-response verb from the legacy MessageHandler is exposed as a

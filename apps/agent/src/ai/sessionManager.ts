@@ -1368,6 +1368,18 @@ export class SessionManager extends EventEmitter {
     return ps.providerSession.getContextUsage();
   }
 
+  /** Fetch the raw claude.ai subscription usage/rate-limit response from the
+   * provider's experimental `get_usage` control_request. Returns null if the
+   * session has no live provider process or the provider doesn't support it
+   * (only the claude-code CLI does). Caller is responsible for projecting the
+   * raw response via `ClaudeQuotaCache.ingest`. */
+  async getSessionUsage(sessionId: string): Promise<unknown | null> {
+    const ps = this.sessions.get(sessionId);
+    if (!ps?.providerSession?.alive) return null;
+    if (typeof ps.providerSession.getUsage !== 'function') return null;
+    return ps.providerSession.getUsage();
+  }
+
   getSessionAgent(sessionId: string, cwd?: string): AgentId {
     return this.resolveAgentId(sessionId, cwd);
   }

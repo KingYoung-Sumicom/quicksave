@@ -29,6 +29,7 @@ import {
   type ClaudeAuthState,
   type CodexModelInfo,
   type CodexQuotaSnapshot,
+  type ClaudeQuotaSnapshot,
   type CommitSummaryState,
   type ConfigValue,
   type Message,
@@ -47,6 +48,7 @@ import {
 import { useCodexLoginStore } from './stores/codexLoginStore';
 import { useClaudeAuthStore } from './stores/claudeAuthStore';
 import { useCodexQuotaStore } from './stores/codexQuotaStore';
+import { useClaudeQuotaStore } from './stores/claudeQuotaStore';
 import { useTerminalStore } from './stores/terminalStore';
 import { registerAgentBusGetter, getBusForAgent } from './lib/busRegistry';
 import { registerWsRetry } from './lib/wsRetryRegistry';
@@ -178,6 +180,12 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
     onSnapshot: (snapshot) => useCodexQuotaStore.getState().set(agentId, snapshot),
     onUpdate: (snapshot) => useCodexQuotaStore.getState().set(agentId, snapshot),
     onError: (err) => console.warn('[bus] /codex/quota error:', err),
+  });
+
+  bus.subscribe<ClaudeQuotaSnapshot | null, ClaudeQuotaSnapshot>('/claude/usage', {
+    onSnapshot: (snapshot) => useClaudeQuotaStore.getState().set(agentId, snapshot),
+    onUpdate: (snapshot) => useClaudeQuotaStore.getState().set(agentId, snapshot),
+    onError: (err) => console.warn('[bus] /claude/usage error:', err),
   });
 
   bus.subscribe<TerminalSummary[], TerminalsUpdate>('/terminals', {

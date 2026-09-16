@@ -145,6 +145,7 @@ import {
   CodexLoginCancelResponsePayload,
   ClaudeAuthStatusResponsePayload,
   CodexQuotaSnapshot,
+  ClaudeQuotaSnapshot,
   ProjectListSummariesResponsePayload,
   ProjectSummary,
   ProjectDeleteRequestPayload,
@@ -205,6 +206,7 @@ import { CodexAppServerProvider } from '../ai/codexAppServer/index.js';
 import { CodexLoginManager } from '../ai/codexLogin.js';
 import { ClaudeAuthManager } from '../ai/claudeAuth.js';
 import { CodexQuotaService } from '../ai/codexQuota.js';
+import { ClaudeQuotaCache, type ClaudeUsageRawResponse } from '../ai/claudeUsage.js';
 import { PACKAGE_VERSION } from '../version.js';
 import { getTerminalManager } from '../terminal/terminalManager.js';
 import { getFileBrowser } from '../files/fileBrowser.js';
@@ -496,6 +498,7 @@ export class MessageHandler {
   private codexModelsCheckInFlight: Promise<CodexModelInfo[] | null> | null = null;
   private codexModelsUpdateHandler: ((models: CodexModelInfo[]) => void) | null = null;
   private codexQuotaService = new CodexQuotaService();
+  private claudeQuotaCache = new ClaudeQuotaCache();
   /** Override for tests; defaults to `~/.codex`. Still consulted by
    *  `getCodexLoginStatus` to read `auth.json`; no longer used for model
    *  discovery (that flows through `model/list` against a short-lived
@@ -791,6 +794,30 @@ export class MessageHandler {
 
   refreshCodexQuotaIfStale(): void {
     this.codexQuotaService.refreshIfStale();
+  }
+
+  /** Snapshot accessor for the bus `/claude/usage` subscription. */
+  getCachedClaudeQuota(): ClaudeQuotaSnapshot | null {
+    return this.claudeQuotaCache.getSnapshot();
+  }
+
+  setClaudeQuotaUpdateHandler(handler: (snapshot: ClaudeQuotaSnapshot) => void): void {
+    this.claudeQuotaCache.setUpdateHandler(handler);
+  }
+
+  /** Probe a live Claude Code session's `get_usage` control_request and, if it
+   * carries subscription rate-limit data, cache + broadcast it. No-op for
+   * non-Claude sessions or sessions without a live provider process — there is
+   * no standalone poll path (unlike Codex quota), so this is only called from
+   * the turn-end hook in run.ts. Errors are swallowed; a failed probe simply
+   * leaves the previous cached snapshot in place. */
+  async probeClaudeUsage(sessionId: string): Promise<void> {
+    try {
+      const raw = await this.claudeService.getSessionUsage(sessionId);
+      this.claudeQuotaCache.ingest(raw as ClaudeUsageRawResponse | null);
+    } catch {
+      // best-effort — leave the previous cached snapshot in place
+    }
   }
 
   /**

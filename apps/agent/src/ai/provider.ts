@@ -112,6 +112,10 @@ export interface ProviderSession {
    * usage. Only supported by the Claude Code CLI (via `get_context_usage`
    * control_request). Returns null on providers that don't support it. */
   getContextUsage?(): Promise<ContextUsageBreakdown | null>;
+  /** Optional — raw claude.ai subscription usage/rate-limit response from the
+   *  CLI's experimental `get_usage` control_request. Only supported by the
+   *  Claude Code CLI; callers project this via `ClaudeQuotaCache.ingest`. */
+  getUsage?(): Promise<unknown | null>;
   /** Optional provider control channel. Claude uses CLI control_request
    * frames; Codex app-server maps supported subtypes onto JSON-RPC methods. */
   sendControlRequest?(

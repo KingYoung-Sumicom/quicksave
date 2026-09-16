@@ -704,6 +704,7 @@ All request-response, state subscribe, and server push between PWA and Agent go 
 | `/sessions/:sessionId/attention` | `null` (presence-only) | — | The PWA only subscribes when on the session page and the tab is visible+focused; `subscriberCount === 0` acts as the push gate |
 | `/claude/auth` | `ClaudeAuthState` | — | Sanitized machine-local `claude auth status --json`; email, organization, and account ids never leave the daemon |
 | `/codex/quota` | `CodexQuotaSnapshot \| null` | `CodexQuotaSnapshot` | Agent-wide `CodexQuotaService`; includes reset-credit summaries when app-server provides them; stale-on-subscribe refreshes after 5 minutes, and `codex-turn-settled` force-refreshes after each Codex prompt |
+| `/claude/usage` | `ClaudeQuotaSnapshot \| null` | `ClaudeQuotaSnapshot` | Agent-wide `ClaudeQuotaCache`, fed by the CLI's experimental `get_usage` control_request (see `docs/references/claude-code-cli-control-requests.md#get_usage`). Unlike `/codex/quota` there is **no standalone poll** — `run.ts`'s turn-end hook calls `messageHandler.probeClaudeUsage(sessionId)` alongside the existing context-usage probe, so the cache only updates when an active Claude Code CLI session answers a turn. Ingests are dropped when `rate_limits_available` is false (API-key / Bedrock / Vertex sessions), leaving the previous cached snapshot in place |
 | `/terminals` | `TerminalSummary[]` | `TerminalsUpdate` (`{ kind: 'upsert', terminal }` or `{ kind: 'remove', terminalId }`) | `terminalManager.listSummaries()` + `terminals-updated` / `terminal-updated` events |
 | `/terminals/:terminalId/output` | `TerminalOutputSnapshot \| null` (scrollback + seq + size + exit status) | `TerminalOutputChunk` (next chunk of output, monotonic `seq`) | `terminalManager.outputSnapshot()` + PTY `'data'` event |
 
@@ -916,6 +917,7 @@ command is emitted for either outcome. Selecting an option only changes local
 card state; the PWA resolves the request only when the user presses Send.
 | — | Agent→PWA push | `bus.subscribe('/repos/commit-summary')` | AI commit summary state for all repos (replaces the removed `ai:commit-summary:get` command) |
 | — | Agent→PWA push | `bus.subscribe('/codex/quota')` | Agent-wide Codex quota snapshot (`5h` / `7d` windows only). The agent owns the app-server query and refreshes after Codex turns or when a subscriber finds the cache older than 5 minutes |
+| — | Agent→PWA push | `bus.subscribe('/claude/usage')` | Agent-wide claude.ai subscription rate-limit snapshot, sourced from the CLI's experimental `get_usage` control_request at Claude Code turn end (no standalone poll) |
 | `bus:frame` | Bidirectional | — | MessageBus envelope: payload is `ClientFrame` / `ServerFrame` (sub / unsub / cmd / snap / upd / result / sub-error) |
 | `push:subscription-offer` | PWA→Agent | Goes through the legacy WS path (`connection.send`) | Multi-agent routing requires `sendToAgent`; the bus is single-active-agent |
 | `push:subscription-offer:response` | Agent→PWA | Registration result `{success, error?}` |

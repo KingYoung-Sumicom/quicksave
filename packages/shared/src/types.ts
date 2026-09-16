@@ -947,6 +947,53 @@ export interface CodexQuotaSnapshot {
   error?: string;
 }
 
+/** claude.ai subscription rate-limit windows exposed by the Claude Code CLI's
+ *  `get_usage` control_request. Unlike Codex quota (a standalone app-server
+ *  RPC we can poll on demand), this data only refreshes when an active Claude
+ *  Code CLI session answers the request — see docs/references/claude-code-cli-control-requests.md. */
+export type ClaudeQuotaWindowId =
+  | 'five_hour'
+  | 'seven_day'
+  | 'seven_day_oauth_apps'
+  | 'seven_day_opus'
+  | 'seven_day_sonnet';
+
+export interface ClaudeQuotaWindow {
+  id: ClaudeQuotaWindowId;
+  label: string;
+  /** Percentage of the window used, 0-100. */
+  usedPercent: number;
+  /** Reset time as unix milliseconds, or null when the CLI did not expose it. */
+  resetAt: number | null;
+}
+
+/** Per-model weekly window from the CLI's `rate_limits.model_scoped` array
+ *  (e.g. a separate cap for a specific model beyond the general 7-day one). */
+export interface ClaudeQuotaModelWindow {
+  displayName: string;
+  usedPercent: number | null;
+  resetAt: number | null;
+}
+
+export interface ClaudeQuotaSnapshot {
+  source: 'cli';
+  /** Unix ms when the agent last received a `get_usage` response. */
+  fetchedAt: number;
+  /** Agent-side cache TTL used to decide when a snapshot is flagged stale. */
+  ttlMs: number;
+  /** True when this snapshot is older than the agent-side TTL, or was never
+   *  refreshed by an active session recently. */
+  stale: boolean;
+  /** null for API-key / third-party-provider (Bedrock, Vertex) sessions. */
+  subscriptionType: 'pro' | 'max' | 'team' | 'enterprise' | null;
+  /** False when plan rate limits don't apply (API key, Bedrock, Vertex, or
+   *  missing profile scope) — `windows` will be empty in that case. */
+  rateLimitsAvailable: boolean;
+  windows: ClaudeQuotaWindow[];
+  modelWindows?: ClaudeQuotaModelWindow[];
+  error?: string;
+}
+
 /** Device-code OAuth state mirrored from the spawned `codex login --device-auth`. */
 export interface CodexLoginState {
   /** True once auth credentials appear (either ChatGPT OAuth or OPENAI_API_KEY). */
