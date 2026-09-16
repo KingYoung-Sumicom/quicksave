@@ -87,6 +87,33 @@ describe('useClaudeOperations', () => {
     expect(useClaudeStore.getState().cards).toHaveLength(0);
   });
 
+  it('gives /compact a longer RPC timeout than a normal resume', async () => {
+    let latestOps: ClaudeOps | null = null;
+    const command = vi.fn().mockResolvedValue({ success: true, sessionId: 'session-A' });
+    const bus = { command } as unknown as MessageBusClient;
+    useClaudeStore.getState().setSessions([
+      { sessionId: 'session-A', summary: 'A', lastModified: 1, isActive: true, isStreaming: false } as any,
+    ]);
+    useClaudeStore.getState().setActiveSession('session-A');
+
+    await act(async () => {
+      root.render(<Harness getBus={() => bus} onRender={(ops) => { latestOps = ops; }} />);
+    });
+
+    await act(async () => {
+      await latestOps!.resumeSession('session-A', '/compact', '/repo');
+    });
+
+    expect(command).toHaveBeenCalledWith(
+      'claude:resume',
+      { sessionId: 'session-A', prompt: '/compact', cwd: '/repo' },
+      expect.objectContaining({ timeoutMs: 600000, queueWhileDisconnected: true }),
+    );
+    expect(useClaudeStore.getState().cards).toHaveLength(0);
+    expect(useClaudeStore.getState().sessions['session-A'].isStreaming).toBe(false);
+    expect(useClaudeStore.getState().sessions['session-A'].isCompacting).toBe(false);
+  });
+
   it('adds the user card only after an acknowledged resume', async () => {
     let latestOps: ClaudeOps | null = null;
     let resolveCommand: (value: unknown) => void = () => {};

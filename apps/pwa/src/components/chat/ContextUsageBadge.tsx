@@ -12,7 +12,8 @@ import { normalizeAgentId } from '../../lib/claudePresets';
 
 interface ContextUsageBadgeProps {
   sessionId: string;
-  onCompact?: () => void;
+  /** Resolves when the agent's compaction RPC settles (success or error). */
+  onCompact?: () => void | Promise<unknown>;
   onClear?: () => void;
 }
 
@@ -64,8 +65,12 @@ function colorFor(name: string): { fill: string; dot: string } {
 export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsageBadgeProps) {
   const intl = useIntl();
   const session = useClaudeStore((s) => s.sessions[sessionId]);
+  const upsertSession = useClaudeStore((s) => s.upsertSession);
   const config = useSessionConfig(sessionId);
   const [open, setOpen] = useState(false);
+  // Compaction is a slow background op (tens of seconds to minutes). Close the
+  // modal immediately and let the session status / system card carry progress.
+  const [compacting, setCompacting] = useState(false);
 
   const breakdown = session?.lastTurnContextUsage as ContextUsageBreakdown | undefined;
   const modelFromBreakdown = breakdown?.model;
@@ -268,11 +273,23 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
             <div className="space-y-2 pt-1">
               {(onCompact || onClear) && (
                 <div className="grid grid-cols-2 gap-2">
-                  {onCompact && (
+                    {onCompact && (
                     <button
                       type="button"
-                      onClick={() => { onCompact(); setOpen(false); }}
-                      className="px-3 py-2 text-xs font-medium rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors"
+                      disabled={compacting || session?.isCompacting === true}
+                      onClick={async () => {
+                        if (compacting || session?.isCompacting) return;
+                        setOpen(false);
+                        setCompacting(true);
+                        upsertSession({ sessionId, isCompacting: true });
+                        try {
+                          await onCompact?.();
+                        } finally {
+                          setCompacting(false);
+                          upsertSession({ sessionId, isCompacting: false });
+                        }
+                      }}
+                      className="px-3 py-2 text-xs font-medium rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors disabled:opacity-80"
                       title={intl.formatMessage({ id: 'contextUsage.action.compactTitle' })}
                     >
                       <FormattedMessage id="contextUsage.action.compact" />

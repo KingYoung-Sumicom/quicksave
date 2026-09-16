@@ -145,7 +145,7 @@ export interface SubagentCard extends CardBase {
   activities?: SubagentActivity[];
 }
 
-export type SystemCardSubtype = 'compacted' | 'cost' | 'error' | 'info' | 'warning';
+export type SystemCardSubtype = 'compacting' | 'compacted' | 'cost' | 'error' | 'info' | 'stopped' | 'warning';
 
 /**
  * Optional structured payload for system cards that carry more than a one-line

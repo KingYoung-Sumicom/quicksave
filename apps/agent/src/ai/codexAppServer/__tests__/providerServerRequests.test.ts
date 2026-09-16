@@ -52,6 +52,40 @@ function harness(response: { action: 'allow' | 'deny'; response?: string } = { a
 }
 
 describe('CodexAppServerSession server-initiated requests', () => {
+  it('compacts through thread/compact/start and suppresses duplicate native cards', async () => {
+    const h = harness();
+    const requestPromise = receiveClientRequest(h.serverSide);
+
+    const compact = h.session.compact();
+    const request = await requestPromise;
+    expect(request.method).toBe('thread/compact/start');
+    expect(request.params).toEqual({ threadId: h.threadId });
+    await h.serverSide.send({ jsonrpc: '2.0', id: request.id, result: {} });
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      method: 'turn/started',
+      params: { threadId: h.threadId, turn: makeTurn('compact_turn', 'inProgress') },
+    });
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      method: 'item/completed',
+      params: {
+        threadId: h.threadId,
+        turnId: 'compact_turn',
+        item: { type: 'contextCompaction', id: 'compact_item' },
+      },
+    });
+    await h.serverSide.send({
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: { threadId: h.threadId, turn: makeTurn('compact_turn', 'completed') },
+    });
+
+    await resolvesWithin(compact);
+    expect(h.callbacks.emitCardEvent).not.toHaveBeenCalled();
+    expect(h.callbacks.emitStreamEnd).not.toHaveBeenCalled();
+  });
+
   it('answers item/tool/requestUserInput through the shared question prompt flow', async () => {
     const h = harness({ action: 'allow', response: 'Alice\nBlue' });
 

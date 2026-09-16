@@ -93,6 +93,29 @@ export function SystemMessage({ card, agentId }: { card: SystemCard; agentId?: s
     );
   }
 
+  if (card.subtype === 'stopped') {
+    return (
+      <div className="flex justify-center py-1">
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-800/60 px-2.5 py-0.5 text-[11px] text-slate-400">
+          <span aria-hidden>■</span>
+          <span>{card.text}</span>
+        </span>
+      </div>
+    );
+  }
+
+  if (card.subtype === 'compacting') {
+    return (
+      <div className="my-1 mr-auto inline-flex items-center gap-1.5 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-200">
+        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+        </svg>
+        {card.text}
+      </div>
+    );
+  }
+
   if (card.subtype === 'compacted') {
     return (
       <div className="my-1 mr-auto inline-flex rounded-md border border-cyan-500/25 bg-cyan-500/10 px-2.5 py-1 text-xs text-cyan-200">

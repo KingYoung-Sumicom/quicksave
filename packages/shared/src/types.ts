@@ -552,7 +552,7 @@ export interface SessionRegistryEntry {
    * fresh (non-resume) session, where it has no `--session-id` yet — it scans
    * the project's registry files for the one whose `mcpCorrId` matches its own.
    * 1:1 with the MCP child process, so the match is exact and concurrency-safe
-   * (unlike a "newest lastAccessedAt" heuristic). See `sandboxMcpStdio.ts`.
+   * (unlike a "newest lastAccessedAt" heuristic). See `quicksaveToolsMcpStdio.ts`.
    */
   mcpCorrId?: string;
   // Session settings — persisted so they survive daemon restarts
@@ -659,6 +659,9 @@ export interface BroadcastSessionEntry extends SessionRegistryEntry {
   lastInteractionAt?: number;
   lastPromptAt?: number;
   lastTurnEndedAt?: number;
+  /** Most recent non-interrupted turn end. Used for unread attention cues so
+   *  manually stopping a turn does not create a new unread notification. */
+  lastUnreadTurnEndedAt?: number;
   turnCount?: number;
   totalInputTokens?: number;
   totalOutputTokens?: number;
@@ -1937,6 +1940,7 @@ export interface ClaudeSessionSummary {
    * PWA to navigate away from session pages whose id is no longer live. */
   archived?: boolean;
   isStreaming?: boolean;
+  isCompacting?: boolean;
   hasPendingInput?: boolean;
   queueState?: SessionQueueState | null;
   permissionMode?: string;
@@ -1958,6 +1962,8 @@ export interface ClaudeSessionSummary {
    * Autonomous turns can run for minutes; anchoring on `lastPromptAt` would
    * expire the countdown prematurely. */
   lastTurnEndedAt?: number;
+  /** Epoch ms of the most recent non-interrupted `turn_ended` event. */
+  lastUnreadTurnEndedAt?: number;
   /** Epoch ms of the most recent SDK assistant/result message whose `usage`
    * reported `cache_creation_input_tokens > 0` or `cache_read_input_tokens > 0`.
    * This is the most reliable anchor for the prompt-cache TTL countdown:
@@ -2074,6 +2080,7 @@ export interface SessionUpdatePayload {
   archived: boolean;
   agent?: AgentId;
   isStreaming: boolean;
+  isCompacting?: boolean;
   hasPendingInput: boolean;
   queueState?: SessionQueueState | null;
   permissionMode?: string;
@@ -2081,6 +2088,8 @@ export interface SessionUpdatePayload {
   lastPromptAt?: number;
   /** See `ClaudeSessionSummary.lastTurnEndedAt`. */
   lastTurnEndedAt?: number;
+  /** See `ClaudeSessionSummary.lastUnreadTurnEndedAt`. */
+  lastUnreadTurnEndedAt?: number;
   /** See `ClaudeSessionSummary.lastCacheTouchAt`. */
   lastCacheTouchAt?: number;
   turnCount?: number;

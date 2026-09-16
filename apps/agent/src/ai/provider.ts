@@ -87,6 +87,9 @@ export interface ProviderSession {
   interrupt(): void;
   kill(): void | Promise<void>;
   readonly alive: boolean;
+  /** Optional provider-native compaction through this live session's existing
+   * writer connection. Preferred over opening a second provider connection. */
+  compact?(): Promise<void>;
   /** Optional provider-native permission switch. OpenCode uses this to
    * toggle client-side auto approval without restarting its server session. */
   setPermissionMode?(level: PermissionLevel): void | Promise<void>;
@@ -313,8 +316,17 @@ export interface CodingAgentProvider {
 
   /** Optional — compact a session using the provider's native API.
    *  Called when the user clicks the compact button (prompt === '/compact').
-   *  `model` is the provider/model id the session was spawned with. */
-  compact?(sessionId: string, opts?: { cwd?: string; model?: string }): Promise<void>;
+   *  `model` is the provider/model id the session was spawned with.
+   *  `emitCompactedCard` lets the provider surface the visible
+   *  "Context compacted" system card after a successful compaction.
+   *  Providers whose native flow already emits a compaction notification
+   *  (e.g. Claude's `compact_boundary`) must not call it, or the card
+   *  would appear twice. */
+  compact?(
+    sessionId: string,
+    opts?: { cwd?: string; model?: string },
+    emitCompactedCard?: (text: string, subtype: 'compacted') => void,
+  ): Promise<void>;
   /** Defaults to `registry`, preserving archive support for legacy providers. */
   readonly archiveStorage?: ProviderArchiveStorage;
   /** Archive or restore the provider-native durable session, when supported. */

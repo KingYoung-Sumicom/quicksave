@@ -40,6 +40,24 @@ describe('isSessionUnread', () => {
     expect(isSessionUnread(session)).toBe(true);
   });
 
+  it('does not create unread activity for a newer interrupted turn', () => {
+    const session = makeSummary({
+      lastReadAt: 2_000,
+      lastTurnEndedAt: 5_000,
+      lastUnreadTurnEndedAt: 1_000,
+    });
+    expect(isSessionUnread(session)).toBe(false);
+  });
+
+  it('preserves older unread output when a newer turn is interrupted', () => {
+    const session = makeSummary({
+      lastReadAt: 500,
+      lastTurnEndedAt: 5_000,
+      lastUnreadTurnEndedAt: 1_000,
+    });
+    expect(isSessionUnread(session)).toBe(true);
+  });
+
   it('returns false when lastReadAt equals lastTurnEndedAt', () => {
     const session = makeSummary({ lastReadAt: 5_000, lastTurnEndedAt: 5_000 });
     expect(isSessionUnread(session)).toBe(false);
@@ -85,6 +103,22 @@ describe('sessionStatusKey priority', () => {
       lastTurnEndedAt: 5_000,
     });
     expect(sessionStatusKey(session)).toBe('thinking');
+  });
+
+  it('compacting wins over thinking so compaction is not mistaken for a normal turn', () => {
+    const session = makeSummary({
+      isCompacting: true,
+      isStreaming: true,
+    });
+    expect(sessionStatusKey(session)).toBe('compacting');
+  });
+
+  it('pending still wins over compacting', () => {
+    const session = makeSummary({
+      isCompacting: true,
+      hasPendingInput: true,
+    });
+    expect(sessionStatusKey(session)).toBe('pending');
   });
 
   it('unread wins over closed (an ended session with unseen output still flags purple)', () => {

@@ -1153,9 +1153,9 @@ export function ClaudePanel({
               // the model — without prematurely tearing down the in-flight
               // stream, which would happen if we treated WS blips as
               // "session ended."
-              const sessionStreaming = isStreaming || !!activeSession?.isStreaming;
-              const showDots = sessionStreaming && !isResuming && !activeSession?.hasPendingInput;
-              if (!showDots) return null;
+               const sessionStreaming = isStreaming || !!activeSession?.isStreaming;
+               const showDots = sessionStreaming && !isResuming && !activeSession?.hasPendingInput && !activeSession?.isCompacting;
+               if (!showDots) return null;
               const linkUncertain = relayState !== 'connected'
                 || agentConnection?.state !== 'connected'
                 || agentOnline === false;

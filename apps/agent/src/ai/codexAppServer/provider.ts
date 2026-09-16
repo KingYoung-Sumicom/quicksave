@@ -57,6 +57,8 @@ import type { ThreadListParams } from './schema/generated/v2/ThreadListParams.js
 import type { ThreadListResponse } from './schema/generated/v2/ThreadListResponse.js';
 import type { ThreadResumeParams } from './schema/generated/v2/ThreadResumeParams.js';
 import type { ThreadResumeResponse } from './schema/generated/v2/ThreadResumeResponse.js';
+import type { ThreadCompactStartParams } from './schema/generated/v2/ThreadCompactStartParams.js';
+import type { ThreadCompactStartResponse } from './schema/generated/v2/ThreadCompactStartResponse.js';
 import type { TurnStartParams } from './schema/generated/v2/TurnStartParams.js';
 import type { TurnStartResponse } from './schema/generated/v2/TurnStartResponse.js';
 import type { TurnInterruptParams } from './schema/generated/v2/TurnInterruptParams.js';
@@ -112,6 +114,7 @@ const CODEX_BUILT_IN_SLASH_COMMANDS: SlashCommandInfo[] = [
 // rejection, so timing out also releases the child process for a clean retry.
 const CODEX_THREAD_RESUME_TIMEOUT_MS = 45_000;
 const CODEX_TURN_START_TIMEOUT_MS = 45_000;
+const CODEX_COMPACT_TIMEOUT_MS = 180_000;
 const NATIVE_COMPLETION_BATCH_MAX = 8;
 const NATIVE_COMPLETION_OUTPUT_MAX_CHARS = 4_000;
 const NATIVE_COMPLETION_COMMAND_MAX_CHARS = 1_000;
@@ -389,6 +392,26 @@ export class CodexAppServerProvider implements CodingAgentProvider {
     }
   }
 
+  /** Compact a cold Codex thread. Live sessions use ProviderSession.compact()
+   * so the request stays on the app-server connection that owns the thread. */
+  async compact(sessionId: string, opts?: { cwd?: string }): Promise<void> {
+    const handle = await spawnCodexNativeListAppServer();
+    try {
+      await withTimeout(
+        handle.rpc.request<ThreadResumeResponse>('thread/resume', {
+          threadId: sessionId,
+          cwd: opts?.cwd,
+          excludeTurns: true,
+        } satisfies ThreadResumeParams),
+        'thread/resume',
+        CODEX_THREAD_RESUME_TIMEOUT_MS,
+      );
+      await compactCodexThread(handle, sessionId);
+    } finally {
+      await handle.shutdown().catch(() => {});
+    }
+  }
+
   async unarchiveSession(sessionId: string): Promise<void> {
     const handle = await spawnCodexNativeListAppServer();
     try {
@@ -419,6 +442,79 @@ function withTimeout<T>(promise: Promise<T>, operation: string, timeoutMs: numbe
   return Promise.race([promise, timeout]).finally(() => {
     if (timer !== undefined) clearTimeout(timer);
   });
+}
+
+/** Start native compaction and wait for the durable compaction item rather
+ * than treating the empty RPC acknowledgement as completion. */
+async function compactCodexThread(handle: AppServerHandle, threadId: string): Promise<void> {
+  let compactTurnId: string | null = null;
+  let compactionItemCompleted = false;
+  let completedTurn: TurnCompletedNotification['turn'] | null = null;
+  let resolveCompletion!: () => void;
+  let rejectCompletion!: (error: Error) => void;
+  const completion = new Promise<void>((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+  const maybeFinish = () => {
+    if (!compactionItemCompleted || !completedTurn) return;
+    if (completedTurn.status === 'completed') {
+      resolveCompletion();
+      return;
+    }
+    rejectCompletion(new Error(
+      completedTurn.error?.message
+        || `Codex context compaction ${completedTurn.status}`,
+    ));
+  };
+  const unsubscribeNotification = handle.rpc.onNotification((notification) => {
+    if (!notificationBelongsToThread(notification.params, threadId)) return;
+    if (notification.method === 'turn/started' && compactTurnId === null) {
+      compactTurnId = (notification.params as TurnStartedNotification).turn.id;
+      return;
+    }
+    if (notification.method === 'thread/compacted') {
+      const params = notification.params as { turnId: string };
+      compactTurnId ??= params.turnId;
+      compactionItemCompleted = true;
+      maybeFinish();
+      return;
+    }
+    if (notification.method === 'item/completed') {
+      const params = notification.params as { turnId: string; item: ThreadItem };
+      if (params.item.type === 'contextCompaction'
+        && (compactTurnId === null || params.turnId === compactTurnId)) {
+        compactTurnId = params.turnId;
+        compactionItemCompleted = true;
+        maybeFinish();
+      }
+      return;
+    }
+    if (notification.method === 'turn/completed') {
+      const params = notification.params as TurnCompletedNotification;
+      if (compactTurnId !== null && params.turn.id === compactTurnId) {
+        completedTurn = params.turn;
+        maybeFinish();
+      }
+    }
+  });
+  const unsubscribeClose = handle.rpc.onClose((reason) => {
+    rejectCompletion(new Error(`Codex app-server closed during compaction${reason ? `: ${String(reason)}` : ''}`));
+  });
+  try {
+    const request = handle.rpc.request<ThreadCompactStartResponse>(
+      'thread/compact/start',
+      { threadId } satisfies ThreadCompactStartParams,
+    );
+    await withTimeout(
+      Promise.all([request, completion]).then(() => undefined),
+      'thread/compact/start',
+      CODEX_COMPACT_TIMEOUT_MS,
+    );
+  } finally {
+    unsubscribeNotification();
+    unsubscribeClose();
+  }
 }
 
 function scheduleInitialTurn(
@@ -469,6 +565,8 @@ export interface CodexAppServerProviderSession extends ProviderSession {
   refreshGoalConfig(): Promise<void>;
   /** Archive through the app-server instance that already owns this thread. */
   setArchived(archived: boolean): Promise<void>;
+  /** Compact through the app-server connection that owns this live thread. */
+  compact(): Promise<void>;
 }
 
 export class CodexAppServerSession implements CodexAppServerProviderSession {
@@ -502,6 +600,10 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   private nativeCompletionSuppressedByArchiveOrClose = false;
   private nativeCompletionGoalAllowsContinuation = true;
   private readonly nativeCompletionRetryCounts = new Map<string, number>();
+  /** While a user-requested compact is running, its native turn/items are
+   * represented by SessionManager's single Compacting… card instead. */
+  private manualCompactionInFlight = false;
+  private manualCompactionTurnId: string | null = null;
 
   constructor(args: SessionArgs) {
     this.handle = args.handle;
@@ -561,6 +663,21 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       return;
     }
     void this.runTurn(prompt, attachments);
+  }
+
+  async compact(): Promise<void> {
+    if (this.exited) throw new Error('Codex app-server session is closed');
+    if (this.running || this.startingRunTurn || this.currentTurnId || this.manualCompactionInFlight) {
+      throw new Error('Session is busy — wait for the current turn to finish, then try compacting again.');
+    }
+    this.manualCompactionInFlight = true;
+    this.manualCompactionTurnId = null;
+    try {
+      await compactCodexThread(this.handle, this.threadId);
+    } finally {
+      this.manualCompactionInFlight = false;
+      this.manualCompactionTurnId = null;
+    }
   }
 
   interruptThenSendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
@@ -1207,6 +1324,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       }
       this.observeNativeExecCompletionNotification(notification);
       this.observeTokenUsageNotification(notification);
+      if (this.shouldSuppressManualCompactionNotification(notification)) return;
       const turnId = this.ensureTurnConsumerForNotification(notification);
       this.dispatchTurnNotification(notification, turnId);
       this.observeSubagentThreads(notification);
@@ -1233,6 +1351,31 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
         `[codex-app] failed to handle session notification method=${notification.method} session=${this.threadId.slice(0, 8)} params=${codexProtocolPreview(notification.params)} error=${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  private shouldSuppressManualCompactionNotification(
+    notification: { method: string; params: unknown },
+  ): boolean {
+    if (!this.manualCompactionInFlight || !notificationBelongsToThread(notification.params, this.threadId)) {
+      return false;
+    }
+    if (notification.method === 'turn/started' && this.manualCompactionTurnId === null) {
+      this.manualCompactionTurnId = (notification.params as TurnStartedNotification).turn.id;
+      return true;
+    }
+    if (notification.method === 'item/started' || notification.method === 'item/completed') {
+      const params = notification.params as { turnId: string; item: ThreadItem };
+      if (params.item.type === 'contextCompaction') {
+        this.manualCompactionTurnId ??= params.turnId;
+        return true;
+      }
+    }
+    if (notification.method === 'thread/compacted') {
+      this.manualCompactionTurnId ??= (notification.params as { turnId: string }).turnId;
+      return true;
+    }
+    const turnId = notificationTurnId(notification);
+    return this.manualCompactionTurnId !== null && turnId === this.manualCompactionTurnId;
   }
 
   /**

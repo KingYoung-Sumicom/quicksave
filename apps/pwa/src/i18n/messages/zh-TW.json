@@ -366,6 +366,7 @@
   "commitForm.source.cli.hint": "Agentic · 會讀取相關檔案 · 使用你的 Claude 訂閱",
 
   "sessionStatus.label.thinking": "思考中",
+  "sessionStatus.label.compacting": "壓縮中",
   "sessionStatus.label.pending": "待處理",
   "sessionStatus.label.waiting": "等待中",
   "sessionStatus.label.unread": "未讀",
@@ -413,6 +414,7 @@
   "contextUsage.totals.output": "Output",
   "contextUsage.totals.cost": "成本",
   "contextUsage.action.compact": "壓縮",
+  "contextUsage.action.compacting": "壓縮中…",
   "contextUsage.action.compactTitle": "摘要對話以降低 context 用量",
   "contextUsage.action.clear": "清除",
   "contextUsage.action.clearTitle": "開始全新任務",

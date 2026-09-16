@@ -59,6 +59,22 @@ vi.mock('./cardBuilder.js', () => {
       patch: { answers },
     })),
     startNewTurn: vi.fn(),
+    systemMessage: vi.fn().mockImplementation((text: string, subtype?: string) => ({
+      type: 'add',
+      card: { type: 'system', id: 'sys1', text, ...(subtype ? { subtype } : {}) },
+    })),
+    systemMessageWithId: vi.fn().mockImplementation((id: string, text: string, subtype?: string) => ({
+      type: 'add',
+      card: { type: 'system', id, text, ...(subtype ? { subtype } : {}) },
+    })),
+    updateSystemMessage: vi.fn().mockImplementation((id: string, patch: Record<string, unknown>) => ({
+      type: 'update',
+      cardId: id,
+      patch,
+    })),
+    enableMemoryPersistence: vi.fn(),
+    disablePersistence: vi.fn(),
+    persistSupplementalCard: vi.fn().mockResolvedValue(undefined),
   }));
   return {
     StreamCardBuilder,
@@ -2526,6 +2542,170 @@ describe('SessionManager', () => {
       const startEvent = events.find(e => e.sessionId === sessionId && e.isActive);
       expect(startEvent).toBeDefined();
       expect(startEvent.isStreaming).toBe(true);
+    });
+  });
+
+  // ── /compact (compact button) ──
+
+  describe('/compact', () => {
+    let sessionId: string;
+    let managed: ManagedSession;
+
+    beforeEach(async () => {
+      sessionId = 'compact-session';
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+      await manager.startSession({
+        prompt: 'Hello',
+        cwd: '/tmp/test',
+      });
+      managed = (manager as unknown as { sessions: Map<string, ManagedSession> }).sessions.get(sessionId)!;
+      // startSession leaves the session mid-turn; settle it so compact runs
+      // on an idle session.
+      managed.streaming = false;
+      // Earlier tests in this file swap the StreamCardBuilder factory mock
+      // with builders that lack systemMessage, and mockReturnValue persists
+      // past clearAllMocks — make sure this instance can emit the card.
+      const cb = managed.cardBuilder as unknown as Record<string, unknown>;
+      if (typeof cb?.systemMessage !== 'function') {
+        cb!.systemMessage = (text: string, subtype?: string) => ({
+          type: 'add',
+          card: { type: 'system', id: 'sys1', text, ...(subtype ? { subtype } : {}) },
+        });
+      }
+      if (typeof cb?.systemMessageWithId !== 'function') {
+        cb!.systemMessageWithId = (id: string, text: string, subtype?: string) => ({
+          type: 'add',
+          card: { type: 'system', id, text, ...(subtype ? { subtype } : {}) },
+        });
+      }
+      if (typeof cb?.updateSystemMessage !== 'function') {
+        cb!.updateSystemMessage = (id: string, patch: Record<string, unknown>) => ({
+          type: 'update',
+          cardId: id,
+          patch,
+        });
+      }
+    });
+
+    it('delegates to provider.compact and emits the compacted card when idle', async () => {
+      provider.compact = vi.fn().mockImplementation(
+        async (_sid: string, _opts: unknown, emit?: (text: string, subtype: 'compacted') => void) => {
+          emit?.('Context compacted', 'compacted');
+        },
+      );
+      const cardEvents: any[] = [];
+      manager.on('card-event', (e) => cardEvents.push(e));
+
+      const result = await manager.resumeSession({
+        sessionId,
+        prompt: '/compact',
+        cwd: '/tmp/test',
+      });
+
+      expect(result).toBe(sessionId);
+      expect(provider.compact).toHaveBeenCalledTimes(1);
+      const [compactSid, compactOpts] = (provider.compact as Mock).mock.calls[0];
+      expect(compactSid).toBe(sessionId);
+      expect(compactOpts.cwd).toBe('/tmp/test');
+      expect(cardEvents).toHaveLength(2);
+      expect(cardEvents[0].card.type).toBe('system');
+      expect(cardEvents[0].card.subtype).toBe('compacting');
+      expect(cardEvents[0].card.text).toBe('Compacting…');
+      expect(cardEvents[1].type).toBe('update');
+      expect(cardEvents[1].cardId).toBe(cardEvents[0].card.id);
+      expect(cardEvents[1].patch).toEqual({ text: 'Context compacted', subtype: 'compacted' });
+    });
+
+    it('prefers the live provider session compact connection', async () => {
+      const liveCompact = vi.fn().mockResolvedValue(undefined);
+      managed.providerSession!.compact = liveCompact;
+      provider.compact = vi.fn().mockResolvedValue(undefined);
+
+      await manager.resumeSession({
+        sessionId,
+        prompt: '/compact',
+        cwd: '/tmp/test',
+      });
+
+      expect(liveCompact).toHaveBeenCalledTimes(1);
+      expect(provider.compact).not.toHaveBeenCalled();
+    });
+
+    it('passes the session config model to provider.compact', async () => {
+      provider.compact = vi.fn().mockResolvedValue(undefined);
+      await manager.setSessionConfig(sessionId, 'model', 'vllm-160/Qwen3.8 27B');
+
+      await manager.resumeSession({
+        sessionId,
+        prompt: '/compact',
+        cwd: '/tmp/test',
+      });
+
+      expect((provider.compact as Mock).mock.calls[0][1].model).toBe('vllm-160/Qwen3.8 27B');
+    });
+
+    it('rejects when the session is mid-turn', async () => {
+      provider.compact = vi.fn().mockResolvedValue(undefined);
+      managed.streaming = true;
+
+      await expect(
+        manager.resumeSession({
+          sessionId,
+          prompt: '/compact',
+          cwd: '/tmp/test',
+        }),
+      ).rejects.toThrow(/busy/i);
+      expect(provider.compact).not.toHaveBeenCalled();
+    });
+
+    it('rejects while another compact is in flight', async () => {
+      provider.compact = vi.fn().mockResolvedValue(undefined);
+      managed.compacting = true;
+
+      await expect(
+        manager.resumeSession({
+          sessionId,
+          prompt: '/compact',
+          cwd: '/tmp/test',
+        }),
+      ).rejects.toThrow(/busy/i);
+      expect(provider.compact).not.toHaveBeenCalled();
+    });
+
+    it('publishes isCompacting while compacting and clears it afterwards', async () => {
+      provider.compact = vi.fn().mockImplementation(async () => {
+        expect(manager.buildSessionUpdatePayload(sessionId).isCompacting).toBe(true);
+      });
+      const updates: any[] = [];
+      manager.on('session-updated', (e) => updates.push(e));
+
+      await manager.resumeSession({
+        sessionId,
+        prompt: '/compact',
+        cwd: '/tmp/test',
+      });
+
+      expect(updates.some((update) => update.sessionId === sessionId && update.isCompacting === true)).toBe(true);
+      expect(updates.at(-1)?.isCompacting).toBe(false);
+      expect(manager.buildSessionUpdatePayload(sessionId).isCompacting).toBe(false);
+    });
+
+    it('rejects while a cold resume is in flight', async () => {
+      provider.compact = vi.fn().mockResolvedValue(undefined);
+      (manager as unknown as { coldResumeInFlight: Map<string, unknown> })
+        .coldResumeInFlight.set(sessionId, { queuedPrompts: [] });
+
+      await expect(
+        manager.resumeSession({
+          sessionId,
+          prompt: '/compact',
+          cwd: '/tmp/test',
+        }),
+      ).rejects.toThrow(/busy/i);
+      expect(provider.compact).not.toHaveBeenCalled();
     });
   });
 

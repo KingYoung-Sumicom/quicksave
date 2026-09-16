@@ -17,6 +17,7 @@ import type {
   PendingInputAttachment,
   GeneratedImageCard,
   SystemCard,
+  SystemCardSubtype,
   MarkdownArtifactRef,
 } from '@sumicom/quicksave-shared';
 import { appendFile, readFile, readdir, writeFile, mkdir, stat, open, rename, utimes } from 'fs/promises';
@@ -1373,9 +1374,18 @@ export class StreamCardBuilder {
     return this.updateEvent(cardId, { status, summary });
   }
 
-  systemMessage(text: string, subtype?: 'compacted' | 'cost' | 'error' | 'info' | 'warning'): CardEvent {
+  systemMessage(text: string, subtype?: SystemCardSubtype): CardAddEvent {
     const card: Card = { type: 'system', id: this.nextId(), timestamp: Date.now(), text, subtype };
     return this.addEvent(card);
+  }
+
+  systemMessageWithId(id: CardId, text: string, subtype?: SystemCardSubtype): CardAddEvent {
+    const card: Card = { type: 'system', id, timestamp: Date.now(), text, subtype };
+    return this.addEvent(card);
+  }
+
+  updateSystemMessage(cardId: CardId, patch: { text?: string; subtype?: SystemCardSubtype }): CardEvent {
+    return this.updateEvent(cardId, patch);
   }
 
   /** Live structured `turn_duration` card — mirrors the history builder so a

@@ -33,6 +33,7 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     current.isActive === payload.isActive &&
     current.archived === payload.archived &&
     current.isStreaming === payload.isStreaming &&
+    current.isCompacting === payload.isCompacting &&
     current.hasPendingInput === payload.hasPendingInput &&
     current.queueState?.pendingUserMessages === payload.queueState?.pendingUserMessages &&
     current.queueState?.latestPromptPreview === payload.queueState?.latestPromptPreview &&
@@ -44,6 +45,7 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     current.permissionMode === payload.permissionMode &&
     current.lastPromptAt === payload.lastPromptAt &&
     current.lastTurnEndedAt === payload.lastTurnEndedAt &&
+    current.lastUnreadTurnEndedAt === payload.lastUnreadTurnEndedAt &&
     current.lastCacheTouchAt === payload.lastCacheTouchAt &&
     current.turnCount === payload.turnCount &&
     current.totalInputTokens === payload.totalInputTokens &&
@@ -74,12 +76,14 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     isActive: payload.isActive,
     archived: payload.archived,
     isStreaming: payload.isStreaming,
+    isCompacting: payload.isCompacting,
     hasPendingInput: payload.hasPendingInput,
     queueState,
     agent,
     permissionMode: payload.permissionMode,
     lastPromptAt: payload.lastPromptAt,
     lastTurnEndedAt: payload.lastTurnEndedAt,
+    lastUnreadTurnEndedAt: payload.lastUnreadTurnEndedAt,
     lastCacheTouchAt: payload.lastCacheTouchAt,
     turnCount: payload.turnCount,
     totalInputTokens: payload.totalInputTokens,

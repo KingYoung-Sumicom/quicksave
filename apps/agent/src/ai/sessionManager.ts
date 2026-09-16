@@ -283,6 +283,7 @@ export interface ManagedSession {
   providerSession: ProviderSession | null;
   cwd: string;
   streaming: boolean;
+  compacting?: boolean;
   permissionLevel: PermissionLevel;
   sandboxed: boolean;
   cardBuilder: StreamCardBuilder | null;
@@ -793,9 +794,50 @@ export class SessionManager extends EventEmitter {
     if (opts.prompt === '/compact') {
       const provider = this.getProvider(this.resolveAgentId(opts.sessionId, opts.cwd, opts.agent));
       if (provider.compact) {
+        const managed = this.sessions.get(opts.sessionId);
+        // Compacting a session mid-turn blocks on the provider side until
+        // the turn finishes (OpenCode's /summarize has no timeout), so the
+        // HTTP request would hang until the client gives up. Reject fast
+        // with a visible error instead.
+        if (managed?.streaming || managed?.compacting || this.coldResumeInFlight.has(opts.sessionId)) {
+          throw new Error('Session is busy — wait for the current turn to finish, then try compacting again.');
+        }
         console.log(`[session-manager] compacting session=${opts.sessionId.slice(0, 8)} via provider.compact`);
-        await provider.compact(opts.sessionId, { cwd: opts.cwd, model: desiredModel });
+        const cardBuilder = managed?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.cwd);
+        if (!managed?.cardBuilder) {
+          cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory' || provider.id === 'opencode');
+          cardBuilder.disablePersistence?.(provider.historyMode === 'codex-thread');
+          if (provider.historyMode === 'memory' || provider.id === 'opencode') {
+            cardBuilder.seedSequenceFromMax(await loadPersistedCardMaxSequence(opts.sessionId));
+          }
+          await cardBuilder.snapshotCutoff();
+        }
+        const callbacks = this.makeCallbacks(provider.id);
+        const compactCardId = `${opts.sessionId}:compact:${randomUUID()}`;
+        if (managed) managed.compacting = true;
         this.emitSessionUpdate(opts.sessionId);
+        callbacks.emitCardEvent(cardBuilder.systemMessageWithId(compactCardId, 'Compacting…', 'compacting'));
+        try {
+          if (managed?.providerSession?.compact) {
+            await managed.providerSession.compact();
+          } else {
+            await provider.compact(opts.sessionId, { cwd: opts.cwd, model: desiredModel });
+          }
+          callbacks.emitCardEvent(cardBuilder.updateSystemMessage(compactCardId, {
+            text: 'Context compacted',
+            subtype: 'compacted',
+          }));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          callbacks.emitCardEvent(cardBuilder.updateSystemMessage(compactCardId, {
+            text: `Compact failed: ${message}`,
+            subtype: 'error',
+          }));
+          throw error;
+        } finally {
+          if (managed) managed.compacting = false;
+          this.emitSessionUpdate(opts.sessionId);
+        }
         return opts.sessionId;
       }
       console.log(`[session-manager] provider ${provider.id} has no compact API — falling back to /compact prompt`);
@@ -2250,6 +2292,7 @@ export class SessionManager extends EventEmitter {
         ?? this.nativeSessions.get(sessionId)?.agent
         ?? registryAgent,
       isStreaming: ps?.streaming ?? false,
+      isCompacting: ps?.compacting ?? false,
       hasPendingInput,
       queueState: ps?.providerSession?.getQueueState?.() ?? null,
       permissionMode: ps?.permissionLevel ?? this.sessionPermissions.get(sessionId),

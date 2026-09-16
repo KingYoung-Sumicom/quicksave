@@ -368,8 +368,9 @@ export function useClaudeOperations(
       const session = state.sessions[sessionId];
       const activeSessionIdAtRequest = state.activeSessionId;
       const wasAlreadyStreaming = state.isStreaming || session?.isStreaming === true;
-      const queueInsteadOfAppend = wasAlreadyStreaming && !opts?.interruptCurrentTurn;
-      setStreaming(true);
+      const isCompactPrompt = prompt === '/compact';
+      const queueInsteadOfAppend = wasAlreadyStreaming && !opts?.interruptCurrentTurn && !isCompactPrompt;
+      if (!isCompactPrompt) setStreaming(true);
       setStreamError(null);
       if (queueInsteadOfAppend) {
         const optimisticUntil = Date.now() + OPTIMISTIC_QUEUE_MIN_MS;
@@ -411,7 +412,11 @@ export function useClaudeOperations(
               ? { attachmentIds: opts.attachmentIds }
               : {}),
           },
-          120000,
+          // Compaction can run for minutes on large sessions (the agent caps
+          // its own summarize call at QUICKSAVE_OPENCODE_COMPACT_TIMEOUT_MS,
+          // default 600s), so give /compact headroom to avoid mistaking a
+          // slow compact for a failed resume.
+          prompt === '/compact' ? 600000 : 120000,
         );
         if (!response.success) {
           throw new Error(response.error || 'Failed to resume session');
@@ -423,7 +428,7 @@ export function useClaudeOperations(
           activeSessionIdAtRequest,
           currentActiveSessionId: useClaudeStore.getState().activeSessionId,
         });
-        if (!queueInsteadOfAppend && shouldAppendCard) {
+        if (!queueInsteadOfAppend && shouldAppendCard && !isCompactPrompt) {
           appendAcknowledgedUserCard(prompt, opts?.attachmentMetadata, appendCard);
         }
         // Flip the indicator to "thinking" immediately so we don't rely on the
@@ -432,7 +437,8 @@ export function useClaudeOperations(
         upsertSession({
           sessionId: actualSessionId,
           isActive: true,
-          isStreaming: true,
+          isStreaming: !isCompactPrompt,
+          ...(isCompactPrompt ? { isCompacting: false } : {}),
           hasPendingInput: false,
           ...(response.queueState !== undefined ? { queueState: response.queueState } : {}),
         });
@@ -466,7 +472,8 @@ export function useClaudeOperations(
           }
         }
       } catch (error) {
-        setStreaming(false);
+        if (!isCompactPrompt || !wasAlreadyStreaming) setStreaming(false);
+        if (isCompactPrompt) upsertSession({ sessionId, isCompacting: false });
         setStreamError(error instanceof Error ? error.message : 'Failed to resume session');
         return false;
       }

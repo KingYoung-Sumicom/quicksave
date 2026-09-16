@@ -46,8 +46,13 @@ function cardContainsArtifact(card: Card): boolean {
     && parseMarkdownArtifactRef(card.result?.content) !== null;
 }
 
-function isVisibleSystemAlert(card: Card): boolean {
-  return card.type === 'system' && (card.subtype === 'error' || card.subtype === 'warning');
+function isAlwaysVisibleSystemCard(card: Card): boolean {
+  return card.type === 'system' && (
+    card.subtype === 'error'
+    || card.subtype === 'warning'
+    || card.subtype === 'compacting'
+    || card.subtype === 'compacted'
+  );
 }
 
 export function shouldCollapseCard(
@@ -60,7 +65,9 @@ export function shouldCollapseCard(
   if (cardContainsArtifact(card)) return false;
   // Provider and runtime failures need to remain visible after a turn ends;
   // otherwise they get mistaken for an item inside the collapsed tool run.
-  if (isVisibleSystemAlert(card)) return false;
+  // Compaction status ("Compacting…") and its result ("Context compacted") are
+  // user-facing milestones, not turn internals, so they must split a folded run.
+  if (isAlwaysVisibleSystemCard(card)) return false;
   // Codex's optional follow-up prompts are user-facing next steps, not turn
   // internals. Keep them visible after the source turn has completed.
   if (card.type === 'follow_up_question') return false;

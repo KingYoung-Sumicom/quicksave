@@ -24,6 +24,22 @@ describe('SystemMessage', () => {
     expect(html).toContain('target="_blank"');
   });
 
+  it('renders compacting as a spinner card', () => {
+    const html = renderToStaticMarkup(createElement(SystemMessage, {
+      card: {
+        type: 'system',
+        id: 'compacting',
+        timestamp: 123,
+        subtype: 'compacting',
+        text: 'Compacting…',
+      },
+    }));
+
+    expect(html).toContain('animate-spin');
+    expect(html).toContain('text-cyan-200');
+    expect(html).toContain('Compacting…');
+  });
+
   it('renders warnings separately from errors', () => {
     const html = renderToStaticMarkup(createElement(SystemMessage, {
       card: {

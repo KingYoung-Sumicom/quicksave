@@ -366,6 +366,7 @@
   "commitForm.source.cli.hint": "Agentic · reads related files · uses your Claude subscription",
 
   "sessionStatus.label.thinking": "Thinking",
+  "sessionStatus.label.compacting": "Compacting",
   "sessionStatus.label.pending": "Pending",
   "sessionStatus.label.waiting": "Waiting",
   "sessionStatus.label.unread": "Unread",
@@ -413,6 +414,7 @@
   "contextUsage.totals.output": "Output",
   "contextUsage.totals.cost": "Cost",
   "contextUsage.action.compact": "Compact",
+  "contextUsage.action.compacting": "Compacting…",
   "contextUsage.action.compactTitle": "Summarize conversation to reduce context",
   "contextUsage.action.clear": "Clear",
   "contextUsage.action.clearTitle": "Start a fresh task",

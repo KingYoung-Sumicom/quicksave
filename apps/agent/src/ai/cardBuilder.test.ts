@@ -600,6 +600,27 @@ describe('StreamCardBuilder', () => {
       const event = builder.systemMessage('Info') as CardAddEvent;
       expect((event.card as any).subtype).toBeUndefined();
     });
+
+    it('creates a system card with a caller-provided id', () => {
+      const event = builder.systemMessageWithId('sess-1:compact:1', 'Compacting…', 'compacting') as CardAddEvent;
+
+      expect(event.type).toBe('add');
+      expect(event.card.id).toBe('sess-1:compact:1');
+      expect(event.card.type).toBe('system');
+      expect((event.card as any).text).toBe('Compacting…');
+      expect((event.card as any).subtype).toBe('compacting');
+    });
+
+    it('updates an existing system card by id', () => {
+      builder.systemMessageWithId('sess-1:compact:1', 'Compacting…', 'compacting');
+      const event = builder.updateSystemMessage('sess-1:compact:1', { text: 'Context compacted', subtype: 'compacted' }) as CardUpdateEvent;
+
+      expect(event.type).toBe('update');
+      expect(event.cardId).toBe('sess-1:compact:1');
+      expect(event.patch).toEqual({ text: 'Context compacted', subtype: 'compacted' });
+      expect((builder.getCards()[0] as any).text).toBe('Context compacted');
+      expect((builder.getCards()[0] as any).subtype).toBe('compacted');
+    });
   });
 
   describe('errorMessage()', () => {

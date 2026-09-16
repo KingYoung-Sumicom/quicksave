@@ -4,10 +4,11 @@ import { clsx } from 'clsx';
 import { FormattedMessage } from 'react-intl';
 import type { ClaudeSessionSummary } from '@sumicom/quicksave-shared';
 
-export type SessionStatusKey = 'thinking' | 'pending' | 'waiting' | 'unread' | 'standby' | 'closed';
+export type SessionStatusKey = 'thinking' | 'compacting' | 'pending' | 'waiting' | 'unread' | 'standby' | 'closed';
 
 export const SESSION_STATUS = {
   thinking: { dotColor: 'bg-blue-400',   textColor: 'text-blue-300',   borderColor: 'border-blue-500/30',   bgColor: 'bg-blue-500/10',   pulse: true  },
+  compacting: { dotColor: 'bg-cyan-400', textColor: 'text-cyan-300',   borderColor: 'border-cyan-500/30',   bgColor: 'bg-cyan-500/10',   pulse: true  },
   pending:  { dotColor: 'bg-orange-400', textColor: 'text-orange-300', borderColor: 'border-orange-500/30', bgColor: 'bg-orange-500/10', pulse: true  },
   waiting:  { dotColor: 'bg-blue-400',   textColor: 'text-blue-300',   borderColor: 'border-blue-500/30',   bgColor: 'bg-blue-500/10',   pulse: true  },
   unread:   { dotColor: 'bg-purple-400', textColor: 'text-purple-300', borderColor: 'border-purple-500/30', bgColor: 'bg-purple-500/10', pulse: false },
@@ -28,36 +29,43 @@ export const SESSION_STATUS = {
  *     that predates the feature) from flooding the home list with purple
  *     dots; once any device sends `session:mark-read` once, the field
  *     populates and normal unread tracking takes over.
- *   - Sessions that have never produced output (`lastTurnEndedAt == null`)
+ *   - Sessions that have never produced readable output
+ *     (`lastUnreadTurnEndedAt == null`)
  *     — there's nothing to read yet.
  *
  * Inactive sessions (`isActive === false`) ARE allowed to be unread — a
  * session that ended with output you never saw still wants the cue, even
  * if its CLI process is gone.
  */
-export function isSessionUnread(session: Pick<ClaudeSessionSummary, 'lastReadAt' | 'lastTurnEndedAt'>): boolean {
+export function isSessionUnread(session: Pick<ClaudeSessionSummary, 'lastReadAt' | 'lastTurnEndedAt' | 'lastUnreadTurnEndedAt'>): boolean {
   const lastReadAt = session.lastReadAt;
   if (typeof lastReadAt !== 'number') return false;
-  const lastTurnEndedAt = session.lastTurnEndedAt;
-  if (typeof lastTurnEndedAt !== 'number' || lastTurnEndedAt <= 0) return false;
-  return lastReadAt < lastTurnEndedAt;
+  // Older agents omit the dedicated field, so retain lastTurnEndedAt as a
+  // wire-compatible fallback until every connected daemon has upgraded.
+  const unreadActivityAt = session.lastUnreadTurnEndedAt ?? session.lastTurnEndedAt;
+  if (typeof unreadActivityAt !== 'number' || unreadActivityAt <= 0) return false;
+  return lastReadAt < unreadActivityAt;
 }
 
 /**
  * Derive status from a session summary. Priority order:
- *   1. `pending`  — agent paused for user input (orange). Wins over
+ *   1. `pending`    — agent paused for user input (orange). Wins over
  *      everything: permission requests arrive mid-stream while `isStreaming`
  *      is still true, so this check must come first or the blue cursor cue
  *      would permanently mask the orange action cue.
- *   2. `thinking` — actively producing output (blue cursor cue).
- *   3. `unread`   — there's new output the user hasn't viewed (purple).
+ *   2. `compacting` — context compaction is running (cyan). Wins over
+ *      `thinking` so the slow background operation is not mistaken for a
+ *      normal model turn.
+ *   3. `thinking`   — actively producing output (blue cursor cue).
+ *   4. `unread`     — there's new output the user hasn't viewed (purple).
  *      Wins over `closed`: until the user actually opens it,
  *      "you haven't seen this" is the loudest remaining signal.
- *   4. `closed`   — process is gone, follow-up needs cold-resume.
- *   5. `standby`  — idle, alive, all read.
+ *   5. `closed`     — process is gone, follow-up needs cold-resume.
+ *   6. `standby`    — idle, alive, all read.
  */
 export function sessionStatusKey(session: ClaudeSessionSummary): SessionStatusKey {
   if (session.hasPendingInput) return 'pending';
+  if (session.isCompacting) return 'compacting';
   if (session.isStreaming) return 'thinking';
   if (isSessionUnread(session)) return 'unread';
   if (!session.isActive) return 'closed';

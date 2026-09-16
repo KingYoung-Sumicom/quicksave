@@ -87,6 +87,30 @@ describe('shouldCollapseCard', () => {
     expect(shouldCollapseCard(card, true, true)).toBe(false);
   });
 
+  it('keeps the in-progress compacting card visible after a turn completes', () => {
+    const card: Card = {
+      type: 'system',
+      id: 'compact-progress',
+      timestamp: 123,
+      text: 'Compacting…',
+      subtype: 'compacting',
+    };
+
+    expect(shouldCollapseCard(card, true, true)).toBe(false);
+  });
+
+  it('keeps the completed compacted card visible after a turn completes', () => {
+    const card: Card = {
+      type: 'system',
+      id: 'compact-result',
+      timestamp: 123,
+      text: 'Context compacted',
+      subtype: 'compacted',
+    };
+
+    expect(shouldCollapseCard(card, true, true)).toBe(false);
+  });
+
   it('keeps optional follow-up questions visible after their source turn completes', () => {
     const card: Card = {
       type: 'follow_up_question',

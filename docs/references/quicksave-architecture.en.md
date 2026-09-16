@@ -309,6 +309,10 @@ interface ProviderSession {
   interrupt(): void;
   kill(): void;
   readonly alive: boolean;
+  /** Optional — compact through the live provider connection. Codex uses
+   *  `thread/compact/start`; SessionManager prefers this over opening a
+   *  second app-server connection for an already-loaded thread. */
+  compact?(): Promise<void>;
   /** Optional — ask the provider for a breakdown of current context window
    *  usage. Only supported by the Claude Code CLI (via `get_context_usage`
    *  control_request). Returns null on providers that don't support it. */
@@ -352,6 +356,12 @@ interface ProviderCallbacks {
 ```
 
 There is no `cancelSession` / `closeSession` on the provider interface — those live on `SessionManager` and are implemented by calling `interrupt()` / `kill()` on the held `ProviderSession`.
+
+Manual Codex compaction is a native non-steerable turn. Quicksave waits for its
+`contextCompaction` item before changing the single `Compacting…` card to
+`Context compacted`; the native item is suppressed from card projection during
+this user-requested flow to avoid a duplicate completion card. Auto-compaction
+items continue through the normal history/card adapter.
 
 ### Session Registry (persistence)
 

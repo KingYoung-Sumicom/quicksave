@@ -201,6 +201,9 @@ interface ActiveSession {
 interface ProviderSession {
   sessionId: string;
   abort(): Promise<void>;
+  /** Optional —透過既有 provider connection 執行原生 compact。Codex 使用
+   * `thread/compact/start`，避免已載入的 thread 再開第二條 writer connection。 */
+  compact?(): Promise<void>;
   /** Optional — claude-code CLI only. Queries `get_context_usage`
    * control_request and returns a category-level breakdown of the
    * current context window. Fetched after every turn_ended and stored
@@ -208,6 +211,11 @@ interface ProviderSession {
   getContextUsage?(): Promise<ContextUsageBreakdown | null>;
 }
 ```
+
+Codex 手動 compact 是一個不可 steer 的原生 turn。Quicksave 會等到
+`contextCompaction` item 完成，再把同一張 `Compacting…` card 更新為
+`Context compacted`；手動流程中的原生 item 不再額外投影成第二張完成 card，
+而自動 compact 仍照一般 history/card adapter 顯示。
 
 ### Session Registry（persistence）
 
