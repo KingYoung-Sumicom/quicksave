@@ -32,6 +32,8 @@ describe('CodexAppServerProvider history persistence', () => {
       cwd: '/repo',
       ephemeral: false,
       parentThreadId: null,
+      agentNickname: null,
+      agentRole: null,
       name: 'In project',
       preview: 'Work here',
       createdAt: 1,
@@ -57,11 +59,26 @@ describe('CodexAppServerProvider history persistence', () => {
     const rootThread = {
       ephemeral: false,
       parentThreadId: null,
+      agentNickname: null,
+      agentRole: null,
       cwd: '/repo',
-    } satisfies Pick<Thread, 'ephemeral' | 'parentThreadId' | 'cwd'>;
+    } satisfies Pick<Thread, 'ephemeral' | 'parentThreadId' | 'cwd' | 'agentNickname' | 'agentRole'>;
 
     expect(isListableCodexThread(rootThread, ['/repo', '/other-repo'])).toBe(true);
     expect(isListableCodexThread({ ...rootThread, cwd: '/unmanaged' }, ['/repo', '/other-repo'])).toBe(false);
+  });
+
+  it('excludes collab-mode sub-agents even when they report parentThreadId: null', () => {
+    const rootThread = {
+      ephemeral: false,
+      parentThreadId: null,
+      agentNickname: null,
+      agentRole: null,
+      cwd: '/repo',
+    } satisfies Pick<Thread, 'ephemeral' | 'parentThreadId' | 'cwd' | 'agentNickname' | 'agentRole'>;
+
+    expect(isListableCodexThread({ ...rootThread, agentNickname: 'Euler' }, ['/repo'])).toBe(false);
+    expect(isListableCodexThread({ ...rootThread, agentRole: 'researcher' }, ['/repo'])).toBe(false);
   });
 
   it('uses the legacy history path only for a missing app-server method', () => {

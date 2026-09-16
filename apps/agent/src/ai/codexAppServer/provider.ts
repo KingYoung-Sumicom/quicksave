@@ -2366,15 +2366,23 @@ async function listCodexThreads(
   return threads;
 }
 
-/** Only root threads in the requested project paths belong in session history. */
+/** Only root threads in the requested project paths belong in session history.
+ * Collab-mode / AgentControl sub-agents are tagged via `agentNickname` /
+ * `agentRole` rather than `parentThreadId` — Codex still reports them as
+ * root threads (`parentThreadId: null`) in `thread/list`, so both signals
+ * must be checked or they leak into the session picker as top-level sessions. */
 export function isListableCodexThread(
-  thread: Pick<Thread, 'ephemeral' | 'parentThreadId' | 'cwd'>,
+  thread: Pick<Thread, 'ephemeral' | 'parentThreadId' | 'cwd' | 'agentNickname' | 'agentRole'>,
   cwd?: string | readonly string[],
 ): boolean {
   const matchesCwd = typeof cwd === 'string'
     ? thread.cwd === cwd
     : !cwd || cwd.includes(thread.cwd);
-  return !thread.ephemeral && thread.parentThreadId === null && matchesCwd;
+  return !thread.ephemeral
+    && thread.parentThreadId === null
+    && thread.agentNickname === null
+    && thread.agentRole === null
+    && matchesCwd;
 }
 
 function codexThreadToNativeSession(thread: Thread, archived: boolean): NativeSessionSummary {
