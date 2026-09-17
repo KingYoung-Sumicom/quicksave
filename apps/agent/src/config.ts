@@ -40,6 +40,15 @@ export interface AgentConfig {
   managedCodingPaths?: string[];
   /** Enable OpenCode's built-in websearch tool (backed by Exa). */
   openCodeEnableExa?: boolean;
+  /** Machine-local reviewer used by OpenCode auto-review sessions. */
+  openCodeGuardian?: {
+    baseUrl: string;
+    apiKey?: string;
+    model: string;
+    enableThinking?: boolean;
+    timeoutMs?: number;
+    maxConsecutiveDenials?: number;
+  };
 }
 
 const DEFAULT_SIGNALING_SERVER = 'wss://signal.quicksave.dev';
@@ -156,6 +165,171 @@ export function getOpenCodeEnableExa(): boolean {
 export function setOpenCodeEnableExa(enabled: boolean): void {
   const config = loadConfig() ?? getOrCreateConfig(DEFAULT_SIGNALING_SERVER);
   config.openCodeEnableExa = enabled;
+  saveConfig(config);
+}
+
+// ── OpenCode guardian (auto-review) ──────────────────────────────────────────
+//
+// When an OpenCode session runs in the `auto-review` permission mode, the
+// daemon routes permission requests through an LLM reviewer instead of
+// auto-approving them. The reviewer never runs inside the coding-agent
+// provider (no hidden session is created for it) — it calls a
+// user-configured, OpenAI-compatible model server directly. This is a
+// prerequisite for `auto-review`, not an optional override: with no model
+// server configured, `auto-review` is unavailable rather than silently
+// falling back to the main session's own model.
+
+export interface GuardianModelServerConfig {
+  /** Base URL of an OpenAI-compatible API, e.g. `http://localhost:8000/v1`. */
+  baseUrl: string;
+  apiKey?: string;
+  model: string;
+  enableThinking: boolean;
+}
+
+export interface GuardianSettingsInput {
+  baseUrl: string;
+  model: string;
+  apiKey?: string | null;
+  enableThinking: boolean;
+  timeoutMs: number;
+  maxConsecutiveDenials: number;
+}
+
+function environmentGuardianModelServerConfig(): GuardianModelServerConfig | undefined {
+  const baseUrl = process.env.QUICKSAVE_GUARDIAN_MODEL_SERVER_URL?.trim();
+  const model = process.env.QUICKSAVE_GUARDIAN_MODEL?.trim();
+  if (!baseUrl || !model) return undefined;
+  const apiKey = process.env.QUICKSAVE_GUARDIAN_MODEL_SERVER_API_KEY?.trim();
+  return {
+    baseUrl,
+    model,
+    ...(apiKey ? { apiKey } : {}),
+    enableThinking: parseGuardianThinkingSetting(
+      process.env.QUICKSAVE_GUARDIAN_ENABLE_THINKING,
+      false,
+    ),
+  };
+}
+
+function parseGuardianThinkingSetting(raw: string | undefined, fallback: boolean): boolean {
+  if (raw === undefined || !raw.trim()) return fallback;
+  const normalized = raw.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
+/** Guardian reviewer model server, or undefined when not configured (in
+ *  which case `auto-review` must be rejected, not silently downgraded). */
+export function getGuardianModelServerConfig(): GuardianModelServerConfig | undefined {
+  const environment = environmentGuardianModelServerConfig();
+  if (environment) return environment;
+  const stored = loadConfig()?.openCodeGuardian;
+  const baseUrl = stored?.baseUrl.trim();
+  const model = stored?.model.trim();
+  if (!baseUrl || !model) return undefined;
+  return {
+    baseUrl,
+    model,
+    ...(stored?.apiKey ? { apiKey: stored.apiKey } : {}),
+    enableThinking: parseGuardianThinkingSetting(
+      process.env.QUICKSAVE_GUARDIAN_ENABLE_THINKING,
+      stored?.enableThinking === true,
+    ),
+  };
+}
+
+/** Wall-clock timeout for one guardian review, in milliseconds. */
+export function getOpenCodeGuardianTimeoutMs(): number {
+  const raw = Number(process.env.QUICKSAVE_GUARDIAN_TIMEOUT_MS ?? loadConfig()?.openCodeGuardian?.timeoutMs);
+  if (!Number.isFinite(raw) || raw <= 0) return 60_000;
+  return Math.min(300_000, Math.max(5_000, Math.round(raw)));
+}
+
+/** Consecutive guardian denials/failures before a request escalates to the
+ *  user for a manual decision. */
+export function getOpenCodeGuardianMaxConsecutiveDenials(): number {
+  const raw = Number(process.env.QUICKSAVE_GUARDIAN_MAX_CONSECUTIVE ?? loadConfig()?.openCodeGuardian?.maxConsecutiveDenials);
+  if (!Number.isFinite(raw) || raw <= 0) return 3;
+  return Math.min(10, Math.max(1, Math.round(raw)));
+}
+
+export function getOpenCodeGuardianSettingsSnapshot(): {
+  configured: boolean;
+  source: 'environment' | 'settings' | 'none';
+  baseUrl?: string;
+  model?: string;
+  hasApiKey: boolean;
+  enableThinking: boolean;
+  timeoutMs: number;
+  maxConsecutiveDenials: number;
+} {
+  const environment = environmentGuardianModelServerConfig();
+  const stored = loadConfig()?.openCodeGuardian;
+  const active = environment ?? (stored?.baseUrl?.trim() && stored.model?.trim()
+    ? {
+        baseUrl: stored.baseUrl.trim(),
+        model: stored.model.trim(),
+        ...(stored.apiKey ? { apiKey: stored.apiKey } : {}),
+        enableThinking: parseGuardianThinkingSetting(
+          process.env.QUICKSAVE_GUARDIAN_ENABLE_THINKING,
+          stored.enableThinking === true,
+        ),
+      }
+    : undefined);
+  return {
+    configured: Boolean(active),
+    source: environment ? 'environment' : active ? 'settings' : 'none',
+    ...(active?.baseUrl ? { baseUrl: active.baseUrl } : {}),
+    ...(active?.model ? { model: active.model } : {}),
+    hasApiKey: Boolean(active?.apiKey),
+    enableThinking: active?.enableThinking ?? false,
+    timeoutMs: getOpenCodeGuardianTimeoutMs(),
+    maxConsecutiveDenials: getOpenCodeGuardianMaxConsecutiveDenials(),
+  };
+}
+
+export function setOpenCodeGuardianSettings(input: GuardianSettingsInput): void {
+  if (environmentGuardianModelServerConfig()) {
+    throw new Error('Guardian settings are managed by environment variables on this machine');
+  }
+  const baseUrl = input.baseUrl.trim().replace(/\/+$/, '');
+  const model = input.model.trim();
+  if (Boolean(baseUrl) !== Boolean(model)) {
+    throw new Error('Guardian base URL and model must either both be set or both be empty');
+  }
+  if (baseUrl) {
+    let parsed: URL;
+    try { parsed = new URL(baseUrl); } catch { throw new Error('Guardian base URL must be a valid URL'); }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('Guardian base URL must use http or https');
+    }
+  }
+  if (!Number.isFinite(input.timeoutMs) || input.timeoutMs < 5_000 || input.timeoutMs > 300_000) {
+    throw new Error('Guardian timeout must be between 5 and 300 seconds');
+  }
+  if (!Number.isInteger(input.maxConsecutiveDenials)
+    || input.maxConsecutiveDenials < 1
+    || input.maxConsecutiveDenials > 10) {
+    throw new Error('Guardian denial threshold must be an integer between 1 and 10');
+  }
+
+  const config = loadConfig() ?? getOrCreateConfig(DEFAULT_SIGNALING_SERVER);
+  if (!baseUrl) {
+    delete config.openCodeGuardian;
+  } else {
+    const previousKey = config.openCodeGuardian?.apiKey;
+    const apiKey = input.apiKey === undefined ? previousKey : input.apiKey?.trim() || undefined;
+    config.openCodeGuardian = {
+      baseUrl,
+      model,
+      ...(apiKey ? { apiKey } : {}),
+      enableThinking: input.enableThinking,
+      timeoutMs: Math.round(input.timeoutMs),
+      maxConsecutiveDenials: input.maxConsecutiveDenials,
+    };
+  }
   saveConfig(config);
 }
 

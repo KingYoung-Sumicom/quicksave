@@ -156,6 +156,36 @@ export function buildOpenCodeQuicksaveConfig(
   };
 }
 
+/** Explicitly safe permission categories that bypass Guardian review.
+ *
+ * OpenCode evaluates rules in order and the last match wins. The auto-review
+ * ruleset therefore starts with a catch-all `ask` and appends this allowlist.
+ * New permission categories introduced by OpenCode are reviewed by default
+ * instead of silently inheriting a permissive global configuration.
+ * `external_directory` remains reviewed even when the underlying operation is
+ * a read, because OpenCode combines all applicable resource checks. */
+export const AUTO_REVIEW_SAFE_PERMISSION_ALLOWLIST = [
+  'read',
+  'grep',
+  'glob',
+  'list',
+  'lsp',
+  'todowrite',
+  'question',
+  'doom_loop',
+] as const;
+
+export function buildAutoReviewPermissionRuleset(): OpenCodePermissionRule[] {
+  return [
+    { permission: '*', pattern: '*', action: 'ask' },
+    ...AUTO_REVIEW_SAFE_PERMISSION_ALLOWLIST.map((permission) => ({
+      permission,
+      pattern: '*',
+      action: 'allow' as const,
+    })),
+  ];
+}
+
 export function buildOpenCodeServerEnv(
   env: NodeJS.ProcessEnv = process.env,
   ownDir = __aiDir,
@@ -184,6 +214,19 @@ export interface CreateSessionOpts {
   directory: string;
   title?: string;
   agent?: string;
+  model?: { providerID: string; modelID: string };
+  metadata?: Record<string, unknown>;
+  /** Per-session permission ruleset. Session rules are evaluated AFTER the
+   * config-level permission map (last match wins), so they can tighten —
+   * but not loosen — rules the user set globally. */
+  permission?: OpenCodePermissionRule[];
+}
+
+/** One entry of an OpenCode per-session permission ruleset. */
+export interface OpenCodePermissionRule {
+  permission: string;
+  pattern: string;
+  action: 'allow' | 'ask' | 'deny';
 }
 
 export interface OpenCodeSessionInfo {
@@ -192,7 +235,24 @@ export interface OpenCodeSessionInfo {
   parentID?: string | null;
   title?: string;
   directory?: string;
+  metadata?: Record<string, unknown>;
+  model?: { id: string; providerID: string; variant?: string };
   time?: { created?: number; updated?: number; archived?: number | null };
+}
+
+const DEFAULT_OPENCODE_COMPACT_TIMEOUT_MS = 600_000;
+
+/** Client-side ceiling for the summarize POST. OpenCode has no server-side
+ * timeout: on a busy session it queues until the turn ends, so without a
+ * client timeout the request would hang until undici's headers timeout
+ * (~5 min) and the failure would surface as an opaque fetch error.
+ * Slow local models (e.g. vLLM) may need well over 3 min to summarize a
+ * large session, so this is tunable via
+ * QUICKSAVE_OPENCODE_COMPACT_TIMEOUT_MS (milliseconds). The PWA /compact
+ * RPC timeout must be at least this value or the client gives up first. */
+export function getOpenCodeCompactTimeoutMs(): number {
+  const raw = Number(process.env.QUICKSAVE_OPENCODE_COMPACT_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_OPENCODE_COMPACT_TIMEOUT_MS;
 }
 
 export interface PromptOpts {
@@ -203,6 +263,13 @@ export interface PromptOpts {
   variant?: string;
   system?: string;
   attachments?: readonly Attachment[];
+  /** Per-prompt tool gate. OpenCode converts this into session-level
+   * permission rules (`true` → allow, `false` → deny, pattern `*`), so
+   * `tools: { "*": false }` disables every tool for this prompt. */
+  tools?: Record<string, boolean>;
+  /** Force the model's final answer to match a JSON schema (OpenCode injects
+   * a StructuredOutput tool for this). */
+  format?: { type: 'json_schema'; schema: Record<string, unknown>; retryCount?: number };
 }
 
 export type PromptPart =
@@ -656,10 +723,31 @@ class OpenCodeServer {
     const body: Record<string, unknown> = {};
     if (opts.title) body.title = opts.title;
     if (opts.agent) body.agent = opts.agent;
+    if (opts.model) body.model = { providerID: opts.model.providerID, id: opts.model.modelID };
+    if (opts.metadata) body.metadata = opts.metadata;
+    if (opts.permission?.length) body.permission = opts.permission;
     return this.req<{ id: string }>('/session', {
       method: 'POST',
       body: JSON.stringify(body),
     }, { directory: opts.directory });
+  }
+
+  /** Replace the session's per-session permission ruleset. Used to apply the
+   * guardian boundary to sessions created before auto-review was switched on
+   * (or cold-resumed into it). */
+  async setSessionPermission(
+    sessionID: string,
+    directory: string,
+    permission: OpenCodePermissionRule[],
+  ): Promise<void> {
+    await this.req<unknown>(
+      `/session/${encodeURIComponent(sessionID)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ permission }),
+      },
+      { directory },
+    );
   }
 
   async deleteSession(sessionID: string, directory: string): Promise<void> {
@@ -703,17 +791,28 @@ class OpenCodeServer {
     directory: string,
     model: { providerID: string; modelID: string },
   ): Promise<void> {
-    await this.req<unknown>(
-      `/session/${encodeURIComponent(sessionID)}/summarize`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          providerID: model.providerID,
-          modelID: model.modelID,
-        }),
-      },
-      { directory },
-    );
+    const timeoutMs = getOpenCodeCompactTimeoutMs();
+    try {
+      await this.req<unknown>(
+        `/session/${encodeURIComponent(sessionID)}/summarize`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            providerID: model.providerID,
+            modelID: model.modelID,
+          }),
+          signal: AbortSignal.timeout(timeoutMs),
+        },
+        { directory },
+      );
+    } catch (err) {
+      if ((err as Error)?.name === 'TimeoutError') {
+        throw new Error(
+          `opencode compact timed out after ${timeoutMs / 1000}s — the session may still be busy or the model too slow; try again`,
+        );
+      }
+      throw err;
+    }
   }
 
   async sendPromptAsync(sessionID: string, directory: string, opts: PromptOpts): Promise<void> {
@@ -726,6 +825,8 @@ class OpenCodeServer {
     if (opts.agent) body.agent = opts.agent;
     if (opts.variant) body.variant = opts.variant;
     if (opts.system) body.system = opts.system;
+    if (opts.tools) body.tools = opts.tools;
+    if (opts.format) body.format = opts.format;
     await this.req<unknown>(`/session/${encodeURIComponent(sessionID)}/prompt_async`, {
       method: 'POST',
       body: JSON.stringify(body),

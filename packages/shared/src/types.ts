@@ -106,6 +106,8 @@ export type MessageType =
   | 'opencode:mcp-remove:response'
   | 'opencode:websearch-update'
   | 'opencode:websearch-update:response'
+  | 'opencode:guardian-update'
+  | 'opencode:guardian-update:response'
   // systemd user-unit (auto-start at login) — Linux only
   | 'systemd:status'
   | 'systemd:status:response'
@@ -777,7 +779,7 @@ export interface AgentProbePayload {
   availableProviders: AgentProviderInfo[];
 }
 
-// OpenCode machine configuration (read-only snapshot). This intentionally
+// OpenCode machine configuration (sanitized snapshot). This intentionally
 // contains summaries only: credential values and raw config documents never
 // cross the agent/PWA boundary.
 export interface OpenCodeConfigSnapshotPayload {
@@ -787,6 +789,16 @@ export interface OpenCodeConfigSnapshotPayload {
   defaultModel?: string;
   smallModel?: string;
   websearch: { exaEnabled: boolean; permission: 'ask' | 'allow' | 'deny' | 'unknown' };
+  guardian: {
+    configured: boolean;
+    source: 'environment' | 'settings' | 'none';
+    baseUrl?: string;
+    model?: string;
+    hasApiKey: boolean;
+    enableThinking: boolean;
+    timeoutMs: number;
+    maxConsecutiveDenials: number;
+  };
   mcp: Array<{
     name: string;
     type?: 'local' | 'remote';
@@ -832,6 +844,16 @@ export interface OpenCodeMcpRemoveRequestPayload { name: string; }
 export interface OpenCodeMcpMutationResponsePayload { success: boolean; error?: string; }
 export interface OpenCodeWebSearchUpdateRequestPayload { exaEnabled: boolean; }
 export interface OpenCodeWebSearchUpdateResponsePayload { success: boolean; error?: string; }
+export interface OpenCodeGuardianUpdateRequestPayload {
+  baseUrl: string;
+  model: string;
+  /** Omit to retain the stored key, null to clear it, or pass a new value. */
+  apiKey?: string | null;
+  enableThinking: boolean;
+  timeoutMs: number;
+  maxConsecutiveDenials: number;
+}
+export interface OpenCodeGuardianUpdateResponsePayload { success: boolean; error?: string; }
 
 /**
  * Machine-level voice capability the agent advertises in the handshake ack.

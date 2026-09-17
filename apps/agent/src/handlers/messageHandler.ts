@@ -178,6 +178,8 @@ import {
   OpenCodeMcpMutationResponsePayload,
   OpenCodeWebSearchUpdateRequestPayload,
   OpenCodeWebSearchUpdateResponsePayload,
+  OpenCodeGuardianUpdateRequestPayload,
+  OpenCodeGuardianUpdateResponsePayload,
 } from '@sumicom/quicksave-shared';
 import {
   getSystemdStatus,
@@ -187,7 +189,7 @@ import {
 } from '../service/systemdUnit.js';
 import { GitOperations } from '../git/operations.js';
 import type { PushClient } from '../service/pushClient.js';
-import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, removeManagedRepo, addManagedCodingPath, removeManagedCodingPath, getOpenCodeEnableExa, setOpenCodeEnableExa } from '../config.js';
+import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, removeManagedRepo, addManagedCodingPath, removeManagedCodingPath, getOpenCodeEnableExa, setOpenCodeEnableExa, getOpenCodeGuardianSettingsSnapshot, setOpenCodeGuardianSettings } from '../config.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';
 import { CommitSummaryCliService, CommitSummaryCliError } from '../ai/commitSummaryCli.js';
 import { CommitSummaryStateStore } from '../ai/commitSummaryStore.js';
@@ -295,7 +297,7 @@ function configEntries(value: unknown): Array<[string, Record<string, unknown>]>
 }
 
 function emptyOpenCodeSnapshot(error?: string): OpenCodeConfigSnapshotResponsePayload {
-  return { available: false, websearch: { exaEnabled: getOpenCodeEnableExa(), permission: getOpenCodeEnableExa() ? 'ask' : 'unknown' }, mcp: [], providers: [], agents: [], skills: [], commands: [], plugins: [], error };
+  return { available: false, websearch: { exaEnabled: getOpenCodeEnableExa(), permission: getOpenCodeEnableExa() ? 'ask' : 'unknown' }, guardian: getOpenCodeGuardianSettingsSnapshot(), mcp: [], providers: [], agents: [], skills: [], commands: [], plugins: [], error };
 }
 
 /** Convert version-skewed OpenCode server/config responses into safe display
@@ -369,6 +371,7 @@ function summarizeOpenCodeConfig(input: OpenCodeSnapshotInput): OpenCodeConfigSn
   return {
     available: true,
     websearch: { exaEnabled: input.exaEnabled, permission: input.exaEnabled ? 'ask' : 'unknown' },
+    guardian: getOpenCodeGuardianSettingsSnapshot(),
     version: input.version,
     schema,
     ...(asString(document.model) ? { defaultModel: asString(document.model) } : {}),
@@ -1091,6 +1094,8 @@ export class MessageHandler {
           return this.handleOpenCodeMcpRemove(message as Message<OpenCodeMcpRemoveRequestPayload>);
         case 'opencode:websearch-update':
           return this.handleOpenCodeWebSearchUpdate(message as Message<OpenCodeWebSearchUpdateRequestPayload>);
+        case 'opencode:guardian-update':
+          return this.handleOpenCodeGuardianUpdate(message as Message<OpenCodeGuardianUpdateRequestPayload>);
         case 'systemd:status':
           return this.handleSystemdStatus(message);
         case 'systemd:install':
@@ -2392,7 +2397,7 @@ export class MessageHandler {
   }
 
   /**
-   * A deliberately reduced, read-only OpenCode configuration view. Raw config
+   * A deliberately reduced, sanitized OpenCode configuration view. Raw config
    * may contain API keys or header values, so it must never be returned to the
    * PWA. This snapshot is also schema-tolerant while agents transition from
    * OpenCode v1 to v2.
@@ -2498,6 +2503,26 @@ export class MessageHandler {
       const response = createMessage<OpenCodeWebSearchUpdateResponsePayload>(
         'opencode:websearch-update:response',
         { success: false, error: error instanceof Error ? error.message : 'Failed to update web search' },
+      );
+      response.id = message.id;
+      return response;
+    }
+  }
+
+  private async handleOpenCodeGuardianUpdate(
+    message: Message<OpenCodeGuardianUpdateRequestPayload>,
+  ): Promise<Message<OpenCodeGuardianUpdateResponsePayload>> {
+    try {
+      setOpenCodeGuardianSettings(message.payload);
+      const response = createMessage<OpenCodeGuardianUpdateResponsePayload>(
+        'opencode:guardian-update:response', { success: true },
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<OpenCodeGuardianUpdateResponsePayload>(
+        'opencode:guardian-update:response',
+        { success: false, error: error instanceof Error ? error.message : 'Failed to update Guardian settings' },
       );
       response.id = message.id;
       return response;

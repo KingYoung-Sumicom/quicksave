@@ -167,6 +167,12 @@ function autoApproveToolsFor(agentId: AgentId, level: PermissionLevel): Set<stri
   if (agentId === 'codex') {
     return CODEX_AUTO_APPROVE[normalized as CodexPermissionPreset];
   }
+  if (agentId === 'opencode' && normalized === 'auto-review') {
+    // The OpenCode provider resolves `auto-review` requests through the
+    // guardian reviewer; only the same trivially-safe tools as `auto` may
+    // bypass the reviewer on the daemon side.
+    return CLAUDE_AUTO_APPROVE['auto'];
+  }
   return CLAUDE_AUTO_APPROVE[normalized as ClaudePermissionMode];
 }
 
@@ -378,6 +384,9 @@ export class SessionManager extends EventEmitter {
 
   /** Guards against concurrent cold resumes. Queues prompts arriving while a spawn is in flight. */
   private coldResumeInFlight: Map<string, { queuedPrompts: Array<{ prompt: string; attachments?: readonly Attachment[] }> }> = new Map();
+  /** One manual compaction per session. Duplicate signals await the original
+   * operation instead of sending a second provider request or progress card. */
+  private compactInFlight: Map<string, Promise<void>> = new Map();
 
   constructor(providers: CodingAgentProvider[], defaultAgentId: AgentId = DEFAULT_AGENT) {
     super();
@@ -794,47 +803,63 @@ export class SessionManager extends EventEmitter {
     if (opts.prompt === '/compact') {
       const provider = this.getProvider(this.resolveAgentId(opts.sessionId, opts.cwd, opts.agent));
       if (provider.compact) {
+        const compactProvider = provider.compact.bind(provider);
+        const existingCompact = this.compactInFlight.get(opts.sessionId);
+        if (existingCompact) {
+          console.log(`[session-manager] compact already in flight session=${opts.sessionId.slice(0, 8)} — joining`);
+          await existingCompact;
+          return opts.sessionId;
+        }
         const managed = this.sessions.get(opts.sessionId);
         // Compacting a session mid-turn blocks on the provider side until
         // the turn finishes (OpenCode's /summarize has no timeout), so the
         // HTTP request would hang until the client gives up. Reject fast
         // with a visible error instead.
-        if (managed?.streaming || managed?.compacting || this.coldResumeInFlight.has(opts.sessionId)) {
+        if (managed?.streaming || this.coldResumeInFlight.has(opts.sessionId)) {
           throw new Error('Session is busy — wait for the current turn to finish, then try compacting again.');
         }
         console.log(`[session-manager] compacting session=${opts.sessionId.slice(0, 8)} via provider.compact`);
-        const cardBuilder = managed?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.cwd);
-        if (!managed?.cardBuilder) {
-          cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory' || provider.id === 'opencode');
-          cardBuilder.disablePersistence?.(provider.historyMode === 'codex-thread');
-          if (provider.historyMode === 'memory' || provider.id === 'opencode') {
-            cardBuilder.seedSequenceFromMax(await loadPersistedCardMaxSequence(opts.sessionId));
-          }
-          await cardBuilder.snapshotCutoff();
-        }
-        const callbacks = this.makeCallbacks(provider.id);
-        const compactCardId = `${opts.sessionId}:compact:${randomUUID()}`;
         if (managed) managed.compacting = true;
         this.emitSessionUpdate(opts.sessionId);
-        callbacks.emitCardEvent(cardBuilder.systemMessageWithId(compactCardId, 'Compacting…', 'compacting'));
-        try {
-          if (managed?.providerSession?.compact) {
-            await managed.providerSession.compact();
-          } else {
-            await provider.compact(opts.sessionId, { cwd: opts.cwd, model: desiredModel });
+        const operation = (async () => {
+          const cardBuilder = managed?.cardBuilder ?? new StreamCardBuilder(opts.sessionId, opts.cwd);
+          if (!managed?.cardBuilder) {
+            cardBuilder.enableMemoryPersistence?.(provider.historyMode === 'memory' || provider.id === 'opencode');
+            cardBuilder.disablePersistence?.(provider.historyMode === 'codex-thread');
+            if (provider.historyMode === 'memory' || provider.id === 'opencode') {
+              cardBuilder.seedSequenceFromMax(await loadPersistedCardMaxSequence(opts.sessionId));
+            }
+            await cardBuilder.snapshotCutoff();
           }
-          callbacks.emitCardEvent(cardBuilder.updateSystemMessage(compactCardId, {
-            text: 'Context compacted',
-            subtype: 'compacted',
-          }));
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          callbacks.emitCardEvent(cardBuilder.updateSystemMessage(compactCardId, {
-            text: `Compact failed: ${message}`,
-            subtype: 'error',
-          }));
-          throw error;
+          const callbacks = this.makeCallbacks(provider.id);
+          const compactCardId = `${opts.sessionId}:compact:${randomUUID()}`;
+          callbacks.emitCardEvent(cardBuilder.systemMessageWithId(compactCardId, 'Compacting…', 'compacting'));
+          try {
+            if (managed?.providerSession?.compact) {
+              await managed.providerSession.compact();
+            } else {
+              await compactProvider(opts.sessionId, { cwd: opts.cwd, model: desiredModel });
+            }
+            callbacks.emitCardEvent(cardBuilder.updateSystemMessage(compactCardId, {
+              text: 'Context compacted',
+              subtype: 'compacted',
+            }));
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            callbacks.emitCardEvent(cardBuilder.updateSystemMessage(compactCardId, {
+              text: `Compact failed: ${message}`,
+              subtype: 'error',
+            }));
+            throw error;
+          }
+        })();
+        this.compactInFlight.set(opts.sessionId, operation);
+        try {
+          await operation;
         } finally {
+          if (this.compactInFlight.get(opts.sessionId) === operation) {
+            this.compactInFlight.delete(opts.sessionId);
+          }
           if (managed) managed.compacting = false;
           this.emitSessionUpdate(opts.sessionId);
         }
@@ -1090,12 +1115,27 @@ export class SessionManager extends EventEmitter {
     const ps = this.sessions.get(sessionId);
     if (!ps?.providerSession) return false;
     console.log(`[session-manager] cancel session=${sessionId.slice(0, 8)}`);
+    const stoppedEvent = ps.streaming && ps.cardBuilder
+      ? ps.cardBuilder.systemMessage('Stopped by user', 'stopped')
+      : null;
+    if (stoppedEvent) {
+      this.emit('card-event', stoppedEvent);
+    }
     ps.providerSession.interrupt();
     // The CLI abandons its can_use_tool RPC after interrupt, so any awaiter
     // on our side would hang forever. Resolve outstanding permissions with
     // deny: it unblocks the daemon promise, frees the map slot, and matches
     // user intent ("stop" = don't do that thing).
     this.cancelPendingInputsForSession(sessionId);
+    if (stoppedEvent && ps.cardBuilder) {
+      try {
+        await ps.cardBuilder.persistSupplementalCard(stoppedEvent.card);
+      } catch (err) {
+        // Interrupt already succeeded; a history-write failure must not turn
+        // the Stop action itself into an apparent failure.
+        console.warn(`[session-manager] failed to persist manual stop session=${sessionId.slice(0, 8)}:`, err);
+      }
+    }
     return true;
   }
 
@@ -1643,6 +1683,7 @@ export class SessionManager extends EventEmitter {
           ?? this.sessionPermissions.get(entry.sessionId),
         lastPromptAt: stats.lastPromptAt ?? undefined,
         lastTurnEndedAt: stats.lastTurnEndedAt ?? undefined,
+        lastUnreadTurnEndedAt: stats.lastUnreadTurnEndedAt ?? undefined,
         // Prefer the in-memory anchor when available (it ticks per-message;
         // the event-store value is throttled to once per 30s) and fall back
         // to the persisted value for sessions that are registry-only.
@@ -2299,6 +2340,7 @@ export class SessionManager extends EventEmitter {
       sandboxed: ps?.sandboxed ?? this.sessionSandboxed.get(sessionId) ?? false,
       lastPromptAt: stats.lastPromptAt ?? undefined,
       lastTurnEndedAt: stats.lastTurnEndedAt ?? undefined,
+      lastUnreadTurnEndedAt: stats.lastUnreadTurnEndedAt ?? undefined,
       lastCacheTouchAt: maxDefined(ps?.lastCacheTouchAt, stats.lastCacheTouchAt ?? undefined),
       turnCount: stats.turnCount,
       totalInputTokens: stats.totalInputTokens,

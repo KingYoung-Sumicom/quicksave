@@ -726,6 +726,14 @@ export class StreamCardBuilder {
     await this.persistCardBatch([card]);
   }
 
+  /** Persist a local record that has no provider-native history item.
+   *  Unlike normal card persistence this intentionally works when native
+   *  history is authoritative (for example, a user pressing Stop in Codex). */
+  async persistSupplementalCard(card: Card): Promise<void> {
+    if (this.sessionId === 'pending') return;
+    await appendCardHistoryEntry(this.sessionId, { op: 'upsert', card: cleanPersistedCard(card) });
+  }
+
   async flushCardHistoryWrites(): Promise<void> {
     try {
       await this.cardHistoryWriteQueue;

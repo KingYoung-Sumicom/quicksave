@@ -527,7 +527,24 @@ Claude Code (`ClaudePermissionMode` in `ai/provider.ts`):
 
 Codex (`CodexPermissionPreset`): `read-only`, `default`, `auto-review`, `full-access`. The new-session default is intentionally `auto-review` with `sandboxed=false`: Codex runs with `danger-full-access` while auto-review handles approval prompts. `read-only` remains the constrained preset; `full-access` maps to `approvalPolicy=never`. Compatibility shims in `normalizePermissionLevelForAgent` map legacy Claude-only values (`bypassPermissions` → `full-access`, `plan` → `read-only`, `auto` → `auto-review`, `acceptEdits` → `default`).
 
-**Sandbox MCP tool permissions:**
+OpenCode accepts the Claude-style modes plus `auto-review`. In that mode,
+`OpenCodeProvider` applies a fail-safe per-session permission ruleset: a
+catch-all `ask` rule is followed by an explicit allowlist for known local,
+read-only/UI-only categories (`read`, `grep`, `glob`, `list`, `lsp`,
+`todowrite`, `question`, and `doom_loop`). Because OpenCode uses the last
+matching rule, every unknown future permission category and every MCP tool
+crosses the Guardian boundary by default. Live permission-mode changes PATCH
+the session rules before changing the local router mode; leaving auto-review
+clears the per-session override.
+`SessionEventRouter` sends each resulting `permission.asked` request to the
+configured OpenAI-compatible guardian model server. The guardian is never an
+OpenCode session; it receives bounded recent-session context and returns a
+structured allow/deny verdict. Incomplete `allow` verdicts fail closed. The
+model server can be configured from the paired machine's OpenCode settings
+page (stored in `~/.quicksave/agent.json` with write-only API-key handling) or
+through `QUICKSAVE_GUARDIAN_*` environment variables, which take precedence.
+
+**Quicksave tools MCP permissions:**
 - `UpdateSessionStatus` — always auto-approved; handled in `sessionManager.shouldAutoApprove`, which writes
   `subject` / `stage` / `blocked` / `note` back to the session config and `SessionRegistryEntry`,
   and triggers the `session-config-updated` event. The `note` field is append-only: each call with a non-empty `note`
@@ -876,7 +893,7 @@ interface Message {
 | `session:` | Session config + history + active provider control (`set-config`, `control-request`, `list-slash-commands`, `update-history`, `delete-history`, `list-archived`, `history-updated`, `config-updated`) |
 | `git:` | Git operations (status/diff/stage/commit/...) |
 | `agent:` | Daemon management (list-repos/add-repo/clone-repo/check-update/update/restart/...) |
-| `opencode:` | Machine-local OpenCode management. `config-snapshot` is a read-only, sanitized summary of OpenCode version/schema plus MCP, provider/model, agent, skill/command, plugin, and built-in Exa web-search metadata. `mcp-upsert` and `mcp-remove` persist global MCP configuration on the paired machine; secret values are write-only in the UI and snapshots remain redacted. `websearch-update` persists the per-agent Exa opt-in and restarts only its OpenCode child; the injected `websearch` permission remains `ask`. |
+| `opencode:` | Machine-local OpenCode management. `config-snapshot` is a sanitized summary of OpenCode version/schema plus MCP, provider/model, agent, skill/command, plugin, Exa, and Guardian status; API keys are never returned. `mcp-upsert` and `mcp-remove` persist global MCP configuration on the paired machine. `websearch-update` persists the per-agent Exa opt-in and restarts only its OpenCode child. `guardian-update` persists the Guardian model-server URL/model, write-only API key, timeout, and manual-escalation threshold in `~/.quicksave/agent.json`; `QUICKSAVE_GUARDIAN_*` environment variables take precedence and make the UI read-only. |
 | `ai:` | AI utilities (generate-commit-summary, commit-summary:clear, commit-summary:updated, set-api-key, get-api-key-status) |
 | `codex:` | Codex model list, device-auth login flow, and CLI update controls. `list-models`, `login-start/-status/-cancel`, and `check-update`/`update` are request-response verbs. The update action supports a resolved npm global package (using its sibling npm executable) or the documented Codex standalone-install location (using OpenAI's non-interactive installer); other installation methods remain manual to avoid overwriting an unrelated package manager's install. Quota is exposed through the `/codex/quota` bus subscription, not a request/response verb. |
 | `project:` | Project summaries (`list-summaries`, `list-repos`, `delete`) |
@@ -1020,7 +1037,10 @@ claudeStore.ts
   // ClaudeSessionSummary / SessionUpdatePayload (set server-side by the
   // `session:mark-read` handler and broadcast on /sessions/history +
   // /sessions/active). Derive `isSessionUnread(s)` = lastReadAt is a number
-  // AND older than lastTurnEndedAt. Missing `lastReadAt` is treated as
+  // AND older than lastUnreadTurnEndedAt (the latest non-interrupted turn).
+  // This keeps a manual Stop from producing a purple unread dot while
+  // preserving any earlier completed output that is still unread. Older
+  // agents fall back to lastTurnEndedAt. Missing `lastReadAt` is treated as
   // "feature not engaged for this session" (not unread) — keeps stale
   // builds / pre-feature registry entries from flooding the list purple.
   // Inactive sessions can still be unread. `attendedSessionId` is the local

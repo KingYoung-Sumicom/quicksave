@@ -47,6 +47,9 @@ export interface SessionStats {
   totalCostUsd: number;
   lastPromptAt: number | null;
   lastTurnEndedAt: number | null;
+  /** Latest turn end that represents output worth drawing unread attention to.
+   *  User-interrupted turns are deliberately excluded. */
+  lastUnreadTurnEndedAt: number | null;
   /** MAX(time) of `cache_touched` events for this session. Most reliable anchor
    *  for the prompt-cache countdown — see EventType comment. */
   lastCacheTouchAt: number | null;
@@ -122,7 +125,11 @@ export class EventStore {
         COALESCE(SUM(CAST(json_extract(data, '$.inputTokens') AS INTEGER)), 0) AS totalInputTokens,
         COALESCE(SUM(CAST(json_extract(data, '$.outputTokens') AS INTEGER)), 0) AS totalOutputTokens,
         COALESCE(SUM(CAST(json_extract(data, '$.costUsd') AS REAL)), 0) AS totalCostUsd,
-        MAX(time) AS lastTurnEndedAt
+        MAX(time) AS lastTurnEndedAt,
+        MAX(CASE
+          WHEN COALESCE(json_extract(data, '$.interrupted'), 0) = 0 THEN time
+          ELSE NULL
+        END) AS lastUnreadTurnEndedAt
       FROM events
       WHERE session_id = ? AND type = 'turn_ended'
     `);
@@ -176,6 +183,7 @@ export class EventStore {
       totalOutputTokens: number;
       totalCostUsd: number;
       lastTurnEndedAt: number | null;
+      lastUnreadTurnEndedAt: number | null;
     };
     const promptRow = this.lastPromptStmt.get(sessionId) as { lastPromptAt: number | null };
     const cacheRow = this.lastCacheTouchStmt.get(sessionId) as { lastCacheTouchAt: number | null };
@@ -186,6 +194,7 @@ export class EventStore {
       totalCostUsd: turnRow.totalCostUsd,
       lastPromptAt: promptRow.lastPromptAt,
       lastTurnEndedAt: turnRow.lastTurnEndedAt,
+      lastUnreadTurnEndedAt: turnRow.lastUnreadTurnEndedAt,
       lastCacheTouchAt: cacheRow.lastCacheTouchAt,
     };
   }

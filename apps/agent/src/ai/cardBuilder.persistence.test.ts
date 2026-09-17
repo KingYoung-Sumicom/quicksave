@@ -81,6 +81,22 @@ describe('memory-mode card history persistence', () => {
     ]);
   });
 
+  it('persists a supplemental manual-stop card beside native history', async () => {
+    const builder = new StreamCardBuilder('codex-stopped', '/cwd');
+    builder.disablePersistence();
+    const event = builder.systemMessage('Stopped by user', 'stopped');
+
+    await builder.persistSupplementalCard(event.card);
+
+    await expect(loadPersistedCards('codex-stopped')).resolves.toEqual([
+      expect.objectContaining({
+        type: 'system',
+        text: 'Stopped by user',
+        subtype: 'stopped',
+      }),
+    ]);
+  });
+
   it('migrates the legacy JSON array snapshot to append-only JSONL on read', async () => {
     mkdirSync(cardHistoryDir(), { recursive: true });
     const legacyCards: Card[] = [

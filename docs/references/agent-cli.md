@@ -196,6 +196,13 @@ a local-only HTTP inspector bound to `127.0.0.1:7927` (next free port if
 | `QUICKSAVE_CLAUDE_TRANSPORT`          | Override the Claude Code transport selection                      |
 | `QUICKSAVE_CODEX_BIN`                 | Absolute path or command name for the Codex CLI when daemon PATH lookup is insufficient |
 | `QUICKSAVE_CODEX_BACKGROUND_COMPLETIONS=0` | Disable experimental, agent-registered Codex native-command completion notices. Native Bash, Guardian, approvals, and sandbox behavior remain unchanged. |
+| `QUICKSAVE_GUARDIAN_MODEL_SERVER_URL` | Base URL of the OpenAI-compatible chat-completions server used by OpenCode `auto-review` (for example `http://localhost:8000/v1`). Overrides the paired machine's OpenCode settings page when this and `QUICKSAVE_GUARDIAN_MODEL` are both set. |
+| `QUICKSAVE_GUARDIAN_MODEL` | Model id sent to the configured guardian model server. Paired with the URL override above. |
+| `QUICKSAVE_GUARDIAN_MODEL_SERVER_API_KEY` | Optional bearer-token override for the guardian model server. The UI-managed key is write-only and stored in `~/.quicksave/agent.json`. |
+| `QUICKSAVE_GUARDIAN_ENABLE_THINKING` | Enable or disable reviewer-model thinking (`true`/`false`; default `false`). Passed as `chat_template_kwargs.enable_thinking` to compatible model servers. |
+| `QUICKSAVE_GUARDIAN_TIMEOUT_MS` | Guardian review-timeout override in milliseconds (default `60000`, clamped to `5000`–`300000`). |
+| `QUICKSAVE_GUARDIAN_MAX_CONSECUTIVE` | Override for consecutive guardian denials/failures before escalating to a human (default `3`, clamped to `1`–`10`). |
+| `QUICKSAVE_OPENCODE_COMPACT_TIMEOUT_MS` | OpenCode native compaction timeout in milliseconds (default `600000`). |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW`     | Read on every turn — switches the Claude CLI auto-compact window without respawn |
 | `OPENAI_API_KEY`                      | Treated as a Codex login (`method: 'api-key'`)                    |
 | `QUICKSAVE_VOICE_STUN`                | Comma-separated STUN URLs for streaming-voice WebRTC ICE (default `stun:stun.l.google.com:19302`). No TURN is used — if P2P can't be established the PWA falls back to batch transcription. |

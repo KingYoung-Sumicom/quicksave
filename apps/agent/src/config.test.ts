@@ -44,6 +44,9 @@ const {
   pinPeerPWA,
   clearPeerPWA,
   unlockPairingAndRotate,
+  getGuardianModelServerConfig,
+  getOpenCodeGuardianSettingsSnapshot,
+  setOpenCodeGuardianSettings,
 } = await import('./config.js');
 
 const CONFIG_DIR = '/fake/home/.quicksave';
@@ -67,6 +70,78 @@ function mockConfigFile(config: AgentConfig | null) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  delete process.env.QUICKSAVE_GUARDIAN_MODEL_SERVER_URL;
+  delete process.env.QUICKSAVE_GUARDIAN_MODEL;
+  delete process.env.QUICKSAVE_GUARDIAN_MODEL_SERVER_API_KEY;
+  delete process.env.QUICKSAVE_GUARDIAN_ENABLE_THINKING;
+  delete process.env.QUICKSAVE_GUARDIAN_TIMEOUT_MS;
+  delete process.env.QUICKSAVE_GUARDIAN_MAX_CONSECUTIVE;
+});
+
+describe('OpenCode Guardian settings', () => {
+  it('persists model-server settings without exposing the API key in snapshots', () => {
+    mockConfigFile(baseConfig);
+    setOpenCodeGuardianSettings({
+      baseUrl: 'http://localhost:8000/v1/', model: 'reviewer', apiKey: 'secret',
+      enableThinking: true,
+      timeoutMs: 45_000, maxConsecutiveDenials: 4,
+    });
+    const saved = JSON.parse(mockedWriteFileSync.mock.calls[0]![1] as string);
+    expect(saved.openCodeGuardian).toEqual({
+      baseUrl: 'http://localhost:8000/v1', model: 'reviewer', apiKey: 'secret',
+      enableThinking: true,
+      timeoutMs: 45_000, maxConsecutiveDenials: 4,
+    });
+
+    mockConfigFile(saved);
+    expect(getGuardianModelServerConfig()).toEqual({
+      baseUrl: 'http://localhost:8000/v1', model: 'reviewer', apiKey: 'secret', enableThinking: true,
+    });
+    expect(getOpenCodeGuardianSettingsSnapshot()).toMatchObject({
+      configured: true, source: 'settings', hasApiKey: true,
+      baseUrl: 'http://localhost:8000/v1', model: 'reviewer',
+      enableThinking: true,
+      timeoutMs: 45_000, maxConsecutiveDenials: 4,
+    });
+    expect(getOpenCodeGuardianSettingsSnapshot()).not.toHaveProperty('apiKey');
+  });
+
+  it('lets environment variables override stored settings and blocks UI writes', () => {
+    mockConfigFile({
+      ...baseConfig,
+      openCodeGuardian: { baseUrl: 'http://stored/v1', model: 'stored' },
+    });
+    process.env.QUICKSAVE_GUARDIAN_MODEL_SERVER_URL = 'https://env.example/v1';
+    process.env.QUICKSAVE_GUARDIAN_MODEL = 'env-model';
+    expect(getOpenCodeGuardianSettingsSnapshot()).toMatchObject({
+      source: 'environment', baseUrl: 'https://env.example/v1', model: 'env-model',
+    });
+    expect(() => setOpenCodeGuardianSettings({
+      baseUrl: 'http://new/v1', model: 'new', enableThinking: false, timeoutMs: 60_000, maxConsecutiveDenials: 3,
+    })).toThrow(/managed by environment/i);
+  });
+
+  it('rejects partial or unsafe settings', () => {
+    mockConfigFile(baseConfig);
+    expect(() => setOpenCodeGuardianSettings({
+      baseUrl: 'http://localhost:8000/v1', model: '', enableThinking: false, timeoutMs: 60_000, maxConsecutiveDenials: 3,
+    })).toThrow(/both be set/i);
+    expect(() => setOpenCodeGuardianSettings({
+      baseUrl: 'file:///tmp/model', model: 'x', enableThinking: false, timeoutMs: 60_000, maxConsecutiveDenials: 3,
+    })).toThrow(/http or https/i);
+  });
+
+  it('lets the environment override the stored thinking preference', () => {
+    mockConfigFile({
+      ...baseConfig,
+      openCodeGuardian: {
+        baseUrl: 'http://stored/v1', model: 'stored', enableThinking: false,
+      },
+    });
+    process.env.QUICKSAVE_GUARDIAN_ENABLE_THINKING = 'true';
+    expect(getGuardianModelServerConfig()?.enableThinking).toBe(true);
+    expect(getOpenCodeGuardianSettingsSnapshot().enableThinking).toBe(true);
+  });
 });
 
 describe('getConfigPath', () => {

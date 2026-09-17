@@ -566,6 +566,9 @@ claudeStore.ts
   isStreaming: boolean
   cards: Card[]
   historyHasMore: boolean
+  // 未讀狀態比較 lastReadAt 與 lastUnreadTurnEndedAt；後者只計算非中止的
+  // turn，因此手動 Stop 不會產生紫色未讀點，但較早尚未閱讀的完成內容仍
+  // 會保留提醒。舊版 agent 未提供此欄位時 fallback 到 lastTurnEndedAt。
   selectedModel: string
   selectedPermissionMode: string
 

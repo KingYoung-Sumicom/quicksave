@@ -612,6 +612,25 @@ describe('SessionManager', () => {
       expect(mockSession.interrupt).toHaveBeenCalled();
     });
 
+    it('should emit and persist a manual-stop history card', async () => {
+      const sessionId = 'cancel-history';
+      (provider.startSession as Mock).mockResolvedValue({
+        sessionId,
+        session: createMockProviderSession(),
+      });
+      await manager.startSession({ prompt: 'Hello', cwd: '/tmp/test' });
+      const cardEvents: any[] = [];
+      manager.on('card-event', (event) => cardEvents.push(event));
+
+      await manager.cancelSession(sessionId);
+
+      const stopped = cardEvents.find((event) => event.card?.subtype === 'stopped');
+      expect(stopped?.card?.text).toBe('Stopped by user');
+      const { StreamCardBuilder } = await import('./cardBuilder.js');
+      const builder = (StreamCardBuilder as Mock).mock.results.at(-1)?.value;
+      expect(builder.persistSupplementalCard).toHaveBeenCalledWith(stopped.card);
+    });
+
     it('should drain pending permission requests with deny when stop is pressed', async () => {
       // Regression: pressing stop while a permission prompt is awaiting was
       // leaving the pendingInputRequests entry behind. The CLI abandons its
@@ -2661,18 +2680,18 @@ describe('SessionManager', () => {
       expect(provider.compact).not.toHaveBeenCalled();
     });
 
-    it('rejects while another compact is in flight', async () => {
-      provider.compact = vi.fn().mockResolvedValue(undefined);
-      managed.compacting = true;
+    it('joins an in-flight compact instead of sending a duplicate request', async () => {
+      let finishCompact!: () => void;
+      provider.compact = vi.fn(() => new Promise<void>((resolve) => { finishCompact = resolve; }));
 
-      await expect(
-        manager.resumeSession({
-          sessionId,
-          prompt: '/compact',
-          cwd: '/tmp/test',
-        }),
-      ).rejects.toThrow(/busy/i);
-      expect(provider.compact).not.toHaveBeenCalled();
+      const first = manager.resumeSession({ sessionId, prompt: '/compact', cwd: '/tmp/test' });
+      await Promise.resolve();
+      const duplicate = manager.resumeSession({ sessionId, prompt: '/compact', cwd: '/tmp/test' });
+
+      expect(provider.compact).toHaveBeenCalledTimes(1);
+      finishCompact();
+      await expect(Promise.all([first, duplicate])).resolves.toEqual([sessionId, sessionId]);
+      expect(provider.compact).toHaveBeenCalledTimes(1);
     });
 
     it('publishes isCompacting while compacting and clears it afterwards', async () => {

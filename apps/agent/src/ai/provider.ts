@@ -42,6 +42,12 @@ export function isPermissionLevelAcceptedForAgent(agentId: AgentId, value: unkno
       || value === 'auto'
       || value === 'acceptEdits';
   }
+  if (agentId === 'opencode') {
+    // OpenCode reuses the Claude-style levels plus a Codex-style `auto-review`
+    // mode in which the daemon routes permission requests through the
+    // guardian reviewer instead of auto-approving or prompting the user.
+    return isClaudePermissionMode(value) || value === 'auto-review';
+  }
   return isClaudePermissionMode(value);
 }
 
@@ -59,6 +65,7 @@ export function normalizePermissionLevelForAgent(
     return defaultPermissionLevelForAgent(agentId);
   }
 
+  if (agentId === 'opencode' && value === 'auto-review') return 'auto-review';
   if (isClaudePermissionMode(value)) return value;
   return defaultPermissionLevelForAgent(agentId);
 }

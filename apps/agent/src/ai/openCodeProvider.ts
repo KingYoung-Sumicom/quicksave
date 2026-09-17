@@ -34,6 +34,7 @@ import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import type { Attachment, Card, CardHistoryResponse, CardStreamEnd, ContextUsageBreakdown, NativeSessionSummary } from '@sumicom/quicksave-shared';
 import { StreamCardBuilder } from './cardBuilder.js';
+import { makeQueuedUserPrompt, queueStateFor, type QueuedUserPrompt } from './queuedUserPrompts.js';
 import type {
   CodingAgentProvider,
   ProviderSession,
@@ -43,7 +44,24 @@ import type {
   ProbeResult,
   PermissionLevel,
 } from './provider.js';
-import { getOpenCodeServer, type OpenCodeEvent, type OpenCodeServer, type OpenCodeV2Message } from './openCodeServer.js';
+import {
+  getOpenCodeServer,
+  buildAutoReviewPermissionRuleset,
+  type OpenCodeEvent,
+  type OpenCodeServer,
+  type OpenCodeSessionInfo,
+  type OpenCodeV2Message,
+} from './openCodeServer.js';
+import {
+  GUARDIAN_OWNER_METADATA_KEY,
+  GUARDIAN_SESSION_TITLE,
+  OpenCodeGuardian,
+} from './guardian.js';
+import {
+  getGuardianModelServerConfig,
+  getOpenCodeGuardianMaxConsecutiveDenials,
+  getOpenCodeGuardianTimeoutMs,
+} from '../config.js';
 import { QUICKSAVE_SESSION_ID_ARG } from './openCodeMcpPlugin.js';
 
 // ── Part types we translate (verified from opencode 1.14 OpenAPI Part union) ──
@@ -121,6 +139,22 @@ export function isValidOpenCodeModelId(model: string | undefined | null): model 
 export function parseModelId(model: string): { providerID: string; modelID: string } {
   const idx = model.indexOf('/');
   return { providerID: model.slice(0, idx), modelID: model.slice(idx + 1) };
+}
+
+/** Feedback the main model receives when the guardian denies a tool call.
+ * Mirrors Codex's post-denial instruction: no workaround retries, only a
+ * materially safer alternative — or ask the user. */
+function buildGuardianDenialMessage(rationale: string): string {
+  return `Denied by the Quicksave guardian auto-reviewer: ${rationale} `
+    + 'Do not retry the same action or pursue the same outcome via an indirect workaround. '
+    + 'Use a materially safer alternative, or ask the user to approve the original action.';
+}
+
+/** True for the hidden guardian review sessions Quicksave creates. They must
+ * never appear in the user-facing session list. */
+function isGuardianSession(session: OpenCodeSessionInfo): boolean {
+  return session.title === GUARDIAN_SESSION_TITLE
+    || session.metadata?.[GUARDIAN_OWNER_METADATA_KEY] != null;
 }
 
 // OpenCode exposes lowercase tool IDs and uses camelCase for several argument
@@ -236,6 +270,9 @@ export class OpencodeSession implements ProviderSession {
   private turnConfig: TurnConfig;
   private cb: StreamCardBuilder | null = null;
   private callbacks: ProviderCallbacks | null = null;
+  private queuedUserPrompts: QueuedUserPrompt[] = [];
+  private turnActive = false;
+  private compactPromise: Promise<void> | null = null;
   /** Model context window for building ContextUsageBreakdown. */
   private modelContextWindow: number | undefined;
 
@@ -259,11 +296,13 @@ export class OpencodeSession implements ProviderSession {
     callbacks: ProviderCallbacks,
     router: SessionEventRouter,
     dispose: () => void,
+    initialTurnActive = false,
   ) {
     this.cb = cb;
     this.callbacks = callbacks;
     this.router = router;
     this.dispose = dispose;
+    this.turnActive = initialTurnActive;
   }
 
   /** Hot resume entry: SessionManager calls this for in-process follow-ups.
@@ -273,13 +312,23 @@ export class OpencodeSession implements ProviderSession {
       console.warn('[openCode] sendUserMessage on a dead session — ignoring');
       return;
     }
-    // Emit the user card immediately so the PWA reflects the prompt without
-    // waiting for SSE round-trip.
+    if (this.compactPromise || this.turnActive) {
+      this.queuedUserPrompts.push(makeQueuedUserPrompt(prompt, attachments));
+      this.emitQueueStateChange();
+      return;
+    }
+    this.sendUserMessageNow(prompt, attachments);
+  }
+
+  private sendUserMessageNow(prompt: string, attachments?: readonly Attachment[]): void {
+    if (!this.aliveFlag || !this.cb || !this.callbacks || !this.router) return;
+    // Emit the user card only when the queued prompt actually starts.
     if (prompt || (attachments && attachments.length > 0)) {
       this.callbacks.emitCardEvent(this.cb.userMessage(prompt, attachments));
     }
     this.cb.startNewTurn();
     this.router.resetForNewTurn();
+    this.turnActive = true;
     this.server.sendPromptAsync(this.opencodeSessionId, this.directory, {
       text: prompt,
       attachments,
@@ -292,6 +341,57 @@ export class OpencodeSession implements ProviderSession {
     });
   }
 
+  /** Native compaction is serialized with normal OpenCode turns. Prompts that
+   * arrive while it runs stay in Quicksave's existing visible message queue
+   * and start only after summarize has completed. Repeated compact signals
+   * share the same promise, so only one summarize request reaches OpenCode. */
+  compact(): Promise<void> {
+    if (!this.aliveFlag) return Promise.reject(new Error('OpenCode session is closed'));
+    if (this.compactPromise) return this.compactPromise;
+    if (this.turnActive) {
+      return Promise.reject(new Error('Session is busy — wait for the current turn to finish, then try compacting again.'));
+    }
+    const operation = this.server.compactSession(
+      this.opencodeSessionId,
+      this.directory,
+      this.turnConfig.model,
+    ).finally(() => {
+      if (this.compactPromise === operation) this.compactPromise = null;
+      this.sendNextQueuedMessage();
+    });
+    this.compactPromise = operation;
+    return operation;
+  }
+
+  getQueueState() {
+    return queueStateFor(this.queuedUserPrompts, this.turnActive);
+  }
+
+  deleteQueuedMessage(id: string): boolean {
+    const index = this.queuedUserPrompts.findIndex((queued) => queued.id === id);
+    if (index === -1) return false;
+    this.queuedUserPrompts.splice(index, 1);
+    this.emitQueueStateChange();
+    return true;
+  }
+
+  /** @internal called after the router has emitted stream-end for one turn. */
+  _onTurnFinalized(): void {
+    this.turnActive = false;
+    this.sendNextQueuedMessage();
+  }
+
+  private sendNextQueuedMessage(): void {
+    if (!this.aliveFlag || this.compactPromise || this.turnActive || this.queuedUserPrompts.length === 0) return;
+    const next = this.queuedUserPrompts.shift()!;
+    this.emitQueueStateChange();
+    this.sendUserMessageNow(next.prompt, next.attachments);
+  }
+
+  private emitQueueStateChange(): void {
+    this.callbacks?.onQueueStateChange?.(this.opencodeSessionId);
+  }
+
   interrupt(): void {
     void this.server.abortSession(this.opencodeSessionId, this.directory).catch(() => {});
   }
@@ -300,10 +400,26 @@ export class OpencodeSession implements ProviderSession {
     if (!this.aliveFlag) return;
     this.aliveFlag = false;
     void this.server.abortSession(this.opencodeSessionId, this.directory).catch(() => {});
+    this.router?.disposeGuardian().catch(() => {});
     this.dispose();
   }
 
-  setPermissionMode(level: PermissionLevel): void {
+  async setPermissionMode(level: PermissionLevel): Promise<void> {
+    if (level === 'auto-review' && !getGuardianModelServerConfig()) {
+      throw new Error(
+        'auto-review requires a guardian model server — configure it in OpenCode settings '
+        + 'or set QUICKSAVE_GUARDIAN_MODEL_SERVER_URL and QUICKSAVE_GUARDIAN_MODEL',
+      );
+    }
+    // Update the server-side boundary before changing the router mode. This
+    // ordering prevents a hot switch from claiming auto-review while global
+    // OpenCode allow rules can still bypass permission.asked entirely.
+    await this.server.setSessionPermission(
+      this.opencodeSessionId,
+      this.directory,
+      level === 'auto-review' ? buildAutoReviewPermissionRuleset() : [],
+    );
+    if (level !== 'auto-review') await this.router?.disposeGuardian();
     this.router?.setPermissionLevel(level);
   }
 
@@ -337,6 +453,7 @@ export class OpenCodeProvider implements CodingAgentProvider {
   readonly historyMode = 'opencode-thread' as const;
   readonly archiveStorage = 'native' as const;
   readonly label = 'OpenCode';
+  private readonly compactInFlight = new Map<string, Promise<void>>();
 
   constructor(private readonly server: OpenCodeServer = getOpenCodeServer()) {}
 
@@ -446,7 +563,9 @@ export class OpenCodeProvider implements CodingAgentProvider {
     const sessions = await this.server.listSessions(opts?.cwd);
     return sessions
       .filter((session) =>
-        (!opts?.cwd || session.directory === opts.cwd) && !session.parentID,
+        (!opts?.cwd || session.directory === opts.cwd)
+        && !session.parentID
+        && !isGuardianSession(session),
       )
       .map((session) => ({
         sessionId: session.id,
@@ -463,7 +582,7 @@ export class OpenCodeProvider implements CodingAgentProvider {
   async getNativeSession(sessionId: string, opts?: { cwd?: string }): Promise<NativeSessionSummary | undefined> {
     try {
       const session = await this.server.getSession(sessionId, opts?.cwd);
-      if (!session.directory || session.parentID) return undefined;
+      if (!session.directory || session.parentID || isGuardianSession(session)) return undefined;
       return {
         sessionId: session.id,
         cwd: session.directory,
@@ -504,10 +623,20 @@ export class OpenCodeProvider implements CodingAgentProvider {
           : 'opencode requires an explicit model id (provider/model)',
       );
     }
+    if (opts.permissionLevel === 'auto-review' && !getGuardianModelServerConfig()) {
+      throw new Error(
+        'auto-review requires a guardian model server — set QUICKSAVE_GUARDIAN_MODEL_SERVER_URL '
+        + 'and QUICKSAVE_GUARDIAN_MODEL',
+      );
+    }
     const server = this.server;
     const { id: opencodeSessionId } = await server.createSession({
       directory: opts.cwd,
       agent: 'build',
+      // `auto-review` gets an enforced approval boundary: core state-changing
+      // and network categories are forced to `ask` so the guardian reviewer
+      // sees them regardless of the user's global permission config.
+      ...(opts.permissionLevel === 'auto-review' ? { permission: buildAutoReviewPermissionRuleset() } : {}),
     });
     try {
       await this.requireV2History(opencodeSessionId);
@@ -532,9 +661,10 @@ export class OpenCodeProvider implements CodingAgentProvider {
     const router = new SessionEventRouter(opencodeSessionId, cardBuilder, callbacks, server, {
       directory: opts.cwd,
       permissionLevel: opts.permissionLevel,
+      onFinalized: () => session._onTurnFinalized(),
     });
     const unsub = server.subscribe(opencodeSessionId, (ev) => router.handle(ev));
-    session._setTurnWiring(cardBuilder, callbacks, router, unsub);
+    session._setTurnWiring(cardBuilder, callbacks, router, unsub, true);
 
     // Give SessionManager one macrotask to persist the new registry entry.
     // The first UpdateSessionStatus MCP call can otherwise beat registration.
@@ -558,16 +688,48 @@ export class OpenCodeProvider implements CodingAgentProvider {
   // ── compact ──────────────────────────────────────────────────────────────────
 
   /** Compact an existing opencode session using the dedicated API. */
-  async compact(sessionId: string, opts?: { cwd?: string; directory?: string; model?: string }): Promise<void> {
+  async compact(
+    sessionId: string,
+    opts?: { cwd?: string; directory?: string; model?: string },
+    emitCompactedCard?: (text: string, subtype: 'compacted') => void,
+  ): Promise<void> {
+    const existing = this.compactInFlight.get(sessionId);
+    if (existing) return existing;
+    const operation = this.compactOnce(sessionId, opts, emitCompactedCard);
+    this.compactInFlight.set(sessionId, operation);
+    try {
+      await operation;
+    } finally {
+      if (this.compactInFlight.get(sessionId) === operation) {
+        this.compactInFlight.delete(sessionId);
+      }
+    }
+  }
+
+  private async compactOnce(
+    sessionId: string,
+    opts?: { cwd?: string; directory?: string; model?: string },
+    emitCompactedCard?: (text: string, subtype: 'compacted') => void,
+  ): Promise<void> {
     const directory = opts?.cwd ?? opts?.directory ?? process.cwd();
-    if (!opts?.model || !isValidOpenCodeModelId(opts.model)) {
+    let model = opts?.model && isValidOpenCodeModelId(opts.model) ? parseModelId(opts.model) : undefined;
+    if (!model) {
+      // Quicksave's own bookkeeping may not carry the model (e.g. after a
+      // daemon restart) — opencode knows which model the session used.
+      const info = await this.server.getSession(sessionId, directory);
+      if (info.model?.providerID && info.model?.id) {
+        model = { providerID: info.model.providerID, modelID: info.model.id };
+      }
+    }
+    if (!model) {
       throw new Error(
         opts?.model
           ? `opencode compact requires the session model (provider/model), got "${opts.model}"`
           : 'opencode compact requires the session model (provider/model)',
       );
     }
-    await this.server.compactSession(sessionId, directory, parseModelId(opts.model));
+    await this.server.compactSession(sessionId, directory, model);
+    emitCompactedCard?.('Context compacted', 'compacted');
   }
 
   // ── resumeSession ───────────────────────────────────────────────────────────
@@ -584,6 +746,12 @@ export class OpenCodeProvider implements CodingAgentProvider {
           : 'opencode requires an explicit model id (provider/model)',
       );
     }
+    if (opts.permissionLevel === 'auto-review' && !getGuardianModelServerConfig()) {
+      throw new Error(
+        'auto-review requires a guardian model server — set QUICKSAVE_GUARDIAN_MODEL_SERVER_URL '
+        + 'and QUICKSAVE_GUARDIAN_MODEL',
+      );
+    }
     const server = this.server;
     // `opts.sessionId` from SessionManager IS opencode's ses_… (we returned
     // it from startSession). Reuse it directly — no createSession.
@@ -591,6 +759,15 @@ export class OpenCodeProvider implements CodingAgentProvider {
     await this.requireV2History(opencodeSessionId).catch((err) => {
       throw new Error(`OpenCode v2 cursor history API is required: ${(err as Error).message}`);
     });
+    // Re-assert the approval boundary for sessions that enter auto-review
+    // after creation (e.g. a hot permission-mode switch from the PWA).
+    if (opts.permissionLevel === 'auto-review') {
+      await server.setSessionPermission(
+        opencodeSessionId,
+        opts.cwd,
+        buildAutoReviewPermissionRuleset(),
+      );
+    }
 
     const turnConfig: TurnConfig = {
       model: parseModelId(opts.model),
@@ -608,6 +785,7 @@ export class OpenCodeProvider implements CodingAgentProvider {
     const router = new SessionEventRouter(opencodeSessionId, cardBuilder, callbacks, server, {
       directory: opts.cwd,
       permissionLevel: opts.permissionLevel,
+      onFinalized: () => session._onTurnFinalized(),
     });
     // A cold resume creates a fresh router whose in-memory dedupe sets are
     // empty, while OpenCode's message endpoint returns the entire session.
@@ -617,7 +795,7 @@ export class OpenCodeProvider implements CodingAgentProvider {
       console.warn('[openCode] failed to prime resume history:', err);
     });
     const unsub = server.subscribe(opencodeSessionId, (ev) => router.handle(ev));
-    session._setTurnWiring(cardBuilder, callbacks, router, unsub);
+    session._setTurnWiring(cardBuilder, callbacks, router, unsub, true);
 
     server.sendPromptAsync(opencodeSessionId, opts.cwd, {
       text: opts.prompt,
@@ -723,12 +901,18 @@ export class SessionEventRouter {
   private turnCost = 0;
   private turnModelContextWindow: number | undefined;
 
+  private guardian: OpenCodeGuardian | null = null;
+
   constructor(
     sessionId: string,
     cb: StreamCardBuilder,
     callbacks: ProviderCallbacks,
     server: OpenCodeServer,
-    opts: { directory?: string; permissionLevel?: PermissionLevel } = {},
+    opts: {
+      directory?: string;
+      permissionLevel?: PermissionLevel;
+      onFinalized?: () => void;
+    } = {},
   ) {
     this.sessionId = sessionId;
     this.cb = cb;
@@ -736,6 +920,50 @@ export class SessionEventRouter {
     this.server = server;
     this.directory = opts.directory ?? process.cwd();
     this.permissionLevel = opts.permissionLevel ?? 'default';
+    this.onFinalized = opts.onFinalized;
+  }
+
+  private readonly onFinalized?: () => void;
+
+  /** Lazily-created guardian reviewer (one per main session). Throws if no
+   *  guardian model server is configured — callers gate `auto-review` on
+   *  `getGuardianModelServerConfig()` before session start, so this should
+   *  not be reachable without one in practice. */
+  private getGuardian(): OpenCodeGuardian {
+    if (!this.guardian) {
+      const modelServer = getGuardianModelServerConfig();
+      if (!modelServer) throw new Error('auto-review requires a guardian model server');
+      this.guardian = new OpenCodeGuardian({
+        server: this.server,
+        directory: this.directory,
+        mainSessionId: this.sessionId,
+        modelServer,
+        timeoutMs: getOpenCodeGuardianTimeoutMs(),
+        maxConsecutiveDenials: getOpenCodeGuardianMaxConsecutiveDenials(),
+      });
+    }
+    return this.guardian;
+  }
+
+  /** Dispose the guardian reviewer. No-op today (the reviewer holds no
+   *  provider-side state), kept as a call site for future cleanup. */
+  async disposeGuardian(): Promise<void> {
+    await this.guardian?.dispose();
+    this.guardian = null;
+  }
+
+  /** Surface a guardian note on the tool card being reviewed (falls back to
+   * a system message when the card does not exist yet). */
+  private emitGuardianNote(callID: string | undefined, message: string): void {
+    if (this.finalized) return;
+    const event = callID
+      ? this.cb.updatePendingGuardianMessageForToolUseId(callID, message)
+      : this.cb.updateLatestGuardianMessageForToolCard(message);
+    if (event) {
+      this.callbacks.emitCardEvent(event);
+      return;
+    }
+    this.callbacks.emitCardEvent(this.cb.systemMessage(message, 'info'));
   }
 
   setPermissionLevel(level: PermissionLevel): void {
@@ -1175,6 +1403,12 @@ export class SessionEventRouter {
       });
       return;
     }
+    if (this.permissionLevel === 'auto-review') {
+      // Codex `auto_review` semantics: an independent LLM reviewer decides
+      // this boundary-crossing action instead of the daemon (or the user).
+      await this.handleAutoReviewPermission(requestID, req);
+      return;
+    }
     const rawToolName = req.permission ?? req.title ?? 'permission';
     const toolName = normalizeOpenCodeToolName(rawToolName);
     const toolInput = normalizeOpenCodeToolInput(rawToolName, {
@@ -1200,6 +1434,92 @@ export class SessionEventRouter {
       console.error('[openCode] permission handling failed', err);
       await this.server.replyPermission(requestID, this.directory, 'reject').catch(() => {});
     }
+  }
+
+  /** `auto-review` mode: route the permission request through the guardian
+   * reviewer. A denial is sent back to the model as a corrected-error
+   * message with the rationale, mirroring how Codex's guardian instructs
+   * the main agent to find a materially safer path. */
+  private async handleAutoReviewPermission(
+    requestID: string,
+    req: {
+      permission?: string;
+      patterns?: string[];
+      metadata?: Record<string, unknown>;
+      tool?: { messageID?: string; callID?: string };
+    },
+  ): Promise<void> {
+    const rawToolName = req.permission ?? 'permission';
+    const toolName = normalizeOpenCodeToolName(rawToolName);
+    const toolInput = normalizeOpenCodeToolInput(rawToolName, {
+      ...(req.metadata ?? {}),
+      ...(req.patterns?.length && req.metadata?.patterns === undefined
+        ? { patterns: req.patterns }
+        : {}),
+    });
+    const callID = req.tool?.callID;
+    const guardian = this.getGuardian();
+
+    // Circuit breaker: repeated guardian denials/failures escalate to the
+    // human instead of letting the reviewer keep blocking the session.
+    if (guardian.shouldEscalateToUser) {
+      console.warn(
+        `[openCode] guardian circuit breaker tripped (`
+        + `${guardian.consecutiveDenialCount} consecutive denials) — escalating to user`,
+      );
+      try {
+        const decision = await this.callbacks.handlePermissionRequest(this.sessionId, {
+          toolName,
+          toolInput,
+          toolUseId: requestID,
+          message: `Guardian auto-review has denied or failed ${guardian.consecutiveDenialCount} `
+            + 'consecutive tool calls in this session. Manual decision required.',
+        });
+        guardian.recordUserDecision();
+        await this.server.replyPermission(
+          requestID,
+          this.directory,
+          decision.action === 'allow' ? 'once' : 'reject',
+          decision.action === 'deny' ? decision.response : undefined,
+        );
+      } catch (err) {
+        console.error('[openCode] guardian escalation handling failed', err);
+        await this.server.replyPermission(requestID, this.directory, 'reject').catch(() => {});
+      }
+      return;
+    }
+
+    this.emitGuardianNote(callID, `Guardian reviewing ${toolName}…`);
+    const decision = await guardian.review({
+      toolName,
+      permission: rawToolName,
+      patterns: req.patterns ?? [],
+      input: toolInput,
+    });
+
+    if (decision.outcome === 'allow') {
+      this.emitGuardianNote(
+        callID,
+        `Guardian approved${decision.riskLevel ? ` (risk: ${decision.riskLevel})` : ''}: ${decision.rationale}`,
+      );
+      await this.server.replyPermission(requestID, this.directory, 'once').catch((err) => {
+        console.error('[openCode] guardian allow reply failed', err);
+      });
+      return;
+    }
+
+    this.emitGuardianNote(
+      callID,
+      `Guardian denied${decision.riskLevel ? ` (risk: ${decision.riskLevel})` : ''}: ${decision.rationale}`,
+    );
+    await this.server.replyPermission(
+      requestID,
+      this.directory,
+      'reject',
+      buildGuardianDenialMessage(decision.rationale),
+    ).catch((err) => {
+      console.error('[openCode] guardian deny reply failed', err);
+    });
   }
 
   private async handleQuestionAsked(ev: OpenCodeEvent): Promise<void> {
@@ -1310,6 +1630,7 @@ export class SessionEventRouter {
         : {}),
     };
     this.callbacks.emitStreamEnd(end);
+    this.onFinalized?.();
     // Notify SessionManager so it can mark the session inactive between
     // turns. The OpencodeSession is still alive (server keeps it) — we just
     // stop streaming this turn.

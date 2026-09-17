@@ -369,7 +369,12 @@ export function useClaudeOperations(
       const activeSessionIdAtRequest = state.activeSessionId;
       const wasAlreadyStreaming = state.isStreaming || session?.isStreaming === true;
       const isCompactPrompt = prompt === '/compact';
-      const queueInsteadOfAppend = wasAlreadyStreaming && !opts?.interruptCurrentTurn && !isCompactPrompt;
+      // Compaction is a provider turn even though it is not normal assistant
+      // streaming. Reuse the existing queued-message UX for prompts submitted
+      // during it; the daemon starts them only after compact completes.
+      const queueInsteadOfAppend = (wasAlreadyStreaming || session?.isCompacting === true)
+        && !opts?.interruptCurrentTurn
+        && !isCompactPrompt;
       if (!isCompactPrompt) setStreaming(true);
       setStreamError(null);
       if (queueInsteadOfAppend) {

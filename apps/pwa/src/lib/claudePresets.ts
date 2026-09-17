@@ -178,6 +178,7 @@ export const CODEX_PERMISSION_MODES = [
 
 export const OPENCODE_PERMISSION_MODES = [
   { value: 'default', label: 'Default' },
+  { value: 'auto-review', label: 'Auto Review' },
   { value: 'auto', label: 'Auto-approve' },
   { value: 'bypassPermissions', label: 'Bypass' },
 ];

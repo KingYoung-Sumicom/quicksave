@@ -75,6 +75,7 @@ describe('EventStore', () => {
         totalCostUsd: 0,
         lastPromptAt: null,
         lastTurnEndedAt: null,
+        lastUnreadTurnEndedAt: null,
         lastCacheTouchAt: null,
       });
     });
@@ -101,6 +102,24 @@ describe('EventStore', () => {
       expect(stats.totalOutputTokens).toBe(125);
       expect(stats.totalCostUsd).toBeCloseTo(0.07, 6);
       expect(stats.lastTurnEndedAt).toBe(2000);
+      expect(stats.lastUnreadTurnEndedAt).toBe(2000);
+    });
+
+    it('excludes interrupted turns from the unread activity timestamp', () => {
+      store.record({ type: 'turn_ended', sessionId: 's1', time: 1000, data: { interrupted: false } });
+      store.record({ type: 'turn_ended', sessionId: 's1', time: 2000, data: { interrupted: true } });
+
+      const stats = store.getSessionStats('s1');
+      expect(stats.lastTurnEndedAt).toBe(2000);
+      expect(stats.lastUnreadTurnEndedAt).toBe(1000);
+    });
+
+    it('has no unread activity when every turn was interrupted', () => {
+      store.record({ type: 'turn_ended', sessionId: 's1', time: 2000, data: { interrupted: true } });
+
+      const stats = store.getSessionStats('s1');
+      expect(stats.lastTurnEndedAt).toBe(2000);
+      expect(stats.lastUnreadTurnEndedAt).toBeNull();
     });
 
     it('returns lastPromptAt as the max time of prompt_sent events', () => {

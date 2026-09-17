@@ -1342,7 +1342,19 @@ function OpenCodeConfigRoute() {
     if (!bus) throw new Error('Not connected');
     return bus.command<{ success: boolean; error?: string }>('opencode:websearch-update', { exaEnabled }, { timeoutMs: 30_000, queueWhileDisconnected: false });
   }, [agentId]);
-  return <OpenCodeConfigPage onGetSnapshot={getSnapshot} onUpsertMcp={upsertMcp} onSetWebSearch={setWebSearch} />;
+  const setGuardian = useCallback(async (config: {
+    baseUrl: string;
+    model: string;
+    apiKey?: string | null;
+    enableThinking: boolean;
+    timeoutMs: number;
+    maxConsecutiveDenials: number;
+  }) => {
+    const bus = agentId ? getBusForAgent(agentId) : null;
+    if (!bus) throw new Error('Not connected');
+    return bus.command<{ success: boolean; error?: string }>('opencode:guardian-update', config, { timeoutMs: 30_000, queueWhileDisconnected: false });
+  }, [agentId]);
+  return <OpenCodeConfigPage onGetSnapshot={getSnapshot} onUpsertMcp={upsertMcp} onSetWebSearch={setWebSearch} onSetGuardian={setGuardian} />;
 }
 
 function GitIdentityModalForAgent({

@@ -16,8 +16,8 @@ import type {
 
 // ── Mocks ──
 
-vi.mock('./cardBuilder.js', () => {
-  const StreamCardBuilder = vi.fn().mockImplementation((sessionId: string, cwd: string) => ({
+function makeMockCardBuilder(sessionId: string, cwd: string) {
+  return {
     sessionId,
     cwd,
     jsonlCutoff: null,
@@ -34,7 +34,18 @@ vi.mock('./cardBuilder.js', () => {
       card: { type: 'tool_call', id: 'tc1', toolName: 'Bash', toolUseId: 'tu1' },
     }),
     startNewTurn: vi.fn(),
-  }));
+    systemMessage: vi.fn().mockImplementation((text: string, subtype?: string) => ({
+      type: 'add',
+      card: { type: 'system', id: 'sys1', text, ...(subtype ? { subtype } : {}) },
+    })),
+    persistSupplementalCard: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+vi.mock('./cardBuilder.js', () => {
+  const StreamCardBuilder = vi.fn().mockImplementation((sessionId: string, cwd: string) =>
+    makeMockCardBuilder(sessionId, cwd),
+  );
   return {
     StreamCardBuilder,
     buildCardsFromHistory: vi.fn().mockResolvedValue({ cards: [], total: 0, hasMore: false }),
@@ -108,6 +119,12 @@ describe('SessionManager — adversarial edge cases', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // The getCards pagination test installs StreamCardBuilder via
+    // mockReturnValue; clearAllMocks() does not clear return values, so
+    // re-apply the default implementation to prevent cross-test pollution.
+    (StreamCardBuilder as unknown as Mock).mockImplementation(
+      (sessionId: string, cwd: string) => makeMockCardBuilder(sessionId, cwd),
+    );
     tmpQuicksaveDir = mkdtempSync(join(tmpdir(), 'qs-session-edge-test-'));
     setQuicksaveDir(tmpQuicksaveDir);
     provider = createMockProvider();
