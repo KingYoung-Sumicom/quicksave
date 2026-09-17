@@ -95,7 +95,6 @@ import type { ThreadGoalUpdatedNotification } from './schema/generated/v2/Thread
 import type { JsonValue } from './schema/generated/serde_json/JsonValue.js';
 import { codexProtocolPreview } from './protocolLog.js';
 import { codexServerRequestInputId } from './serverRequestIds.js';
-import { CODEX_SCHEMA_PINNED_VERSION } from './version.js';
 
 const __ownDir = dirname(fileURLToPath(import.meta.url));
 const __aiDir = dirname(__ownDir);
@@ -124,27 +123,6 @@ const NATIVE_COMPLETION_MAX_DEFINITIVE_RETRIES = 1;
  * native Bash, approvals, Guardian, and sandbox settings remain untouched. */
 export function isNativeCompletionFeatureEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.QUICKSAVE_CODEX_BACKGROUND_COMPLETIONS?.trim() !== '0';
-}
-
-/** `turn/start.toolOutput` is source-verified for this schema line only. */
-export function supportsNativeCompletionProtocol(
-  cliVersion: string | null | undefined,
-  pinnedVersion = CODEX_SCHEMA_PINNED_VERSION,
-): boolean {
-  const cli = parseCodexSemver(cliVersion);
-  const pinned = parseCodexSemver(pinnedVersion);
-  return cli !== null
-    && pinned !== null
-    && cli.major === pinned.major
-    && cli.minor === pinned.minor
-    && cli.patch >= pinned.patch;
-}
-
-function parseCodexSemver(value: string | null | undefined): { major: number; minor: number; patch: number } | null {
-  if (typeof value !== 'string') return null;
-  const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(value.trim());
-  if (!match) return null;
-  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) };
 }
 
 type NativeCompletionEnvelope = {
@@ -567,6 +545,14 @@ export interface CodexAppServerProviderSession extends ProviderSession {
   setArchived(archived: boolean): Promise<void>;
   /** Compact through the app-server connection that owns this live thread. */
   compact(): Promise<void>;
+  /** Read the native SQLite-backed history through the owning app-server. */
+  loadCardHistory(opts: {
+    sessionId: string;
+    cwd: string;
+    offset: number;
+    limit: number;
+    cursor?: string;
+  }): Promise<CardHistoryResponse>;
 }
 
 export class CodexAppServerSession implements CodexAppServerProviderSession {
@@ -613,14 +599,11 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     this.cardBuilder = args.cardBuilder;
     this.callbacks = args.callbacks;
     this.cardBuilder.updateSessionId(this.threadId);
-    this.nativeCompletionFeatureEnabled = isNativeCompletionFeatureEnabled()
-      && supportsNativeCompletionProtocol(this.handle.cliVersion);
-    if (isNativeCompletionFeatureEnabled() && !this.nativeCompletionFeatureEnabled) {
-      console.warn(
-        `[codex-app] background completion registration disabled session=${this.threadId.slice(0, 8)}: ` +
-        `requires Codex ${CODEX_SCHEMA_PINNED_VERSION} schema line (installed ${this.handle.cliVersion || 'unknown'})`,
-      );
-    }
+    // Capability is detected by use, not by CLI version. Codex app-server
+    // evolves independently of its semver schema line: advertise the
+    // registration tool, try turn/start.toolOutput, and permanently disable
+    // delivery for this session only if the server rejects that field.
+    this.nativeCompletionFeatureEnabled = isNativeCompletionFeatureEnabled();
     this.nativeExecCompletionTracker = new NativeExecCompletionTracker({
       threadId: this.threadId,
       onCoverageDegraded: (reason) => {
@@ -646,6 +629,21 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       this.nativeCompletionSuppressedByArchiveOrClose = true;
       this.nativeExecCompletionTracker.suppressAll();
       args.onExitedFire?.(this.threadId, this);
+    });
+  }
+
+  async loadCardHistory(opts: {
+    sessionId: string;
+    cwd: string;
+    offset: number;
+    limit: number;
+    cursor?: string;
+  }): Promise<CardHistoryResponse> {
+    return readCodexHistoryPage(this.handle, {
+      ...opts,
+      // A live provider session must never be used to read a different
+      // thread, even if a caller accidentally passes the wrong id.
+      sessionId: this.threadId,
     });
   }
 

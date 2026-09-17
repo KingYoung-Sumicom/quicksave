@@ -298,8 +298,46 @@ describe('SessionManager', () => {
         sessionId: nativeSession.sessionId,
         cwd: nativeSession.cwd,
       }));
+      expect(codexProvider.loadCardHistory).toHaveBeenCalledTimes(1);
       expect(mgr.getSessionAgent(nativeSession.sessionId)).toBe('codex');
       expect(mgr.getSessionCwd(nativeSession.sessionId)).toBe(nativeSession.cwd);
+    });
+
+    it('reads active Codex history through its live SQLite-backed session and overlays live cards', async () => {
+      const liveHistoryLoader = vi.fn().mockResolvedValue({
+        cards: [
+          { type: 'assistant_text', id: 'native-old', timestamp: 1, text: 'Old', streaming: false, turnId: 'turn-old' },
+          { type: 'assistant_text', id: 'native-live', timestamp: 2, text: 'Stale', streaming: false, turnId: 'turn-live' },
+        ],
+        total: 2,
+        hasMore: false,
+      });
+      const codexProvider = {
+        ...createMockProvider('codex', 'memory'),
+        historyMode: 'codex-thread' as const,
+        loadCardHistory: vi.fn().mockRejectedValue(new Error('must not spawn a second app-server')),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      const liveCard = {
+        type: 'assistant_text', id: 'live-current', timestamp: 3,
+        text: 'Current', streaming: true, turnId: 'turn-live',
+      } as const;
+      (mgr as unknown as { sessions: Map<string, ManagedSession> }).sessions.set('active-codex', {
+        sessionId: 'active-codex',
+        cwd: '/repo',
+        agentId: 'codex',
+        providerSession: createMockProviderSession({ loadCardHistory: liveHistoryLoader }),
+        cardBuilder: { getCards: vi.fn().mockReturnValue([liveCard]) },
+      } as unknown as ManagedSession);
+
+      const first = await mgr.getCards('active-codex', '/repo');
+      const second = await mgr.getCards('active-codex', '/repo');
+
+      expect(liveHistoryLoader).toHaveBeenCalledTimes(2);
+      expect(codexProvider.loadCardHistory).not.toHaveBeenCalled();
+      expect(first.cards.map((card) => card.id)).toEqual(['native-old', 'live-current']);
+      expect(second.cards.map((card) => card.id)).toEqual(['native-old', 'live-current']);
+      expect(second.total).toBe(2);
     });
 
     it('keeps native sessions within configured project directories only', async () => {

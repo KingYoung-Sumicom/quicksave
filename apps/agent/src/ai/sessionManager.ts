@@ -84,6 +84,14 @@ const EMPTY_AGENT_CAPABILITIES = {
   supportsStreaming: false,
 } as const;
 
+// Opening a Codex thread starts a read-only app-server process. Codex
+// still scans the rollout file even when Quicksave asks for only one bounded
+// turn page, which is noticeable for 100+ MB sessions. Keep a small, short-
+// lived cache for the initial page. Active-session live cards overlay this
+// base, while sending a prompt and settling a turn invalidate it.
+const CODEX_HISTORY_CACHE_TTL_MS = 5 * 60_000;
+const CODEX_HISTORY_CACHE_MAX = 8;
+
 /**
  * Events emitted:
  *   'card-event'             (event: CardEvent)
@@ -381,6 +389,7 @@ export class SessionManager extends EventEmitter {
   /** Native session identity cache populated by discovery and single-id lookups.
    * It is intentionally runtime-only: providers remain the source of truth. */
   private nativeSessions: Map<string, NativeSessionSummary> = new Map();
+  private codexHistoryCache = new Map<string, { expiresAt: number; result: CardHistoryResponse }>();
 
   /** Guards against concurrent cold resumes. Queues prompts arriving while a spawn is in flight. */
   private coldResumeInFlight: Map<string, { queuedPrompts: Array<{ prompt: string; attachments?: readonly Attachment[] }> }> = new Map();
@@ -792,6 +801,7 @@ export class SessionManager extends EventEmitter {
     attachments?: readonly Attachment[];
     interruptCurrentTurn?: boolean;
   }): Promise<string> {
+    this.invalidateCodexHistory(opts.sessionId);
     // Compact: delegate to provider's native compact API instead of sending
     // '/compact' as a user prompt (a '/compact' prompt is a TUI-only command —
     // the agent loop never intercepts it, so it only adds a message without
@@ -1738,13 +1748,44 @@ export class SessionManager extends EventEmitter {
         ? Number(cursor.slice('codex-offset:'.length))
         : offset;
       if (!provider.loadCardHistory) throw new Error('Codex provider does not implement durable history loading');
-      result = await provider.loadCardHistory({
+      const historyOpts = {
         sessionId,
         cwd: historyCwd,
         offset: Number.isSafeInteger(codexOffset) && codexOffset >= 0 ? codexOffset : offset,
         limit,
         cursor,
-      });
+      };
+      const liveHistoryLoader = ps?.providerSession?.loadCardHistory;
+      const cacheKey = provider.historyMode === 'codex-thread'
+        && !liveHistoryLoader
+        && offset === 0
+        && !cursor
+        ? `${sessionId}\u0000${historyCwd}\u0000${limit}`
+        : undefined;
+      const cached = cacheKey ? this.codexHistoryCache.get(cacheKey) : undefined;
+      if (liveHistoryLoader) {
+        result = await liveHistoryLoader.call(ps!.providerSession, historyOpts);
+      } else if (cacheKey && cached && cached.expiresAt > Date.now()) {
+        // Touch for LRU ordering and clone the array because supplemental-card
+        // merging below may splice it for this response only.
+        this.codexHistoryCache.delete(cacheKey);
+        this.codexHistoryCache.set(cacheKey, cached);
+        result = { ...cached.result, cards: [...cached.result.cards] };
+      } else {
+        if (cacheKey) this.codexHistoryCache.delete(cacheKey);
+        result = await provider.loadCardHistory(historyOpts);
+        if (cacheKey) {
+          this.codexHistoryCache.set(cacheKey, {
+            expiresAt: Date.now() + CODEX_HISTORY_CACHE_TTL_MS,
+            result: { ...result, cards: [...result.cards] },
+          });
+          while (this.codexHistoryCache.size > CODEX_HISTORY_CACHE_MAX) {
+            const oldest = this.codexHistoryCache.keys().next().value as string | undefined;
+            if (oldest === undefined) break;
+            this.codexHistoryCache.delete(oldest);
+          }
+        }
+      }
     } else if (provider.historyMode === 'claude-jsonl') {
       const cursorOffset = cursor?.startsWith('claude-offset:')
         ? Number(cursor.slice('claude-offset:'.length))
@@ -1785,6 +1826,24 @@ export class SessionManager extends EventEmitter {
           hasMore: persisted.hasMore,
           ...(persisted.nextCursor ? { nextCursor: persisted.nextCursor } : {}),
         };
+      }
+    }
+
+    // The cached/native Codex page is the durable base. For an active session,
+    // replace native cards from turns represented in the live CardBuilder and
+    // append its current state. This makes cached history safe during a turn
+    // and avoids duplicate native/live projections of the same turn.
+    if (provider.historyMode === 'codex-thread' && offset === 0 && !cursor && ps?.cardBuilder) {
+      const liveCards = ps.cardBuilder.getCards();
+      if (liveCards.length > 0) {
+        const liveTurnIds = new Set(liveCards.flatMap((card) => card.turnId ? [card.turnId] : []));
+        const liveCardIds = new Set(liveCards.map((card) => card.id));
+        const nativeCards = result.cards.filter((card) =>
+          !liveCardIds.has(card.id) && (!card.turnId || !liveTurnIds.has(card.turnId)),
+        );
+        const removed = result.cards.length - nativeCards.length;
+        result.cards = [...nativeCards, ...liveCards];
+        if (result.total !== undefined) result.total += liveCards.length - removed;
       }
     }
 
@@ -1865,6 +1924,13 @@ export class SessionManager extends EventEmitter {
     }
 
     return result;
+  }
+
+  private invalidateCodexHistory(sessionId: string): void {
+    const prefix = `${sessionId}\u0000`;
+    for (const key of this.codexHistoryCache.keys()) {
+      if (key.startsWith(prefix)) this.codexHistoryCache.delete(key);
+    }
   }
 
   getPendingInputRequests(): ClaudeUserInputRequestPayload[] {
@@ -1973,6 +2039,7 @@ export class SessionManager extends EventEmitter {
       },
       onTurnSettled: (sessionId: string) => {
         if (agentId === 'codex') {
+          this.invalidateCodexHistory(sessionId);
           this.emit('codex-turn-settled', { sessionId });
         }
       },

@@ -10,7 +10,6 @@ import {
   CodexAppServerSession,
   isNativeCompletionFeatureEnabled,
   nativeCompletionEnvelope,
-  supportsNativeCompletionProtocol,
 } from '../provider.js';
 import type { ReadyNativeExecCompletion } from '../nativeExecCompletionTracker.js';
 import { CodexRpcClient, InMemoryTransport, type WireRequest, type WireResponse } from '../rpcClient.js';
@@ -907,7 +906,7 @@ describe('CodexAppServerSession registered native completion continuation', () =
 });
 
 describe('native completion payload and switch', () => {
-  it('keeps completion data bounded and enables only the verified Codex schema line', () => {
+  it('keeps completion data bounded and uses an explicit feature switch instead of a version gate', () => {
     const completion: ReadyNativeExecCompletion = {
       eventId: 'event_1', threadId: 'thr_1', originTurnId: 'turn_1', commandExecutionId: 'cmd_1',
       command: 'echo done', cwd: '/repo', processHandle: null, status: 'failed', exitCode: 2,
@@ -921,10 +920,6 @@ describe('native completion payload and switch', () => {
     });
     expect(isNativeCompletionFeatureEnabled({})).toBe(true);
     expect(isNativeCompletionFeatureEnabled({ QUICKSAVE_CODEX_BACKGROUND_COMPLETIONS: '0' })).toBe(false);
-    expect(supportsNativeCompletionProtocol('0.153.4')).toBe(true);
-    expect(supportsNativeCompletionProtocol('0.153.9')).toBe(true);
-    expect(supportsNativeCompletionProtocol('0.152.9')).toBe(false);
-    expect(supportsNativeCompletionProtocol('0.154.0')).toBe(false);
   });
 });
 

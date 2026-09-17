@@ -97,6 +97,16 @@ export interface ProviderSession {
   /** Optional provider-native compaction through this live session's existing
    * writer connection. Preferred over opening a second provider connection. */
   compact?(): Promise<void>;
+  /** Optional durable-history reader through the live provider connection.
+   * Codex uses this to query its SQLite projection without spawning another
+   * app-server process that would rescan the rollout file. */
+  loadCardHistory?(opts: {
+    sessionId: string;
+    cwd: string;
+    offset: number;
+    limit: number;
+    cursor?: string;
+  }): Promise<CardHistoryResponse>;
   /** Optional provider-native permission switch. OpenCode uses this to
    * toggle client-side auto approval without restarting its server session. */
   setPermissionMode?(level: PermissionLevel): void | Promise<void>;
