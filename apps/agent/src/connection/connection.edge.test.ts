@@ -6,7 +6,7 @@
  * These tests try to BREAK the connection layer by simulating race conditions,
  * replay attacks, memory leaks, and other adversarial scenarios.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PubSub, BROADCAST_TOPIC } from './pubsub.js';
 
 // ---------------------------------------------------------------------------
@@ -594,11 +594,19 @@ describe('edge: broadcast fallback behavior', () => {
 // ---------------------------------------------------------------------------
 
 describe('edge: key exchange timestamp boundaries', () => {
+  const fixedNow = Date.parse('2026-01-01T00:00:00.000Z');
+  let restoreDateNow: () => void;
   let conn: AgentConnection;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(fixedNow);
+    restoreDateNow = () => dateNowSpy.mockRestore();
     conn = new AgentConnection(makeConfig());
+  });
+
+  afterEach(() => {
+    restoreDateNow();
   });
 
   it('rejects timestamp exactly at 60001ms age (just past expiry)', async () => {
