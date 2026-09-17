@@ -7,6 +7,11 @@ import {
   buildAutoReviewPermissionRuleset,
   getOpenCodeCompactTimeoutMs,
 } from './openCodeServer.js';
+import {
+  UPDATE_SESSION_STATUS_TOOL,
+  DISPLAY_MARKDOWN_REPORT_TOOL,
+  REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL,
+} from './quicksaveToolsMcp.js';
 
 const ENV_KEY = 'QUICKSAVE_OPENCODE_COMPACT_TIMEOUT_MS';
 
@@ -47,6 +52,9 @@ describe('buildAutoReviewPermissionRuleset', () => {
       { permission: 'todowrite', pattern: '*', action: 'allow' },
       { permission: 'question', pattern: '*', action: 'allow' },
       { permission: 'doom_loop', pattern: '*', action: 'allow' },
+      { permission: UPDATE_SESSION_STATUS_TOOL, pattern: '*', action: 'allow' },
+      { permission: DISPLAY_MARKDOWN_REPORT_TOOL, pattern: '*', action: 'allow' },
+      { permission: REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL, pattern: '*', action: 'allow' },
     ]);
   });
 });

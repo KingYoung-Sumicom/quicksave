@@ -63,6 +63,7 @@ import {
   getOpenCodeGuardianTimeoutMs,
 } from '../config.js';
 import { QUICKSAVE_SESSION_ID_ARG } from './openCodeMcpPlugin.js';
+import { bypassesQuicksaveGuardian } from './quicksaveToolsMcp.js';
 
 // ── Part types we translate (verified from opencode 1.14 OpenAPI Part union) ──
 
@@ -258,6 +259,16 @@ export interface TurnConfig {
   system?: string;
 }
 
+const OPENCODE_CONTEXT_OVERFLOW_RE = /maximum context length[\s\S]*requested \d+ output tokens[\s\S]*prompt contains/i;
+const OPENCODE_CONTEXT_OVERFLOW_CONTINUATION = '[Quicksave automatic continuation] Continue from where you left off after the automatic context compaction.';
+
+/** OpenCode can discover a tool result pushed the next request over the
+ * context limit only after that request fails. It then compacts on its own,
+ * but leaves the session idle instead of retrying the interrupted agent loop. */
+export function isOpenCodeContextOverflowError(message: string): boolean {
+  return OPENCODE_CONTEXT_OVERFLOW_RE.test(message);
+}
+
 export class OpencodeSession implements ProviderSession {
   /** opencode server's `ses_…` id. Stable across turns; we use it for
     *  follow-up prompts and abort. */
@@ -273,6 +284,7 @@ export class OpencodeSession implements ProviderSession {
   private queuedUserPrompts: QueuedUserPrompt[] = [];
   private turnActive = false;
   private compactPromise: Promise<void> | null = null;
+  private contextOverflowRecoveryAttempts = 0;
   /** Model context window for building ContextUsageBreakdown. */
   private modelContextWindow: number | undefined;
 
@@ -328,6 +340,7 @@ export class OpencodeSession implements ProviderSession {
     }
     this.cb.startNewTurn();
     this.router.resetForNewTurn();
+    this.contextOverflowRecoveryAttempts = 0;
     this.turnActive = true;
     this.server.sendPromptAsync(this.opencodeSessionId, this.directory, {
       text: prompt,
@@ -337,6 +350,44 @@ export class OpencodeSession implements ProviderSession {
       ...(this.turnConfig.system ? { system: this.turnConfig.system } : {}),
     }).catch((err: Error) => {
       console.error('[openCode] follow-up prompt_async failed:', err);
+      this.router?.finalize(false, err.message);
+    });
+  }
+
+  /** Accept at most one invisible continuation per user turn. If the retry
+   * also overflows, the router surfaces that second error normally. */
+  _beginContextOverflowRecovery(message: string): boolean {
+    if (!this.aliveFlag || this.contextOverflowRecoveryAttempts >= 1) return false;
+    this.contextOverflowRecoveryAttempts += 1;
+    if (this.cb && this.callbacks) {
+      this.callbacks.emitCardEvent(this.cb.systemMessage(
+        'Context limit reached; compacting before continuing…',
+        'compacting',
+      ));
+    }
+    console.warn(`[openCode] recovering from context overflow: ${message}`);
+    return true;
+  }
+
+  /** OpenCode's automatic compaction has reached idle. A textual prompt is
+   * required to restart the interrupted agent loop, so send one without
+   * presenting it as a user-authored chat message. */
+  _continueAfterContextOverflow(): void {
+    if (!this.aliveFlag || !this.cb || !this.callbacks || !this.router) return;
+    this.callbacks.emitCardEvent(this.cb.systemMessage(
+      'Context compacted; continuing automatically',
+      'compacted',
+    ));
+    this.cb.startNewTurn();
+    this.router.resetForNewTurn();
+    this.turnActive = true;
+    this.server.sendPromptAsync(this.opencodeSessionId, this.directory, {
+      text: OPENCODE_CONTEXT_OVERFLOW_CONTINUATION,
+      model: this.turnConfig.model,
+      ...(this.turnConfig.variant ? { variant: this.turnConfig.variant } : {}),
+      ...(this.turnConfig.system ? { system: this.turnConfig.system } : {}),
+    }).catch((err: Error) => {
+      console.error('[openCode] context-overflow continuation failed:', err);
       this.router?.finalize(false, err.message);
     });
   }
@@ -662,6 +713,8 @@ export class OpenCodeProvider implements CodingAgentProvider {
       directory: opts.cwd,
       permissionLevel: opts.permissionLevel,
       onFinalized: () => session._onTurnFinalized(),
+      onContextOverflow: (message) => session._beginContextOverflowRecovery(message),
+      onContextOverflowCompacted: () => session._continueAfterContextOverflow(),
     });
     const unsub = server.subscribe(opencodeSessionId, (ev) => router.handle(ev));
     session._setTurnWiring(cardBuilder, callbacks, router, unsub, true);
@@ -786,6 +839,8 @@ export class OpenCodeProvider implements CodingAgentProvider {
       directory: opts.cwd,
       permissionLevel: opts.permissionLevel,
       onFinalized: () => session._onTurnFinalized(),
+      onContextOverflow: (message) => session._beginContextOverflowRecovery(message),
+      onContextOverflowCompacted: () => session._continueAfterContextOverflow(),
     });
     // A cold resume creates a fresh router whose in-memory dedupe sets are
     // empty, while OpenCode's message endpoint returns the entire session.
@@ -827,7 +882,12 @@ export function projectOpenCodeMessages(sessionId: string, cwd: string, messages
     builder.startNewTurn(message.id);
     switch (message.type) {
       case 'user':
-        if (message.text) builder.userMessage(message.text);
+        // This synthetic prompt restarts OpenCode after its own late
+        // auto-compaction. It was never authored by the user, so do not
+        // render it as a user bubble when history is loaded again.
+        if (message.text && message.text !== OPENCODE_CONTEXT_OVERFLOW_CONTINUATION) {
+          builder.userMessage(message.text);
+        }
         break;
       case 'assistant':
         for (const content of message.content ?? []) {
@@ -900,6 +960,7 @@ export class SessionEventRouter {
   private turnCacheWrite = 0;
   private turnCost = 0;
   private turnModelContextWindow: number | undefined;
+  private awaitingContextOverflowCompaction = false;
 
   private guardian: OpenCodeGuardian | null = null;
 
@@ -912,6 +973,8 @@ export class SessionEventRouter {
       directory?: string;
       permissionLevel?: PermissionLevel;
       onFinalized?: () => void;
+      onContextOverflow?: (message: string) => boolean;
+      onContextOverflowCompacted?: () => void;
     } = {},
   ) {
     this.sessionId = sessionId;
@@ -921,9 +984,13 @@ export class SessionEventRouter {
     this.directory = opts.directory ?? process.cwd();
     this.permissionLevel = opts.permissionLevel ?? 'default';
     this.onFinalized = opts.onFinalized;
+    this.onContextOverflow = opts.onContextOverflow;
+    this.onContextOverflowCompacted = opts.onContextOverflowCompacted;
   }
 
   private readonly onFinalized?: () => void;
+  private readonly onContextOverflow?: (message: string) => boolean;
+  private readonly onContextOverflowCompacted?: () => void;
 
   /** Lazily-created guardian reviewer (one per main session). Throws if no
    *  guardian model server is configured — callers gate `auto-review` on
@@ -1078,16 +1145,21 @@ export class SessionEventRouter {
         this.scheduleToolSync();
         break;
       case 'session.idle':
+        if (this.continueAfterContextOverflowCompaction()) break;
         this.finalize(true);
         break;
       case 'session.status': {
         const status = (ev.properties as { status?: { type?: string } }).status;
-        if (status?.type === 'idle') this.finalize(true);
+        if (status?.type === 'idle' && !this.continueAfterContextOverflowCompaction()) this.finalize(true);
         break;
       }
       case 'session.error': {
         const err = (ev.properties as { error?: { data?: { message?: string }; name?: string } }).error;
         const msg = err?.data?.message || err?.name || 'opencode session error';
+        if (isOpenCodeContextOverflowError(msg) && this.onContextOverflow?.(msg)) {
+          this.awaitingContextOverflowCompaction = true;
+          break;
+        }
         this.emitErrorCard(msg);
         this.finalize(false, msg);
         break;
@@ -1106,6 +1178,13 @@ export class SessionEventRouter {
         // session.updated metadata, server.heartbeat, etc.).
         break;
     }
+  }
+
+  private continueAfterContextOverflowCompaction(): boolean {
+    if (!this.awaitingContextOverflowCompaction) return false;
+    this.awaitingContextOverflowCompaction = false;
+    this.onContextOverflowCompacted?.();
+    return true;
   }
 
   /** Coalesce concurrent tool-sync requests into a single in-flight fetch.
@@ -1384,6 +1463,15 @@ export class SessionEventRouter {
     };
     const requestID = req.id;
     if (!requestID) return;
+    if (bypassesQuicksaveGuardian(req.permission)) {
+      // The per-session auto-review catch-all can override config-level allow
+      // rules on some OpenCode versions. Keep a provider-side backstop so
+      // Quicksave's own metadata/control calls never create a Guardian turn.
+      await this.server.replyPermission(requestID, this.directory, 'once').catch((err) => {
+        console.error('[openCode] Quicksave control-tool auto-approve failed', err);
+      });
+      return;
+    }
     if (req.permission === 'question') {
       // Current Quicksave config allows the question tool so this should be a
       // compatibility fallback only. A `question.asked` event carries the

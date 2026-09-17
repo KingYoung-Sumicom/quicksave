@@ -53,6 +53,7 @@ import {
   _resetOpenCodeBinCache,
   normalizeOpenCodeToolInput,
   normalizeOpenCodeToolName,
+  isOpenCodeContextOverflowError,
   projectOpenCodeMessages,
   type TurnConfig,
 } from './openCodeProvider.js';
@@ -493,6 +494,36 @@ describe('OpencodeSession', () => {
 
     expect(server.prompts.map((prompt) => prompt.body.text)).toEqual(['first', 'second']);
     expect(s.getQueueState()).toBeNull();
+  });
+
+  it('continues once after OpenCode automatically compacts a context overflow', async () => {
+    const server = makeMockServer();
+    const s = new OpencodeSession('ses_overflow', server, '/workspace', turnConfig);
+    const cb = new StreamCardBuilder('ses_overflow', '/workspace');
+    const cbs = makeCallbacks();
+    const router = new SessionEventRouter('ses_overflow', cb, cbs, server, {
+      directory: '/workspace',
+      onFinalized: () => s._onTurnFinalized(),
+      onContextOverflow: (message) => s._beginContextOverflowRecovery(message),
+      onContextOverflowCompacted: () => s._continueAfterContextOverflow(),
+    });
+    s._setTurnWiring(cb, cbs, router, () => {}, true);
+    const overflow = "This model's maximum context length is 262144 tokens. However, you requested 32000 output tokens and your prompt contains at least 230145 input tokens.";
+
+    router.handle({ type: 'session.error', properties: { error: { data: { message: overflow } } } });
+    router.handle({ type: 'session.status', properties: { status: { type: 'idle' } } });
+    await flushAsync();
+
+    expect(cbs.ends).toHaveLength(0);
+    expect(server.prompts).toHaveLength(1);
+    expect(server.prompts[0]?.body.text).toContain('Continue from where you left off');
+    expect(cbs.cards.some((event: any) => event.card?.subtype === 'compacting')).toBe(true);
+    expect(cbs.cards.some((event: any) => event.card?.subtype === 'compacted')).toBe(true);
+
+    router.handle({ type: 'session.error', properties: { error: { data: { message: overflow } } } });
+    await flushAsync();
+    expect(cbs.ends).toHaveLength(1);
+    expect(cbs.ends[0]).toMatchObject({ success: false, error: overflow });
   });
 
   it('sendUserMessage on a killed session is a no-op', () => {
@@ -937,6 +968,13 @@ describe('SessionEventRouter', () => {
     expect(cbs.ends[0]).toMatchObject({ success: false, error: 'Model not found: foo/bar.' });
   });
 
+  it('recognizes only the provider context-overflow error shape', () => {
+    expect(isOpenCodeContextOverflowError(
+      "This model's maximum context length is 262144 tokens. However, you requested 32000 output tokens and your prompt contains at least 230145 input tokens.",
+    )).toBe(true);
+    expect(isOpenCodeContextOverflowError('Model not found: foo/bar.')).toBe(false);
+  });
+
   it('server.disposed finalizes with success=false', async () => {
     const { router, cbs } = makeRouter();
     router.handle(ev('server.disposed', {}));
@@ -1244,6 +1282,29 @@ describe('SessionEventRouter', () => {
       });
       router.handle({ id: 'diff', type: 'session.diff', properties: { sessionID: 'ses_t' } });
     }
+
+    it('bypasses the guardian for trusted Quicksave control tools', async () => {
+      const server = makeGuardianServer();
+      const cbs = makeCallbacks();
+      const router = makeAutoReviewRouter(server, cbs);
+
+      router.handle({
+        id: 'e-control', type: 'permission.asked',
+        properties: {
+          id: 'per_control',
+          sessionID: 'ses_t',
+          permission: 'mcp__quicksave-tools__UpdateSessionStatus',
+          tool: { messageID: 'msg1', callID: 'call_control' },
+        },
+      });
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(server.replies).toEqual([{
+        requestID: 'per_control', directory: '/p', reply: 'once',
+      }]);
+      expect(server.guardianPrompts).toHaveLength(0);
+      expect(cbs.cards).toHaveLength(0);
+    });
 
     it('auto-approves through the guardian (no user prompt) and annotates the tool card', async () => {
       const server = makeGuardianServer();
@@ -1699,6 +1760,19 @@ describe('OpenCodeProvider', () => {
     expect(cards[3]?.text).toBe('Done.');
   });
 
+  it('does not project the synthetic overflow continuation as a user message', () => {
+    const cards = projectOpenCodeMessages('ses_history', '/workspace/a', [
+      {
+        id: 'msg_recovery',
+        type: 'user',
+        text: '[Quicksave automatic continuation] Continue from where you left off after the automatic context compaction.',
+      },
+      { id: 'msg_assistant', type: 'assistant', content: [{ type: 'text', text: 'Recovered.' }] },
+    ]);
+    expect(cards.map((card) => card.type)).toEqual(['assistant_text']);
+    expect(cards[0]?.text).toBe('Recovered.');
+  });
+
   it('uses the OpenCode v2 cursor directly for older card pages', async () => {
     const server = makeMockServer();
     const page = vi.fn().mockResolvedValue({
@@ -1808,6 +1882,11 @@ describe('OpenCodeProvider', () => {
     expect(server.creates[0]?.permission).toContainEqual(
       { permission: '*', pattern: '*', action: 'ask' },
     );
+    expect(server.creates[0]?.permission).toEqual(expect.arrayContaining([
+      { permission: 'mcp__quicksave-tools__UpdateSessionStatus', pattern: '*', action: 'allow' },
+      { permission: 'mcp__quicksave-tools__DisplayMarkdownReport', pattern: '*', action: 'allow' },
+      { permission: 'mcp__quicksave-tools__RegisterBackgroundExecutionCompletion', pattern: '*', action: 'allow' },
+    ]));
   });
 
   it('enforces and clears the guardian boundary during a live permission switch', async () => {

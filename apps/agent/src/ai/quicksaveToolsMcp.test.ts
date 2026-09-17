@@ -3,7 +3,11 @@
 import { describe, it, expect } from 'vitest';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { buildQuicksaveToolsMcpServerConfig, QUICKSAVE_MCP_NAME } from './quicksaveToolsMcp.js';
+import {
+  bypassesQuicksaveGuardian,
+  buildQuicksaveToolsMcpServerConfig,
+  QUICKSAVE_MCP_NAME,
+} from './quicksaveToolsMcp.js';
 
 const __thisDir = dirname(fileURLToPath(import.meta.url));
 
@@ -96,5 +100,13 @@ describe('buildQuicksaveToolsMcpServerConfig', () => {
 
   it('uses canonical server name for the export', () => {
     expect(QUICKSAVE_MCP_NAME).toBe('quicksave-tools');
+  });
+
+  it('bypasses guardian only for explicit Quicksave control tools', () => {
+    expect(bypassesQuicksaveGuardian('mcp__quicksave-tools__UpdateSessionStatus')).toBe(true);
+    expect(bypassesQuicksaveGuardian('mcp__quicksave-tools__DisplayMarkdownReport')).toBe(true);
+    expect(bypassesQuicksaveGuardian('mcp__quicksave-tools__RegisterBackgroundExecutionCompletion')).toBe(true);
+    expect(bypassesQuicksaveGuardian('mcp__quicksave-tools__FutureDestructiveTool')).toBe(false);
+    expect(bypassesQuicksaveGuardian('bash')).toBe(false);
   });
 });

@@ -19,6 +19,20 @@ export const REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME = 'RegisterBackg
 export const REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL =
   `${QUICKSAVE_MCP_PREFIX}${REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL_NAME}`;
 
+/** Quicksave-owned control-plane tools that never cross a user security
+ * boundary and therefore must not be sent to the OpenCode Guardian. Keep
+ * this explicit: a future state-changing MCP tool should not inherit the
+ * bypass merely because it shares the Quicksave server prefix. */
+export const QUICKSAVE_GUARDIAN_BYPASS_TOOLS: readonly string[] = [
+  UPDATE_SESSION_STATUS_TOOL,
+  DISPLAY_MARKDOWN_REPORT_TOOL,
+  REGISTER_BACKGROUND_EXECUTION_COMPLETION_TOOL,
+];
+
+export function bypassesQuicksaveGuardian(toolName: string | undefined): boolean {
+  return typeof toolName === 'string' && QUICKSAVE_GUARDIAN_BYPASS_TOOLS.includes(toolName);
+}
+
 export interface QuicksaveToolsMcpServerConfig {
   type: 'stdio';
   command: string;

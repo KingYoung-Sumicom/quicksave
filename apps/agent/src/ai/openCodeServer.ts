@@ -24,6 +24,7 @@ import { getOpenCodeBin } from './openCodeProvider.js';
 import { getOpenCodeEnableExa } from '../config.js';
 import {
   DISPLAY_MARKDOWN_REPORT_TOOL,
+  QUICKSAVE_GUARDIAN_BYPASS_TOOLS,
   QUICKSAVE_MCP_PREFIX,
   UPDATE_SESSION_STATUS_TOOL,
   buildQuicksaveToolsMcpServerConfig,
@@ -179,6 +180,11 @@ export function buildAutoReviewPermissionRuleset(): OpenCodePermissionRule[] {
   return [
     { permission: '*', pattern: '*', action: 'ask' },
     ...AUTO_REVIEW_SAFE_PERMISSION_ALLOWLIST.map((permission) => ({
+      permission,
+      pattern: '*',
+      action: 'allow' as const,
+    })),
+    ...QUICKSAVE_GUARDIAN_BYPASS_TOOLS.map((permission) => ({
       permission,
       pattern: '*',
       action: 'allow' as const,
