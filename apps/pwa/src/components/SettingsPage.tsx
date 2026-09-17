@@ -130,8 +130,6 @@ export function SettingsPage({ onSendApiKeyToAgent, onPushOffer }: SettingsPageP
 
           <LanguageSection />
 
-          <div className="border-t border-slate-700" />
-
           <DangerZoneSection />
 
         </div>
