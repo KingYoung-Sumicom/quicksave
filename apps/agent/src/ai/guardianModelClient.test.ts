@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { callGuardianModel } from './guardianModelClient.js';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { callGuardianModel, probeGuardianModel } from './guardianModelClient.js';
+import { getGuardianServerState, resetGuardianServerState } from './guardianServerState.js';
 
 const SCHEMA = { type: 'object', properties: { outcome: { type: 'string' } } };
 
@@ -117,5 +118,113 @@ describe('callGuardianModel', () => {
     await expect(callGuardianModel({
       baseUrl: 'http://x/v1', model: 'm', systemPrompt: 's', userMessage: 'u', schema: SCHEMA,
     })).rejects.toThrow(/empty completion/);
+  });
+
+  it('marks the daemon-wide server state ok on a successful review', async () => {
+    resetGuardianServerState();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: '{"outcome":"allow"}' } }],
+    }), { status: 200 })));
+
+    await callGuardianModel({
+      baseUrl: 'http://x/v1', model: 'm', systemPrompt: 's', userMessage: 'u', schema: SCHEMA,
+    });
+    expect(getGuardianServerState()).toMatchObject({ status: 'ok' });
+  });
+
+  it('marks the daemon-wide server state failed with the reason on an HTTP error', async () => {
+    resetGuardianServerState();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 500 })));
+
+    await expect(callGuardianModel({
+      baseUrl: 'http://x/v1', model: 'm', systemPrompt: 's', userMessage: 'u', schema: SCHEMA,
+    })).rejects.toThrow(/guardian model server 500/);
+    expect(getGuardianServerState()).toMatchObject({ status: 'failed', lastError: expect.stringContaining('guardian model server 500') });
+  });
+
+  it('marks the daemon-wide server state failed on a transport error', async () => {
+    resetGuardianServerState();
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNREFUSED'); }));
+
+    await expect(callGuardianModel({
+      baseUrl: 'http://x/v1', model: 'm', systemPrompt: 's', userMessage: 'u', schema: SCHEMA,
+    })).rejects.toThrow(/ECONNREFUSED/);
+    expect(getGuardianServerState()).toMatchObject({ status: 'failed', lastError: 'ECONNREFUSED' });
+  });
+});
+
+describe('probeGuardianModel', () => {
+  beforeEach(() => {
+    resetGuardianServerState();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const CONFIG = { baseUrl: 'http://localhost:8000/v1', model: 'reviewer' };
+
+  it('returns ok with a latency and marks the server state ok', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('http://localhost:8000/v1/chat/completions');
+      const body = JSON.parse(init.body as string);
+      expect(body.model).toBe('reviewer');
+      expect(body.max_tokens).toBe(1);
+      expect(body.response_format).toBeUndefined();
+      return new Response('{}', { status: 200 });
+    }));
+
+    const result = await probeGuardianModel(CONFIG, 5_000);
+    expect(result.ok).toBe(true);
+    expect(typeof result.latencyMs).toBe('number');
+    expect(getGuardianServerState()).toMatchObject({ status: 'ok' });
+  });
+
+  it('strips trailing slashes and omits the auth header without an API key', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      expect(init.headers).not.toHaveProperty('authorization');
+      return new Response('{}', { status: 200 });
+    }));
+    await expect(probeGuardianModel({ baseUrl: 'http://localhost:8000/v1/', model: 'm' }, 5_000)).resolves.toMatchObject({ ok: true });
+  });
+
+  it('sends the draft API key as a bearer token', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      expect(init.headers).toMatchObject({ authorization: 'Bearer draft-key' });
+      return new Response('{}', { status: 200 });
+    }));
+    await expect(probeGuardianModel({ baseUrl: 'http://x/v1', model: 'm', apiKey: 'draft-key' }, 5_000)).resolves.toMatchObject({ ok: true });
+  });
+
+  it('reports the HTTP error and marks the server state failed', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('service unavailable', { status: 503 })));
+
+    const result = await probeGuardianModel(CONFIG, 5_000);
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/guardian model server 503/);
+    expect(getGuardianServerState()).toMatchObject({ status: 'failed', lastError: expect.stringContaining('503') });
+  });
+
+  it('does not record draft probes when recordState is false', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('bad', { status: 500 })));
+
+    const result = await probeGuardianModel({ baseUrl: 'http://draft/v1', model: 'draft' }, 5_000, false);
+    expect(result.ok).toBe(false);
+    expect(getGuardianServerState()).toEqual({ status: 'unknown' });
+  });
+
+  it('times out the probe and reports a timeout error', async () => {
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      (init.signal as AbortSignal).addEventListener('abort', () => {
+        const err = new Error('The operation was aborted');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    })));
+
+    const result = await probeGuardianModel(CONFIG, 30);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('guardian model server timed out');
+    expect(getGuardianServerState()).toMatchObject({ status: 'failed', lastError: 'guardian model server timed out' });
   });
 });

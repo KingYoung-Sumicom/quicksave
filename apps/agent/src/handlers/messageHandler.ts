@@ -180,6 +180,8 @@ import {
   OpenCodeWebSearchUpdateResponsePayload,
   OpenCodeGuardianUpdateRequestPayload,
   OpenCodeGuardianUpdateResponsePayload,
+  OpenCodeGuardianTestRequestPayload,
+  OpenCodeGuardianTestResponsePayload,
 } from '@sumicom/quicksave-shared';
 import {
   getSystemdStatus,
@@ -189,7 +191,8 @@ import {
 } from '../service/systemdUnit.js';
 import { GitOperations } from '../git/operations.js';
 import type { PushClient } from '../service/pushClient.js';
-import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, removeManagedRepo, addManagedCodingPath, removeManagedCodingPath, getOpenCodeEnableExa, setOpenCodeEnableExa, getOpenCodeGuardianSettingsSnapshot, setOpenCodeGuardianSettings } from '../config.js';
+import { getAnthropicApiKey, setAnthropicApiKey, hasAnthropicApiKey, addManagedRepo, removeManagedRepo, addManagedCodingPath, removeManagedCodingPath, getOpenCodeEnableExa, setOpenCodeEnableExa, getOpenCodeGuardianSettingsSnapshot, setOpenCodeGuardianSettings, getGuardianModelServerConfig, getOpenCodeGuardianTimeoutMs } from '../config.js';
+import { probeGuardianModel } from '../ai/guardianModelClient.js';
 import { CommitSummaryService } from '../ai/commitSummary.js';
 import { CommitSummaryCliService, CommitSummaryCliError } from '../ai/commitSummaryCli.js';
 import { CommitSummaryStateStore } from '../ai/commitSummaryStore.js';
@@ -1096,6 +1099,8 @@ export class MessageHandler {
           return this.handleOpenCodeWebSearchUpdate(message as Message<OpenCodeWebSearchUpdateRequestPayload>);
         case 'opencode:guardian-update':
           return this.handleOpenCodeGuardianUpdate(message as Message<OpenCodeGuardianUpdateRequestPayload>);
+        case 'opencode:guardian-test':
+          return this.handleOpenCodeGuardianTest(message as Message<OpenCodeGuardianTestRequestPayload>);
         case 'systemd:status':
           return this.handleSystemdStatus(message);
         case 'systemd:install':
@@ -2526,6 +2531,55 @@ export class MessageHandler {
       );
       response.id = message.id;
       return response;
+    }
+  }
+
+  /** Connectivity check for the reviewer server — either the stored config
+   *  or the draft values in the settings dialog. Daemon-wide server state is
+   *  only updated when the probed config IS the active one, so testing an
+   *  unsaved draft cannot poison the state that reviews rely on. */
+  private async handleOpenCodeGuardianTest(
+    message: Message<OpenCodeGuardianTestRequestPayload>,
+  ): Promise<Message<OpenCodeGuardianTestResponsePayload>> {
+    const respond = (payload: OpenCodeGuardianTestResponsePayload) => {
+      const response = createMessage<OpenCodeGuardianTestResponsePayload>(
+        'opencode:guardian-test:response', payload,
+      );
+      response.id = message.id;
+      return response;
+    };
+    try {
+      const draft = message.payload ?? {};
+      const active = getGuardianModelServerConfig();
+      const hasDraft = Boolean(draft.baseUrl?.trim()) || Boolean(draft.model?.trim());
+      const target = hasDraft
+        ? {
+            baseUrl: (draft.baseUrl ?? '').trim().replace(/\/+$/, ''),
+            model: (draft.model ?? '').trim(),
+            ...(draft.apiKey?.trim() ? { apiKey: draft.apiKey.trim() } : active?.apiKey ? { apiKey: active.apiKey } : {}),
+            enableThinking: active?.enableThinking ?? false,
+          }
+        : active;
+      if (hasDraft && (!target || !target.baseUrl || !target.model)) {
+        return respond({ success: false, configured: false, error: 'Provide both base URL and model to test' });
+      }
+      if (!target || !target.baseUrl || !target.model) {
+        return respond({ success: false, configured: false, error: 'Guardian is not configured' });
+      }
+      const recordState = active
+        ? target.baseUrl === active.baseUrl && target.model === active.model && !draft.apiKey?.trim()
+        : false;
+      const timeoutMs = Math.min(getOpenCodeGuardianTimeoutMs(), 30_000);
+      const result = await probeGuardianModel(target, timeoutMs, recordState);
+      return result.ok
+        ? respond({ success: true, configured: true, latencyMs: result.latencyMs })
+        : respond({ success: false, configured: true, error: result.error });
+    } catch (error) {
+      return respond({
+        success: false,
+        configured: false,
+        error: error instanceof Error ? error.message : 'Failed to test Guardian server',
+      });
     }
   }
 

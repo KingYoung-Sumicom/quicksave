@@ -8,4 +8,19 @@ describe('LEGACY_BUS_VERBS', () => {
     expect(LEGACY_BUS_VERBS).toContain('codex:check-update');
     expect(LEGACY_BUS_VERBS).toContain('codex:update');
   });
+
+  it('exposes every opencode: verb the PWA invokes', () => {
+    // A verb missing from this allowlist is never registered as a bus
+    // handler and the PWA receives "Unknown command: <verb>".
+    for (const verb of [
+      'opencode:config-snapshot',
+      'opencode:mcp-upsert',
+      'opencode:mcp-remove',
+      'opencode:websearch-update',
+      'opencode:guardian-update',
+      'opencode:guardian-test',
+    ]) {
+      expect(LEGACY_BUS_VERBS, `missing bus verb: ${verb}`).toContain(verb);
+    }
+  });
 });

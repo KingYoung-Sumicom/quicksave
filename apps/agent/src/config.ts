@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { generateAgentKeyPair } from './connection/connection.js';
+import { getGuardianServerState, resetGuardianServerState } from './ai/guardianServerState.js';
 import { generateAgentId, generateSigningKeyPair, encodeKeyPair, type License } from '@sumicom/quicksave-shared';
 import { getQuicksaveDir, getConfigFile } from './service/singleton.js';
 
@@ -264,6 +265,7 @@ export function getOpenCodeGuardianSettingsSnapshot(): {
   enableThinking: boolean;
   timeoutMs: number;
   maxConsecutiveDenials: number;
+  serverState: { status: 'unknown' | 'ok' | 'failed'; lastCheckedAt?: number; lastError?: string };
 } {
   const environment = environmentGuardianModelServerConfig();
   const stored = loadConfig()?.openCodeGuardian;
@@ -287,6 +289,7 @@ export function getOpenCodeGuardianSettingsSnapshot(): {
     enableThinking: active?.enableThinking ?? false,
     timeoutMs: getOpenCodeGuardianTimeoutMs(),
     maxConsecutiveDenials: getOpenCodeGuardianMaxConsecutiveDenials(),
+    serverState: getGuardianServerState(),
   };
 }
 
@@ -331,6 +334,9 @@ export function setOpenCodeGuardianSettings(input: GuardianSettingsInput): void 
     };
   }
   saveConfig(config);
+  // A different server/model may be entirely different — previous health
+  // (or its absence) no longer says anything about the new endpoint.
+  resetGuardianServerState();
 }
 
 // Managed repos helpers

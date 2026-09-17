@@ -49,6 +49,12 @@ const {
   setOpenCodeGuardianSettings,
 } = await import('./config.js');
 
+const {
+  getGuardianServerState,
+  recordGuardianServerResult,
+  resetGuardianServerState,
+} = await import('./ai/guardianServerState.js');
+
 const CONFIG_DIR = '/fake/home/.quicksave';
 const CONFIG_FILE = '/fake/home/.quicksave/agent.json';
 
@@ -76,6 +82,7 @@ beforeEach(() => {
   delete process.env.QUICKSAVE_GUARDIAN_ENABLE_THINKING;
   delete process.env.QUICKSAVE_GUARDIAN_TIMEOUT_MS;
   delete process.env.QUICKSAVE_GUARDIAN_MAX_CONSECUTIVE;
+  resetGuardianServerState();
 });
 
 describe('OpenCode Guardian settings', () => {
@@ -141,6 +148,40 @@ describe('OpenCode Guardian settings', () => {
     process.env.QUICKSAVE_GUARDIAN_ENABLE_THINKING = 'true';
     expect(getGuardianModelServerConfig()?.enableThinking).toBe(true);
     expect(getOpenCodeGuardianSettingsSnapshot().enableThinking).toBe(true);
+  });
+
+  it('exposes the daemon-wide server state in the settings snapshot', () => {
+    mockConfigFile(baseConfig);
+    expect(getOpenCodeGuardianSettingsSnapshot().serverState).toEqual({ status: 'unknown' });
+    recordGuardianServerResult(false, 'guardian model server 500: boom');
+    expect(getOpenCodeGuardianSettingsSnapshot().serverState).toMatchObject({
+      status: 'failed',
+      lastError: 'guardian model server 500: boom',
+      lastCheckedAt: expect.any(Number),
+    });
+    recordGuardianServerResult(true);
+    expect(getOpenCodeGuardianSettingsSnapshot().serverState).toMatchObject({
+      status: 'ok',
+      lastCheckedAt: expect.any(Number),
+    });
+  });
+
+  it('invalidates the server state whenever the settings change', () => {
+    mockConfigFile(baseConfig);
+    recordGuardianServerResult(false, 'old server is down');
+    expect(getOpenCodeGuardianSettingsSnapshot().serverState.status).toBe('failed');
+
+    setOpenCodeGuardianSettings({
+      baseUrl: 'http://new-server:8000/v1', model: 'new-reviewer',
+      enableThinking: false, timeoutMs: 60_000, maxConsecutiveDenials: 3,
+    });
+    mockConfigFile(JSON.parse(mockedWriteFileSync.mock.calls[0]![1] as string));
+    expect(getOpenCodeGuardianSettingsSnapshot().serverState).toEqual({ status: 'unknown' });
+    // The stored settings themselves must survive the reset.
+    expect(getGuardianServerState()).toEqual({ status: 'unknown' });
+    expect(getGuardianModelServerConfig()).toEqual({
+      baseUrl: 'http://new-server:8000/v1', model: 'new-reviewer', enableThinking: false,
+    });
   });
 });
 

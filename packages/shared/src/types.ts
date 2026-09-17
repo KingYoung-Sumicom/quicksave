@@ -108,6 +108,8 @@ export type MessageType =
   | 'opencode:websearch-update:response'
   | 'opencode:guardian-update'
   | 'opencode:guardian-update:response'
+  | 'opencode:guardian-test'
+  | 'opencode:guardian-test:response'
   // systemd user-unit (auto-start at login) — Linux only
   | 'systemd:status'
   | 'systemd:status:response'
@@ -798,6 +800,9 @@ export interface OpenCodeConfigSnapshotPayload {
     enableThinking: boolean;
     timeoutMs: number;
     maxConsecutiveDenials: number;
+    /** Daemon-wide reachability state of the reviewer server; invalidated
+     *  on failure and when the settings change. */
+    serverState: { status: 'unknown' | 'ok' | 'failed'; lastCheckedAt?: number; lastError?: string };
   };
   mcp: Array<{
     name: string;
@@ -854,6 +859,20 @@ export interface OpenCodeGuardianUpdateRequestPayload {
   maxConsecutiveDenials: number;
 }
 export interface OpenCodeGuardianUpdateResponsePayload { success: boolean; error?: string; }
+export interface OpenCodeGuardianTestRequestPayload {
+  /** Draft values from the settings dialog. Omit both to test the stored
+   *  (or environment-managed) configuration. */
+  baseUrl?: string;
+  model?: string;
+  /** Omit to test with the stored key. */
+  apiKey?: string;
+}
+export interface OpenCodeGuardianTestResponsePayload {
+  success: boolean;
+  configured: boolean;
+  error?: string;
+  latencyMs?: number;
+}
 
 /**
  * Machine-level voice capability the agent advertises in the handshake ack.

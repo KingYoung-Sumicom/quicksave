@@ -1,12 +1,17 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { useState, useRef, useEffect, type ReactNode } from 'react';
-import type { ConfigValue } from '@sumicom/quicksave-shared';
+import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
+import type { ConfigValue, OpenCodeConfigSnapshotResponsePayload } from '@sumicom/quicksave-shared';
 import type { SessionControlRequestResponsePayload } from '@sumicom/quicksave-shared';
 import { DEFAULT_CONTEXT_WINDOW } from '@sumicom/quicksave-shared';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
+import { getBusForAgent } from '../../lib/busRegistry';
 import { getAgentProvider } from '../../lib/agentProvider';
 import { AGENT_LABEL } from '../../lib/agentLabel';
+import {
+  GuardianEditor,
+  type GuardianTestResult,
+} from '../OpenCodeConfigPage';
 import {
   getCodexFastServiceTierId,
   isCodexFastServiceTier,
@@ -57,6 +62,7 @@ export function SessionStatusBar({
 }: SessionStatusBarProps) {
   const config = useSessionConfig(sessionId);
   const [openPopover, setOpenPopover] = useState<string | null>(null);
+  const [guardianSetup, setGuardianSetup] = useState<OpenCodeConfigSnapshotResponsePayload['guardian'] | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const sessionMachineAgentId = useClaudeStore((s) => s.sessions[sessionId]?.machineAgentId);
   const codexModels = useConnectionStore((s) => selectCodexModelsForAgent(s, sessionMachineAgentId));
@@ -83,11 +89,29 @@ export function SessionStatusBar({
     sandbox: !!config.sandboxed,
   };
 
+  const checkGuardian = useCallback(async () => {
+    const bus = sessionMachineAgentId ? getBusForAgent(sessionMachineAgentId) : null;
+    if (!bus) return;
+    try {
+      const snapshot = await bus.command<OpenCodeConfigSnapshotResponsePayload>(
+        'opencode:config-snapshot', {}, { timeoutMs: 30_000, queueWhileDisconnected: false },
+      );
+      if (snapshot.available && (!snapshot.guardian.configured || snapshot.guardian.serverState?.status === 'failed')) {
+        setGuardianSetup(snapshot.guardian);
+      }
+    } catch {
+      // Agent unreachable — nothing to validate, keep the session usable.
+    }
+  }, [sessionMachineAgentId]);
+
   const onChange = (key: string, value: unknown) => {
     const wireKey = key === 'sandbox' ? 'sandboxed' : key === 'fastMode' ? 'serviceTier' : key;
     const wireValue = key === 'fastMode' ? (value ? fastServiceTierId ?? 'fast' : null) : value;
     onSetSessionConfig?.(sessionId, wireKey, wireValue as ConfigValue);
     setOpenPopover(null);
+    if (key === 'permissionMode' && value === 'auto-review' && agentId === 'opencode') {
+      void checkGuardian();
+    }
   };
 
   const agentLabel = AGENT_LABEL[agentId] ?? AGENT_LABEL['claude-code'];
@@ -126,6 +150,29 @@ export function SessionStatusBar({
       <CodexGoalBadge sessionId={sessionId} onSendControlRequest={onSendControlRequest} />
 
       {children}
+
+      {guardianSetup && (
+        <GuardianEditor
+          guardian={guardianSetup}
+          onClose={() => setGuardianSetup(null)}
+          onSave={async (config) => {
+            const bus = sessionMachineAgentId ? getBusForAgent(sessionMachineAgentId) : null;
+            if (!bus) throw new Error('Not connected');
+            const result = await bus.command<{ success: boolean; error?: string }>(
+              'opencode:guardian-update', config, { timeoutMs: 30_000, queueWhileDisconnected: false },
+            );
+            if (!result.success) throw new Error(result.error || 'Failed to save Guardian settings');
+            setGuardianSetup(null);
+          }}
+          onTest={async (draft) => {
+            const bus = sessionMachineAgentId ? getBusForAgent(sessionMachineAgentId) : null;
+            if (!bus) throw new Error('Not connected');
+            return bus.command<GuardianTestResult>(
+              'opencode:guardian-test', draft, { timeoutMs: 60_000, queueWhileDisconnected: false },
+            );
+          }}
+        />
+      )}
     </div>
   );
 }

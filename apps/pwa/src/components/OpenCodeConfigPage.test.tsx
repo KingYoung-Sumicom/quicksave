@@ -22,6 +22,7 @@ const baseSnapshot: OpenCodeConfigSnapshotResponsePayload = {
     enableThinking: false,
     timeoutMs: 60_000,
     maxConsecutiveDenials: 3,
+    serverState: { status: 'unknown' },
   },
   mcp: [],
   providers: [],
@@ -48,7 +49,7 @@ describe('OpenCodeConfigPage Guardian settings', () => {
     container.remove();
   });
 
-  async function render(snapshot: OpenCodeConfigSnapshotResponsePayload) {
+  async function render(snapshot: OpenCodeConfigSnapshotResponsePayload, onTestGuardian?: (draft: { baseUrl: string; model: string; apiKey?: string }) => Promise<{ success: boolean; configured: boolean; error?: string; latencyMs?: number }>) {
     await act(async () => {
       root.render(
         <MemoryRouter initialEntries={['/settings/m/machine-a/opencode']}>
@@ -59,12 +60,29 @@ describe('OpenCodeConfigPage Guardian settings', () => {
                 onUpsertMcp={vi.fn()}
                 onSetWebSearch={vi.fn()}
                 onSetGuardian={vi.fn()}
+                onTestGuardian={onTestGuardian ?? vi.fn().mockResolvedValue({ success: true, configured: true, latencyMs: 12 })}
               />
             } />
           </Routes>
         </MemoryRouter>,
       );
       await Promise.resolve();
+    });
+  }
+
+  async function openGuardianEditor() {
+    const configure = [...container.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Configure' || button.textContent === 'Edit');
+    expect(configure).toBeTruthy();
+    await act(async () => configure!.click());
+    expect(container.querySelector('[role="dialog"][aria-label="Guardian settings"]')).toBeTruthy();
+  }
+
+  function setInputValue(input: HTMLInputElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+    act(() => {
+      setter.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
     });
   }
 
@@ -96,11 +114,107 @@ describe('OpenCodeConfigPage Guardian settings', () => {
         enableThinking: true,
         timeoutMs: 30_000,
         maxConsecutiveDenials: 2,
+        serverState: { status: 'unknown' },
       },
     });
     const environment = [...container.querySelectorAll('button')]
       .find((button) => button.textContent === 'Environment');
     expect(environment?.disabled).toBe(true);
     expect(container.textContent).toContain('Managed by QUICKSAVE_GUARDIAN_* environment variables.');
+  });
+
+  it('flags an unreachable reviewer server with the last failure reason', async () => {
+    await render({
+      ...baseSnapshot,
+      guardian: {
+        configured: true,
+        source: 'settings',
+        baseUrl: 'http://localhost:8000/v1',
+        model: 'reviewer',
+        hasApiKey: false,
+        enableThinking: false,
+        timeoutMs: 60_000,
+        maxConsecutiveDenials: 3,
+        serverState: { status: 'failed', lastError: 'guardian model server 503: bad gateway' },
+      },
+    });
+    expect(container.textContent).toContain('Configured');
+    expect(container.textContent).toContain('Server unreachable');
+    expect(container.textContent).toContain('Last failure: guardian model server 503: bad gateway');
+  });
+
+  it('hides the server-unreachable chip while the last check was ok', async () => {
+    await render({
+      ...baseSnapshot,
+      guardian: {
+        configured: true,
+        source: 'settings',
+        baseUrl: 'http://localhost:8000/v1',
+        model: 'reviewer',
+        hasApiKey: false,
+        enableThinking: false,
+        timeoutMs: 60_000,
+        maxConsecutiveDenials: 3,
+        serverState: { status: 'ok', lastCheckedAt: 1 },
+      },
+    });
+    expect(container.textContent).not.toContain('Server unreachable');
+  });
+
+  it('tests the reviewer server from the settings dialog and reports the outcome', async () => {
+    const onTestGuardian = vi.fn(async (draft: { baseUrl: string; model: string }) => ({
+      success: true, configured: true, latencyMs: 33,
+    }));
+    await render(baseSnapshot, onTestGuardian);
+    await openGuardianEditor();
+
+    const dialog = container.querySelector('[role="dialog"][aria-label="Guardian settings"]')!;
+    const inputs = dialog.querySelectorAll<HTMLInputElement>('input');
+    const baseUrlInput = inputs[0];
+    const modelInput = inputs[1];
+    setInputValue(baseUrlInput, 'http://localhost:8000/v1');
+    setInputValue(modelInput, 'reviewer');
+
+    const testButton = [...dialog.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Test');
+    expect(testButton).toBeTruthy();
+    await act(async () => testButton!.click());
+    await act(async () => { await Promise.resolve(); });
+
+    expect(onTestGuardian).toHaveBeenCalledWith({ baseUrl: 'http://localhost:8000/v1', model: 'reviewer' });
+    expect(container.textContent).toContain('Connected · 33ms');
+  });
+
+  it('shows the failure reason when the reviewer server rejects the test', async () => {
+    const onTestGuardian = vi.fn(async () => ({
+      success: false, configured: true, error: 'guardian model server timed out',
+    }));
+    await render(baseSnapshot, onTestGuardian);
+    await openGuardianEditor();
+
+    const dialog = container.querySelector('[role="dialog"][aria-label="Guardian settings"]')!;
+    const inputs = dialog.querySelectorAll<HTMLInputElement>('input');
+    setInputValue(inputs[0], 'http://localhost:8000/v1');
+    setInputValue(inputs[1], 'reviewer');
+
+    const testButton = [...dialog.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Test');
+    await act(async () => testButton!.click());
+    await act(async () => { await Promise.resolve(); });
+
+    expect(container.textContent).toContain('Test failed: guardian model server timed out');
+  });
+
+  it('disables the Test button until both draft fields are filled', async () => {
+    await render(baseSnapshot);
+    await openGuardianEditor();
+    const dialog = container.querySelector('[role="dialog"][aria-label="Guardian settings"]')!;
+    const testButton = [...dialog.querySelectorAll('button')]
+      .find((button) => button.textContent === 'Test')!;
+    expect(testButton.disabled).toBe(true);
+    setInputValue(dialog.querySelectorAll<HTMLInputElement>('input')[0], 'http://localhost:8000/v1');
+    expect(testButton.disabled).toBe(true);
+    setInputValue(dialog.querySelectorAll<HTMLInputElement>('input')[1], 'reviewer');
+    expect(testButton.disabled).toBe(false);
   });
 });

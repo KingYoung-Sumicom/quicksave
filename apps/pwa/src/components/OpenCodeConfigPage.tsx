@@ -18,16 +18,21 @@ type GuardianSettingsInput = {
   maxConsecutiveDenials: number;
 };
 
+export type GuardianTestDraft = { baseUrl: string; model: string; apiKey?: string };
+export type GuardianTestResult = { success: boolean; configured: boolean; error?: string; latencyMs?: number };
+
 export function OpenCodeConfigPage({
   onGetSnapshot,
   onUpsertMcp,
   onSetWebSearch,
   onSetGuardian,
+  onTestGuardian,
 }: {
   onGetSnapshot: () => Promise<OpenCodeConfigSnapshotResponsePayload>;
   onUpsertMcp: (name: string, config: { type: 'local' | 'remote'; command?: string[]; url?: string; headers?: Record<string, string> }) => Promise<{ success: boolean; error?: string }>;
   onSetWebSearch: (exaEnabled: boolean) => Promise<{ success: boolean; error?: string }>;
   onSetGuardian: (config: GuardianSettingsInput) => Promise<{ success: boolean; error?: string }>;
+  onTestGuardian?: (draft: GuardianTestDraft) => Promise<GuardianTestResult>;
 }) {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
@@ -63,7 +68,7 @@ export function OpenCodeConfigPage({
       />
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-lg mx-auto p-4">
-          <OpenCodeConfigSection online={online} snapshot={snapshot} loading={loading} error={error} onLoad={() => void load()} onUpsertMcp={onUpsertMcp} onSetWebSearch={onSetWebSearch} onSetGuardian={onSetGuardian} />
+          <OpenCodeConfigSection online={online} snapshot={snapshot} loading={loading} error={error} onLoad={() => void load()} onUpsertMcp={onUpsertMcp} onSetWebSearch={onSetWebSearch} onSetGuardian={onSetGuardian} onTestGuardian={onTestGuardian} />
         </div>
       </div>
     </div>
@@ -72,11 +77,12 @@ export function OpenCodeConfigPage({
 
 type Detail = { title: string; kind: string; rows: Array<[string, string]> };
 
-function OpenCodeConfigSection({ online, snapshot, loading, error, onLoad, onUpsertMcp, onSetWebSearch, onSetGuardian }: {
+function OpenCodeConfigSection({ online, snapshot, loading, error, onLoad, onUpsertMcp, onSetWebSearch, onSetGuardian, onTestGuardian }: {
   online: boolean; snapshot: OpenCodeConfigSnapshotResponsePayload | null; loading: boolean; error: string | null; onLoad: () => void;
   onUpsertMcp: (name: string, config: { type: 'local' | 'remote'; command?: string[]; url?: string; headers?: Record<string, string> }) => Promise<{ success: boolean; error?: string }>;
   onSetWebSearch: (exaEnabled: boolean) => Promise<{ success: boolean; error?: string }>;
   onSetGuardian: (config: GuardianSettingsInput) => Promise<{ success: boolean; error?: string }>;
+  onTestGuardian?: (draft: GuardianTestDraft) => Promise<GuardianTestResult>;
 }) {
   const [selected, setSelected] = useState<Detail | null>(null);
   const [addingMcp, setAddingMcp] = useState(false);
@@ -100,8 +106,9 @@ function OpenCodeConfigSection({ online, snapshot, loading, error, onLoad, onUps
               <div className="rounded-lg bg-slate-700/30 px-3 py-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="flex items-center gap-2"><p className="text-xs font-medium text-slate-200">Guardian auto-review</p><span className={`rounded-full px-1.5 py-0.5 text-[10px] ${snapshot.guardian.configured ? 'bg-emerald-500/15 text-emerald-300' : 'bg-slate-600/60 text-slate-400'}`}>{snapshot.guardian.configured ? 'Configured' : 'Not configured'}</span></div>
+                    <div className="flex items-center gap-2"><p className="text-xs font-medium text-slate-200">Guardian auto-review</p><span className={`rounded-full px-1.5 py-0.5 text-[10px] ${snapshot.guardian.configured ? 'bg-emerald-500/15 text-emerald-300' : 'bg-slate-600/60 text-slate-400'}`}>{snapshot.guardian.configured ? 'Configured' : 'Not configured'}</span>{snapshot.guardian.configured && snapshot.guardian.serverState?.status === 'failed' && <span className="rounded-full px-1.5 py-0.5 text-[10px] bg-red-500/15 text-red-300">Server unreachable</span>}</div>
                     <p className="mt-0.5 text-[11px] text-slate-500 break-all">{snapshot.guardian.configured ? `${snapshot.guardian.model} · ${snapshot.guardian.baseUrl}` : 'Required before OpenCode auto-review can be enabled.'}</p>
+                    {snapshot.guardian.configured && snapshot.guardian.serverState?.status === 'failed' && <p className="mt-0.5 text-[11px] text-red-300/90 break-all">Last failure: {snapshot.guardian.serverState.lastError ?? 'unknown error'}</p>}
                   </div>
                   <button type="button" disabled={snapshot.guardian.source === 'environment'} onClick={() => setEditingGuardian(true)} className="shrink-0 px-2.5 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-xs text-slate-200">{snapshot.guardian.source === 'environment' ? 'Environment' : snapshot.guardian.configured ? 'Edit' : 'Configure'}</button>
                 </div>
@@ -116,14 +123,15 @@ function OpenCodeConfigSection({ online, snapshot, loading, error, onLoad, onUps
             </div>}
     {selected && <OpenCodeDetailModal detail={selected} onClose={() => setSelected(null)} />}
     {addingMcp && <McpEditor onClose={() => setAddingMcp(false)} onSave={async (name, config) => { const result = await onUpsertMcp(name, config); if (!result.success) throw new Error(result.error || 'Failed to save MCP'); setAddingMcp(false); onLoad(); }} />}
-    {editingGuardian && snapshot && <GuardianEditor guardian={snapshot.guardian} onClose={() => setEditingGuardian(false)} onSave={async (config) => { const result = await onSetGuardian(config); if (!result.success) throw new Error(result.error || 'Failed to save Guardian settings'); setEditingGuardian(false); onLoad(); }} />}
+    {editingGuardian && snapshot && <GuardianEditor guardian={snapshot.guardian} onClose={() => setEditingGuardian(false)} onSave={async (config) => { const result = await onSetGuardian(config); if (!result.success) throw new Error(result.error || 'Failed to save Guardian settings'); setEditingGuardian(false); onLoad(); }} onTest={onTestGuardian} />}
   </section>;
 }
 
-function GuardianEditor({ guardian, onClose, onSave }: {
+export function GuardianEditor({ guardian, onClose, onSave, onTest }: {
   guardian: OpenCodeConfigSnapshotResponsePayload['guardian'];
   onClose: () => void;
   onSave: (config: GuardianSettingsInput) => Promise<void>;
+  onTest?: (draft: GuardianTestDraft) => Promise<GuardianTestResult>;
 }) {
   const [baseUrl, setBaseUrl] = useState(guardian.baseUrl ?? '');
   const [model, setModel] = useState(guardian.model ?? '');
@@ -134,6 +142,24 @@ function GuardianEditor({ guardian, onClose, onSave }: {
   const [maxDenials, setMaxDenials] = useState(String(guardian.maxConsecutiveDenials));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<GuardianTestResult | null>(null);
+  const test = async () => {
+    if (!onTest) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      setTestResult(await onTest({
+        baseUrl: baseUrl.trim(),
+        model: model.trim(),
+        ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
+      }));
+    } catch (err) {
+      setTestResult({ success: false, configured: true, error: err instanceof Error ? err.message : 'Test failed' });
+    } finally {
+      setTesting(false);
+    }
+  };
   const save = async () => {
     setSaving(true); setError(null);
     try {
@@ -149,7 +175,7 @@ function GuardianEditor({ guardian, onClose, onSave }: {
     finally { setSaving(false); }
   };
   const partiallyConfigured = Boolean(baseUrl.trim()) !== Boolean(model.trim());
-  return <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/70 p-0 sm:p-4" role="dialog" aria-modal="true" aria-label="Guardian settings"><div className="w-full max-w-md rounded-t-xl sm:rounded-xl bg-slate-800 border border-slate-700 p-4 space-y-3"><div className="flex justify-between gap-3"><div><h2 className="text-sm font-medium text-white">Guardian auto-review</h2><p className="mt-1 text-[11px] text-slate-500">OpenAI-compatible chat completions server</p></div><button type="button" onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close Guardian settings">×</button></div><label className="block text-xs text-slate-400">Base URL<input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://localhost:8000/v1" className="mt-1 w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-white font-mono" /></label><label className="block text-xs text-slate-400">Model<input value={model} onChange={(e) => setModel(e.target.value)} placeholder="reviewer-model" className="mt-1 w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-white font-mono" /></label><label className="block text-xs text-slate-400">API key {guardian.hasApiKey && <span className="text-slate-500">· stored</span>}<MaskedSecretInput value={apiKey} onChange={(value) => { setApiKey(value); setClearApiKey(false); }} placeholder={guardian.hasApiKey ? 'Leave blank to keep existing key' : 'Optional'} /></label>{guardian.hasApiKey && <label className="flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={clearApiKey} onChange={(e) => { setClearApiKey(e.target.checked); if (e.target.checked) setApiKey(''); }} />Clear stored API key</label>}<label className="flex items-center justify-between gap-3 rounded bg-slate-700/40 px-3 py-2 text-xs text-slate-300"><span><span className="block">Enable model thinking</span><span className="mt-0.5 block text-[11px] text-slate-500">May improve difficult reviews, but increases latency.</span></span><input type="checkbox" role="switch" aria-label="Enable model thinking" checked={enableThinking} onChange={(e) => setEnableThinking(e.target.checked)} /></label><div className="grid grid-cols-2 gap-3"><label className="block text-xs text-slate-400">Timeout (seconds)<input type="number" min="5" max="300" value={timeoutSeconds} onChange={(e) => setTimeoutSeconds(e.target.value)} className="mt-1 w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-white" /></label><label className="block text-xs text-slate-400">Denials before manual review<input type="number" min="1" max="10" value={maxDenials} onChange={(e) => setMaxDenials(e.target.value)} className="mt-1 w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-white" /></label></div><p className="text-[11px] text-slate-500">Clear both URL and model to disable Guardian. Credentials are stored only on this machine and are never returned to the browser.</p>{error && <p className="text-xs text-red-300">{error}</p>}<button type="button" onClick={() => void save()} disabled={saving || partiallyConfigured} className="w-full py-2 rounded bg-purple-600 hover:bg-purple-500 disabled:bg-slate-600 text-sm text-white">{saving ? 'Saving…' : baseUrl.trim() || model.trim() ? 'Save Guardian settings' : 'Disable Guardian'}</button></div></div>;
+  return <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/70 p-0 sm:p-4" role="dialog" aria-modal="true" aria-label="Guardian settings"><div className="w-full max-w-md rounded-t-xl sm:rounded-xl bg-slate-800 border border-slate-700 p-4 space-y-3"><div className="flex justify-between gap-3"><div><h2 className="text-sm font-medium text-white">Guardian auto-review</h2><p className="mt-1 text-[11px] text-slate-500">OpenAI-compatible chat completions server</p></div><button type="button" onClick={onClose} className="text-slate-400 hover:text-white" aria-label="Close Guardian settings">×</button></div><label className="block text-xs text-slate-400">Base URL<input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://localhost:8000/v1" className="mt-1 w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-white font-mono" /></label><label className="block text-xs text-slate-400">Model<input value={model} onChange={(e) => setModel(e.target.value)} placeholder="reviewer-model" className="mt-1 w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-white font-mono" /></label><label className="block text-xs text-slate-400">API key {guardian.hasApiKey && <span className="text-slate-500">· stored</span>}<MaskedSecretInput value={apiKey} onChange={(value) => { setApiKey(value); setClearApiKey(false); }} placeholder={guardian.hasApiKey ? 'Leave blank to keep existing key' : 'Optional'} /></label>{guardian.hasApiKey && <label className="flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={clearApiKey} onChange={(e) => { setClearApiKey(e.target.checked); if (e.target.checked) setApiKey(''); }} />Clear stored API key</label>}<label className="flex items-center justify-between gap-3 rounded bg-slate-700/40 px-3 py-2 text-xs text-slate-300"><span><span className="block">Enable model thinking</span><span className="mt-0.5 block text-[11px] text-slate-500">May improve difficult reviews, but increases latency.</span></span><input type="checkbox" role="switch" aria-label="Enable model thinking" checked={enableThinking} onChange={(e) => setEnableThinking(e.target.checked)} /></label><div className="grid grid-cols-2 gap-3"><label className="block text-xs text-slate-400">Timeout (seconds)<input type="number" min="5" max="300" value={timeoutSeconds} onChange={(e) => setTimeoutSeconds(e.target.value)} className="mt-1 w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-white" /></label><label className="block text-xs text-slate-400">Denials before manual review<input type="number" min="1" max="10" value={maxDenials} onChange={(e) => setMaxDenials(e.target.value)} className="mt-1 w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded text-white" /></label></div><p className="text-[11px] text-slate-500">Clear both URL and model to disable Guardian. Credentials are stored only on this machine and are never returned to the browser.</p>{testResult && <p className={`text-xs break-all ${testResult.success ? 'text-emerald-300' : 'text-red-300'}`} aria-live="polite">{testResult.success ? `Connected · ${testResult.latencyMs ?? 0}ms` : `Test failed: ${testResult.error ?? 'unknown error'}`}</p>}{error && <p className="text-xs text-red-300">{error}</p>}<div className="flex gap-2">{onTest && <button type="button" onClick={() => void test()} disabled={testing || saving || !baseUrl.trim() || !model.trim()} aria-label="Test Guardian connection" className="px-3 py-2 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-sm text-slate-200">{testing ? 'Testing…' : 'Test'}</button>}<button type="button" onClick={() => void save()} disabled={saving || partiallyConfigured} aria-label="Save Guardian settings" className="flex-1 py-2 rounded bg-purple-600 hover:bg-purple-500 disabled:bg-slate-600 text-sm text-white">{saving ? 'Saving…' : baseUrl.trim() || model.trim() ? 'Save Guardian settings' : 'Disable Guardian'}</button></div></div></div>;
 }
 
 function OpenCodeGroup({ title, count, empty, children, collapsible = false }: { title: string; count: number; empty: string; children: ReactNode; collapsible?: boolean }) {
