@@ -66,6 +66,12 @@ export function normalizePermissionLevelForAgent(
   }
 
   if (agentId === 'opencode' && value === 'auto-review') return 'auto-review';
+  if (agentId === 'opencode' && value === 'bypassPermissions') {
+    // OpenCode's `--yolo` is a hidden alias of `--auto` — there is no
+    // separate bypass state. Legacy sessions persisted under the old
+    // "Bypass" label map onto the auto-approve mode.
+    return 'auto';
+  }
   if (isClaudePermissionMode(value)) return value;
   return defaultPermissionLevelForAgent(agentId);
 }

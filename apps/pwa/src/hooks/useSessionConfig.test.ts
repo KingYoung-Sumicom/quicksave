@@ -46,7 +46,7 @@ function getSessionConfig(sessionId: string | null): Record<string, ConfigValue>
     ?? (((sessionConfig as Record<string, ConfigValue>)['provider']) as string | undefined);
   const sessionAgent = rawSessionAgent ? normalizeAgentId(rawSessionAgent) : undefined;
 
-  return {
+  const merged: Record<string, ConfigValue> = {
     agent: selectedAgent ?? DEFAULT_AGENT,
     model: selectedModel,
     permissionMode: selectedPermissionMode,
@@ -55,6 +55,10 @@ function getSessionConfig(sessionId: string | null): Record<string, ConfigValue>
     ...sessionConfig,
     ...(sessionAgent ? { agent: sessionAgent } : {}),
   };
+  if (merged.agent === 'opencode' && merged.permissionMode === 'bypassPermissions') {
+    merged.permissionMode = 'auto';
+  }
+  return merged;
 }
 
 describe('useSessionConfig (logic)', () => {
@@ -168,6 +172,13 @@ describe('useSessionConfig (logic)', () => {
         sessionConfigs: { 'session-1': { permissionMode: 'bypassPermissions' } },
       });
       expect(getSessionConfig('session-1').permissionMode).toBe('bypassPermissions');
+    });
+
+    it('maps legacy opencode bypassPermissions onto auto (OpenCode yolo is an alias of auto)', () => {
+      useClaudeStore.setState({
+        sessionConfigs: { 'session-1': { agent: 'opencode', permissionMode: 'bypassPermissions' } },
+      });
+      expect(getSessionConfig('session-1').permissionMode).toBe('auto');
     });
 
     it('preserves non-standard session config keys', () => {

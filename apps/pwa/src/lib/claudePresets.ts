@@ -176,11 +176,17 @@ export const CODEX_PERMISSION_MODES = [
   { value: 'full-access', label: 'Full Access' },
 ];
 
+/** OpenCode's native autonomy states. OpenCode has exactly two: `default`
+ *  (permissive defaults; doom_loop / external_directory / .env reads still
+ *  ask) and `--auto` (auto-approve anything not explicitly denied). The
+ *  `--yolo` / `--dangerously-skip-permissions` CLI flags are hidden aliases
+ *  of `--auto`, so "Yolo" IS the auto-approve mode — there is no separate
+ *  bypass. Quicksave's `auto-review` additionally routes boundary asks to
+ *  the guardian reviewer. */
 export const OPENCODE_PERMISSION_MODES = [
   { value: 'default', label: 'Default' },
   { value: 'auto-review', label: 'Auto Review' },
-  { value: 'auto', label: 'Auto-approve' },
-  { value: 'bypassPermissions', label: 'Bypass' },
+  { value: 'auto', label: 'Yolo' },
 ];
 
 /** Claude Code's reasoning levels — values accepted by the Claude CLI's

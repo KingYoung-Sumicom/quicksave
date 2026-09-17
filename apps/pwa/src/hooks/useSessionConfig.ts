@@ -44,7 +44,7 @@ export function useSessionConfig(sessionId: string | null): Record<string, Confi
   const sessionAgent = rawSessionAgent ? normalizeAgentId(rawSessionAgent) : undefined;
 
   // Active session — merge defaults with session-specific overrides
-  return {
+  const merged: Record<string, ConfigValue> = {
     agent: selectedAgent ?? DEFAULT_AGENT,
     model: selectedModel,
     permissionMode: selectedPermissionMode,
@@ -55,4 +55,11 @@ export function useSessionConfig(sessionId: string | null): Record<string, Confi
     ...sessionConfig,
     ...(sessionAgent ? { agent: sessionAgent } : {}),
   };
+  // OpenCode has no separate bypass state — `--yolo` is a hidden alias of
+  // `--auto`. Sessions persisted under the old "Bypass" label keep showing
+  // the matching (Yolo) chip instead of a value with no preset option.
+  if (merged.agent === 'opencode' && merged.permissionMode === 'bypassPermissions') {
+    merged.permissionMode = 'auto';
+  }
+  return merged;
 }

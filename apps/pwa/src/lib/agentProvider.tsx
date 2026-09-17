@@ -747,7 +747,7 @@ class OpenCodeAgentProvider extends BaseAgentProvider {
   };
   readonly features = ['git'] as const;
   readonly defaultModel = '';
-  readonly defaultPermissionMode = 'bypassPermissions';
+  readonly defaultPermissionMode = 'auto';
   readonly defaultReasoningEffort = '';
 
   getModels(dynamic?: AgentDynamicData): ReadonlyArray<Option> {
@@ -765,7 +765,7 @@ class OpenCodeAgentProvider extends BaseAgentProvider {
         key: 'permissionMode',
         label: 'Permission',
         setting: { kind: 'preset', options: OPENCODE_PERMISSION_MODES },
-        default: 'bypassPermissions',
+        default: 'auto',
       },
     ];
   }

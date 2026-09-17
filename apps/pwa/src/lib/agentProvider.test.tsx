@@ -83,7 +83,7 @@ describe('OpenCode agent provider status chips', () => {
 
   it('splits the grouped catalog into provider and model chips', async () => {
     const onChange = vi.fn();
-    const Harness = chipsHarness('opencode', { model: 'anthropic/claude-sonnet', permissionMode: 'bypassPermissions' }, onChange, OPENCODE_DYNAMIC);
+    const Harness = chipsHarness('opencode', { model: 'anthropic/claude-sonnet', permissionMode: 'auto' }, onChange, OPENCODE_DYNAMIC);
 
     await act(async () => {
       root.render(<Harness />);
@@ -97,7 +97,7 @@ describe('OpenCode agent provider status chips', () => {
 
   it('keeps the model dropdown scoped to the selected provider', async () => {
     const onChange = vi.fn();
-    const Harness = chipsHarness('opencode', { model: 'openai/gpt-5', permissionMode: 'bypassPermissions' }, onChange, OPENCODE_DYNAMIC);
+    const Harness = chipsHarness('opencode', { model: 'openai/gpt-5', permissionMode: 'auto' }, onChange, OPENCODE_DYNAMIC);
 
     await act(async () => {
       root.render(<Harness />);
@@ -120,7 +120,7 @@ describe('OpenCode agent provider status chips', () => {
 
   it('switching provider selects that provider’s first model', async () => {
     const onChange = vi.fn();
-    const Harness = chipsHarness('opencode', { model: 'anthropic/claude-sonnet', permissionMode: 'bypassPermissions' }, onChange, OPENCODE_DYNAMIC);
+    const Harness = chipsHarness('opencode', { model: 'anthropic/claude-sonnet', permissionMode: 'auto' }, onChange, OPENCODE_DYNAMIC);
 
     await act(async () => {
       root.render(<Harness />);
@@ -141,7 +141,7 @@ describe('OpenCode agent provider status chips', () => {
 
   it('falls back to the first provider when the selected model is unknown', async () => {
     const onChange = vi.fn();
-    const Harness = chipsHarness('opencode', { model: 'gone/model', permissionMode: 'bypassPermissions' }, onChange, OPENCODE_DYNAMIC);
+    const Harness = chipsHarness('opencode', { model: 'gone/model', permissionMode: 'auto' }, onChange, OPENCODE_DYNAMIC);
 
     await act(async () => {
       root.render(<Harness />);
@@ -159,7 +159,7 @@ describe('OpenCode agent provider status chips', () => {
         { id: 'thor/qwen3.6', name: 'Qwen 3.6', providerId: 'thor', providerName: 'Thor' },
       ],
     };
-    const Harness = chipsHarness('opencode', { model: 'thor/qwen3.8', permissionMode: 'bypassPermissions' }, onChange, dynamic);
+    const Harness = chipsHarness('opencode', { model: 'thor/qwen3.8', permissionMode: 'auto' }, onChange, dynamic);
 
     await act(async () => {
       root.render(<Harness />);
