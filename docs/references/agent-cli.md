@@ -106,11 +106,13 @@ Logs go to the journal: `journalctl --user -u quicksave -f`.
 
 When the unit is enabled, the CLI's `ensureDaemon` path delegates startup to
 `systemctl --user restart quicksave` instead of self-spawning, so crash
-recovery is owned exclusively by systemd's `Restart=on-failure`. The
-hand-rolled detached-spawn path remains as a fallback for hosts where the
-unit isn't installed or where `systemctl --user` returns non-zero (e.g.
-no DBus session). A daemon launched under systemd records `managedBy:
-"systemd"` in `state/service.json` for diagnostic purposes.
+recovery is owned exclusively by systemd's `Restart=on-failure`. Updates use
+the same delegation: a daemon launched by systemd asks `systemctl --user
+restart quicksave.service` to perform the handoff. This is required because a
+detached child remains inside the service cgroup and is killed when systemd
+stops the old daemon. The hand-rolled detached-spawn path remains for
+non-systemd installations. A daemon launched under systemd records
+`managedBy:"systemd"` in `state/service.json` for diagnostic purposes.
 
 Note that `quicksave service stop` exits the daemon cleanly, which systemd
 treats as a successful stop — the unit will not auto-restart until the next

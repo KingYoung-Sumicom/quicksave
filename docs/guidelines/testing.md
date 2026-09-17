@@ -77,6 +77,9 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
      errors, or goes offline. Assert the healthy machine's state and session
      indicators remain unchanged, and distinguish a shared relay disconnect
      from a single-machine disconnect.
+   - Supervisor-owned daemon restarts: when a service is managed by systemd,
+     assert update/restart requests delegate to the unit and never launch a
+     detached child that systemd will reap with the old service cgroup.
    - Put these in a dedicated `edgeCases.test.ts` or alongside the relevant module
 
 3. **Integration tests** — Cross-module flows with real filesystem.

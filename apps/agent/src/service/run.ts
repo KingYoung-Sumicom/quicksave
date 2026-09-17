@@ -12,11 +12,9 @@
  * 6. Run heartbeat loop.
  */
 
-import { basename, join, resolve, dirname } from 'path';
+import { basename, join } from 'path';
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { hostname } from 'os';
-import { fileURLToPath } from 'url';
-import { spawn } from 'child_process';
 
 import { getOrCreateConfig, getManagedRepos, getManagedCodingPaths, addManagedRepo, removeManagedRepo, loadConfig, type AgentConfig } from '../config.js';
 import { AgentConnection } from '../connection/connection.js';
@@ -34,12 +32,12 @@ import {
   acquireLock,
   ensureDirectories,
   getSocketPath,
-  getRunDir,
   getSessionRegistryDir,
   cleanStaleRuntime,
 } from './singleton.js';
 import { writeServiceState, removeServiceState } from './stateStore.js';
 import { wasLaunchedBySystemd } from './systemdUnit.js';
+import { requestDaemonRestart } from './restart.js';
 import { buildCodexContextUsage } from './contextUsage.js';
 import { IPC_VERSION, BUILD_ID, isDebugEnabled, isDev } from './types.js';
 import { PACKAGE_VERSION } from '../version.js';
@@ -206,41 +204,9 @@ export async function runDaemon(): Promise<void> {
   });
   messageHandler.setPushClient(pushClient);
 
-  // Self-restart after update: spawn a detached launcher that
-  // 1. sanity-checks the new binary (--version)
-  // 2. only then kills the old daemon
-  // 3. starts the new daemon
-  // If the sanity check fails, old daemon stays alive untouched.
-  messageHandler.onRestartRequested = () => {
-    console.log('Update complete — spawning upgrade launcher...');
-    const thisFile = fileURLToPath(import.meta.url);
-    const isTs = thisFile.endsWith('.ts');
-    const entryPath = resolve(dirname(thisFile), isTs ? '../index.ts' : '../index.js');
-    const logPath = join(getRunDir(), 'daemon.log');
-    const node = process.execPath;
-    const nf = isTs ? `--import tsx ` : '';
-    const oldPid = process.pid;
-    // Escape single quotes in paths for safe shell interpolation
-    const sq = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-    // Detached shell: verify → kill old → start new.
-    // Sanity check + its `||` fallback must stay in a single array element —
-    // if we split them and `.join(' && ')`, the result becomes `… && || { … }`
-    // which is a shell syntax error and the whole launcher silently aborts.
-    const script = [
-      `sleep 1`,
-      // Sanity-check: if new binary can't even print version, abort
-      `${sq(node)} ${nf}${sq(entryPath)} --version > /dev/null 2>&1 || { echo "[upgrade] new binary failed sanity check, aborting" >> ${sq(logPath)}; exit 1; }`,
-      // New binary works — kill old daemon (graceful shutdown releases lock)
-      `kill ${oldPid}`,
-      // Wait for old daemon to fully exit and release lock
-      `for i in 1 2 3 4 5; do kill -0 ${oldPid} 2>/dev/null || break; sleep 1; done`,
-      // Start new daemon
-      `${sq(node)} ${nf}${sq(entryPath)} service run >> ${sq(logPath)} 2>&1`,
-    ].join(' && ');
-    spawn('sh', ['-c', script], {
-      detached: true, stdio: 'ignore', env: process.env,
-    }).unref();
-  };
+  // Ask the owning supervisor to restart after a successful update. The
+  // helper keeps the detached launcher for non-systemd installations.
+  messageHandler.onRestartRequested = requestDaemonRestart;
 
   // Pub/sub: SessionManager emits card events → send only to peers subscribed to that session
   const sessionManager = messageHandler.getSessionManager();
