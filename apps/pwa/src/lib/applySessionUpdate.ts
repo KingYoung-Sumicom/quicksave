@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import type { AgentId, SessionUpdatePayload } from '@sumicom/quicksave-shared';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 
 function sameStringArray(a?: readonly string[], b?: readonly string[]): boolean {
   if (a === b) return true;
@@ -23,7 +23,7 @@ export function applySessionUpdate(payload: SessionUpdatePayload, machineAgentId
     activeSessionId,
     upsertSession,
     setActiveSession,
-  } = useClaudeStore.getState();
+  } = useSessionStore.getState();
 
   const current = sessions[payload.sessionId];
   const agent: AgentId | undefined = payload.agent ?? current?.agent;

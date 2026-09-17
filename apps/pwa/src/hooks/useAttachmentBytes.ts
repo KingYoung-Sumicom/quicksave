@@ -8,7 +8,7 @@ import type {
 } from '@sumicom/quicksave-shared';
 import { readAttachmentWithCache } from '../lib/attachmentCache';
 import { getBusForAgent } from '../lib/busRegistry';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 
 export type AttachmentBytesState =
   | { status: 'loading' }
@@ -26,7 +26,7 @@ export function useAttachmentBytes(
   sessionId: string | null | undefined,
   attachmentId: string | null | undefined,
 ): AttachmentBytesState {
-  const agentId = useClaudeStore((s) =>
+  const agentId = useSessionStore((s) =>
     sessionId ? (s.sessions[sessionId]?.machineAgentId ?? null) : null,
   );
   const [state, setState] = useState<AttachmentBytesState>({ status: 'loading' });

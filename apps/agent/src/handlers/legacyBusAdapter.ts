@@ -98,6 +98,7 @@ export const LEGACY_BUS_VERBS: MessageType[] = [
   'session:update-history',
   'session:delete-history',
   'session:list-archived',
+  'session:refresh-history',
   'session:mark-read',
   'session:dismiss-pending-mission',
   // project

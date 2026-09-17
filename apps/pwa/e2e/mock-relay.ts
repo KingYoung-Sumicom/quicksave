@@ -24,7 +24,7 @@ import {
 import type {
   Message,
   HandshakeAckPayload,
-  ClaudeSessionSummary,
+  SessionSummary,
   KeyPair,
   BroadcastSessionEntry,
 } from '@sumicom/quicksave-shared';
@@ -69,7 +69,7 @@ export interface MockRelayOptions {
   /** Repository path returned in handshake:ack. */
   repoPath?: string;
   /** Sessions state used by the mock (returned via /sessions/history snap when wired). */
-  sessions?: ClaudeSessionSummary[];
+  sessions?: SessionSummary[];
   /** Cards to return for claude:get-cards. */
   cards?: Card[];
   /** If provided, these card events will be emitted after a session starts. */
@@ -83,7 +83,7 @@ export class MockRelay {
   private agentKeyPair: KeyPair;
   private agentId: string;
   private repoPath: string;
-  private sessions: ClaudeSessionSummary[];
+  private sessions: SessionSummary[];
   private cards: Card[];
   private cardEventsOnStart: CardEvent[];
   private peers: Map<string, PeerState> = new Map();
@@ -493,7 +493,7 @@ export class MockRelay {
     }
   }
 
-  private toHistoryEntry(session: ClaudeSessionSummary): BroadcastSessionEntry {
+  private toHistoryEntry(session: SessionSummary): BroadcastSessionEntry {
     return {
       sessionId: session.sessionId,
       cwd: session.cwd ?? this.repoPath,
@@ -560,7 +560,7 @@ export class MockRelay {
   }
 
   /** Update mock sessions list (returned via /sessions/history snapshot when wired). */
-  setSessions(sessions: ClaudeSessionSummary[]): void {
+  setSessions(sessions: SessionSummary[]): void {
     this.sessions = sessions;
   }
 

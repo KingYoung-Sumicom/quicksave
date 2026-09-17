@@ -9,7 +9,7 @@
  * so a second PWA tab subscribed to the same session sees the prompt in real
  * time. Pre-fix the comment said "PWA already shows an optimistic user card,
  * so we don't emit" — true for the sending tab but leaves other tabs blind.
- * The PWA's claudeStore dedupes by text + recent timestamp so the sending
+ * The PWA's sessionStore dedupes by text + recent timestamp so the sending
  * tab still sees only one card.
  */
 

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { FormattedMessage } from 'react-intl';
 import { useProjects } from '../hooks/useProjects';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 import { useMachineStore } from '../stores/machineStore';
 import { useTerminalStore } from '../stores/terminalStore';
 import { DesktopSideMenuAppBar } from './DesktopSideMenuAppBar';
@@ -34,7 +34,7 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
   const sessionMatch = location.pathname.match(/\/p\/[^/]+\/s\/([^/?]+)/);
   const activeSessionId = sessionMatch?.[1];
 
-  const sessions = useClaudeStore((s) => s.sessions);
+  const sessions = useSessionStore((s) => s.sessions);
   const machines = useMachineStore((s) => s.machines);
   const terminals = useTerminalStore((s) => s.terminals);
   const terminalCount = useMemo(() => Object.keys(terminals).length, [terminals]);

@@ -28,6 +28,7 @@ import {
   type SessionUpdateHistoryResponsePayload,
   type SessionListArchivedRequestPayload,
   type SessionListArchivedResponsePayload,
+  type SessionRefreshHistoryResponsePayload,
   type SessionMarkReadRequestPayload,
   type SessionMarkReadResponsePayload,
   type SessionDismissPendingMissionRequestPayload,
@@ -39,11 +40,12 @@ import {
   type SessionQueueState,
 } from '@sumicom/quicksave-shared';
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 import { selectCodexModelsForAgent, useConnectionStore } from '../stores/connectionStore';
 import { applySessionCardsSnapshot, applySessionCardsUpdate } from '../lib/applySessionCards';
+import { applyHistorySnapshot } from '../lib/applyHistoryEntry';
 import { primeUploadedAttachment } from '../lib/attachmentUploader';
-import { getCodexFastServiceTierId } from '../lib/claudePresets';
+import { getCodexFastServiceTierId } from '../lib/agentPresets';
 
 const QUEUE_PREVIEW_MAX = 80;
 const OPTIMISTIC_QUEUE_MIN_MS = 1500;
@@ -79,7 +81,7 @@ function appendOptimisticQueueState(
 function appendAcknowledgedUserCard(
   prompt: string,
   attachments: AttachmentMetadata[] | undefined,
-  appendCard: ReturnType<typeof useClaudeStore.getState>['appendCard'],
+  appendCard: ReturnType<typeof useSessionStore.getState>['appendCard'],
 ): void {
   const hasContent = prompt.trim().length > 0 || (attachments?.length ?? 0) > 0;
   if (!hasContent) return;
@@ -88,7 +90,7 @@ function appendAcknowledgedUserCard(
   // response reaches this tab. Reuse it when present; otherwise add a local
   // card at the acknowledgement boundary so the message never appears early.
   const attachmentSig = (attachments ?? []).map((a) => a.id).sort().join(',');
-  const alreadyHas = useClaudeStore.getState().cards.some((card) => {
+  const alreadyHas = useSessionStore.getState().cards.some((card) => {
     if (card.type !== 'user' || card.text !== prompt) return false;
     if (Date.now() - card.timestamp >= 5000) return false;
     const cardSig = (card.attachments ?? []).map((a) => a.id).sort().join(',');
@@ -116,7 +118,7 @@ export function shouldAdoptResumeResult(opts: {
   return opts.activeSessionIdAtRequest === null && opts.currentActiveSessionId === null;
 }
 
-export function useClaudeOperations(
+export function useSessionOperations(
   getBus: () => MessageBusClient | null,
 ) {
   // Per-session unsubscribe fns for /sessions/:id/cards bus subscriptions.
@@ -154,7 +156,7 @@ export function useClaudeOperations(
     setAgentPref,
     setSessionConfigKey,
     applySessionConfig,
-  } = useClaudeStore();
+  } = useSessionStore();
 
   // Apply server-pushed preferences. ClaudePreferences is wire-scoped to the
   // claude-code agent (the daemon doesn't know about codex prefs), so write
@@ -198,11 +200,11 @@ export function useClaudeOperations(
         if (!bus) return;
         if (cardsSnapshotBuffersRef.current.has(sessionId)) return;
         // Release any stale subscription for this session before re-subscribing.
-        // ClaudePanel only unsubs through its nav effect / handleNewSession,
+        // SessionPanel only unsubs through its nav effect / handleNewSession,
         // so the ProjectList "+" button (which navigates straight to /add)
         // and direct URL bar navigation leave the previous session's entry
         // in cardsUnsubsRef. After the user creates a new session and comes
-        // back, ClaudePanel.tsx clearCards() wipes the store, calls us, and
+        // back, SessionPanel.tsx clearCards() wipes the store, calls us, and
         // a plain dedup early-return would leave the panel blank — the bus
         // client's lastSnapshot cache only replays on a NEW subscribe call.
         // Releasing first triggers an unsub→sub on the wire so the agent
@@ -261,7 +263,7 @@ export function useClaudeOperations(
       setLoadingHistory(true);
       setHistoryError(null);
       try {
-        const cursor = useClaudeStore.getState().historyCursor;
+        const cursor = useSessionStore.getState().historyCursor;
         const response = await sendCommand<CardHistoryResponse, ClaudeGetMessagesRequestPayload>(
           'claude:get-cards',
           { sessionId, offset, limit, ...(cursor ? { cursor } : {}), ...(cwd ? { cwd } : {}) },
@@ -342,8 +344,8 @@ export function useClaudeOperations(
           }
         }
         setActiveSession(response.sessionId ?? null);
-        // ClaudePanel's urlSessionId effect subscribes via the per-route
-        // useClaudeOperations instance once it mounts at the new URL. We
+        // SessionPanel's urlSessionId effect subscribes via the per-route
+        // useSessionOperations instance once it mounts at the new URL. We
         // intentionally do NOT subscribe here: doing so would register the
         // unsub handle in the top-level hook's `cardsUnsubsRef`, while every
         // later unsubscribe/release-first call runs through the per-route
@@ -364,7 +366,7 @@ export function useClaudeOperations(
 
   const resumeSession = useCallback(
     async (sessionId: string, prompt: string, cwd?: string, opts?: { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean }) => {
-      const state = useClaudeStore.getState();
+      const state = useSessionStore.getState();
       const session = state.sessions[sessionId];
       const activeSessionIdAtRequest = state.activeSessionId;
       const wasAlreadyStreaming = state.isStreaming || session?.isStreaming === true;
@@ -386,7 +388,7 @@ export function useClaudeOperations(
           queueState: appendOptimisticQueueState(session?.queueState, prompt, optimisticUntil),
         });
         window.setTimeout(() => {
-          const latest = useClaudeStore.getState().sessions[sessionId]?.queueState;
+          const latest = useSessionStore.getState().sessions[sessionId]?.queueState;
           if (latest?.optimisticUntil === optimisticUntil) {
             upsertSession({ sessionId, queueState: null });
           }
@@ -431,7 +433,7 @@ export function useClaudeOperations(
           requestedSessionId: sessionId,
           actualSessionId,
           activeSessionIdAtRequest,
-          currentActiveSessionId: useClaudeStore.getState().activeSessionId,
+          currentActiveSessionId: useSessionStore.getState().activeSessionId,
         });
         if (!queueInsteadOfAppend && shouldAppendCard && !isCompactPrompt) {
           appendAcknowledgedUserCard(prompt, opts?.attachmentMetadata, appendCard);
@@ -625,6 +627,19 @@ export function useClaudeOperations(
     [sendCommand],
   );
 
+  const refreshSessionHistory = useCallback(
+    async (machineAgentId: string): Promise<SessionRefreshHistoryResponsePayload> => {
+      const response = await sendCommand<SessionRefreshHistoryResponsePayload>(
+        'session:refresh-history',
+        {},
+        2 * 60 * 1000,
+      );
+      if (response.success) applyHistorySnapshot(response.entries, machineAgentId);
+      return response;
+    },
+    [sendCommand],
+  );
+
   const setPreferences = useCallback(
     (prefs: Partial<ClaudePreferences>) => {
       applyPreferences(prefs); // optimistic
@@ -777,6 +792,7 @@ export function useClaudeOperations(
     markSessionRead,
     dismissPendingMission,
     listArchivedSessions,
+    refreshSessionHistory,
     respondToUserInput,
     setPreferences,
     setSessionPermission,

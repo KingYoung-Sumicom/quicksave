@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { create } from 'zustand';
-import type { AgentId, Card, CardEvent, ClaudeSessionSummary, ConfigValue } from '@sumicom/quicksave-shared';
+import type { AgentId, Card, CardEvent, SessionSummary, ConfigValue } from '@sumicom/quicksave-shared';
 import {
   DEFAULT_AGENT,
   DEFAULT_MODEL,
   DEFAULT_CONTEXT_WINDOW,
 } from '@sumicom/quicksave-shared';
-import { clampContextWindowForModel } from '../lib/claudePresets';
+import { clampContextWindowForModel } from '../lib/agentPresets';
 import { getAgentProvider } from '../lib/agentProvider';
 
 // --- Per-agent session prefs ---
@@ -50,7 +50,7 @@ interface PersistedPrefs {
   /** Opt-in to spending usage credits for 1M context on models that aren't
    *  included in the user's subscription plan (Sonnet 1M today). Default
    *  false so the UI keeps the user away from a "silently eat your money"
-   *  failure mode — see docs in claudePresets.ts. */
+   *  failure mode — see docs in agentPresets.ts. */
   allow1mForBilledModels?: boolean;
   /** Ordered list of provider ids sorted by last chosen (most recent first).
    *  Used to sort the provider picker in the two-level model selector. */
@@ -206,12 +206,12 @@ for (const bucket of Object.values(savedPrefs.agentPrefs)) {
  * multi-agent mode — same `cwd` string can exist on multiple machines, and
  * a bus command for this session must target the owning agent.
  */
-export type StoredSessionSummary = ClaudeSessionSummary & { machineAgentId?: string };
+export type StoredSessionSummary = SessionSummary & { machineAgentId?: string };
 
 /** Sessions keyed by sessionId for O(1) lookup. */
 type SessionMap = Record<string, StoredSessionSummary>;
 
-interface ClaudeStore {
+interface SessionStore {
   // Session list
   sessions: SessionMap;
 
@@ -265,7 +265,7 @@ interface ClaudeStore {
   sessionConfigs: Record<string, Record<string, ConfigValue>>;
 
   // Actions — sessions
-  setSessions: (sessions: ClaudeSessionSummary[]) => void;
+  setSessions: (sessions: SessionSummary[]) => void;
   upsertSession: (session: Partial<StoredSessionSummary> & { sessionId: string }) => void;
   removeSession: (sessionId: string) => void;
   /** Demote any store-locally-active sessions whose ids are missing from
@@ -274,6 +274,9 @@ interface ClaudeStore {
    *  list atomically per agent. Scoped by `machineAgentId` so one agent's
    *  snap doesn't wipe another agent's active sessions. */
   reconcileActiveSessions: (activeSessionIds: Set<string>, machineAgentId: string) => void;
+  /** Replace the historical projection for one machine while preserving
+   * sessions owned by other connected agents. */
+  reconcileHistorySessions: (sessionIds: Set<string>, machineAgentId: string) => void;
   /** Demote active sessions to closed after a transport disconnect. When an
    *  agent id is supplied, leave sessions on other machines untouched. */
   clearActiveOnDisconnect: (machineAgentId?: string) => void;
@@ -337,7 +340,7 @@ interface ClaudeStore {
   reset: () => void;
 }
 
-export const useClaudeStore = create<ClaudeStore>((set, get) => ({
+export const useSessionStore = create<SessionStore>((set, get) => ({
   // Initial state
   sessions: {},
   attendedSessionId: null,
@@ -392,6 +395,17 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
         }
       }
       return { sessions: updated };
+    }),
+  reconcileHistorySessions: (sessionIds, machineAgentId) =>
+    set((state) => {
+      const updated = { ...state.sessions };
+      let changed = false;
+      for (const [id, session] of Object.entries(updated)) {
+        if (session.machineAgentId !== machineAgentId || sessionIds.has(id)) continue;
+        delete updated[id];
+        changed = true;
+      }
+      return changed ? { sessions: updated } : state;
     }),
   clearActiveOnDisconnect: (machineAgentId) =>
     set((state) => {
@@ -717,7 +731,7 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
     })),
   applySessionConfig: (sessionId, config) =>
     set((state) => {
-      const next: Partial<ClaudeStore> = {
+      const next: Partial<SessionStore> = {
         sessionConfigs: {
           ...state.sessionConfigs,
           [sessionId]: { ...state.sessionConfigs[sessionId], ...config },
@@ -791,5 +805,5 @@ export const useClaudeStore = create<ClaudeStore>((set, get) => ({
 
 // Debug: expose store on window for console access
 if (typeof window !== 'undefined') {
-  (window as any).__claudeStore = useClaudeStore;
+  (window as any).__sessionStore = useSessionStore;
 }

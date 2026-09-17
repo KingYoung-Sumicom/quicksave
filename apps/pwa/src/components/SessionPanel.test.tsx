@@ -3,8 +3,8 @@
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useClaudeStore } from '../stores/claudeStore';
-import { ClaudePanel, scrollTopAfterPrepend, shouldReplaceComposerWithVoice } from './ClaudePanel';
+import { useSessionStore } from '../stores/sessionStore';
+import { SessionPanel, scrollTopAfterPrepend, shouldReplaceComposerWithVoice } from './SessionPanel';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -35,13 +35,13 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-describe('ClaudePanel composer acknowledgement', () => {
+describe('SessionPanel composer acknowledgement', () => {
   let container: HTMLDivElement;
   let root: Root;
 
   beforeEach(() => {
     localStorage.clear();
-    useClaudeStore.getState().reset();
+    useSessionStore.getState().reset();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -51,7 +51,7 @@ describe('ClaudePanel composer acknowledgement', () => {
     act(() => root.unmount());
     container.remove();
     localStorage.clear();
-    useClaudeStore.getState().reset();
+    useSessionStore.getState().reset();
     vi.restoreAllMocks();
   });
 
@@ -59,7 +59,7 @@ describe('ClaudePanel composer acknowledgement', () => {
     localStorage.setItem('qs_draft_new', 'message awaiting ack');
     await act(async () => {
       root.render(
-        <ClaudePanel
+        <SessionPanel
           newSession
           agentId="agent-1"
           onGetSessionCards={vi.fn().mockResolvedValue(undefined)}
@@ -90,7 +90,7 @@ describe('ClaudePanel composer acknowledgement', () => {
     // Providers can publish their user-card event before the command response
     // reaches this tab. It must remain hidden until that response is acked.
     await act(async () => {
-      useClaudeStore.getState().appendCard({
+      useSessionStore.getState().appendCard({
         type: 'user',
         id: 'agent-user-card',
         timestamp: Date.now(),
@@ -123,7 +123,7 @@ describe('ClaudePanel composer acknowledgement', () => {
   });
 });
 
-describe('ClaudePanel voice workspace visibility', () => {
+describe('SessionPanel voice workspace visibility', () => {
   it('replaces the composer only while the voice sidebar is active', () => {
     expect(shouldReplaceComposerWithVoice(true, 'voice')).toBe(true);
     expect(shouldReplaceComposerWithVoice(true, null)).toBe(false);
@@ -131,7 +131,7 @@ describe('ClaudePanel voice workspace visibility', () => {
   });
 });
 
-describe('ClaudePanel history scroll restoration', () => {
+describe('SessionPanel history scroll restoration', () => {
   it('keeps the same content visible when prepended cards add height', () => {
     expect(scrollTopAfterPrepend(120, 800, 1100)).toBe(420);
   });

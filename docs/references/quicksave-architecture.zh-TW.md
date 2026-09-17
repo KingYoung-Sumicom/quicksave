@@ -85,9 +85,9 @@ acquireLock()
   → ipcServer.start()                                # 監聽 Unix Socket（IPC）
   → loadConfig()                                     # 讀取 ~/.quicksave/config.json
   → new AgentConnection(...)                         # 建立信令連線
-  → claudeService = new SessionManager(new ClaudeCliProvider())  # 初始化 session 協調層
-  → new MessageHandler(claudeService, ...)          # 初始化路由器
-  → claudeService.on('card-event', ...)             # 串接 AI 事件 → WebSocket push
+  → sessionManager = new SessionManager(new ClaudeCliProvider())  # 初始化 session 協調層
+  → new MessageHandler(sessionManager, ...)          # 初始化路由器
+  → sessionManager.on('card-event', ...)             # 串接 AI 事件 → WebSocket push
   → writeServiceState()                              # 寫入 service.json（ready）
   → heartbeatLoop(30s)                              # 心跳迴圈
 ```
@@ -232,6 +232,7 @@ Codex 手動 compact 是一個不可 steer 的原生 turn。Quicksave 會等到
 
 - `encoded-cwd` 把 `/` 替換成 `-`（對齊 Claude Code `~/.claude/projects/` 慣例）
 - **記憶體只保留 active entries**：archive 後 daemon 記憶體佔用 & `/sessions/history` snapshot 大小只跟「使用中」的 session 數成正比，與歷史總量無關
+- **原生 session 清單快取**：`SessionManager` 會依 cwd 快取 provider 原生清單，並合併同時發生的冷啟動查詢；因此 MessageBus 重新訂閱時不必再次掃描 app server。每台機器設定頁的「重整工作階段清單」會送出 `session:refresh-history`，清除快取、重新掃描並以完整 snapshot 更新 PWA store。專案 allowlist 改變會自動清除快取，封存操作則直接修補快取中的狀態。
 - `upsertEntry(entry)` 依 `entry.archived` 自動路由到正確子樹，並刪掉另一邊的舊檔；`updateEntry()` 能找 memory 或 archived 磁碟上的 entry，翻轉 `archived` flag 時自動搬家
 - `loadAll()` 忽略 `archived/` 子目錄；若在 active 子樹遇到 `archived: true` 的 legacy 檔案會自動搬到 archived 子樹（一次性遷移）
 - 需要讀取 archived metadata（unarchive UI 之類）：`readArchivedEntry(cwd, id)` / `listArchivedEntries(cwd?)` 都 on-demand 讀磁碟
@@ -359,12 +360,12 @@ PWA 與 Agent 之間的所有 request-response、state subscribe、server push �
 **現行 subscribe path：**
 | Path | Snapshot 型別 | Update 型別 | 來源 |
 |---|---|---|---|
-| `/sessions/active` | `SessionUpdatePayload[]` | `SessionUpdatePayload` | `claudeService.snapshotActiveSessions()` + `session-updated` 事件 |
-| `/preferences` | `ClaudePreferences` | `ClaudePreferences` | `claudeService.getPreferences()` + `preferences-updated` 事件 |
-| `/sessions/history` | `SessionRegistryEntry[]` | `SessionHistoryUpdatedPayload` | `sessionRegistry.getEntriesForProject()`（active only；archived 不在此 snapshot）+ `messageHandler.onHistoryUpdated` |
+| `/sessions/active` | `SessionUpdatePayload[]` | `SessionUpdatePayload` | `sessionManager.snapshotActiveSessions()` + `session-updated` 事件 |
+| `/preferences` | `ClaudePreferences` | `ClaudePreferences` | `sessionManager.getPreferences()` + `preferences-updated` 事件 |
+| `/sessions/history` | `BroadcastSessionEntry[]` | `SessionHistoryUpdatedPayload` | `sessionManager.listSessionHistoryEntries().map(enrichEntry)`（registry + 快取的原生 active sessions；不含 archived）+ `messageHandler.onHistoryUpdated` |
 | `/repos/commit-summary` | `CommitSummaryState[]` | `CommitSummaryState` | `commitSummaryStore.snapshot()` + `state-updated` 事件 |
-| `/sessions/config` | `Record<sessionId, Record<key, ConfigValue>>` | `SessionConfigUpdatedPayload` | `claudeService.getAllSessionConfigs()` + `session-config-updated` 事件 |
-| `/sessions/:sessionId/cards` | `CardHistoryResponse`（offset=0、含 pendingInput overlay + title） | `SessionCardsUpdate`（`{ kind: 'card', event }` 或 `{ kind: 'stream-end', result }`） | `claudeService.getCards()` + `card-event` / `card-stream-end` 事件 |
+| `/sessions/config` | `Record<sessionId, Record<key, ConfigValue>>` | `SessionConfigUpdatedPayload` | `sessionManager.getAllSessionConfigs()` + `session-config-updated` 事件 |
+| `/sessions/:sessionId/cards` | `CardHistoryResponse`（offset=0、含 pendingInput overlay + title） | `SessionCardsUpdate`（`{ kind: 'card', event }` 或 `{ kind: 'stream-end', result }`） | `sessionManager.getCards()` + `card-event` / `card-stream-end` 事件 |
 | `/sessions/:sessionId/attention` | `null`（presence-only） | — | PWA 僅在 session 頁面且 tab 可見+獲焦時訂閱；`subscriberCount === 0` 作為 push gate |
 | `/terminals` | `TerminalSummary[]` | `TerminalsUpdate`（`{ kind: 'upsert', terminal }` 或 `{ kind: 'remove', terminalId }`） | `terminalManager.listSummaries()` + `terminals-updated` / `terminal-updated` 事件 |
 | `/terminals/:terminalId/output` | `TerminalOutputSnapshot \| null`（scrollback + seq + size + exit 狀態） | `TerminalOutputChunk`（新一段輸出，monotonic `seq`） | `terminalManager.outputSnapshot()` + PTY `'data'` 事件 |
@@ -452,7 +453,7 @@ CLI：
 ### Request-response 模式（MessageBus command）
 
 ```typescript
-// PWA 端（useClaudeOperations.ts / useGitOperations.ts）
+// PWA 端（useSessionOperations.ts / useGitOperations.ts）
 const result = await busRef.current.command<ResponseType, RequestPayload>(
   'claude:start',
   payload,
@@ -491,13 +492,14 @@ interface Message {
 | `ping`/`pong` | 心跳 |
 | `handshake`/`handshake:ack` | 連線建立 |
 
-### Claude 相關 Message Types
+### Session Message Types（保留舊版 `claude:*` 相容 verb）
 
 PWA↔Agent 的 session / cards / preferences 事件現在都走 MessageBus 的 `/path` 訂閱（見「MessageBus」章節）。下表的「Message type」欄是 `MessageHandler` 內部仍使用的 verb 名稱；對應的 bus 用法在「bus 對應」欄。
 
 | Type | 方向 | bus 對應 | 說明 |
 |---|---|---|---|
 | — | Agent→PWA push | `bus.subscribe('/sessions/history')` | 歷史 sessions 全量 snapshot + 增量更新（取代已移除的 `claude:list-sessions` 命令，避免與 `/sessions/active` 競態） |
+| `session:refresh-history` | PWA→Agent | `bus.command('session:refresh-history', {})` | 清除該機器的原生 session 清單快取、重新掃描 provider，並回傳完整 active-history snapshot |
 | `claude:start` | PWA→Agent | `bus.command('claude:start', …)` | 啟動新 session |
 | `claude:resume` | PWA→Agent | `bus.command('claude:resume', …)` | 繼續 session |
 | `claude:cancel` | PWA→Agent | `bus.command('claude:cancel', …)` | 取消 streaming |
@@ -524,7 +526,7 @@ PWA↔Agent 的 session / cards / preferences 事件現在都走 MessageBus 的 
 
 | 型別 | 路徑（types.ts 行號） |
 |---|---|
-| `ClaudeSessionSummary` | 行 599 |
+| `SessionSummary` | 行 599 |
 | `ClaudeHistoryMessage` | 行 682 |
 | `ClaudeSubagentBlock` | 行 694 |
 | `ClaudeGetMessagesResponsePayload` | 行 704 |
@@ -560,8 +562,8 @@ type CardType =
 ### 狀態管理（Zustand）
 
 ```
-claudeStore.ts
-  sessions: ClaudeSessionSummary[]
+sessionStore.ts
+  sessions: SessionSummary[]
   activeSessionId: string | null
   isStreaming: boolean
   cards: Card[]
@@ -591,7 +593,7 @@ identityStore.ts
 
 詳細 threat model 與 key derivation 見 `docs/guidelines/sync-security.zh-TW.md`。
 
-### Hook API（`useClaudeOperations.ts`）
+### Hook API（`useSessionOperations.ts`）
 
 ```typescript
 // Session 操作
@@ -614,7 +616,7 @@ unsubscribeSession(sessionId)
 
 ```
 App.tsx
-└── ClaudePanel
+└── SessionPanel
     ├── SessionList        # sessions 列表，含 New Session 按鈕
     └── ChatView
         ├── CardRenderer   # 根據 card.type 渲染
@@ -689,7 +691,7 @@ interface DebugResult {
 
 ```
 使用者輸入 prompt
-  ↓ useClaudeOperations.startSession()
+  ↓ useSessionOperations.startSession()
   ↓ bus.command('claude:start', payload, { queueWhileDisconnected: true })
   ↓ bus:frame { kind: 'cmd', verb: 'claude:start' } → [加密] → WebRTC → [解密]
   ↓ busServerTransport → bus.onCommand('claude:start') adapter
@@ -705,10 +707,10 @@ interface DebugResult {
        for await (line of readline(proc.stdout))
          if control_request → handleControlRequest() → emit card → wait user → sendControlResponse()
          else → routeMessage() → StreamCardBuilder → CardEvent → emit('card-event')
-  ↓ claudeService.on('card-event') → bus.publish('/sessions/:id/cards', { kind: 'card', event })
+  ↓ sessionManager.on('card-event') → bus.publish('/sessions/:id/cards', { kind: 'card', event })
   ↓ bus:frame { kind: 'upd', path: '/sessions/.../cards' } → [加密] → WebRTC → [解密]
   ↓ MessageBusClient dispatch → applySessionCardsUpdate(sessionId, update)
-  ↓ claudeStore.handleCardEvent() → React re-render → CardRenderer
+  ↓ sessionStore.handleCardEvent() → React re-render → CardRenderer
   ↓ on 'result': turn complete, process stays alive for next stdin message
 ```
 
@@ -723,7 +725,7 @@ interface DebugResult {
 | MessageBus (RPC + PubSub) | `packages/message-bus` + `busServerTransport` / `busClientTransport` | PWA↔Agent 的 command / subscribe / publish |
 | Snapshot-on-subscribe | `bus.onSubscribe(path, { snapshot })` | 斷線重連自動重放當下 state，消除 stale window |
 | Command adapter | `service/run.ts — LEGACY_BUS_VERBS` | 把每個 verb 包裝成 bus command，delegate 給既有 `messageHandler.handleMessage` |
-| Zustand Store | `claudeStore.ts` / `gitStore.ts` | 集中式 PWA 狀態 |
+| Zustand Store | `sessionStore.ts` / `gitStore.ts` | 集中式 PWA 狀態 |
 | Singleton Lock | `singleton.ts` | 確保單一 daemon |
 | JSONL Append | `sessionStore.ts` | Session 歷史持久化 |
 

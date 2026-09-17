@@ -11,7 +11,7 @@ is the source for that deployment.
 
 - React 18 + TypeScript, Vite 5, Tailwind 3
 - `react-markdown` with GFM, syntax highlighting, and KaTeX math rendering
-- [Zustand](https://zustand-demo.pmnd.rs/) for state (`claudeStore`, `gitStore`, `connectionStore`, `identityStore`)
+- [Zustand](https://zustand-demo.pmnd.rs/) for state (`sessionStore`, `gitStore`, `connectionStore`, `identityStore`)
 - [`@sumicom/quicksave-message-bus`](../../packages/message-bus/README.md) for RPC + subscriptions over the encrypted WebSocket channel
 - [`vite-plugin-pwa`](https://vite-pwa-org.netlify.app/) + custom `sw.ts` (Workbox injectManifest) for offline support and Web Push
 - React Router 7 for navigation
@@ -65,11 +65,11 @@ src/
 ├── App.tsx               # top-level router + auth / pairing gate
 ├── main.tsx              # entry; mounts React (Vite PWA injects SW registration)
 ├── sw.ts                 # service worker (push + offline cache)
-├── components/           # UI components (ClaudePanel, CommitForm, DiffViewer, ...)
+├── components/           # UI components (SessionPanel, CommitForm, DiffViewer, ...)
 │   ├── chat/             # chat cards (UserCard, AssistantTextCard, ToolCallCard, ...)
 │   ├── settings/         # settings pages
 │   └── ui/               # primitives
-├── hooks/                # useClaudeOperations, useGitOperations, useProjects, ...
+├── hooks/                # useSessionOperations, useGitOperations, useProjects, ...
 ├── lib/                  # transport (busClientTransport, websocket), sync, crypto helpers
 └── stores/               # zustand stores
 ```

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 import { useMemo, useState } from 'react';
 import type { Card, SubagentCard } from '@sumicom/quicksave-shared';
-import { useClaudeStore } from '../../stores/claudeStore';
+import { useSessionStore } from '../../stores/sessionStore';
 
 const STATUS_CLASS: Record<SubagentCard['status'], string> = {
   running: 'bg-blue-400',
@@ -66,7 +66,7 @@ export function collectSubagents(cards: readonly Card[]): SubagentCard[] {
 }
 
 export function SubagentsPanel({ embedded = false }: { embedded?: boolean }) {
-  const cards = useClaudeStore((s) => s.cards);
+  const cards = useSessionStore((s) => s.cards);
   const [expanded, setExpanded] = useState<string | null>(null);
   const agents = useMemo(() => collectSubagents(cards), [cards]);
 

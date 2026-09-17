@@ -4,11 +4,11 @@ import { useState, useEffect } from 'react';
 import { FormattedMessage, useIntl } from 'react-intl';
 import { clsx } from 'clsx';
 import type { ContextUsageBreakdown } from '@sumicom/quicksave-shared';
-import { useClaudeStore } from '../../stores/claudeStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import { selectCodexModelsForAgent, useConnectionStore } from '../../stores/connectionStore';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
 import { getAgentProvider } from '../../lib/agentProvider';
-import { normalizeAgentId } from '../../lib/claudePresets';
+import { normalizeAgentId } from '../../lib/agentPresets';
 
 interface ContextUsageBadgeProps {
   sessionId: string;
@@ -64,8 +64,8 @@ function colorFor(name: string): { fill: string; dot: string } {
 
 export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsageBadgeProps) {
   const intl = useIntl();
-  const session = useClaudeStore((s) => s.sessions[sessionId]);
-  const upsertSession = useClaudeStore((s) => s.upsertSession);
+  const session = useSessionStore((s) => s.sessions[sessionId]);
+  const upsertSession = useSessionStore((s) => s.upsertSession);
   const config = useSessionConfig(sessionId);
   const [open, setOpen] = useState(false);
   // Compaction is a slow background op (tens of seconds to minutes). Close the
@@ -76,7 +76,7 @@ export function ContextUsageBadge({ sessionId, onCompact, onClear }: ContextUsag
   const modelFromBreakdown = breakdown?.model;
   const modelFromConfig = config.model as string | undefined;
   const model = modelFromBreakdown ?? modelFromConfig;
-  const sessionMachineAgentId = useClaudeStore((s) => s.sessions[sessionId]?.machineAgentId);
+  const sessionMachineAgentId = useSessionStore((s) => s.sessions[sessionId]?.machineAgentId);
   const codexModels = useConnectionStore((s) => selectCodexModelsForAgent(s, sessionMachineAgentId));
   const agentId = normalizeAgentId((config.agent as string | undefined) ?? 'claude-code');
   const sessionContextWindow = config.contextWindow as number | undefined;

@@ -4,7 +4,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { IntlProvider } from 'react-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useClaudeStore } from '../../stores/claudeStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import { useClaudeAuthStore } from '../../stores/claudeAuthStore';
 import { useCodexLoginStore } from '../../stores/codexLoginStore';
 import { useConnectionStore } from '../../stores/connectionStore';
@@ -19,8 +19,8 @@ describe('NewSessionEmptyState machine-scoped auth gates', () => {
 
   beforeEach(() => {
     localStorage.clear();
-    useClaudeStore.getState().reset();
-    useClaudeStore.getState().setSelectedAgent('codex');
+    useSessionStore.getState().reset();
+    useSessionStore.getState().setSelectedAgent('codex');
     useCodexLoginStore.setState({ byAgent: {} });
     useClaudeAuthStore.setState({ byAgent: {} });
     useConnectionStore.setState({ agentId: 'machine-a', codexModels: [] });
@@ -34,7 +34,7 @@ describe('NewSessionEmptyState machine-scoped auth gates', () => {
     act(() => root.unmount());
     container.remove();
     localStorage.clear();
-    useClaudeStore.getState().reset();
+    useSessionStore.getState().reset();
     useCodexLoginStore.setState({ byAgent: {} });
     useClaudeAuthStore.setState({ byAgent: {} });
   });
@@ -58,7 +58,7 @@ describe('NewSessionEmptyState machine-scoped auth gates', () => {
   });
 
   it('isolates Claude authentication by selected project machine', async () => {
-    useClaudeStore.getState().setSelectedAgent('claude-code');
+    useSessionStore.getState().setSelectedAgent('claude-code');
     useClaudeAuthStore.getState().set('machine-a', { loggedIn: false });
     useClaudeAuthStore.getState().set('machine-b', { loggedIn: true, method: 'claude.ai' });
 
@@ -68,7 +68,7 @@ describe('NewSessionEmptyState machine-scoped auth gates', () => {
   });
 
   it('shows the Claude gate for a signed-out selected project machine', async () => {
-    useClaudeStore.getState().setSelectedAgent('claude-terminal');
+    useSessionStore.getState().setSelectedAgent('claude-terminal');
     useClaudeAuthStore.getState().set('machine-a', { loggedIn: true, method: 'claude.ai' });
     useClaudeAuthStore.getState().set('machine-b', { loggedIn: false });
 
@@ -92,7 +92,7 @@ describe('NewSessionEmptyState machine-scoped auth gates', () => {
   });
 
   it('refreshes the selected machine’s OpenCode model list', async () => {
-    useClaudeStore.getState().setSelectedAgent('opencode');
+    useSessionStore.getState().setSelectedAgent('opencode');
     useConnectionStore.getState().setAgentConnected('machine-b', '/b', false);
     const command = vi.fn().mockResolvedValue({
       availableProviders: [{

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { clsx } from 'clsx';
 import { FormattedMessage, useIntl } from 'react-intl';
-import { useClaudeStore } from '../../stores/claudeStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import { selectCodexModelsForAgent, selectOpenCodeModelsForAgent, useConnectionStore } from '../../stores/connectionStore';
 import { AGENT_TYPES, getAgentProvider } from '../../lib/agentProvider';
 import { ButtonGroup } from '../ui/ButtonGroup';
@@ -31,7 +31,7 @@ export interface NewSessionEmptyStateProps {
 
 export function NewSessionEmptyState({ cwd, agentId, projectSelector }: NewSessionEmptyStateProps) {
   const intl = useIntl();
-  const { selectedAgent, selectedModel, agentPrefs, allow1mForBilledModels, setSelectedAgent, setAgentSetting, lastChosenProviders, recordProviderChoice } = useClaudeStore();
+  const { selectedAgent, selectedModel, agentPrefs, allow1mForBilledModels, setSelectedAgent, setAgentSetting, lastChosenProviders, recordProviderChoice } = useSessionStore();
   const codexModels = useConnectionStore((s) => selectCodexModelsForAgent(s, agentId));
   const opencodeModels = useConnectionStore((s) => selectOpenCodeModelsForAgent(s, agentId));
   const setAgentAvailableProviders = useConnectionStore((s) => s.setAgentAvailableProviders);

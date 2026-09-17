@@ -9,7 +9,7 @@ import { ArchivedSessionsList } from './ArchivedSessionsList';
 import { useMachineStore } from '../stores/machineStore';
 import { resolveProjectCwd } from '../lib/projectId';
 import { getBusForAgent } from '../lib/busRegistry';
-import { useClaudeOperations } from '../hooks/useClaudeOperations';
+import { useSessionOperations } from '../hooks/useSessionOperations';
 
 export function ArchivedSessionsPage() {
   const { agentId, projectId } = useParams<{ agentId: string; projectId: string }>();
@@ -20,7 +20,7 @@ export function ArchivedSessionsPage() {
     (): MessageBusClient | null => (agentId ? getBusForAgent(agentId) : null),
     [agentId],
   );
-  const { listArchivedSessions, restoreSession } = useClaudeOperations(agentBus);
+  const { listArchivedSessions, restoreSession } = useSessionOperations(agentBus);
 
   const cwd = useMemo(() => {
     if (!projectId) return undefined;

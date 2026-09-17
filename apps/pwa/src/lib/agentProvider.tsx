@@ -18,7 +18,7 @@ import {
   codexModelsToOptions,
   getCodexFastServiceTierId,
   type AgentType,
-} from './claudePresets';
+} from './agentPresets';
 import { ButtonGroup } from '../components/ui/ButtonGroup';
 import { ToggleSwitch } from '../components/ui/ToggleSwitch';
 import { clsx } from 'clsx';

@@ -3,7 +3,7 @@
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useClaudeStore } from '../../stores/claudeStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { registerAgentBusGetter } from '../../lib/busRegistry';
 import type { OpenCodeConfigSnapshotResponsePayload } from '@sumicom/quicksave-shared';
@@ -17,7 +17,7 @@ describe('SessionStatusBar OpenCode model chip', () => {
 
   beforeEach(() => {
     localStorage.clear();
-    useClaudeStore.getState().reset();
+    useSessionStore.getState().reset();
     useConnectionStore.setState({
       agentId: 'machine-a',
       codexModels: [],
@@ -34,7 +34,7 @@ describe('SessionStatusBar OpenCode model chip', () => {
     act(() => root.unmount());
     container.remove();
     localStorage.clear();
-    useClaudeStore.getState().reset();
+    useSessionStore.getState().reset();
   });
 
   it('shows the session machine’s OpenCode model even when the flat mirror is stale', async () => {
@@ -55,10 +55,10 @@ describe('SessionStatusBar OpenCode model chip', () => {
     // catalog because machine-a is the active agent.
     expect(useConnectionStore.getState().opencodeModels).toEqual([]);
 
-    const claudeStore = useClaudeStore.getState();
-    claudeStore.upsertSession({ sessionId: 'ses-1', machineAgentId: 'machine-b' });
-    claudeStore.setSessionConfigKey('ses-1', 'agent', 'opencode');
-    claudeStore.setSessionConfigKey('ses-1', 'model', 'thor/qwen3.8');
+    const sessionStore = useSessionStore.getState();
+    sessionStore.upsertSession({ sessionId: 'ses-1', machineAgentId: 'machine-b' });
+    sessionStore.setSessionConfigKey('ses-1', 'agent', 'opencode');
+    sessionStore.setSessionConfigKey('ses-1', 'model', 'thor/qwen3.8');
 
     await act(async () => {
       root.render(<SessionStatusBar sessionId="ses-1" />);
@@ -84,10 +84,10 @@ describe('SessionStatusBar OpenCode model chip', () => {
       ],
     }]);
 
-    const claudeStore = useClaudeStore.getState();
-    claudeStore.upsertSession({ sessionId: 'ses-1', machineAgentId: 'machine-b' });
-    claudeStore.setSessionConfigKey('ses-1', 'agent', 'opencode');
-    claudeStore.setSessionConfigKey('ses-1', 'model', 'thor/qwen3.8');
+    const sessionStore = useSessionStore.getState();
+    sessionStore.upsertSession({ sessionId: 'ses-1', machineAgentId: 'machine-b' });
+    sessionStore.setSessionConfigKey('ses-1', 'agent', 'opencode');
+    sessionStore.setSessionConfigKey('ses-1', 'model', 'thor/qwen3.8');
 
     await act(async () => {
       root.render(<SessionStatusBar sessionId="ses-1" />);
@@ -116,10 +116,10 @@ describe('SessionStatusBar OpenCode model chip', () => {
     // the session lives on machine-b, which has no OpenCode provider.
     expect(useConnectionStore.getState().opencodeModels.length).toBe(1);
 
-    const claudeStore = useClaudeStore.getState();
-    claudeStore.upsertSession({ sessionId: 'ses-1', machineAgentId: 'machine-b' });
-    claudeStore.setSessionConfigKey('ses-1', 'agent', 'opencode');
-    claudeStore.setSessionConfigKey('ses-1', 'model', 'thor/qwen3.8');
+    const sessionStore = useSessionStore.getState();
+    sessionStore.upsertSession({ sessionId: 'ses-1', machineAgentId: 'machine-b' });
+    sessionStore.setSessionConfigKey('ses-1', 'agent', 'opencode');
+    sessionStore.setSessionConfigKey('ses-1', 'model', 'thor/qwen3.8');
 
     await act(async () => {
       root.render(<SessionStatusBar sessionId="ses-1" />);
@@ -151,7 +151,7 @@ describe('SessionStatusBar guardian auto-open', () => {
 
   beforeEach(() => {
     localStorage.clear();
-    useClaudeStore.getState().reset();
+    useSessionStore.getState().reset();
     useConnectionStore.setState({
       agentId: 'machine-a',
       codexModels: [],
@@ -168,7 +168,7 @@ describe('SessionStatusBar guardian auto-open', () => {
     act(() => root.unmount());
     container.remove();
     localStorage.clear();
-    useClaudeStore.getState().reset();
+    useSessionStore.getState().reset();
     registerAgentBusGetter(null as never);
   });
 
@@ -178,11 +178,11 @@ describe('SessionStatusBar guardian auto-open', () => {
       throw new Error(`unexpected command ${type}`);
     });
     registerAgentBusGetter((agentId) => (agentId === 'machine-b' ? ({ command } as never) : null));
-    const claudeStore = useClaudeStore.getState();
-    claudeStore.upsertSession({ sessionId: 'ses-1', machineAgentId: 'machine-b' });
-    claudeStore.setSessionConfigKey('ses-1', 'agent', 'opencode');
-    claudeStore.setSessionConfigKey('ses-1', 'model', 'thor/qwen3.8');
-    claudeStore.setSessionConfigKey('ses-1', 'permissionMode', 'auto');
+    const sessionStore = useSessionStore.getState();
+    sessionStore.upsertSession({ sessionId: 'ses-1', machineAgentId: 'machine-b' });
+    sessionStore.setSessionConfigKey('ses-1', 'agent', 'opencode');
+    sessionStore.setSessionConfigKey('ses-1', 'model', 'thor/qwen3.8');
+    sessionStore.setSessionConfigKey('ses-1', 'permissionMode', 'auto');
     await act(async () => {
       root.render(<SessionStatusBar sessionId="ses-1" />);
     });
@@ -239,10 +239,10 @@ describe('SessionStatusBar guardian auto-open', () => {
   it('does not open the dialog when the machine is unreachable', async () => {
     const command = vi.fn(async (type: string) => { throw new Error('no bus for you'); });
     registerAgentBusGetter(() => ({ command } as never));
-    const claudeStore = useClaudeStore.getState();
-    claudeStore.upsertSession({ sessionId: 'ses-1', machineAgentId: 'machine-b' });
-    claudeStore.setSessionConfigKey('ses-1', 'agent', 'opencode');
-    claudeStore.setSessionConfigKey('ses-1', 'permissionMode', 'auto');
+    const sessionStore = useSessionStore.getState();
+    sessionStore.upsertSession({ sessionId: 'ses-1', machineAgentId: 'machine-b' });
+    sessionStore.setSessionConfigKey('ses-1', 'agent', 'opencode');
+    sessionStore.setSessionConfigKey('ses-1', 'permissionMode', 'auto');
     await act(async () => {
       root.render(<SessionStatusBar sessionId="ses-1" />);
     });

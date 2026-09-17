@@ -13,9 +13,9 @@ import {
   getCodexFastServiceTierId,
   isCodexFastServiceTier,
   getModelContextLimit,
-} from './claudePresets';
+} from './agentPresets';
 
-describe('claudePresets', () => {
+describe('agentPresets', () => {
   describe('normalizeAgentId', () => {
     it('returns codex for "codex"', () => {
       expect(normalizeAgentId('codex')).toBe('codex');

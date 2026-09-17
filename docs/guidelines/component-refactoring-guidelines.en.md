@@ -36,7 +36,7 @@ Split priority is not measured by "how many lines were saved" but by **change bl
 - Generic UI components go under `components/ui/` (already includes `ActionButtons.tsx`, `ButtonGroup.tsx`, `ChevronIcon.tsx`, `ConfirmModal.tsx`, `ErrorBox.tsx`, `Modal.tsx`, `Spinner.tsx`, `ToggleSwitch.tsx`)
 - Custom hooks go under `hooks/` (already includes `useEdgeSwipe`, `useMediaQuery`, `useLongPress`, etc.)
 - Chat-specific reusable components stay under `components/chat/` or `components/chat/toolViews/`
-- Settings sections go under `components/settings/` (already includes `ApiKeySection`, `ClaudeSettingsSection`, `ControlRequestPalette`, `DangerZoneSection`, `LanguageSection`, `MachinesSection`, `NotificationSection`, `PrimaryKeySection`)
+- Settings sections go under `components/settings/` (already includes `ApiKeySection`, `ProviderSettingsSection`, `ControlRequestPalette`, `DangerZoneSection`, `LanguageSection`, `MachinesSection`, `NotificationSection`, `PrimaryKeySection`)
 
 **Why:** Following the existing directory conventions reduces cognitive load. Separating generic UI components from business components makes cross-feature reuse easier.
 
@@ -133,14 +133,14 @@ Split priority is not measured by "how many lines were saved" but by **change bl
 > **Done:**
 > - `components/ui/Spinner.tsx` — currently imported by 24 consumer files across the app (App, routes/JoinGroupPage, MachineInfoPage, ProjectDetail, GitIdentityModal, CommitForm, GitignoreEditor, QRScanner, FloatingActionButton, ScanToJoinModal, MachineCard, ArchivedSessionsList, chat/CodexLogin, Settings, PairDeviceModal, PathBrowser, FileList, AddNewPage, files/FileBrowserPage, files/FilePreviewModal, files/MarkdownPreview, terminal/TerminalListSection, settings/ApiKeySection, settings/NotificationSection). Original `SettingsPanel` consumers migrated into the new `components/settings/*` files when settings became route-based pages.
 > - `components/ui/ErrorBox.tsx` — currently imported by 14 consumers (CommitForm, RepoView, AddMachineModal, ConnectionSetup, DevicePairingSection, Settings, settings/NotificationSection, settings/ApiKeySection, settings/PrimaryKeySection, ScanToJoinModal, PairDeviceModal, GitIdentityModal, AddNewPage, routes/JoinGroupPage).
-> **Not replaced:** SVG spinner (CommitForm, ClaudePanel) and bouncing dots are different patterns and were left as-is.
+> **Not replaced:** SVG spinner (CommitForm, SessionPanel) and bouncing dots are different patterns and were left as-is.
 
 **Pattern:** 10+ components repeat loading spinners, error boxes, and empty states in different ways. There are currently 4+ different spinner styles.
 
 **Loading spinner variants:**
 - SVG spinner: `CommitForm.tsx`
 - Border spinner: `DevicePairingSection.tsx`
-- Bouncing dots: `ClaudePanel.tsx`, `AddMachineModal.tsx`
+- Bouncing dots: `SessionPanel.tsx`, `AddMachineModal.tsx`
 - CSS loading dots: `CommitForm.tsx`
 
 **Error box pattern (duplicated styling):**
@@ -222,7 +222,7 @@ The following components exceed 400 lines and should be broken into smaller subc
 |------|------|----------|--------|
 | `chat/ToolCallMessage.tsx` | 178 | Extract `InlinePermissionActions` into its own file | [done] — extracted to `chat/InlinePermissionActions.tsx`; ToolCallMessage trimmed from 606 → 178 lines |
 | `SettingsPanel.tsx` | — | Split each section into `components/settings/` | [done] — file removed; settings now live as route-based pages (`SettingsPage.tsx` at 136 lines) plus `components/settings/*` sections |
-| `ClaudePanel.tsx` | 638 | Extract a `ChatInputBar` component | Pending — file has grown rather than shrunk |
+| `SessionPanel.tsx` | 638 | Extract a `ChatInputBar` component | Pending — file has grown rather than shrunk |
 | `NavigationDrawer.tsx` | — | Extract `MachineSwitcher` and `SessionList` | [done] — file removed (route-based migration); `chat/SessionList.tsx` now exists at 66 lines |
 | `FileList.tsx` | 370 | Extract `FileTreeNode` and `FileDiffRow` | Partial — under the 400-line threshold but still a split candidate |
 

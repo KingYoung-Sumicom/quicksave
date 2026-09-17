@@ -4,9 +4,9 @@ import { useEffect, useState } from 'react';
 import { useIntl } from 'react-intl';
 import { clsx } from 'clsx';
 import { DEFAULT_KV_CACHE_LIFETIME_MS } from '@sumicom/quicksave-shared';
-import { useClaudeStore } from '../../stores/claudeStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
-import { normalizeAgentId } from '../../lib/claudePresets';
+import { normalizeAgentId } from '../../lib/agentPresets';
 import { ContextUsageBadge, formatTokens } from './ContextUsageBadge';
 
 const OPENAI_PROMPT_CACHE_LIFETIME_MS = 24 * DEFAULT_KV_CACHE_LIFETIME_MS;
@@ -39,7 +39,7 @@ export function SessionStatsBar({
   onClear,
 }: SessionStatsBarProps) {
   const intl = useIntl();
-  const session = useClaudeStore((s) => s.sessions[sessionId]);
+  const session = useSessionStore((s) => s.sessions[sessionId]);
   const config = useSessionConfig(sessionId);
   const agentId = normalizeAgentId((config.agent as string | undefined) ?? 'claude-code');
   const effectiveCacheLifetimeMs = cacheLifetimeMs ?? (

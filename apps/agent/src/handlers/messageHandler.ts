@@ -133,6 +133,7 @@ import {
   SessionDeleteHistoryResponsePayload,
   SessionListArchivedRequestPayload,
   SessionListArchivedResponsePayload,
+  SessionRefreshHistoryResponsePayload,
   SessionMarkReadRequestPayload,
   SessionMarkReadResponsePayload,
   SessionDismissPendingMissionRequestPayload,
@@ -489,8 +490,8 @@ export class MessageHandler {
   /** Per-repo agent-owned commit summary state. The daemon wires the
    *  `state-updated` event to `connection.broadcast` (see service/run.ts). */
   private commitSummaryStore: CommitSummaryStateStore = new CommitSummaryStateStore();
-  private claudeService: SessionManager;
-  /** Voice intermediary ("AI coworker"). Bound to `claudeService` so its tools
+  private sessionManager: SessionManager;
+  /** Voice intermediary ("AI coworker"). Bound to `sessionManager` so its tools
    *  can steer/observe coding sessions; events wired to the bus in `run.ts`. */
   private voiceIntermediary: VoiceIntermediarySupervisor;
   private attachmentStaging: AttachmentStaging = new AttachmentStaging();
@@ -539,14 +540,14 @@ export class MessageHandler {
     this.availableRepos = repos;
     this.defaultRepoPath = repos.length > 0 ? repos[0].path : '';
     this.productionBuild = productionBuild;
-    this.claudeService = options?.sessionManager
+    this.sessionManager = options?.sessionManager
       ?? new SessionManager([
         new ClaudeCodeProvider(),
         new ClaudeTerminalProvider(),
         new CodexAppServerProvider(),
         new OpenCodeProvider(),
       ]);
-    this.voiceIntermediary = new VoiceIntermediarySupervisor(this.claudeService);
+    this.voiceIntermediary = new VoiceIntermediarySupervisor(this.sessionManager);
     this.codexCacheDir = options?.codexCacheDir ?? join(homedir(), '.codex');
 
     // Load explicit coding paths only (repos and coding paths are independent)
@@ -564,7 +565,7 @@ export class MessageHandler {
   }
 
   private syncProjectDirectories(): void {
-    this.claudeService.setProjectDirectories(this.codingPaths.keys());
+    this.sessionManager.setProjectDirectories(this.codingPaths.keys());
   }
 
   /**
@@ -819,7 +820,7 @@ export class MessageHandler {
    * leaves the previous cached snapshot in place. */
   async probeClaudeUsage(sessionId: string): Promise<void> {
     try {
-      const raw = await this.claudeService.getSessionUsage(sessionId);
+      const raw = await this.sessionManager.getSessionUsage(sessionId);
       this.claudeQuotaCache.ingest(raw as ClaudeUsageRawResponse | null);
     } catch {
       // best-effort — leave the previous cached snapshot in place
@@ -927,11 +928,11 @@ export class MessageHandler {
       this.attachmentGcTimer = null;
     }
     await this.voiceIntermediary.close();
-    await this.claudeService.cleanup();
+    await this.sessionManager.cleanup();
   }
 
   getActiveSessionCount(): number {
-    return this.claudeService.getActiveSessionCount();
+    return this.sessionManager.getActiveSessionCount();
   }
 
   /** Exposed so the daemon can wire state-updated events to broadcasts. */
@@ -939,8 +940,8 @@ export class MessageHandler {
     return this.commitSummaryStore;
   }
 
-  getClaudeService(): SessionManager {
-    return this.claudeService;
+  getSessionManager(): SessionManager {
+    return this.sessionManager;
   }
 
   /** Exposed so the daemon can republish voice-agent events on the bus and feed
@@ -1170,6 +1171,8 @@ export class MessageHandler {
           return this.handleDeleteHistory(message as Message<SessionDeleteHistoryRequestPayload>);
         case 'session:list-archived':
           return await this.handleListArchived(message as Message<SessionListArchivedRequestPayload>);
+        case 'session:refresh-history':
+          return await this.handleRefreshHistory(message);
         case 'session:mark-read':
           return this.handleMarkRead(message as Message<SessionMarkReadRequestPayload>);
         case 'session:dismiss-pending-mission':
@@ -1222,14 +1225,14 @@ export class MessageHandler {
     this.checkLatestVersion().catch(() => {});
     this.fetchCodexModels().catch(() => {});
 
-    const availableProviders = await this.claudeService.probeProviders();
+    const availableProviders = await this.sessionManager.probeProviders();
     const response = createMessage<HandshakeAckPayload>('handshake:ack', {
       success: true,
       agentVersion: this.agentVersion,
       repoPath: this.defaultRepoPath,
       availableRepos: this.availableRepos,
       availableCodingPaths: [...this.codingPaths.values()],
-      preferences: this.claudeService.getPreferences(),
+      preferences: this.sessionManager.getPreferences(),
       latestVersion: this.latestVersionCache?.version,
       devBuild: !this.productionBuild || undefined,
       codexModels: this.codexModelsCache?.models,
@@ -2394,7 +2397,7 @@ export class MessageHandler {
   }
 
   private async handleAgentProbe(): Promise<Message<AgentProbePayload>> {
-    const availableProviders = await this.claudeService.probeProviders();
+    const availableProviders = await this.sessionManager.probeProviders();
     return createMessage<AgentProbePayload>(
       'agent:probe:response',
       { availableProviders },
@@ -2866,7 +2869,7 @@ export class MessageHandler {
     }
 
     try {
-      const sessionId = await this.claudeService.startSession({
+      const sessionId = await this.sessionManager.startSession({
         prompt,
         cwd,
         agent: resolvedAgent,
@@ -2894,7 +2897,7 @@ export class MessageHandler {
       });
       const registry = getSessionRegistry();
       const gitBranch = await this.getGitBranchQuiet(cwd);
-      const actualAgent = this.claudeService.getSessionAgent(sessionId, cwd);
+      const actualAgent = this.sessionManager.getSessionAgent(sessionId, cwd);
       registry.upsertEntry({
         sessionId, cwd,
         agent: actualAgent,
@@ -2909,7 +2912,7 @@ export class MessageHandler {
         reasoningEffort,
         serviceTier: validatedServiceTier ?? undefined,
         contextWindow,
-        mcpCorrId: this.claudeService.getSessionMcpCorrId(sessionId),
+        mcpCorrId: this.sessionManager.getSessionMcpCorrId(sessionId),
       });
       this.onHistoryUpdated?.(cwd, registry.getEntry(cwd, sessionId)!, 'upsert');
 
@@ -2938,7 +2941,7 @@ export class MessageHandler {
     const legacyProvider = (message.payload as { provider?: 'claude-cli' | 'claude-sdk' | 'codex-mcp' }).provider;
     const cwd = payloadCwd || this.defaultRepoPath;
     const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
-    const activeCfg = this.claudeService.getSessionConfig(requestedId);
+    const activeCfg = this.sessionManager.getSessionConfig(requestedId);
     console.log(`[agent:resume] session=${requestedId} agent=${resolvedAgent ?? 'stored'} model=${(activeCfg.model as string | undefined) ?? 'default'} cwd=${cwd} prompt=${prompt.slice(0, 80)}${attachmentIds && attachmentIds.length > 0 ? ` [+${attachmentIds.length} attachments]` : ''}`);
 
     let attachments: ReturnType<AttachmentStaging['consume']> | undefined;
@@ -2958,7 +2961,7 @@ export class MessageHandler {
     }
 
     try {
-      const actualSessionId = await this.claudeService.resumeSession({
+      const actualSessionId = await this.sessionManager.resumeSession({
         sessionId: requestedId,
         prompt,
         cwd,
@@ -2984,7 +2987,7 @@ export class MessageHandler {
         ?? registry.readArchivedEntry(cwd, requestedId)
         ?? registry.readArchivedEntry(cwd, actualSessionId);
       const gitBranch = await this.getGitBranchQuiet(cwd);
-      const actualAgent = this.claudeService.getSessionAgent(actualSessionId, cwd);
+      const actualAgent = this.sessionManager.getSessionAgent(actualSessionId, cwd);
       registry.upsertEntry({
         ...(existing ?? { sessionId: actualSessionId, cwd, repoName: basename(cwd), createdAt: Date.now() }),
         sessionId: actualSessionId,
@@ -2992,7 +2995,7 @@ export class MessageHandler {
         archived: false,
         lastAccessedAt: Date.now(),
         gitBranch,
-        mcpCorrId: this.claudeService.getSessionMcpCorrId(actualSessionId) ?? existing?.mcpCorrId,
+        mcpCorrId: this.sessionManager.getSessionMcpCorrId(actualSessionId) ?? existing?.mcpCorrId,
       });
       this.onHistoryUpdated?.(cwd, registry.getEntry(cwd, actualSessionId)!, 'upsert');
 
@@ -3001,7 +3004,7 @@ export class MessageHandler {
         {
           success: true,
           sessionId: actualSessionId,
-          queueState: this.claudeService.buildSessionUpdatePayload(actualSessionId).queueState,
+          queueState: this.sessionManager.buildSessionUpdatePayload(actualSessionId).queueState,
         }
       );
       response.id = message.id;
@@ -3026,7 +3029,7 @@ export class MessageHandler {
     message: Message<ClaudeCancelRequestPayload>
   ): Promise<Message<ClaudeCancelResponsePayload>> {
     const { sessionId } = message.payload;
-    const success = await this.claudeService.cancelSession(sessionId);
+    const success = await this.sessionManager.cancelSession(sessionId);
     if (success) {
       getEventStore().record({ type: 'session_cancelled', sessionId });
     }
@@ -3042,7 +3045,7 @@ export class MessageHandler {
     message: Message<ClaudeInterruptRequestPayload>
   ): Promise<Message<ClaudeInterruptResponsePayload>> {
     const { sessionId } = message.payload;
-    const success = await this.claudeService.interruptSession(sessionId);
+    const success = await this.sessionManager.interruptSession(sessionId);
     const response = createMessage<ClaudeInterruptResponsePayload>(
       'claude:interrupt:response',
       { success, error: success ? undefined : 'Session not found or already ended' }
@@ -3055,7 +3058,7 @@ export class MessageHandler {
     message: Message<ClaudeSteerQueuedRequestPayload>
   ): Promise<Message<ClaudeSteerQueuedResponsePayload>> {
     const { sessionId, interruptCurrentTurn } = message.payload;
-    const success = await this.claudeService.steerQueuedMessage(sessionId, { interruptCurrentTurn });
+    const success = await this.sessionManager.steerQueuedMessage(sessionId, { interruptCurrentTurn });
     const response = createMessage<ClaudeSteerQueuedResponsePayload>(
       'claude:steer-queued:response',
       { success, error: success ? undefined : 'No queued message or active turn to steer' }
@@ -3068,7 +3071,7 @@ export class MessageHandler {
     message: Message<ClaudeDeleteQueuedRequestPayload>
   ): Promise<Message<ClaudeDeleteQueuedResponsePayload>> {
     const { sessionId, queuedId } = message.payload;
-    const success = await this.claudeService.deleteQueuedMessage(sessionId, queuedId);
+    const success = await this.sessionManager.deleteQueuedMessage(sessionId, queuedId);
     const response = createMessage<ClaudeDeleteQueuedResponsePayload>(
       'claude:delete-queued:response',
       { success, error: success ? undefined : 'No matching queued message to delete' }
@@ -3081,7 +3084,7 @@ export class MessageHandler {
     message: Message<ClaudeCloseRequestPayload>
   ): Message<ClaudeCloseResponsePayload> {
     const { sessionId } = message.payload;
-    const success = this.claudeService.closeSession(sessionId);
+    const success = this.sessionManager.closeSession(sessionId);
     console.log(`[agent:close] session=${sessionId} success=${success}`);
     const response = createMessage<ClaudeCloseResponsePayload>(
       'claude:close:response',
@@ -3107,14 +3110,14 @@ export class MessageHandler {
     const { sessionId } = message.payload;
     const registry = getSessionRegistry();
     let native = undefined as NativeSessionSummary | undefined;
-    let cwd = this.claudeService.getSessionCwd(sessionId)
+    let cwd = this.sessionManager.getSessionCwd(sessionId)
       ?? registry.findBySessionId(sessionId)?.cwd;
     if (!cwd) {
-      native = await this.claudeService.findNativeSessionById(sessionId);
+      native = await this.sessionManager.findNativeSessionById(sessionId);
       // Older provider adapters only expose the bulk native-session listing.
       // Use it as a compatibility fallback for a task Quicksave never started.
       if (!native) {
-        native = (await this.claudeService.listNativeSessions())
+        native = (await this.sessionManager.listNativeSessions())
           .find((session) => session.sessionId === sessionId);
       }
       cwd = native?.cwd;
@@ -3124,8 +3127,8 @@ export class MessageHandler {
     let archived = false;
     if (cwd) {
       try {
-        const archiveStorage = await this.claudeService.setSessionArchived(sessionId, cwd, true);
-        const agent = native?.agent ?? this.claudeService.getSessionAgent(sessionId, cwd);
+        const archiveStorage = await this.sessionManager.setSessionArchived(sessionId, cwd, true);
+        const agent = native?.agent ?? this.sessionManager.getSessionAgent(sessionId, cwd);
         const isNativeArchiveProvider = archiveStorage === 'native';
         const updated = registry.updateEntry(cwd, sessionId, isNativeArchiveProvider
           ? { archived: false, nativeArchived: true }
@@ -3168,14 +3171,14 @@ export class MessageHandler {
       }
     }
 
-    const closed = this.claudeService.closeSession(sessionId);
+    const closed = this.sessionManager.closeSession(sessionId);
 
     // closeSession() emits this state transition for a live process. A
     // registry-only session has no process to close, but after a successful
     // archive the PWA still needs the same `archived: true` update to leave
     // its now-defunct session page.
     if (!closed && archived) {
-      this.claudeService.emitSessionUpdate(sessionId);
+      this.sessionManager.emitSessionUpdate(sessionId);
     }
 
     // Drop persisted attachment bytes for this session — fire-and-forget;
@@ -3203,10 +3206,10 @@ export class MessageHandler {
     // On plan approval, update permission level synchronously before resolving
     // so the CLI sees the correct mode for its first tool call after ExitPlanMode.
     if (payload.action === 'allow' && payload.permissionMode) {
-      this.claudeService.setPermissionLevel(payload.sessionId, payload.permissionMode)
+      this.sessionManager.setPermissionLevel(payload.sessionId, payload.permissionMode)
         .catch(err => console.error('[plan-approve] setPermissionLevel failed:', err));
     }
-    const resolved = this.claudeService.resolveUserInput(payload);
+    const resolved = this.sessionManager.resolveUserInput(payload);
     console.log(`[agent:user-input-response] requestId=${payload.requestId} action=${payload.action} resolved=${resolved}`);
     // No dedicated response type — just acknowledge
     const response = createMessage('claude:user-input-response', { success: resolved });
@@ -3221,7 +3224,7 @@ export class MessageHandler {
     const cwd = payloadCwd || this.defaultRepoPath;
 
     try {
-      const result = await this.claudeService.getCards(sessionId, cwd, offset, limit, cursor);
+      const result = await this.sessionManager.getCards(sessionId, cwd, offset, limit, cursor);
       const response = createMessage<CardHistoryResponse>('claude:get-cards:response', result);
       response.id = message.id;
       return response;
@@ -3377,7 +3380,7 @@ export class MessageHandler {
   }
 
   private handleSetPreferences(message: Message<ClaudeSetPreferencesRequestPayload>): Message<ClaudeSetPreferencesResponsePayload> {
-    const applied = this.claudeService.setPreferences(message.payload.preferences);
+    const applied = this.sessionManager.setPreferences(message.payload.preferences);
     const response = createMessage<ClaudeSetPreferencesResponsePayload>(
       'claude:set-preferences:response',
       { success: true, preferences: applied },
@@ -3390,7 +3393,7 @@ export class MessageHandler {
     const { sessionId, permissionMode } = message.payload;
     let success = false;
     try {
-      success = await this.claudeService.setPermissionLevel(sessionId, permissionMode);
+      success = await this.sessionManager.setPermissionLevel(sessionId, permissionMode);
     } catch {
       success = false;
     }
@@ -3411,7 +3414,7 @@ export class MessageHandler {
     // tolerates inactive sessions (returns the registry-stored agent or
     // falls back to the default provider).
     if (key === 'model' && typeof value === 'string') {
-      const agentId = this.claudeService.getSessionAgent(sessionId);
+      const agentId = this.sessionManager.getSessionAgent(sessionId);
       const coerced = this.validateCodexModel(value, agentId);
       if (coerced !== value) {
         console.log(`[agent:set-config] coerced model "${value}" → "${coerced}" for session=${sessionId.slice(0, 8)}`);
@@ -3419,13 +3422,13 @@ export class MessageHandler {
       }
     }
     if (key === 'serviceTier' && (typeof value === 'string' || value === null)) {
-      const sessionConfig = this.claudeService.getSessionConfig(sessionId);
-      const agentId = this.claudeService.getSessionAgent(sessionId);
+      const sessionConfig = this.sessionManager.getSessionConfig(sessionId);
+      const agentId = this.sessionManager.getSessionAgent(sessionId);
       value = this.validateCodexServiceTier(value, sessionConfig.model as string | undefined, agentId) ?? null;
     }
     console.log(`[agent:set-config] session=${sessionId.slice(0, 8)} ${key}=${String(value)}`);
     try {
-      const config = await this.claudeService.setSessionConfig(sessionId, key, value);
+      const config = await this.sessionManager.setSessionConfig(sessionId, key, value);
       const response = createMessage<SessionSetConfigResponsePayload>(
         'session:set-config:response',
         { success: true, sessionId, config },
@@ -3433,7 +3436,7 @@ export class MessageHandler {
       response.id = message.id;
       return response;
     } catch (err) {
-      const config = this.claudeService.getSessionConfig(sessionId);
+      const config = this.sessionManager.getSessionConfig(sessionId);
       const response = createMessage<SessionSetConfigResponsePayload>(
         'session:set-config:response',
         {
@@ -3454,7 +3457,7 @@ export class MessageHandler {
     const { sessionId, subtype, params } = message.payload;
     console.log(`[agent:control-request] session=${sessionId.slice(0, 8)} subtype=${subtype} params=${JSON.stringify(params ?? {})}`);
     try {
-      const result = await this.claudeService.sendControlRequest(sessionId, subtype, params);
+      const result = await this.sessionManager.sendControlRequest(sessionId, subtype, params);
       const response = createMessage<SessionControlRequestResponsePayload>(
         'session:control-request:response',
         { success: true, sessionId, response: result },
@@ -3478,7 +3481,7 @@ export class MessageHandler {
   ): Promise<Message<SessionListSlashCommandsResponsePayload>> {
     const { sessionId, cwd, forceReload } = message.payload;
     try {
-      const commands = await this.claudeService.listSlashCommands(sessionId, { cwd, forceReload });
+      const commands = await this.sessionManager.listSlashCommands(sessionId, { cwd, forceReload });
       const response = createMessage<SessionListSlashCommandsResponsePayload>(
         'session:list-slash-commands:response',
         { success: true, sessionId, commands },
@@ -3507,7 +3510,7 @@ export class MessageHandler {
       ?? registry.readArchivedEntry(cwd, sessionId);
     let native: NativeSessionSummary | undefined;
     if (!existing && updates.archived === false) {
-      native = await this.claudeService.findNativeSession(cwd, sessionId);
+      native = await this.sessionManager.findNativeSession(cwd, sessionId);
     }
 
     // Commit the provider-native state first. A native-only, already-active
@@ -3516,7 +3519,7 @@ export class MessageHandler {
       const nativeAlreadyMatches = native?.archived === updates.archived;
       try {
         if (!nativeAlreadyMatches) {
-          await this.claudeService.setSessionArchived(sessionId, cwd, updates.archived);
+          await this.sessionManager.setSessionArchived(sessionId, cwd, updates.archived);
         }
       } catch (error) {
         const response = createMessage<SessionUpdateHistoryResponsePayload>(
@@ -3580,7 +3583,7 @@ export class MessageHandler {
     const safeOffset = Math.max(0, offset | 0);
     const safeLimit = Math.max(0, limit | 0);
     const registry = getSessionRegistry();
-    for (const entry of await this.claudeService.reconcileNativeArchiveStatuses(cwd)) {
+    for (const entry of await this.sessionManager.reconcileNativeArchiveStatuses(cwd)) {
       this.onHistoryUpdated?.(cwd, entry, entry.nativeArchived ? 'delete' : 'upsert');
     }
     const byKey = new Map<string, BroadcastSessionEntry>();
@@ -3594,7 +3597,7 @@ export class MessageHandler {
       byKey.set(this.sessionEntryKey(enriched.cwd, enriched.sessionId), enriched);
     }
 
-    const nativeSessions = await this.claudeService.listNativeSessions(cwd);
+    const nativeSessions = await this.sessionManager.listNativeSessions(cwd);
     for (const native of nativeSessions) {
       if (!native.archived) continue;
       const key = this.sessionEntryKey(native.cwd, native.sessionId);
@@ -3621,6 +3624,33 @@ export class MessageHandler {
     );
     response.id = message.id;
     return response;
+  }
+
+  private async handleRefreshHistory(
+    message: Message,
+  ): Promise<Message<SessionRefreshHistoryResponsePayload>> {
+    try {
+      const entries = (await this.sessionManager.refreshSessionHistoryEntries())
+        .filter((entry) => this.isManagedCodingPath(entry.cwd))
+        .map(enrichEntry);
+      const response = createMessage<SessionRefreshHistoryResponsePayload>(
+        'session:refresh-history:response',
+        { success: true, entries },
+      );
+      response.id = message.id;
+      return response;
+    } catch (error) {
+      const response = createMessage<SessionRefreshHistoryResponsePayload>(
+        'session:refresh-history:response',
+        {
+          success: false,
+          entries: [],
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      response.id = message.id;
+      return response;
+    }
   }
 
   private nativeSessionToRegistryEntry(native: NativeSessionSummary, archived: boolean): SessionRegistryEntry {
@@ -3695,7 +3725,7 @@ export class MessageHandler {
       // read state immediately. /sessions/active is also re-emitted via
       // sessionManager so the live-stats path stays consistent.
       this.onHistoryUpdated?.(cwd, entry, 'upsert');
-      this.claudeService.emitSessionUpdate(sessionId);
+      this.sessionManager.emitSessionUpdate(sessionId);
     }
     const response = createMessage<SessionMarkReadResponsePayload>(
       'session:mark-read:response',
@@ -3727,7 +3757,7 @@ export class MessageHandler {
     const updated = getSessionRegistry().updateEntry(cwd, sessionId, { pendingMission });
     const entry = updated ?? { ...existing, pendingMission };
     this.onHistoryUpdated?.(cwd, entry, 'upsert');
-    this.claudeService.emitSessionUpdate(sessionId);
+    this.sessionManager.emitSessionUpdate(sessionId);
 
     const response = createMessage<SessionDismissPendingMissionResponsePayload>(
       'session:dismiss-pending-mission:response',
@@ -3754,7 +3784,7 @@ export class MessageHandler {
     }
 
     // Build active session set from session manager
-    const activeSessions = this.claudeService.getActiveSessions();
+    const activeSessions = this.sessionManager.getActiveSessions();
     const activeCwds = new Set<string>();
     for (const s of activeSessions) {
       activeCwds.add(s.cwd);
@@ -3915,16 +3945,16 @@ export class MessageHandler {
     const { cwd } = message.payload;
     const registry = getSessionRegistry();
 
-    const liveHere = this.claudeService.getActiveSessions().filter((s) => s.cwd === cwd);
+    const liveHere = this.sessionManager.getActiveSessions().filter((s) => s.cwd === cwd);
     for (const s of liveHere) {
-      this.claudeService.closeSession(s.sessionId);
+      this.sessionManager.closeSession(s.sessionId);
     }
 
     const active = registry.getEntriesForProject(cwd);
     let archivedCount = 0;
     for (const entry of active) {
       try {
-        await this.claudeService.setSessionArchived(entry.sessionId, cwd, true);
+        await this.sessionManager.setSessionArchived(entry.sessionId, cwd, true);
       } catch (error) {
         console.error(`[project:delete] native archive failed session=${entry.sessionId}:`, error);
         continue;

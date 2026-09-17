@@ -52,7 +52,7 @@ entire app is stuck on the launch screen.
 
 ### No vertical scrolling inside chat view elements
 
-Inside the chat view (`apps/pwa/src/components/ClaudePanel.tsx`), only the top-level messages container (`chatContainerRef`, the `flex-1 overflow-y-auto … overscroll-contain` wrapper) and the input-row textarea/slash-command popover may have vertical scroll. No element inside the messages list itself (subagent blocks, tool results, plan views, etc.) may have vertical scroll.
+Inside the chat view (`apps/pwa/src/components/SessionPanel.tsx`), only the top-level messages container (`chatContainerRef`, the `flex-1 overflow-y-auto … overscroll-contain` wrapper) and the input-row textarea/slash-command popover may have vertical scroll. No element inside the messages list itself (subagent blocks, tool results, plan views, etc.) may have vertical scroll.
 
 **Why:** On touch devices, a scroll gesture that starts inside a nested scrollable element is captured by that element and does not bubble up to the messages list. This breaks the expected scroll behavior from the user's perspective.
 
@@ -100,7 +100,7 @@ if (e.key === 'Enter' && !e.nativeEvent.isComposing) { submit(); }
 
 **Why:** CJK input methods (Chinese, Japanese, Korean) use Enter to confirm a character during composition. Without the guard, pressing Enter to pick a candidate character fires the submit action prematurely, making the input unusable for CJK users.
 
-**How to apply:** Search for `e.key === 'Enter'` across the PWA and verify every occurrence includes `!e.nativeEvent.isComposing`. The main chat textarea in `apps/pwa/src/components/ClaudePanel.tsx` already does this correctly — follow the same pattern everywhere else.
+**How to apply:** Search for `e.key === 'Enter'` across the PWA and verify every occurrence includes `!e.nativeEvent.isComposing`. The main chat textarea in `apps/pwa/src/components/SessionPanel.tsx` already does this correctly — follow the same pattern everywhere else.
 
 ---
 

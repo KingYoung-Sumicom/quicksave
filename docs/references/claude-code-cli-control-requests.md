@@ -256,7 +256,7 @@ async getUsage(): Promise<ClaudeUsageSnapshot | null> {
 
 ## `list_models` — model catalog
 
-Description string: "Requests the worker's selectable model catalog. Fulfills the caps.modelCatalog capability: in a remote thin-client session the worker's provider, settings cascade, and enforcement policy decide which models the session can run, so the thin client must ask rather than read its own getModelOptions()." Built for `--remote` mode, but the local handler answers it too (`{models: Ygt(y1t())}` in the v2.1.241 source), so a locally-spawned CLI can be asked for its live catalog instead of us hand-maintaining `CLAUDE_MODELS` in `packages/shared/src/types.ts` / `apps/pwa/src/lib/claudePresets.ts`.
+Description string: "Requests the worker's selectable model catalog. Fulfills the caps.modelCatalog capability: in a remote thin-client session the worker's provider, settings cascade, and enforcement policy decide which models the session can run, so the thin client must ask rather than read its own getModelOptions()." Built for `--remote` mode, but the local handler answers it too (`{models: Ygt(y1t())}` in the v2.1.241 source), so a locally-spawned CLI can be asked for its live catalog instead of us hand-maintaining `CLAUDE_MODELS` in `packages/shared/src/types.ts` / `apps/pwa/src/lib/agentPresets.ts`.
 
 `ModelInfo` shape (schema var `gQo`):
 

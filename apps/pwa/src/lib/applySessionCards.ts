@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import type { CardHistoryResponse, SessionCardsUpdate } from '@sumicom/quicksave-shared';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 
 /**
  * Apply a `/sessions/:sessionId/cards` snapshot: replaces the current card
  * list with the initial page and reconciles history metadata + title.
  */
 export function applySessionCardsSnapshot(sessionId: string, snap: CardHistoryResponse): void {
-  const { activeSessionId, setCards, setHistoryMeta, applySessionConfig } = useClaudeStore.getState();
+  const { activeSessionId, setCards, setHistoryMeta, applySessionConfig } = useSessionStore.getState();
   if (sessionId !== activeSessionId) return;
   setCards(snap.cards);
   setHistoryMeta(snap.total, snap.hasMore, snap.nextCursor);
@@ -28,7 +28,7 @@ export function applySessionCardsSnapshot(sessionId: string, snap: CardHistoryRe
  * {@link applySessionUpdate}, which carry the agent's authoritative view.
  */
 export function applySessionCardsUpdate(sessionId: string, update: SessionCardsUpdate): void {
-  const state = useClaudeStore.getState();
+  const state = useSessionStore.getState();
   if (sessionId !== state.activeSessionId && !(state.isStreaming && !state.activeSessionId)) {
     return;
   }

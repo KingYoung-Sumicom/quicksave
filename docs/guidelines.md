@@ -44,7 +44,7 @@ Before designing or implementing any feature, check the relevant guidelines belo
 - File organization (`ui/`, `hooks/`, `chat/`)
 - High priority: Collapsible, Modal, useLongPress, loading-state components
 - Medium priority: FormField, StatusBadge, IconButton, ToolViewHeader
-- Large-component split targets (ToolCallMessage, SettingsPanel, ClaudePanel, NavigationDrawer, FileList)
+- Large-component split targets (ToolCallMessage, SettingsPanel, SessionPanel, NavigationDrawer, FileList)
 
 **Maintenance rule**: after completing a split, update the guideline doc to mark it done and record the actual file paths.
 

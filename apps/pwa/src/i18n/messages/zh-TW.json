@@ -73,6 +73,10 @@
   "machineInfo.projects.empty": "這台機器還沒有專案。",
   "machineInfo.projects.sessionCount": "{count} 個任務",
   "machineInfo.projects.archivedCount": "{count} 個封存",
+  "machineInfo.sessions.title": "工作階段紀錄",
+  "machineInfo.sessions.description": "重新連線會使用 agent 的記憶體內工作階段清單。若從 Quicksave 外部變更工作階段，請手動重整。",
+  "machineInfo.sessions.refresh": "重整工作階段清單",
+  "machineInfo.sessions.refreshSuccess": "工作階段清單已重整。",
 
   "settings.notifications.title": "通知",
   "settings.notifications.description": "當有任務需要你處理時提醒你。",

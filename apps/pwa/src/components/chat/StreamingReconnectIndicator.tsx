@@ -14,7 +14,7 @@ import { retryWsReconnect } from '../../lib/wsRetryRegistry';
  *     that kicks off a fresh round of auto-reconnect attempts. This is the
  *     only path that takes a deliberate user click — we never preemptively
  *     close a healthy socket from the UI.
- *   - **Connected and agent online**: render nothing; caller (ClaudePanel)
+ *   - **Connected and agent online**: render nothing; caller (SessionPanel)
  *     falls back to the regular bounce-dots indicator.
  */
 export function StreamingReconnectIndicator({ agentId }: { agentId: string }) {

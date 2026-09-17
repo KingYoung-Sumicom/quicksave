@@ -356,6 +356,27 @@ describe('SessionManager', () => {
       ]);
     });
 
+    it('reuses native listings until an explicit history refresh', async () => {
+      const opencodeProvider = {
+        ...createMockProvider('opencode', 'opencode-thread'),
+        listNativeSessions: vi.fn().mockResolvedValue([{
+          sessionId: 'cached-native', cwd: '/repo', agent: 'opencode', archived: false,
+          createdAt: 10, lastInteractionAt: 20,
+        }]),
+      };
+      const mgr = new SessionManager([opencodeProvider], 'opencode' as any);
+      mgr.setProjectDirectories(['/repo']);
+      (getSessionRegistry().getEntriesForProject as Mock).mockReturnValue([]);
+      (getSessionRegistry().listArchivedEntries as Mock).mockReturnValue([]);
+
+      await mgr.listSessionHistoryEntries('/repo');
+      await mgr.listSessionHistoryEntries('/repo');
+      expect(opencodeProvider.listNativeSessions).toHaveBeenCalledTimes(1);
+
+      await mgr.refreshSessionHistoryEntries('/repo');
+      expect(opencodeProvider.listNativeSessions).toHaveBeenCalledTimes(2);
+    });
+
     it('includes an untracked native OpenCode session while preserving registry metadata when present', async () => {
       const opencodeProvider = {
         ...createMockProvider('opencode', 'opencode-thread'),

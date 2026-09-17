@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 import { clsx } from 'clsx';
 import { FormattedMessage } from 'react-intl';
-import type { ClaudeSessionSummary } from '@sumicom/quicksave-shared';
+import type { SessionSummary } from '@sumicom/quicksave-shared';
 
 export type SessionStatusKey = 'thinking' | 'compacting' | 'pending' | 'waiting' | 'unread' | 'standby' | 'closed';
 
@@ -37,7 +37,7 @@ export const SESSION_STATUS = {
  * session that ended with output you never saw still wants the cue, even
  * if its CLI process is gone.
  */
-export function isSessionUnread(session: Pick<ClaudeSessionSummary, 'lastReadAt' | 'lastTurnEndedAt' | 'lastUnreadTurnEndedAt'>): boolean {
+export function isSessionUnread(session: Pick<SessionSummary, 'lastReadAt' | 'lastTurnEndedAt' | 'lastUnreadTurnEndedAt'>): boolean {
   const lastReadAt = session.lastReadAt;
   if (typeof lastReadAt !== 'number') return false;
   // Older agents omit the dedicated field, so retain lastTurnEndedAt as a
@@ -63,7 +63,7 @@ export function isSessionUnread(session: Pick<ClaudeSessionSummary, 'lastReadAt'
  *   5. `closed`     — process is gone, follow-up needs cold-resume.
  *   6. `standby`    — idle, alive, all read.
  */
-export function sessionStatusKey(session: ClaudeSessionSummary): SessionStatusKey {
+export function sessionStatusKey(session: SessionSummary): SessionStatusKey {
   if (session.hasPendingInput) return 'pending';
   if (session.isCompacting) return 'compacting';
   if (session.isStreaming) return 'thinking';

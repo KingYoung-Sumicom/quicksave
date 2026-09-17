@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import type { ReactNode } from 'react';
-import { useClaudeStore } from '../../stores/claudeStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import { useFilePreviewStore } from '../../stores/filePreviewStore';
 
 interface FilePathLinkProps {
@@ -37,11 +37,11 @@ const DEFAULT_LOOK = 'inline-block align-baseline text-blue-400 hover:text-blue-
  * Read/Write/Edit tool headers or authored Markdown file links.
  */
 export function FilePathLink({ path, children, className, title }: FilePathLinkProps) {
-  const cwd = useClaudeStore((s) => {
+  const cwd = useSessionStore((s) => {
     const id = s.activeSessionId;
     return id ? s.sessions[id]?.cwd ?? '' : '';
   });
-  const agentId = useClaudeStore((s) => {
+  const agentId = useSessionStore((s) => {
     const id = s.activeSessionId;
     return id ? s.sessions[id]?.machineAgentId ?? '' : '';
   });

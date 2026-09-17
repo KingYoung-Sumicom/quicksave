@@ -12,7 +12,7 @@ import type {
   AgentProviderInfo,
 
   Attachment,
-  ClaudeSessionSummary,
+  SessionSummary,
   ClaudeUserInputRequestPayload,
   ClaudeUserInputResponsePayload,
   ClaudePreferences,
@@ -389,6 +389,12 @@ export class SessionManager extends EventEmitter {
   /** Native session identity cache populated by discovery and single-id lookups.
    * It is intentionally runtime-only: providers remain the source of truth. */
   private nativeSessions: Map<string, NativeSessionSummary> = new Map();
+  /** Completed provider listings keyed by cwd (or the global managed-path
+   * scope). Reconnect snapshots reuse these until the user explicitly
+   * refreshes, avoiding repeated app-server scans for unchanged history. */
+  private nativeSessionLists: Map<string, NativeSessionSummary[]> = new Map();
+  /** Coalesce concurrent subscribers that request the same cold listing. */
+  private nativeSessionListInFlight: Map<string, Promise<NativeSessionSummary[]>> = new Map();
   private codexHistoryCache = new Map<string, { expiresAt: number; result: CardHistoryResponse }>();
 
   /** Guards against concurrent cold resumes. Queues prompts arriving while a spawn is in flight. */
@@ -407,6 +413,25 @@ export class SessionManager extends EventEmitter {
 
   setProjectDirectories(directories: Iterable<string>): void {
     this.projectDirectories = new Set(directories);
+    this.clearNativeSessionListCache();
+  }
+
+  private nativeSessionListKey(cwd?: string): string {
+    return cwd ?? '\u0000all-managed-projects';
+  }
+
+  private clearNativeSessionListCache(cwd?: string): void {
+    if (cwd === undefined) {
+      this.nativeSessionLists.clear();
+      this.nativeSessionListInFlight.clear();
+      return;
+    }
+    const key = this.nativeSessionListKey(cwd);
+    this.nativeSessionLists.delete(key);
+    this.nativeSessionListInFlight.delete(key);
+    // A project-scoped mutation also makes the global projection stale.
+    this.nativeSessionLists.delete(this.nativeSessionListKey());
+    this.nativeSessionListInFlight.delete(this.nativeSessionListKey());
   }
 
   private getProvider(agentId?: AgentId): CodingAgentProvider {
@@ -1491,7 +1516,34 @@ export class SessionManager extends EventEmitter {
     return this.sessions.get(sessionId)?.cardBuilder ?? null;
   }
 
-  async listNativeSessions(cwd?: string): Promise<NativeSessionSummary[]> {
+  async listNativeSessions(
+    cwd?: string,
+    opts?: { forceRefresh?: boolean },
+  ): Promise<NativeSessionSummary[]> {
+    const cacheKey = this.nativeSessionListKey(cwd);
+    if (!opts?.forceRefresh) {
+      const cached = this.nativeSessionLists.get(cacheKey);
+      if (cached) return cached;
+      const inFlight = this.nativeSessionListInFlight.get(cacheKey);
+      if (inFlight) return inFlight;
+    }
+
+    const listing = this.fetchNativeSessions(cwd);
+    this.nativeSessionListInFlight.set(cacheKey, listing);
+    try {
+      const sessions = await listing;
+      if (this.nativeSessionListInFlight.get(cacheKey) === listing) {
+        this.nativeSessionLists.set(cacheKey, sessions);
+      }
+      return sessions;
+    } finally {
+      if (this.nativeSessionListInFlight.get(cacheKey) === listing) {
+        this.nativeSessionListInFlight.delete(cacheKey);
+      }
+    }
+  }
+
+  private async fetchNativeSessions(cwd?: string): Promise<NativeSessionSummary[]> {
     const results: NativeSessionSummary[] = [];
     const projectDirectories = this.projectDirectories;
     // A global history snapshot should not make native providers enumerate
@@ -1517,6 +1569,12 @@ export class SessionManager extends EventEmitter {
       }
     }
     return results.sort((a, b) => b.lastInteractionAt - a.lastInteractionAt);
+  }
+
+  /** Drop provider-list caches and rebuild the merged history projection. */
+  async refreshSessionHistoryEntries(cwd?: string): Promise<SessionRegistryEntry[]> {
+    this.clearNativeSessionListCache(cwd);
+    return this.listSessionHistoryEntries(cwd);
   }
 
   async findNativeSession(cwd: string, sessionId: string): Promise<NativeSessionSummary | undefined> {
@@ -1574,6 +1632,7 @@ export class SessionManager extends EventEmitter {
     const activeSession = this.sessions.get(sessionId);
     if (activeSession?.agentId === agentId && activeSession.providerSession?.setArchived) {
       await activeSession.providerSession.setArchived(archived);
+      this.patchNativeSessionArchiveState(sessionId, archived);
       return 'native';
     }
     const operation = archived ? provider.archiveSession : provider.unarchiveSession;
@@ -1581,8 +1640,22 @@ export class SessionManager extends EventEmitter {
       throw new Error(`Provider ${provider.id} advertises native archive storage without an archive operation`);
     }
     await operation.call(provider, sessionId, { cwd });
-    if (native) this.nativeSessions.set(sessionId, { ...native, archived });
+    this.patchNativeSessionArchiveState(sessionId, archived);
     return 'native';
+  }
+
+  private patchNativeSessionArchiveState(sessionId: string, archived: boolean): void {
+    const native = this.nativeSessions.get(sessionId);
+    if (native) this.nativeSessions.set(sessionId, { ...native, archived });
+    for (const [key, sessions] of this.nativeSessionLists) {
+      let changed = false;
+      const next = sessions.map((session) => {
+        if (session.sessionId !== sessionId) return session;
+        changed = true;
+        return { ...session, archived };
+      });
+      if (changed) this.nativeSessionLists.set(key, next);
+    }
   }
 
   /**
@@ -1664,7 +1737,7 @@ export class SessionManager extends EventEmitter {
     return Array.from(byKey.values()).sort((a, b) => b.lastAccessedAt - a.lastAccessedAt);
   }
 
-  async listAvailableSessions(cwd: string): Promise<ClaudeSessionSummary[]> {
+  async listAvailableSessions(cwd: string): Promise<SessionSummary[]> {
     const registryEntries = await this.listSessionHistoryEntries(cwd);
 
     const pendingSessionIds = new Set(
@@ -1708,7 +1781,7 @@ export class SessionManager extends EventEmitter {
         lastTurnInputTokens: lastTurn?.inputTokens,
         lastTurnCacheCreationTokens: lastTurn?.cacheCreationTokens,
         lastTurnCacheReadTokens: lastTurn?.cacheReadTokens,
-        lastTurnContextUsage: normalizeStoredContextUsage(lastTurn?.contextUsage) as ClaudeSessionSummary['lastTurnContextUsage'],
+        lastTurnContextUsage: normalizeStoredContextUsage(lastTurn?.contextUsage) as SessionSummary['lastTurnContextUsage'],
         lastReadAt: entry.lastReadAt,
         pendingMission: entry.pendingMission,
       };
@@ -2424,7 +2497,7 @@ export class SessionManager extends EventEmitter {
       pendingMission: registryEntry?.pendingMission,
       // Surface the PTY terminal id when this provider owns one. Only the
       // claude-terminal provider populates it today. The PWA mirrors it onto
-      // ClaudeSessionSummary so the session view can render a TerminalView
+      // SessionSummary so the session view can render a TerminalView
       // alongside the structured card stream.
       terminalId: ps?.providerSession?.terminalId ?? undefined,
     };

@@ -15,6 +15,7 @@ import type {
   SystemdStatusResponsePayload,
   SystemdInstallResponsePayload,
   SystemdUninstallResponsePayload,
+  SessionRefreshHistoryResponsePayload,
 } from '@sumicom/quicksave-shared';
 
 interface MachineInfoPageProps {
@@ -24,6 +25,7 @@ interface MachineInfoPageProps {
   onUpdateCodex?: () => Promise<{ success: boolean; previousVersion: string; newVersion?: string; error?: string }>;
   onRestartAgent?: () => Promise<{ success: boolean; error?: string }>;
   onDeleteProject?: (cwd: string) => Promise<ProjectDeleteResponsePayload | null>;
+  onRefreshSessions?: () => Promise<SessionRefreshHistoryResponsePayload>;
   onGetSystemdStatus?: () => Promise<SystemdStatusResponsePayload>;
   onInstallSystemdUnit?: () => Promise<SystemdInstallResponsePayload>;
   onUninstallSystemdUnit?: () => Promise<SystemdUninstallResponsePayload>;
@@ -42,6 +44,7 @@ export function MachineInfoPage({
   onUpdateCodex,
   onRestartAgent,
   onDeleteProject,
+  onRefreshSessions,
   onGetSystemdStatus,
   onInstallSystemdUnit,
   onUninstallSystemdUnit,
@@ -85,6 +88,8 @@ export function MachineInfoPage({
   const [isCheckingCodexUpdate, setIsCheckingCodexUpdate] = useState(false);
   const [isUpdatingCodex, setIsUpdatingCodex] = useState(false);
   const [codexUpdateResult, setCodexUpdateResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [isRefreshingSessions, setIsRefreshingSessions] = useState(false);
+  const [sessionRefreshResult, setSessionRefreshResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // systemd auto-start: gated on Linux (the only platform this matters on)
   // and an online connection (we need IPC to query/install). The fetch is
@@ -334,6 +339,55 @@ export function MachineInfoPage({
               </div>
             )}
           </div>
+
+          <section className="space-y-3">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+              <FormattedMessage id="machineInfo.sessions.title" />
+            </h3>
+            <p className="text-xs text-slate-500">
+              <FormattedMessage id="machineInfo.sessions.description" />
+            </p>
+            {sessionRefreshResult && (
+              <div className={`p-2 rounded text-sm ${
+                sessionRefreshResult.success
+                  ? 'bg-green-500/20 border border-green-500/50 text-green-400'
+                  : 'bg-red-500/20 border border-red-500/50 text-red-400'
+              }`}>
+                {sessionRefreshResult.success
+                  ? <FormattedMessage id="machineInfo.sessions.refreshSuccess" />
+                  : sessionRefreshResult.message}
+              </div>
+            )}
+            <button
+              type="button"
+              disabled={!isOnline || !onRefreshSessions || isRefreshingSessions}
+              onClick={async () => {
+                if (!onRefreshSessions) return;
+                setIsRefreshingSessions(true);
+                setSessionRefreshResult(null);
+                try {
+                  const result = await onRefreshSessions();
+                  setSessionRefreshResult({
+                    success: result.success,
+                    message: result.success
+                      ? ''
+                      : result.error ?? 'Failed to refresh session list.',
+                  });
+                } catch (error) {
+                  setSessionRefreshResult({
+                    success: false,
+                    message: error instanceof Error ? error.message : 'Failed to refresh session list.',
+                  });
+                } finally {
+                  setIsRefreshingSessions(false);
+                }
+              }}
+              className="w-full py-2 px-4 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors flex items-center justify-center gap-2"
+            >
+              {isRefreshingSessions && <Spinner color="border-white" />}
+              <FormattedMessage id="machineInfo.sessions.refresh" />
+            </button>
+          </section>
 
           {/* CLI Agent section — moved here from the in-session settings drawer
               so version checks live with the rest of the per-machine UI. */}

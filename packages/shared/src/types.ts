@@ -163,6 +163,8 @@ export type MessageType =
   | 'session:delete-history:response' // agent-response: delete ack
   | 'session:list-archived'          // pwa-request: paginated archived history
   | 'session:list-archived:response' // agent-response: page of archived entries
+  | 'session:refresh-history'          // pwa-request: invalidate provider listing cache
+  | 'session:refresh-history:response' // agent-response: authoritative active history
   | 'session:mark-read'              // pwa-request: clear the email-style unread mark on a session
   | 'session:mark-read:response'     // agent-response: mark-read ack
   | 'session:dismiss-pending-mission'          // pwa-request: hide an overdue pending-mission banner
@@ -650,6 +652,12 @@ export interface SessionListArchivedResponsePayload {
   limit: number;
 }
 
+export interface SessionRefreshHistoryResponsePayload {
+  success: boolean;
+  entries: BroadcastSessionEntry[];
+  error?: string;
+}
+
 /**
  * `SessionRegistryEntry` enriched with live stats pulled from the event store
  * at broadcast time. These fields are NOT persisted on the registry JSON —
@@ -673,7 +681,7 @@ export interface BroadcastSessionEntry extends SessionRegistryEntry {
   lastTurnCacheCreationTokens?: number;
   lastTurnCacheReadTokens?: number;
   lastTurnContextUsage?: ContextUsageBreakdown;
-  /** Most reliable cache-TTL countdown anchor. See `ClaudeSessionSummary.lastCacheTouchAt`.
+  /** Most reliable cache-TTL countdown anchor. See `SessionSummary.lastCacheTouchAt`.
    * Populated only for sessions live in-memory; inactive sessions fall back to `lastTurnEndedAt`. */
   lastCacheTouchAt?: number;
 }
@@ -1966,7 +1974,7 @@ export type VoiceDcMessage =
 // ============================================================================
 
 // Session summary (delivered via `/sessions/history` + `/sessions/active` bus subs)
-export interface ClaudeSessionSummary {
+export interface SessionSummary {
   sessionId: string;
   summary: string;
   lastModified: number;
@@ -2112,7 +2120,7 @@ export interface SessionQueueState {
 /**
  * Payload emitted by the agent for the `/sessions/active` bus subscription:
  * snapshot is `SessionUpdatePayload[]`, each update is one
- * `SessionUpdatePayload`. Fields mirror the subset of `ClaudeSessionSummary`
+ * `SessionUpdatePayload`. Fields mirror the subset of `SessionSummary`
  * that the PWA's session row cares about for live status.
  */
 export interface SessionUpdatePayload {
@@ -2127,11 +2135,11 @@ export interface SessionUpdatePayload {
   permissionMode?: string;
   sandboxed?: boolean;
   lastPromptAt?: number;
-  /** See `ClaudeSessionSummary.lastTurnEndedAt`. */
+  /** See `SessionSummary.lastTurnEndedAt`. */
   lastTurnEndedAt?: number;
-  /** See `ClaudeSessionSummary.lastUnreadTurnEndedAt`. */
+  /** See `SessionSummary.lastUnreadTurnEndedAt`. */
   lastUnreadTurnEndedAt?: number;
-  /** See `ClaudeSessionSummary.lastCacheTouchAt`. */
+  /** See `SessionSummary.lastCacheTouchAt`. */
   lastCacheTouchAt?: number;
   turnCount?: number;
   totalInputTokens?: number;
@@ -2147,7 +2155,7 @@ export interface SessionUpdatePayload {
   lastReadAt?: number;
   /** See `SessionRegistryEntry.pendingMission`. */
   pendingMission?: SessionPendingMission;
-  /** See `ClaudeSessionSummary.terminalId`. */
+  /** See `SessionSummary.terminalId`. */
   terminalId?: string;
 }
 

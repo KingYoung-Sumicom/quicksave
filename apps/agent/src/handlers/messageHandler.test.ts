@@ -891,20 +891,20 @@ describe('MessageHandler', () => {
     });
 
     it('closes every live Claude session under the deleted cwd', async () => {
-      const claudeService = (handler as unknown as {
-        claudeService: {
+      const sessionManager = (handler as unknown as {
+        sessionManager: {
           getActiveSessions: () => Array<{ sessionId: string; cwd: string }>;
           closeSession: (sessionId: string) => boolean;
         };
-      }).claudeService;
+      }).sessionManager;
 
       const otherCwd = join(tmpdir(), `qs-other-${Date.now()}`);
-      vi.spyOn(claudeService, 'getActiveSessions').mockReturnValue([
+      vi.spyOn(sessionManager, 'getActiveSessions').mockReturnValue([
         { sessionId: 'live-1', cwd: projectDir } as any,
         { sessionId: 'live-2', cwd: projectDir } as any,
         { sessionId: 'live-other', cwd: otherCwd } as any,
       ]);
-      const closeSpy = vi.spyOn(claudeService, 'closeSession').mockReturnValue(true);
+      const closeSpy = vi.spyOn(sessionManager, 'closeSession').mockReturnValue(true);
 
       await handler.handleMessage(createMessage('project:delete', { cwd: projectDir }));
 
@@ -931,21 +931,21 @@ describe('MessageHandler', () => {
       };
       getSessionRegistry().upsertEntry(archivedEntry);
 
-      const claudeService = (handler as unknown as {
-        claudeService: {
+      const sessionManager = (handler as unknown as {
+        sessionManager: {
           getSessionConfig: (sessionId: string) => Record<string, unknown>;
           resumeSession: (opts: unknown) => Promise<string>;
           getSessionAgent: (sessionId: string, cwd?: string) => string;
           getSessionMcpCorrId: (sessionId: string) => string | undefined;
           buildSessionUpdatePayload: (sessionId: string) => { queueState: null };
         };
-      }).claudeService;
+      }).sessionManager;
 
-      vi.spyOn(claudeService, 'getSessionConfig').mockReturnValue({});
-      vi.spyOn(claudeService, 'resumeSession').mockResolvedValue(sessionId);
-      vi.spyOn(claudeService, 'getSessionAgent').mockReturnValue('codex');
-      vi.spyOn(claudeService, 'getSessionMcpCorrId').mockReturnValue('corr-new');
-      vi.spyOn(claudeService, 'buildSessionUpdatePayload').mockReturnValue({ queueState: null });
+      vi.spyOn(sessionManager, 'getSessionConfig').mockReturnValue({});
+      vi.spyOn(sessionManager, 'resumeSession').mockResolvedValue(sessionId);
+      vi.spyOn(sessionManager, 'getSessionAgent').mockReturnValue('codex');
+      vi.spyOn(sessionManager, 'getSessionMcpCorrId').mockReturnValue('corr-new');
+      vi.spyOn(sessionManager, 'buildSessionUpdatePayload').mockReturnValue({ queueState: null });
 
       const historyEvents: Array<{ cwd: string; entry: SessionRegistryEntry; action: string }> = [];
       handler.onHistoryUpdated = (cwd, entry, action) => {
@@ -979,6 +979,34 @@ describe('MessageHandler', () => {
     });
   });
 
+  describe('handleMessage - session:refresh-history', () => {
+    it('returns a fresh authoritative snapshot limited to managed projects', async () => {
+      const addResponse = await handler.handleMessage(
+        createMessage('agent:add-coding-path', { path: testRepoPath }),
+      );
+      expect((addResponse.payload as { success: boolean }).success).toBe(true);
+      const refresh = vi.spyOn(handler.getSessionManager(), 'refreshSessionHistoryEntries').mockResolvedValue([
+        {
+          sessionId: 'managed', cwd: testRepoPath, agent: 'codex',
+          createdAt: 1_000, lastAccessedAt: 2_000,
+        },
+        {
+          sessionId: 'outside', cwd: '/outside', agent: 'codex',
+          createdAt: 1_000, lastAccessedAt: 3_000,
+        },
+      ]);
+
+      const response = await handler.handleMessage(createMessage('session:refresh-history', {}));
+
+      expect(refresh).toHaveBeenCalledWith();
+      expect(response.type).toBe('session:refresh-history:response');
+      expect(response.payload).toMatchObject({
+        success: true,
+        entries: [expect.objectContaining({ sessionId: 'managed', cwd: testRepoPath })],
+      });
+    });
+  });
+
   describe('handleMessage - session:list-archived', () => {
     function seedArchived(overrides: Partial<SessionRegistryEntry>): SessionRegistryEntry {
       const entry: SessionRegistryEntry = {
@@ -1007,12 +1035,12 @@ describe('MessageHandler', () => {
         time: 9_000,
       });
 
-      const claudeService = (handler as unknown as {
-        claudeService: {
+      const sessionManager = (handler as unknown as {
+        sessionManager: {
           listNativeSessions: (cwd?: string) => Promise<unknown[]>;
         };
-      }).claudeService;
-      vi.spyOn(claudeService, 'listNativeSessions').mockResolvedValue([
+      }).sessionManager;
+      vi.spyOn(sessionManager, 'listNativeSessions').mockResolvedValue([
         {
           sessionId: 'native-session',
           cwd: testRepoPath,
@@ -1051,12 +1079,12 @@ describe('MessageHandler', () => {
     });
 
     it('materializes a native-only session when restoring it', async () => {
-      const claudeService = (handler as unknown as {
-        claudeService: {
+      const sessionManager = (handler as unknown as {
+        sessionManager: {
           findNativeSession: (cwd: string, sessionId: string) => Promise<unknown>;
         };
-      }).claudeService;
-      vi.spyOn(claudeService, 'findNativeSession').mockResolvedValue({
+      }).sessionManager;
+      vi.spyOn(sessionManager, 'findNativeSession').mockResolvedValue({
         sessionId: 'native-restore',
         cwd: testRepoPath,
         agent: 'codex',
@@ -1126,12 +1154,12 @@ describe('MessageHandler', () => {
         historyEvents.push({ cwd, entry, action });
       };
       const sessionUpdates: Array<{ sessionId: string; isActive: boolean; archived: boolean }> = [];
-      const claudeService = (handler as unknown as {
-        claudeService: {
+      const sessionManager = (handler as unknown as {
+        sessionManager: {
           on(event: 'session-updated', listener: (payload: { sessionId: string; isActive: boolean; archived: boolean }) => void): void;
         };
-      }).claudeService;
-      claudeService.on('session-updated', (payload) => sessionUpdates.push(payload));
+      }).sessionManager;
+      sessionManager.on('session-updated', (payload) => sessionUpdates.push(payload));
 
       const msg = createMessage('claude:end-task', { sessionId: 'sess-end' });
       const response = await handler.handleMessage(msg);
@@ -1164,15 +1192,15 @@ describe('MessageHandler', () => {
     it('keeps the local entry active when native Codex archiving fails', async () => {
       const entry = { ...seedEntry('codex-archive-failure'), agent: 'codex' as const };
       getSessionRegistry().upsertEntry(entry);
-      const claudeService = (handler as unknown as {
-        claudeService: {
+      const sessionManager = (handler as unknown as {
+        sessionManager: {
           setSessionArchived: (sessionId: string, cwd: string, archived: boolean) => Promise<unknown>;
           closeSession: (sessionId: string) => boolean;
         };
-      }).claudeService;
-      const nativeArchive = vi.spyOn(claudeService, 'setSessionArchived')
+      }).sessionManager;
+      const nativeArchive = vi.spyOn(sessionManager, 'setSessionArchived')
         .mockRejectedValue(new Error('Codex archive rejected'));
-      const closeSpy = vi.spyOn(claudeService, 'closeSession');
+      const closeSpy = vi.spyOn(sessionManager, 'closeSession');
 
       const response = await handler.handleMessage(
         createMessage('claude:end-task', { sessionId: entry.sessionId }),
@@ -1193,9 +1221,9 @@ describe('MessageHandler', () => {
       handler.onHistoryUpdated = (cwd, entry, action) => {
         historyEvents.push({ cwd, entry, action });
       };
-      const claudeService = handler.getClaudeService();
-      vi.spyOn(claudeService, 'findNativeSessionById').mockResolvedValue(nativeSession);
-      const archive = vi.spyOn(claudeService, 'setSessionArchived').mockResolvedValue('native');
+      const sessionManager = handler.getSessionManager();
+      vi.spyOn(sessionManager, 'findNativeSessionById').mockResolvedValue(nativeSession);
+      const archive = vi.spyOn(sessionManager, 'setSessionArchived').mockResolvedValue('native');
 
       const response = await handler.handleMessage(
         createMessage('claude:end-task', { sessionId: nativeSession.sessionId }),
@@ -1221,13 +1249,13 @@ describe('MessageHandler', () => {
 
     it.each(['codex', 'opencode'] as const)('archives a native-only discovered %s session', async (agent) => {
       const sessionId = `native-only-${agent}`;
-      const claudeService = (handler as unknown as {
-        claudeService: {
+      const sessionManager = (handler as unknown as {
+        sessionManager: {
           listNativeSessions: () => Promise<NativeSessionSummary[]>;
           setSessionArchived: (id: string, cwd: string, archived: boolean) => Promise<unknown>;
         };
-      }).claudeService;
-      vi.spyOn(claudeService, 'listNativeSessions').mockResolvedValue([{
+      }).sessionManager;
+      vi.spyOn(sessionManager, 'listNativeSessions').mockResolvedValue([{
         sessionId,
         cwd: projectDir,
         agent,
@@ -1236,7 +1264,7 @@ describe('MessageHandler', () => {
         lastInteractionAt: 2_000,
         archived: false,
       }]);
-      const archive = vi.spyOn(claudeService, 'setSessionArchived').mockResolvedValue('native');
+      const archive = vi.spyOn(sessionManager, 'setSessionArchived').mockResolvedValue('native');
 
       const response = await handler.handleMessage(createMessage('claude:end-task', { sessionId }));
 
@@ -1250,14 +1278,14 @@ describe('MessageHandler', () => {
     it('also kills the live CLI process when the session is active', async () => {
       seedEntry('sess-live');
 
-      const claudeService = (handler as unknown as {
-        claudeService: {
+      const sessionManager = (handler as unknown as {
+        sessionManager: {
           getSessionCwd: (sessionId: string) => string | undefined;
           closeSession: (sessionId: string) => boolean;
         };
-      }).claudeService;
-      vi.spyOn(claudeService, 'getSessionCwd').mockReturnValue(projectDir);
-      const closeSpy = vi.spyOn(claudeService, 'closeSession').mockReturnValue(true);
+      }).sessionManager;
+      vi.spyOn(sessionManager, 'getSessionCwd').mockReturnValue(projectDir);
+      const closeSpy = vi.spyOn(sessionManager, 'closeSession').mockReturnValue(true);
 
       const msg = createMessage('claude:end-task', { sessionId: 'sess-live' });
       const response = await handler.handleMessage(msg);

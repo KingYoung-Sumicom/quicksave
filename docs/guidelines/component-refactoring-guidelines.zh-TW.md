@@ -36,7 +36,7 @@
 - 通用 UI 元件放 `components/ui/`（已有 `ActionButtons.tsx`、`ButtonGroup.tsx`、`ToggleSwitch.tsx`）
 - Custom hooks 放 `hooks/`（已有 `useEdgeSwipe`、`useMediaQuery` 等）
 - Chat 專用的可重用元件留在 `components/chat/` 或 `components/chat/toolViews/`
-- Settings 各 section 放 `components/settings/`（已有 `ClaudeSettingsSection.tsx`）
+- Settings 各 section 放 `components/settings/`（已有 `ProviderSettingsSection.tsx`）
 
 **Why:** 遵循現有的目錄慣例，降低認知負擔。通用元件與業務元件分離，方便跨功能區重用。
 
@@ -132,16 +132,16 @@
 ### 4. Loading / Error / Empty 狀態元件 [部分完成]
 
 > **已完成：**
-> - `components/ui/Spinner.tsx` — 替換 13 個檔案中的 border spinner（FileList, MachineCard, GitignoreEditor, FloatingActionButton, CommitForm, Settings, AgentSettingsDrawer×2, DevicePairingSection, SettingsPanel×3, PathBrowser×2, QRScanner, ClaudePanel）
+> - `components/ui/Spinner.tsx` — 替換 13 個檔案中的 border spinner（FileList, MachineCard, GitignoreEditor, FloatingActionButton, CommitForm, Settings, AgentSettingsDrawer×2, DevicePairingSection, SettingsPanel×3, PathBrowser×2, QRScanner, SessionPanel）
 > - `components/ui/ErrorBox.tsx` — 替換 8 個檔案中的 error box（CommitForm, RepoView, AddMachineModal, ConnectionSetup×2, DevicePairingSection×2, SettingsPanel×2, Settings）
-> **未替換：** SVG spinner（CommitForm, ClaudePanel）和 bouncing dots 為不同 pattern，保留原樣
+> **未替換：** SVG spinner（CommitForm, SessionPanel）和 bouncing dots 為不同 pattern，保留原樣
 
 **Pattern:** 10+ 組件以不同方式重複 loading spinner、error box、empty state。目前有 4+ 種不同的 spinner 樣式。
 
 **Loading spinner 變體：**
 - SVG spinner：`CommitForm.tsx`
 - Border spinner：`DevicePairingSection.tsx`
-- Bouncing dots：`ClaudePanel.tsx`、`AddMachineModal.tsx`
+- Bouncing dots：`SessionPanel.tsx`、`AddMachineModal.tsx`
 - CSS loading dots：`CommitForm.tsx`
 
 **Error box pattern（重複樣式）：**
@@ -223,7 +223,7 @@
 |------|------|----------|
 | `chat/ToolCallMessage.tsx` | 606 | 抽出 `InlinePermissionActions` 到獨立檔案 |
 | `SettingsPanel.tsx` | 593 | 各 section 拆到 `components/settings/` |
-| `ClaudePanel.tsx` | 527 | 抽出 `ChatInputBar` 元件 |
+| `SessionPanel.tsx` | 527 | 抽出 `ChatInputBar` 元件 |
 | `NavigationDrawer.tsx` | 456 | 抽出 `MachineSwitcher`、`SessionList` |
 | `FileList.tsx` | 444 | 抽出 `FileTreeNode`、`FileDiffRow` |
 

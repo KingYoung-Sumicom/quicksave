@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { FormattedMessage } from 'react-intl';
-import type { ClaudeSessionSummary } from '@sumicom/quicksave-shared';
+import type { SessionSummary } from '@sumicom/quicksave-shared';
 import { StatusDot, sessionStatusKey } from '../SessionStatusBadge';
 import { formatRelativeTime } from '../../lib/formatRelativeTime';
 import { AGENT_LABEL } from '../../lib/agentLabel';
@@ -11,8 +11,8 @@ export function SessionList({
   onSelect,
   onNewSession,
 }: {
-  sessions: ClaudeSessionSummary[];
-  onSelect: (session: ClaudeSessionSummary) => void;
+  sessions: SessionSummary[];
+  onSelect: (session: SessionSummary) => void;
   onNewSession: () => void;
 }) {
   return (

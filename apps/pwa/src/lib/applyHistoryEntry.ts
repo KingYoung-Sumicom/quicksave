@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import type { BroadcastSessionEntry, SessionHistoryUpdatedPayload } from '@sumicom/quicksave-shared';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 
 /**
  * Apply a single session-registry entry to the store.
@@ -15,7 +15,7 @@ import { useClaudeStore } from '../stores/claudeStore';
  * for sessions archived during the current PWA session.
  */
 export function applyHistoryEntry(entry: BroadcastSessionEntry, machineAgentId: string): void {
-  const { upsertSession } = useClaudeStore.getState();
+  const { upsertSession } = useSessionStore.getState();
   if (entry.archived) {
     upsertSession({ sessionId: entry.sessionId, machineAgentId, archived: true });
     return;
@@ -58,13 +58,22 @@ export function applyHistoryEntry(entry: BroadcastSessionEntry, machineAgentId: 
   });
 }
 
+/** Apply a complete history snapshot for one machine and discard stale rows. */
+export function applyHistorySnapshot(entries: BroadcastSessionEntry[], machineAgentId: string): void {
+  useSessionStore.getState().reconcileHistorySessions(
+    new Set(entries.map((entry) => entry.sessionId)),
+    machineAgentId,
+  );
+  for (const entry of entries) applyHistoryEntry(entry, machineAgentId);
+}
+
 /**
  * Apply an incremental history update from the `/sessions/history` bus path.
  * `action === 'delete'` removes; otherwise delegates to `applyHistoryEntry`.
  */
 export function applyHistoryAction(payload: SessionHistoryUpdatedPayload, machineAgentId: string): void {
   if (payload.action === 'delete') {
-    useClaudeStore.getState().removeSession(payload.entry.sessionId);
+    useSessionStore.getState().removeSession(payload.entry.sessionId);
     return;
   }
   applyHistoryEntry(payload.entry, machineAgentId);

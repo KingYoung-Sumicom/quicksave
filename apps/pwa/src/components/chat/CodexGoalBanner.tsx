@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { clsx } from 'clsx';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
-import { normalizeAgentId } from '../../lib/claudePresets';
+import { normalizeAgentId } from '../../lib/agentPresets';
 import { ConfirmModal } from '../ui/ConfirmModal';
 import {
   formatDate,

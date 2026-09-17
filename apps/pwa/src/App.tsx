@@ -4,12 +4,12 @@ import { useCallback, useRef, useEffect, useMemo, useState } from 'react';
 import { HashRouter, Routes, Route, useNavigate, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { FormattedMessage } from 'react-intl';
 import { useConnectionStore } from './stores/connectionStore';
-import { useClaudeStore } from './stores/claudeStore';
+import { useSessionStore } from './stores/sessionStore';
 import { useGitStore } from './stores/gitStore';
 import { useMachineStore } from './stores/machineStore';
 import { useIdentityStore } from './stores/identityStore';
 import { useGitOperations } from './hooks/useGitOperations';
-import { useClaudeOperations } from './hooks/useClaudeOperations';
+import { useSessionOperations } from './hooks/useSessionOperations';
 import { useSessionAttention } from './hooks/useSessionAttention';
 import { WebSocketClient } from './lib/websocket';
 import { BusClientTransport } from './lib/busClientTransport';
@@ -22,7 +22,7 @@ import { NewSessionAppBar } from './components/NewSessionAppBar';
 import { RepoView } from './components/RepoView';
 import { BaseStatusBar, BackButton } from './components/BaseStatusBar';
 import { Spinner } from './components/ui/Spinner';
-import { ClaudePanel } from './components/ClaudePanel';
+import { SessionPanel } from './components/SessionPanel';
 import {
   type ClaudePreferences,
   type CodexLoginState,
@@ -53,7 +53,7 @@ import { useTerminalStore } from './stores/terminalStore';
 import { registerAgentBusGetter, getBusForAgent } from './lib/busRegistry';
 import { registerWsRetry } from './lib/wsRetryRegistry';
 import { applySessionUpdate } from './lib/applySessionUpdate';
-import { applyHistoryEntry, applyHistoryAction } from './lib/applyHistoryEntry';
+import { applyHistorySnapshot, applyHistoryAction } from './lib/applyHistoryEntry';
 import { NotificationPrompt } from './components/NotificationPrompt';
 import { buildOfferMessage, getCurrentSubscription, notificationPermission } from './lib/pushSubscription';
 import { GitIdentityModal } from './components/GitIdentityModal';
@@ -110,7 +110,7 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
       // has marked isActive=true for this agent that is NOT in the snap
       // must be demoted, otherwise a stale green badge survives reconnect.
       const liveIds = new Set(sessions.map((s) => s.sessionId));
-      useClaudeStore.getState().reconcileActiveSessions(liveIds, agentId);
+      useSessionStore.getState().reconcileActiveSessions(liveIds, agentId);
       for (const s of sessions) applySessionUpdate(s, agentId);
     },
     onUpdate: (session) => applySessionUpdate(session, agentId),
@@ -125,7 +125,7 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
 
   bus.subscribe<BroadcastSessionEntry[], SessionHistoryUpdatedPayload>('/sessions/history', {
     onSnapshot: (entries) => {
-      for (const entry of entries) applyHistoryEntry(entry, agentId);
+      applyHistorySnapshot(entries, agentId);
     },
     onUpdate: (payload) => applyHistoryAction(payload, agentId),
     onError: (err) => console.warn('[bus] /sessions/history error:', err),
@@ -142,10 +142,10 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
   bus.subscribe<Record<string, Record<string, ConfigValue>>, SessionConfigUpdatedPayload>('/sessions/config', {
     onSnapshot: (all) => {
       for (const [sessionId, config] of Object.entries(all)) {
-        useClaudeStore.getState().applySessionConfig(sessionId, config);
+        useSessionStore.getState().applySessionConfig(sessionId, config);
       }
     },
-    onUpdate: ({ sessionId, config }) => useClaudeStore.getState().applySessionConfig(sessionId, config),
+    onUpdate: ({ sessionId, config }) => useSessionStore.getState().applySessionConfig(sessionId, config),
     onError: (err) => console.warn('[bus] /sessions/config error:', err),
   });
 
@@ -201,8 +201,8 @@ function subscribeAllPaths(bus: MessageBusClient, agentId: string): void {
 
 function applyPreferencesToStore(prefs: ClaudePreferences): void {
   // Server prefs are claude-scoped; write to claude-code's bucket directly
-  // (see useClaudeOperations.applyPreferences for the same reasoning).
-  const { setAgentPref } = useClaudeStore.getState();
+  // (see useSessionOperations.applyPreferences for the same reasoning).
+  const { setAgentPref } = useSessionStore.getState();
   if (prefs.model !== undefined) setAgentPref('claude-code', 'model', prefs.model);
   if (prefs.reasoningEffort !== undefined) setAgentPref('claude-code', 'reasoningEffort', prefs.reasoningEffort);
 }
@@ -526,7 +526,7 @@ function AppContent() {
         if (preferences) {
           // Server prefs are claude-scoped — write to claude-code's bucket
           // so codex prefs aren't clobbered when the user is on Codex.
-          useClaudeStore.getState().setAgentPref('claude-code', 'model', preferences.model);
+          useSessionStore.getState().setAgentPref('claude-code', 'model', preferences.model);
         }
         // Update the single-agent mirror only when this agent is the one
         // the client treats as active (or no active has been chosen yet).
@@ -593,7 +593,7 @@ function AppContent() {
         // pre-disconnect snapshot across the blip, and letting stale green
         // badges persist causes a "flash green then gray" on reconnect when
         // the fresh /sessions/active snap finally corrects them.
-        useClaudeStore.getState().clearActiveOnDisconnect();
+        useSessionStore.getState().clearActiveOnDisconnect();
       },
       onRelayReconnecting: (attempt, maxAttempts) => {
         if (!intentionalDisconnectRef.current) {
@@ -1232,7 +1232,7 @@ function ProjectRouteDetail({
     deleteProject,
     listArchivedSessions,
     restoreSession,
-  } = useClaudeOperations(agentBus);
+  } = useSessionOperations(agentBus);
   const { restartAgent } = useGitOperations(clientRef, agentBus, getTargetAgentId);
 
   const handleDeleteProject = useCallback(async (deleteCwd: string): Promise<ProjectDeleteResponsePayload | null> => {
@@ -1291,7 +1291,7 @@ function MachineInfoRoute({
     installSystemdUnit,
     uninstallSystemdUnit,
   } = useGitOperations(clientRef, agentBus, getTargetAgentId);
-  const { deleteProject, listProjectSummaries } = useClaudeOperations(agentBus);
+  const { deleteProject, listProjectSummaries, refreshSessionHistory } = useSessionOperations(agentBus);
   const handleDeleteProject = useCallback(async (cwd: string): Promise<ProjectDeleteResponsePayload | null> => {
     const result = await deleteProject(cwd);
     if (result?.success && agentId) {
@@ -1315,6 +1315,7 @@ function MachineInfoRoute({
       onUpdateCodex={updateCodex}
       onRestartAgent={restartAgent}
       onDeleteProject={handleDeleteProject}
+      onRefreshSessions={() => refreshSessionHistory(agentId!)}
       onGetSystemdStatus={getSystemdStatus}
       onInstallSystemdUnit={installSystemdUnit}
       onUninstallSystemdUnit={uninstallSystemdUnit}
@@ -1420,7 +1421,7 @@ function ProjectRouteSession({
   const location = useLocation();
   const isNewSession = searchParams.has('new');
   const isDesktop = useMediaQuery('(min-width: 768px)');
-  const activeSessionId = useClaudeStore((s) => s.activeSessionId);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
   // Watch the archived flag on the URL-bound session so we can bounce out
   // of pages whose sessionId has been retired in the registry (End Task,
   // project:delete). isActive alone is too noisy — it can flip during normal
@@ -1428,7 +1429,7 @@ function ProjectRouteSession({
   // the CLI process is killed (Terminate Coding Agent Process / unexpected
   // CLI exit) since the registry entry is still active and cold-resumable.
   // Cold-resume rekey forks are handled by the separate rerouter below.
-  const viewedArchived = useClaudeStore((s) =>
+  const viewedArchived = useSessionStore((s) =>
     urlSessionId && urlSessionId !== 'new' ? s.sessions[urlSessionId]?.archived === true : false
   );
 
@@ -1467,7 +1468,7 @@ function ProjectRouteSession({
     listSlashCommands,
     unsubscribeSession,
     listProjectRepos,
-  } = useClaudeOperations(agentBus);
+  } = useSessionOperations(agentBus);
 
   const {
     fetchStatus,
@@ -1579,7 +1580,7 @@ function ProjectRouteSession({
     }
   }, [viewedArchived, location.key, navigate, projectBasePath]);
 
-  const getSessionId = () => useClaudeStore.getState().activeSessionId || urlSessionId;
+  const getSessionId = () => useSessionStore.getState().activeSessionId || urlSessionId;
 
   // Bind cwd into callbacks
   const boundGetCards = useCallback(
@@ -1643,7 +1644,7 @@ function ProjectRouteSession({
           }}
         />
       )}
-      <ClaudePanel
+      <SessionPanel
         sessionId={urlSessionId === 'new' ? undefined : urlSessionId}
         newSession={isNewSession}
         cwd={cwd}

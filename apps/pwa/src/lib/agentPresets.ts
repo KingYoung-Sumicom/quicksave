@@ -234,7 +234,7 @@ export function normalizeAgentId(agentId?: string): AgentId {
  * Max context window (tokens) for the badge / progress bar.
  * Resolution order:
  *   1. Session-scoped `contextWindow` config (200k / 500k / 1M) — set by the
- *      ClaudeSettingsSection picker. Authoritative when present.
+ *      ProviderSettingsSection picker. Authoritative when present.
  *   2. Legacy `[1m]` suffix on the model string (kept for backwards-compat
  *      until older session configs are migrated).
  *   3. Codex per-model context advertised by the daemon.

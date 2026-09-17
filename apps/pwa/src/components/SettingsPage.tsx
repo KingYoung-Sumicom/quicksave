@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FormattedMessage, useIntl } from 'react-intl';
 import { useGitStore } from '../stores/gitStore';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { PairDeviceModal } from './PairDeviceModal';
 import { ScanToJoinModal } from './ScanToJoinModal';
@@ -163,8 +163,8 @@ function AttributionToggle() {
 }
 
 function Allow1mToggle() {
-  const enabled = useClaudeStore((s) => s.allow1mForBilledModels);
-  const setEnabled = useClaudeStore((s) => s.setAllow1mForBilledModels);
+  const enabled = useSessionStore((s) => s.allow1mForBilledModels);
+  const setEnabled = useSessionStore((s) => s.setAllow1mForBilledModels);
   return (
     <button
       type="button"

@@ -3,9 +3,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { Card, CardEvent, CardHistoryResponse, SessionCardsUpdate } from '@sumicom/quicksave-shared';
 import { applySessionCardsSnapshot, applySessionCardsUpdate } from './applySessionCards';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 
-// localStorage shim — claudeStore reads it at module init for prefs.
+// localStorage shim — sessionStore reads it at module init for prefs.
 const localStorageMock = (() => {
   let store: Record<string, string> = {};
   return {
@@ -53,8 +53,8 @@ function streamEnd(sessionId: string, turnId = 'turn-A'): SessionCardsUpdate {
 
 describe('applySessionCards (multi-session permission resolve)', () => {
   beforeEach(() => {
-    useClaudeStore.getState().reset();
-    useClaudeStore.setState({
+    useSessionStore.getState().reset();
+    useSessionStore.setState({
       cards: [],
       activeSessionId: null,
       isStreaming: false,
@@ -66,7 +66,7 @@ describe('applySessionCards (multi-session permission resolve)', () => {
   });
 
   it('stores the agent-issued history cursor from a snapshot', () => {
-    useClaudeStore.setState({ activeSessionId: 'sess-cursor' });
+    useSessionStore.setState({ activeSessionId: 'sess-cursor' });
     applySessionCardsSnapshot('sess-cursor', {
       cards: [],
       total: 75,
@@ -74,17 +74,17 @@ describe('applySessionCards (multi-session permission resolve)', () => {
       nextCursor: 'memory-ordinal:25',
     });
 
-    expect(useClaudeStore.getState().historyCursor).toBe('memory-ordinal:25');
+    expect(useSessionStore.getState().historyCursor).toBe('memory-ordinal:25');
   });
 
   it('clears pending input when the update sessionId matches activeSessionId', () => {
     // Baseline: viewing session A, A's update arrives — pendingInput must clear.
     const card = makePermissionToolCard('sess-A', 'req-A1', 'cA');
-    useClaudeStore.setState({ cards: [card], activeSessionId: 'sess-A' });
+    useSessionStore.setState({ cards: [card], activeSessionId: 'sess-A' });
 
     applySessionCardsUpdate('sess-A', clearPendingEvent('sess-A', 'cA'));
 
-    const updated = useClaudeStore.getState().cards[0] as any;
+    const updated = useSessionStore.getState().cards[0] as any;
     expect(updated.pendingInput).toBeUndefined();
   });
 
@@ -94,13 +94,13 @@ describe('applySessionCards (multi-session permission resolve)', () => {
     // routing on the agent should prevent this from being delivered in the
     // first place, but the receiver also defends.)
     const aCard = makePermissionToolCard('sess-A', 'req-A1', 'cA');
-    useClaudeStore.setState({ cards: [aCard], activeSessionId: 'sess-A' });
+    useSessionStore.setState({ cards: [aCard], activeSessionId: 'sess-A' });
 
     // A stale update for session B (e.g. from a still-mounted leaked subscription).
     applySessionCardsUpdate('sess-B', clearPendingEvent('sess-B', 'cA'));
 
     // A's pending must remain — the stale B-update did not clobber it.
-    const aAfter = useClaudeStore.getState().cards[0] as any;
+    const aAfter = useSessionStore.getState().cards[0] as any;
     expect(aAfter.pendingInput).toBeDefined();
     expect(aAfter.pendingInput.requestId).toBe('req-A1');
   });
@@ -117,7 +117,7 @@ describe('applySessionCards (multi-session permission resolve)', () => {
 
     // Step 1: view A.
     const cardA = makePermissionToolCard('sess-A', 'req-A', 'cA');
-    useClaudeStore.setState({
+    useSessionStore.setState({
       cards: [cardA],
       activeSessionId: 'sess-A',
       isStreaming: false,
@@ -125,22 +125,22 @@ describe('applySessionCards (multi-session permission resolve)', () => {
 
     // Step 2: agent emits A's clear; A's bus subscription delivers it.
     applySessionCardsUpdate('sess-A', clearPendingEvent('sess-A', 'cA'));
-    expect((useClaudeStore.getState().cards[0] as any).pendingInput).toBeUndefined();
+    expect((useSessionStore.getState().cards[0] as any).pendingInput).toBeUndefined();
 
-    // Step 3: navigate to B. ClaudePanel calls clearCards() then subscribes
+    // Step 3: navigate to B. SessionPanel calls clearCards() then subscribes
     // to /sessions/sess-B/cards; the snapshot arrives with B's pending card.
-    useClaudeStore.getState().clearCards();
-    useClaudeStore.getState().setActiveSession('sess-B');
+    useSessionStore.getState().clearCards();
+    useSessionStore.getState().setActiveSession('sess-B');
     const cardB = makePermissionToolCard('sess-B', 'req-B', 'cB');
     const snapshot: CardHistoryResponse = { cards: [cardB], total: 1, hasMore: false };
     applySessionCardsSnapshot('sess-B', snapshot);
-    expect(useClaudeStore.getState().cards).toHaveLength(1);
-    expect((useClaudeStore.getState().cards[0] as any).pendingInput?.requestId).toBe('req-B');
+    expect(useSessionStore.getState().cards).toHaveLength(1);
+    expect((useSessionStore.getState().cards[0] as any).pendingInput?.requestId).toBe('req-B');
 
     // Step 4: resolve B — the bug-report failure mode is that this does
     // nothing. The store must end up with B's pending input cleared.
     applySessionCardsUpdate('sess-B', clearPendingEvent('sess-B', 'cB'));
-    const cardAfter = useClaudeStore.getState().cards[0] as any;
+    const cardAfter = useSessionStore.getState().cards[0] as any;
     expect(cardAfter.pendingInput).toBeUndefined();
     expect('pendingInput' in cardAfter).toBe(false);
   });
@@ -150,7 +150,7 @@ describe('applySessionCards (multi-session permission resolve)', () => {
     // subscription arrives at the receiver. activeSessionId is now B, so
     // the A-stamped update must be silently discarded — not mutate B's cards.
     const cardB = makePermissionToolCard('sess-B', 'req-B', 'cB');
-    useClaudeStore.setState({
+    useSessionStore.setState({
       cards: [cardB],
       activeSessionId: 'sess-B',
       isStreaming: false,
@@ -159,7 +159,7 @@ describe('applySessionCards (multi-session permission resolve)', () => {
     // Late A-clear arrives — must be ignored.
     applySessionCardsUpdate('sess-A', clearPendingEvent('sess-A', 'cB'));
 
-    const after = useClaudeStore.getState().cards[0] as any;
+    const after = useSessionStore.getState().cards[0] as any;
     expect(after.pendingInput).toBeDefined();
     expect(after.pendingInput.requestId).toBe('req-B');
   });
@@ -169,7 +169,7 @@ describe('applySessionCards (multi-session permission resolve)', () => {
     // When B's snapshot arrives, activeSessionId is already 'sess-C', so the
     // snapshot must NOT replace C's cards.
     const cardC = makePermissionToolCard('sess-C', 'req-C', 'cC');
-    useClaudeStore.setState({ cards: [cardC], activeSessionId: 'sess-C' });
+    useSessionStore.setState({ cards: [cardC], activeSessionId: 'sess-C' });
 
     const lateBSnapshot: CardHistoryResponse = {
       cards: [makePermissionToolCard('sess-B', 'req-B', 'cB')],
@@ -178,23 +178,23 @@ describe('applySessionCards (multi-session permission resolve)', () => {
     };
     applySessionCardsSnapshot('sess-B', lateBSnapshot);
 
-    expect(useClaudeStore.getState().cards).toHaveLength(1);
-    expect(useClaudeStore.getState().cards[0].id).toBe('cC');
+    expect(useSessionStore.getState().cards).toHaveLength(1);
+    expect(useSessionStore.getState().cards[0].id).toBe('cC');
   });
 
   it('marks the completed turn on active session stream-end', () => {
-    useClaudeStore.setState({ activeSessionId: 'sess-A', completedTurnIds: {} });
+    useSessionStore.setState({ activeSessionId: 'sess-A', completedTurnIds: {} });
 
     applySessionCardsUpdate('sess-A', streamEnd('sess-A', 'turn-1'));
 
-    expect(useClaudeStore.getState().completedTurnIds).toEqual({ 'turn-1': true });
+    expect(useSessionStore.getState().completedTurnIds).toEqual({ 'turn-1': true });
   });
 
   it('does not mark completed turns for stale session stream-end', () => {
-    useClaudeStore.setState({ activeSessionId: 'sess-B', completedTurnIds: {} });
+    useSessionStore.setState({ activeSessionId: 'sess-B', completedTurnIds: {} });
 
     applySessionCardsUpdate('sess-A', streamEnd('sess-A', 'turn-1'));
 
-    expect(useClaudeStore.getState().completedTurnIds).toEqual({});
+    expect(useSessionStore.getState().completedTurnIds).toEqual({});
   });
 });

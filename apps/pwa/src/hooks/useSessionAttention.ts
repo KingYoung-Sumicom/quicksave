@@ -22,7 +22,7 @@
  */
 import { useEffect, useRef } from 'react';
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 
 export interface AttentionDeps {
   isAttending: () => boolean;
@@ -57,7 +57,7 @@ function browserDeps(sendMarkRead?: (sessionId: string, viewedAt: number) => voi
       t.removeEventListener(event, handler);
     },
     onAttendChange: (sessionId, attending) => {
-      const { setAttendedSession } = useClaudeStore.getState();
+      const { setAttendedSession } = useSessionStore.getState();
       if (attending) {
         setAttendedSession(sessionId);
         // Fire-and-forget: best-effort mark-read. The agent persists
@@ -67,7 +67,7 @@ function browserDeps(sendMarkRead?: (sessionId: string, viewedAt: number) => voi
       } else {
         // Only release the slot if it was ours — guards against a stale detach
         // landing after a fast nav from session A to session B.
-        const current = useClaudeStore.getState().attendedSessionId;
+        const current = useSessionStore.getState().attendedSessionId;
         if (current === sessionId) setAttendedSession(null);
       }
     },
@@ -197,7 +197,7 @@ export function useSessionAttention(
           // Look up cwd from the store at call time so a missing-then-arrived
           // session entry (e.g. attention attached during a reconnect) still
           // gets a successful mark-read once the registry snapshot lands.
-          const session = useClaudeStore.getState().sessions[id];
+          const session = useSessionStore.getState().sessions[id];
           const cwd = session?.cwd;
           if (!cwd) return;
           markRef.current?.(id, cwd, viewedAt);

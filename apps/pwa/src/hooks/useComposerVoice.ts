@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 /**
- * Shared voice-input logic for message composers (ClaudePanel + the new-session
+ * Shared voice-input logic for message composers (SessionPanel + the new-session
  * view). The input mode is user-selected (VoiceConfig.mode):
  *
  * - `streaming` — live WebRTC + realtime ASR. Requires the machine to advertise

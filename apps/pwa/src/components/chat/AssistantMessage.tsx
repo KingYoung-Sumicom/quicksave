@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 import { useState } from 'react';
 import { ChatMarkdown } from './ChatMarkdown';
-import { useClaudeStore } from '../../stores/claudeStore';
+import { useSessionStore } from '../../stores/sessionStore';
 
 export function AssistantMessage({ content, isLast }: { content: string; isLast: boolean }) {
-  const isStreaming = useClaudeStore((s) => s.isStreaming);
+  const isStreaming = useSessionStore((s) => s.isStreaming);
   const isActivelyStreaming = isLast && isStreaming;
   const [showRaw, setShowRaw] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -20,7 +20,7 @@ export function AssistantMessage({ content, isLast }: { content: string; isLast:
     }
   }
 
-  // Empty content while streaming — ClaudePanel renders bounce dots instead;
+  // Empty content while streaming — SessionPanel renders bounce dots instead;
   // rendering nothing here avoids a duplicate loading indicator.
   if (!content) return null;
 

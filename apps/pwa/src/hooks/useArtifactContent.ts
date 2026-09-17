@@ -7,7 +7,7 @@ import type {
   ArtifactFetchResponsePayload,
 } from '@sumicom/quicksave-shared';
 import { getBusForAgent } from '../lib/busRegistry';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 
 export type ArtifactContentState =
   | { status: 'loading' }
@@ -20,7 +20,7 @@ export function useArtifactContent(
   sessionId: string | null | undefined,
   artifactId: string | null | undefined,
 ): ArtifactContentState {
-  const agentId = useClaudeStore((s) =>
+  const agentId = useSessionStore((s) =>
     sessionId ? (s.sessions[sessionId]?.machineAgentId ?? null) : null,
   );
   const [state, setState] = useState<ArtifactContentState>({ status: 'loading' });

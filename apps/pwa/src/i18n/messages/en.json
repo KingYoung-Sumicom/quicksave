@@ -73,6 +73,10 @@
   "machineInfo.projects.empty": "No projects on this machine yet.",
   "machineInfo.projects.sessionCount": "{count, plural, one {# task} other {# tasks}}",
   "machineInfo.projects.archivedCount": "{count, plural, one {# archived} other {# archived}}",
+  "machineInfo.sessions.title": "Session history",
+  "machineInfo.sessions.description": "Reconnects use the agent's in-memory session list. Refresh it after sessions change outside Quicksave.",
+  "machineInfo.sessions.refresh": "Refresh session list",
+  "machineInfo.sessions.refreshSuccess": "Session list refreshed.",
 
   "settings.notifications.title": "Notifications",
   "settings.notifications.description": "Get alerted when a task needs your attention.",

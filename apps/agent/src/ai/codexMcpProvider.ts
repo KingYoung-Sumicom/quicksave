@@ -243,7 +243,7 @@ class CodexMcpSession implements ProviderSession {
         this.cardBuilder.startNewTurn();
         // Record + emit the user prompt so other PWA tabs subscribed to this
         // session see it in real time. The sending tab dedupes its
-        // optimistic card by text + recent timestamp in claudeStore.
+        // optimistic card by text + recent timestamp in sessionStore.
         this.callbacks.emitCardEvent(this.cardBuilder.userMessage(turn.prompt));
 
         try {

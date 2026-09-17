@@ -118,13 +118,13 @@ acquireLock()
   → new MessageHandler(repos, license, codingPaths, isProduction)
       // MessageHandler internally does:
       //   new SessionManager([new ClaudeCodeProvider(), new CodexAppServerProvider()])
-  → claudeService = messageHandler.getClaudeService()
+  → sessionManager = messageHandler.getSessionManager()
   → bus.onSubscribe('/sessions/active'|'/preferences'|'/sessions/history'|
                     '/repos/commit-summary'|'/sessions/config'|
                     '/sessions/:sessionId/cards'|'/sessions/:sessionId/attention'|
                     '/codex/quota'|
                     '/terminals'|'/terminals/:terminalId/output', ...)
-  → claudeService.on('card-event' | 'card-stream-end' | …) → bus.publish(...)
+  → sessionManager.on('card-event' | 'card-stream-end' | …) → bus.publish(...)
   → wireLegacyBusVerbs(bus, messageHandler)          # Bridge LEGACY_BUS_VERBS → handleMessage
   → writeServiceState()                              # Write service.json (ready)
   → heartbeatLoop(30s)
@@ -397,6 +397,13 @@ items continue through the normal history/card adapter.
   allowlist; OpenCode also exposes only root sessions (`parentID` empty). Claude
   Code has no native listing API, so its registry entry remains the complete
   source for that provider.
+- **In-memory native listing cache:** `SessionManager` caches completed native
+  provider listings per cwd plus one global managed-project projection, and
+  coalesces concurrent cold requests. Automatic MessageBus resubscription can
+  therefore rebuild `/sessions/history` without repeatedly spawning/scanning
+  provider app servers. `session:refresh-history` is the explicit invalidation
+  boundary exposed on the per-machine settings page; project allowlist changes
+  invalidate the cache automatically, while archive mutations patch cached rows.
 
 ### AI Provider Events
 
@@ -723,12 +730,12 @@ All request-response, state subscribe, and server push between PWA and Agent go 
 **Current subscribe paths:**
 | Path | Snapshot Type | Update Type | Source |
 |---|---|---|---|
-| `/sessions/active` | `SessionUpdatePayload[]` | `SessionUpdatePayload` | `claudeService.snapshotActiveSessions()` + `session-updated` event |
-| `/preferences` | `ClaudePreferences` | `ClaudePreferences` | `claudeService.getPreferences()` + `preferences-updated` event |
-| `/sessions/history` | `BroadcastSessionEntry[]` | `SessionHistoryUpdatedPayload` | `sessionRegistry.getEntriesForProject().map(enrichEntry)` (active only; archived not in this snapshot) + `messageHandler.onHistoryUpdated` |
+| `/sessions/active` | `SessionUpdatePayload[]` | `SessionUpdatePayload` | `sessionManager.snapshotActiveSessions()` + `session-updated` event |
+| `/preferences` | `ClaudePreferences` | `ClaudePreferences` | `sessionManager.getPreferences()` + `preferences-updated` event |
+| `/sessions/history` | `BroadcastSessionEntry[]` | `SessionHistoryUpdatedPayload` | `sessionManager.listSessionHistoryEntries().map(enrichEntry)` (registry + cached native active sessions; archived excluded) + `messageHandler.onHistoryUpdated` |
 | `/repos/commit-summary` | `CommitSummaryState[]` | `CommitSummaryState` | `commitSummaryStore.snapshot()` + `state-updated` event |
-| `/sessions/config` | `Record<sessionId, Record<key, ConfigValue>>` | `SessionConfigUpdatedPayload` | `claudeService.getAllSessionConfigs()` + `session-config-updated` event |
-| `/sessions/:sessionId/cards` | `CardHistoryResponse` (initial page, opaque `nextCursor`, pendingInput overlay + title) | `SessionCardsUpdate` (`{ kind: 'card', event }` or `{ kind: 'stream-end', result }`) | `claudeService.getCards()` + `card-event` / `card-stream-end` events |
+| `/sessions/config` | `Record<sessionId, Record<key, ConfigValue>>` | `SessionConfigUpdatedPayload` | `sessionManager.getAllSessionConfigs()` + `session-config-updated` event |
+| `/sessions/:sessionId/cards` | `CardHistoryResponse` (initial page, opaque `nextCursor`, pendingInput overlay + title) | `SessionCardsUpdate` (`{ kind: 'card', event }` or `{ kind: 'stream-end', result }`) | `sessionManager.getCards()` + `card-event` / `card-stream-end` events |
 | `/sessions/:sessionId/attention` | `null` (presence-only) | — | The PWA only subscribes when on the session page and the tab is visible+focused; `subscriberCount === 0` acts as the push gate |
 | `/claude/auth` | `ClaudeAuthState` | — | Sanitized machine-local `claude auth status --json`; email, organization, and account ids never leave the daemon |
 | `/codex/quota` | `CodexQuotaSnapshot \| null` | `CodexQuotaSnapshot` | Agent-wide `CodexQuotaService`; includes reset-credit summaries when app-server provides them; stale-on-subscribe refreshes after 5 minutes, and `codex-turn-settled` force-refreshes after each Codex prompt |
@@ -819,7 +826,7 @@ For full design details see `docs/guidelines/sync-security.en.md`.
 ### Request-Response Pattern (MessageBus command)
 
 ```typescript
-// PWA side (useClaudeOperations.ts / useGitOperations.ts)
+// PWA side (useSessionOperations.ts / useGitOperations.ts)
 const bus = getBusForAgent(ownerAgentId);
 const result = await bus.command<ResponseType, RequestPayload>(
   'claude:start',
@@ -908,7 +915,7 @@ interface Message {
 | `ping`/`pong` | Heartbeat |
 | `handshake`/`handshake:ack` | Connection establishment. Ack now carries `platform: 'linux' \| 'darwin' \| 'win32' \| 'other'` so the PWA can hide platform-specific UI (e.g. the systemd toggle) without a round-trip. Older agents omit the field; treat absence as "unknown — hide". |
 
-### Claude-Related Message Types
+### Session Message Types (legacy `claude:*` compatibility verbs)
 
 PWA↔Agent session/cards/preferences events now all flow through MessageBus `/path` subscriptions (see the "MessageBus" section). The "Message type" column below is the verb name still used internally by `MessageHandler`; the corresponding bus usage is in the "bus equivalent" column.
 
@@ -932,6 +939,7 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 | `claude:set-session-permission` | PWA→Agent | `bus.command('claude:set-session-permission', …)` | Change a session's permission mode |
 | `session:list-slash-commands` | PWA→Agent | `bus.command('session:list-slash-commands', …)` | Ask the active provider for composer slash suggestions. Returns `SlashCommandInfo[]`; Claude uses `reload_plugins`, Codex maps enabled `skills/list` entries |
 | `session:list-archived` | PWA→Agent | `bus.command('session:list-archived', …)` | Lists restore candidates for a cwd. The agent merges Quicksave archived registry entries with provider-native sessions when a provider supports native discovery, dedupes active registry entries, sorts by `BroadcastSessionEntry.lastInteractionAt`, then paginates |
+| `session:refresh-history` | PWA→Agent | `bus.command('session:refresh-history', {})` | Invalidates this machine's in-memory native listing cache, rescans providers, and returns an authoritative active-history snapshot for the PWA store |
 | — | Agent→PWA push | `bus.subscribe('/sessions/:id/cards')` → `{kind: 'card', event}` / `{kind: 'stream-end', result}` | The old `claude:card-event` / `claude:card-stream-end` / `claude:user-input-request` have all moved to this path (CardBuilder carries the input request inside the pendingInput overlay) |
 | — | Agent→PWA push | `bus.subscribe('/sessions/active')` | Replaces the removed `claude:active-sessions` command and `claude:session-updated` push |
 | — | Agent→PWA push | `bus.subscribe('/preferences')` | Replaces the removed `claude:get-preferences` command and `claude:preferences-updated` push |
@@ -960,7 +968,7 @@ card state; the PWA resolves the request only when the user presses Send.
 |---|---|
 | `Message` envelope | line 5 |
 | `MessageType` union | line 22 |
-| `ClaudeSessionSummary` | line 1170 |
+| `SessionSummary` | line 1170 |
 | `ClaudeHistoryMessage` | line 1389 |
 | `ClaudeSubagentBlock` | line 1401 |
 | `ClaudeGetMessagesResponsePayload` | line 1411 |
@@ -1026,7 +1034,7 @@ review points.
 ### State Management (Zustand)
 
 ```
-claudeStore.ts
+sessionStore.ts
   sessions: Record<sessionId, StoredSessionSummary>   // SessionMap, not array
   activeSessionId: string | null
   isStreaming: boolean
@@ -1034,7 +1042,7 @@ claudeStore.ts
   cards: Card[]
   historyTotal / historyHasMore / historyCursor / isLoadingHistory / historyError
   // Email-style unread state lives on the wire as `lastReadAt` on
-  // ClaudeSessionSummary / SessionUpdatePayload (set server-side by the
+  // SessionSummary / SessionUpdatePayload (set server-side by the
   // `session:mark-read` handler and broadcast on /sessions/history +
   // /sessions/active). Derive `isSessionUnread(s)` = lastReadAt is a number
   // AND older than lastUnreadTurnEndedAt (the latest non-interrupted turn).
@@ -1100,9 +1108,9 @@ sessionRightPanelStore.ts
 
 For the detailed threat model and key derivation see `docs/guidelines/sync-security.en.md`.
 
-### Hook API (`useClaudeOperations.ts`)
+### Hook API (`useSessionOperations.ts`)
 
-`useClaudeOperations(getBus)` and `useGitOperations(clientRef, getBus, getAgentId?)`
+`useSessionOperations(getBus)` and `useGitOperations(clientRef, getBus, getAgentId?)`
 expect a bus getter that is already scoped to the intended agent. `getAgentId`
 lets git operations compare in-flight responses against the same owner agent
 even if `WebSocketClient.activeAgentId` changes while the command is pending.
@@ -1144,7 +1152,7 @@ for retry.
 
 ```
 App.tsx
-└── ClaudePanel              # Single React component owning the session view + composer
+└── SessionPanel              # Single React component owning the session view + composer
     ├── SessionList          # (chat/SessionList.tsx) Session list with the New Session button
     ├── CardRenderer         # (chat/CardRenderer.tsx) Renders by card.type into one of:
     │   ├── UserMessage      #   chat/UserMessage.tsx        ('user')
@@ -1155,7 +1163,7 @@ App.tsx
     │   ├── SystemMessage    #   chat/SystemMessage.tsx      ('system')
     │   └── RecoverySuggestedMessage # chat/RecoverySuggestedMessage.tsx ('recovery_suggested')
     │   └── FollowUpQuestionMessage # chat/FollowUpQuestionMessage.tsx ('follow_up_question')
-    └── (textarea + send)    # Inline composer inside ClaudePanel; not a separate component
+    └── (textarea + send)    # Inline composer inside SessionPanel; not a separate component
 ```
 
 ---
@@ -1223,7 +1231,7 @@ interface DebugResult {
 
 ```
 User enters a prompt
-  ↓ useClaudeOperations.startSession()
+  ↓ useSessionOperations.startSession()
   ↓ bus.command('claude:start', payload, { queueWhileDisconnected: true })
   ↓ bus:frame { kind: 'cmd', verb: 'claude:start' } → [encrypt] → WebRTC → [decrypt]
   ↓ BusServerTransport → bus.onCommand('claude:start') (registered by wireLegacyBusVerbs)
@@ -1239,10 +1247,10 @@ User enters a prompt
        for await (line of readline(proc.stdout))
          if control_request → callbacks.handlePermissionRequest → emit card → wait for user → sendControlResponse()
          else → routeMessage() → StreamCardBuilder → CardEvent → callbacks.emitCardEvent
-  ↓ claudeService.on('card-event') → bus.publish('/sessions/:id/cards', { kind: 'card', event })
+  ↓ sessionManager.on('card-event') → bus.publish('/sessions/:id/cards', { kind: 'card', event })
   ↓ bus:frame { kind: 'upd', path: '/sessions/.../cards' } → [encrypt] → WebRTC → [decrypt]
   ↓ MessageBusClient dispatch → applySessionCardsUpdate(sessionId, update)
-  ↓ claudeStore.handleCardEvent() → React re-render → CardRenderer
+  ↓ sessionStore.handleCardEvent() → React re-render → CardRenderer
   ↓ on 'result': turn complete, process stays alive for next stdin message
 ```
 
@@ -1257,7 +1265,7 @@ User enters a prompt
 | MessageBus (RPC + PubSub) | `packages/message-bus` + `busServerTransport` / `busClientTransport` | PWA↔Agent command / subscribe / publish |
 | Snapshot-on-subscribe | `bus.onSubscribe(path, { snapshot })` | Auto-replays current state on disconnect-reconnect, eliminating the stale window |
 | Command adapter | `handlers/legacyBusAdapter.ts — LEGACY_BUS_VERBS` + `wireLegacyBusVerbs` (called from `service/run.ts`) | Wraps every verb as a bus command, delegating to the existing `messageHandler.handleMessage` |
-| Zustand Store | `claudeStore.ts` / `gitStore.ts` | Centralized PWA state |
+| Zustand Store | `sessionStore.ts` / `gitStore.ts` | Centralized PWA state |
 | Singleton Lock | `singleton.ts` | Ensures a single daemon |
 | JSONL Append | `sessionStore.ts` | Session history persistence |
 

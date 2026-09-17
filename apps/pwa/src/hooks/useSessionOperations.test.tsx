@@ -4,26 +4,26 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
-import { useClaudeStore } from '../stores/claudeStore';
-import { useClaudeOperations } from './useClaudeOperations';
+import { useSessionStore } from '../stores/sessionStore';
+import { useSessionOperations } from './useSessionOperations';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-type ClaudeOps = ReturnType<typeof useClaudeOperations>;
+type SessionOps = ReturnType<typeof useSessionOperations>;
 
 function Harness({
   getBus,
   onRender,
 }: {
   getBus: () => MessageBusClient | null;
-  onRender: (ops: ClaudeOps) => void;
+  onRender: (ops: SessionOps) => void;
 }) {
-  const ops = useClaudeOperations(getBus);
+  const ops = useSessionOperations(getBus);
   onRender(ops);
   return null;
 }
 
-describe('useClaudeOperations', () => {
+describe('useSessionOperations', () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -31,7 +31,7 @@ describe('useClaudeOperations', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    useClaudeStore.getState().reset();
+    useSessionStore.getState().reset();
   });
 
   afterEach(() => {
@@ -39,21 +39,51 @@ describe('useClaudeOperations', () => {
       root.unmount();
     });
     container.remove();
-    useClaudeStore.getState().reset();
+    useSessionStore.getState().reset();
     vi.restoreAllMocks();
   });
 
+  it('refreshes and replaces the cached history for the selected machine', async () => {
+    let latestOps: SessionOps | null = null;
+    const command = vi.fn().mockResolvedValue({
+      success: true,
+      entries: [{
+        sessionId: 'fresh', cwd: '/repo', agent: 'codex', createdAt: 1, lastAccessedAt: 2,
+      }],
+    });
+    const bus = { command } as unknown as MessageBusClient;
+    useSessionStore.getState().setSessions([
+      { sessionId: 'stale', machineAgentId: 'machine-a' } as any,
+      { sessionId: 'other', machineAgentId: 'machine-b' } as any,
+    ]);
+
+    await act(async () => {
+      root.render(<Harness getBus={() => bus} onRender={(ops) => { latestOps = ops; }} />);
+    });
+    await act(async () => {
+      await latestOps!.refreshSessionHistory('machine-a');
+    });
+
+    expect(command).toHaveBeenCalledWith(
+      'session:refresh-history',
+      {},
+      expect.objectContaining({ timeoutMs: 120000, queueWhileDisconnected: true }),
+    );
+    expect(Object.keys(useSessionStore.getState().sessions).sort()).toEqual(['fresh', 'other']);
+    expect(useSessionStore.getState().sessions.fresh.machineAgentId).toBe('machine-a');
+  });
+
   it('does not switch back to a cold-resumed session if the user navigated away before the response', async () => {
-    let latestOps: ClaudeOps | null = null;
+    let latestOps: SessionOps | null = null;
     let resolveCommand: (value: unknown) => void = () => {};
     const command = vi.fn(() => new Promise((resolve) => { resolveCommand = resolve; }));
     const bus = { command } as unknown as MessageBusClient;
 
-    useClaudeStore.getState().setSessions([
+    useSessionStore.getState().setSessions([
       { sessionId: 'session-A', summary: 'A', lastModified: 1, isActive: false, isStreaming: false } as any,
       { sessionId: 'session-B', summary: 'B', lastModified: 2, isActive: true, isStreaming: false } as any,
     ]);
-    useClaudeStore.getState().setActiveSession('session-A');
+    useSessionStore.getState().setActiveSession('session-A');
 
     await act(async () => {
       root.render(<Harness getBus={() => bus} onRender={(ops) => { latestOps = ops; }} />);
@@ -65,10 +95,10 @@ describe('useClaudeOperations', () => {
       await Promise.resolve();
     });
 
-    expect(useClaudeStore.getState().cards).toHaveLength(0);
+    expect(useSessionStore.getState().cards).toHaveLength(0);
 
     act(() => {
-      useClaudeStore.getState().setActiveSession('session-B');
+      useSessionStore.getState().setActiveSession('session-B');
     });
 
     await act(async () => {
@@ -81,20 +111,20 @@ describe('useClaudeOperations', () => {
       { sessionId: 'session-A', prompt: 'continue', cwd: '/repo' },
       expect.objectContaining({ timeoutMs: 120000, queueWhileDisconnected: true }),
     );
-    expect(useClaudeStore.getState().activeSessionId).toBe('session-B');
-    expect(useClaudeStore.getState().sessions['session-A'].isStreaming).toBe(true);
+    expect(useSessionStore.getState().activeSessionId).toBe('session-B');
+    expect(useSessionStore.getState().sessions['session-A'].isStreaming).toBe(true);
     expect(await resumePromise).toBe(true);
-    expect(useClaudeStore.getState().cards).toHaveLength(0);
+    expect(useSessionStore.getState().cards).toHaveLength(0);
   });
 
   it('gives /compact a longer RPC timeout than a normal resume', async () => {
-    let latestOps: ClaudeOps | null = null;
+    let latestOps: SessionOps | null = null;
     const command = vi.fn().mockResolvedValue({ success: true, sessionId: 'session-A' });
     const bus = { command } as unknown as MessageBusClient;
-    useClaudeStore.getState().setSessions([
+    useSessionStore.getState().setSessions([
       { sessionId: 'session-A', summary: 'A', lastModified: 1, isActive: true, isStreaming: false } as any,
     ]);
-    useClaudeStore.getState().setActiveSession('session-A');
+    useSessionStore.getState().setActiveSession('session-A');
 
     await act(async () => {
       root.render(<Harness getBus={() => bus} onRender={(ops) => { latestOps = ops; }} />);
@@ -109,17 +139,17 @@ describe('useClaudeOperations', () => {
       { sessionId: 'session-A', prompt: '/compact', cwd: '/repo' },
       expect.objectContaining({ timeoutMs: 600000, queueWhileDisconnected: true }),
     );
-    expect(useClaudeStore.getState().cards).toHaveLength(0);
-    expect(useClaudeStore.getState().sessions['session-A'].isStreaming).toBe(false);
-    expect(useClaudeStore.getState().sessions['session-A'].isCompacting).toBe(false);
+    expect(useSessionStore.getState().cards).toHaveLength(0);
+    expect(useSessionStore.getState().sessions['session-A'].isStreaming).toBe(false);
+    expect(useSessionStore.getState().sessions['session-A'].isCompacting).toBe(false);
   });
 
   it('shows prompts submitted during compaction in the existing queued-message state', async () => {
-    let latestOps: ClaudeOps | null = null;
+    let latestOps: SessionOps | null = null;
     let resolveCommand: (value: unknown) => void = () => {};
     const command = vi.fn(() => new Promise((resolve) => { resolveCommand = resolve; }));
     const bus = { command } as unknown as MessageBusClient;
-    useClaudeStore.getState().setSessions([
+    useSessionStore.getState().setSessions([
       {
         sessionId: 'session-A',
         summary: 'A',
@@ -129,7 +159,7 @@ describe('useClaudeOperations', () => {
         isCompacting: true,
       } as any,
     ]);
-    useClaudeStore.getState().setActiveSession('session-A');
+    useSessionStore.getState().setActiveSession('session-A');
 
     await act(async () => {
       root.render(<Harness getBus={() => bus} onRender={(ops) => { latestOps = ops; }} />);
@@ -141,11 +171,11 @@ describe('useClaudeOperations', () => {
       await Promise.resolve();
     });
 
-    expect(useClaudeStore.getState().sessions['session-A'].queueState).toMatchObject({
+    expect(useSessionStore.getState().sessions['session-A'].queueState).toMatchObject({
       pendingUserMessages: 1,
       queuedPromptPreviews: ['continue after compact'],
     });
-    expect(useClaudeStore.getState().cards).toHaveLength(0);
+    expect(useSessionStore.getState().cards).toHaveLength(0);
 
     await act(async () => {
       resolveCommand({
@@ -162,19 +192,19 @@ describe('useClaudeOperations', () => {
       await resumePromise;
     });
 
-    expect(useClaudeStore.getState().sessions['session-A'].queueState?.queuedPromptIds).toEqual(['queued-1']);
-    expect(useClaudeStore.getState().cards).toHaveLength(0);
+    expect(useSessionStore.getState().sessions['session-A'].queueState?.queuedPromptIds).toEqual(['queued-1']);
+    expect(useSessionStore.getState().cards).toHaveLength(0);
   });
 
   it('adds the user card only after an acknowledged resume', async () => {
-    let latestOps: ClaudeOps | null = null;
+    let latestOps: SessionOps | null = null;
     let resolveCommand: (value: unknown) => void = () => {};
     const command = vi.fn(() => new Promise((resolve) => { resolveCommand = resolve; }));
     const bus = { command } as unknown as MessageBusClient;
-    useClaudeStore.getState().setSessions([
+    useSessionStore.getState().setSessions([
       { sessionId: 'session-A', summary: 'A', lastModified: 1, isActive: true, isStreaming: false } as any,
     ]);
-    useClaudeStore.getState().setActiveSession('session-A');
+    useSessionStore.getState().setActiveSession('session-A');
 
     await act(async () => {
       root.render(<Harness getBus={() => bus} onRender={(ops) => { latestOps = ops; }} />);
@@ -185,25 +215,25 @@ describe('useClaudeOperations', () => {
       resumePromise = latestOps!.resumeSession('session-A', 'show after ack', '/repo');
       await Promise.resolve();
     });
-    expect(useClaudeStore.getState().cards).toHaveLength(0);
+    expect(useSessionStore.getState().cards).toHaveLength(0);
 
     await act(async () => {
       resolveCommand({ success: true, sessionId: 'session-A' });
       await resumePromise;
     });
-    expect(useClaudeStore.getState().cards).toEqual([
+    expect(useSessionStore.getState().cards).toEqual([
       expect.objectContaining({ type: 'user', text: 'show after ack' }),
     ]);
   });
 
   it('returns false when the agent does not acknowledge a resume command', async () => {
-    let latestOps: ClaudeOps | null = null;
+    let latestOps: SessionOps | null = null;
     const command = vi.fn().mockResolvedValue({ success: false, error: 'agent rejected prompt' });
     const bus = { command } as unknown as MessageBusClient;
-    useClaudeStore.getState().setSessions([
+    useSessionStore.getState().setSessions([
       { sessionId: 'session-A', summary: 'A', lastModified: 1, isActive: true, isStreaming: false } as any,
     ]);
-    useClaudeStore.getState().setActiveSession('session-A');
+    useSessionStore.getState().setActiveSession('session-A');
 
     await act(async () => {
       root.render(<Harness getBus={() => bus} onRender={(ops) => { latestOps = ops; }} />);
@@ -215,12 +245,12 @@ describe('useClaudeOperations', () => {
     });
 
     expect(acknowledged).toBe(false);
-    expect(useClaudeStore.getState().streamError).toBe('agent rejected prompt');
-    expect(useClaudeStore.getState().cards).toHaveLength(0);
+    expect(useSessionStore.getState().streamError).toBe('agent rejected prompt');
+    expect(useSessionStore.getState().cards).toHaveLength(0);
   });
 
   it('returns the agent-issued cursor when loading older card history', async () => {
-    let latestOps: ClaudeOps | null = null;
+    let latestOps: SessionOps | null = null;
     const command = vi.fn().mockResolvedValue({
       cards: [],
       total: 100,
@@ -228,7 +258,7 @@ describe('useClaudeOperations', () => {
       nextCursor: 'memory-ordinal:25',
     });
     const bus = { command } as unknown as MessageBusClient;
-    useClaudeStore.setState({ historyCursor: 'memory-ordinal:50' });
+    useSessionStore.setState({ historyCursor: 'memory-ordinal:50' });
 
     await act(async () => {
       root.render(<Harness getBus={() => bus} onRender={(ops) => { latestOps = ops; }} />);
@@ -248,6 +278,6 @@ describe('useClaudeOperations', () => {
       },
       expect.objectContaining({ timeoutMs: 30000, queueWhileDisconnected: true }),
     );
-    expect(useClaudeStore.getState().historyCursor).toBe('memory-ordinal:25');
+    expect(useSessionStore.getState().historyCursor).toBe('memory-ordinal:25');
   });
 });

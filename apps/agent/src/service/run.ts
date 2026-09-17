@@ -87,7 +87,7 @@ const REGISTRY_WATCH_INTERVAL_MS = 1_000;
 
 function startSessionRegistryWatcher(
   bus: MessageBusServer,
-  claudeService: ReturnType<MessageHandler['getClaudeService']>,
+  sessionManager: ReturnType<MessageHandler['getSessionManager']>,
 ): () => void {
   const seen = new Map<string, number>();
   const registry = getSessionRegistry();
@@ -134,7 +134,7 @@ function startSessionRegistryWatcher(
             entry: enriched,
             action: 'upsert',
           });
-          claudeService.emitSessionUpdate(entry.sessionId);
+          sessionManager.emitSessionUpdate(entry.sessionId);
         } catch (err) {
           console.warn(`[sessionRegistry] Failed to publish external update for ${path}:`, err);
         }
@@ -242,8 +242,8 @@ export async function runDaemon(): Promise<void> {
     }).unref();
   };
 
-  // Pub/sub: ClaudeCodeService emits card events → send only to peers subscribed to that session
-  const claudeService = messageHandler.getClaudeService();
+  // Pub/sub: SessionManager emits card events → send only to peers subscribed to that session
+  const sessionManager = messageHandler.getSessionManager();
   const commitSummaryStore = messageHandler.getCommitSummaryStore();
   const voiceIntermediary = messageHandler.getVoiceIntermediary();
   // Native providers enumerate every session in their own store. Only expose
@@ -260,13 +260,13 @@ export async function runDaemon(): Promise<void> {
   // single SessionUpdatePayload per change.
   bus.onSubscribe<'/sessions/active', SessionUpdatePayload[], SessionUpdatePayload>(
     '/sessions/active',
-    { snapshot: () => claudeService.snapshotActiveSessions() },
+    { snapshot: () => sessionManager.snapshotActiveSessions() },
   );
 
   // Global user-editable preferences (model, reasoning effort).
   bus.onSubscribe<'/preferences', ClaudePreferences, ClaudePreferences>(
     '/preferences',
-    { snapshot: () => claudeService.getPreferences() },
+    { snapshot: () => sessionManager.getPreferences() },
   );
 
   // Session registry entries (historical + active). Snapshot returns every
@@ -275,7 +275,7 @@ export async function runDaemon(): Promise<void> {
     '/sessions/history',
     {
       snapshot: async () => {
-        return (await claudeService.listSessionHistoryEntries())
+        return (await sessionManager.listSessionHistoryEntries())
           .filter((entry) => isManagedCodingPath(entry.cwd))
           .map(enrichEntry);
       },
@@ -293,7 +293,7 @@ export async function runDaemon(): Promise<void> {
   // pre-know which ids exist.
   bus.onSubscribe<'/sessions/config', Record<string, Record<string, ConfigValue>>, SessionConfigUpdatedPayload>(
     '/sessions/config',
-    { snapshot: () => claudeService.getAllSessionConfigs() },
+    { snapshot: () => sessionManager.getAllSessionConfigs() },
   );
 
   // Per-session card history + live card/stream-end stream. Snapshot = the
@@ -304,7 +304,7 @@ export async function runDaemon(): Promise<void> {
     {
       snapshot: async ({ params }) => {
         const sessionId = params.sessionId;
-        const liveCwd = claudeService.getSessionCwd(sessionId);
+        const liveCwd = sessionManager.getSessionCwd(sessionId);
         const registry = getSessionRegistry();
         let cwd =
           liveCwd
@@ -316,11 +316,11 @@ export async function runDaemon(): Promise<void> {
         // cwd parameter, so recover it from provider-native discovery before
         // delegating to the history loader.
         if (!cwd) {
-          cwd = (await claudeService.listNativeSessions())
+          cwd = (await sessionManager.listNativeSessions())
             .find((session) => session.sessionId === sessionId)?.cwd
             ?? '';
         }
-        return claudeService.getCards(sessionId, cwd, 0, 50);
+        return sessionManager.getCards(sessionId, cwd, 0, 50);
       },
     },
   );
@@ -370,14 +370,14 @@ export async function runDaemon(): Promise<void> {
     bus.publish<TerminalOutputChunk>(`/terminals/${chunk.terminalId}/output`, chunk);
   });
 
-  claudeService.on('card-event', (event: CardEvent) => {
+  sessionManager.on('card-event', (event: CardEvent) => {
     voiceIntermediary.recordCardEvent(event);
     bus.publish<SessionCardsUpdate>(
       `/sessions/${event.sessionId}/cards`,
       { kind: 'card', event },
     );
   });
-  claudeService.on('card-stream-end', (result: CardStreamEnd) => {
+  sessionManager.on('card-stream-end', (result: CardStreamEnd) => {
     voiceIntermediary.recordStreamEnd(result);
     voiceIntermediary.notifyStreamEnd(result);
     bus.publish<SessionCardsUpdate>(
@@ -395,7 +395,7 @@ export async function runDaemon(): Promise<void> {
     // Skip when the turn paused for user input (user-input-request handles
     // that path) and when the agent was explicitly interrupted.
     const attendingCount = bus.subscriberCount(`/sessions/${result.sessionId}/attention`);
-    const suppressed = result.interrupted || claudeService.hasPendingInputForSession(result.sessionId);
+    const suppressed = result.interrupted || sessionManager.hasPendingInputForSession(result.sessionId);
     if (attendingCount === 0 && !suppressed) {
       pushClient.notify(result.sessionId, {
         title: 'Quicksave',
@@ -406,7 +406,7 @@ export async function runDaemon(): Promise<void> {
         .catch((err) => console.warn('[push] notify (idle) failed', err));
     }
 
-    const cwd = claudeService.getSessionCwd(result.sessionId);
+    const cwd = sessionManager.getSessionCwd(result.sessionId);
     const inputTokens = result.tokenUsage?.input ?? 0;
     const outputTokens = result.tokenUsage?.output ?? 0;
     const cacheCreationTokens = result.tokenUsage?.cacheCreation ?? 0;
@@ -424,10 +424,10 @@ export async function runDaemon(): Promise<void> {
     // Only the Claude Code CLI responds; other providers return null quickly.
     // Fire-and-record to avoid blocking the peer notification above.
     (async () => {
-      const providerContextUsage = await claudeService.getSessionContextUsage(result.sessionId).catch(() => null);
+      const providerContextUsage = await sessionManager.getSessionContextUsage(result.sessionId).catch(() => null);
       const contextUsage = providerContextUsage
         ?? buildCodexContextUsage({
-          model: claudeService.getSessionConfig(result.sessionId).model as string | undefined,
+          model: sessionManager.getSessionConfig(result.sessionId).model as string | undefined,
           modelContextWindow,
           inputTokens,
           cachedInputTokens: cacheReadTokens,
@@ -479,12 +479,12 @@ export async function runDaemon(): Promise<void> {
       // detect "the session has new output you haven't seen" (unread mark);
       // without this follow-up, the home list never picks up the new value
       // until the next session activity, breaking cross-tab unread sync.
-      claudeService.emitSessionUpdate(result.sessionId);
+      sessionManager.emitSessionUpdate(result.sessionId);
     })().catch((err) => {
       console.error(`[turn_ended] failed to record turn for session=${result.sessionId.slice(0, 8)}:`, err);
     });
   });
-  claudeService.on('user-input-request', (request) => {
+  sessionManager.on('user-input-request', (request) => {
     // The CardBuilder emits a card-event (update with pendingInput) before
     // this fires, so any PWA subscribed to /sessions/:id/cards already sees
     // the prompt. Here we only handle side effects: push-notify idle peers
@@ -519,7 +519,7 @@ export async function runDaemon(): Promise<void> {
     // pending permission and ask the user — "it wants to run X, shall I allow?".
     voiceIntermediary.notifyPendingPermission(request);
   });
-  claudeService.on('user-input-resolved', (info) => {
+  sessionManager.on('user-input-resolved', (info) => {
     // CardBuilder.clearPendingInput emits a card-event (update with
     // pendingInput: undefined) before this fires, so PWA state is already
     // reconciled via the /sessions/:id/cards subscription.
@@ -529,16 +529,16 @@ export async function runDaemon(): Promise<void> {
       data: { requestId: info.requestId },
     });
   });
-  claudeService.on('session-updated', (info) => {
+  sessionManager.on('session-updated', (info) => {
     // Delivered via the bus `/sessions/active` subscription. New peers receive
     // the full active-session list atomically in their snap frame, so no
     // separate connect-time broadcast is needed.
     bus.publish<SessionUpdatePayload>('/sessions/active', info);
   });
-  claudeService.on('preferences-updated', (prefs) => {
+  sessionManager.on('preferences-updated', (prefs) => {
     bus.publish<ClaudePreferences>('/preferences', prefs);
   });
-  claudeService.on('session-config-updated', (payload) => {
+  sessionManager.on('session-config-updated', (payload) => {
     bus.publish<SessionConfigUpdatedPayload>('/sessions/config', payload);
   });
 
@@ -600,7 +600,7 @@ export async function runDaemon(): Promise<void> {
       onSubscribed: () => messageHandler.refreshCodexQuotaIfStale(),
     },
   );
-  claudeService.on('codex-turn-settled', () => {
+  sessionManager.on('codex-turn-settled', () => {
     void messageHandler.refreshCodexQuota(true);
   });
 
@@ -637,11 +637,11 @@ export async function runDaemon(): Promise<void> {
   );
 
   // Init preferences from the last session's JSONL (best-effort, non-blocking)
-  claudeService.initPreferences().catch(() => {});
+  sessionManager.initPreferences().catch(() => {});
 
   // Init session registry (loads all entries from disk)
   getSessionRegistry();
-  const stopSessionRegistryWatcher = startSessionRegistryWatcher(bus, claudeService);
+  const stopSessionRegistryWatcher = startSessionRegistryWatcher(bus, sessionManager);
 
   // Per-session card stream, pendingInput overlay, and session status are all
   // delivered via the bus (`/sessions/:id/cards` + `/sessions/active`), so the
@@ -707,7 +707,7 @@ export async function runDaemon(): Promise<void> {
   // Start debug HTTP server (local-only, gated by debug mode)
   let debugHttpServer: DebugHttpServer | null = null;
   if (isDebugEnabled()) {
-    debugHttpServer = new DebugHttpServer(claudeService);
+    debugHttpServer = new DebugHttpServer(sessionManager);
     debugHttpServer.start().catch((err) => {
       console.warn('Failed to start debug HTTP server:', err);
     });
@@ -941,7 +941,7 @@ function registerDaemonMethods(
   // debug — full daemon introspection snapshot
   ipcServer.registerMethod('debug', (): DebugResult => {
     const connState = connection.getDebugState();
-    const claudeState = messageHandler.getClaudeService().getDebugState();
+    const claudeState = messageHandler.getSessionManager().getDebugState();
     return {
       pid: process.pid,
       uptime: process.uptime(),
@@ -957,7 +957,7 @@ function registerDaemonMethods(
     const requestId = params.requestId as string;
     const action = (params.action as string) || 'allow';
     if (!requestId) throw Object.assign(new Error('Missing requestId'), { rpcCode: -32602 });
-    const resolved = messageHandler.getClaudeService().resolveUserInput({
+    const resolved = messageHandler.getSessionManager().resolveUserInput({
       requestId,
       sessionId: '',
       action: action as 'allow' | 'deny',
@@ -968,7 +968,7 @@ function registerDaemonMethods(
   // list-sessions — SDK sessions enriched with live state
   ipcServer.registerMethod('list-sessions', async (params): Promise<{ sessions: unknown[] }> => {
     const cwd = (params.cwd as string) || getManagedRepos()[0] || process.cwd();
-    const sessions = await messageHandler.getClaudeService().listAvailableSessions(cwd);
+    const sessions = await messageHandler.getSessionManager().listAvailableSessions(cwd);
     return { sessions };
   });
 
@@ -979,7 +979,7 @@ function registerDaemonMethods(
     const offset = (params.offset as number) || 0;
     const limit = (params.limit as number) || 50;
     if (!sessionId) throw Object.assign(new Error('Missing sessionId'), { rpcCode: -32602 });
-    return messageHandler.getClaudeService().getCards(sessionId, cwd, offset, limit);
+    return messageHandler.getSessionManager().getCards(sessionId, cwd, offset, limit);
   });
 }
 

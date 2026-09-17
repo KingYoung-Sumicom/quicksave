@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 import { useEffect, useMemo, useRef, useCallback, useState } from 'react';
 import { clsx } from 'clsx';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 import { useConnectionStore } from '../stores/connectionStore';
 import type {
-  ClaudeSessionSummary,
+  SessionSummary,
   ClaudeUserInputResponsePayload,
   ConfigValue,
   SessionControlRequestResponsePayload,
@@ -43,7 +43,7 @@ import { selectPanelMode, type SessionPanelMode, useSessionRightPanelStore } fro
 type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; machineAgentId?: string; sandboxed?: boolean; reasoningEffort?: string; fastMode?: boolean; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
 type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean };
 
-interface ClaudePanelProps {
+interface SessionPanelProps {
   onSelectSession?: (sessionId: string) => void;
   sessionId?: string;
   newSession?: boolean;
@@ -169,7 +169,7 @@ function PendingMissionBanner({
   session,
   onDismiss,
 }: {
-  session?: ClaudeSessionSummary;
+  session?: SessionSummary;
   onDismiss?: (sessionId: string, cwd: string, dismissedAt?: number) => Promise<void> | void;
 }) {
   const mission = session?.pendingMission;
@@ -218,7 +218,7 @@ function QueuedComposerPanel({
   onSteerQueuedSession,
   onDeleteQueuedSession,
 }: {
-  session?: ClaudeSessionSummary;
+  session?: SessionSummary;
   onSteerQueuedSession?: (sessionId: string) => Promise<void> | void;
   onDeleteQueuedSession?: (sessionId: string, queuedId: string) => Promise<void> | void;
 }) {
@@ -300,7 +300,7 @@ function QueuedComposerPanel({
   );
 }
 
-export function ClaudePanel({
+export function SessionPanel({
   onSelectSession,
   sessionId: urlSessionId,
   newSession,
@@ -320,7 +320,7 @@ export function ClaudePanel({
   onDismissPendingMission,
   onNewSession,
   voiceAgent: voiceAgentProp,
-}: ClaudePanelProps) {
+}: SessionPanelProps) {
   const {
     sessions,
     activeSessionId,
@@ -343,7 +343,7 @@ export function ClaudePanel({
     setActiveSession,
     setStreamError,
     clearCards,
-  } = useClaudeStore();
+  } = useSessionStore();
 
   const hideToolCalls = useUiPrefsStore((s) => s.hideToolCalls);
   // Prefer the viewed project/session's machine; fall back to the global
@@ -595,28 +595,6 @@ export function ClaudePanel({
     }
   }, [urlSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-subscribe after agent reconnect: the relay drops all pubsub subscriptions
-  // when the agent's WebSocket disconnects. When the agent comes back online and
-  // key exchange completes, we must call getCards (which re-subscribes the peer).
-  // This covers both full PWA reconnects (relayState change) and agent-only
-  // relay blips (agentOnline flips false→true while connectionState stays 'connected').
-  const prevOnlineRef = useRef(agentOnline);
-  useEffect(() => {
-    const wasOnline = prevOnlineRef.current;
-    prevOnlineRef.current = agentOnline;
-    if (!urlSessionId || relayState !== 'connected') return;
-    // Agent came back online (was offline or null → true)
-    if (agentOnline === true && wasOnline === false) {
-      console.log(`[sub:panel] agent reconnected: re-subscribe session=${urlSessionId.slice(0, 8)}`);
-      onGetSessionCards(urlSessionId);
-    }
-    // Initial load: no cards yet
-    if (agentOnline === true && wasOnline === null && cards.length === 0) {
-      console.log(`[sub:panel] initial load: subscribe session=${urlSessionId.slice(0, 8)}`);
-      onGetSessionCards(urlSessionId);
-    }
-  }, [agentOnline, relayState]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // Unsubscribe when leaving session view (navigating to session list)
   useEffect(() => {
     if (!isChat && activeSessionId) {
@@ -625,7 +603,7 @@ export function ClaudePanel({
     }
   }, [isChat]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Reset session-bound store state on unmount. claudeStore is module-level
+  // Reset session-bound store state on unmount. sessionStore is module-level
   // and survives ProjectDetail's lifecycle, so without this `activeSessionId`
   // and `cards` carry over to the next panel mount. The new mount's first
   // urlSessionId effect would then unsub through a fresh (empty) per-hook
@@ -679,7 +657,7 @@ export function ClaudePanel({
   }, [cards, isStreaming]);
 
 
-  const handleSelectSession = useCallback(async (session: ClaudeSessionSummary) => {
+  const handleSelectSession = useCallback(async (session: SessionSummary) => {
     if (onSelectSession) {
       onSelectSession(session.sessionId);
     } else {
@@ -843,7 +821,7 @@ export function ClaudePanel({
     // Read cards from the live store rather than the closure so this
     // callback reference stays stable across re-renders — required for
     // CardRenderer's memoization to actually skip re-renders on keystrokes.
-    const card = useClaudeStore.getState().cards.find((c) => c.pendingInput?.requestId === requestId);
+    const card = useSessionStore.getState().cards.find((c) => c.pendingInput?.requestId === requestId);
     if (!card?.pendingInput) return;
     onRespondToUserInput({
       sessionId: card.pendingInput.sessionId,
@@ -858,7 +836,7 @@ export function ClaudePanel({
   const handleLoadMore = useCallback(async () => {
     // Read isLoadingHistory from live store state (not stale closure) to prevent
     // the IntersectionObserver from firing duplicate requests before React re-renders.
-    if (!activeSessionId || useClaudeStore.getState().isLoadingHistory || !historyHasMore) return;
+    if (!activeSessionId || useSessionStore.getState().isLoadingHistory || !historyHasMore) return;
     const container = chatContainerRef.current;
     const prevScrollHeight = container?.scrollHeight ?? 0;
     const prevScrollTop = container?.scrollTop ?? 0;
@@ -1038,7 +1016,7 @@ export function ClaudePanel({
 
   // Append a finalized transcript to the prompt (shared by streaming + batch).
   const commitTranscript = useCallback((text: string) => {
-    const prev = useClaudeStore.getState().promptInput;
+    const prev = useSessionStore.getState().promptInput;
     const next = prev.trim() ? `${prev.trim()} ${text}` : text;
     setPromptInput(next);
     saveDraft(next);

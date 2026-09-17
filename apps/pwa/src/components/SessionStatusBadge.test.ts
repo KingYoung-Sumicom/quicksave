@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { describe, it, expect } from 'vitest';
-import type { ClaudeSessionSummary } from '@sumicom/quicksave-shared';
+import type { SessionSummary } from '@sumicom/quicksave-shared';
 import { isSessionUnread, sessionStatusKey } from './SessionStatusBadge';
 
-function makeSummary(overrides: Partial<ClaudeSessionSummary> = {}): ClaudeSessionSummary {
+function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
     sessionId: 's1',
     summary: 'subject',

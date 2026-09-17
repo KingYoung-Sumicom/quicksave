@@ -5,9 +5,9 @@ import { useNavigate } from 'react-router-dom';
 import { SwipeableDrawer } from './SwipeableDrawer';
 import { Modal } from './ui/Modal';
 import type { ConfigValue, ProjectRepo, SessionControlRequestResponsePayload } from '@sumicom/quicksave-shared';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 import { useConnectionStore } from '../stores/connectionStore';
-import { ClaudeSettingsSection } from './settings/ClaudeSettingsSection';
+import { ProviderSettingsSection } from './settings/ProviderSettingsSection';
 import { ControlRequestPalette } from './settings/ControlRequestPalette';
 import { pathToHash } from '../lib/pathHash';
 import { SubagentsPanel } from './chat/SubagentsPanel';
@@ -58,14 +58,14 @@ export function SettingsPanelContent({
   const navigate = useNavigate();
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [showControlPalette, setShowControlPalette] = useState(false);
-  const storeSessionId = useClaudeStore((s) => s.activeSessionId);
+  const storeSessionId = useSessionStore((s) => s.activeSessionId);
   // The drawer is rendered for a URL-bound session. During route changes the
   // global active id can briefly still name the previous task; that must not
   // replace the explicit route identity or the panel can render no utilities
   // for the session the user is viewing.
   const activeSessionId = sessionIdProp ?? storeSessionId ?? null;
-  const localIsStreaming = useClaudeStore((s) => s.isStreaming);
-  const sessions = useClaudeStore((s) => s.sessions);
+  const localIsStreaming = useSessionStore((s) => s.isStreaming);
+  const sessions = useSessionStore((s) => s.sessions);
   const activeSession = activeSessionId ? sessions[activeSessionId] : undefined;
   const isStreaming = localIsStreaming || !!activeSession?.isStreaming;
   const isClaudeCode = activeSession?.agent === 'claude-code';
@@ -118,7 +118,7 @@ export function SettingsPanelContent({
       {!activeSessionId && (
         <div className="space-y-3">
           <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Agent</h3>
-          <ClaudeSettingsSection sessionId={null} onSetConfig={onSetSessionConfig} />
+          <ProviderSettingsSection sessionId={null} onSetConfig={onSetSessionConfig} />
         </div>
       )}
 

@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: MIT
 import { clsx } from 'clsx';
 import { FormattedMessage } from 'react-intl';
-import type { AgentId, ClaudeSessionSummary, SessionStage } from '@sumicom/quicksave-shared';
+import type { AgentId, SessionSummary, SessionStage } from '@sumicom/quicksave-shared';
 import { sessionStatusKey, SESSION_STATUS } from './SessionStatusBadge';
 import { formatRelativeTime } from '../lib/formatRelativeTime';
 import { AGENT_LABEL } from '../lib/agentLabel';
 import { MachineIcon } from './icons/MachineIcon';
 
 interface SessionTicketCardProps {
-  session: ClaudeSessionSummary;
+  session: SessionSummary;
   onClick: () => void;
   /** Render in a denser variant — drops the third-line note preview. */
   compact?: boolean;
@@ -20,7 +20,7 @@ interface SessionTicketCardProps {
    * since the last turn-end / pending-input event. Renders a stronger
    * subject (semibold + brighter text) and an accent bar on the leading
    * edge so the user can spot which tickets they haven't read yet.
-   * Driven by `useClaudeStore.unreadSessions[sessionId]` — see store doc.
+   * Driven by `useSessionStore.unreadSessions[sessionId]` — see store doc.
    */
   isUnread?: boolean;
   /** Override the wrapper button's padding/spacing — for nested layouts. */
@@ -108,7 +108,7 @@ function formatMissionDue(ts: number): string {
 // sessions that need handling — in particular pending permission / pending
 // user input. Ticket metadata (stage, blocked) is communicated through the
 // chip labels below, not the dot color, so it can't mask a live signal.
-function pickDot(session: ClaudeSessionSummary): { color: string; pulse: boolean } {
+function pickDot(session: SessionSummary): { color: string; pulse: boolean } {
   const s = SESSION_STATUS[sessionStatusKey(session)];
   return { color: s.dotColor, pulse: s.pulse };
 }

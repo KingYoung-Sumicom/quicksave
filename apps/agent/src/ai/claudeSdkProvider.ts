@@ -83,7 +83,7 @@ export class SdkProviderSession implements ProviderSession {
     const userEvent = this.cardBuilder.userMessage(prompt, attachments);
     // Emit the card-event so other PWA tabs subscribed to this session see
     // the follow-up prompt in real time. The sending tab dedupes its
-    // optimistic card by text + recent timestamp in claudeStore.
+    // optimistic card by text + recent timestamp in sessionStore.
     this.callbacks?.emitCardEvent(userEvent);
     const userMsg: SDKUserMessage = {
       type: 'user',
@@ -376,7 +376,7 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
 
     // Record + emit the initial user prompt so other PWA tabs subscribed to
     // this session see it in real time. The sending tab dedupes its
-    // optimistic card by text + recent timestamp in claudeStore.
+    // optimistic card by text + recent timestamp in sessionStore.
     if (prompt || (attachments && attachments.length > 0)) {
       emitCard(cb.userMessage(prompt ?? '', attachments));
     }

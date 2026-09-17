@@ -3,19 +3,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type {
   AgentId,
-  ClaudeSessionSummary,
+  SessionSummary,
   ContextUsageBreakdown,
   SessionUpdatePayload,
 } from '@sumicom/quicksave-shared';
 import { applySessionUpdate } from './applySessionUpdate';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 
 // ── Mock the zustand store module. Each test rewrites getState()'s return. ──
-vi.mock('../stores/claudeStore', () => ({
-  useClaudeStore: { getState: vi.fn() },
+vi.mock('../stores/sessionStore', () => ({
+  useSessionStore: { getState: vi.fn() },
 }));
 
-const getStateMock = useClaudeStore.getState as unknown as ReturnType<typeof vi.fn>;
+const getStateMock = useSessionStore.getState as unknown as ReturnType<typeof vi.fn>;
 
 // ── Helpers ──
 
@@ -48,8 +48,8 @@ function makePayload(overrides: Partial<SessionUpdatePayload> = {}): SessionUpda
 const MACHINE_AGENT_ID = 'machine-a';
 
 function makeSummary(
-  overrides: Partial<ClaudeSessionSummary & { machineAgentId?: string }> = {}
-): ClaudeSessionSummary & { machineAgentId?: string } {
+  overrides: Partial<SessionSummary & { machineAgentId?: string }> = {}
+): SessionSummary & { machineAgentId?: string } {
   // Build a summary that deep-matches makePayload() by default, so idempotency
   // comparisons hold unless a test explicitly overrides a compared field.
   return {
@@ -81,7 +81,7 @@ function makeSummary(
 }
 
 interface StoreStub {
-  sessions: Record<string, ClaudeSessionSummary & { machineAgentId?: string }>;
+  sessions: Record<string, SessionSummary & { machineAgentId?: string }>;
   activeSessionId: string | null;
   upsertSession: ReturnType<typeof vi.fn>;
   setActiveSession: ReturnType<typeof vi.fn>;
@@ -187,7 +187,7 @@ describe('applySessionUpdate', () => {
     // Parametrized: each single-field difference must trigger upsert.
     const diffCases: Array<{
       field: string;
-      existing: Partial<ClaudeSessionSummary>;
+      existing: Partial<SessionSummary>;
       incoming: Partial<SessionUpdatePayload>;
     }> = [
       { field: 'isActive', existing: { isActive: true }, incoming: { isActive: false } },

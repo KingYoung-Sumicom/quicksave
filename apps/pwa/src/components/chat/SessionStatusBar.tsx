@@ -16,8 +16,8 @@ import {
   getCodexFastServiceTierId,
   isCodexFastServiceTier,
   normalizeAgentId,
-} from '../../lib/claudePresets';
-import { useClaudeStore } from '../../stores/claudeStore';
+} from '../../lib/agentPresets';
+import { useSessionStore } from '../../stores/sessionStore';
 import { selectCodexModelsForAgent, selectOpenCodeModelsForAgent, useConnectionStore } from '../../stores/connectionStore';
 import { CodexGoalBadge } from './CodexGoalBadge';
 
@@ -64,9 +64,9 @@ export function SessionStatusBar({
   const [openPopover, setOpenPopover] = useState<string | null>(null);
   const [guardianSetup, setGuardianSetup] = useState<OpenCodeConfigSnapshotResponsePayload['guardian'] | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
-  const sessionMachineAgentId = useClaudeStore((s) => s.sessions[sessionId]?.machineAgentId);
+  const sessionMachineAgentId = useSessionStore((s) => s.sessions[sessionId]?.machineAgentId);
   const codexModels = useConnectionStore((s) => selectCodexModelsForAgent(s, sessionMachineAgentId));
-  const allow1mForBilledModels = useClaudeStore((s) => s.allow1mForBilledModels);
+  const allow1mForBilledModels = useSessionStore((s) => s.allow1mForBilledModels);
 
   const rawAgent = (config.agent as string) ?? 'claude-code';
   const agentId = normalizeAgentId(rawAgent);

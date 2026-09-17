@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { FormattedMessage, useIntl } from 'react-intl';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 import { useMachineStore } from '../stores/machineStore';
 import { useConnectionStore } from '../stores/connectionStore';
 import { BaseStatusBar, BackButton } from './BaseStatusBar';
@@ -11,7 +11,7 @@ import { Spinner } from './ui/Spinner';
 import { ConfirmModal } from './ui/ConfirmModal';
 import { pathToHash } from '../lib/pathHash';
 import type {
-  ClaudeSessionSummary,
+  SessionSummary,
   ProjectRepo,
   ProjectDeleteResponsePayload,
   SessionListArchivedResponsePayload,
@@ -49,7 +49,7 @@ export function ProjectDetail({
   const intl = useIntl();
   const navigate = useNavigate();
   const { projectId } = useParams<{ projectId: string }>();
-  const sessions = useClaudeStore((s) => s.sessions);
+  const sessions = useSessionStore((s) => s.sessions);
   const error = useConnectionStore((s) => s.agentConnections[agentId]?.error ?? null);
   const removeProject = useMachineStore((s) => s.removeProject);
   const [showMenu, setShowMenu] = useState(false);
@@ -90,7 +90,7 @@ export function ProjectDetail({
     return () => window.clearInterval(id);
   }, []);
 
-  const handleSelectSession = useCallback((session: ClaudeSessionSummary) => {
+  const handleSelectSession = useCallback((session: SessionSummary) => {
     navigate(`/p/${projectId}/s/${session.sessionId}`);
   }, [navigate, projectId]);
 

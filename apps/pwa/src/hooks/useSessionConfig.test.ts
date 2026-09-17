@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 import type { ConfigValue } from '@sumicom/quicksave-shared';
 import {
   DEFAULT_AGENT,
@@ -9,7 +9,7 @@ import {
   DEFAULT_PERMISSION_MODE,
   DEFAULT_REASONING_EFFORT,
 } from '@sumicom/quicksave-shared';
-import { normalizeAgentId } from '../lib/claudePresets';
+import { normalizeAgentId } from '../lib/agentPresets';
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -28,7 +28,7 @@ Object.defineProperty(globalThis, 'localStorage', { value: localStorageMock });
  * This lets us test the config merging in a pure unit-test context.
  */
 function getSessionConfig(sessionId: string | null): Record<string, ConfigValue> {
-  const state = useClaudeStore.getState();
+  const state = useSessionStore.getState();
   const { sessionConfigs, selectedModel, selectedAgent, selectedPermissionMode, selectedReasoningEffort, sandboxEnabled } = state;
 
   if (!sessionId) {
@@ -63,8 +63,8 @@ function getSessionConfig(sessionId: string | null): Record<string, ConfigValue>
 
 describe('useSessionConfig (logic)', () => {
   beforeEach(() => {
-    useClaudeStore.getState().reset();
-    useClaudeStore.setState({
+    useSessionStore.getState().reset();
+    useSessionStore.setState({
       selectedModel: DEFAULT_MODEL,
       selectedAgent: DEFAULT_AGENT,
       selectedPermissionMode: DEFAULT_PERMISSION_MODE,
@@ -85,7 +85,7 @@ describe('useSessionConfig (logic)', () => {
     });
 
     it('reflects changed store values', () => {
-      useClaudeStore.setState({
+      useSessionStore.setState({
         selectedModel: 'claude-haiku-4-5-20251001',
         selectedAgent: 'codex',
         selectedPermissionMode: 'bypassPermissions',
@@ -110,7 +110,7 @@ describe('useSessionConfig (logic)', () => {
     });
 
     it('merges session-specific overrides', () => {
-      useClaudeStore.setState({
+      useSessionStore.setState({
         sessionConfigs: {
           'session-1': { title: 'My Session', model: 'claude-haiku-4-5-20251001' },
         },
@@ -123,21 +123,21 @@ describe('useSessionConfig (logic)', () => {
     });
 
     it('normalizes codex agent from session config', () => {
-      useClaudeStore.setState({
+      useSessionStore.setState({
         sessionConfigs: { 'session-1': { agent: 'codex' } },
       });
       expect(getSessionConfig('session-1').agent).toBe('codex');
     });
 
     it('normalizes codex-mcp to codex', () => {
-      useClaudeStore.setState({
+      useSessionStore.setState({
         sessionConfigs: { 'session-1': { agent: 'codex-mcp' } },
       });
       expect(getSessionConfig('session-1').agent).toBe('codex');
     });
 
     it('preserves opencode agent from resumed session config', () => {
-      useClaudeStore.setState({
+      useSessionStore.setState({
         selectedAgent: 'claude-code',
         sessionConfigs: { 'session-1': { agent: 'opencode' } },
       });
@@ -145,7 +145,7 @@ describe('useSessionConfig (logic)', () => {
     });
 
     it('preserves pi agent from resumed session config', () => {
-      useClaudeStore.setState({
+      useSessionStore.setState({
         selectedAgent: 'claude-code',
         sessionConfigs: { 'session-1': { agent: 'pi' } },
       });
@@ -153,21 +153,21 @@ describe('useSessionConfig (logic)', () => {
     });
 
     it('normalizes legacy provider field to agent', () => {
-      useClaudeStore.setState({
+      useSessionStore.setState({
         sessionConfigs: { 'session-1': { provider: 'codex-mcp' } },
       });
       expect(getSessionConfig('session-1').agent).toBe('codex');
     });
 
     it('normalizes unknown provider to claude-code', () => {
-      useClaudeStore.setState({
+      useSessionStore.setState({
         sessionConfigs: { 'session-1': { agent: 'claude-code' } },
       });
       expect(getSessionConfig('session-1').agent).toBe('claude-code');
     });
 
     it('session config overrides store defaults', () => {
-      useClaudeStore.setState({
+      useSessionStore.setState({
         selectedPermissionMode: 'default',
         sessionConfigs: { 'session-1': { permissionMode: 'bypassPermissions' } },
       });
@@ -175,14 +175,14 @@ describe('useSessionConfig (logic)', () => {
     });
 
     it('maps legacy opencode bypassPermissions onto auto (OpenCode yolo is an alias of auto)', () => {
-      useClaudeStore.setState({
+      useSessionStore.setState({
         sessionConfigs: { 'session-1': { agent: 'opencode', permissionMode: 'bypassPermissions' } },
       });
       expect(getSessionConfig('session-1').permissionMode).toBe('auto');
     });
 
     it('preserves non-standard session config keys', () => {
-      useClaudeStore.setState({
+      useSessionStore.setState({
         sessionConfigs: { 'session-1': { customKey: 'customValue' } },
       });
       expect(getSessionConfig('session-1').customKey).toBe('customValue');

@@ -13,7 +13,7 @@ import type {
 } from '@sumicom/quicksave-shared';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useMachineStore } from '../stores/machineStore';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 import { useProjects } from '../hooks/useProjects';
 import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { ChevronIcon } from './ui/ChevronIcon';
@@ -33,7 +33,7 @@ import { VoiceCapturePreparingOverlay } from './VoiceCapturePreparingOverlay';
 import { VoiceRecoveryDrafts } from './VoiceRecoveryDrafts';
 import { toProjectId } from '../lib/projectId';
 import { getBusForAgent } from '../lib/busRegistry';
-import { useClaudeOperations } from '../hooks/useClaudeOperations';
+import { useSessionOperations } from '../hooks/useSessionOperations';
 import { useGitOperations } from '../hooks/useGitOperations';
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from '../lib/composerDraft';
 import type { WebSocketClient } from '../lib/websocket';
@@ -667,23 +667,23 @@ function SessionTab({
     (): MessageBusClient | null => (project?.agentId ? getBusForAgent(project.agentId) : null),
     [project?.agentId],
   );
-  const { startSession } = useClaudeOperations(sessionAgentBus);
+  const { startSession } = useSessionOperations(sessionAgentBus);
 
-  const selectedAgent = useClaudeStore((s) => s.selectedAgent);
-  const selectedModel = useClaudeStore((s) => s.selectedModel);
-  const selectedPermissionMode = useClaudeStore((s) => s.selectedPermissionMode);
-  const selectedContextWindow = useClaudeStore((s) => s.selectedContextWindow);
-  const selectedReasoningEffort = useClaudeStore((s) => s.selectedReasoningEffort);
-  const selectedFastMode = useClaudeStore((s) => s.selectedFastMode);
-  const sandboxEnabled = useClaudeStore((s) => s.sandboxEnabled);
-  const setGlobalPromptInput = useClaudeStore((s) => s.setPromptInput);
+  const selectedAgent = useSessionStore((s) => s.selectedAgent);
+  const selectedModel = useSessionStore((s) => s.selectedModel);
+  const selectedPermissionMode = useSessionStore((s) => s.selectedPermissionMode);
+  const selectedContextWindow = useSessionStore((s) => s.selectedContextWindow);
+  const selectedReasoningEffort = useSessionStore((s) => s.selectedReasoningEffort);
+  const selectedFastMode = useSessionStore((s) => s.selectedFastMode);
+  const sandboxEnabled = useSessionStore((s) => s.sandboxEnabled);
+  const setGlobalPromptInput = useSessionStore((s) => s.setPromptInput);
 
   const [prompt, setPrompt] = useState('');
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const newSessionDraftKey = project ? `qs_addnew_draft_${project.projectId}` : null;
 
-  // Add New lives outside ClaudePanel, so it needs its own project-scoped
+  // Add New lives outside SessionPanel, so it needs its own project-scoped
   // composer draft. Switching projects restores that project's unfinished text.
   useEffect(() => {
     if (!newSessionDraftKey) {
@@ -776,10 +776,10 @@ function SessionTab({
         ...(attachmentIds.length > 0 ? { attachmentIds, attachmentMetadata } : {}),
       });
       if (!acknowledged) {
-        setError(useClaudeStore.getState().streamError ?? intl.formatMessage({ id: 'addNew.session.failed' }));
+        setError(useSessionStore.getState().streamError ?? intl.formatMessage({ id: 'addNew.session.failed' }));
         return;
       }
-      const sid = useClaudeStore.getState().activeSessionId;
+      const sid = useSessionStore.getState().activeSessionId;
       if (isTerminalNewSession) {
         setGlobalPromptInput('');
       } else {

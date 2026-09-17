@@ -9,17 +9,17 @@ import {
   DEFAULT_REASONING_EFFORT,
 } from '@sumicom/quicksave-shared';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
-import { useClaudeStore } from '../../stores/claudeStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import { selectCodexModelsForAgent, selectOpenCodeModelsForAgent, useConnectionStore } from '../../stores/connectionStore';
 import { AGENT_TYPES, getAgentProvider } from '../../lib/agentProvider';
 import {
   getCodexFastServiceTierId,
   isCodexFastServiceTier,
   normalizeAgentId,
-} from '../../lib/claudePresets';
+} from '../../lib/agentPresets';
 import { ButtonGroup } from '../ui/ButtonGroup';
 
-interface ClaudeSettingsSectionProps {
+interface ProviderSettingsSectionProps {
   /** Session ID — null means new session (shows defaults, changes update store only) */
   sessionId: string | null;
   /** Called for any config key change on an active session */
@@ -30,12 +30,12 @@ interface ClaudeSettingsSectionProps {
   hideFields?: Array<'agent' | 'model' | 'permission' | 'reasoningEffort' | 'sandbox' | 'contextWindow'>;
 }
 
-export function ClaudeSettingsSection({ sessionId, onSetConfig, agentLocked, hideFields = [] }: ClaudeSettingsSectionProps) {
+export function ProviderSettingsSection({ sessionId, onSetConfig, agentLocked, hideFields = [] }: ProviderSettingsSectionProps) {
   const hide = new Set(hideFields);
   const config = useSessionConfig(sessionId);
-  const sessionAgentId = useClaudeStore((s) => sessionId ? s.sessions[sessionId]?.machineAgentId : undefined);
+  const sessionAgentId = useSessionStore((s) => sessionId ? s.sessions[sessionId]?.machineAgentId : undefined);
   const codexModels = useConnectionStore((s) => selectCodexModelsForAgent(s, sessionAgentId));
-  const allow1mForBilledModels = useClaudeStore((s) => s.allow1mForBilledModels);
+  const allow1mForBilledModels = useSessionStore((s) => s.allow1mForBilledModels);
 
   const rawAgent = (config['agent'] as string | undefined) ?? (config['provider'] as string | undefined);
   const selectedAgent = rawAgent ? normalizeAgentId(rawAgent) : DEFAULT_AGENT;
@@ -102,7 +102,7 @@ function CodexPendingHint({
   sessionId: string | null;
   isCodexAgent: boolean;
 }) {
-  const isStreaming = useClaudeStore((s) =>
+  const isStreaming = useSessionStore((s) =>
     sessionId ? !!s.sessions[sessionId]?.isStreaming : false,
   );
   if (!isCodexAgent || !sessionId || !isStreaming) return null;

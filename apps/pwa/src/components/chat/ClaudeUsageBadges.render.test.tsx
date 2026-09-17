@@ -4,7 +4,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ClaudeQuotaSnapshot } from '@sumicom/quicksave-shared';
-import { useClaudeStore } from '../../stores/claudeStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import { useClaudeQuotaStore } from '../../stores/claudeQuotaStore';
 import { ClaudeUsageBadges } from './ClaudeUsageBadges';
 
@@ -18,8 +18,8 @@ describe('ClaudeUsageBadges rendering', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    useClaudeStore.getState().reset();
-    useClaudeStore.setState({
+    useSessionStore.getState().reset();
+    useSessionStore.setState({
       sessionConfigs: {
         'claude-session': { agent: 'claude-code' },
       },
@@ -32,7 +32,7 @@ describe('ClaudeUsageBadges rendering', () => {
       root.unmount();
     });
     container.remove();
-    useClaudeStore.getState().reset();
+    useSessionStore.getState().reset();
     useClaudeQuotaStore.setState({ byAgent: {} });
   });
 

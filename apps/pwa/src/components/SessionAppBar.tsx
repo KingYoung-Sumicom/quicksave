@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 import { useNavigate } from 'react-router-dom';
 import type { ConfigValue, ProjectRepo, SessionControlRequestResponsePayload } from '@sumicom/quicksave-shared';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { StatusDot, sessionStatusKey, type SessionStatusKey } from './SessionStatusBadge';
 import { BaseStatusBar, MenuButton, BackButton, DrawerButton } from './BaseStatusBar';
@@ -52,7 +52,7 @@ export function SessionAppBar({
   const openSettingsPanel = () => {
     const targetSessionId = sessionId && sessionId !== 'new'
       ? sessionId
-      : useClaudeStore.getState().activeSessionId;
+      : useSessionStore.getState().activeSessionId;
     if (targetSessionId) openPanelForSession(targetSessionId, 'settings');
   };
 
@@ -145,9 +145,9 @@ export function SessionAppBar({
 }
 
 function SessionStatusIndicator({ sessionId }: { sessionId?: string }) {
-  const activeSessionId = useClaudeStore((s) => s.activeSessionId);
-  const sessions = useClaudeStore((s) => s.sessions);
-  const sessionConfigs = useClaudeStore((s) => s.sessionConfigs);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const sessions = useSessionStore((s) => s.sessions);
+  const sessionConfigs = useSessionStore((s) => s.sessionConfigs);
   const displaySessionId = sessionId && sessionId !== 'new' ? sessionId : activeSessionId;
 
   if (!displaySessionId) return null;

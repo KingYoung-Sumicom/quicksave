@@ -4,7 +4,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { describe, expect, it } from 'vitest';
 import type { Card, SubagentCard } from '@sumicom/quicksave-shared';
-import { useClaudeStore } from '../../stores/claudeStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import { collectSubagents, SubagentsPanel } from './SubagentsPanel';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -76,7 +76,7 @@ describe('collectSubagents', () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
-    useClaudeStore.getState().setCards([
+    useSessionStore.getState().setCards([
       system('Sub-agent active: /root/route_candidate_tiers', Date.now()),
     ]);
 
@@ -93,7 +93,7 @@ describe('collectSubagents', () => {
     } finally {
       await act(async () => root.unmount());
       container.remove();
-      useClaudeStore.getState().reset();
+      useSessionStore.getState().reset();
     }
   });
 });

@@ -447,7 +447,7 @@ export class CliProviderSession implements ProviderSession {
     const userEvent = this.cardBuilder?.userMessage(prompt, attachments);
     // Emit the card-event so other PWA tabs subscribed to this session see
     // the follow-up prompt in real time. The sending tab already rendered an
-    // optimistic user card; claudeStore.handleCardEvent dedupes by text +
+    // optimistic user card; sessionStore.handleCardEvent dedupes by text +
     // recent timestamp so the duplicate does not stack.
     if (userEvent) this.callbacks?.emitCardEvent(userEvent);
     // Pause the idle clock immediately — CLI will start a new turn once it

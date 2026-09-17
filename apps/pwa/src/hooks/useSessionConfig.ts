@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 import type { ConfigValue } from '@sumicom/quicksave-shared';
 import {
   DEFAULT_AGENT,
@@ -9,21 +9,21 @@ import {
   DEFAULT_PERMISSION_MODE,
   DEFAULT_REASONING_EFFORT,
 } from '@sumicom/quicksave-shared';
-import { normalizeAgentId } from '../lib/claudePresets';
+import { normalizeAgentId } from '../lib/agentPresets';
 
 /**
  * Returns the runtime config for an active session.
  * Falls back to new-session defaults from the store when sessionId is null.
  */
 export function useSessionConfig(sessionId: string | null): Record<string, ConfigValue> {
-  const sessionConfigs = useClaudeStore((s) => s.sessionConfigs);
-  const selectedModel = useClaudeStore((s) => s.selectedModel);
-  const selectedAgent = useClaudeStore((s) => s.selectedAgent);
-  const selectedPermissionMode = useClaudeStore((s) => s.selectedPermissionMode);
-  const selectedReasoningEffort = useClaudeStore((s) => s.selectedReasoningEffort);
-  const selectedFastMode = useClaudeStore((s) => s.selectedFastMode);
-  const sandboxEnabled = useClaudeStore((s) => s.sandboxEnabled);
-  const selectedContextWindow = useClaudeStore((s) => s.selectedContextWindow);
+  const sessionConfigs = useSessionStore((s) => s.sessionConfigs);
+  const selectedModel = useSessionStore((s) => s.selectedModel);
+  const selectedAgent = useSessionStore((s) => s.selectedAgent);
+  const selectedPermissionMode = useSessionStore((s) => s.selectedPermissionMode);
+  const selectedReasoningEffort = useSessionStore((s) => s.selectedReasoningEffort);
+  const selectedFastMode = useSessionStore((s) => s.selectedFastMode);
+  const sandboxEnabled = useSessionStore((s) => s.sandboxEnabled);
+  const selectedContextWindow = useSessionStore((s) => s.selectedContextWindow);
 
   if (!sessionId) {
     // New session — return store defaults (falling back to shared defaults)

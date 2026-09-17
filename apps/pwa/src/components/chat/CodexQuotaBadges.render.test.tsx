@@ -4,7 +4,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { CodexQuotaSnapshot } from '@sumicom/quicksave-shared';
-import { useClaudeStore } from '../../stores/claudeStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import { useCodexQuotaStore } from '../../stores/codexQuotaStore';
 import { CodexQuotaBadges } from './CodexQuotaBadges';
 
@@ -18,8 +18,8 @@ describe('CodexQuotaBadges rendering', () => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    useClaudeStore.getState().reset();
-    useClaudeStore.setState({
+    useSessionStore.getState().reset();
+    useSessionStore.setState({
       sessionConfigs: {
         'codex-session': { agent: 'codex' },
       },
@@ -32,7 +32,7 @@ describe('CodexQuotaBadges rendering', () => {
       root.unmount();
     });
     container.remove();
-    useClaudeStore.getState().reset();
+    useSessionStore.getState().reset();
     useCodexQuotaStore.setState({ byAgent: {} });
   });
 

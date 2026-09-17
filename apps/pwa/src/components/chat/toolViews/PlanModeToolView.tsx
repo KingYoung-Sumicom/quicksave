@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { ChatMarkdown } from '../ChatMarkdown';
 import { Modal } from '../../ui/Modal';
-import { PERMISSION_MODES } from '../../../lib/claudePresets';
+import { PERMISSION_MODES } from '../../../lib/agentPresets';
 
 export function EnterPlanModeToolView() {
   return <span className="text-indigo-400">Entering plan mode</span>;

@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import { useMachineStore } from '../stores/machineStore';
 import { useConnectionStore } from '../stores/connectionStore';
-import { useClaudeStore } from '../stores/claudeStore';
+import { useSessionStore } from '../stores/sessionStore';
 import { toProjectId } from '../lib/projectId';
 
 export interface ProjectEntry {
@@ -24,14 +24,14 @@ export interface ProjectEntry {
 }
 
 /**
- * Derives a sorted project list from machineStore + connectionStore + claudeStore.
+ * Derives a sorted project list from machineStore + connectionStore + sessionStore.
  * For the connected machine, live session data overrides cached data.
  * Sorted by lastActivityAt desc.
  */
 export function useProjects(): ProjectEntry[] {
   const machines = useMachineStore((s) => s.machines);
   const agentConnections = useConnectionStore((s) => s.agentConnections);
-  const sessions = useClaudeStore((s) => s.sessions);
+  const sessions = useSessionStore((s) => s.sessions);
 
   return useMemo(() => {
     // Pre-compute live session stats keyed by `{agentId}\0{cwd}` so the same

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { clsx } from 'clsx';
 import type { CodexQuotaSnapshot, CodexQuotaWindow } from '@sumicom/quicksave-shared';
 import { useSessionConfig } from '../../hooks/useSessionConfig';
-import { normalizeAgentId } from '../../lib/claudePresets';
+import { normalizeAgentId } from '../../lib/agentPresets';
 import { useCodexQuotaStore } from '../../stores/codexQuotaStore';
 
 const ORDERED_WINDOWS: Array<CodexQuotaWindow['id']> = ['five_hour', 'seven_day'];

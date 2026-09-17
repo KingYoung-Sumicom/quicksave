@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FilesReadResponsePayload } from '@sumicom/quicksave-shared';
 import { useFileOps } from '../../hooks/useFileOps';
 import { getBusForAgent } from '../../lib/busRegistry';
-import { useClaudeStore } from '../../stores/claudeStore';
+import { useSessionStore } from '../../stores/sessionStore';
 import { useFilePreviewStore } from '../../stores/filePreviewStore';
 import { Spinner } from '../ui/Spinner';
 
@@ -52,7 +52,7 @@ export function LocalFileImage({
   agentId?: string;
   className?: string;
 }) {
-  const activeSession = useClaudeStore((state) => {
+  const activeSession = useSessionStore((state) => {
     const id = state.activeSessionId;
     return id ? state.sessions[id] : undefined;
   });
