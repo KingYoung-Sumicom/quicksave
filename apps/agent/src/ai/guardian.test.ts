@@ -180,6 +180,26 @@ describe('buildGuardianContext', () => {
   it('handles empty input', () => {
     expect(buildGuardianContext([])).toEqual({ userIntent: [], recentActions: [] });
   });
+
+  it('anchors on the newest activity when the legacy route pages oldest-first', () => {
+    // The legacy v1 fallback (used when the v2 route returns an empty page)
+    // delivers messages oldest-first and stamps each with a creation time.
+    // The 12-message window must still land on the NEWEST activity, not the
+    // oldest — with 20+ messages the old assumption-based slicing picked the
+    // session's first user requests instead of the current ones, so the
+    // reviewer judged tool calls against stale intent.
+    const messages: OpenCodeV2Message[] = [];
+    for (let i = 0; i < 20; i++) {
+      messages.push({
+        id: `m${i}`,
+        type: 'user',
+        text: `request number ${i}`,
+        createdAt: 1_700_000_000 + i * 1_000,
+      });
+    }
+    const context = buildGuardianContext(messages); // oldest-first input
+    expect(context.userIntent).toEqual(['request number 18', 'request number 19']);
+  });
 });
 
 describe('buildGuardianReviewText', () => {

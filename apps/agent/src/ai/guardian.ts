@@ -179,7 +179,16 @@ export interface GuardianContext {
  * `descMessages` must be newest-first, as returned by
  * `getMessagePage(order: 'desc')`. */
 export function buildGuardianContext(descMessages: readonly OpenCodeV2Message[]): GuardianContext {
-  const ascending = [...descMessages].reverse().slice(-CONTEXT_MESSAGE_LIMIT);
+  // The v2 route honors the requested order (newest-first for `desc`), but the
+  // legacy v1 fallback pages oldest-first. When every message carries a
+  // creation timestamp (the legacy adapter stamps one), sort explicitly so the
+  // context is anchored on the newest activity regardless of which route
+  // served the page. Without timestamps, fall back to the v2 contract.
+  const stamped = descMessages.every((message) => typeof message.createdAt === 'number');
+  const ordered = stamped
+    ? [...descMessages].sort((a, b) => a.createdAt! - b.createdAt!)
+    : [...descMessages].reverse();
+  const ascending = ordered.slice(-CONTEXT_MESSAGE_LIMIT);
 
   // Collected newest-first; present chronologically (oldest request first).
   const userIntent: string[] = [];

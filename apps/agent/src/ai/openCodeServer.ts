@@ -292,6 +292,9 @@ export interface OpenCodeProviderInfo {
 export interface OpenCodeV2Message {
   id: string;
   type: string;
+  /** Creation time in epoch ms. Set when the message was adapted from the
+   *  legacy v1 route (which pages oldest-first, unlike the v2 contract). */
+  createdAt?: number;
   text?: string;
   content?: Array<Record<string, unknown>>;
   command?: string;
@@ -361,10 +364,14 @@ function legacyMessagesToV2(messages: OpenCodeLegacyMessagePage['data']): OpenCo
   return messages.map((message) => {
     const info = message.info;
     const id = typeof info.id === 'string' ? info.id : `legacy-${Date.now()}`;
+    const time = isRecord(info.time) ? info.time.created : undefined;
+    const createdAt = typeof time === 'number' ? time : undefined;
+    const created = createdAt !== undefined ? { createdAt } : {};
     if (info.role === 'user') {
       return {
         id,
         type: 'user',
+        ...created,
         text: message.parts
           .filter((part) => part.type === 'text' && typeof part.text === 'string')
           .map((part) => part.text as string)
@@ -387,7 +394,7 @@ function legacyMessagesToV2(messages: OpenCodeLegacyMessagePage['data']): OpenCo
         state: { ...state, content: state.content ?? state.output ?? [] },
       }];
     });
-    return { id, type: 'assistant', content };
+    return { id, type: 'assistant', ...created, content };
   });
 }
 
