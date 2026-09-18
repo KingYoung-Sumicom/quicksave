@@ -76,7 +76,7 @@ Variants:
 | `user` (`UserCard`) | 43–46 | A user prompt. `text: string`. |
 | `assistant_text` (`AssistantTextCard`) | 48–53 | Streaming or finalized assistant prose. `text` accumulates via `append_text` events; `streaming?: boolean` flips false on finalize. |
 | `thinking` (`ThinkingCard`) | 55–58 | Reasoning trace. Plain `text`. Codex reasoning summary AND raw reasoning AND Claude `thinking` blocks all funnel here. |
-| `tool_call` (`ToolCallCard`) | 60–73 | A tool invocation. Carries `toolName`, `toolInput`, `toolUseId`, optional `result: ToolCallResult`, optional `answers: Record<string,string>` (AskUserQuestion only). `pendingInput` carries a permission/question UI prompt while pending. |
+| `tool_call` (`ToolCallCard`) | 60–73 | A tool invocation. Carries `toolName`, `toolInput`, `toolUseId`, optional `result: ToolCallResult`, optional `answers: Record<string,string>` (AskUserQuestion only), optional `historyAnchorItemId` (AskUserQuestion only — see the supplemental persistence note under `setToolAnswers`). `pendingInput` carries a permission/question UI prompt while pending. |
 | `subagent` (`SubagentCard`) | 81–92 | A child Agent invocation (Claude only today). `description`, `agentId`, `toolUseId`, `status: 'running' \| 'completed' \| 'failed' \| 'stopped'`, `summary?`, `toolUseCount`, `lastToolName?`. |
 | `system` (`SystemCard`) | 96–100 | Banners. `text` + `subtype: SystemCardSubtype` (`'compacted' \| 'cost' \| 'error' \| 'info' \| 'warning'`). Used for compaction notices, errors, "User interrupted", unknown-block fallbacks. |
 
@@ -145,9 +145,9 @@ provider must forward to `callbacks.emitCardEvent()`.
 | `assistantText(text)` | 425 | First call adds an `assistant_text` card with `streaming: true`. Subsequent calls return `append_text` events on the same card. | Coalesce continues until any non-text mutation resets `currentTextCardId`. |
 | `finalizeAssistantText()` | 436 | `update { streaming: false }` on current text card; null otherwise. | Idempotent on null path: returns `null` after first call. |
 | `toolUse(name, input, id)` | 448 | `add` of a `tool_call`; OR `update { toolInput }` if the toolUseId already had a card from `toolCallFromPermission`. | Same call is used for "create card" and "patch input" — keyed on `toolUseIdToCardId`. |
-| `toolCallFromPermission(name, input, id, pending, ephemeral?)` | 471 | `add` (with `pendingInput`) OR `update { pendingInput }` if `toolUse` already created the card. `ephemeral` marks for removal on resolve. | Driven by SessionManager (handlePermissionRequest), not the provider stream. |
+| `toolCallFromPermission(name, input, id, pending, ephemeral?, historyAnchorItemId?)` | 471 | `add` (with `pendingInput`) OR `update { pendingInput }` if `toolUse` already created the card. `ephemeral` marks for removal on resolve. `historyAnchorItemId` stores the native item the question belongs to. | Driven by SessionManager (handlePermissionRequest), not the provider stream. |
 | `toolResult(id, content, isError)` | 540 | `update { result }`; null if no matching `tool_call`. Truncates content > 500 chars and sets `truncated: true`. |
-| `setToolAnswers(id, answers)` | 553 | `update { answers }` on `tool_call`. | Used only for AskUserQuestion. |
+| `setToolAnswers(id, answers)` | 553 | `update { answers }` on `tool_call`. When native history is authoritative (`disablePersistence` mode), a resolved AskUserQuestion card is additionally persisted as a supplemental record (questions + answers). The question arrives as a server request, not a thread item, so native history can never rebuild it; SessionManager's `getCards` re-merges the supplemental record beside its anchor item or turn on reload. | Used only for AskUserQuestion. |
 | `attachPendingToSubagent(agentId, pending)` | 500 | `update { pendingInput }` on the `subagent` card. |
 | `clearPendingInput(requestId)` | 507 | `update { pendingInput: null }`, OR `remove` if ephemeral; null if no match. |
 | `subagentStart(desc, agentId, toolUseId?)` | 559 | Adds a `subagent` card; positions `afterCardId = toolUseId's card`. |

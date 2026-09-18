@@ -2316,7 +2316,7 @@ describe('SessionManager', () => {
       expect(older.cards.map((card) => card.id)).toEqual(['anchored', 'follow-up-old']);
     });
 
-    it('keeps an unresolved item anchor hidden instead of placing it at its turn tail', async () => {
+    it('falls back to the turn tail for an unresolved item anchor when the turn is present', async () => {
       const codexProvider = {
         ...createMockProvider('codex'),
         historyMode: 'codex-thread' as const,
@@ -2337,7 +2337,139 @@ describe('SessionManager', () => {
 
       const result = await mgr.getCards('codex-history', '/tmp/test');
 
-      expect(result.cards.map((card) => card.id)).toEqual(['same-turn', 'later-turn']);
+      expect(result.cards.map((card) => card.id)).toEqual(['same-turn', 'orphaned-follow-up', 'later-turn']);
+    });
+
+    it('keeps an orphaned prompt hidden when its anchor turn is absent from the page', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex'),
+        historyMode: 'codex-thread' as const,
+        loadCardHistory: vi.fn().mockResolvedValue({
+          cards: [
+            { type: 'assistant_text', id: 'later-turn', timestamp: 2, text: 'Later turn', streaming: false, turnId: 'turn-2', nativeItemId: 'item-later' },
+          ],
+          hasMore: false,
+        }),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      const { loadPersistedCards } = await import('./cardBuilder.js');
+      (loadPersistedCards as Mock).mockResolvedValue([{
+        type: 'follow_up_question', id: 'orphaned-follow-up', timestamp: 1,
+        question: 'Original choice?', answer: 'Yes', turnId: 'turn-1', historyAnchorItemId: 'missing-native-item',
+      }]);
+
+      const result = await mgr.getCards('codex-history', '/tmp/test');
+
+      expect(result.cards.map((card) => card.id)).toEqual(['later-turn']);
+    });
+
+    it('restores a resolved AskUserQuestion tool card at its turn after a reload', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex'),
+        historyMode: 'codex-thread' as const,
+        loadCardHistory: vi.fn().mockResolvedValue({
+          cards: [
+            { type: 'assistant_text', id: 'native-1', timestamp: 1, text: 'Native answer', streaming: false, turnId: 'turn-1', nativeItemId: 'item-1' },
+            { type: 'assistant_text', id: 'native-2', timestamp: 2, text: 'Later turn', streaming: false, turnId: 'turn-2', nativeItemId: 'item-2' },
+          ],
+          total: 2,
+          hasMore: false,
+          nativeTimeRange: { startMs: 1, endMs: 3 },
+        }),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      const { loadPersistedCards } = await import('./cardBuilder.js');
+      const { loadPersistedCardsInTimeRange } = await import('./cardHistoryIndex.js');
+      (loadPersistedCardsInTimeRange as Mock).mockResolvedValue([
+        {
+          type: 'tool_call',
+          id: 'question-1',
+          timestamp: 2,
+          toolName: 'AskUserQuestion',
+          toolInput: { questions: [{ question: 'Which framework?', options: [{ label: 'React' }, { label: 'Vue' }] }] },
+          toolUseId: 'tu-question',
+          answers: { 'Which framework?': 'React' },
+          turnId: 'turn-1',
+          // The request_user_input item never materializes in native history,
+          // so the item anchor must degrade to the turn.
+          historyAnchorItemId: 'item-question',
+        },
+      ]);
+
+      const result = await mgr.getCards('codex-history', '/tmp/test');
+
+      expect(result.cards).toMatchObject([
+        { id: 'native-1' },
+        { id: 'question-1', type: 'tool_call', toolName: 'AskUserQuestion', answers: { 'Which framework?': 'React' } },
+        { id: 'native-2' },
+      ]);
+      expect(result.total).toBe(3);
+      expect(loadPersistedCardsInTimeRange).toHaveBeenCalledWith('codex-history', { startMs: 1, endMs: 3 });
+      expect(loadPersistedCards).not.toHaveBeenCalled();
+    });
+
+    it('ignores unanswered questions and non-question tool cards from the supplemental index', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex'),
+        historyMode: 'codex-thread' as const,
+        loadCardHistory: vi.fn().mockResolvedValue({
+          cards: [
+            { type: 'assistant_text', id: 'native-1', timestamp: 1, text: 'Native answer', streaming: false, turnId: 'turn-1', nativeItemId: 'item-1' },
+          ],
+          total: 1,
+          hasMore: false,
+          nativeTimeRange: { startMs: 1, endMs: 3 },
+        }),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      const { loadPersistedCardsInTimeRange } = await import('./cardHistoryIndex.js');
+      (loadPersistedCardsInTimeRange as Mock).mockResolvedValue([
+        { type: 'tool_call', id: 'bash-1', timestamp: 2, toolName: 'Bash', toolInput: { command: 'ls' }, toolUseId: 'tu-bash', turnId: 'turn-1' },
+        { type: 'tool_call', id: 'question-open', timestamp: 2, toolName: 'AskUserQuestion', toolInput: { questions: [] }, toolUseId: 'tu-open', turnId: 'turn-1' },
+      ]);
+
+      const result = await mgr.getCards('codex-history', '/tmp/test');
+
+      expect(result.cards.map((card) => card.id)).toEqual(['native-1']);
+      expect(result.total).toBe(1);
+    });
+
+    it('does not duplicate an answered question card that is still live in the CardBuilder', async () => {
+      const liveQuestionCard = {
+        type: 'tool_call',
+        id: 'codex-live:5',
+        timestamp: 2,
+        toolName: 'AskUserQuestion',
+        toolInput: { questions: [{ question: 'Which?', options: [{ label: 'A' }] }] },
+        toolUseId: 'tu-live',
+        answers: { 'Which?': 'A' },
+        turnId: 'turn-1',
+        historyAnchorItemId: 'item-live',
+      };
+      const codexProvider = {
+        ...createMockProvider('codex'),
+        historyMode: 'codex-thread' as const,
+        loadCardHistory: vi.fn().mockResolvedValue({
+          cards: [
+            { type: 'assistant_text', id: 'native-1', timestamp: 1, text: 'Native answer', streaming: false, turnId: 'turn-1', nativeItemId: 'item-1' },
+          ],
+          total: 1,
+          hasMore: false,
+        }),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      (mgr as unknown as { sessions: Map<string, { cardBuilder: { getCards: () => unknown[] } }> }).sessions.set(
+        'codex-history',
+        { cardBuilder: { getCards: () => [liveQuestionCard] } },
+      );
+      const { loadPersistedCards } = await import('./cardBuilder.js');
+      (loadPersistedCards as Mock).mockResolvedValue([liveQuestionCard]);
+
+      const result = await mgr.getCards('codex-history', '/tmp/test');
+
+      // The live merge already represents the whole turn; the persisted
+      // duplicate must not be inserted a second time.
+      expect(result.cards.filter((card) => card.id === 'codex-live:5')).toHaveLength(1);
     });
 
     it('should return cards from history for claude-jsonl provider', async () => {

@@ -200,16 +200,20 @@ claude:start → MessageHandler.handleClaudeStart()
          → cardAdapter translates `turn/started`, `item/*`, `turn/completed`,
            autonomous turns started by goal mode, and related v2 notifications into
            CardBuilder events
-         → an experimental `item/tool/requestUserInput` with `isBlocking: false`
-           becomes a `follow_up_question`; its reply resolves that server
-           request and never starts a new `turn/start`. The resolved card keeps
-           the selected answer (or a dismissed marker) in the live conversation
-           and as supplemental card history, because the native thread has no
-           `request_user_input` item to reconstruct after a reload. The
-           supplemental record keeps the emitting native item and turn anchor;
-           history inserts it immediately after that item (or turn fallback),
-           including when the relevant older page is loaded, rather than
-           appending it below the newest conversation.
+          → an experimental `item/tool/requestUserInput` with `isBlocking: false`
+            becomes a `follow_up_question`; its reply resolves that server
+            request and never starts a new `turn/start`. Blocking requests
+            become ordinary AskUserQuestion `tool_call` cards instead. The
+            resolved card keeps the selected answer (or a dismissed marker) in
+            the live conversation and as supplemental card history, because the
+            native thread has no `request_user_input` item to reconstruct after
+            a reload. The supplemental record keeps the emitting native item
+            and turn anchor; history inserts it immediately after that item
+            (falling back to the end of its turn when the item anchor is absent
+            — the AskUserQuestion item id never materializes in native history,
+            so the turn anchor is its effective placement), including when the
+            relevant older page is loaded, rather than appending it below the
+            newest conversation.
     → SessionManager registers ManagedSession + permission table + bypass-flag sentinel
   ← sessionId
 

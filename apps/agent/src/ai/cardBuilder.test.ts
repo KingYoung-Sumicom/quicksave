@@ -347,6 +347,37 @@ describe('StreamCardBuilder', () => {
       expect(card.toolName).toBe('Bash');
     });
 
+    it('attaches the native-history anchor to a new question card', () => {
+      const pending = makePendingInput('req-anchor');
+      const event = builder.toolCallFromPermission(
+        'AskUserQuestion',
+        { questions: [{ question: 'Which?', options: [{ label: 'A' }] }] },
+        'tu-anchor',
+        pending,
+        false,
+        'item-anchor',
+      ) as CardAddEvent;
+
+      expect(event.type).toBe('add');
+      expect(event.card).toMatchObject({
+        type: 'tool_call',
+        toolName: 'AskUserQuestion',
+        historyAnchorItemId: 'item-anchor',
+      });
+    });
+
+    it('attaches the native-history anchor to an existing card', () => {
+      const addEvent = builder.toolUse('AskUserQuestion', { questions: [] }, 'tu-anchor2') as CardAddEvent;
+      const pending = makePendingInput('req-anchor2');
+      const event = builder.toolCallFromPermission(
+        'AskUserQuestion', { questions: [] }, 'tu-anchor2', pending, false, 'item-anchor2',
+      ) as CardUpdateEvent;
+
+      expect(event.type).toBe('update');
+      expect(event.cardId).toBe(addEvent.card.id);
+      expect(event.patch).toMatchObject({ historyAnchorItemId: 'item-anchor2' });
+    });
+
     it('updates existing card with pendingInput when toolUse arrived first', () => {
       // tool_use arrives first in stream
       const addEvent = builder.toolUse('Bash', { command: 'ls' }, 'tu-race') as CardAddEvent;

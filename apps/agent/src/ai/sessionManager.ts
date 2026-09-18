@@ -212,11 +212,12 @@ function buildAskUserAnswers(
   return answers;
 }
 
-/** Insert persisted optional Codex prompts beside the native item (or turn)
- * that emitted them. Native provider history is page-based, so a prompt whose
- * anchor is absent stays hidden rather than being incorrectly appended beneath
- * the newest conversation. */
-function insertSupplementalFollowUps(
+/** Insert persisted native-provider prompt cards (optional follow-ups and
+ * resolved AskUserQuestion tool cards) beside the native item (or turn) that
+ * emitted them. Native provider history is page-based, so a prompt whose
+ * anchor turn is absent from the page stays hidden rather than being
+ * incorrectly appended beneath the newest conversation. */
+function insertSupplementalQuestionCards(
   cards: Card[],
   supplemental: readonly Card[],
 ): number {
@@ -232,28 +233,37 @@ function insertSupplementalFollowUps(
   };
 
   const ordered = supplemental
-    .filter((card): card is Extract<Card, { type: 'follow_up_question' }> =>
-      card.type === 'follow_up_question' && !existingIds.has(card.id),
-    )
+    .filter((card) => !existingIds.has(card.id))
     .map((card, index) => ({ card, index }))
     .sort((a, b) => a.card.timestamp - b.card.timestamp || a.index - b.index)
     .map(({ card }) => card);
 
   for (const card of ordered) {
-    const anchorKey = card.historyAnchorItemId
-      ? `item:${card.historyAnchorItemId}`
-      : card.turnId ? `turn:${card.turnId}` : undefined;
-    let anchorIndex = anchorKey ? insertedAfter.get(anchorKey) : undefined;
-
-    if (anchorIndex === undefined && card.historyAnchorItemId) {
-      anchorIndex = findLastIndex((nativeCard) => nativeCard.nativeItemId === card.historyAnchorItemId);
+    const itemAnchor = 'historyAnchorItemId' in card ? card.historyAnchorItemId : undefined;
+    const anchorKeys = [
+      ...(itemAnchor ? [`item:${itemAnchor}`] : []),
+      ...(card.turnId ? [`turn:${card.turnId}`] : []),
+    ];
+    let anchorIndex: number | undefined;
+    for (const key of anchorKeys) {
+      const stacked = insertedAfter.get(key);
+      if (stacked !== undefined) { anchorIndex = stacked; break; }
     }
-    // An item id is an exact native-history anchor. Do not silently degrade an
-    // unresolved item anchor to the end of its turn: that produces a plausible
-    // but incorrect dialogue order after a reload. Turn anchoring is reserved
-    // for legacy cards that predate item-level anchors.
-    if (anchorIndex === undefined && !card.historyAnchorItemId && card.turnId) {
-      anchorIndex = findLastIndex((nativeCard) => nativeCard.turnId === card.turnId);
+
+    if (anchorIndex === undefined && itemAnchor) {
+      const found = findLastIndex((nativeCard) => nativeCard.nativeItemId === itemAnchor);
+      if (found >= 0) anchorIndex = found;
+    }
+    // An item id is an exact native-history anchor when the native item exists
+    // (optional follow-ups anchor on the agent message that emitted them).
+    // AskUserQuestion records are the exception: request_user_input arrives as
+    // a server request and has no native thread item, so its item anchor can
+    // never resolve. Degrade to the end of its turn instead of hiding the
+    // card — the answer belongs to that turn, and hiding it would drop the
+    // user's reply from the reloaded history.
+    if (anchorIndex === undefined && card.turnId) {
+      const found = findLastIndex((nativeCard) => nativeCard.turnId === card.turnId);
+      if (found >= 0) anchorIndex = found;
     }
 
     if (anchorIndex === undefined || anchorIndex < 0) {
@@ -265,7 +275,7 @@ function insertSupplementalFollowUps(
 
     const insertAt = anchorIndex + 1;
     cards.splice(insertAt, 0, card);
-    if (anchorKey) insertedAfter.set(anchorKey, insertAt);
+    for (const key of anchorKeys) insertedAfter.set(key, insertAt);
     existingIds.add(card.id);
     inserted++;
   }
@@ -1922,11 +1932,13 @@ export class SessionManager extends EventEmitter {
 
     // Native Codex/OpenCode history does not contain request_user_input cards.
     // Keep the live prompt visible through a browser refresh, and merge the
-    // supplemental resolved follow-up record written by StreamCardBuilder
-    // after a daemon/browser restart. The native item / turn anchor restores
-    // it at its original dialogue position instead of below the latest card.
-    // Apply this to every history page: older prompts wait for their anchor
-    // turn rather than being misplaced in the newest page.
+    // supplemental resolved-prompt records written by StreamCardBuilder after
+    // a daemon/browser restart (optional follow-ups and AskUserQuestion tool
+    // cards both arrive as server requests, never thread items). The native
+    // item / turn anchor restores each card at its original dialogue position
+    // instead of below the latest card. Apply this to every history page:
+    // older prompts wait for their anchor turn rather than being misplaced in
+    // the newest page.
     if ((provider.historyMode === 'codex-thread' || provider.historyMode === 'opencode-thread') && !useLocalCardHistory) {
       // Native Codex pages carry their turn-time window. Query the local card
       // index only for records that could belong to this page; item ids still
@@ -1934,15 +1946,19 @@ export class SessionManager extends EventEmitter {
       const persistedCards = result.nativeTimeRange
         ? await loadPersistedCardsInTimeRange(sessionId, result.nativeTimeRange)
         : await loadPersistedCards(sessionId);
-      const persistedFollowUps = persistedCards
-        .filter((card) => card.type === 'follow_up_question');
-      const liveFollowUps = (ps?.cardBuilder?.getCards() ?? [])
-        .filter((card) => card.type === 'follow_up_question');
+      const isSupplementalQuestionCard = (card: Card): boolean =>
+        card.type === 'follow_up_question'
+        || (card.type === 'tool_call'
+          && card.toolName === 'AskUserQuestion'
+          && !!card.answers
+          && Object.keys(card.answers).length > 0);
+      const persistedQuestions = persistedCards.filter(isSupplementalQuestionCard);
+      const liveQuestions = (ps?.cardBuilder?.getCards() ?? []).filter(isSupplementalQuestionCard);
       const supplementalById = new Map<string, Card>();
-      for (const card of persistedFollowUps) supplementalById.set(card.id, card);
-      for (const card of liveFollowUps) supplementalById.set(card.id, card);
+      for (const card of persistedQuestions) supplementalById.set(card.id, card);
+      for (const card of liveQuestions) supplementalById.set(card.id, card);
 
-      const inserted = insertSupplementalFollowUps(
+      const inserted = insertSupplementalQuestionCards(
         result.cards,
         Array.from(supplementalById.values()),
       );
@@ -2213,7 +2229,7 @@ export class SessionManager extends EventEmitter {
           historyAnchorItemId: req.historyAnchorItemId,
           pendingInput: pendingAttachment,
         })
-        : cb.toolCallFromPermission(toolName, toolInput, toolUseId, pendingAttachment);
+        : cb.toolCallFromPermission(toolName, toolInput, toolUseId, pendingAttachment, false, req.historyAnchorItemId);
       this.emit('card-event', cardEvt);
     }
 

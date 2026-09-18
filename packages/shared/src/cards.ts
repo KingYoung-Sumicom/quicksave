@@ -93,6 +93,13 @@ export interface ToolCallCard extends CardBase {
    * selections without waiting for (or parsing) the CLI's tool_result.
    */
   answers?: Record<string, string>;
+  /**
+   * AskUserQuestion only: native item after which this card belongs in
+   * history. The question arrives as a server request, not a thread item, so
+   * the resolved card is persisted as a supplemental record and re-anchored
+   * here on reload.
+   */
+  historyAnchorItemId?: string;
 }
 
 export interface ToolCallResult {

@@ -81,6 +81,84 @@ describe('memory-mode card history persistence', () => {
     ]);
   });
 
+  it('persists a resolved AskUserQuestion tool card when native provider history is otherwise disabled', async () => {
+    const builder = new StreamCardBuilder('codex-question', '/cwd');
+    builder.disablePersistence();
+    builder.startNewTurn('turn-1');
+    builder.toolCallFromPermission(
+      'AskUserQuestion',
+      { questions: [{ question: 'Which framework?', options: [{ label: 'React' }, { label: 'Vue' }] }] },
+      'tu-question',
+      {
+        sessionId: 'codex-question',
+        requestId: 'req-question',
+        inputType: 'question',
+        title: 'Which framework?',
+      },
+      false,
+      'item-question-anchor',
+    );
+    builder.setToolAnswers('tu-question', { 'Which framework?': 'React' });
+
+    await builder.flushCardHistoryWrites();
+
+    const cards = await loadPersistedCards('codex-question');
+    expect(cards).toEqual([expect.objectContaining({
+      type: 'tool_call',
+      toolName: 'AskUserQuestion',
+      toolUseId: 'tu-question',
+      answers: { 'Which framework?': 'React' },
+      historyAnchorItemId: 'item-question-anchor',
+      turnId: 'turn-1',
+    })]);
+    expect((cards[0] as { pendingInput?: unknown }).pendingInput).toBeUndefined();
+  });
+
+  it('does not persist an answered tool card that is not AskUserQuestion', async () => {
+    const builder = new StreamCardBuilder('codex-bash', '/cwd');
+    builder.disablePersistence();
+    builder.startNewTurn('turn-1');
+    builder.toolCallFromPermission(
+      'Bash',
+      { command: 'ls' },
+      'tu-bash',
+      {
+        sessionId: 'codex-bash',
+        requestId: 'req-bash',
+        inputType: 'question',
+        title: 'What?',
+      },
+    );
+    builder.setToolAnswers('tu-bash', { 'What?': 'x' });
+
+    await builder.flushCardHistoryWrites();
+
+    await expect(loadPersistedCards('codex-bash')).resolves.toEqual([]);
+  });
+
+  it('does not persist an unresolved AskUserQuestion card (no answers yet)', async () => {
+    const builder = new StreamCardBuilder('codex-open', '/cwd');
+    builder.disablePersistence();
+    builder.startNewTurn('turn-1');
+    builder.toolCallFromPermission(
+      'AskUserQuestion',
+      { questions: [{ question: 'Which?', options: [{ label: 'A' }] }] },
+      'tu-open',
+      {
+        sessionId: 'codex-open',
+        requestId: 'req-open',
+        inputType: 'question',
+        title: 'Which?',
+      },
+      false,
+      'item-open-anchor',
+    );
+
+    await builder.flushCardHistoryWrites();
+
+    await expect(loadPersistedCards('codex-open')).resolves.toEqual([]);
+  });
+
   it('persists a supplemental manual-stop card beside native history', async () => {
     const builder = new StreamCardBuilder('codex-stopped', '/cwd');
     builder.disablePersistence();

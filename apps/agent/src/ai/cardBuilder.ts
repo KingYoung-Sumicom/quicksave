@@ -862,11 +862,13 @@ export class StreamCardBuilder {
 
   /**
    * Codex/OpenCode histories are normally rebuilt from their native source,
-   * so their general card persistence is disabled. A resolved optional
-   * follow-up has no durable native item, however; persist just that card as
-   * a supplemental history record so a PWA reload can restore the answer.
+   * so their general card persistence is disabled. Resolved native-provider
+   * prompts have no durable native item, however (optional follow-ups and
+   * AskUserQuestion tool cards both arrive as server requests, not thread
+   * items); persist just the resolved card as a supplemental history record
+   * so a PWA reload can restore the answer.
    */
-  private enqueueResolvedFollowUpHistory(card: Card): void {
+  private enqueueResolvedQuestionHistory(card: Card): void {
     if (!this.persistenceDisabled || this.sessionId === 'pending') return;
     const sessionId = this.sessionId;
     this.cardHistoryWriteQueue = this.cardHistoryWriteQueue
@@ -874,7 +876,7 @@ export class StreamCardBuilder {
       .then(() => appendCardHistoryEntry(sessionId, { op: 'upsert', card: cleanPersistedCard(card) }))
       .catch((err) => {
         console.warn(
-          `[card-history] follow-up append failed for session=${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+          `[card-history] resolved question append failed for session=${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
         );
       });
   }
@@ -1060,6 +1062,8 @@ export class StreamCardBuilder {
     pendingInput: PendingInputAttachment,
     /** Ephemeral cards are removed after permission is resolved (subagent permissions). */
     ephemeral = false,
+    /** Native-history anchor for supplemental restoration after a reload. */
+    historyAnchorItemId?: string,
   ): CardEvent {
     this.currentTextCardId = null;
 
@@ -1069,13 +1073,17 @@ export class StreamCardBuilder {
     const pendingWithGuardian = this.pendingInputWithGuardianMessage(toolUseId, pendingInput);
     if (existingCardId) {
       if (ephemeral) this.ephemeralCards.add(existingCardId);
-      return this.updateEvent(existingCardId, { pendingInput: pendingWithGuardian });
+      return this.updateEvent(existingCardId, {
+        pendingInput: pendingWithGuardian,
+        ...(historyAnchorItemId ? { historyAnchorItemId } : {}),
+      });
     }
 
     const id = this.nextId();
     const card: ToolCallCard = {
       type: 'tool_call', id, timestamp: Date.now(),
       toolName, toolInput, toolUseId, pendingInput: pendingWithGuardian,
+      ...(historyAnchorItemId ? { historyAnchorItemId } : {}),
     };
     this.toolUseIdToCardId.set(toolUseId, id);
     if (ephemeral) this.ephemeralCards.add(id);
@@ -1288,7 +1296,22 @@ export class StreamCardBuilder {
   setToolAnswers(toolUseId: string, answers: Record<string, string>): CardEvent | null {
     const cardId = this.toolUseIdToCardId.get(toolUseId);
     if (!cardId) return null;
-    return this.updateEvent(cardId, { answers });
+    const event = this.updateEvent(cardId, { answers });
+    this.persistResolvedQuestionCard(cardId);
+    return event;
+  }
+
+  /** AskUserQuestion tool cards have no native-history item — the question
+   *  arrives as a server request, not a thread item. When native history is
+   *  authoritative, persist the resolved card (questions + answers) as a
+   *  supplemental record so a PWA reload can restore it. Other tool calls
+   *  keep their native items and must not be double-persisted. */
+  private persistResolvedQuestionCard(cardId: CardId): void {
+    if (!this.persistenceDisabled) return;
+    const card = this.cards.get(cardId);
+    if (card?.type !== 'tool_call' || card.toolName !== 'AskUserQuestion') return;
+    if (!card.answers || Object.keys(card.answers).length === 0) return;
+    this.enqueueResolvedQuestionHistory(card);
   }
 
   /** Stash Agent tool_use input fields for later use when task_started arrives. */
@@ -1491,7 +1514,7 @@ export class StreamCardBuilder {
         ...(answer ? { answer } : { dismissed: true }),
       });
       const resolved = this.cards.get(card.id);
-      if (resolved) this.enqueueResolvedFollowUpHistory(resolved);
+      if (resolved) this.enqueueResolvedQuestionHistory(resolved);
       return event;
     }
     return null;
