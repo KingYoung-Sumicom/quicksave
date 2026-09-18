@@ -35,7 +35,6 @@ export function ProviderSettingsSection({ sessionId, onSetConfig, agentLocked, h
   const config = useSessionConfig(sessionId);
   const sessionAgentId = useSessionStore((s) => sessionId ? s.sessions[sessionId]?.machineAgentId : undefined);
   const codexModels = useConnectionStore((s) => selectCodexModelsForAgent(s, sessionAgentId));
-  const allow1mForBilledModels = useSessionStore((s) => s.allow1mForBilledModels);
 
   const rawAgent = (config['agent'] as string | undefined) ?? (config['provider'] as string | undefined);
   const selectedAgent = rawAgent ? normalizeAgentId(rawAgent) : DEFAULT_AGENT;
@@ -87,7 +86,6 @@ export function ProviderSettingsSection({ sessionId, onSetConfig, agentLocked, h
         dynamic,
         hideKeys,
         sessionId,
-        allow1mForBilledModels,
       })}
 
       <CodexPendingHint sessionId={sessionId} isCodexAgent={selectedAgent === 'codex'} />

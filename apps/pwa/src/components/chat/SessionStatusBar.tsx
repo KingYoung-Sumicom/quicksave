@@ -66,7 +66,6 @@ export function SessionStatusBar({
   const barRef = useRef<HTMLDivElement>(null);
   const sessionMachineAgentId = useSessionStore((s) => s.sessions[sessionId]?.machineAgentId);
   const codexModels = useConnectionStore((s) => selectCodexModelsForAgent(s, sessionMachineAgentId));
-  const allow1mForBilledModels = useSessionStore((s) => s.allow1mForBilledModels);
 
   const rawAgent = (config.agent as string) ?? 'claude-code';
   const agentId = normalizeAgentId(rawAgent);
@@ -137,7 +136,6 @@ export function SessionStatusBar({
         dynamic,
         openPopover,
         onOpenPopover: setOpenPopover,
-        allow1mForBilledModels,
       })}
 
       {fastModeAvailable && (

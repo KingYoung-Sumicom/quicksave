@@ -122,22 +122,14 @@ describe('agentPresets', () => {
   });
 
   describe('modelSupports1m', () => {
-    it('returns false for haiku regardless of allowBilled', () => {
+    it('returns false for haiku', () => {
       expect(modelSupports1m('claude-haiku-4-5-20251001')).toBe(false);
-      expect(modelSupports1m('claude-haiku-4-5-20251001', { allowBilled: true })).toBe(false);
     });
 
-    it('returns false for sonnet without allowBilled (1M needs usage credits)', () => {
-      expect(modelSupports1m('claude-sonnet-4-6')).toBe(false);
-    });
-
-    it('returns true for sonnet only when allowBilled is opted in', () => {
-      expect(modelSupports1m('claude-sonnet-4-6', { allowBilled: true })).toBe(true);
-    });
-
-    it('returns true for opus regardless of allowBilled (1M included in subscriptions)', () => {
+    it('returns true for sonnet and opus', () => {
+      expect(modelSupports1m('claude-sonnet-4-6')).toBe(true);
+      expect(modelSupports1m('claude-sonnet-5')).toBe(true);
       expect(modelSupports1m('claude-opus-4-7')).toBe(true);
-      expect(modelSupports1m('claude-opus-4-7', { allowBilled: false })).toBe(true);
     });
   });
 
@@ -147,17 +139,12 @@ describe('agentPresets', () => {
       expect(opts.map((o) => o.value)).toEqual([200_000]);
     });
 
-    it('returns only 200k for sonnet by default', () => {
+    it('returns the full ladder for sonnet', () => {
       const opts = getContextWindowOptionsForModel('claude-sonnet-4-6');
-      expect(opts.map((o) => o.value)).toEqual([200_000]);
-    });
-
-    it('returns the full ladder for sonnet when allowBilled is on', () => {
-      const opts = getContextWindowOptionsForModel('claude-sonnet-4-6', { allowBilled: true });
       expect(opts.map((o) => o.value)).toEqual([200_000, 500_000, 1_000_000]);
     });
 
-    it('returns 200k/500k/1M for opus without allowBilled', () => {
+    it('returns 200k/500k/1M for opus', () => {
       const opts = getContextWindowOptionsForModel('claude-opus-4-7');
       expect(opts.map((o) => o.value)).toEqual([200_000, 500_000, 1_000_000]);
     });
@@ -173,16 +160,11 @@ describe('agentPresets', () => {
       expect(clampContextWindowForModel('claude-haiku-4-5-20251001', 1_000_000)).toBe(200_000);
     });
 
-    it('clamps sonnet down to 200k when allowBilled is off (default)', () => {
-      expect(clampContextWindowForModel('claude-sonnet-4-6', 1_000_000)).toBe(200_000);
+    it('preserves 1M on sonnet', () => {
+      expect(clampContextWindowForModel('claude-sonnet-4-6', 1_000_000)).toBe(1_000_000);
     });
 
-    it('preserves 1M on sonnet when allowBilled is on', () => {
-      expect(clampContextWindowForModel('claude-sonnet-4-6', 1_000_000, { allowBilled: true }))
-        .toBe(1_000_000);
-    });
-
-    it('passes 1M through for opus regardless of allowBilled', () => {
+    it('passes 1M through for opus', () => {
       expect(clampContextWindowForModel('claude-opus-4-7', 1_000_000)).toBe(1_000_000);
     });
 

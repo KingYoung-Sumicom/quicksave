@@ -47,11 +47,6 @@ const PREFS_KEY = 'quicksave:session-prefs';
 interface PersistedPrefs {
   selectedAgent: AgentId;
   agentPrefs: AgentPrefsMap;
-  /** Opt-in to spending usage credits for 1M context on models that aren't
-   *  included in the user's subscription plan (Sonnet 1M today). Default
-   *  false so the UI keeps the user away from a "silently eat your money"
-   *  failure mode — see docs in agentPresets.ts. */
-  allow1mForBilledModels?: boolean;
   /** Ordered list of provider ids sorted by last chosen (most recent first).
    *  Used to sort the provider picker in the two-level model selector. */
   lastChosenProviders?: string[];
@@ -67,7 +62,6 @@ function loadPrefs(): PersistedPrefs {
   const fallback: PersistedPrefs = {
     selectedAgent: DEFAULT_AGENT,
     agentPrefs: defaultAgentPrefsMap(),
-    allow1mForBilledModels: false,
     lastChosenProviders: [],
   };
   try {
@@ -81,7 +75,6 @@ function loadPrefs(): PersistedPrefs {
     };
 
     const selectedAgent = parsed.selectedAgent ?? DEFAULT_AGENT;
-    const allow1mForBilledModels = parsed.allow1mForBilledModels === true;
     const merged = defaultAgentPrefsMap();
 
     if (parsed.agentPrefs) {
@@ -132,12 +125,12 @@ function loadPrefs(): PersistedPrefs {
         model: baseModel,
         settings: {
           ...bucket.settings,
-          contextWindow: clampContextWindowForModel(baseModel, cw, { allowBilled: allow1mForBilledModels }),
+          contextWindow: clampContextWindowForModel(baseModel, cw),
         },
       };
     }
 
-    return { selectedAgent, agentPrefs: merged, allow1mForBilledModels };
+    return { selectedAgent, agentPrefs: merged };
   } catch {
     return fallback;
   }
@@ -255,9 +248,6 @@ interface SessionStore {
   selectedFastMode: boolean;
   sandboxEnabled: boolean;
   selectedContextWindow: number;
-  /** User-level opt-in to billed 1M context (Sonnet today). Persisted to
-   *  the same prefs blob as agent settings. See PersistedPrefs.allow1mForBilledModels. */
-  allow1mForBilledModels: boolean;
   /** Ordered list of provider ids sorted by last chosen (most recent first). */
   lastChosenProviders: string[];
 
@@ -318,7 +308,6 @@ interface SessionStore {
   setSelectedContextWindow: (contextWindow: number) => void;
   /** Toggle the billed-1M opt-in. Flipping off re-clamps every Claude-code
    *  agent bucket so a stale 1M Sonnet setting can't sneak through. */
-  setAllow1mForBilledModels: (allowed: boolean) => void;
   /** Write a setting (or 'model') on the active agent's prefs.
    *  Used by provider renderSettings onChange callbacks. */
   setAgentSetting: (key: string, value: unknown) => void;
@@ -359,7 +348,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   selectedAgent: savedPrefs.selectedAgent,
   agentPrefs: savedPrefs.agentPrefs,
   ...flatViewOf(savedPrefs.agentPrefs[savedPrefs.selectedAgent]),
-  allow1mForBilledModels: savedPrefs.allow1mForBilledModels === true,
   lastChosenProviders: savedPrefs.lastChosenProviders ?? [],
   sessionConfigs: {},
 
@@ -583,10 +571,10 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   // Session preferences (new session defaults) — persisted to localStorage.
   // Writes go to the active agent's bucket; the flat view is recomputed.
   setSelectedModel: (model) => {
-    const { selectedAgent, agentPrefs, allow1mForBilledModels } = get();
+    const { selectedAgent, agentPrefs } = get();
     const prevCw = agentPrefs[selectedAgent].settings['contextWindow'] as number | undefined;
     const nextCw = selectedAgent === 'claude-code'
-      ? clampContextWindowForModel(model, prevCw, { allowBilled: allow1mForBilledModels })
+      ? clampContextWindowForModel(model, prevCw)
       : prevCw ?? DEFAULT_CONTEXT_WINDOW;
     const updated: AgentPrefsMap = {
       ...agentPrefs,
@@ -596,13 +584,13 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       },
     };
     set({ agentPrefs: updated, selectedModel: model, selectedContextWindow: nextCw });
-    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
+    savePrefs({ selectedAgent, agentPrefs: updated });
   },
   setSelectedAgent: (agent) => {
     const { agentPrefs } = get();
     const prefs = agentPrefs[agent] ?? defaultPrefsForAgent(agent);
     set({ selectedAgent: agent, ...flatViewOf(prefs) });
-    savePrefs({ selectedAgent: agent, agentPrefs, allow1mForBilledModels: get().allow1mForBilledModels });
+    savePrefs({ selectedAgent: agent, agentPrefs });
   },
   setSelectedPermissionMode: (mode) => {
     const { selectedAgent, agentPrefs } = get();
@@ -611,7 +599,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, permissionMode: mode } },
     };
     set({ agentPrefs: updated, selectedPermissionMode: mode });
-    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
+    savePrefs({ selectedAgent, agentPrefs: updated });
   },
   setSelectedReasoningEffort: (effort) => {
     const { selectedAgent, agentPrefs } = get();
@@ -620,7 +608,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, reasoningEffort: effort } },
     };
     set({ agentPrefs: updated, selectedReasoningEffort: effort });
-    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
+    savePrefs({ selectedAgent, agentPrefs: updated });
   },
   setSandboxEnabled: (enabled) => {
     const { selectedAgent, agentPrefs } = get();
@@ -629,19 +617,19 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, sandbox: enabled } },
     };
     set({ agentPrefs: updated, sandboxEnabled: enabled });
-    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
+    savePrefs({ selectedAgent, agentPrefs: updated });
   },
   setSelectedContextWindow: (contextWindow) => {
-    const { selectedAgent, agentPrefs, allow1mForBilledModels } = get();
+    const { selectedAgent, agentPrefs } = get();
     const clamped = selectedAgent === 'claude-code'
-      ? clampContextWindowForModel(agentPrefs[selectedAgent].model, contextWindow, { allowBilled: allow1mForBilledModels })
+      ? clampContextWindowForModel(agentPrefs[selectedAgent].model, contextWindow)
       : contextWindow;
     const updated: AgentPrefsMap = {
       ...agentPrefs,
       [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, contextWindow: clamped } },
     };
     set({ agentPrefs: updated, selectedContextWindow: clamped });
-    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
+    savePrefs({ selectedAgent, agentPrefs: updated });
   },
   setSelectedFastMode: (enabled) => {
     const { selectedAgent, agentPrefs } = get();
@@ -650,7 +638,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       [selectedAgent]: { ...agentPrefs[selectedAgent], settings: { ...agentPrefs[selectedAgent].settings, fastMode: enabled } },
     };
     set({ agentPrefs: updated, selectedFastMode: enabled });
-    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
+    savePrefs({ selectedAgent, agentPrefs: updated });
   },
   setAgentSetting: (key, value) => {
     if (key === 'model') { get().setSelectedModel(value as string); return; }
@@ -666,36 +654,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     else if (key === 'sandbox') flatPatch.sandboxEnabled = value;
     else if (key === 'contextWindow') flatPatch.selectedContextWindow = value;
     set({ agentPrefs: updated, ...flatPatch });
-    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
-  },
-  setAllow1mForBilledModels: (allowed) => {
-    const { selectedAgent, agentPrefs } = get();
-    // When flipping OFF, walk the claude-code bucket and clamp any leftover
-    // 1M Sonnet (or other billed-1M) setting back down to 200k so the next
-    // session start doesn't immediately trip the "Usage credits required"
-    // API error. Opus stays at whatever the user had — its 1M is included.
-    let updatedPrefs = agentPrefs;
-    if (!allowed) {
-      const claudeBucket = agentPrefs['claude-code'];
-      if (claudeBucket) {
-        const cw = claudeBucket.settings['contextWindow'] as number | undefined;
-        const clamped = clampContextWindowForModel(claudeBucket.model, cw, { allowBilled: false });
-        if (clamped !== cw) {
-          updatedPrefs = {
-            ...agentPrefs,
-            'claude-code': {
-              ...claudeBucket,
-              settings: { ...claudeBucket.settings, contextWindow: clamped },
-            },
-          };
-        }
-      }
-    }
-    const flatPatch = updatedPrefs === agentPrefs
-      ? {}
-      : flatViewOf(updatedPrefs[selectedAgent]);
-    set({ allow1mForBilledModels: allowed, agentPrefs: updatedPrefs, ...flatPatch });
-    savePrefs({ selectedAgent, agentPrefs: updatedPrefs, allow1mForBilledModels: allowed });
+    savePrefs({ selectedAgent, agentPrefs: updated });
   },
   setAgentPref: (agent, key, value) => {
     const { selectedAgent, agentPrefs } = get();
@@ -710,15 +669,15 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         ? { agentPrefs: updated, ...flatViewOf(updated[agent]) }
         : { agentPrefs: updated },
     );
-    savePrefs({ selectedAgent, agentPrefs: updated, allow1mForBilledModels: get().allow1mForBilledModels });
+    savePrefs({ selectedAgent, agentPrefs: updated });
   },
   recordProviderChoice: (providerId) => {
     const { lastChosenProviders } = get();
     const filtered = lastChosenProviders.filter((id) => id !== providerId);
     const updated = [providerId, ...filtered];
     set({ lastChosenProviders: updated });
-    const { selectedAgent, agentPrefs, allow1mForBilledModels } = get();
-    savePrefs({ selectedAgent, agentPrefs, allow1mForBilledModels, lastChosenProviders: updated });
+    const { selectedAgent, agentPrefs } = get();
+    savePrefs({ selectedAgent, agentPrefs, lastChosenProviders: updated });
   },
 
   // Per-session runtime config

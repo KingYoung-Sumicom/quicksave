@@ -31,7 +31,7 @@ export interface NewSessionEmptyStateProps {
 
 export function NewSessionEmptyState({ cwd, agentId, projectSelector }: NewSessionEmptyStateProps) {
   const intl = useIntl();
-  const { selectedAgent, selectedModel, agentPrefs, allow1mForBilledModels, setSelectedAgent, setAgentSetting, lastChosenProviders, recordProviderChoice } = useSessionStore();
+  const { selectedAgent, selectedModel, agentPrefs, setSelectedAgent, setAgentSetting, lastChosenProviders, recordProviderChoice } = useSessionStore();
   const codexModels = useConnectionStore((s) => selectCodexModelsForAgent(s, agentId));
   const opencodeModels = useConnectionStore((s) => selectOpenCodeModelsForAgent(s, agentId));
   const setAgentAvailableProviders = useConnectionStore((s) => s.setAgentAvailableProviders);
@@ -125,7 +125,7 @@ export function NewSessionEmptyState({ cwd, agentId, projectSelector }: NewSessi
         {showClaudeAuthGate && <ClaudeAuthBanner agentId={agentId} />}
 
         {/* Provider-owned settings — model + all knobs */}
-        {provider.renderSettings(values, setAgentSetting, { mode: 'new-session', dynamic, allow1mForBilledModels })}
+        {provider.renderSettings(values, setAgentSetting, { mode: 'new-session', dynamic })}
         {selectedAgent === 'opencode' && (
           <div className="space-y-1.5">
             <button
