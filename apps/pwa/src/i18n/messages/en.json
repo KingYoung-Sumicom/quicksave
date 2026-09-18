@@ -19,6 +19,13 @@
   "settings.deviceSync.join.button": "Link to existing device",
   "settings.deviceSync.join.description": "Open the camera and scan a QR from an already-set-up device.",
 
+  "settings.daemonRestart.button": "Restart background daemon",
+  "settings.daemonRestart.description": "Restarts the Quicksave background daemon on every connected machine. Active sessions are interrupted and the connection drops for a few seconds.",
+  "settings.daemonRestart.restarting": "Restarting the background daemon — the connection will return shortly.",
+  "settings.daemonRestart.confirm.title": "Restart the background daemon?",
+  "settings.daemonRestart.confirm.message": "The connection drops briefly and active sessions on the connected machine(s) are interrupted. The PWA reconnects automatically.",
+  "settings.daemonRestart.confirm.button": "Restart",
+
   "settings.dangerZone.title": "Danger zone",
   "settings.dangerZone.primaryKey.label": "Primary key",
   "settings.dangerZone.primaryKey.description": "Root key that encrypts all connections. Back it up to restore access on a new device.",
