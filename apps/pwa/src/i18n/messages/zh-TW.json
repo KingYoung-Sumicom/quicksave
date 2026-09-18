@@ -19,13 +19,6 @@
   "settings.deviceSync.join.button": "連結到現有裝置",
   "settings.deviceSync.join.description": "打開相機,掃描另一台已設定好的裝置上的 QR 碼。",
 
-  "settings.daemonRestart.button": "重啟背景程式",
-  "settings.daemonRestart.description": "重新啟動所有已連線裝置上的 Quicksave 背景 daemon。進行中的 session 會中斷,連線中斷幾秒後自動恢復。",
-  "settings.daemonRestart.restarting": "背景程式重新啟動中,連線稍後會自動恢復…",
-  "settings.daemonRestart.confirm.title": "重啟背景程式?",
-  "settings.daemonRestart.confirm.message": "連線會短暫中斷,已連線裝置上進行中的 session 會被打斷,之後會自動重新連線。",
-  "settings.daemonRestart.confirm.button": "重啟",
-
   "settings.dangerZone.title": "危險區",
   "settings.dangerZone.primaryKey.label": "主金鑰",
   "settings.dangerZone.primaryKey.description": "加密所有連線的根金鑰。備份起來才能在新裝置上還原存取權。",
@@ -80,6 +73,11 @@
   "machineInfo.sessions.description": "重新連線會使用 agent 的記憶體內工作階段清單。若從 Quicksave 外部變更工作階段，請手動重整。",
   "machineInfo.sessions.refresh": "重整工作階段清單",
   "machineInfo.sessions.refreshSuccess": "工作階段清單已重整。",
+  "machineInfo.daemon.title": "背景程式",
+  "machineInfo.daemon.description": "重新啟動這台機器上的 Quicksave 背景 daemon。進行中的工作階段會中斷,連線會中斷幾秒後自動恢復。",
+  "machineInfo.daemon.restart": "重啟背景程式",
+  "machineInfo.daemon.restarting": "重新啟動中…",
+  "machineInfo.daemon.restartSuccess": "背景程式重新啟動中,連線稍後會自動恢復。",
 
   "settings.notifications.title": "通知",
   "settings.notifications.description": "當有任務需要你處理時提醒你。",

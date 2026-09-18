@@ -13,7 +13,6 @@ import { DangerZoneSection } from './settings/DangerZoneSection';
 import { NotificationSection } from './settings/NotificationSection';
 import { MachinesSection } from './settings/MachinesSection';
 import { LanguageSection } from './settings/LanguageSection';
-import { DaemonRestartSection } from './settings/DaemonRestartSection';
 import type { Message, PushSubscriptionOfferPayload } from '@sumicom/quicksave-shared';
 
 interface SettingsPageProps {
@@ -112,8 +111,6 @@ export function SettingsPage({ onSendApiKeyToAgent, onPushOffer }: SettingsPageP
           <LanguageSection />
 
           <div className="border-t border-slate-700" />
-
-          <DaemonRestartSection />
 
           <DangerZoneSection />
 

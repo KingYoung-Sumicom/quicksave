@@ -389,6 +389,52 @@ export function MachineInfoPage({
             </button>
           </section>
 
+          <section className="space-y-3">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+              <FormattedMessage id="machineInfo.daemon.title" />
+            </h3>
+            <p className="text-xs text-slate-500">
+              <FormattedMessage id="machineInfo.daemon.description" />
+            </p>
+            {restartResult && (
+              <div className={`p-2 rounded text-sm ${
+                restartResult.success
+                  ? 'bg-green-500/20 border border-green-500/50 text-green-400'
+                  : 'bg-red-500/20 border border-red-500/50 text-red-400'
+              }`}>
+                {restartResult.success
+                  ? <FormattedMessage id="machineInfo.daemon.restartSuccess" />
+                  : restartResult.message}
+              </div>
+            )}
+            <button
+              type="button"
+              disabled={!isOnline || !onRestartAgent || isRestarting}
+              onClick={async () => {
+                if (!onRestartAgent) return;
+                setIsRestarting(true);
+                setRestartResult(null);
+                try {
+                  const result = await onRestartAgent();
+                  setRestartResult(result.success
+                    ? { success: true, message: '' }
+                    : { success: false, message: result.error || 'Restart failed' });
+                } catch (error) {
+                  setRestartResult({
+                    success: false,
+                    message: error instanceof Error ? error.message : 'Restart failed',
+                  });
+                } finally {
+                  setIsRestarting(false);
+                }
+              }}
+              className="w-full py-2 px-4 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors flex items-center justify-center gap-2"
+            >
+              {isRestarting && <Spinner color="border-white" />}
+              <FormattedMessage id={isRestarting ? 'machineInfo.daemon.restarting' : 'machineInfo.daemon.restart'} />
+            </button>
+          </section>
+
           {/* CLI Agent section — moved here from the in-session settings drawer
               so version checks live with the rest of the per-machine UI. */}
           <div className="space-y-3">
@@ -407,50 +453,6 @@ export function MachineInfoPage({
               <p className="text-xs text-slate-500">
                 Connect to this machine to check or update the agent.
               </p>
-            )}
-
-            {isOnline && devBuild && (
-              <div className="space-y-2">
-                {restartResult && (
-                  <div className={`p-2 rounded text-sm ${
-                    restartResult.success
-                      ? 'bg-green-500/20 border border-green-500/50 text-green-400'
-                      : 'bg-red-500/20 border border-red-500/50 text-red-400'
-                  }`}>
-                    {restartResult.message}
-                  </div>
-                )}
-                <button
-                  onClick={async () => {
-                    if (!onRestartAgent) return;
-                    setIsRestarting(true);
-                    setRestartResult(null);
-                    try {
-                      const result = await onRestartAgent();
-                      if (result.success) {
-                        setRestartResult({ success: true, message: 'Agent is restarting...' });
-                      } else {
-                        setRestartResult({ success: false, message: result.error || 'Restart failed' });
-                      }
-                    } catch (err) {
-                      setRestartResult({ success: false, message: err instanceof Error ? err.message : 'Restart failed' });
-                    } finally {
-                      setIsRestarting(false);
-                    }
-                  }}
-                  disabled={isRestarting || !onRestartAgent}
-                  className="w-full py-2 px-4 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors flex items-center justify-center gap-2"
-                >
-                  {isRestarting ? (
-                    <>
-                      <Spinner color="border-white" />
-                      Restarting...
-                    </>
-                  ) : (
-                    'Restart Agent'
-                  )}
-                </button>
-              </div>
             )}
 
             {isOnline && !devBuild && (
