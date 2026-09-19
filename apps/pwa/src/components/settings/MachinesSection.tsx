@@ -52,15 +52,17 @@ export function MachinesSection() {
           {machines.map((machine) => {
             const conn = agentConnections[machine.agentId];
             const isConnected = conn?.state === 'connected' && conn?.online !== false;
+            const isConnecting = conn?.online !== false
+              && (conn?.state === 'connecting' || conn?.state === 'reconnecting');
             const rowContent = (
               <>
                 <div className="relative w-9 h-9 bg-slate-700 rounded-lg flex items-center justify-center text-slate-300 flex-shrink-0">
                   <MachineIcon className="w-4 h-4" />
                   <span
                     className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-800 ${
-                      isConnected ? 'bg-green-500' : 'bg-slate-500'
+                      isConnected ? 'bg-green-500' : isConnecting ? 'bg-amber-400' : 'bg-slate-500'
                     }`}
-                    aria-label={isConnected ? 'Online' : 'Offline'}
+                    aria-label={isConnected ? 'Online' : isConnecting ? 'Connecting' : 'Offline'}
                   />
                 </div>
                 <div className="flex-1 min-w-0 text-left">
