@@ -62,6 +62,10 @@ const AUDIO_EXT_TO_MIME: Record<string, string> = {
   webm: 'audio/webm',
 };
 
+const DOCUMENT_EXT_TO_MIME: Record<string, string> = {
+  pdf: 'application/pdf',
+};
+
 function imageMimeFor(absPath: string): string | undefined {
   const dot = absPath.lastIndexOf('.');
   if (dot < 0) return undefined;
@@ -72,6 +76,12 @@ function audioMimeFor(absPath: string): string | undefined {
   const dot = absPath.lastIndexOf('.');
   if (dot < 0) return undefined;
   return AUDIO_EXT_TO_MIME[absPath.slice(dot + 1).toLowerCase()];
+}
+
+function documentMimeFor(absPath: string): string | undefined {
+  const dot = absPath.lastIndexOf('.');
+  if (dot < 0) return undefined;
+  return DOCUMENT_EXT_TO_MIME[absPath.slice(dot + 1).toLowerCase()];
 }
 
 /** Weak ETag built from stat metadata. Same shape that the PWA produces
@@ -172,6 +182,11 @@ export class FileBrowser {
       const audioMime = audioMimeFor(targetAbs);
       if (audioMime) {
         return { success: true, ...meta, kind: 'binary', mimeType: audioMime };
+      }
+
+      const documentMime = documentMimeFor(targetAbs);
+      if (documentMime) {
+        return { success: true, ...meta, kind: 'binary', mimeType: documentMime };
       }
 
       const requested = payload.maxBytes ?? DEFAULT_PREVIEW_BYTES;

@@ -24,6 +24,7 @@
     "highlight.js": "^11.11.1",
     "html5-qrcode": "^2.3.8",
     "katex": "^0.16.47",
+    "pdfjs-dist": "^5.7.284",
     "qrcode": "^1.5.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

@@ -19,6 +19,7 @@ import { Spinner } from '../ui/Spinner';
 import { MarkdownPreview } from './MarkdownPreview';
 import { CsvViewer, isCsvPath, csvDelimiterFor } from './CsvViewer';
 import { PinchZoomImage } from './PinchZoomImage';
+import { PdfViewer } from './PdfViewer';
 
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -115,7 +116,7 @@ export function FilePreviewModal() {
     <div className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center sm:p-4">
       <div className="absolute inset-0 bg-black/60" onClick={close} />
       <div
-        className="relative bg-slate-800 sm:rounded-lg w-full sm:max-w-3xl max-h-screen sm:max-h-[90vh] flex flex-col shadow-xl"
+        className="relative bg-slate-800 w-full h-[100dvh] sm:h-auto sm:rounded-lg sm:max-w-3xl sm:max-h-[90vh] flex flex-col shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <FileViewerPane request={current} onClose={close} />
@@ -213,6 +214,10 @@ export function FileViewerPane({
     && isHtml
     && renderHtml
     && canRichRender;
+  const showsPdf = data?.success === true
+    && data.kind === 'binary'
+    && data.encoding === 'base64'
+    && data.mimeType === 'application/pdf';
   const downloadFile = useCallback(() => {
     const download = createPreviewDownload(data, fileName);
     if (!download) return;
@@ -332,7 +337,7 @@ export function FileViewerPane({
       </div>
 
       {/* Body */}
-      <div className={`flex-1 min-h-0 ${showsZoomImage || showsRenderedHtml ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+      <div className={`flex-1 min-h-0 ${showsZoomImage || showsRenderedHtml || showsPdf ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         {loading && (
           <div className="flex flex-col items-center justify-center gap-3 py-12">
             <Spinner size="w-5 h-5" color="border-blue-400" />
@@ -481,6 +486,12 @@ export function PreviewContent({
     && data.encoding === 'base64'
     && data.mimeType?.startsWith('audio/')) {
     return <AudioPreview data={data} />;
+  }
+
+  if (data.kind === 'binary'
+    && data.encoding === 'base64'
+    && data.mimeType === 'application/pdf') {
+    return <PdfViewer data={data} />;
   }
 
   if (data.kind === 'binary') {

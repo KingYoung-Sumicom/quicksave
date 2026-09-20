@@ -172,6 +172,27 @@ describe('fileCache', () => {
       expect(retried).toMatchObject({ kind: 'binary', content: 'AAEC', encoding: 'base64' });
     });
 
+    it('invalidates a pre-PDF-preview text cache entry instead of returning it on matching etag', async () => {
+      const req: FilesReadRequestPayload = { cwd: '/p', path: 'report.pdf' };
+      const fetcher = vi.fn()
+        .mockResolvedValueOnce(ok({ path: 'report.pdf', content: '%PDF-1.7', size: 8 }))
+        .mockResolvedValueOnce(ok({
+          path: 'report.pdf',
+          kind: 'binary',
+          mimeType: 'application/pdf',
+          content: 'JVBERi0x',
+          encoding: 'base64',
+          size: 8,
+        }));
+
+      await readWithCache(req, fetcher);
+      const refreshed = await readWithCache(req, fetcher);
+
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher.mock.calls[1][0]).not.toHaveProperty('ifNoneMatch');
+      expect(refreshed.mimeType).toBe('application/pdf');
+    });
+
     it('warm hit revalidates: fetcher receives ifNoneMatch, cached body returned on notModified', async () => {
       const req: FilesReadRequestPayload = { cwd: '/p', path: 'a.md' };
       let nthCall = 0;

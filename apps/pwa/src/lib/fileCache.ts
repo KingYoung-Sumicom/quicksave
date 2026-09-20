@@ -51,6 +51,14 @@ export async function readWithCache(
   fetcher: (req: FilesReadRequestPayload) => Promise<FilesReadResponsePayload>,
 ): Promise<FilesReadResponsePayload> {
   const cached = await fileCache.peek(req);
+  // A PDF cached before PDF preview support may be stored as text because the
+  // old agent did not advertise application/pdf. Do not let a matching etag
+  // preserve that stale classification after the agent has been upgraded.
+  if (cached && isPdfPath(req.path)
+    && (cached.kind !== 'binary' || cached.mimeType !== 'application/pdf')) {
+    fileCache.invalidatePrefix(`${req.cwd} ${req.path} `);
+    return fetcher(req);
+  }
   // Metadata-only oversized/binary entries from older builds must not
   // suppress a fresh attempt to fetch the body through WebRTC. In
   // particular, revalidating an old binary entry with ifNoneMatch would make
@@ -77,6 +85,10 @@ export async function readWithCache(
   }
   // Cold path — no cached entry to revalidate against.
   return fileCache.read(req, fetcher);
+}
+
+function isPdfPath(path: string): boolean {
+  return path.split('/').pop()?.toLowerCase().endsWith('.pdf') === true;
 }
 
 /** Build an `If-None-Match` token from a cached response, or undefined

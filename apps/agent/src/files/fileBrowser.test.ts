@@ -272,6 +272,19 @@ describe('FileBrowser', () => {
       expect(res.content).toBeUndefined();
     });
 
+    it('routes PDF extensions to direct transfer with the PDF MIME type', async () => {
+      writeFileSync(join(root, 'report.pdf'), '%PDF-1.7\ntext-like header');
+
+      const res = await fb.read({ cwd: root, path: 'report.pdf' });
+
+      expect(res).toMatchObject({
+        success: true,
+        kind: 'binary',
+        mimeType: 'application/pdf',
+      });
+      expect(res.content).toBeUndefined();
+    });
+
     it('returns kind "oversized" with no content for files exceeding the default 1 MiB cap', async () => {
       const big = Buffer.alloc(2 * 1024 * 1024, 0x41);
       writeFileSync(join(root, 'big.txt'), big);

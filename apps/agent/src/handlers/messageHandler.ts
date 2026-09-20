@@ -2234,7 +2234,7 @@ export class MessageHandler {
   // Agent Self-Update
   // ============================================================================
 
-  /** Callback set by run.ts to trigger daemon restart after update. */
+  /** Callback set by run.ts so every startup mode can restart via its supervisor. */
   onRestartRequested?: () => void;
 
   private async handleAgentCheckUpdate(
@@ -2353,16 +2353,21 @@ export class MessageHandler {
   private async handleAgentRestart(
     message: Message,
   ): Promise<Message<AgentRestartResponsePayload>> {
-    if (this.productionBuild) {
-      const response = createMessage<AgentRestartResponsePayload>(
-        'agent:restart:response',
-        { success: false, error: 'Restart is only available for dev builds' },
-      );
-      response.id = message.id;
-      return response;
-    }
-
     try {
+      // The daemon wires this to the startup supervisor. In particular, a
+      // systemd user unit must restart through systemctl; a detached child
+      // launched from inside the unit would be reaped with the old daemon.
+      if (this.onRestartRequested) {
+        setTimeout(() => this.onRestartRequested?.(), 500);
+        const response = createMessage<AgentRestartResponsePayload>(
+          'agent:restart:response',
+          { success: true },
+        );
+        response.id = message.id;
+        return response;
+      }
+
+      // Test/custom-handler fallback for hosts without a supervisor callback.
       const { spawn } = await import('child_process');
       const { fileURLToPath } = await import('url');
       const { resolve: resolvePath } = await import('path');

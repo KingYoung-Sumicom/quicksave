@@ -55,10 +55,12 @@ export function transformForPinch(
   currentCenter: Point,
   viewportCenter: Point,
   maxScale = DEFAULT_MAX_SCALE,
+  sensitivity = 1,
 ): ZoomTransform {
+  const distanceRatio = currentDistance / Math.max(initialDistance, 1);
   const scale = Math.min(
     maxScale,
-    Math.max(MIN_SCALE, initial.scale * (currentDistance / Math.max(initialDistance, 1))),
+    Math.max(MIN_SCALE, initial.scale * Math.pow(distanceRatio, sensitivity)),
   );
   const focalX = (initialCenter.x - viewportCenter.x - initial.x) / initial.scale;
   const focalY = (initialCenter.y - viewportCenter.y - initial.y) / initial.scale;

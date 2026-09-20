@@ -47,6 +47,10 @@ const AUDIO_MIME: Record<string, string> = {
   webm: 'audio/webm',
 };
 
+const DOCUMENT_MIME: Record<string, string> = {
+  pdf: 'application/pdf',
+};
+
 export interface FileRtcBus {
   onCommand<Req = unknown, Res = unknown>(
     verb: string,
@@ -222,9 +226,10 @@ async function prepareFile(payload: FilesRtcConnectRequestPayload): Promise<Prep
   const extension = dot >= 0 ? absolutePath.slice(dot + 1).toLowerCase() : '';
   const imageMimeType = payload.allowImage ? IMAGE_MIME[extension] : undefined;
   const audioMimeType = AUDIO_MIME[extension];
-  const mimeType = imageMimeType ?? audioMimeType;
-  let kind: FileReadKind = imageMimeType ? 'image' : 'text';
-  if (!imageMimeType) {
+  const documentMimeType = DOCUMENT_MIME[extension];
+  const mimeType = imageMimeType ?? audioMimeType ?? documentMimeType;
+  let kind: FileReadKind = imageMimeType ? 'image' : documentMimeType ? 'binary' : 'text';
+  if (!imageMimeType && !documentMimeType) {
     const handle = await open(absolutePath, 'r');
     try {
       const sniff = Buffer.alloc(Math.min(SNIFF_BYTES, info.size));
