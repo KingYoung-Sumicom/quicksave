@@ -1422,6 +1422,7 @@ function ProjectRouteSession({
   const isNewSession = searchParams.has('new');
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const hasSessionCards = useSessionStore((s) => s.cards.length > 0);
   // Watch the archived flag on the URL-bound session so we can bounce out
   // of pages whose sessionId has been retired in the registry (End Task,
   // project:delete). isActive alone is too noisy — it can flip during normal
@@ -1596,7 +1597,16 @@ function ProjectRouteSession({
     [resumeSession, cwd],
   );
 
-  if (!isReady) {
+  // Keep the mounted session panel while a previously-rendered session is
+  // reconnecting. The panel owns the reconnect indicator and can continue to
+  // render cached/live cards without replacing the entire viewport.
+  const hasWarmSession = Boolean(
+      urlSessionId && urlSessionId !== 'new'
+      && activeSessionId === urlSessionId
+      && hasSessionCards,
+  );
+
+  if (!isReady && !hasWarmSession) {
     return (
       <div className="flex flex-col h-full overflow-hidden">
         <NewSessionAppBar cwd={cwd} onOpenMenu={() => {}} backTo={projectBasePath} />

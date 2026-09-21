@@ -46,6 +46,13 @@ import { applySessionCardsSnapshot, applySessionCardsUpdate } from '../lib/apply
 import { applyHistorySnapshot } from '../lib/applyHistoryEntry';
 import { primeUploadedAttachment } from '../lib/attachmentUploader';
 import { getCodexFastServiceTierId } from '../lib/agentPresets';
+import {
+  readSessionHistoryCache,
+  writeSessionHistoryCache,
+  subscribeSessionHistoryCache,
+  type SessionHistoryCacheRecord,
+} from '../lib/sessionHistoryCache';
+import { recordSessionHistoryMetric } from '../lib/sessionHistoryTelemetry';
 
 const QUEUE_PREVIEW_MAX = 80;
 const OPTIMISTIC_QUEUE_MIN_MS = 1500;
@@ -107,6 +114,12 @@ function appendAcknowledgedUserCard(
   });
 }
 
+function mergeHistoryCards(serverCards: CardHistoryResponse['cards'], cachedCards: CardHistoryResponse['cards']): CardHistoryResponse['cards'] {
+  const byId = new Map(cachedCards.map((card) => [card.id, card]));
+  for (const card of serverCards) byId.set(card.id, card);
+  return [...byId.values()].sort((a, b) => a.timestamp - b.timestamp);
+}
+
 export function shouldAdoptResumeResult(opts: {
   requestedSessionId: string;
   actualSessionId: string;
@@ -124,6 +137,8 @@ export function useSessionOperations(
   // Per-session unsubscribe fns for /sessions/:id/cards bus subscriptions.
   const cardsUnsubsRef = useRef<Map<string, () => void>>(new Map());
   const cardsSnapshotBuffersRef = useRef<Map<string, SessionCardsUpdate[]>>(new Map());
+  const historyCacheRecordsRef = useRef<Map<string, SessionHistoryCacheRecord>>(new Map());
+  const historyCacheTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // Release every live /sessions/:id/cards subscription when the hook
   // unmounts. Without this, navigating away from a ProjectDetail leaks the
@@ -139,8 +154,16 @@ export function useSessionOperations(
       }
       unsubs.clear();
       cardsSnapshotBuffersRef.current.clear();
+      for (const timer of historyCacheTimersRef.current.values()) clearTimeout(timer);
+      historyCacheTimersRef.current.clear();
+      historyCacheRecordsRef.current.clear();
     };
   }, []);
+  useEffect(() => subscribeSessionHistoryCache(() => {
+    for (const timer of historyCacheTimersRef.current.values()) clearTimeout(timer);
+    historyCacheTimersRef.current.clear();
+    historyCacheRecordsRef.current.clear();
+  }), []);
   const {
     upsertSession,
     setActiveSession,
@@ -157,6 +180,26 @@ export function useSessionOperations(
     setSessionConfigKey,
     applySessionConfig,
   } = useSessionStore();
+
+  const scheduleHistoryCacheWrite = useCallback((sessionId: string) => {
+    const previous = historyCacheTimersRef.current.get(sessionId);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      historyCacheTimersRef.current.delete(sessionId);
+      const state = useSessionStore.getState();
+      if (state.activeSessionId !== sessionId || state.cards.length === 0) return;
+      void writeSessionHistoryCache(sessionId, {
+        cards: state.cards,
+        total: state.historyTotal,
+        hasMore: state.historyHasMore,
+        nextCursor: state.historyCursor,
+        historySync: historyCacheRecordsRef.current.get(sessionId)?.historySync,
+        coverage: historyCacheRecordsRef.current.get(sessionId)?.coverage,
+      });
+      recordSessionHistoryMetric('cache_write', { sessionId, cardCount: state.cards.length });
+    }, 250);
+    historyCacheTimersRef.current.set(sessionId, timer);
+  }, []);
 
   // Apply server-pushed preferences. ClaudePreferences is wire-scoped to the
   // claude-code agent (the daemon doesn't know about codex prefs), so write
@@ -199,6 +242,14 @@ export function useSessionOperations(
         const bus = getBus();
         if (!bus) return;
         if (cardsSnapshotBuffersRef.current.has(sessionId)) return;
+        const cached = await readSessionHistoryCache(sessionId);
+        recordSessionHistoryMetric(cached ? 'cache_hit' : 'cache_miss', { sessionId });
+        if (cached && useSessionStore.getState().activeSessionId === sessionId) {
+          historyCacheRecordsRef.current.set(sessionId, cached);
+          useSessionStore.getState().setCards(cached.cards);
+          setHistoryMeta(cached.total ?? undefined, cached.hasMore, cached.nextCursor);
+          setLoadingHistory(false);
+        }
         // Release any stale subscription for this session before re-subscribing.
         // SessionPanel only unsubs through its nav effect / handleNewSession,
         // so the ProjectList "+" button (which navigates straight to /add)
@@ -224,13 +275,43 @@ export function useSessionOperations(
             `/sessions/${sessionId}/cards`,
             {
               onSnapshot: (snap) => {
+                recordSessionHistoryMetric('snapshot', {
+                  sessionId,
+                  readMode: snap.historySync?.readMode,
+                  hasMore: snap.hasMore,
+                });
                 const bufferedUpdates = cardsSnapshotBuffersRef.current.get(sessionId) ?? [];
                 cardsSnapshotBuffersRef.current.delete(sessionId);
                 if (!subscribeOnly) setLoadingHistory(false);
                 applySessionCardsSnapshot(sessionId, snap);
+                const cachedRecord = historyCacheRecordsRef.current.get(sessionId);
+                const cacheEpochMatches = !cachedRecord?.historySync || !snap.historySync
+                  || cachedRecord.historySync.epoch === snap.historySync.epoch;
+                if (cachedRecord && cacheEpochMatches && cachedRecord.cards.length > snap.cards.length) {
+                  const mergedCards = mergeHistoryCards(snap.cards, cachedRecord.cards);
+                  useSessionStore.getState().setCards(mergedCards);
+                }
                 for (const update of bufferedUpdates) {
                   applySessionCardsUpdate(sessionId, update);
                 }
+                const current = useSessionStore.getState();
+                if (current.activeSessionId === sessionId) {
+                  historyCacheRecordsRef.current.set(sessionId, {
+                    key: cachedRecord?.key ?? '',
+                    sessionId,
+                    cards: current.cards,
+                    total: current.historyTotal,
+                    hasMore: current.historyHasMore,
+                    nextCursor: current.historyCursor,
+                    historySync: snap.historySync ?? cachedRecord?.historySync,
+                    coverage: [
+                      ...(cachedRecord?.coverage ?? []),
+                      ...(snap.historySync?.coverage ? [{ ...snap.historySync.coverage, cachedAt: Date.now() }] : []),
+                    ].slice(-32),
+                    cachedAt: Date.now(),
+                  });
+                }
+                scheduleHistoryCacheWrite(sessionId);
               },
               onUpdate: (update) => {
                 const buffer = cardsSnapshotBuffersRef.current.get(sessionId);
@@ -239,9 +320,11 @@ export function useSessionOperations(
                   return;
                 }
                 applySessionCardsUpdate(sessionId, update);
+                scheduleHistoryCacheWrite(sessionId);
               },
               onError: (err) => {
                 cardsSnapshotBuffersRef.current.delete(sessionId);
+                recordSessionHistoryMetric('reconnect', { sessionId, error: String(err) });
                 console.warn(`[bus] /sessions/${sessionId}/cards error:`, err);
                 if (!subscribeOnly) {
                   setHistoryError(err);
@@ -271,6 +354,24 @@ export function useSessionOperations(
         if (response.error) throw new Error(response.error);
         prependCards(response.cards);
         setHistoryMeta(response.total, response.hasMore, response.nextCursor);
+        const previous = historyCacheRecordsRef.current.get(sessionId);
+        if (response.historySync) {
+          historyCacheRecordsRef.current.set(sessionId, {
+            ...(previous ?? {
+              key: '', sessionId, cards: useSessionStore.getState().cards,
+              total: useSessionStore.getState().historyTotal,
+              hasMore: useSessionStore.getState().historyHasMore,
+              nextCursor: useSessionStore.getState().historyCursor,
+              cachedAt: Date.now(),
+            }),
+            historySync: response.historySync,
+            coverage: [
+              ...(previous?.coverage ?? []),
+              ...(response.historySync.coverage ? [{ ...response.historySync.coverage, cachedAt: Date.now() }] : []),
+            ].slice(-32),
+          });
+        }
+        scheduleHistoryCacheWrite(sessionId);
       } catch (error) {
         console.error('Failed to get session cards:', error);
         setHistoryError(error instanceof Error ? error.message : 'Failed to load history');
@@ -278,7 +379,7 @@ export function useSessionOperations(
         setLoadingHistory(false);
       }
     },
-    [getBus, sendCommand, prependCards, setHistoryMeta, setLoadingHistory, setHistoryError]
+    [getBus, sendCommand, prependCards, setHistoryMeta, setLoadingHistory, setHistoryError, scheduleHistoryCacheWrite]
   );
 
   const startSession = useCallback(

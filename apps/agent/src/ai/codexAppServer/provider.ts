@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment, Card, CardHistoryResponse, ConfigValue, NativeSessionSummary, SlashCommandInfo, SubagentActivity } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, Card, CardHistoryResponse, ConfigValue, HistorySyncMetadata, NativeSessionSummary, SlashCommandInfo, SubagentActivity } from '@sumicom/quicksave-shared';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -926,7 +926,11 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       this.callbacks.emitCardEvent(userEvent);
       if (userEvent.type === 'add') {
         try {
-          await this.cardBuilder.persistCard(userEvent.card);
+          // `turn/steer` can add a user message without creating a durable
+          // native userMessage item on older app-server versions. Codex
+          // disables normal card persistence, so this must use the explicit
+          // supplemental path or the card disappears after reconnect.
+          await this.cardBuilder.persistSupplementalCard(userEvent.card);
         } catch {
           // best-effort; the end-of-turn persist will retry if this process lives
         }
@@ -2224,6 +2228,13 @@ export async function readCodexHistoryPage(
   const turnCursor = cursor?.turnCursor ?? null;
   const turnLimit = Math.max(1, Math.min(CODEX_HISTORY_TURN_PAGE_MAX, Math.ceil(Math.max(1, opts.limit) / 4)));
   const mode = metadata.thread.historyMode;
+  const epoch = `codex:${handle.cliVersion}:${opts.sessionId}:${mode}`;
+  const sync = (readMode: HistorySyncMetadata['readMode'], nextCursor?: string): HistorySyncMetadata => ({
+    epoch,
+    revision: `${nativeRevision(metadata.thread)}:${nextCursor ?? 'end'}`,
+    readMode,
+    coverage: { ...(opts.cursor ? { cursorIn: opts.cursor } : {}), ...(nextCursor ? { cursorOut: nextCursor } : {}), complete: !nextCursor },
+  });
 
   if (unsupportedHistoryMethods.has(historyCapabilityKey(handle, mode, 'thread/turns/list'))) {
     const legacy = await handle.rpc.request<ThreadReadResponse>(
@@ -2236,6 +2247,7 @@ export async function readCodexHistoryPage(
       cards,
       total: cards.length,
       hasMore: false,
+      historySync: sync(mode === 'legacy' ? 'legacy-full' : 'fallback-full'),
       ...(nativeTimeRange ? { nativeTimeRange } : {}),
     };
   }
@@ -2258,6 +2270,7 @@ export async function readCodexHistoryPage(
       cards,
       total: cards.length,
       hasMore: false,
+      historySync: sync(mode === 'legacy' ? 'legacy-full' : 'fallback-full'),
       ...(nativeTimeRange ? { nativeTimeRange } : {}),
     };
   }
@@ -2300,9 +2313,16 @@ export async function readCodexHistoryPage(
     // Exact card totals are intentionally unknown until every native turn has
     // been read, which we deliberately never do merely to populate a counter.
     hasMore: !!nextCursor,
+    historySync: sync(mode === 'legacy' ? 'legacy-full' : 'paginated', nextCursor),
     ...(nextCursor ? { nextCursor } : {}),
     ...(nativeTimeRange ? { nativeTimeRange } : {}),
   };
+}
+
+function nativeRevision(thread: Thread): string {
+  const turns = thread.turns ?? [];
+  const last = turns[turns.length - 1];
+  return `${turns.length}:${last?.id ?? 'empty'}:${last?.completedAt ?? last?.startedAt ?? ''}`;
 }
 
 /** Turn timestamps are the only durable native time information available for

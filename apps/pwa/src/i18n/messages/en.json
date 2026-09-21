@@ -20,6 +20,13 @@
   "settings.deviceSync.join.description": "Open the camera and scan a QR from an already-set-up device.",
 
   "settings.dangerZone.title": "Danger zone",
+  "settings.dangerZone.cache.label": "Session history cache",
+  "settings.dangerZone.cache.description": "Remove locally cached session history from this browser. Server history is not deleted.",
+  "settings.dangerZone.cache.button": "Clear session history cache",
+  "settings.dangerZone.cache.clearing": "Clearing…",
+  "settings.dangerZone.cache.confirm": "Clear locally cached session history? Server history will not be deleted.",
+  "settings.dangerZone.cache.success": "Session history cache cleared.",
+  "settings.dangerZone.cache.error": "Failed to clear session history cache.",
   "settings.dangerZone.primaryKey.label": "Primary key",
   "settings.dangerZone.primaryKey.description": "Root key that encrypts all connections. Back it up to restore access on a new device.",
   "settings.dangerZone.primaryKey.copy": "Copy to clipboard",

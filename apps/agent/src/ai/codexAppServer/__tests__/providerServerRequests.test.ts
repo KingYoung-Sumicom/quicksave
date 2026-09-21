@@ -427,6 +427,9 @@ describe('CodexAppServerSession slash command listing', () => {
 describe('CodexAppServerSession active-turn follow-up routing', () => {
   it('steers a normal follow-up into the current active turn', async () => {
     const h = harness();
+    const persistSupplementalCard = vi
+      .spyOn(StreamCardBuilder.prototype, 'persistSupplementalCard')
+      .mockResolvedValue();
     const startReqPromise = receiveClientRequest(h.serverSide);
     const run = h.session.runTurn('initial prompt');
 
@@ -453,6 +456,12 @@ describe('CodexAppServerSession active-turn follow-up routing', () => {
       params: { threadId: h.threadId, turn: makeTurn('turn_1', 'completed') },
     });
     await run;
+
+    expect(persistSupplementalCard).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'user',
+      text: 'adjust course',
+    }));
+    persistSupplementalCard.mockRestore();
 
     expect(h.callbacks.emitStreamEnd).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: h.threadId,

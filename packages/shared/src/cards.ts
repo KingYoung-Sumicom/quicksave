@@ -317,8 +317,25 @@ export interface PendingInputWithContext extends PendingInputAttachment {
 
 // ── History Response (agent → PWA) ────────────────────────────────────────
 
+export type HistoryReadMode = 'paginated' | 'legacy-full' | 'fallback-full' | 'local-index';
+
+export interface HistorySyncMetadata {
+  /** Stable provider/session identity. A changed epoch invalidates old coverage. */
+  epoch: string;
+  /** Provider-issued or agent-derived version for stale-response detection. */
+  revision: string;
+  readMode: HistoryReadMode;
+  /** Opaque boundaries represented by this response/page. */
+  coverage?: {
+    cursorIn?: string;
+    cursorOut?: string;
+    complete: boolean;
+  };
+}
+
 export interface CardHistoryResponse {
   cards: Card[];
+  historySync?: HistorySyncMetadata;
   /**
    * Native-provider time window represented by this page. The daemon uses it
    * to query only locally persisted supplemental cards that can belong here.

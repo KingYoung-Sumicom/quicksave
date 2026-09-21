@@ -20,6 +20,13 @@
   "settings.deviceSync.join.description": "打開相機,掃描另一台已設定好的裝置上的 QR 碼。",
 
   "settings.dangerZone.title": "危險區",
+  "settings.dangerZone.cache.label": "Session 對話快取",
+  "settings.dangerZone.cache.description": "清除此瀏覽器本機保存的 session 對話紀錄，不會刪除 server 上的資料。",
+  "settings.dangerZone.cache.button": "清除 session 對話快取",
+  "settings.dangerZone.cache.clearing": "清除中…",
+  "settings.dangerZone.cache.confirm": "要清除本機 session 對話快取嗎？server 上的資料不會被刪除。",
+  "settings.dangerZone.cache.success": "Session 對話快取已清除。",
+  "settings.dangerZone.cache.error": "清除 session 對話快取失敗。",
   "settings.dangerZone.primaryKey.label": "主金鑰",
   "settings.dangerZone.primaryKey.description": "加密所有連線的根金鑰。備份起來才能在新裝置上還原存取權。",
   "settings.dangerZone.primaryKey.copy": "複製到剪貼簿",

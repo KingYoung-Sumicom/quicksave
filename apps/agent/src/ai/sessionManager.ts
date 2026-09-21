@@ -20,6 +20,7 @@ import type {
   Card,
   CardEvent,
   CardHistoryResponse,
+  HistoryReadMode,
   CardStreamEnd,
   NativeSessionSummary,
   SessionNoteEntry,
@@ -2010,6 +2011,25 @@ export class SessionManager extends EventEmitter {
       const registry = getSessionRegistry();
       const entry = registry.getEntry(cwd, sessionId);
       if (entry?.title) result.title = entry.title;
+    }
+
+    // Every history source exposes an explicit identity and coverage contract.
+    // Native Codex pages provide richer metadata; local/legacy sources get a
+    // conservative marker so clients never merge coverage across identities.
+    if (!result.historySync) {
+      const readMode: HistoryReadMode = provider.historyMode === 'memory' || provider.historyMode === 'opencode-thread'
+        ? 'local-index'
+        : 'legacy-full';
+      result.historySync = {
+        epoch: `${provider.id}:${sessionId}:${provider.historyMode}`,
+        revision: `${result.cards.length}:${result.nextCursor ?? 'end'}:${result.nativeTimeRange?.endMs ?? ''}`,
+        readMode,
+        coverage: {
+          ...(cursor ? { cursorIn: cursor } : {}),
+          ...(result.nextCursor ? { cursorOut: result.nextCursor } : {}),
+          complete: !result.hasMore,
+        },
+      };
     }
 
     return result;
