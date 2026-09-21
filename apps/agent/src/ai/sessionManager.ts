@@ -20,6 +20,7 @@ import type {
   Card,
   CardEvent,
   CardHistoryResponse,
+  SessionMetadata,
   HistoryReadMode,
   CardStreamEnd,
   NativeSessionSummary,
@@ -1775,6 +1776,8 @@ export class SessionManager extends EventEmitter {
         hasPendingInput: pendingSessionIds.has(entry.sessionId),
         permissionMode: this.sessions.get(entry.sessionId)?.permissionLevel
           ?? this.sessionPermissions.get(entry.sessionId),
+        model: this.sessions.get(entry.sessionId)?.spawnedModel
+          ?? entry.model,
         lastPromptAt: stats.lastPromptAt ?? undefined,
         lastTurnEndedAt: stats.lastTurnEndedAt ?? undefined,
         lastUnreadTurnEndedAt: stats.lastUnreadTurnEndedAt ?? undefined,
@@ -1797,6 +1800,32 @@ export class SessionManager extends EventEmitter {
         pendingMission: entry.pendingMission,
       };
     });
+  }
+
+  getSessionMetadata(sessionId: string, cwd = ''): SessionMetadata {
+    const active = this.sessions.get(sessionId);
+    const registry = getSessionRegistry();
+    const entry = registry.findBySessionId(sessionId) ?? registry.findArchivedBySessionId(sessionId);
+    const config = this.sessionConfigs.get(sessionId) ?? {};
+    const stats = getEventStore().getSessionStats(sessionId);
+    const lastTurn = getEventStore().getLastTurn(sessionId);
+    const agent = active?.agentId ?? this.resolveAgentId(sessionId, cwd);
+    return {
+      sessionId,
+      agent,
+      model: active?.spawnedModel ?? (config.model as string | undefined) ?? entry?.model,
+      permissionMode: active?.permissionLevel ?? (config.permissionMode as string | undefined) ?? entry?.permissionMode,
+      reasoningEffort: (config.reasoningEffort as string | undefined) ?? entry?.reasoningEffort,
+      contextWindow: active?.spawnedContextWindow ?? (config.contextWindow as number | undefined) ?? entry?.contextWindow,
+      serviceTier: (config.serviceTier as string | undefined) ?? entry?.serviceTier,
+      sandboxed: active?.sandboxed ?? (config.sandboxed as boolean | undefined) ?? entry?.sandboxed,
+      lastTurnInputTokens: lastTurn?.inputTokens,
+      lastTurnCacheCreationTokens: lastTurn?.cacheCreationTokens,
+      lastTurnCacheReadTokens: lastTurn?.cacheReadTokens,
+      lastTurnContextUsage: normalizeStoredContextUsage(lastTurn?.contextUsage) as SessionMetadata['lastTurnContextUsage'],
+      lastTurnEndedAt: stats.lastTurnEndedAt ?? undefined,
+      lastCacheTouchAt: maxDefined(active?.lastCacheTouchAt, stats.lastCacheTouchAt ?? undefined),
+    };
   }
 
   async getCards(

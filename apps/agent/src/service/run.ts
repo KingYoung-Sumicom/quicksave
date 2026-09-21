@@ -60,6 +60,7 @@ import {
   type Message,
   type Repository,
   type SessionCardsUpdate,
+  type SessionMetadata,
   type VoiceAgentEvent,
   type BroadcastSessionEntry,
   type SessionConfigUpdatedPayload,
@@ -291,6 +292,32 @@ export async function runDaemon(): Promise<void> {
     },
   );
 
+  bus.onSubscribe<'/sessions/:sessionId/metadata', SessionMetadata, SessionMetadata>(
+    '/sessions/:sessionId/metadata',
+    {
+      snapshot: ({ params }) => {
+        const registry = getSessionRegistry();
+        const cwd = sessionManager.getSessionCwd(params.sessionId)
+          ?? registry.findBySessionId(params.sessionId)?.cwd
+          ?? registry.findArchivedBySessionId(params.sessionId)?.cwd
+          ?? '';
+        return sessionManager.getSessionMetadata(params.sessionId, cwd);
+      },
+    },
+  );
+
+  const publishSessionMetadata = (sessionId: string): void => {
+    const registry = getSessionRegistry();
+    const cwd = sessionManager.getSessionCwd(sessionId)
+      ?? registry.findBySessionId(sessionId)?.cwd
+      ?? registry.findArchivedBySessionId(sessionId)?.cwd
+      ?? '';
+    bus.publish<SessionMetadata>(
+      `/sessions/${sessionId}/metadata`,
+      sessionManager.getSessionMetadata(sessionId, cwd),
+    );
+  };
+
   // Presence marker for the session view. The PWA subscribes only while the
   // tab is visible AND focused; it unsubscribes on visibilitychange/blur and
   // on tab close. We use `subscriberCount(attention) === 0` as the push gate,
@@ -446,6 +473,7 @@ export async function runDaemon(): Promise<void> {
       // without this follow-up, the home list never picks up the new value
       // until the next session activity, breaking cross-tab unread sync.
       sessionManager.emitSessionUpdate(result.sessionId);
+      publishSessionMetadata(result.sessionId);
     })().catch((err) => {
       console.error(`[turn_ended] failed to record turn for session=${result.sessionId.slice(0, 8)}:`, err);
     });
@@ -500,12 +528,14 @@ export async function runDaemon(): Promise<void> {
     // the full active-session list atomically in their snap frame, so no
     // separate connect-time broadcast is needed.
     bus.publish<SessionUpdatePayload>('/sessions/active', info);
+    publishSessionMetadata(info.sessionId);
   });
   sessionManager.on('preferences-updated', (prefs) => {
     bus.publish<ClaudePreferences>('/preferences', prefs);
   });
   sessionManager.on('session-config-updated', (payload) => {
     bus.publish<SessionConfigUpdatedPayload>('/sessions/config', payload);
+    publishSessionMetadata(payload.sessionId);
   });
 
   // Per-repo commit-summary state (agent-owned). Each PWA mirrors the

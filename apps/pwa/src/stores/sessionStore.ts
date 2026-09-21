@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { create } from 'zustand';
-import type { AgentId, Card, CardEvent, SessionSummary, ConfigValue } from '@sumicom/quicksave-shared';
+import type { AgentId, Card, CardEvent, SessionMetadata, SessionSummary, ConfigValue } from '@sumicom/quicksave-shared';
 import {
   DEFAULT_AGENT,
   DEFAULT_MODEL,
@@ -253,6 +253,7 @@ interface SessionStore {
 
   // Per-session runtime config (keyed by sessionId)
   sessionConfigs: Record<string, Record<string, ConfigValue>>;
+  sessionMetadata: Record<string, SessionMetadata>;
 
   // Actions — sessions
   setSessions: (sessions: SessionSummary[]) => void;
@@ -320,6 +321,7 @@ interface SessionStore {
   // Actions — per-session runtime config
   setSessionConfigKey: (sessionId: string, key: string, value: ConfigValue) => void;
   applySessionConfig: (sessionId: string, config: Record<string, ConfigValue>) => void;
+  setSessionMetadata: (metadata: SessionMetadata) => void;
 
   // Actions — UI
   setPromptInput: (input: string) => void;
@@ -350,6 +352,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   ...flatViewOf(savedPrefs.agentPrefs[savedPrefs.selectedAgent]),
   lastChosenProviders: savedPrefs.lastChosenProviders ?? [],
   sessionConfigs: {},
+  sessionMetadata: {},
 
   // Sessions
   setSessions: (sessions) => {
@@ -737,6 +740,26 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       }
       return next;
     }),
+  setSessionMetadata: (metadata) =>
+    set((state) => {
+      const session = state.sessions[metadata.sessionId];
+      const sessionPatch: Partial<StoredSessionSummary> = {};
+      if (metadata.agent !== undefined) sessionPatch.agent = metadata.agent;
+      if (metadata.model !== undefined) sessionPatch.model = metadata.model;
+      if (metadata.permissionMode !== undefined) sessionPatch.permissionMode = metadata.permissionMode;
+      if (metadata.lastTurnInputTokens !== undefined) sessionPatch.lastTurnInputTokens = metadata.lastTurnInputTokens;
+      if (metadata.lastTurnCacheCreationTokens !== undefined) sessionPatch.lastTurnCacheCreationTokens = metadata.lastTurnCacheCreationTokens;
+      if (metadata.lastTurnCacheReadTokens !== undefined) sessionPatch.lastTurnCacheReadTokens = metadata.lastTurnCacheReadTokens;
+      if (metadata.lastTurnContextUsage !== undefined) sessionPatch.lastTurnContextUsage = metadata.lastTurnContextUsage;
+      if (metadata.lastTurnEndedAt !== undefined) sessionPatch.lastTurnEndedAt = metadata.lastTurnEndedAt;
+      if (metadata.lastCacheTouchAt !== undefined) sessionPatch.lastCacheTouchAt = metadata.lastCacheTouchAt;
+      return {
+        sessionMetadata: { ...state.sessionMetadata, [metadata.sessionId]: metadata },
+        ...(session && Object.keys(sessionPatch).length > 0
+          ? { sessions: { ...state.sessions, [metadata.sessionId]: { ...session, ...sessionPatch } } }
+          : {}),
+      };
+    }),
 
   // UI
   setPromptInput: (input) => set({ promptInput: input }),
@@ -757,6 +780,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       isLoadingHistory: false,
       historyError: null,
       completedTurnIds: {},
+      sessionMetadata: {},
       promptInput: '',
       isVisible: false,
     }),

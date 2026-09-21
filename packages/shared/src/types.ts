@@ -1993,6 +1993,8 @@ export interface SessionSummary {
   hasPendingInput?: boolean;
   queueState?: SessionQueueState | null;
   permissionMode?: string;
+  /** Model persisted with the session; used when the session is inactive. */
+  model?: string;
   // Ticket-model metadata — mirrored from `SessionRegistryEntry` so home-screen
   // session cards can render stage/blocked/latest-note without joining manually.
   /** First-prompt fallback used when title (subject) hasn't been set. */
@@ -2044,6 +2046,24 @@ export interface SessionSummary {
    * render alongside the structured card stream. Only set by the
    * `claude-terminal` provider. */
   terminalId?: string;
+}
+
+/** Session-scoped settings and latest usage data used by the detail view. */
+export interface SessionMetadata {
+  sessionId: string;
+  agent?: AgentId;
+  model?: string;
+  permissionMode?: string;
+  reasoningEffort?: string;
+  contextWindow?: number;
+  serviceTier?: string;
+  sandboxed?: boolean;
+  lastTurnInputTokens?: number;
+  lastTurnCacheCreationTokens?: number;
+  lastTurnCacheReadTokens?: number;
+  lastTurnContextUsage?: ContextUsageBreakdown;
+  lastTurnEndedAt?: number;
+  lastCacheTouchAt?: number;
 }
 
 /** Category breakdown of current context window occupancy. Claude fields

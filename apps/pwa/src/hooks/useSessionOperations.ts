@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import {
   type CardHistoryResponse,
+  type SessionMetadata,
   type ClaudeStartResponsePayload,
   type ClaudeResumeResponsePayload,
   type ClaudeInterruptResponsePayload,
@@ -136,6 +137,7 @@ export function useSessionOperations(
 ) {
   // Per-session unsubscribe fns for /sessions/:id/cards bus subscriptions.
   const cardsUnsubsRef = useRef<Map<string, () => void>>(new Map());
+  const metadataUnsubsRef = useRef<Map<string, () => void>>(new Map());
   const cardsSnapshotBuffersRef = useRef<Map<string, SessionCardsUpdate[]>>(new Map());
   const historyCacheRecordsRef = useRef<Map<string, SessionHistoryCacheRecord>>(new Map());
   const historyCacheTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -153,6 +155,10 @@ export function useSessionOperations(
         try { unsub(); } catch { /* swallow */ }
       }
       unsubs.clear();
+      for (const unsub of metadataUnsubsRef.current.values()) {
+        try { unsub(); } catch { /* swallow */ }
+      }
+      metadataUnsubsRef.current.clear();
       cardsSnapshotBuffersRef.current.clear();
       for (const timer of historyCacheTimersRef.current.values()) clearTimeout(timer);
       historyCacheTimersRef.current.clear();
@@ -265,6 +271,20 @@ export function useSessionOperations(
           cardsUnsubsRef.current.delete(sessionId);
           existing();
         }
+        const existingMetadata = metadataUnsubsRef.current.get(sessionId);
+        if (existingMetadata) {
+          metadataUnsubsRef.current.delete(sessionId);
+          existingMetadata();
+        }
+        const metadataUnsub = bus.subscribe<SessionMetadata, never>(
+          `/sessions/${sessionId}/metadata`,
+          {
+            onSnapshot: (metadata) => useSessionStore.getState().setSessionMetadata(metadata),
+            onUpdate: (metadata) => useSessionStore.getState().setSessionMetadata(metadata),
+            onError: (err) => console.warn(`[bus] /sessions/${sessionId}/metadata error:`, err),
+          },
+        );
+        metadataUnsubsRef.current.set(sessionId, metadataUnsub);
         if (!subscribeOnly) {
           setLoadingHistory(true);
           setHistoryError(null);
@@ -337,6 +357,11 @@ export function useSessionOperations(
           cardsUnsubsRef.current.set(sessionId, unsub);
         } catch (err) {
           cardsSnapshotBuffersRef.current.delete(sessionId);
+          const metadataUnsub = metadataUnsubsRef.current.get(sessionId);
+          if (metadataUnsub) {
+            metadataUnsubsRef.current.delete(sessionId);
+            metadataUnsub();
+          }
           throw err;
         }
         return;

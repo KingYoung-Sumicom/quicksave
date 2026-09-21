@@ -17,6 +17,8 @@ import { normalizeAgentId } from '../lib/agentPresets';
  */
 export function useSessionConfig(sessionId: string | null): Record<string, ConfigValue> {
   const sessionConfigs = useSessionStore((s) => s.sessionConfigs);
+  const session = useSessionStore((s) => sessionId ? s.sessions[sessionId] : undefined);
+  const sessionMetadata = useSessionStore((s) => sessionId ? s.sessionMetadata[sessionId] : undefined);
   const selectedModel = useSessionStore((s) => s.selectedModel);
   const selectedAgent = useSessionStore((s) => s.selectedAgent);
   const selectedPermissionMode = useSessionStore((s) => s.selectedPermissionMode);
@@ -39,6 +41,15 @@ export function useSessionConfig(sessionId: string | null): Record<string, Confi
   }
 
   const sessionConfig = sessionConfigs[sessionId] ?? {};
+  const metadataConfig: Record<string, ConfigValue> = sessionMetadata ? {
+    ...(sessionMetadata.agent ? { agent: sessionMetadata.agent } : {}),
+    ...(sessionMetadata.model ? { model: sessionMetadata.model } : {}),
+    ...(sessionMetadata.permissionMode ? { permissionMode: sessionMetadata.permissionMode } : {}),
+    ...(sessionMetadata.reasoningEffort ? { reasoningEffort: sessionMetadata.reasoningEffort } : {}),
+    ...(sessionMetadata.contextWindow !== undefined ? { contextWindow: sessionMetadata.contextWindow } : {}),
+    ...(sessionMetadata.serviceTier ? { serviceTier: sessionMetadata.serviceTier } : {}),
+    ...(sessionMetadata.sandboxed !== undefined ? { sandboxed: sessionMetadata.sandboxed } : {}),
+  } : {};
   const rawSessionAgent = (sessionConfig['agent'] as string | undefined)
     ?? (((sessionConfig as Record<string, ConfigValue>)['provider']) as string | undefined);
   const sessionAgent = rawSessionAgent ? normalizeAgentId(rawSessionAgent) : undefined;
@@ -46,12 +57,13 @@ export function useSessionConfig(sessionId: string | null): Record<string, Confi
   // Active session — merge defaults with session-specific overrides
   const merged: Record<string, ConfigValue> = {
     agent: selectedAgent ?? DEFAULT_AGENT,
-    model: selectedModel,
+    model: session?.model ?? selectedModel,
     permissionMode: selectedPermissionMode,
     reasoningEffort: selectedReasoningEffort,
     fastMode: selectedFastMode,
     sandboxed: sandboxEnabled,
     contextWindow: selectedContextWindow,
+    ...metadataConfig,
     ...sessionConfig,
     ...(sessionAgent ? { agent: sessionAgent } : {}),
   };

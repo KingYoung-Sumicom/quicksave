@@ -30,6 +30,8 @@ Object.defineProperty(globalThis, 'localStorage', { value: localStorageMock });
 function getSessionConfig(sessionId: string | null): Record<string, ConfigValue> {
   const state = useSessionStore.getState();
   const { sessionConfigs, selectedModel, selectedAgent, selectedPermissionMode, selectedReasoningEffort, sandboxEnabled } = state;
+  const session = sessionId ? state.sessions[sessionId] : undefined;
+  const metadata = sessionId ? state.sessionMetadata[sessionId] : undefined;
 
   if (!sessionId) {
     return {
@@ -42,16 +44,26 @@ function getSessionConfig(sessionId: string | null): Record<string, ConfigValue>
   }
 
   const sessionConfig = sessionConfigs[sessionId] ?? {};
+  const metadataConfig: Record<string, ConfigValue> = metadata ? {
+    ...(metadata.agent ? { agent: metadata.agent } : {}),
+    ...(metadata.model ? { model: metadata.model } : {}),
+    ...(metadata.permissionMode ? { permissionMode: metadata.permissionMode } : {}),
+    ...(metadata.reasoningEffort ? { reasoningEffort: metadata.reasoningEffort } : {}),
+    ...(metadata.contextWindow !== undefined ? { contextWindow: metadata.contextWindow } : {}),
+    ...(metadata.serviceTier ? { serviceTier: metadata.serviceTier } : {}),
+    ...(metadata.sandboxed !== undefined ? { sandboxed: metadata.sandboxed } : {}),
+  } : {};
   const rawSessionAgent = (sessionConfig['agent'] as string | undefined)
     ?? (((sessionConfig as Record<string, ConfigValue>)['provider']) as string | undefined);
   const sessionAgent = rawSessionAgent ? normalizeAgentId(rawSessionAgent) : undefined;
 
   const merged: Record<string, ConfigValue> = {
     agent: selectedAgent ?? DEFAULT_AGENT,
-    model: selectedModel,
+    model: session?.model ?? selectedModel,
     permissionMode: selectedPermissionMode,
     reasoningEffort: selectedReasoningEffort,
     sandboxed: sandboxEnabled,
+    ...metadataConfig,
     ...sessionConfig,
     ...(sessionAgent ? { agent: sessionAgent } : {}),
   };
@@ -107,6 +119,35 @@ describe('useSessionConfig (logic)', () => {
       const config = getSessionConfig('session-1');
       expect(config.agent).toBe(DEFAULT_AGENT);
       expect(config.model).toBe(DEFAULT_MODEL);
+    });
+
+    it('uses the persisted session model when an inactive session has no runtime config', () => {
+      useSessionStore.getState().setSessions([{
+        sessionId: 'session-1',
+        summary: 'inactive Codex',
+        lastModified: 1,
+        agent: 'codex',
+        model: 'gpt-5.5',
+        isActive: false,
+      }]);
+      useSessionStore.setState({ selectedModel: 'gpt-5' });
+
+      expect(getSessionConfig('session-1').model).toBe('gpt-5.5');
+    });
+
+    it('uses session metadata settings before global defaults', () => {
+      useSessionStore.getState().setSessionMetadata({
+        sessionId: 'session-1',
+        agent: 'codex',
+        model: 'gpt-5.5',
+        reasoningEffort: 'high',
+        serviceTier: 'fast',
+      });
+      useSessionStore.setState({ selectedModel: 'gpt-5' });
+
+      expect(getSessionConfig('session-1')).toMatchObject({
+        agent: 'codex', model: 'gpt-5.5', reasoningEffort: 'high', serviceTier: 'fast',
+      });
     });
 
     it('merges session-specific overrides', () => {
