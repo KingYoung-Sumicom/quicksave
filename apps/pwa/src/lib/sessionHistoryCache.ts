@@ -25,6 +25,14 @@ export interface SessionHistoryCacheRecord {
   historySync?: HistorySyncMetadata;
   /** Every server page observed while this record was assembled. */
   coverage?: Array<NonNullable<HistorySyncMetadata['coverage']> & { cachedAt: number }>;
+  /** The last card visible when this cache record was written. */
+  lastReceivedCard?: {
+    id: string;
+    timestamp: number;
+    turnId?: string;
+  };
+  /** True when the cached view was captured while a turn was still streaming. */
+  hasLiveCards?: boolean;
   /** The cache is a display aid until the next server snapshot validates it. */
   cachedAt: number;
 }

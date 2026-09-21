@@ -1718,7 +1718,9 @@ export class SessionManager extends EventEmitter {
    * Codex and OpenCode supply existence/archive state from their own stores.
    */
   async listSessionHistoryEntries(cwd?: string): Promise<SessionRegistryEntry[]> {
-    await this.reconcileNativeArchiveStatuses(cwd);
+    // Listing is the foreground snapshot path. Native archive reconciliation
+    // can enumerate every Codex thread and is handled by explicit refresh /
+    // archive flows instead of delaying every history subscription.
     const registry = getSessionRegistry();
     const byKey = new Map(
       registry.getEntriesForProject(cwd)

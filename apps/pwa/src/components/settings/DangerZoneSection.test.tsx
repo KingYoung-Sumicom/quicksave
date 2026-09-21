@@ -10,13 +10,6 @@ import { DangerZoneSection } from './DangerZoneSection';
 
 const messages = {
   'settings.dangerZone.title': 'Danger Zone',
-  'settings.dangerZone.cache.label': 'Session history cache',
-  'settings.dangerZone.cache.description': 'Clear local history cache.',
-  'settings.dangerZone.cache.button': 'Clear cache',
-  'settings.dangerZone.cache.clearing': 'Clearing…',
-  'settings.dangerZone.cache.confirm': 'Clear cache?',
-  'settings.dangerZone.cache.success': 'Cache cleared.',
-  'settings.dangerZone.cache.error': 'Failed.',
   'settings.dangerZone.primaryKey.label': 'Primary key backup',
   'settings.dangerZone.primaryKey.description': 'Back up and restore your primary key.',
   'settings.dangerZone.primaryKey.copy': 'Copy',
@@ -61,6 +54,7 @@ describe('DangerZoneSection collapsible', () => {
     await act(async () => { summary.click(); });
     expect(details.open).toBe(true);
     expect(container.textContent).toContain('Primary key backup');
+    expect(container.textContent).not.toContain('Session history cache');
     await act(async () => { summary.click(); });
     expect(details.open).toBe(false);
   });

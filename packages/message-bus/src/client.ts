@@ -13,6 +13,8 @@ export type SubscribeCallbacks<S = unknown, U = unknown> = {
   onSnapshot: (data: S) => void;
   onUpdate: (data: U) => void;
   onError?: (error: string) => void;
+  /** Replay the last locally cached snapshot to a new subscriber. Defaults to true. */
+  replayCachedSnapshot?: boolean;
   /**
    * Deliver snapshots even when their seq is older than an update already
    * applied on this path. Use only for incremental update streams whose
@@ -154,7 +156,7 @@ export class MessageBusClient {
     state.subscribers.add(cb);
     state.refcount++;
     // If we already have a cached snapshot, replay it to the new subscriber.
-    if (state.lastSnapshot) {
+    if (state.lastSnapshot && callbacks.replayCachedSnapshot !== false) {
       queueMicrotask(() => {
         if (state.subscribers.has(cb)) cb.onSnapshot(state.lastSnapshot!.data);
       });

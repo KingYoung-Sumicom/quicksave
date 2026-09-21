@@ -25,6 +25,7 @@ import { ClaudeUsageBadges } from './chat/ClaudeUsageBadges';
 import { StreamingReconnectIndicator } from './chat/StreamingReconnectIndicator';
 import { ToolCallGroupPlaceholder } from './chat/ToolCallGroupPlaceholder';
 import { ToolCallVisibilityChip } from './chat/ToolCallVisibilityChip';
+import { Spinner } from './ui/Spinner';
 import { filterRenderableCards, shouldCollapseCard } from './chat/cardCollapse';
 import { AttachmentTray } from './AttachmentTray';
 import { useUiPrefsStore } from '../stores/uiPrefsStore';
@@ -1117,6 +1118,13 @@ export function SessionPanel({
                 );
               });
             })()}
+            {/* Keep the cached transcript visible while the fresh history snapshot loads. */}
+            {isLoadingHistory && cards.length > 0 && (
+              <div className="flex items-center justify-center gap-2 py-2 text-xs text-slate-500" role="status">
+                <Spinner size="w-3.5 h-3.5" color="border-slate-500" />
+                <span className="sr-only">Loading session history</span>
+              </div>
+            )}
             {streamError && (
               <div className="text-sm text-red-400 bg-red-500/10 rounded-lg px-3 py-2">
                 {streamError}

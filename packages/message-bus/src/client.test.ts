@@ -176,6 +176,18 @@ describe('MessageBusClient - subscriptions', () => {
     expect(onUpdate2).toHaveBeenCalledWith('u');
   });
 
+  it('can subscribe without replaying the locally cached snapshot', async () => {
+    client.subscribe('/x/1', { onSnapshot: vi.fn(), onUpdate: vi.fn() });
+    transport.emit({ kind: 'snap', path: '/x/1', data: 'old' });
+
+    const onSnapshot = vi.fn();
+    client.subscribe('/x/1', { onSnapshot, onUpdate: vi.fn(), replayCachedSnapshot: false });
+    await Promise.resolve();
+
+    expect(onSnapshot).not.toHaveBeenCalled();
+    expect(transport.sent).toHaveLength(1);
+  });
+
   it('only sends unsub after last subscriber releases', () => {
     const off1 = client.subscribe('/x/1', {
       onSnapshot: vi.fn(),

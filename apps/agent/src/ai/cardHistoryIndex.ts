@@ -165,44 +165,51 @@ function statNumber(value: number | bigint | undefined, fallback: number): numbe
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
-function readBytesFrom(path: string, offset: number): Buffer {
-  const stat = statSync(path);
-  const size = statNumber(stat.size, 0);
-  if (offset >= size) return Buffer.alloc(0);
-  const fd = openSync(path, 'r');
-  try {
-    const buffer = Buffer.alloc(size - offset);
-    const bytesRead = readSync(fd, buffer, 0, buffer.length, offset);
-    return bytesRead === buffer.length ? buffer : buffer.subarray(0, bytesRead);
-  } finally {
-    closeSync(fd);
-  }
-}
-
-function applyLogBuffer(
+/** Replay only complete lines from a bounded chunked read. */
+function applyLogFile(
   db: DbHandle,
   sessionId: string,
-  buffer: Buffer,
   startOffset: number,
+  sourceSize: number,
   nextOrdinal: number,
 ): { processedBytes: number; nextOrdinal: number } {
-  const text = buffer.toString('utf8');
-  let cursor = 0;
+  const fd = openSync(cardHistoryLogPath(sessionId), 'r');
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  let pending = Buffer.alloc(0);
+  let filePosition = startOffset;
   let processedBytes = startOffset;
-  while (cursor < text.length) {
-    const nl = text.indexOf('\n', cursor);
-    if (nl < 0) break;
-    const rawLine = text.slice(cursor, nl);
-    processedBytes += Buffer.byteLength(text.slice(cursor, nl + 1), 'utf8');
-    cursor = nl + 1;
-    if (!rawLine.trim()) continue;
+
+  const applyLine = (line: Buffer): void => {
+    const rawLine = line.toString('utf8');
+    if (!rawLine.trim()) return;
     try {
-      const entry = JSON.parse(rawLine) as CardHistoryLogEntry;
-      nextOrdinal = applyLogEntry(db, sessionId, entry, nextOrdinal);
+      nextOrdinal = applyLogEntry(db, sessionId, JSON.parse(rawLine) as CardHistoryLogEntry, nextOrdinal);
     } catch {
       // Keep existing JSONL tolerance: malformed complete lines are ignored.
     }
+  };
+
+  try {
+    while (filePosition < sourceSize) {
+      const bytesRead = readSync(fd, chunk, 0, Math.min(chunk.length, sourceSize - filePosition), filePosition);
+      if (bytesRead <= 0) break;
+      filePosition += bytesRead;
+      pending = pending.length === 0
+        ? Buffer.from(chunk.subarray(0, bytesRead))
+        : Buffer.concat([pending, chunk.subarray(0, bytesRead)]);
+
+      let newline = pending.indexOf(0x0a);
+      while (newline >= 0) {
+        applyLine(pending.subarray(0, newline));
+        processedBytes += newline + 1;
+        pending = pending.subarray(newline + 1);
+        newline = pending.indexOf(0x0a);
+      }
+    }
+  } finally {
+    closeSync(fd);
   }
+
   return { processedBytes, nextOrdinal };
 }
 
@@ -319,8 +326,7 @@ function syncIndexWithDb(
     }
 
     if (sourceSize > meta.processed_bytes) {
-      const buffer = readBytesFrom(logPath, meta.processed_bytes);
-      const result = applyLogBuffer(db, sessionId, buffer, meta.processed_bytes, meta.next_ordinal);
+      const result = applyLogFile(db, sessionId, meta.processed_bytes, sourceSize, meta.next_ordinal);
       meta = {
         ...meta,
         processed_bytes: result.processedBytes,

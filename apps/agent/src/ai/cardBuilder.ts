@@ -418,6 +418,10 @@ async function readMessagesFromJSONL(
   if (!existsSync(p)) return [];
 
   if (opts?.headBytes != null) {
+    if (opts.headBytes <= 0) return [];
+    if (opts.headBytes > 16 * 1024 * 1024) {
+      return readMessagesFromJSONLStream(p, opts.headBytes);
+    }
     const fh = await open(p, 'r');
     try {
       const buf = Buffer.alloc(opts.headBytes);
@@ -438,8 +442,33 @@ async function readMessagesFromJSONL(
     return parseJSONLContent(content);
   }
 
+  // Keep the compatibility path safe for very large files too. Small files
+  // retain readFile() for the common path; large files are parsed line by line
+  // and never become one giant UTF-16 string.
+  const { size } = await stat(p);
+  if (size > 16 * 1024 * 1024) {
+    return readMessagesFromJSONLStream(p);
+  }
   const content = await readFile(p, 'utf-8');
   return parseJSONLContent(content);
+}
+
+async function readMessagesFromJSONLStream(filePath: string, maxBytes?: number): Promise<any[]> {
+  const messages: any[] = [];
+  const rl = createInterface({
+    input: createReadStream(filePath, maxBytes === undefined ? undefined : { start: 0, end: maxBytes - 1 }),
+    crlfDelay: Infinity,
+  });
+  for await (const line of rl) {
+    if (!line || line[0] !== '{') continue;
+    try {
+      const message = JSON.parse(line);
+      if (message.type === 'user' || message.type === 'assistant' || message.type === 'system') {
+        messages.push(message);
+      }
+    } catch { /* skip malformed lines */ }
+  }
+  return messages;
 }
 
 async function listSubagentIdsFromDisk(sessionId: string, cwd: string): Promise<string[]> {

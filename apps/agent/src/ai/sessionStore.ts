@@ -7,10 +7,10 @@
  *   ~/.quicksave/state/sessions/<session-id>/messages.jsonl
  *
  * One JSON object per line, matching ClaudeHistoryMessage shape.
- * Append-only writes; full-file reads on cold resume.
+ * Append-only writes; line-by-line reads on cold resume.
  */
 
-import { appendFileSync, readFileSync, mkdirSync, existsSync } from 'fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, statSync } from 'fs';
 import { join } from 'path';
 import { getSessionsDir } from '../service/singleton.js';
 import type { ClaudeHistoryMessage } from '@sumicom/quicksave-shared';
@@ -66,16 +66,16 @@ export function loadMessagesFromJSONL(
     const filePath = join(getSessionsDir(), sessionId, 'messages.jsonl');
     if (!existsSync(filePath)) return [];
 
-    const content = readFileSync(filePath, 'utf-8');
-    const lines = content.split('\n').filter((line) => line.trim() !== '');
     const messages: ClaudeHistoryMessage[] = [];
-
-    for (let i = 0; i < lines.length; i++) {
+    let lineNumber = 0;
+    for (const line of readJSONLLinesSync(filePath)) {
+      lineNumber++;
+      if (!line.trim()) continue;
       try {
-        messages.push(JSON.parse(lines[i]) as ClaudeHistoryMessage);
+        messages.push(JSON.parse(line) as ClaudeHistoryMessage);
       } catch {
         console.warn(
-          `[sessionStore] Skipping malformed JSONL line ${i + 1} for session=${sessionId}`
+          `[sessionStore] Skipping malformed JSONL line ${lineNumber} for session=${sessionId}`
         );
       }
     }
@@ -87,5 +87,32 @@ export function loadMessagesFromJSONL(
       err
     );
     return [];
+  }
+}
+
+/** Iterate JSONL without materializing the file as one giant string. */
+function* readJSONLLinesSync(filePath: string): Generator<string> {
+  const fd = openSync(filePath, 'r');
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  let pending = '';
+
+  try {
+    const size = Number(statSync(filePath).size);
+    let position = 0;
+    while (position < size) {
+      const bytesRead = readSync(fd, chunk, 0, chunk.length, position);
+      if (bytesRead <= 0) break;
+      position += bytesRead;
+      pending += chunk.toString('utf8', 0, bytesRead);
+      let newline = pending.indexOf('\n');
+      while (newline >= 0) {
+        yield pending.slice(0, newline).replace(/\r$/, '');
+        pending = pending.slice(newline + 1);
+        newline = pending.indexOf('\n');
+      }
+    }
+    if (pending.length > 0) yield pending.replace(/\r$/, '');
+  } finally {
+    closeSync(fd);
   }
 }

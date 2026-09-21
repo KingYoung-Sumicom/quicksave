@@ -115,9 +115,16 @@ function appendAcknowledgedUserCard(
   });
 }
 
-function mergeHistoryCards(serverCards: CardHistoryResponse['cards'], cachedCards: CardHistoryResponse['cards']): CardHistoryResponse['cards'] {
+function mergeHistoryCards(
+  serverCards: CardHistoryResponse['cards'],
+  cachedCards: CardHistoryResponse['cards'],
+  preferCachedCards = false,
+): CardHistoryResponse['cards'] {
   const byId = new Map(cachedCards.map((card) => [card.id, card]));
   for (const card of serverCards) byId.set(card.id, card);
+  if (preferCachedCards) {
+    for (const card of cachedCards) byId.set(card.id, card);
+  }
   return [...byId.values()].sort((a, b) => a.timestamp - b.timestamp);
 }
 
@@ -187,6 +194,30 @@ export function useSessionOperations(
     applySessionConfig,
   } = useSessionStore();
 
+  const persistHistoryCacheSnapshot = useCallback((sessionId: string) => {
+    const state = useSessionStore.getState();
+    if (state.cards.length === 0) return;
+    const last = state.cards[state.cards.length - 1];
+    const snapshot = {
+      cards: state.cards,
+      total: state.historyTotal,
+      hasMore: state.historyHasMore,
+      nextCursor: state.historyCursor,
+      historySync: historyCacheRecordsRef.current.get(sessionId)?.historySync,
+      coverage: historyCacheRecordsRef.current.get(sessionId)?.coverage,
+      lastReceivedCard: last ? { id: last.id, timestamp: last.timestamp, ...(last.turnId ? { turnId: last.turnId } : {}) } : undefined,
+      hasLiveCards: state.isStreaming,
+    };
+    const previous = historyCacheRecordsRef.current.get(sessionId);
+    historyCacheRecordsRef.current.set(sessionId, {
+      ...(previous ?? { key: '', sessionId, cachedAt: Date.now() }),
+      ...snapshot,
+      cachedAt: Date.now(),
+    });
+    void writeSessionHistoryCache(sessionId, snapshot);
+    recordSessionHistoryMetric('cache_write', { sessionId, cardCount: state.cards.length });
+  }, []);
+
   const scheduleHistoryCacheWrite = useCallback((sessionId: string) => {
     const previous = historyCacheTimersRef.current.get(sessionId);
     if (previous) clearTimeout(previous);
@@ -194,18 +225,22 @@ export function useSessionOperations(
       historyCacheTimersRef.current.delete(sessionId);
       const state = useSessionStore.getState();
       if (state.activeSessionId !== sessionId || state.cards.length === 0) return;
-      void writeSessionHistoryCache(sessionId, {
-        cards: state.cards,
-        total: state.historyTotal,
-        hasMore: state.historyHasMore,
-        nextCursor: state.historyCursor,
-        historySync: historyCacheRecordsRef.current.get(sessionId)?.historySync,
-        coverage: historyCacheRecordsRef.current.get(sessionId)?.coverage,
-      });
-      recordSessionHistoryMetric('cache_write', { sessionId, cardCount: state.cards.length });
+      persistHistoryCacheSnapshot(sessionId);
     }, 250);
     historyCacheTimersRef.current.set(sessionId, timer);
-  }, []);
+  }, [persistHistoryCacheSnapshot]);
+
+  /** Persist the current view before navigation clears it. Streaming updates
+   * are debounced during normal rendering, so leaving mid-turn must flush the
+   * latest card list without depending on activeSessionId remaining stable. */
+  const flushHistoryCacheWrite = useCallback((sessionId: string) => {
+    const pending = historyCacheTimersRef.current.get(sessionId);
+    if (pending) {
+      clearTimeout(pending);
+      historyCacheTimersRef.current.delete(sessionId);
+    }
+    persistHistoryCacheSnapshot(sessionId);
+  }, [persistHistoryCacheSnapshot]);
 
   // Apply server-pushed preferences. ClaudePreferences is wire-scoped to the
   // claude-code agent (the daemon doesn't know about codex prefs), so write
@@ -248,7 +283,11 @@ export function useSessionOperations(
         const bus = getBus();
         if (!bus) return;
         if (cardsSnapshotBuffersRef.current.has(sessionId)) return;
-        const cached = await readSessionHistoryCache(sessionId);
+        const persistedCache = await readSessionHistoryCache(sessionId);
+        const memoryCache = historyCacheRecordsRef.current.get(sessionId);
+        const cached = memoryCache && (!persistedCache || memoryCache.cachedAt > persistedCache.cachedAt)
+          ? memoryCache
+          : persistedCache;
         recordSessionHistoryMetric(cached ? 'cache_hit' : 'cache_miss', { sessionId });
         if (cached && useSessionStore.getState().activeSessionId === sessionId) {
           historyCacheRecordsRef.current.set(sessionId, cached);
@@ -307,8 +346,11 @@ export function useSessionOperations(
                 const cachedRecord = historyCacheRecordsRef.current.get(sessionId);
                 const cacheEpochMatches = !cachedRecord?.historySync || !snap.historySync
                   || cachedRecord.historySync.epoch === snap.historySync.epoch;
-                if (cachedRecord && cacheEpochMatches && cachedRecord.cards.length > snap.cards.length) {
-                  const mergedCards = mergeHistoryCards(snap.cards, cachedRecord.cards);
+                const cachedBoundaryIsMissing = cachedRecord?.lastReceivedCard
+                  && !snap.cards.some((card) => card.id === cachedRecord.lastReceivedCard?.id);
+                const preserveCachedLiveCards = cachedRecord?.hasLiveCards === true;
+                if (cachedRecord && cacheEpochMatches && (cachedRecord.cards.length > snap.cards.length || cachedBoundaryIsMissing || preserveCachedLiveCards)) {
+                  const mergedCards = mergeHistoryCards(snap.cards, cachedRecord.cards, preserveCachedLiveCards);
                   useSessionStore.getState().setCards(mergedCards);
                 }
                 for (const update of bufferedUpdates) {
@@ -328,6 +370,10 @@ export function useSessionOperations(
                       ...(cachedRecord?.coverage ?? []),
                       ...(snap.historySync?.coverage ? [{ ...snap.historySync.coverage, cachedAt: Date.now() }] : []),
                     ].slice(-32),
+                    lastReceivedCard: (() => {
+                      const last = current.cards[current.cards.length - 1];
+                      return last ? { id: last.id, timestamp: last.timestamp, ...(last.turnId ? { turnId: last.turnId } : {}) } : cachedRecord?.lastReceivedCard;
+                    })(),
                     cachedAt: Date.now(),
                   });
                 }
@@ -351,6 +397,11 @@ export function useSessionOperations(
                   setLoadingHistory(false);
                 }
               },
+              // The cache was already rendered above. Do not replay the
+              // message-bus client's previous snapshot, which can describe
+              // only the last completed turn and briefly roll back a live one
+              // before the fresh wire snapshot arrives.
+              replayCachedSnapshot: false,
               acceptStaleSnapshots: true,
             },
           );
@@ -394,6 +445,11 @@ export function useSessionOperations(
               ...(previous?.coverage ?? []),
               ...(response.historySync.coverage ? [{ ...response.historySync.coverage, cachedAt: Date.now() }] : []),
             ].slice(-32),
+            lastReceivedCard: (() => {
+              const cards = useSessionStore.getState().cards;
+              const last = cards[cards.length - 1];
+              return last ? { id: last.id, timestamp: last.timestamp, ...(last.turnId ? { turnId: last.turnId } : {}) } : previous?.lastReceivedCard;
+            })(),
           });
         }
         scheduleHistoryCacheWrite(sessionId);
@@ -853,12 +909,19 @@ export function useSessionOperations(
    */
   const unsubscribeSession = useCallback(
     (sessionId: string) => {
+      flushHistoryCacheWrite(sessionId);
       const unsub = cardsUnsubsRef.current.get(sessionId);
-      if (!unsub) return;
-      cardsUnsubsRef.current.delete(sessionId);
-      unsub();
+      if (unsub) {
+        cardsUnsubsRef.current.delete(sessionId);
+        unsub();
+      }
+      const metadataUnsub = metadataUnsubsRef.current.get(sessionId);
+      if (metadataUnsub) {
+        metadataUnsubsRef.current.delete(sessionId);
+        metadataUnsub();
+      }
     },
-    []
+    [flushHistoryCacheWrite]
   );
 
   const listProjectRepos = useCallback(async (cwd: string) => {
