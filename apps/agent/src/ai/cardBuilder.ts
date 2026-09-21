@@ -160,9 +160,10 @@ function statTimeMs(value: number | bigint | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
-function isSeedOnlyCardHistoryLog(raw: string): boolean {
+async function isSeedOnlyCardHistoryLog(filePath: string): Promise<boolean> {
   let sawSeed = false;
-  for (const line of raw.split('\n')) {
+  const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity });
+  for await (const line of rl) {
     if (!line.trim()) continue;
     let entry: Partial<CardHistoryLogEntry>;
     try {
@@ -176,9 +177,9 @@ function isSeedOnlyCardHistoryLog(raw: string): boolean {
   return sawSeed;
 }
 
-async function repairMigratedCardHistoryLogMtime(sessionId: string, raw: string): Promise<void> {
-  if (!isSeedOnlyCardHistoryLog(raw)) return;
+async function repairMigratedCardHistoryLogMtime(sessionId: string): Promise<void> {
   const logPath = cardHistoryLogPath(sessionId);
+  if (!(await isSeedOnlyCardHistoryLog(logPath))) return;
   const logStat = await statOrNull(logPath);
   if (!logStat) return;
 
@@ -220,9 +221,8 @@ export async function loadPersistedCards(sessionId: string): Promise<Card[]> {
   const p = cardHistoryLogPath(sessionId);
   if (!existsSync(p)) return migratedCards ?? [];
   try {
-    const raw = await readFile(p, 'utf-8');
-    await repairMigratedCardHistoryLogMtime(sessionId, raw);
-    const replayed = replayCardHistoryLog(raw);
+    await repairMigratedCardHistoryLogMtime(sessionId);
+    const replayed = await replayCardHistoryLogStream(p);
     return migratedCards ? mergeCardsById(migratedCards, replayed) : replayed;
   } catch {
     return migratedCards ?? [];
@@ -265,9 +265,12 @@ async function migrateLegacyCardHistory(sessionId: string): Promise<Card[] | nul
   }
 }
 
-function replayCardHistoryLog(raw: string): Card[] {
+/** Replay card history without materializing the entire JSONL file in memory. */
+async function replayCardHistoryLogStream(filePath: string): Promise<Card[]> {
   const cardsById = new Map<CardId, Card>();
-  for (const line of raw.split('\n')) {
+  const rl = createInterface({ input: createReadStream(filePath), crlfDelay: Infinity });
+
+  for await (const line of rl) {
     if (!line.trim()) continue;
     let entry: CardHistoryLogEntry;
     try {
@@ -275,41 +278,46 @@ function replayCardHistoryLog(raw: string): Card[] {
     } catch {
       continue;
     }
-    switch (entry.op) {
-      case 'seed':
-        for (const card of entry.cards ?? []) {
-          if (!card?.id || cardsById.has(card.id)) continue;
-          cardsById.set(card.id, cleanPersistedCard(card));
-        }
-        break;
-      case 'upsert':
-        if (entry.card?.id) cardsById.set(entry.card.id, cleanPersistedCard(entry.card));
-        break;
-      case 'patch': {
-        const existing = cardsById.get(entry.cardId);
-        if (!existing) break;
-        const bag = existing as unknown as Record<string, unknown>;
-        for (const [key, value] of Object.entries(entry.patch ?? {})) {
-          if (value === null) delete bag[key];
-          else bag[key] = value;
-        }
-        cardsById.set(entry.cardId, cleanPersistedCard(existing));
-        break;
-      }
-      case 'append_text': {
-        const existing = cardsById.get(entry.cardId);
-        if (existing && 'text' in existing) {
-          (existing as { text: string }).text += entry.text;
-          cardsById.set(entry.cardId, cleanPersistedCard(existing));
-        }
-        break;
-      }
-      case 'remove':
-        cardsById.delete(entry.cardId);
-        break;
-    }
+    applyCardHistoryLogEntry(cardsById, entry);
   }
+
   return sortCardsChronologically(Array.from(cardsById.values()));
+}
+
+function applyCardHistoryLogEntry(cardsById: Map<CardId, Card>, entry: CardHistoryLogEntry): void {
+  switch (entry.op) {
+    case 'seed':
+      for (const card of entry.cards ?? []) {
+        if (!card?.id || cardsById.has(card.id)) continue;
+        cardsById.set(card.id, cleanPersistedCard(card));
+      }
+      break;
+    case 'upsert':
+      if (entry.card?.id) cardsById.set(entry.card.id, cleanPersistedCard(entry.card));
+      break;
+    case 'patch': {
+      const existing = cardsById.get(entry.cardId);
+      if (!existing) break;
+      const bag = existing as unknown as Record<string, unknown>;
+      for (const [key, value] of Object.entries(entry.patch ?? {})) {
+        if (value === null) delete bag[key];
+        else bag[key] = value;
+      }
+      cardsById.set(entry.cardId, cleanPersistedCard(existing));
+      break;
+    }
+    case 'append_text': {
+      const existing = cardsById.get(entry.cardId);
+      if (existing && 'text' in existing) {
+        (existing as { text: string }).text += entry.text;
+        cardsById.set(entry.cardId, cleanPersistedCard(existing));
+      }
+      break;
+    }
+    case 'remove':
+      cardsById.delete(entry.cardId);
+      break;
+  }
 }
 
 async function appendCardHistoryEntry(sessionId: string, entry: CardHistoryLogEntry): Promise<void> {
