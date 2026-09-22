@@ -174,6 +174,21 @@ describe('sessionStore', () => {
       expect((useSessionStore.getState().cards[0] as any).text).toBe('Hello World');
     });
 
+    it('replays an append_text chunk that arrives before its card add', () => {
+      useSessionStore.getState().handleCardEvent({
+        type: 'append_text', sessionId: 'sess1', cardId: 'c-late', text: 'first ',
+      });
+      useSessionStore.getState().handleCardEvent({
+        type: 'append_text', sessionId: 'sess1', cardId: 'c-late', text: 'chunk',
+      });
+      const card = makeCard({ type: 'assistant_text', id: 'c-late', text: 'base' });
+      useSessionStore.getState().handleCardEvent({
+        type: 'add', sessionId: 'sess1', card,
+      });
+
+      expect((useSessionStore.getState().cards[0] as any).text).toBe('basefirst chunk');
+    });
+
     it('append_text ignores cards without text field', () => {
       const card = makeCard({ type: 'tool_call', id: 'tc1', toolName: 'bash', toolInput: {}, toolUseId: 'tu1' } as any);
       useSessionStore.setState({ cards: [card] });

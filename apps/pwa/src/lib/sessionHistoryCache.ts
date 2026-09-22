@@ -81,24 +81,33 @@ export async function readSessionHistoryCache(sessionId: string): Promise<Sessio
 
 export async function writeSessionHistoryCache(
   sessionId: string,
-  value: Omit<SessionHistoryCacheRecord, 'key' | 'sessionId' | 'cachedAt'>,
+  value: Omit<SessionHistoryCacheRecord, 'key' | 'sessionId' | 'cachedAt'> & { cachedAt?: number },
 ): Promise<void> {
   try {
     const db = await openDatabase();
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
-      store.put({
+      const incoming = {
         key: cacheKey(sessionId),
         sessionId,
         ...value,
-        cachedAt: Date.now(),
-      } satisfies SessionHistoryCacheRecord);
-      const all = store.getAll();
-      all.onsuccess = () => {
-        const records = (all.result as SessionHistoryCacheRecord[])
-          .sort((a, b) => b.cachedAt - a.cachedAt);
-        for (const record of records.slice(MAX_RECORDS)) store.delete(record.key);
+        cachedAt: value.cachedAt ?? Date.now(),
+      } satisfies SessionHistoryCacheRecord;
+      const current = store.get(incoming.key);
+      current.onsuccess = () => {
+        // IndexedDB transactions can complete out of order from the caller's
+        // perspective. Never let an older snapshot overwrite a newer one.
+        const existing = current.result as SessionHistoryCacheRecord | undefined;
+        if (!existing || existing.cachedAt <= incoming.cachedAt) {
+          store.put(incoming);
+        }
+        const all = store.getAll();
+        all.onsuccess = () => {
+          const records = (all.result as SessionHistoryCacheRecord[])
+            .sort((a, b) => b.cachedAt - a.cachedAt);
+          for (const record of records.slice(MAX_RECORDS)) store.delete(record.key);
+        };
       };
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error ?? new Error('Failed to write history cache'));

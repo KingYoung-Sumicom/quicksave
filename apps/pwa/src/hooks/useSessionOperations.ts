@@ -146,6 +146,7 @@ export function useSessionOperations(
   const cardsUnsubsRef = useRef<Map<string, () => void>>(new Map());
   const metadataUnsubsRef = useRef<Map<string, () => void>>(new Map());
   const cardsSnapshotBuffersRef = useRef<Map<string, SessionCardsUpdate[]>>(new Map());
+  const sessionGenerationsRef = useRef<Map<string, number>>(new Map());
   const historyCacheRecordsRef = useRef<Map<string, SessionHistoryCacheRecord>>(new Map());
   const historyCacheTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
@@ -167,6 +168,7 @@ export function useSessionOperations(
       }
       metadataUnsubsRef.current.clear();
       cardsSnapshotBuffersRef.current.clear();
+      sessionGenerationsRef.current.clear();
       for (const timer of historyCacheTimersRef.current.values()) clearTimeout(timer);
       historyCacheTimersRef.current.clear();
       historyCacheRecordsRef.current.clear();
@@ -196,7 +198,10 @@ export function useSessionOperations(
 
   const persistHistoryCacheSnapshot = useCallback((sessionId: string) => {
     const state = useSessionStore.getState();
-    if (state.cards.length === 0) return;
+    // A delayed unsubscribe for A must never serialize the currently visible
+    // B cards under A's cache key.
+    if (state.activeSessionId !== sessionId || state.cards.length === 0) return;
+    const cachedAt = Date.now();
     const last = state.cards[state.cards.length - 1];
     const snapshot = {
       cards: state.cards,
@@ -207,12 +212,13 @@ export function useSessionOperations(
       coverage: historyCacheRecordsRef.current.get(sessionId)?.coverage,
       lastReceivedCard: last ? { id: last.id, timestamp: last.timestamp, ...(last.turnId ? { turnId: last.turnId } : {}) } : undefined,
       hasLiveCards: state.isStreaming,
+      cachedAt,
     };
     const previous = historyCacheRecordsRef.current.get(sessionId);
     historyCacheRecordsRef.current.set(sessionId, {
       ...(previous ?? { key: '', sessionId, cachedAt: Date.now() }),
       ...snapshot,
-      cachedAt: Date.now(),
+      cachedAt,
     });
     void writeSessionHistoryCache(sessionId, snapshot);
     recordSessionHistoryMetric('cache_write', { sessionId, cardCount: state.cards.length });
@@ -283,7 +289,13 @@ export function useSessionOperations(
         const bus = getBus();
         if (!bus) return;
         if (cardsSnapshotBuffersRef.current.has(sessionId)) return;
+        const generation = (sessionGenerationsRef.current.get(sessionId) ?? 0) + 1;
+        sessionGenerationsRef.current.set(sessionId, generation);
+        const isCurrentLoad = () =>
+          sessionGenerationsRef.current.get(sessionId) === generation
+          && useSessionStore.getState().activeSessionId === sessionId;
         const persistedCache = await readSessionHistoryCache(sessionId);
+        if (sessionGenerationsRef.current.get(sessionId) !== generation) return;
         const memoryCache = historyCacheRecordsRef.current.get(sessionId);
         const cached = memoryCache && (!persistedCache || memoryCache.cachedAt > persistedCache.cachedAt)
           ? memoryCache
@@ -295,6 +307,7 @@ export function useSessionOperations(
           setHistoryMeta(cached.total ?? undefined, cached.hasMore, cached.nextCursor);
           setLoadingHistory(false);
         }
+        if (!isCurrentLoad()) return;
         // Release any stale subscription for this session before re-subscribing.
         // SessionPanel only unsubs through its nav effect / handleNewSession,
         // so the ProjectList "+" button (which navigates straight to /add)
@@ -318,9 +331,15 @@ export function useSessionOperations(
         const metadataUnsub = bus.subscribe<SessionMetadata, never>(
           `/sessions/${sessionId}/metadata`,
           {
-            onSnapshot: (metadata) => useSessionStore.getState().setSessionMetadata(metadata),
-            onUpdate: (metadata) => useSessionStore.getState().setSessionMetadata(metadata),
-            onError: (err) => console.warn(`[bus] /sessions/${sessionId}/metadata error:`, err),
+            onSnapshot: (metadata) => {
+              if (isCurrentLoad()) useSessionStore.getState().setSessionMetadata(metadata);
+            },
+            onUpdate: (metadata) => {
+              if (isCurrentLoad()) useSessionStore.getState().setSessionMetadata(metadata);
+            },
+            onError: (err) => {
+              if (isCurrentLoad()) console.warn(`[bus] /sessions/${sessionId}/metadata error:`, err);
+            },
           },
         );
         metadataUnsubsRef.current.set(sessionId, metadataUnsub);
@@ -334,6 +353,7 @@ export function useSessionOperations(
             `/sessions/${sessionId}/cards`,
             {
               onSnapshot: (snap) => {
+                if (!isCurrentLoad()) return;
                 recordSessionHistoryMetric('snapshot', {
                   sessionId,
                   readMode: snap.historySync?.readMode,
@@ -380,6 +400,7 @@ export function useSessionOperations(
                 scheduleHistoryCacheWrite(sessionId);
               },
               onUpdate: (update) => {
+                if (!isCurrentLoad()) return;
                 const buffer = cardsSnapshotBuffersRef.current.get(sessionId);
                 if (buffer) {
                   buffer.push(update);
@@ -389,6 +410,7 @@ export function useSessionOperations(
                 scheduleHistoryCacheWrite(sessionId);
               },
               onError: (err) => {
+                if (!isCurrentLoad()) return;
                 cardsSnapshotBuffersRef.current.delete(sessionId);
                 recordSessionHistoryMetric('reconnect', { sessionId, error: String(err) });
                 console.warn(`[bus] /sessions/${sessionId}/cards error:`, err);
@@ -419,6 +441,7 @@ export function useSessionOperations(
       }
 
       // Pagination: fetch older history via command.
+      const requestGeneration = sessionGenerationsRef.current.get(sessionId) ?? 0;
       setLoadingHistory(true);
       setHistoryError(null);
       try {
@@ -428,6 +451,9 @@ export function useSessionOperations(
           { sessionId, offset, limit, ...(cursor ? { cursor } : {}), ...(cwd ? { cwd } : {}) },
         );
         if (response.error) throw new Error(response.error);
+        if ((useSessionStore.getState().activeSessionId !== null
+          && useSessionStore.getState().activeSessionId !== sessionId)
+          || (sessionGenerationsRef.current.get(sessionId) ?? 0) !== requestGeneration) return;
         prependCards(response.cards);
         setHistoryMeta(response.total, response.hasMore, response.nextCursor);
         const previous = historyCacheRecordsRef.current.get(sessionId);
@@ -454,10 +480,17 @@ export function useSessionOperations(
         }
         scheduleHistoryCacheWrite(sessionId);
       } catch (error) {
+        if ((useSessionStore.getState().activeSessionId !== null
+          && useSessionStore.getState().activeSessionId !== sessionId)
+          || (sessionGenerationsRef.current.get(sessionId) ?? 0) !== requestGeneration) return;
         console.error('Failed to get session cards:', error);
         setHistoryError(error instanceof Error ? error.message : 'Failed to load history');
       } finally {
-        setLoadingHistory(false);
+        if ((useSessionStore.getState().activeSessionId === sessionId
+          || useSessionStore.getState().activeSessionId === null)
+          && (sessionGenerationsRef.current.get(sessionId) ?? 0) === requestGeneration) {
+          setLoadingHistory(false);
+        }
       }
     },
     [getBus, sendCommand, prependCards, setHistoryMeta, setLoadingHistory, setHistoryError, scheduleHistoryCacheWrite]
@@ -909,6 +942,11 @@ export function useSessionOperations(
    */
   const unsubscribeSession = useCallback(
     (sessionId: string) => {
+      sessionGenerationsRef.current.set(
+        sessionId,
+        (sessionGenerationsRef.current.get(sessionId) ?? 0) + 1,
+      );
+      cardsSnapshotBuffersRef.current.delete(sessionId);
       flushHistoryCacheWrite(sessionId);
       const unsub = cardsUnsubsRef.current.get(sessionId);
       if (unsub) {

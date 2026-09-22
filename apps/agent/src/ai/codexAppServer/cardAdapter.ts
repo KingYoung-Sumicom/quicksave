@@ -61,6 +61,8 @@ interface AdapterState {
   /** Pending text being debounced before flushing into
    * `cb.assistantText`. */
   textBuffer: string;
+  /** Agent-message item owning the pending text buffer. */
+  textBufferItemId: string | null;
   textTimer: ReturnType<typeof setTimeout> | null;
   /** Number of chars already emitted to `cb.assistantText` per
    * agent_message itemId. Used to compute residual on
@@ -95,6 +97,7 @@ interface AdapterState {
 function emptyState(): AdapterState {
   return {
     textBuffer: '',
+    textBufferItemId: null,
     textTimer: null,
     agentMessageEmittedChars: new Map(),
     reasoningEmittedChars: new Map(),
@@ -214,7 +217,7 @@ export function createCodexTurnStreamConsumer(
     callbacks.emitCardEvent(event);
   };
 
-  const flushText = (): void => {
+  const flushText = (finalize = false): void => {
     if (state.textBuffer) {
       emit(cb.assistantText(state.textBuffer));
       state.textBuffer = '';
@@ -223,10 +226,21 @@ export function createCodexTurnStreamConsumer(
       clearTimeout(state.textTimer);
       state.textTimer = null;
     }
+    if (finalize) {
+      const finished = cb.finalizeAssistantText();
+      if (finished) emit(finished);
+    }
+    state.textBufferItemId = null;
   };
 
-  const bufferText = (delta: string): void => {
+  const bufferText = (itemId: string, delta: string): void => {
     if (!delta) return;
+    if (state.textBufferItemId && state.textBufferItemId !== itemId) {
+      // A provider may interleave item streams. Do not append item B's text
+      // to item A's card merely because the debounce timer is still pending.
+      flushText(true);
+    }
+    state.textBufferItemId = itemId;
     state.textBuffer += delta;
     if (!state.textTimer) {
       state.textTimer = setTimeout(flushText, FLUSH_INTERVAL_MS);
@@ -308,7 +322,7 @@ export function createCodexTurnStreamConsumer(
         if (!params.delta) return;
         const prev = state.agentMessageEmittedChars.get(params.itemId) ?? 0;
         state.agentMessageEmittedChars.set(params.itemId, prev + params.delta.length);
-        bufferText(params.delta);
+        bufferText(params.itemId, params.delta);
         return;
       }
 
@@ -626,7 +640,7 @@ export function createCodexTurnStreamConsumer(
         // delta we haven't yet seen.
         if (item.text) {
           state.agentMessageEmittedChars.set(item.id, item.text.length);
-          bufferText(item.text);
+          bufferText(item.id, item.text);
         }
         return;
       }

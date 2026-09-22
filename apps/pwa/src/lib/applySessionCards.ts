@@ -29,9 +29,7 @@ export function applySessionCardsSnapshot(sessionId: string, snap: CardHistoryRe
  */
 export function applySessionCardsUpdate(sessionId: string, update: SessionCardsUpdate): void {
   const state = useSessionStore.getState();
-  if (sessionId !== state.activeSessionId && !(state.isStreaming && !state.activeSessionId)) {
-    return;
-  }
+  if (sessionId !== state.activeSessionId) return;
   if (update.kind === 'card') {
     state.handleCardEvent(update.event);
     return;

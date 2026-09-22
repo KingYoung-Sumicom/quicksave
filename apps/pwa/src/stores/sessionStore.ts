@@ -230,6 +230,8 @@ interface SessionStore {
   historyError: string | null;
   /** Turn ids that have emitted stream-end during the current live view. */
   completedTurnIds: Record<string, true>;
+  /** Text chunks that arrived before their card-add event. */
+  pendingCardText: Record<string, string>;
 
 
   // UI
@@ -345,6 +347,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   isLoadingHistory: false,
   historyError: null,
   completedTurnIds: {},
+  pendingCardText: {},
   promptInput: '',
   isVisible: false,
   selectedAgent: savedPrefs.selectedAgent,
@@ -459,6 +462,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       // immediately before this, so prompt-sending paths still see true.
       isStreaming: session?.isStreaming ?? false,
       completedTurnIds: {},
+      pendingCardText: {},
       selectedAgent: sessionAgent,
       ...flatViewOf(agentPrefsForSession),
       // Surface the session's permissionMode in the flat view so the chip
@@ -471,7 +475,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   setStreamError: (error) => set({ streamError: error, isStreaming: false }),
 
   // Cards — server returns cards with pendingInput already attached
-  setCards: (cards) => set({ cards: cards ?? [], completedTurnIds: {} }),
+  setCards: (cards) => set({ cards: cards ?? [], completedTurnIds: {}, pendingCardText: {} }),
   prependCards: (newCards) =>
     set((state) => {
       const existingIds = new Set(state.cards.map((c) => c.id));
@@ -485,17 +489,23 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     set((state) => {
       switch (event.type) {
         case 'add': {
+          const pendingText = state.pendingCardText[event.card.id];
+          const card = pendingText && 'text' in event.card
+            ? { ...event.card, text: (event.card as { text: string }).text + pendingText } as Card
+            : event.card;
+          const pendingCardText = { ...state.pendingCardText };
+          delete pendingCardText[event.card.id];
           if (event.afterCardId) {
             const idx = state.cards.findIndex((c) => c.id === event.afterCardId);
             const cards = [...state.cards];
-            cards.splice(idx >= 0 ? idx + 1 : cards.length, 0, event.card);
-            return { cards };
+            cards.splice(idx >= 0 ? idx + 1 : cards.length, 0, card);
+            return { cards, pendingCardText };
           }
           // Dedup user cards (multi-tab broadcast). Match by text + a sorted
           // attachment-id signature so that two attachment-only follow-ups
           // with empty text don't collide.
           if (event.card.type === 'user') {
-            const incoming = event.card as { text: string; attachments?: { id: string }[] };
+            const incoming = card as { text: string; attachments?: { id: string }[] };
             const incomingSig = (incoming.attachments ?? []).map((a) => a.id).sort().join(',');
             const alreadyHas = state.cards.some((c) => {
               if (c.type !== 'user') return false;
@@ -506,7 +516,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
             });
             if (alreadyHas) return state;
           }
-          return { cards: [...state.cards, event.card] };
+          return { cards: [...state.cards, card], pendingCardText };
         }
         case 'update': {
           return {
@@ -525,6 +535,14 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           };
         }
         case 'append_text': {
+          if (!state.cards.some((c) => c.id === event.cardId)) {
+            return {
+              pendingCardText: {
+                ...state.pendingCardText,
+                [event.cardId]: (state.pendingCardText[event.cardId] ?? '') + event.text,
+              },
+            };
+          }
           return {
             cards: state.cards.map((c) =>
               c.id === event.cardId && 'text' in c
@@ -558,6 +576,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     historyHasMore: false,
     historyCursor: null,
     historyError: null,
+    pendingCardText: {},
   }),
 
   clearPendingInput: (requestId) =>

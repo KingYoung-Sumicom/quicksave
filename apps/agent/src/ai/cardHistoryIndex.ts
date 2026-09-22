@@ -179,13 +179,15 @@ function applyLogFile(
   let filePosition = startOffset;
   let processedBytes = startOffset;
 
-  const applyLine = (line: Buffer): void => {
+  const applyLine = (line: Buffer): boolean => {
     const rawLine = line.toString('utf8');
-    if (!rawLine.trim()) return;
+    if (!rawLine.trim()) return true;
     try {
       nextOrdinal = applyLogEntry(db, sessionId, JSON.parse(rawLine) as CardHistoryLogEntry, nextOrdinal);
+      return true;
     } catch {
       // Keep existing JSONL tolerance: malformed complete lines are ignored.
+      return false;
     }
   };
 
@@ -206,6 +208,10 @@ function applyLogFile(
         newline = pending.indexOf(0x0a);
       }
     }
+    // A complete final JSON object is valid JSONL even when the writer has not
+    // appended the conventional trailing newline yet. If it is incomplete,
+    // leave processedBytes at the line start so the next sync can retry it.
+    if (pending.length > 0 && applyLine(pending)) processedBytes = sourceSize;
   } finally {
     closeSync(fd);
   }
@@ -313,7 +319,12 @@ function syncIndexWithDb(
 ): boolean {
   return db.tx(() => {
     let meta = forceRebuild ? undefined : (db.getMeta.get(sessionId) as MetaRow | undefined);
-    if (!meta || meta.log_path !== logPath || sourceSize < meta.processed_bytes) {
+    const sameSizeReplacement = Boolean(
+      meta
+      && sourceSize === meta.source_size
+      && sourceMtimeMs !== meta.source_mtime_ms,
+    );
+    if (!meta || meta.log_path !== logPath || sourceSize < meta.processed_bytes || sameSizeReplacement) {
       resetSessionIndex(db, sessionId);
       meta = {
         session_id: sessionId,

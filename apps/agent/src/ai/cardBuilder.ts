@@ -858,7 +858,11 @@ export class StreamCardBuilder {
     }
     if (this._pendingClearToken !== token) return;
     this._pendingClearToken = null;
-    this._jsonlCutoff = lastSize >= 0 ? lastSize : null;
+    // A timeout is not proof that the provider has flushed its JSONL. Keep
+    // the live projection visible until a later reload can observe the full
+    // turn; clearing here would make the last turn disappear temporarily.
+    if (stableFor < stableMs || lastSize < 0) return;
+    this._jsonlCutoff = lastSize;
     this.cards.clear();
     this.toolUseIdToCardId.clear();
     this.artifactIdToCardId.clear();

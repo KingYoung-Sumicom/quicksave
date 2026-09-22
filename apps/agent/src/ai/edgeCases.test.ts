@@ -572,7 +572,7 @@ describe('StreamCardBuilder scheduleDeferredClear', () => {
     expect(cb.jsonlCutoff).toBe(9000);
   });
 
-  it('gives up after maxWaitMs if file never stabilizes but still clears', async () => {
+  it('keeps live cards when maxWaitMs expires before the file stabilizes', async () => {
     const cb = new StreamCardBuilder('sess-defer-4', 'stream-1', '/test');
     cb.jsonlCutoff = 100;
     cb.userMessage('u');
@@ -587,8 +587,8 @@ describe('StreamCardBuilder scheduleDeferredClear', () => {
     const elapsed = Date.now() - start;
 
     expect(elapsed).toBeGreaterThanOrEqual(55);
-    expect(cb.getCards()).toEqual([]);
-    expect(cb.jsonlCutoff).toBeGreaterThan(100);
+    expect(cb.getCards()).toHaveLength(2);
+    expect(cb.jsonlCutoff).toBe(100);
   });
 
   it('getCards returns a complete view (JSONL OR streamingCards) throughout the defer window', async () => {
