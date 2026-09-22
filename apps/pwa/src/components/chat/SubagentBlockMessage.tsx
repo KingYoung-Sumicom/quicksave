@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { useState } from 'react';
-import type { ClaudeUserInputRequestPayload, SubagentToolCall } from '@sumicom/quicksave-shared';
+import type { ClaudeUserInputRequestPayload, SubagentActivity, SubagentToolCall } from '@sumicom/quicksave-shared';
 import { ChevronIcon } from '../ui/ChevronIcon';
+import { ToolCallMessage } from './ToolCallMessage';
+import { ToolCallGroupPlaceholder } from './ToolCallGroupPlaceholder';
 
 const STATUS_STYLES: Record<string, { dot: string; label: string }> = {
   running:   { dot: 'bg-blue-400 animate-pulse', label: 'Running' },
@@ -11,45 +13,154 @@ const STATUS_STYLES: Record<string, { dot: string; label: string }> = {
   stopped:   { dot: 'bg-slate-400',              label: 'Stopped' },
 };
 
-function NestedToolCallRow({ tc }: { tc: SubagentToolCall }) {
-  const [open, setOpen] = useState(false);
-  const hasResult = !!tc.result;
-  const dotClass = hasResult
-    ? tc.result!.isError ? 'bg-red-400' : 'bg-green-400'
-    : 'bg-blue-400 animate-pulse';
+const ACTIVITY_STATUS_STYLES: Record<string, { dot: string; label: string }> = {
+  running: { dot: 'bg-blue-400 animate-pulse', label: 'Running' },
+  completed: { dot: 'bg-emerald-400', label: 'Done' },
+  failed: { dot: 'bg-red-400', label: 'Failed' },
+};
+
+function ActivityMessage({ activity }: { activity: SubagentActivity }) {
+  return (
+    <div className="rounded-md border border-slate-700/70 bg-slate-900/30 px-2.5 py-2">
+      <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-slate-500">{activity.title}</div>
+      {activity.detail && <div className="whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-300">{activity.detail}</div>}
+    </div>
+  );
+}
+
+function ActivityToolCard({ activity, initiallyExpanded = false }: { activity: SubagentActivity; initiallyExpanded?: boolean }) {
+  const [expanded, setExpanded] = useState(initiallyExpanded);
+  const status = ACTIVITY_STATUS_STYLES[activity.status ?? 'running'] ?? ACTIVITY_STATUS_STYLES.running;
 
   return (
-    <div>
+    <div className="rounded-md border border-slate-700/70 bg-slate-900/30 overflow-hidden">
       <button
-        onClick={() => setOpen((v) => !v)}
-        className="w-full text-left flex items-center gap-1.5 py-0.5 hover:bg-slate-700/20 rounded px-1 transition-colors"
+        type="button"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-center gap-2 px-2.5 py-2 text-left hover:bg-slate-700/30 transition-colors"
       >
-        <ChevronIcon expanded={open} className="text-slate-600" size="w-2 h-2" />
-        <span className={`w-1 h-1 rounded-full shrink-0 ${dotClass}`} />
-        <span className="text-[10px] text-slate-400 font-mono">{tc.toolName}</span>
-        {tc.result && !open && (
-          <span className="text-[10px] text-slate-600 truncate flex-1">
-            {tc.result.content.slice(0, 80)}
-          </span>
-        )}
+        <ChevronIcon expanded={expanded} className="text-slate-500" size="w-3 h-3" />
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${status.dot}`} />
+        <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-slate-300">{activity.title}</span>
+        <span className="shrink-0 text-[10px] text-slate-500">{status.label}</span>
       </button>
-      {open && (
-        <div className="ml-4 mt-0.5 space-y-0.5">
-          <pre className="text-[10px] text-slate-500 whitespace-pre-wrap break-words font-mono bg-slate-900/40 rounded px-1.5 py-1 max-h-32 overflow-y-auto">
-            {JSON.stringify(tc.toolInput, null, 2)}
-          </pre>
-          {tc.result && (
-            <pre className={`text-[10px] whitespace-pre-wrap break-words font-mono bg-slate-900/40 rounded px-1.5 py-1 max-h-32 overflow-y-auto ${tc.result.isError ? 'text-red-400/80' : 'text-slate-500'}`}>
-              {tc.result.content}
-            </pre>
-          )}
+      {expanded && activity.detail && (
+        <div className="border-t border-slate-700/50 px-2 pb-2 pt-1">
+          <ToolCallMessage
+            toolName={activity.title}
+            toolInput={activity.detail}
+            content={activity.detail}
+          />
         </div>
       )}
     </div>
   );
 }
 
-export function SubagentBlockMessage({ content, subagentStatus = 'running', subagentSummary, toolUseCount = 0, lastToolName, subagentType, requestedModel, prompt, toolCalls, pendingInputRequest, onRespond }: {
+type ActivityEntry =
+  | { kind: 'message'; activity: SubagentActivity }
+  | { kind: 'group'; id: string; activities: SubagentActivity[] };
+
+function groupActivities(activities: SubagentActivity[]): ActivityEntry[] {
+  const entries: ActivityEntry[] = [];
+  let run: SubagentActivity[] = [];
+  let runTurnId: string | undefined;
+
+  const flush = () => {
+    if (run.length > 0) {
+      entries.push({ kind: 'group', id: run[0].id, activities: run });
+      run = [];
+      runTurnId = undefined;
+    }
+  };
+
+  for (const activity of activities) {
+    if (activity.type === 'message') {
+      flush();
+      entries.push({ kind: 'message', activity });
+      continue;
+    }
+
+    const activityTurnId = ('turnId' in activity && typeof activity.turnId === 'string')
+      ? activity.turnId
+      : undefined;
+    if (run.length > 0 && activityTurnId !== undefined && runTurnId !== activityTurnId) flush();
+    if (run.length === 0) runTurnId = activityTurnId;
+    run.push(activity);
+  }
+  flush();
+  return entries;
+}
+
+function ActivityStream({ activities, toolCalls }: { activities?: SubagentActivity[]; toolCalls?: SubagentToolCall[] }) {
+  const stream = activities && activities.length > 0
+    ? activities
+    : (toolCalls ?? []).map((tool) => ({
+      id: tool.id,
+      type: 'tool' as const,
+      title: tool.toolName,
+      detail: tool.result?.content || JSON.stringify(tool.toolInput, null, 2),
+      status: tool.result ? (tool.result.isError ? 'failed' as const : 'completed' as const) : 'running' as const,
+    }));
+
+  if (stream.length === 0) return null;
+
+  const entries = groupActivities(stream);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const toggleGroup = (id: string) => {
+    setExpandedGroups((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  return (
+    <div className="border-t border-slate-700/30 px-2 pb-2 pt-2">
+      <div className="mb-1.5 px-0.5 text-[10px] font-medium uppercase tracking-wide text-slate-600">Activity</div>
+      <div className="space-y-1.5">
+        {entries.map((entry) => {
+          if (entry.kind === 'message') {
+            return (
+              <div key={entry.activity.id} data-activity-type={entry.activity.type}>
+                <ActivityMessage activity={entry.activity} />
+              </div>
+            );
+          }
+
+          const open = expandedGroups.has(entry.id);
+          const allTools = entry.activities.every((activity) => activity.type === 'tool');
+          const noun = allTools ? 'tool call' : 'turn item';
+          return (
+            <div key={entry.id} data-activity-group={entry.id}>
+              <ToolCallGroupPlaceholder
+                count={entry.activities.length}
+                noun={noun}
+                expanded={open}
+                onToggle={() => toggleGroup(entry.id)}
+              />
+              {open && (
+                <div className="mt-1.5 space-y-1.5">
+                  {entry.activities.map((activity) => (
+                    <div key={activity.id} data-activity-type={activity.type}>
+                      {activity.type === 'tool'
+                        ? <ActivityToolCard activity={activity} />
+                        : <ActivityMessage activity={activity} />}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function SubagentBlockMessage({ content, subagentStatus = 'running', subagentSummary, toolUseCount = 0, lastToolName, subagentType, requestedModel, prompt, toolCalls, agentPath, statusMessage, activities, legacyNotice, pendingInputRequest, onRespond }: {
   content: string;
   subagentStatus?: 'running' | 'completed' | 'failed' | 'stopped';
   subagentSummary?: string;
@@ -59,10 +170,14 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
   requestedModel?: string;
   prompt?: string;
   toolCalls?: SubagentToolCall[];
+  agentPath?: string;
+  statusMessage?: string;
+  activities?: SubagentActivity[];
+  legacyNotice?: boolean;
   toolUseId?: string;
   agentId?: string;
   pendingInputRequest?: ClaudeUserInputRequestPayload;
-  onRespond?: (action: 'allow' | 'deny', response?: string, allowPattern?: string) => void;
+  onRespond?: (action: 'allow' | 'deny', response?: string, allowPattern?: string, permissionMode?: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [promptExpanded, setPromptExpanded] = useState(false);
@@ -78,7 +193,7 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
 
   return (
     <div className="flex justify-start flex-col gap-0.5">
-      <div className="bg-slate-800/40 border-l-2 border-violet-500/50 rounded-r-lg w-full overflow-hidden">
+      <div className="rounded-lg border border-slate-700 bg-slate-800/50 w-full overflow-hidden shadow-sm">
         {/* Header row */}
         <button
           onClick={() => setExpanded((v) => !v)}
@@ -100,7 +215,7 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
               <span className="text-[10px] text-slate-600">{effectiveToolCount} tool{effectiveToolCount !== 1 ? 's' : ''}</span>
             )}
             <span className={`text-[10px] ${subagentStatus === 'running' ? 'text-blue-400' : subagentStatus === 'completed' ? 'text-green-400' : 'text-slate-500'}`}>
-              {status.label}
+              {statusMessage || status.label}
             </span>
           </span>
         </button>
@@ -126,22 +241,23 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
           </div>
         )}
 
-        {/* Expanded: description, summary, nested tool calls */}
+        {/* Expanded: metadata followed by the live, chronological activity stream. */}
         {expanded && (
           <div className="border-t border-slate-700/40">
             <div className="px-2.5 pb-2 pt-1 space-y-1">
               <p className="text-[10px] text-slate-500 italic">{content}</p>
+              <p className="text-[10px] text-slate-600"><span className="text-slate-500">Status</span> {statusMessage || status.label}</p>
               {subagentSummary && (
                 <p className="text-[10px] text-slate-500">{subagentSummary}</p>
               )}
+              {agentPath && <p className="break-all font-mono text-[10px] text-slate-600">{agentPath}</p>}
+              {legacyNotice && (
+                <div className="rounded border border-amber-500/20 bg-amber-500/5 px-2 py-1.5 text-[10px] text-amber-200/80">
+                  Detailed activity is unavailable because this event predates structured sub-agent tracking.
+                </div>
+              )}
             </div>
-            {toolCalls && toolCalls.length > 0 && (
-              <div className="border-t border-slate-700/30 px-2 pb-1.5 pt-1 space-y-0.5">
-                {toolCalls.map((tc) => (
-                  <NestedToolCallRow key={tc.id} tc={tc} />
-                ))}
-              </div>
-            )}
+            <ActivityStream activities={activities} toolCalls={toolCalls} />
           </div>
         )}
 

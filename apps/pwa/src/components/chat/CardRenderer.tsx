@@ -85,9 +85,13 @@ export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId
           requestedModel={sa.requestedModel}
           prompt={sa.prompt}
           toolCalls={sa.toolCalls}
+          agentPath={sa.agentPath}
+          statusMessage={sa.statusMessage}
+          activities={sa.activities}
+          legacyNotice={sa.agentId.startsWith('legacy-subagent:')}
           pendingInputRequest={sa.pendingInput ? toLegacyPending(sa.pendingInput) : undefined}
           onRespond={sa.pendingInput && onRespondToInput
-            ? (action, response, allowPattern) => onRespondToInput(sa.pendingInput!.requestId, action, response, allowPattern)
+            ? (action, response, allowPattern, permissionMode) => onRespondToInput(sa.pendingInput!.requestId, action, response, allowPattern, permissionMode)
             : undefined}
         />
       );

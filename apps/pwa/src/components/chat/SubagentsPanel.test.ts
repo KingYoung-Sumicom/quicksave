@@ -96,4 +96,80 @@ describe('collectSubagents', () => {
       useSessionStore.getState().reset();
     }
   });
+
+  it('uses session cards for structured agents, collapsible tools, and pending permission actions', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const responses: unknown[] = [];
+    useSessionStore.getState().setCards([{
+      type: 'subagent',
+      id: 'subagent-1',
+      timestamp: Date.now(),
+      description: 'Investigate the route',
+      toolUseId: 'tool-use-1',
+      agentId: 'agent-1',
+      agentPath: '/tmp/agent-1',
+      status: 'running',
+      statusMessage: 'Working',
+      toolUseCount: 1,
+      activities: [
+        { id: 'activity-message', type: 'message', title: 'Response', detail: 'first-message', status: 'completed' },
+        { id: 'activity-reasoning', type: 'reasoning', title: 'Reasoning', detail: 'second-reasoning', status: 'completed' },
+        { id: 'activity-tool', type: 'tool', title: 'npm test', detail: 'tool-output', status: 'completed' },
+        { id: 'activity-response-2', type: 'message', title: 'Response', detail: 'third-message', status: 'completed' },
+      ],
+      pendingInput: {
+        sessionId: 'session-1',
+        requestId: 'request-1',
+        inputType: 'permission',
+        title: 'Allow command?',
+        message: 'The agent wants to run a command.',
+      },
+    }]);
+
+    try {
+      await act(async () => root.render(React.createElement(SubagentsPanel, {
+        onRespondToUserInput: (response) => responses.push(response),
+      })));
+      const buttons = [...container.querySelectorAll('button')];
+      await act(async () => buttons[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+      expect(container.textContent).toContain('Investigate the route');
+      expect(container.textContent).toContain('first-message');
+      expect(container.textContent).toContain('2 turn items');
+      expect(container.textContent).toContain('third-message');
+      expect(container.textContent).toContain('Allow command?');
+      expect(container.textContent).toContain('/tmp/agent-1');
+      expect(container.textContent).not.toContain('second-reasoning');
+      expect(container.textContent).not.toContain('tool-output');
+
+      const groupToggle = container.querySelector('button[aria-label="Show 2 hidden turn items"]');
+      expect(groupToggle).not.toBeNull();
+      await act(async () => groupToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+      expect(container.textContent).toContain('second-reasoning');
+      expect(container.textContent).toContain('npm test');
+      expect(container.textContent!.indexOf('second-reasoning')).toBeLessThan(container.textContent!.indexOf('npm test'));
+      expect(container.textContent!.indexOf('npm test')).toBeLessThan(container.textContent!.indexOf('third-message'));
+
+      const toolToggle = [...container.querySelectorAll('button[aria-expanded="false"]')]
+        .find((button) => button.textContent?.includes('npm test'));
+      expect(toolToggle).not.toBeNull();
+      await act(async () => toolToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+      expect(container.textContent).toContain('tool-output');
+
+      const allow = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Allow');
+      expect(allow).toBeDefined();
+      await act(async () => allow?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+      expect(responses).toEqual([expect.objectContaining({
+        sessionId: 'session-1',
+        requestId: 'request-1',
+        action: 'allow',
+      })]);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      useSessionStore.getState().reset();
+    }
+  });
 });

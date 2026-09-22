@@ -1681,6 +1681,7 @@ function ProjectRouteSession({
             agentId={targetAgentId}
             cwd={cwd}
             voiceAgent={voiceAgent}
+            onRespondToUserInput={respondToUserInput}
             sessionOps={{
               sessionId: urlSessionId,
               projectId,

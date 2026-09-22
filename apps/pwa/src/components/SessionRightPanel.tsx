@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { FileEntry, FilesListResponsePayload } from '@sumicom/quicksave-shared';
+import type { ClaudeUserInputResponsePayload, FileEntry, FilesListResponsePayload } from '@sumicom/quicksave-shared';
 import {
   useSessionRightPanelStore,
   selectPanelMode,
@@ -34,6 +34,7 @@ interface SessionRightPanelProps {
   cwd: string;
   sessionOps: SessionOps;
   voiceAgent: UseVoiceAgent;
+  onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
 }
 
 type RepoPathLike = { path: string };
@@ -60,7 +61,7 @@ export function resolveGitRepoScope(
   return best;
 }
 
-export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps, voiceAgent }: SessionRightPanelProps) {
+export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps, voiceAgent, onRespondToUserInput }: SessionRightPanelProps) {
   const mode = useSessionRightPanelStore(selectPanelMode);
   const panelWidth = useSessionRightPanelStore((s) => s.panelWidth);
   const setPanelWidth = useSessionRightPanelStore((s) => s.setPanelWidth);
@@ -197,7 +198,7 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps, voiceAg
       {/* Content */}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         {mode === 'voice' && <VoiceCoworkerSidebar voiceAgent={voiceAgent} />}
-        {mode === 'subagents' && <SubagentsPanel />}
+        {mode === 'subagents' && <SubagentsPanel onRespondToUserInput={onRespondToUserInput} />}
         {mode === 'files' && <FilesPanel agentId={agentId} cwd={cwd} />}
         {mode === 'git' && <GitPanel agentId={agentId} cwd={cwd} />}
         {mode === 'settings' && <SettingsPanel sessionOps={sessionOps} />}
