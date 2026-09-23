@@ -141,7 +141,7 @@ provider must forward to `callbacks.emitCardEvent()`.
 | Method | Signature | Card effect | Notes |
 |--------|-----------|-------------|-------|
 | `userMessage(text)` | cardBuilder.ts:409 | Adds a `user` card. Resets `currentTextCardId`. | The Claude provider skips `--replay-user-messages` echoes upstream (`isReplay` guard, claudeCliProvider.ts:793). |
-| `thinkingBlock(text)` | 415 | Adds a `thinking` card. | Each call is a fresh card; thinking does NOT stream-coalesce the way text does. |
+| `thinkingBlock(text, itemId?)` | 415 | Adds a `thinking` card; with the same active `itemId`, later calls append to that card. | Codex reasoning deltas coalesce per item. `finalizeThinkingBlock(itemId)` releases the lookup when the item completes; `startNewTurn()` also clears it. Calls without an item id remain independent cards. |
 | `assistantText(text)` | 425 | First call adds an `assistant_text` card with `streaming: true`. Subsequent calls return `append_text` events on the same card. | Coalesce continues until any non-text mutation resets `currentTextCardId`. |
 | `finalizeAssistantText()` | 436 | `update { streaming: false }` on current text card; null otherwise. | Idempotent on null path: returns `null` after first call. |
 | `toolUse(name, input, id)` | 448 | `add` of a `tool_call`; OR `update { toolInput }` if the toolUseId already had a card from `toolCallFromPermission`. | Same call is used for "create card" and "patch input" — keyed on `toolUseIdToCardId`. |
@@ -169,7 +169,7 @@ Lifecycle methods (no card effect, but mutate state used by the above):
 | Method | Effect |
 |--------|--------|
 | `updateSessionId(sid)` (cardBuilder.ts:234) | Rewrites the sessionId baked into freshly-minted CardIds and event envelopes. Called once after the Codex `thread/start` response so the temporary `'pending'` builder id is replaced with the real thread id (sessionManager.ts:505). |
-| `startNewTurn()` (239) | Resets `currentTextCardId`. Cards persist across turns. |
+| `startNewTurn()` (239) | Resets `currentTextCardId` and per-turn reasoning item lookups. Cards persist across turns. |
 | `clearCards()` (244) | Wipes Map + all id→cardId tables + currentTextCardId. |
 | `persistCards()` (257) | Memory-mode only. Strips `pendingInput`, sets `streaming: false` on `assistant_text`, appends to `getCardHistoryDir()/${sessionId}.json`. |
 | `snapshotCutoff()` (289) | Claude-jsonl mode only. Records JSONL byte size; `getCards()` history reads stop here. |
@@ -194,7 +194,7 @@ references below are to `cardAdapter.ts` unless noted.
 | `item/started` (see per-item table below) | `params.{turnId, item}` | varies by `item.type` | 189–194 / 407–529 |
 | `item/completed` (see per-item table below) | `params.{turnId, item}` | varies by `item.type` | 196–201 / 531–678 |
 | `item/agentMessage/delta` | `params.delta` | `bufferText(delta)` (150 ms debounce → `cb.assistantText`); tracks emitted-char count per `itemId` for completed-time residual | 203–211 |
-| `item/reasoning/summaryTextDelta` / `item/reasoning/textDelta` | `params.delta` | `cb.thinkingBlock(delta)` (skipped if `delta.trim()` is empty); tracks emitted-char count to suppress duplicate completed-time emit | 213–225 |
+| `item/reasoning/summaryTextDelta` / `item/reasoning/textDelta` | `params.{itemId, delta}` | `cb.thinkingBlock(delta, itemId)` (skipped if `delta.trim()` is empty); appends deltas to one card per item and tracks emitted-char count to suppress duplicate completed-time emit | 213–225 |
 | `item/reasoning/summaryPartAdded` | — | `flushText()` (boundary marker — commits any in-flight text before the next reasoning section) | 227–232 |
 | `item/commandExecution/outputDelta` | `params.delta` | Append into `commandOutputBuffers[itemId]`, then `cb.toolResult(itemId, accumulated, false)` (overwrite-style update; truncation handled by cardBuilder) | 234–244 |
 | `turn/plan/updated` | `params.{turnId, plan, explanation}` | `cb.toolUse('TodoWrite', { todos }, plan:${turnId})` with `planStatusToTodoStatus` mapping; optional `cb.systemMessage(explanation, 'info')` | 246–251 / 714–725 |

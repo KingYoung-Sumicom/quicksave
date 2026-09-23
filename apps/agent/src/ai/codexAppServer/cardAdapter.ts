@@ -336,7 +336,7 @@ export function createCodexTurnStreamConsumer(
         if (!trimmed) return;
         const prev = state.reasoningEmittedChars.get(params.itemId) ?? 0;
         state.reasoningEmittedChars.set(params.itemId, prev + params.delta.length);
-        emit(cb.thinkingBlock(params.delta));
+        emit(cb.thinkingBlock(params.delta, params.itemId));
         return;
       }
 
@@ -787,6 +787,7 @@ export function createCodexTurnStreamConsumer(
         // Fall back to `content` when summary is empty — some models emit
         // the raw chain-of-thought without producing the bullet summary.
         const alreadyEmitted = state.reasoningEmittedChars.get(item.id) ?? 0;
+        cb.finalizeThinkingBlock(item.id);
         if (alreadyEmitted > 0) return;
         const summary = (item.summary ?? []).join('\n').trim();
         if (summary) {

@@ -1,6 +1,6 @@
 {
   "name": "quicksave-pwa",
-  "version": "0.8.49",
+  "version": "0.8.50",
   "type": "module",
   "scripts": {
     "dev": "vite",

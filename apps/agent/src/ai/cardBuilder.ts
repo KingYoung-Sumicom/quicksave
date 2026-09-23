@@ -643,6 +643,8 @@ export class StreamCardBuilder {
   private nestedToolUseToSubagentCard = new Map<string, string>();
   /** Current streaming assistant_text card (for append_text events) */
   private currentTextCardId: CardId | null = null;
+  /** Codex reasoning item id → card id, scoped to the current turn. */
+  private reasoningCardIds = new Map<string, CardId>();
   /** JSONL file byte offset at the start of the current turn — history reads stop here. */
   private _jsonlCutoff: number | null = null;
   /** Token identifying an in-flight deferred clear. A later call (new turn, cancel)
@@ -688,6 +690,7 @@ export class StreamCardBuilder {
   startNewTurn(turnId?: string): void {
     this.currentTurnId = turnId ?? `turn:${Date.now()}:${++this.turnSeq}`;
     this.currentTextCardId = null;
+    this.reasoningCardIds.clear();
     this.pendingGuardianMessageByToolUseId.clear();
     this.pendingGuardianMessageByToolName.clear();
     this.pendingGuardianMessageForNextPermission = null;
@@ -714,6 +717,7 @@ export class StreamCardBuilder {
   /** Clear all accumulated cards. Call after a turn completes and JSONL is flushed. */
   clearCards(): void {
     this.cards.clear();
+    this.reasoningCardIds.clear();
     this.toolUseIdToCardId.clear();
     this.pendingGuardianMessageByToolUseId.clear();
     this.pendingGuardianMessageByToolName.clear();
@@ -1001,10 +1005,19 @@ export class StreamCardBuilder {
     return this.addEvent(card);
   }
 
-  thinkingBlock(text: string): CardEvent {
+  thinkingBlock(text: string, itemId?: string): CardEvent {
     this.currentTextCardId = null;
+    const existingId = itemId ? this.reasoningCardIds.get(itemId) : undefined;
+    if (existingId) return this.appendTextEvent(existingId, text);
     const card: Card = { type: 'thinking', id: this.nextId(), timestamp: Date.now(), text };
-    return this.addEvent(card);
+    const event = this.addEvent(card);
+    if (itemId) this.reasoningCardIds.set(itemId, card.id);
+    return event;
+  }
+
+  /** Release the per-turn lookup after Codex completes a reasoning item. */
+  finalizeThinkingBlock(itemId: string): void {
+    this.reasoningCardIds.delete(itemId);
   }
 
   /**

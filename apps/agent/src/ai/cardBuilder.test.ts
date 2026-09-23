@@ -225,6 +225,17 @@ describe('StreamCardBuilder', () => {
       expect((event.card as any).text).toBe('reasoning...');
     });
 
+    it('appends deltas for the same reasoning item and separates items', () => {
+      const first = builder.thinkingBlock('small ', 'reason-1') as CardAddEvent;
+      const second = builder.thinkingBlock('chunks', 'reason-1');
+      const other = builder.thinkingBlock('other', 'reason-2') as CardAddEvent;
+
+      expect(second.type).toBe('append_text');
+      expect((second as any).cardId).toBe(first.card.id);
+      expect(other.card.id).not.toBe(first.card.id);
+      expect((builder.getCards().find((card) => card.id === first.card.id) as any).text).toBe('small chunks');
+    });
+
     it('resets the current text card', () => {
       builder.assistantText('text');
       builder.thinkingBlock('think');

@@ -184,6 +184,35 @@ describe('cardAdapter — agentMessage streaming', () => {
   });
 });
 
+describe('cardAdapter — reasoning streaming', () => {
+  it('streams reasoning deltas into one thinking card per item', async () => {
+    const h = harness();
+    for (const delta of ['Think', 'ing ', 'now']) {
+      await h.send('item/reasoning/summaryTextDelta', {
+        threadId: 'thr_test', turnId: 'turn_1', itemId: 'reason_1', summaryIndex: 0, delta,
+      });
+    }
+    await h.send('item/completed', {
+      threadId: 'thr_test', turnId: 'turn_1',
+      item: { type: 'reasoning', id: 'reason_1', summary: ['Thinking now'], content: [] },
+    });
+    await h.send('turn/completed', {
+      threadId: 'thr_test',
+      turn: { id: 'turn_1', items: [], status: 'completed', error: null, startedAt: 0, completedAt: 0, durationMs: 0 },
+    });
+    await h.consume;
+
+    const cards = h.events.filter((e) => e.type === 'add' && (e.card as { type?: string }).type === 'thinking');
+    const thinkingAdds = cards as Array<{ card: { id: string; text: string } }>;
+    const appends = h.events.filter((e) => e.type === 'append_text');
+    expect(thinkingAdds).toHaveLength(1);
+    expect(thinkingAdds[0].card.text).toBe('Think');
+    expect(appends).toHaveLength(2);
+    expect((h.cb.getCards().find((card) => card.id === thinkingAdds[0].card.id) as { text: string }).text)
+      .toBe('Thinking now');
+  });
+});
+
 describe('cardAdapter — commandExecution', () => {
   it('renders Bash tool_use on item/started and accumulates outputDelta chunks', async () => {
     const h = harness();
