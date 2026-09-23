@@ -13,6 +13,23 @@
 
 ## 一、Monorepo Structure
 
+### PWA transcript hot/cold card buckets
+
+The PWA session store keeps an ordered bucket index alongside its compatibility
+`cards` projection. Transcript rows subscribe to their own bucket; only a
+bounded hot tail (three active/recent buckets) observes streaming state. A late
+card update promotes its target bucket, while explicit turn completion cools
+that bucket without dropping the event. Legacy cards without `turnId` are split
+into ordered chunks capped at 128 cards. The agent panel subscribes to a narrow
+subagent-source projection rather than rescanning all transcript cards for each
+text chunk. The existing wire event and IndexedDB cache formats are unchanged.
+
+The compatibility `cards` array is still copied on stream `add`, `update`, and
+`append_text` to preserve immutable semantics for existing non-UI consumers;
+user-card deduplication also scans it. These remain O(N) in total history size
+and are known limitations. The hot/cold change reduces cold-row UI updates; it
+does not yet make all store event handling independent of history size.
+
 ```
 quicksave/
 ├── apps/
@@ -1044,6 +1061,8 @@ sessionStore.ts
   isStreaming: boolean
   streamError: string | null
   cards: Card[]
+  cardBuckets: ordered contiguous turn segments + card-id lookup
+  cardCount: number
   historyTotal / historyHasMore / historyCursor / isLoadingHistory / historyError
   // Email-style unread state lives on the wire as `lastReadAt` on
   // SessionSummary / SessionUpdatePayload (set server-side by the
@@ -1109,6 +1128,20 @@ sessionRightPanelStore.ts
   // Artifact cards stay compact in chat. Opening one stores only its metadata
   // here; ArtifactPreviewPane fetches bytes on demand through artifact:fetch.
 ```
+
+`uiPrefsStore` persists browser-local display and cache preferences. The
+`sessionHistoryCacheEnabled` switch defaults to true; when disabled, session
+history cache records are neither restored nor written. Existing IndexedDB
+records are retained until the user explicitly clears them from Settings.
+
+The transcript subscribes to the ordered bucket ids and renders each bucket
+through a memoized row that selects only its own card array. Existing-card
+update/append events replace that one bucket and preserve historical bucket
+identity. `cards` remains a compatibility projection for non-transcript
+consumers; keeping it synchronized still performs an O(n) array map on hot
+add/update/append_text events. User-card deduplication also scans the list.
+Snapshot replacement, prepend, and `afterCardId` insertions re-index buckets to
+preserve exact ordering, including cards without `turnId`.
 
 For the detailed threat model and key derivation see `docs/guidelines/sync-security.en.md`.
 

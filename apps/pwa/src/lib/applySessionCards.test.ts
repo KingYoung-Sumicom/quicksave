@@ -80,7 +80,8 @@ describe('applySessionCards (multi-session permission resolve)', () => {
   it('clears pending input when the update sessionId matches activeSessionId', () => {
     // Baseline: viewing session A, A's update arrives — pendingInput must clear.
     const card = makePermissionToolCard('sess-A', 'req-A1', 'cA');
-    useSessionStore.setState({ cards: [card], activeSessionId: 'sess-A' });
+    useSessionStore.getState().setCards([card]);
+    useSessionStore.setState({ activeSessionId: 'sess-A' });
 
     applySessionCardsUpdate('sess-A', clearPendingEvent('sess-A', 'cA'));
 
@@ -94,7 +95,8 @@ describe('applySessionCards (multi-session permission resolve)', () => {
     // routing on the agent should prevent this from being delivered in the
     // first place, but the receiver also defends.)
     const aCard = makePermissionToolCard('sess-A', 'req-A1', 'cA');
-    useSessionStore.setState({ cards: [aCard], activeSessionId: 'sess-A' });
+    useSessionStore.getState().setCards([aCard]);
+    useSessionStore.setState({ activeSessionId: 'sess-A' });
 
     // A stale update for session B (e.g. from a still-mounted leaked subscription).
     applySessionCardsUpdate('sess-B', clearPendingEvent('sess-B', 'cA'));
@@ -117,11 +119,8 @@ describe('applySessionCards (multi-session permission resolve)', () => {
 
     // Step 1: view A.
     const cardA = makePermissionToolCard('sess-A', 'req-A', 'cA');
-    useSessionStore.setState({
-      cards: [cardA],
-      activeSessionId: 'sess-A',
-      isStreaming: false,
-    });
+    useSessionStore.getState().setCards([cardA]);
+    useSessionStore.setState({ activeSessionId: 'sess-A', isStreaming: false });
 
     // Step 2: agent emits A's clear; A's bus subscription delivers it.
     applySessionCardsUpdate('sess-A', clearPendingEvent('sess-A', 'cA'));
@@ -169,7 +168,8 @@ describe('applySessionCards (multi-session permission resolve)', () => {
     // When B's snapshot arrives, activeSessionId is already 'sess-C', so the
     // snapshot must NOT replace C's cards.
     const cardC = makePermissionToolCard('sess-C', 'req-C', 'cC');
-    useSessionStore.setState({ cards: [cardC], activeSessionId: 'sess-C' });
+    useSessionStore.getState().setCards([cardC]);
+    useSessionStore.setState({ activeSessionId: 'sess-C' });
 
     const lateBSnapshot: CardHistoryResponse = {
       cards: [makePermissionToolCard('sess-B', 'req-B', 'cB')],

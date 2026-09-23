@@ -6,6 +6,7 @@ const STORAGE_KEY = 'quicksave.uiPrefs';
 
 interface PersistedShape {
   hideToolCalls?: boolean;
+  sessionHistoryCacheEnabled?: boolean;
 }
 
 function load(): PersistedShape {
@@ -33,12 +34,16 @@ interface UiPrefsStore {
   hideToolCalls: boolean;
   setHideToolCalls: (next: boolean) => void;
   toggleHideToolCalls: () => void;
+  /** Whether local IndexedDB session-history reads/writes are enabled. */
+  sessionHistoryCacheEnabled: boolean;
+  setSessionHistoryCacheEnabled: (next: boolean) => void;
 }
 
 export const useUiPrefsStore = create<UiPrefsStore>((set, get) => {
   const persisted = load();
   return {
     hideToolCalls: persisted.hideToolCalls ?? true,
+    sessionHistoryCacheEnabled: persisted.sessionHistoryCacheEnabled ?? true,
     setHideToolCalls: (next) => {
       save({ ...load(), hideToolCalls: next });
       set({ hideToolCalls: next });
@@ -47,6 +52,10 @@ export const useUiPrefsStore = create<UiPrefsStore>((set, get) => {
       const next = !get().hideToolCalls;
       save({ ...load(), hideToolCalls: next });
       set({ hideToolCalls: next });
+    },
+    setSessionHistoryCacheEnabled: (next) => {
+      save({ ...load(), sessionHistoryCacheEnabled: next });
+      set({ sessionHistoryCacheEnabled: next });
     },
   };
 });

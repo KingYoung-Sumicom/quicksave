@@ -5,7 +5,21 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { useSessionStore } from '../stores/sessionStore';
+import { useUiPrefsStore } from '../stores/uiPrefsStore';
 import { useSessionOperations } from './useSessionOperations';
+
+const cacheMocks = vi.hoisted(() => ({
+  read: vi.fn(),
+  write: vi.fn(),
+  subscribe: vi.fn(() => () => {}),
+  clear: vi.fn(),
+}));
+vi.mock('../lib/sessionHistoryCache', () => ({
+  readSessionHistoryCache: cacheMocks.read,
+  writeSessionHistoryCache: cacheMocks.write,
+  subscribeSessionHistoryCache: cacheMocks.subscribe,
+  clearSessionHistoryCache: cacheMocks.clear,
+}));
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -32,6 +46,11 @@ describe('useSessionOperations', () => {
     document.body.appendChild(container);
     root = createRoot(container);
     useSessionStore.getState().reset();
+    useUiPrefsStore.getState().setSessionHistoryCacheEnabled(true);
+    cacheMocks.read.mockClear();
+    cacheMocks.write.mockClear();
+    cacheMocks.subscribe.mockClear();
+    cacheMocks.clear.mockClear();
   });
 
   afterEach(() => {
@@ -279,5 +298,22 @@ describe('useSessionOperations', () => {
       expect.objectContaining({ timeoutMs: 30000, queueWhileDisconnected: true }),
     );
     expect(useSessionStore.getState().historyCursor).toBe('memory-ordinal:25');
+  });
+
+  it('does not restore cached session cards when local history cache is disabled', async () => {
+    let latestOps: SessionOps | null = null;
+    const bus = { subscribe: vi.fn(() => () => {}) } as unknown as MessageBusClient;
+    useSessionStore.setState({ activeSessionId: 'session-A' });
+    useUiPrefsStore.getState().setSessionHistoryCacheEnabled(false);
+
+    await act(async () => {
+      root.render(<Harness getBus={() => bus} onRender={(ops) => { latestOps = ops; }} />);
+    });
+    await act(async () => {
+      await latestOps!.getSessionCards('session-A');
+    });
+
+    expect(cacheMocks.read).not.toHaveBeenCalled();
+    expect(useSessionStore.getState().cards).toEqual([]);
   });
 });

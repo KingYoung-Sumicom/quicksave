@@ -5,7 +5,9 @@ import { createRoot } from 'react-dom/client';
 import { describe, expect, it } from 'vitest';
 import type { Card, SubagentCard } from '@sumicom/quicksave-shared';
 import { useSessionStore } from '../../stores/sessionStore';
+import { useSessionRightPanelStore } from '../../stores/sessionRightPanelStore';
 import { collectSubagents, SubagentsPanel } from './SubagentsPanel';
+import { CardRenderer } from './CardRenderer';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -170,6 +172,43 @@ describe('collectSubagents', () => {
       await act(async () => root.unmount());
       container.remove();
       useSessionStore.getState().reset();
+    }
+  });
+});
+
+describe('SubagentBlockMessage navigation', () => {
+  it('shows no inline collapse control and opens the agent view from the trailing chevron', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const card: SubagentCard = {
+      type: 'subagent',
+      id: 'subagent-nav',
+      timestamp: Date.now(),
+      description: 'Inspect the provider',
+      toolUseId: 'tool-nav',
+      agentId: 'agent-nav',
+      status: 'running',
+      toolUseCount: 0,
+    };
+
+    try {
+      await act(async () => root.render(React.createElement(CardRenderer, {
+        card,
+        isLast: true,
+        sessionId: 'session-nav',
+        agentId: 'agent-nav',
+      })));
+      const openButton = container.querySelector('button[aria-label="Open agent view"]');
+      expect(openButton).not.toBeNull();
+      expect(container.querySelector('button[aria-expanded]')).toBeNull();
+      await act(async () => openButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+      expect(useSessionRightPanelStore.getState().sessionStates['session-nav']?.mode).toBe('subagents');
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      useSessionRightPanelStore.setState({ activeSessionId: null, sessionStates: {} });
     }
   });
 });

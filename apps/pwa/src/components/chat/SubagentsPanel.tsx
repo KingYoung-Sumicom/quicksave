@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import type { Card, ClaudeUserInputResponsePayload, SubagentCard } from '@sumicom/quicksave-shared';
 import { useSessionStore } from '../../stores/sessionStore';
 import { CardRenderer } from './CardRenderer';
+import { useSessionRightPanelStore } from '../../stores/sessionRightPanelStore';
 
 const LEGACY_SUBAGENT_PATTERN = /^Sub-agent (started|active|interrupted):\s*(.+)$/i;
 
@@ -63,7 +64,8 @@ export function SubagentsPanel({ embedded = false, onRespondToUserInput }: {
   embedded?: boolean;
   onRespondToUserInput?: (response: ClaudeUserInputResponsePayload) => void;
 }) {
-  const cards = useSessionStore((s) => s.cards);
+  const cards = useSessionStore((s) => s.subagentCards);
+  const sessionId = useSessionRightPanelStore((s) => s.activeSessionId);
   const agents = useMemo(() => collectSubagents(cards), [cards]);
 
   if (agents.length === 0) {
@@ -77,8 +79,9 @@ export function SubagentsPanel({ embedded = false, onRespondToUserInput }: {
           key={agent.agentId}
           card={agent}
           isLast={index === agents.length - 1}
-          sessionId={agent.pendingInput?.sessionId}
+          sessionId={agent.pendingInput?.sessionId ?? sessionId}
           agentId={agent.agentId}
+          subagentView="agent-panel"
           onRespondToInput={onRespondToUserInput && agent.pendingInput
             ? (requestId, action, response, allowPattern, permissionMode) => onRespondToUserInput({
               sessionId: agent.pendingInput!.sessionId,

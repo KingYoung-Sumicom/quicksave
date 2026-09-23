@@ -53,7 +53,7 @@ describe('sessionStore', () => {
   describe('handleCardEvent', () => {
     it('adds a card to the end when no afterCardId', () => {
       const existing = makeCard({ type: 'assistant_text', id: 'c1', text: 'first' });
-      useSessionStore.setState({ cards: [existing] });
+      useSessionStore.getState().setCards([existing]);
 
       const newCard = makeCard({ type: 'assistant_text', id: 'c2', text: 'second' });
       const event: CardEvent = { type: 'add', sessionId: 'sess1', card: newCard };
@@ -67,7 +67,7 @@ describe('sessionStore', () => {
     it('inserts a card after afterCardId', () => {
       const c1 = makeCard({ type: 'assistant_text', id: 'c1', text: 'first' });
       const c3 = makeCard({ type: 'assistant_text', id: 'c3', text: 'third' });
-      useSessionStore.setState({ cards: [c1, c3] });
+      useSessionStore.getState().setCards([c1, c3]);
 
       const c2 = makeCard({ type: 'assistant_text', id: 'c2', text: 'second' });
       const event: CardEvent = { type: 'add', sessionId: 'sess1', card: c2, afterCardId: 'c1' };
@@ -75,11 +75,13 @@ describe('sessionStore', () => {
 
       const ids = useSessionStore.getState().cards.map((c) => c.id);
       expect(ids).toEqual(['c1', 'c2', 'c3']);
+      const index = useSessionStore.getState().cardBuckets;
+      expect(index.order.flatMap((id) => index.byId.get(id)!.cards.map((c) => c.id))).toEqual(ids);
     });
 
     it('appends when afterCardId is not found', () => {
       const c1 = makeCard({ type: 'assistant_text', id: 'c1', text: 'first' });
-      useSessionStore.setState({ cards: [c1] });
+      useSessionStore.getState().setCards([c1]);
 
       const c2 = makeCard({ type: 'assistant_text', id: 'c2', text: 'second' });
       const event: CardEvent = { type: 'add', sessionId: 'sess1', card: c2, afterCardId: 'nonexistent' };
@@ -91,7 +93,7 @@ describe('sessionStore', () => {
 
     it('deduplicates user cards within 5s window', () => {
       const existing = makeCard({ type: 'user', id: 'u1', text: 'hello', timestamp: Date.now() });
-      useSessionStore.setState({ cards: [existing] });
+      useSessionStore.getState().setCards([existing]);
 
       const duplicate = makeCard({ type: 'user', id: 'u2', text: 'hello', timestamp: Date.now() });
       const event: CardEvent = { type: 'add', sessionId: 'sess1', card: duplicate };
@@ -102,7 +104,7 @@ describe('sessionStore', () => {
 
     it('does NOT dedup user cards outside 5s window', () => {
       const existing = makeCard({ type: 'user', id: 'u1', text: 'hello', timestamp: Date.now() - 6000 });
-      useSessionStore.setState({ cards: [existing] });
+      useSessionStore.getState().setCards([existing]);
 
       const duplicate = makeCard({ type: 'user', id: 'u2', text: 'hello', timestamp: Date.now() });
       const event: CardEvent = { type: 'add', sessionId: 'sess1', card: duplicate };
@@ -113,7 +115,7 @@ describe('sessionStore', () => {
 
     it('does NOT dedup user cards with different text', () => {
       const existing = makeCard({ type: 'user', id: 'u1', text: 'hello', timestamp: Date.now() });
-      useSessionStore.setState({ cards: [existing] });
+      useSessionStore.getState().setCards([existing]);
 
       const different = makeCard({ type: 'user', id: 'u2', text: 'goodbye', timestamp: Date.now() });
       const event: CardEvent = { type: 'add', sessionId: 'sess1', card: different };
@@ -124,7 +126,7 @@ describe('sessionStore', () => {
 
     it('does NOT dedup non-user cards', () => {
       const existing = makeCard({ type: 'assistant_text', id: 'a1', text: 'hello', timestamp: Date.now() });
-      useSessionStore.setState({ cards: [existing] });
+      useSessionStore.getState().setCards([existing]);
 
       const newCard = makeCard({ type: 'assistant_text', id: 'a2', text: 'hello', timestamp: Date.now() });
       const event: CardEvent = { type: 'add', sessionId: 'sess1', card: newCard };
@@ -135,7 +137,7 @@ describe('sessionStore', () => {
 
     it('updates a card with patch', () => {
       const card = makeCard({ type: 'assistant_text', id: 'c1', text: 'original' });
-      useSessionStore.setState({ cards: [card] });
+      useSessionStore.getState().setCards([card]);
 
       const event: CardEvent = {
         type: 'update', sessionId: 'sess1',
@@ -150,7 +152,7 @@ describe('sessionStore', () => {
 
     it('update ignores non-existent cardId', () => {
       const card = makeCard({ type: 'assistant_text', id: 'c1', text: 'original' });
-      useSessionStore.setState({ cards: [card] });
+      useSessionStore.getState().setCards([card]);
 
       const event: CardEvent = {
         type: 'update', sessionId: 'sess1',
@@ -163,7 +165,7 @@ describe('sessionStore', () => {
 
     it('appends text to existing card', () => {
       const card = makeCard({ type: 'assistant_text', id: 'c1', text: 'Hello' });
-      useSessionStore.setState({ cards: [card] });
+      useSessionStore.getState().setCards([card]);
 
       const event: CardEvent = {
         type: 'append_text', sessionId: 'sess1',
@@ -172,6 +174,29 @@ describe('sessionStore', () => {
       useSessionStore.getState().handleCardEvent(event);
 
       expect((useSessionStore.getState().cards[0] as any).text).toBe('Hello World');
+    });
+
+    it('updates only the target transcript bucket identity for a hot append', () => {
+      const old = makeCard({ type: 'assistant_text', id: 'old', text: 'historic', turnId: 'turn-old' });
+      const active = makeCard({ type: 'assistant_text', id: 'active', text: 'now', turnId: 'turn-live' });
+      useSessionStore.getState().setCards([old, active]);
+      const before = useSessionStore.getState();
+      const oldBucketId = before.cardBuckets.cardToBucket.get('old')!;
+      const activeBucketId = before.cardBuckets.cardToBucket.get('active')!;
+      const oldBucket = before.cardBuckets.byId.get(oldBucketId)!;
+      const activeBucket = before.cardBuckets.byId.get(activeBucketId)!;
+      const order = before.cardBuckets.order;
+
+      useSessionStore.getState().handleCardEvent({
+        type: 'append_text', sessionId: 'sess1', cardId: 'active', text: ' update',
+      });
+
+      const after = useSessionStore.getState();
+      expect(after.cardBuckets.order).toBe(order);
+      expect(after.cardBuckets.byId.get(oldBucketId)).toBe(oldBucket);
+      expect(after.cardBuckets.byId.get(activeBucketId)).not.toBe(activeBucket);
+      expect(after.cardBuckets.byId.get(activeBucketId)?.cards[0]).not.toBe(active);
+      expect((after.cards[1] as any).text).toBe('now update');
     });
 
     it('replays an append_text chunk that arrives before its card add', () => {
@@ -191,7 +216,7 @@ describe('sessionStore', () => {
 
     it('append_text ignores cards without text field', () => {
       const card = makeCard({ type: 'tool_call', id: 'tc1', toolName: 'bash', toolInput: {}, toolUseId: 'tu1' } as any);
-      useSessionStore.setState({ cards: [card] });
+      useSessionStore.getState().setCards([card]);
 
       const event: CardEvent = {
         type: 'append_text', sessionId: 'sess1',
@@ -203,10 +228,24 @@ describe('sessionStore', () => {
       expect((useSessionStore.getState().cards[0] as any).text).toBeUndefined();
     });
 
+    it('adds legacy subagent activity to its projection when append_text completes the message', () => {
+      const partial = makeCard({ type: 'system', id: 'legacy-agent', text: 'Sub-agent act' });
+      useSessionStore.getState().setCards([partial]);
+      expect(useSessionStore.getState().subagentCards).toEqual([]);
+
+      useSessionStore.getState().handleCardEvent({
+        type: 'append_text', sessionId: 'sess1', cardId: partial.id, text: 'ive: /root/route_candidate',
+      });
+
+      expect(useSessionStore.getState().subagentCards).toEqual([
+        expect.objectContaining({ id: partial.id, text: 'Sub-agent active: /root/route_candidate' }),
+      ]);
+    });
+
     it('removes a card by id', () => {
       const c1 = makeCard({ type: 'assistant_text', id: 'c1', text: 'first' });
       const c2 = makeCard({ type: 'assistant_text', id: 'c2', text: 'second' });
-      useSessionStore.setState({ cards: [c1, c2] });
+      useSessionStore.getState().setCards([c1, c2]);
 
       const event: CardEvent = { type: 'remove', sessionId: 'sess1', cardId: 'c1' };
       useSessionStore.getState().handleCardEvent(event);
@@ -218,7 +257,7 @@ describe('sessionStore', () => {
 
     it('remove with nonexistent id is a no-op', () => {
       const c1 = makeCard({ type: 'assistant_text', id: 'c1', text: 'first' });
-      useSessionStore.setState({ cards: [c1] });
+      useSessionStore.getState().setCards([c1]);
 
       const event: CardEvent = { type: 'remove', sessionId: 'sess1', cardId: 'nonexistent' };
       useSessionStore.getState().handleCardEvent(event);
@@ -243,7 +282,7 @@ describe('sessionStore', () => {
           title: 'Run Bash?',
         },
       } as any);
-      useSessionStore.setState({ cards: [card] });
+      useSessionStore.getState().setCards([card]);
 
       const event: CardEvent = {
         type: 'update', sessionId: 'sess1',
@@ -481,7 +520,7 @@ describe('sessionStore', () => {
   describe('prependCards', () => {
     it('prepends cards and deduplicates', () => {
       const c2 = makeCard({ type: 'assistant_text', id: 'c2', text: 'existing' });
-      useSessionStore.setState({ cards: [c2] });
+      useSessionStore.getState().setCards([c2]);
 
       const c1 = makeCard({ type: 'assistant_text', id: 'c1', text: 'prepended' });
       const c2Dup = makeCard({ type: 'assistant_text', id: 'c2', text: 'duplicate' });
@@ -531,7 +570,7 @@ describe('sessionStore', () => {
       expect(useSessionStore.getState().cards).toHaveLength(1); // store has no guard itself
 
       // Reset and confirm: with the guard, cards stay empty
-      useSessionStore.setState({ cards: [] });
+      useSessionStore.getState().setCards([]);
       if (shouldAcceptCardEvent(state, event)) {
         useSessionStore.getState().handleCardEvent(event);
       }

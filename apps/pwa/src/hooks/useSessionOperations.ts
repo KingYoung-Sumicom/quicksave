@@ -42,6 +42,7 @@ import {
 } from '@sumicom/quicksave-shared';
 import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
 import { useSessionStore } from '../stores/sessionStore';
+import { useUiPrefsStore } from '../stores/uiPrefsStore';
 import { selectCodexModelsForAgent, useConnectionStore } from '../stores/connectionStore';
 import { applySessionCardsSnapshot, applySessionCardsUpdate } from '../lib/applySessionCards';
 import { applyHistorySnapshot } from '../lib/applyHistoryEntry';
@@ -175,6 +176,13 @@ export function useSessionOperations(
     historyCacheTimersRef.current.clear();
     historyCacheRecordsRef.current.clear();
   }), []);
+  useEffect(() => useUiPrefsStore.subscribe((prefs, previous) => {
+    if (previous.sessionHistoryCacheEnabled && !prefs.sessionHistoryCacheEnabled) {
+      for (const timer of historyCacheTimersRef.current.values()) clearTimeout(timer);
+      historyCacheTimersRef.current.clear();
+      historyCacheRecordsRef.current.clear();
+    }
+  }), []);
   const {
     upsertSession,
     setActiveSession,
@@ -193,6 +201,7 @@ export function useSessionOperations(
   } = useSessionStore();
 
   const persistHistoryCacheSnapshot = useCallback((sessionId: string, completedTurn = false) => {
+    if (!useUiPrefsStore.getState().sessionHistoryCacheEnabled) return;
     const state = useSessionStore.getState();
     // A delayed unsubscribe for A must never serialize the currently visible
     // B cards under A's cache key.
@@ -224,6 +233,12 @@ export function useSessionOperations(
   }, []);
 
   const scheduleHistoryCacheWrite = useCallback((sessionId: string) => {
+    if (!useUiPrefsStore.getState().sessionHistoryCacheEnabled) {
+      const pending = historyCacheTimersRef.current.get(sessionId);
+      if (pending) clearTimeout(pending);
+      historyCacheTimersRef.current.delete(sessionId);
+      return;
+    }
     const previous = historyCacheTimersRef.current.get(sessionId);
     if (previous) clearTimeout(previous);
     const timer = setTimeout(() => {
@@ -293,13 +308,18 @@ export function useSessionOperations(
         const isCurrentLoad = () =>
           sessionGenerationsRef.current.get(sessionId) === generation
           && useSessionStore.getState().activeSessionId === sessionId;
-        const persistedCache = await readSessionHistoryCache(sessionId);
+        const persistedCache = useUiPrefsStore.getState().sessionHistoryCacheEnabled
+          ? await readSessionHistoryCache(sessionId)
+          : undefined;
         if (sessionGenerationsRef.current.get(sessionId) !== generation) return;
-        const memoryCache = historyCacheRecordsRef.current.get(sessionId);
-        const cached = memoryCache && (!persistedCache || memoryCache.cachedAt > persistedCache.cachedAt)
-          ? memoryCache
-          : persistedCache;
-        recordSessionHistoryMetric(cached ? 'cache_hit' : 'cache_miss', { sessionId });
+        const cacheEnabled = useUiPrefsStore.getState().sessionHistoryCacheEnabled;
+        const memoryCache = cacheEnabled ? historyCacheRecordsRef.current.get(sessionId) : undefined;
+        const cached = !cacheEnabled
+          ? undefined
+          : memoryCache && (!persistedCache || memoryCache.cachedAt > persistedCache.cachedAt)
+            ? memoryCache
+            : persistedCache;
+        if (cacheEnabled) recordSessionHistoryMetric(cached ? 'cache_hit' : 'cache_miss', { sessionId });
         if (cached && useSessionStore.getState().activeSessionId === sessionId) {
           historyCacheRecordsRef.current.set(sessionId, cached);
           useSessionStore.getState().setCards(cached.cards);
@@ -362,7 +382,8 @@ export function useSessionOperations(
                 cardsSnapshotBuffersRef.current.delete(sessionId);
                 if (!subscribeOnly) setLoadingHistory(false);
                 applySessionCardsSnapshot(sessionId, snap);
-                const cachedRecord = historyCacheRecordsRef.current.get(sessionId);
+                const cacheEnabled = useUiPrefsStore.getState().sessionHistoryCacheEnabled;
+                const cachedRecord = cacheEnabled ? historyCacheRecordsRef.current.get(sessionId) : undefined;
                 const cacheEpochMatches = !cachedRecord?.historySync || !snap.historySync
                   || cachedRecord.historySync.epoch === snap.historySync.epoch;
                 const cachedBoundaryIsMissing = cachedRecord?.lastReceivedCard
@@ -377,7 +398,7 @@ export function useSessionOperations(
                   if (update.kind === 'stream-end') completedTurnReceived = true;
                 }
                 const current = useSessionStore.getState();
-                if (current.activeSessionId === sessionId) {
+                if (cacheEnabled && current.activeSessionId === sessionId) {
                   historyCacheRecordsRef.current.set(sessionId, {
                     key: cachedRecord?.key ?? '',
                     sessionId,
@@ -463,8 +484,9 @@ export function useSessionOperations(
           || (sessionGenerationsRef.current.get(sessionId) ?? 0) !== requestGeneration) return;
         prependCards(response.cards);
         setHistoryMeta(response.total, response.hasMore, response.nextCursor);
-        const previous = historyCacheRecordsRef.current.get(sessionId);
-        if (response.historySync) {
+        const cacheEnabled = useUiPrefsStore.getState().sessionHistoryCacheEnabled;
+        const previous = cacheEnabled ? historyCacheRecordsRef.current.get(sessionId) : undefined;
+        if (cacheEnabled && response.historySync) {
           historyCacheRecordsRef.current.set(sessionId, {
             ...(previous ?? {
               key: '', sessionId, cards: useSessionStore.getState().cards,

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { ClaudeUserInputRequestPayload, SubagentActivity, SubagentToolCall } from '@sumicom/quicksave-shared';
 import { ChevronIcon } from '../ui/ChevronIcon';
+import { useSessionRightPanelStore } from '../../stores/sessionRightPanelStore';
 import { ToolCallMessage } from './ToolCallMessage';
 import { ToolCallGroupPlaceholder } from './ToolCallGroupPlaceholder';
 
@@ -160,7 +161,7 @@ function ActivityStream({ activities, toolCalls }: { activities?: SubagentActivi
   );
 }
 
-export function SubagentBlockMessage({ content, subagentStatus = 'running', subagentSummary, toolUseCount = 0, lastToolName, subagentType, requestedModel, prompt, toolCalls, agentPath, statusMessage, activities, legacyNotice, pendingInputRequest, onRespond }: {
+export function SubagentBlockMessage({ content, subagentStatus = 'running', subagentSummary, toolUseCount = 0, lastToolName, subagentType, requestedModel, prompt, toolCalls, agentPath, statusMessage, activities, legacyNotice, sessionId, view = 'transcript', pendingInputRequest, onRespond }: {
   content: string;
   subagentStatus?: 'running' | 'completed' | 'failed' | 'stopped';
   subagentSummary?: string;
@@ -174,6 +175,8 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
   statusMessage?: string;
   activities?: SubagentActivity[];
   legacyNotice?: boolean;
+  sessionId?: string;
+  view?: 'transcript' | 'agent-panel';
   toolUseId?: string;
   agentId?: string;
   pendingInputRequest?: ClaudeUserInputRequestPayload;
@@ -181,6 +184,7 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
 }) {
   const [expanded, setExpanded] = useState(false);
   const [promptExpanded, setPromptExpanded] = useState(false);
+  const openPanelForSession = useSessionRightPanelStore((state) => state.openForSession);
   const status = STATUS_STYLES[subagentStatus] ?? STATUS_STYLES.running;
 
   const effectiveToolCount = toolCalls?.length ?? toolUseCount;
@@ -195,30 +199,50 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
     <div className="flex justify-start flex-col gap-0.5">
       <div className="rounded-lg border border-slate-700 bg-slate-800/50 w-full overflow-hidden shadow-sm">
         {/* Header row */}
-        <button
-          onClick={() => setExpanded((v) => !v)}
-          className="w-full text-left flex items-center gap-2 px-2.5 py-1.5 hover:bg-slate-700/30 transition-colors"
-        >
-          <ChevronIcon expanded={expanded} className="text-slate-500" />
-
-          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${status.dot}`} />
-          {subagentType && (
-            <span className="text-[10px] text-violet-400/80 font-mono shrink-0">{subagentType}</span>
-          )}
-          <span className="text-xs text-slate-400 flex-1 min-w-0 truncate">{headerLine}</span>
-
-          <span className="flex items-center gap-2 shrink-0">
-            {requestedModel && (
-              <span className="text-[10px] text-amber-400/60 font-mono">{requestedModel}</span>
+        <div className="flex items-stretch">
+          <div className="min-w-0 flex-1 flex items-center gap-2 px-3 py-2">
+            {view === 'agent-panel' && (
+              <button
+                type="button"
+                aria-label={expanded ? 'Collapse agent details' : 'Expand agent details'}
+                aria-expanded={expanded}
+                onClick={() => setExpanded((v) => !v)}
+                className="-ml-1 rounded p-1 hover:bg-slate-700/50 transition-colors"
+              >
+                <ChevronIcon expanded={expanded} className="text-slate-500" />
+              </button>
             )}
-            {effectiveToolCount > 0 && (
-              <span className="text-[10px] text-slate-600">{effectiveToolCount} tool{effectiveToolCount !== 1 ? 's' : ''}</span>
+
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${status.dot}`} />
+            {subagentType && (
+              <span className="text-[10px] text-violet-400/80 font-mono shrink-0">{subagentType}</span>
             )}
-            <span className={`text-[10px] ${subagentStatus === 'running' ? 'text-blue-400' : subagentStatus === 'completed' ? 'text-green-400' : 'text-slate-500'}`}>
-              {statusMessage || status.label}
+            <span className="text-xs text-slate-400 flex-1 min-w-0 truncate">{headerLine}</span>
+
+            <span className="flex items-center gap-2 shrink-0">
+              {requestedModel && (
+                <span className="text-[10px] text-amber-400/60 font-mono">{requestedModel}</span>
+              )}
+              {effectiveToolCount > 0 && (
+                <span className="text-[10px] text-slate-600">{effectiveToolCount} tool{effectiveToolCount !== 1 ? 's' : ''}</span>
+              )}
+              <span className={`text-[10px] ${subagentStatus === 'running' ? 'text-blue-400' : subagentStatus === 'completed' ? 'text-green-400' : 'text-slate-500'}`}>
+                {statusMessage || status.label}
+              </span>
             </span>
-          </span>
-        </button>
+          </div>
+          {view === 'transcript' && sessionId && (
+            <button
+              type="button"
+              aria-label="Open agent view"
+              title="Open agent view"
+              onClick={() => openPanelForSession(sessionId, 'subagents')}
+              className="shrink-0 border-l border-slate-700/70 px-3 text-slate-500 hover:bg-slate-700/40 hover:text-slate-200 transition-colors"
+            >
+              <ChevronIcon size="w-4 h-4" />
+            </button>
+          )}
+        </div>
 
         {/* Pending permission — always visible */}
         {pendingInputRequest && onRespond && (
@@ -242,7 +266,7 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
         )}
 
         {/* Expanded: metadata followed by the live, chronological activity stream. */}
-        {expanded && (
+        {view === 'agent-panel' && expanded && (
           <div className="border-t border-slate-700/40">
             <div className="px-2.5 pb-2 pt-1 space-y-1">
               <p className="text-[10px] text-slate-500 italic">{content}</p>
@@ -262,7 +286,7 @@ export function SubagentBlockMessage({ content, subagentStatus = 'running', suba
         )}
 
         {/* Prompt — independent collapsible */}
-        {prompt && (
+        {view === 'agent-panel' && prompt && (
           <div className="border-t border-slate-700/40">
             <button
               onClick={() => setPromptExpanded((v) => !v)}

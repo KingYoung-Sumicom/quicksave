@@ -13,7 +13,7 @@ import type {
   SlashCommandInfo,
   AttachmentKind,
 } from '@sumicom/quicksave-shared';
-import { CardRenderer } from './chat/CardRenderer';
+import { TranscriptTurnBucket } from './chat/TranscriptTurnBucket';
 import { VoiceCoworkerControl, VoiceCoworkerStatusPanel } from './VoiceCoworkerControl';
 import { CollapsibleTerminalPanel } from './terminal/CollapsibleTerminalPanel';
 import { SessionList } from './chat/SessionList';
@@ -23,10 +23,8 @@ import { SessionStatsBar } from './chat/SessionStatsBar';
 import { CodexQuotaBadges } from './chat/CodexQuotaBadges';
 import { ClaudeUsageBadges } from './chat/ClaudeUsageBadges';
 import { StreamingReconnectIndicator } from './chat/StreamingReconnectIndicator';
-import { ToolCallGroupPlaceholder } from './chat/ToolCallGroupPlaceholder';
 import { ToolCallVisibilityChip } from './chat/ToolCallVisibilityChip';
 import { Spinner } from './ui/Spinner';
-import { filterRenderableCards, shouldCollapseCard } from './chat/cardCollapse';
 import { AttachmentTray } from './AttachmentTray';
 import { useUiPrefsStore } from '../stores/uiPrefsStore';
 import { getAgentProvider } from '../lib/agentProvider';
@@ -322,29 +320,39 @@ export function SessionPanel({
   onNewSession,
   voiceAgent: voiceAgentProp,
 }: SessionPanelProps) {
-  const {
-    sessions,
-    activeSessionId,
-    isStreaming,
-    streamError,
-    cards,
-    historyHasMore,
-    isLoadingHistory,
-    historyError,
-    completedTurnIds,
-    promptInput,
-    selectedAgent,
-    selectedModel,
-    selectedPermissionMode,
-    selectedReasoningEffort,
-    selectedFastMode,
-    selectedContextWindow,
-    sandboxEnabled,
-    setPromptInput,
-    setActiveSession,
-    setStreamError,
-    clearCards,
-  } = useSessionStore();
+  // Keep this parent subscribed to panel-level state only. Each transcript row
+  // selects its own bucket so a hot turn update leaves historical rows intact.
+  const sessions = useSessionStore((s) => s.sessions);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const isStreaming = useSessionStore((s) => s.isStreaming);
+  const streamError = useSessionStore((s) => s.streamError);
+  const cardBucketOrder = useSessionStore((s) => s.cardBuckets.order);
+  const cardCount = useSessionStore((s) => s.cardCount);
+  const lastCardId = useSessionStore((s) => {
+    const order = s.cardBuckets.order;
+    const bucket = order.length ? s.cardBuckets.byId.get(order[order.length - 1]) : undefined;
+    return bucket?.cards[bucket.cards.length - 1]?.id;
+  });
+  const lastCardType = useSessionStore((s) => {
+    const order = s.cardBuckets.order;
+    const bucket = order.length ? s.cardBuckets.byId.get(order[order.length - 1]) : undefined;
+    return bucket?.cards[bucket.cards.length - 1]?.type;
+  });
+  const historyHasMore = useSessionStore((s) => s.historyHasMore);
+  const isLoadingHistory = useSessionStore((s) => s.isLoadingHistory);
+  const historyError = useSessionStore((s) => s.historyError);
+  const promptInput = useSessionStore((s) => s.promptInput);
+  const selectedAgent = useSessionStore((s) => s.selectedAgent);
+  const selectedModel = useSessionStore((s) => s.selectedModel);
+  const selectedPermissionMode = useSessionStore((s) => s.selectedPermissionMode);
+  const selectedReasoningEffort = useSessionStore((s) => s.selectedReasoningEffort);
+  const selectedFastMode = useSessionStore((s) => s.selectedFastMode);
+  const selectedContextWindow = useSessionStore((s) => s.selectedContextWindow);
+  const sandboxEnabled = useSessionStore((s) => s.sandboxEnabled);
+  const setPromptInput = useSessionStore((s) => s.setPromptInput);
+  const setActiveSession = useSessionStore((s) => s.setActiveSession);
+  const setStreamError = useSessionStore((s) => s.setStreamError);
+  const clearCards = useSessionStore((s) => s.clearCards);
 
   const hideToolCalls = useUiPrefsStore((s) => s.hideToolCalls);
   // Prefer the viewed project/session's machine; fall back to the global
@@ -417,105 +425,6 @@ export function SessionPanel({
     });
   }, []);
 
-  // Build the display sequence: folded runs preserve card order while letting
-  // completed Codex turn internals and optional hidden tool calls be expanded
-  // per group.
-  const displayItems = useMemo(() => {
-    type Item =
-      | { kind: 'card'; card: typeof cards[number] }
-      | { kind: 'tool_group_collapsed'; key: string; groupId: string; count: number; noun: string }
-      | { kind: 'tool_group_expanded_header'; key: string; groupId: string; count: number; noun: string };
-    const out: Item[] = [];
-    let runCards: typeof cards = [];
-    let runStartId: string | null = null;
-    // Remove cards whose Markdown renders nothing before grouping. Returning
-    // null from CardRenderer is too late: the outer wrapper still occupies a
-    // `space-y` slot and the card can split adjacent tool-call runs.
-    const renderableCards = filterRenderableCards(cards);
-    // Hide the user card that matches the pending submission until the ack
-    // arrives. A provider may broadcast its user-card event before the
-    // command response reaches this tab, so temporarily suppress it.
-    const suppressedCardIds = new Set<string>();
-    if (pendingSubmission) {
-      for (const card of renderableCards) {
-        if (
-          card.type === 'user'
-          && card.text === pendingSubmission.prompt
-          && JSON.stringify((card as { attachmentIds?: string[] }).attachmentIds ?? []) === JSON.stringify(pendingSubmission.attachmentIds)
-        ) {
-          suppressedCardIds.add(card.id);
-        }
-      }
-    }
-    const lastTurnId = [...renderableCards].reverse().find((card) => card.isTurnIntermediate && card.turnId)?.turnId ?? null;
-    const finalAssistantCardByTurn = new Map<string, string>();
-    for (const card of renderableCards) {
-      if (card.type === 'assistant_text' && card.turnId) {
-        finalAssistantCardByTurn.set(card.turnId, card.id);
-      }
-    }
-    const isCompletedTurn = (turnId: string): boolean =>
-      completedTurnIds[turnId] === true || renderableCards.some((card) => card.turnId === turnId && card.turnCompleted);
-    const shouldCollapseIntermediate = (card: typeof cards[number]): boolean => {
-      if (!card.turnId) return false;
-      if (isCompletedTurn(card.turnId)) {
-        if (card.type === 'user') return false;
-        if (card.type === 'assistant_text' && finalAssistantCardByTurn.get(card.turnId) === card.id) return false;
-        return true;
-      }
-      if (!card.isTurnIntermediate) return false;
-      if (card.turnCompleted) return true;
-      if (completedTurnIds[card.turnId]) return true;
-      if (!isStreaming) return true;
-      return lastTurnId !== null && card.turnId !== lastTurnId;
-    };
-    const flushRun = () => {
-      if (!runStartId || runCards.length === 0) return;
-      const groupId = runStartId;
-      const noun = runCards.every((c) => c.type === 'tool_call') ? 'tool call' : 'turn item';
-      // Force the group open when any tool call inside has a pending
-      // permission/question — the user can't make a decision they can't see.
-      // No header chip in this mode: collapsing wouldn't take effect until the
-      // request resolves, so the affordance would be misleading.
-      const hasPendingInput = runCards.some((c) => c.pendingInput);
-      if (hasPendingInput) {
-        for (const c of runCards) out.push({ kind: 'card', card: c });
-      } else if (expandedGroups.has(groupId)) {
-        out.push({
-          kind: 'tool_group_expanded_header',
-          key: `tgh:${groupId}`,
-          groupId,
-          count: runCards.length,
-          noun,
-        });
-        for (const c of runCards) out.push({ kind: 'card', card: c });
-      } else {
-        out.push({
-          kind: 'tool_group_collapsed',
-          key: `tgc:${groupId}`,
-          groupId,
-          count: runCards.length,
-          noun,
-        });
-      }
-      runCards = [];
-      runStartId = null;
-    };
-    for (const card of renderableCards) {
-      if (suppressedCardIds.has(card.id)) continue;
-      const collapseIntermediate = shouldCollapseIntermediate(card);
-      if (shouldCollapseCard(card, collapseIntermediate, hideToolCalls)) {
-        if (runStartId === null) runStartId = card.id;
-        runCards.push(card);
-      } else {
-        flushRun();
-        out.push({ kind: 'card', card });
-      }
-    }
-    flushRun();
-    return out;
-  }, [cards, completedTurnIds, hideToolCalls, isStreaming, expandedGroups, pendingSubmission]);
-
   const activeSession = activeSessionId ? sessions[activeSessionId] : undefined;
   const viewedSessionId = urlSessionId ?? activeSessionId;
   const viewedSession = viewedSessionId ? sessions[viewedSessionId] : undefined;
@@ -533,11 +442,10 @@ export function SessionPanel({
   const [isResuming, setIsResuming] = useState(false);
   // Clear isResuming when first non-user card arrives (Claude started responding)
   useEffect(() => {
-    if (isResuming && cards.length > 0) {
-      const last = cards[cards.length - 1];
-      if (last.type !== 'user') setIsResuming(false);
+    if (isResuming && cardCount > 0) {
+      if (lastCardType !== 'user') setIsResuming(false);
     }
-  }, [isResuming, cards]);
+  }, [isResuming, cardCount, lastCardType]);
 
   // View is determined by URL: sessionId present = chat, ?new = new session, absent = sessions list
   const isChat = !!urlSessionId || !!newSession;
@@ -645,7 +553,7 @@ export function SessionPanel({
     if (!container) return;
     if (isAtBottomRef.current) {
       // If the last card has a pending request, scroll to its top so the user sees it fully
-      const lastCard = cards[cards.length - 1];
+      const lastCard = useSessionStore.getState().cards.at(-1);
       if (lastCard?.pendingInput) {
         const el = container.querySelector(`[data-card-id="${lastCard.id}"]`);
         if (el) {
@@ -655,7 +563,7 @@ export function SessionPanel({
       }
       container.scrollTop = container.scrollHeight;
     }
-  }, [cards, isStreaming]);
+  }, [lastCardId, isStreaming]);
 
 
   const handleSelectSession = useCallback(async (session: SessionSummary) => {
@@ -843,7 +751,7 @@ export function SessionPanel({
     const prevScrollTop = container?.scrollTop ?? 0;
     // cards.length is only the compatibility offset. The operation hook sends
     // the agent-issued history cursor when the current server supports it.
-    await onGetSessionCards(activeSessionId, cards.length);
+    await onGetSessionCards(activeSessionId, cardCount);
     // Preserve the visible content after older cards are inserted above it.
     // A collapsed page can add no height; in that case, do not touch scrollTop.
     if (container) {
@@ -857,7 +765,7 @@ export function SessionPanel({
         if (nextScrollTop !== null) container.scrollTop = nextScrollTop;
       });
     }
-  }, [activeSessionId, historyHasMore, cards.length, onGetSessionCards]);
+  }, [activeSessionId, historyHasMore, cardCount, onGetSessionCards]);
 
   // Auto-load older messages when sentinel scrolls into view
   const topSentinelRef = useRef<HTMLDivElement>(null);
@@ -1069,7 +977,7 @@ export function SessionPanel({
               </div>
             )}
             {/* Initial history loading spinner (before any cards arrive) */}
-            {!newSession && cards.length === 0 && isLoadingHistory && !historyError && (
+            {!newSession && cardCount === 0 && isLoadingHistory && !historyError && (
               <div className="flex items-center justify-center py-12">
                 <svg className="w-6 h-6 text-slate-500 animate-spin" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
@@ -1078,7 +986,7 @@ export function SessionPanel({
               </div>
             )}
             {/* History load error with retry */}
-            {historyError && cards.length === 0 && (
+            {historyError && cardCount === 0 && (
               <div className="flex flex-col items-center justify-center py-12 gap-3">
                 <p className="text-sm text-slate-400">{historyError}</p>
                 <button
@@ -1089,37 +997,24 @@ export function SessionPanel({
                 </button>
               </div>
             )}
-            {(() => {
-              const lastCardId = cards[cards.length - 1]?.id;
-              return displayItems.map((item) => {
-                if (item.kind === 'tool_group_collapsed' || item.kind === 'tool_group_expanded_header') {
-                  return (
-                    <ToolCallGroupPlaceholder
-                      key={item.key}
-                      count={item.count}
-                      noun={item.noun}
-                      expanded={item.kind === 'tool_group_expanded_header'}
-                      onToggle={() => toggleGroup(item.groupId)}
-                    />
-                  );
-                }
-                const card = item.card;
-                return (
-                  <div key={card.id} data-card-id={card.id}>
-                    <CardRenderer
-                      card={card}
-                      isLast={card.id === lastCardId}
-                      sessionId={activeSessionId}
-                      agentId={agentId}
-                      onRespondToInput={handleRespondToInput}
-                      onSendQuickPrompt={handleSendQuickPrompt}
-                    />
-                  </div>
-                );
-              });
-            })()}
+            {cardBucketOrder.map((bucketId, bucketIndex) => (
+              <TranscriptTurnBucket
+                key={bucketId}
+                bucketId={bucketId}
+                lastCardId={bucketIndex === cardBucketOrder.length - 1 ? lastCardId : undefined}
+                isLastBucket={bucketIndex === cardBucketOrder.length - 1}
+                hideToolCalls={hideToolCalls}
+                expandedGroups={expandedGroups}
+                onToggleGroup={toggleGroup}
+                sessionId={activeSessionId}
+                agentId={agentId}
+                pendingSubmission={pendingSubmission}
+                onRespondToInput={handleRespondToInput}
+                onSendQuickPrompt={handleSendQuickPrompt}
+              />
+            ))}
             {/* Keep the cached transcript visible while the fresh history snapshot loads. */}
-            {isLoadingHistory && cards.length > 0 && (
+            {isLoadingHistory && cardCount > 0 && (
               <div className="flex items-center justify-center gap-2 py-2 text-xs text-slate-500" role="status">
                 <Spinner size="w-3.5 h-3.5" color="border-slate-500" />
                 <span className="sr-only">Loading session history</span>
@@ -1156,7 +1051,7 @@ export function SessionPanel({
               );
             })()}
             {/* New session empty state — inside scrollable container */}
-            {newSession && cards.length === 0 && (
+            {newSession && cardCount === 0 && (
               <NewSessionEmptyState cwd={cwd} agentId={agentId} />
             )}
             <div ref={messagesEndRef} />

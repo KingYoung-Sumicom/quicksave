@@ -9,6 +9,7 @@ import {
 } from '@sumicom/quicksave-shared';
 import { clampContextWindowForModel } from '../lib/agentPresets';
 import { getAgentProvider } from '../lib/agentProvider';
+import { appendCardToBuckets, flattenCardBuckets, indexCardBuckets, replaceCardBucket } from './cardBuckets';
 
 // --- Per-agent session prefs ---
 //
@@ -142,6 +143,23 @@ function savePrefs(prefs: PersistedPrefs) {
   } catch { /* quota exceeded — ignore */ }
 }
 
+function findLatestIntermediateTurnId(cards: Card[]): string | null {
+  for (let i = cards.length - 1; i >= 0; i--) {
+    if (cards[i].isTurnIntermediate && cards[i].turnId) return cards[i].turnId!;
+  }
+  return null;
+}
+
+function findCardCompletedTurnIds(cards: Card[]): Record<string, true> {
+  const ids: Record<string, true> = {};
+  for (const card of cards) if (card.turnCompleted && card.turnId) ids[card.turnId] = true;
+  return ids;
+}
+
+function isSubagentSourceCard(card: Card): boolean {
+  return card.type === 'subagent' || (card.type === 'system' && /^Sub-agent (started|active|interrupted):\s*(.+)$/i.test(card.text.trim()));
+}
+
 /** Project an active-agent prefs bundle to the flat `selected*` view fields
  *  the rest of the app reads. Pure — used by setters that need to recompute
  *  the view after a write. */
@@ -222,6 +240,12 @@ interface SessionStore {
 
   // Cards (current session)
   cards: Card[];
+  /** Narrow projection so the agent panel ignores unrelated stream chunks. */
+  subagentCards: Card[];
+  /** Transcript-facing ordered turn segments. Segment boundaries preserve legacy/interleaved order. */
+  cardBuckets: ReturnType<typeof indexCardBuckets>;
+  cardCount: number;
+  latestIntermediateTurnId: string | null;
   historyTotal: number | null;
   historyHasMore: boolean;
   /** Opaque agent-issued cursor for the next older persisted history page. */
@@ -230,6 +254,8 @@ interface SessionStore {
   historyError: string | null;
   /** Turn ids that have emitted stream-end during the current live view. */
   completedTurnIds: Record<string, true>;
+  /** Completed turns carried by persisted cards (separate from live stream-end markers). */
+  cardCompletedTurnIds: Record<string, true>;
   /** Text chunks that arrived before their card-add event. */
   pendingCardText: Record<string, string>;
 
@@ -341,12 +367,17 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   isStreaming: false,
   streamError: null,
   cards: [],
+  subagentCards: [],
+  cardBuckets: indexCardBuckets([]),
+  cardCount: 0,
+  latestIntermediateTurnId: null,
   historyTotal: 0,
   historyHasMore: false,
   historyCursor: null,
   isLoadingHistory: false,
   historyError: null,
   completedTurnIds: {},
+  cardCompletedTurnIds: {},
   pendingCardText: {},
   promptInput: '',
   isVisible: false,
@@ -475,15 +506,23 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   setStreamError: (error) => set({ streamError: error, isStreaming: false }),
 
   // Cards — server returns cards with pendingInput already attached
-  setCards: (cards) => set({ cards: cards ?? [], completedTurnIds: {}, pendingCardText: {} }),
+  setCards: (cards) => {
+    const nextCards = cards ?? [];
+    set({ cards: nextCards, subagentCards: nextCards.filter(isSubagentSourceCard), cardBuckets: indexCardBuckets(nextCards), cardCount: nextCards.length, latestIntermediateTurnId: findLatestIntermediateTurnId(nextCards), cardCompletedTurnIds: findCardCompletedTurnIds(nextCards), completedTurnIds: {}, pendingCardText: {} });
+  },
   prependCards: (newCards) =>
     set((state) => {
       const existingIds = new Set(state.cards.map((c) => c.id));
       const deduped = newCards.filter((c) => !existingIds.has(c.id));
-      return { cards: [...deduped, ...state.cards] };
+      if (deduped.length === 0) return state;
+      const cards = [...deduped, ...state.cards];
+      return { cards, subagentCards: [...deduped.filter(isSubagentSourceCard), ...state.subagentCards], cardBuckets: indexCardBuckets(cards), cardCount: cards.length, latestIntermediateTurnId: findLatestIntermediateTurnId(cards), cardCompletedTurnIds: findCardCompletedTurnIds(cards) };
     }),
   appendCard: (card) =>
-    set((state) => ({ cards: [...state.cards, card] })),
+    set((state) => {
+      const cards = [...state.cards, card];
+      return { cards, ...(isSubagentSourceCard(card) ? { subagentCards: [...state.subagentCards, card] } : {}), cardBuckets: appendCardToBuckets(state.cardBuckets, card), cardCount: cards.length, latestIntermediateTurnId: card.isTurnIntermediate && card.turnId ? card.turnId : state.latestIntermediateTurnId, ...(card.turnCompleted && card.turnId ? { cardCompletedTurnIds: { ...state.cardCompletedTurnIds, [card.turnId]: true } } : {}) };
+    }),
 
   handleCardEvent: (event: CardEvent) => {
     set((state) => {
@@ -499,7 +538,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
             const idx = state.cards.findIndex((c) => c.id === event.afterCardId);
             const cards = [...state.cards];
             cards.splice(idx >= 0 ? idx + 1 : cards.length, 0, card);
-            return { cards, pendingCardText };
+            return { cards, subagentCards: cards.filter(isSubagentSourceCard), cardBuckets: indexCardBuckets(cards), cardCount: cards.length, latestIntermediateTurnId: findLatestIntermediateTurnId(cards), cardCompletedTurnIds: findCardCompletedTurnIds(cards), pendingCardText };
           }
           // Dedup user cards (multi-tab broadcast). Match by text + a sorted
           // attachment-id signature so that two attachment-only follow-ups
@@ -516,11 +555,14 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
             });
             if (alreadyHas) return state;
           }
-          return { cards: [...state.cards, card], pendingCardText };
+          const cards = [...state.cards, card];
+          return { cards, ...(isSubagentSourceCard(card) ? { subagentCards: [...state.subagentCards, card] } : {}), cardBuckets: appendCardToBuckets(state.cardBuckets, card), cardCount: cards.length, latestIntermediateTurnId: card.isTurnIntermediate && card.turnId ? card.turnId : state.latestIntermediateTurnId, cardCompletedTurnIds: card.turnCompleted && card.turnId ? { ...state.cardCompletedTurnIds, [card.turnId]: true } : state.cardCompletedTurnIds, pendingCardText };
         }
         case 'update': {
-          return {
-            cards: state.cards.map((c) => {
+          const bucketId = state.cardBuckets.cardToBucket.get(event.cardId);
+          const bucket = bucketId ? state.cardBuckets.byId.get(bucketId) : undefined;
+          if (!bucket) return state;
+          const updatedBucket = bucket.cards.map((c) => {
               if (c.id !== event.cardId) return c;
               // Wire convention: `null` in a patch means "delete this key".
               // JSON.stringify drops `undefined`, so the agent uses `null` as
@@ -531,11 +573,18 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
                 if (value === null) delete merged[key];
               }
               return merged as unknown as Card;
-            }),
-          };
+            });
+          const updatedCard = updatedBucket.find((c) => c.id === event.cardId)!;
+          const cards = state.cards.map((c) => c.id === event.cardId ? updatedCard : c);
+          const subagentCards = state.subagentCards.some((c) => c.id === event.cardId)
+            ? state.subagentCards.map((c) => c.id === event.cardId ? updatedCard : c)
+            : isSubagentSourceCard(updatedCard) ? [...state.subagentCards, updatedCard] : state.subagentCards;
+          return { cards, subagentCards, cardBuckets: replaceCardBucket(state.cardBuckets, bucketId!, updatedBucket), ...(Object.prototype.hasOwnProperty.call(event.patch, 'turnCompleted') || Object.prototype.hasOwnProperty.call(event.patch, 'turnId') ? { cardCompletedTurnIds: findCardCompletedTurnIds(cards) } : {}) };
         }
         case 'append_text': {
-          if (!state.cards.some((c) => c.id === event.cardId)) {
+          const bucketId = state.cardBuckets.cardToBucket.get(event.cardId);
+          const bucket = bucketId ? state.cardBuckets.byId.get(bucketId) : undefined;
+          if (!bucket) {
             return {
               pendingCardText: {
                 ...state.pendingCardText,
@@ -543,16 +592,28 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
               },
             };
           }
-          return {
-            cards: state.cards.map((c) =>
-              c.id === event.cardId && 'text' in c
-                ? { ...c, text: (c as any).text + event.text } as Card
-                : c
-            ),
-          };
+          const updatedBucket = bucket.cards.map((c) =>
+            c.id === event.cardId && 'text' in c
+              ? { ...c, text: (c as any).text + event.text } as Card
+              : c
+          );
+          if (updatedBucket.every((c, i) => c === bucket.cards[i])) return state;
+          const updatedCard = updatedBucket.find((c) => c.id === event.cardId)!;
+          const cards = state.cards.map((c) => c.id === event.cardId ? updatedCard : c);
+          const subagentIndex = state.subagentCards.findIndex((c) => c.id === event.cardId);
+          const subagentCards = subagentIndex >= 0
+            ? state.subagentCards.map((c, i) => i === subagentIndex ? updatedCard : c)
+            : isSubagentSourceCard(updatedCard) ? [...state.subagentCards, updatedCard] : state.subagentCards;
+          return { cards, subagentCards, cardBuckets: replaceCardBucket(state.cardBuckets, bucketId!, updatedBucket) };
         }
         case 'remove': {
-          return { cards: state.cards.filter((c) => c.id !== event.cardId) };
+          const bucketId = state.cardBuckets.cardToBucket.get(event.cardId);
+          const bucket = bucketId ? state.cardBuckets.byId.get(bucketId) : undefined;
+          if (!bucket) return state;
+          const updatedBucket = bucket.cards.filter((c) => c.id !== event.cardId);
+          const cardBuckets = replaceCardBucket(state.cardBuckets, bucketId!, updatedBucket);
+          const cards = flattenCardBuckets(cardBuckets);
+          return { cards, subagentCards: state.subagentCards.filter((c) => c.id !== event.cardId), cardBuckets, cardCount: state.cardCount - 1, latestIntermediateTurnId: findLatestIntermediateTurnId(cards), cardCompletedTurnIds: findCardCompletedTurnIds(cards) };
         }
       }
       return state;
@@ -566,12 +627,23 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   }),
   setLoadingHistory: (loading) => set({ isLoadingHistory: loading }),
   setHistoryError: (error) => set({ historyError: error }),
-  markTurnCompleted: (turnId) => set((state) => ({
-    completedTurnIds: { ...state.completedTurnIds, [turnId]: true },
-  })),
+  markTurnCompleted: (turnId) => set((state) => {
+    const bucketIds = state.cardBuckets.order.filter((id) => state.cardBuckets.byId.get(id)?.turnId === turnId);
+    for (const id of bucketIds) {
+      const bucket = state.cardBuckets.byId.get(id)!;
+      state.cardBuckets.byId.set(id, { ...bucket, hot: false, completed: true });
+      state.cardBuckets.hotOrder = state.cardBuckets.hotOrder.filter((hotId) => hotId !== id);
+    }
+    return { completedTurnIds: { ...state.completedTurnIds, [turnId]: true } };
+  }),
   clearCards: () => set({
     cards: [],
+    subagentCards: [],
+    cardBuckets: indexCardBuckets([]),
+    cardCount: 0,
+    latestIntermediateTurnId: null,
     completedTurnIds: {},
+    cardCompletedTurnIds: {},
     historyTotal: 0,
     historyHasMore: false,
     historyCursor: null,
@@ -793,12 +865,17 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       isStreaming: false,
       streamError: null,
       cards: [],
+      subagentCards: [],
+      cardBuckets: indexCardBuckets([]),
+      cardCount: 0,
+      latestIntermediateTurnId: null,
       historyTotal: 0,
       historyHasMore: false,
       historyCursor: null,
       isLoadingHistory: false,
       historyError: null,
       completedTurnIds: {},
+      cardCompletedTurnIds: {},
       sessionMetadata: {},
       promptInput: '',
       isVisible: false,

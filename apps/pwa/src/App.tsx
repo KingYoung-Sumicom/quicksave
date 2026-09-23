@@ -1420,9 +1420,8 @@ function ProjectRouteSession({
   const navigate = useNavigate();
   const location = useLocation();
   const isNewSession = searchParams.has('new');
-  const isDesktop = useMediaQuery('(min-width: 768px)');
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
-  const hasSessionCards = useSessionStore((s) => s.cards.length > 0);
+  const hasSessionCards = useSessionStore((s) => s.cardCount > 0);
   // Watch the archived flag on the URL-bound session so we can bounce out
   // of pages whose sessionId has been retired in the registry (End Task,
   // project:delete). isActive alone is too noisy — it can flip during normal
@@ -1674,7 +1673,7 @@ function ProjectRouteSession({
         onDismissPendingMission={dismissPendingMission}
         voiceAgent={voiceAgent}
       />
-      {isDesktop && targetAgentId && cwd && (
+      {targetAgentId && cwd && (
         <GitOpsContext.Provider value={sessionGitOpsBundle}>
           <SessionRightPanel
             sessionId={urlSessionId ?? ''}

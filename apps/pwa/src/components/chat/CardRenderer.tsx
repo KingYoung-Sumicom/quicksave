@@ -34,11 +34,12 @@ function toLegacyPending(
   };
 }
 
-export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId, agentId, onRespondToInput, onSendQuickPrompt }: {
+export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId, agentId, subagentView = 'transcript', onRespondToInput, onSendQuickPrompt }: {
   card: Card;
   isLast: boolean;
   sessionId?: string | null;
   agentId: string;
+  subagentView?: 'transcript' | 'agent-panel';
   onRespondToInput?: (requestId: string, action: 'allow' | 'deny', response?: string, allowPattern?: string, permissionMode?: string) => void;
   /** Send a fixed recovery prompt without changing the composer. */
   onSendQuickPrompt?: (prompt: string) => void;
@@ -89,6 +90,8 @@ export const CardRenderer = memo(function CardRenderer({ card, isLast, sessionId
           statusMessage={sa.statusMessage}
           activities={sa.activities}
           legacyNotice={sa.agentId.startsWith('legacy-subagent:')}
+          sessionId={sessionId ?? undefined}
+          view={subagentView}
           pendingInputRequest={sa.pendingInput ? toLegacyPending(sa.pendingInput) : undefined}
           onRespond={sa.pendingInput && onRespondToInput
             ? (action, response, allowPattern, permissionMode) => onRespondToInput(sa.pendingInput!.requestId, action, response, allowPattern, permissionMode)

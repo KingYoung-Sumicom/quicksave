@@ -3,9 +3,13 @@
 import { useState } from 'react';
 import { FormattedMessage, useIntl } from 'react-intl';
 import { clearSessionHistoryCache } from '../../lib/sessionHistoryCache';
+import { useUiPrefsStore } from '../../stores/uiPrefsStore';
+import { ToggleSwitch } from '../ui/ToggleSwitch';
 
 export function SessionHistoryCacheSection() {
   const intl = useIntl();
+  const cacheEnabled = useUiPrefsStore((s) => s.sessionHistoryCacheEnabled);
+  const setCacheEnabled = useUiPrefsStore((s) => s.setSessionHistoryCacheEnabled);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<'success' | 'error' | null>(null);
 
@@ -34,6 +38,12 @@ export function SessionHistoryCacheSection() {
           <FormattedMessage id="settings.cache.description" />
         </p>
       </div>
+      <ToggleSwitch
+        enabled={cacheEnabled}
+        onChange={setCacheEnabled}
+        label={intl.formatMessage({ id: 'settings.cache.enabled' })}
+        description={intl.formatMessage({ id: 'settings.cache.disabledDescription' })}
+      />
       <button
         type="button"
         onClick={clearCache}

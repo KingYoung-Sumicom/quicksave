@@ -25,6 +25,7 @@ import { ArtifactPreviewPane } from './chat/ArtifactMessage';
 import { VoiceCoworkerSidebar } from './VoiceCoworkerControl';
 import type { UseVoiceAgent } from '../hooks/useVoiceAgent';
 import { SubagentsPanel } from './chat/SubagentsPanel';
+import { useMediaQuery } from '../hooks/useMediaQuery';
 
 export type SessionOps = Omit<SettingsPanelContentProps, 'onClose' | 'onOpenFiles'>;
 
@@ -62,6 +63,7 @@ export function resolveGitRepoScope(
 }
 
 export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps, voiceAgent, onRespondToUserInput }: SessionRightPanelProps) {
+  const isDesktop = useMediaQuery('(min-width: 768px)');
   const mode = useSessionRightPanelStore(selectPanelMode);
   const panelWidth = useSessionRightPanelStore((s) => s.panelWidth);
   const setPanelWidth = useSessionRightPanelStore((s) => s.setPanelWidth);
@@ -85,10 +87,20 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps, voiceAg
   if (!mode) return null;
 
   return (
-    <div
-      className="fixed inset-y-0 right-0 z-30 border-l border-slate-700 bg-slate-900 shadow-2xl flex flex-col"
-      style={{ width: panelWidth }}
-    >
+    <>
+      {!isDesktop && (
+        <button
+          type="button"
+          aria-label="Close session panel"
+          onClick={closePanel}
+          className="fixed inset-0 z-20 bg-black/40"
+        />
+      )}
+      <div
+        data-testid="session-right-panel"
+        className="fixed inset-y-0 right-0 z-30 border-l border-slate-700 bg-slate-900 shadow-2xl flex flex-col"
+        style={{ width: isDesktop ? panelWidth : Math.min(panelWidth, window.innerWidth * 0.88) }}
+      >
       {/* Drag handle — left edge, same pattern as FilePreviewModal's DesktopSidePanel */}
       <div
         role="separator"
@@ -120,11 +132,11 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps, voiceAg
           document.body.style.cursor = '';
           document.body.style.userSelect = '';
         }}
-        className="absolute top-0 left-0 h-full w-1.5 -translate-x-1/2 cursor-col-resize hover:bg-blue-500/30 active:bg-blue-500/50 transition-colors z-10"
+        className="absolute top-0 left-0 hidden h-full w-1.5 -translate-x-1/2 cursor-col-resize hover:bg-blue-500/30 active:bg-blue-500/50 transition-colors z-10 md:block"
       />
 
       {/* Tab header */}
-      <div className="flex items-center gap-0.5 px-2 py-1.5 border-b border-slate-700 shrink-0 bg-slate-800/80">
+      <div className="flex items-center gap-0.5 overflow-x-auto px-2 py-1.5 border-b border-slate-700 shrink-0 bg-slate-800/80">
         {mode === 'artifact' && artifactPreview && (
           <div className="flex items-center gap-1.5 rounded bg-slate-700 px-2.5 py-1 text-xs font-medium text-slate-100">
             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -206,7 +218,8 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps, voiceAg
           <ArtifactPreviewPane key={artifactPreview.artifactId} artifact={artifactPreview} />
         )}
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 

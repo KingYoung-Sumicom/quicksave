@@ -23,6 +23,9 @@ export function ToggleSwitch({ enabled, onChange, label, description, compact }:
         </div>
       )}
       <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
         onClick={() => onChange(!enabled)}
         className={clsx(
           'relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0',

@@ -22,6 +22,8 @@
   "settings.dangerZone.title": "Danger zone",
   "settings.cache.label": "Session history cache",
   "settings.cache.description": "Remove locally cached session history from this browser. Server history is not deleted.",
+  "settings.cache.enabled": "Use local session history cache",
+  "settings.cache.disabledDescription": "When off, cached history is neither restored nor saved. Existing cache remains until you clear it below.",
   "settings.cache.button": "Clear session history cache",
   "settings.cache.clearing": "Clearing…",
   "settings.cache.confirm": "Clear locally cached session history? Server history will not be deleted.",
