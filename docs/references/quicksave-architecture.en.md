@@ -163,10 +163,13 @@ The architecture uses a layered design: `SessionManager` provides unified coordi
 
 2. **`CodexAppServerProvider` (id `'codex'`)** — JSON-RPC v2 client speaking
    `codex app-server` (initialize handshake → `thread/start` or
-   `thread/resume` → `turn/start` → notification stream). It enables
-   `persistExtendedHistory` on Codex threads so future `thread/read` /
-   `thread/turns/list` calls can reconstruct richer stored history. See
-   `apps/agent/src/ai/codexAppServer/`.
+   `thread/resume` → `turn/start` → notification stream). Stored history uses
+   `thread/turns/list` for one turn shell and `thread/items/list` for at most
+   100 native items per page (50 for the usual PWA request). The opaque card
+   history cursor holds both turn and item positions; card IDs derive from
+   native item IDs so a turn can be split across pages without collisions.
+   Older app-server stores without item pagination fall back to a full single
+   turn, not a full thread. See `apps/agent/src/ai/codexAppServer/`.
 
 3. **`SessionManager`** — Generic coordination layer (extends EventEmitter)
    - Session state management (`ManagedSession` map + per-session agent / permission / sandbox / config side maps)
@@ -1035,8 +1038,10 @@ type CardType =
                           // its selected or typed answer resolves the
                           // app-server request without a new user turn, then
                           // remains visible with the answer or dismissed state.
-                          // Its historyAnchorItemId (with a turn fallback)
-                          // restores its original dialogue position on reload.
+                          // Its historyAnchorItemId restores its dialogue
+                          // position on reload. Turn fallback for a partial
+                          // native-item page is restricted to its newest
+                          // segment; exact item anchors can land on older pages.
 ```
 
 **PWA XSS threat model**: normal agent/model output reaching a card is not

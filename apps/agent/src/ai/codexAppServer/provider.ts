@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
-import type { AgentId, Attachment, Card, CardHistoryResponse, ConfigValue, HistorySyncMetadata, NativeSessionSummary, SlashCommandInfo, SubagentActivity } from '@sumicom/quicksave-shared';
+import type { AgentId, Attachment, Card, CardEvent, CardHistoryResponse, ConfigValue, HistorySyncMetadata, NativeSessionSummary, SlashCommandInfo, SubagentActivity } from '@sumicom/quicksave-shared';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -2203,18 +2203,20 @@ function spawnCodexNativeListAppServer(): Promise<AppServerHandle> {
 }
 
 const CODEX_HISTORY_CURSOR_PREFIX = 'codex-turn-page:';
-const CODEX_HISTORY_TURN_PAGE_MAX = 20;
+const CODEX_HISTORY_ITEM_PAGE_MAX = 100;
 const unsupportedHistoryMethods = new Set<string>();
 
 type CodexHistoryCursor = {
-  v: 1;
-  turnCursor: string;
+  v: 2;
+  turnCursor: string | null;
+  turnId?: string;
+  itemCursor?: string;
 };
 
 /**
- * Read one bounded native turn page. A page is deliberately turn-based rather
- * than card-based: one persisted item can fan out into multiple UI cards, so
- * calculating an exact card total would require scanning the whole thread.
+ * Read at most one native item page from one turn. A turn may contain thousands
+ * of items, while one item can fan out into multiple UI cards. The opaque
+ * cursor preserves both the turn and item position without counting cards.
  */
 export async function readCodexHistoryPage(
   handle: AppServerHandle,
@@ -2226,9 +2228,11 @@ export async function readCodexHistoryPage(
   );
   const cursor = parseCodexHistoryCursor(opts.cursor);
   const turnCursor = cursor?.turnCursor ?? null;
-  const turnLimit = Math.max(1, Math.min(CODEX_HISTORY_TURN_PAGE_MAX, Math.ceil(Math.max(1, opts.limit) / 4)));
+  const itemLimit = Math.max(1, Math.min(CODEX_HISTORY_ITEM_PAGE_MAX, opts.limit));
   const mode = metadata.thread.historyMode;
-  const epoch = `codex:${handle.cliVersion}:${opts.sessionId}:${mode}`;
+  // Item-derived card IDs and native timestamps differ from the old turn-page
+  // projection; invalidate browser caches built with positional card IDs.
+  const epoch = `codex:item-pages-v2:${handle.cliVersion}:${opts.sessionId}:${mode}`;
   const sync = (readMode: HistorySyncMetadata['readMode'], nextCursor?: string): HistorySyncMetadata => ({
     epoch,
     revision: `${nativeRevision(metadata.thread)}:${nextCursor ?? 'end'}`,
@@ -2236,7 +2240,7 @@ export async function readCodexHistoryPage(
     coverage: { ...(opts.cursor ? { cursorIn: opts.cursor } : {}), ...(nextCursor ? { cursorOut: nextCursor } : {}), complete: !nextCursor },
   });
 
-  if (unsupportedHistoryMethods.has(historyCapabilityKey(handle, mode, 'thread/turns/list'))) {
+  if (unsupportedHistoryMethods.has(historyCapabilityKey(handle, opts.sessionId, mode, 'thread/turns/list'))) {
     const legacy = await handle.rpc.request<ThreadReadResponse>(
       'thread/read',
       { threadId: opts.sessionId, includeTurns: true },
@@ -2254,10 +2258,10 @@ export async function readCodexHistoryPage(
 
   let page: ThreadTurnsListResponse;
   try {
-    page = await readCodexTurnPage(handle, opts.sessionId, mode, turnCursor, turnLimit);
+    page = await readCodexTurnPage(handle, opts.sessionId, mode, turnCursor, 1);
   } catch (error) {
     if (!isUnsupportedCodexMethod(error)) throw error;
-    unsupportedHistoryMethods.add(historyCapabilityKey(handle, mode, 'thread/turns/list'));
+    unsupportedHistoryMethods.add(historyCapabilityKey(handle, opts.sessionId, mode, 'thread/turns/list'));
     // Extremely old app-server / thread combinations have no cursored turn
     // API. This is the sole remaining full-history compatibility path.
     const legacy = await handle.rpc.request<ThreadReadResponse>(
@@ -2276,29 +2280,43 @@ export async function readCodexHistoryPage(
   }
 
   let turns = page.data;
-  if (mode === 'paginated') {
+  let nextCursor = page.nextCursor ? encodeCodexHistoryCursor({ v: 2, turnCursor: page.nextCursor }) : undefined;
+  let nativeTurnComplete = true;
+  const nativeTurnTail = !cursor?.itemCursor;
+  if (turns.length > 0 && !unsupportedHistoryMethods.has(historyCapabilityKey(handle, opts.sessionId, mode, 'thread/items/list'))) {
     try {
-      const entries = (await Promise.all(turns.map(async (turn) => (
-        readAllPersistedPages<ThreadItemsListResponse>(handle, 'thread/items/list', {
-          threadId: opts.sessionId,
-          turnId: turn.id,
-          sortDirection: 'asc',
-        })
-      )))).flatMap((turnPages) => turnPages.flatMap((itemPage) => itemPage.data));
-      turns = hydrateThreadItems(metadata.thread, turns, entries).turns;
+      const turn = turns[0]!;
+      if (cursor?.turnId && cursor.turnId !== turn.id) throw new Error('Codex history cursor no longer matches its turn');
+      const itemPage = await handle.rpc.request<ThreadItemsListResponse>('thread/items/list', {
+        threadId: opts.sessionId,
+        turnId: turn.id,
+        cursor: cursor?.itemCursor ?? null,
+        limit: itemLimit,
+        sortDirection: 'desc',
+      });
+      // Codex returns newest-first in descending mode. Cards and prepended
+      // history pages must each remain chronological within their own page.
+      turns = hydrateThreadItems(metadata.thread, turns, [...itemPage.data].reverse()).turns;
+      nativeTurnComplete = !cursor?.itemCursor && !itemPage.nextCursor;
+      if (itemPage.nextCursor) {
+        nextCursor = encodeCodexHistoryCursor({
+          v: 2, turnCursor, turnId: turn.id, itemCursor: itemPage.nextCursor,
+        });
+      }
     } catch (error) {
       if (!isUnsupportedCodexMethod(error)) throw error;
-      unsupportedHistoryMethods.add(historyCapabilityKey(handle, mode, 'thread/items/list'));
-      // A partially upgraded server can paginate turns but not items. Ask for
-      // full items on this bounded turn page instead of hydrating the thread.
+      unsupportedHistoryMethods.add(historyCapabilityKey(handle, opts.sessionId, mode, 'thread/items/list'));
+      // Older stores cannot paginate items. Keep the bounded one-turn
+      // compatibility path, rather than reading every turn in the thread.
       page = await handle.rpc.request<ThreadTurnsListResponse>('thread/turns/list', {
         threadId: opts.sessionId,
         cursor: turnCursor,
-        limit: turnLimit,
+        limit: 1,
         sortDirection: 'desc',
         itemsView: 'full',
       });
       turns = page.data;
+      nextCursor = page.nextCursor ? encodeCodexHistoryCursor({ v: 2, turnCursor: page.nextCursor }) : undefined;
     }
   }
 
@@ -2307,13 +2325,14 @@ export async function readCodexHistoryPage(
     turns: [...turns].reverse(),
   });
   const nativeTimeRange = codexHistoryTimeRange(turns);
-  const nextCursor = page.nextCursor ? encodeCodexHistoryCursor(page.nextCursor) : undefined;
   return {
     cards,
     // Exact card totals are intentionally unknown until every native turn has
     // been read, which we deliberately never do merely to populate a counter.
     hasMore: !!nextCursor,
-    historySync: sync(mode === 'legacy' ? 'legacy-full' : 'paginated', nextCursor),
+    historySync: sync(mode === 'legacy' && unsupportedHistoryMethods.has(historyCapabilityKey(handle, opts.sessionId, mode, 'thread/items/list')) ? 'legacy-full' : 'paginated', nextCursor),
+    nativeTurnTail,
+    nativeTurnComplete,
     ...(nextCursor ? { nextCursor } : {}),
     ...(nativeTimeRange ? { nativeTimeRange } : {}),
   };
@@ -2358,8 +2377,7 @@ async function readCodexTurnPage(
   cursor: string | null,
   limit: number,
 ): Promise<ThreadTurnsListResponse> {
-  const itemsView = historyMode === 'legacy'
-    || unsupportedHistoryMethods.has(historyCapabilityKey(handle, historyMode, 'thread/items/list'))
+  const itemsView = unsupportedHistoryMethods.has(historyCapabilityKey(handle, threadId, historyMode, 'thread/items/list'))
     ? 'full'
     : 'notLoaded';
   return handle.rpc.request<ThreadTurnsListResponse>('thread/turns/list', {
@@ -2373,24 +2391,35 @@ async function readCodexTurnPage(
 
 function historyCapabilityKey(
   handle: AppServerHandle,
+  threadId: string,
   historyMode: Thread['historyMode'],
   method: 'thread/turns/list' | 'thread/items/list',
 ): string {
-  return `${handle.cliVersion}\u0000${historyMode}\u0000${method}`;
+  return `${handle.cliVersion}\u0000${threadId}\u0000${historyMode}\u0000${method}`;
 }
 
 function parseCodexHistoryCursor(cursor: string | undefined): CodexHistoryCursor | undefined {
   if (!cursor?.startsWith(CODEX_HISTORY_CURSOR_PREFIX)) return undefined;
   try {
-    const parsed = JSON.parse(Buffer.from(cursor.slice(CODEX_HISTORY_CURSOR_PREFIX.length), 'base64url').toString('utf8')) as Partial<CodexHistoryCursor>;
-    return parsed.v === 1 && typeof parsed.turnCursor === 'string' ? { v: 1, turnCursor: parsed.turnCursor } : undefined;
+    const parsed = JSON.parse(Buffer.from(cursor.slice(CODEX_HISTORY_CURSOR_PREFIX.length), 'base64url').toString('utf8')) as {
+      v?: unknown; turnCursor?: unknown; turnId?: unknown; itemCursor?: unknown;
+    };
+    if (parsed.v === 1 && typeof parsed.turnCursor === 'string') return { v: 2, turnCursor: parsed.turnCursor };
+    if (parsed.v !== 2 || (parsed.turnCursor !== null && typeof parsed.turnCursor !== 'string')) return undefined;
+    if ((parsed.itemCursor === undefined) !== (parsed.turnId === undefined)) return undefined;
+    if (parsed.itemCursor !== undefined && (typeof parsed.itemCursor !== 'string' || typeof parsed.turnId !== 'string')) return undefined;
+    return {
+      v: 2,
+      turnCursor: parsed.turnCursor as string | null,
+      ...(parsed.turnId !== undefined ? { turnId: parsed.turnId as string, itemCursor: parsed.itemCursor as string } : {}),
+    };
   } catch {
     return undefined;
   }
 }
 
-function encodeCodexHistoryCursor(turnCursor: string): string {
-  return `${CODEX_HISTORY_CURSOR_PREFIX}${Buffer.from(JSON.stringify({ v: 1, turnCursor } satisfies CodexHistoryCursor)).toString('base64url')}`;
+function encodeCodexHistoryCursor(cursor: CodexHistoryCursor): string {
+  return `${CODEX_HISTORY_CURSOR_PREFIX}${Buffer.from(JSON.stringify(cursor)).toString('base64url')}`;
 }
 
 /** JSON-RPC -32601 means this Codex app-server predates a method. */
@@ -2400,85 +2429,75 @@ export function isUnsupportedCodexMethod(error: unknown): boolean {
     && (error as { code?: unknown }).code === -32601;
 }
 
-async function readAllPersistedPages<T extends { nextCursor: string | null }>(
-  handle: AppServerHandle,
-  method: 'thread/turns/list' | 'thread/items/list',
-  params: Record<string, unknown>,
-): Promise<T[]> {
-  const pages: T[] = [];
-  let cursor: string | null = null;
-  do {
-    const page: T = await handle.rpc.request<T>(method, { ...params, cursor });
-    pages.push(page);
-    cursor = page.nextCursor;
-  } while (cursor);
-  return pages;
-}
-
 /** Build a stable final-state UI projection from persisted Codex items. */
 export function projectCodexThreadCards(sessionId: string, cwd: string, thread: Thread): Card[] {
   const builder = new StreamCardBuilder(sessionId, cwd);
-  const nativeItemByCardId = new Map<string, string>();
+  const nativeItemByCardId = new Map<string, { itemId: string; index: number }>();
+  const turnTimeById = new Map(thread.turns.flatMap((turn) => {
+    const timestamp = turn.startedAt ?? turn.completedAt;
+    return timestamp == null ? [] : [[turn.id, timestamp * 1_000] as const];
+  }));
   for (const turn of thread.turns) {
     builder.startNewTurn(turn.id);
     for (const item of turn.items) {
-      const before = new Set(builder.getCards().map((card) => card.id));
-      projectCodexItem(builder, item);
-      // One native item can render several visual cards (for example a file
-      // change with multiple paths). Keep all of them as an anchor target for
-      // supplemental user-input records; the merge picks the final one.
-      for (const card of builder.getCards()) {
-        if (!before.has(card.id)) nativeItemByCardId.set(card.id, item.id);
+      let index = 0;
+      for (const event of projectCodexItem(builder, item)) {
+        if (event.type === 'add') {
+          nativeItemByCardId.set(event.card.id, { itemId: item.id, index: ++index });
+        }
       }
     }
     for (const event of builder.markTurnCompleted(turn.id)) void event;
   }
-  // StreamCardBuilder sequence IDs are intentionally ephemeral. A history
-  // page begins a fresh builder, so retain the same visual projection but
-  // derive page-independent IDs from the native turn and its card position.
+  // StreamCardBuilder sequence IDs are ephemeral. Native item IDs remain
+  // stable when the same turn is split across several history pages.
   const cardIndexByTurn = new Map<string, number>();
   return builder.getCards().map((card) => {
     const turnKey = card.turnId ?? 'thread';
     const index = (cardIndexByTurn.get(turnKey) ?? 0) + 1;
     cardIndexByTurn.set(turnKey, index);
+    const native = nativeItemByCardId.get(card.id);
     return {
       ...card,
-      id: `${sessionId}:codex:${turnKey}:${index}`,
-      ...(nativeItemByCardId.get(card.id) ? { nativeItemId: nativeItemByCardId.get(card.id) } : {}),
+      ...(turnTimeById.has(turnKey) ? { timestamp: turnTimeById.get(turnKey)! } : {}),
+      id: native
+        ? `${sessionId}:codex:${turnKey}:${encodeURIComponent(native.itemId)}:${native.index}`
+        : `${sessionId}:codex:${turnKey}:unanchored:${index}`,
+      ...(native ? { nativeItemId: native.itemId } : {}),
     } as Card;
   });
 }
 
-function projectCodexItem(builder: StreamCardBuilder, item: ThreadItem): void {
-  const emit = (event: unknown) => { void event; };
+function projectCodexItem(builder: StreamCardBuilder, item: ThreadItem): CardEvent[] {
+  const events: CardEvent[] = [];
+  const emit = (event: CardEvent | null) => { if (event) events.push(event); };
   switch (item.type) {
     case 'userMessage':
       emit(builder.userMessage(item.content.map((part: any) => part.text ?? '').filter(Boolean).join('\n')));
-      return;
+      break;
     case 'agentMessage':
       if (item.text) emit(builder.assistantText(item.text));
       emit(builder.finalizeAssistantText());
-      return;
+      break;
     case 'plan':
       if (item.text) emit(builder.thinkingBlock(item.text));
-      return;
+      break;
     case 'reasoning':
       if (item.summary.length || item.content.length) emit(builder.thinkingBlock([...item.summary, ...item.content].join('\n')));
-      return;
+      break;
     case 'commandExecution':
       emit(builder.toolUse('Bash', { command: item.command }, item.id));
       emit(builder.toolResult(item.id, item.aggregatedOutput ?? '', item.status === 'failed' || item.status === 'declined'));
-      return;
+      break;
     case 'mcpToolCall':
       emit(builder.toolUse(`mcp__${item.server}__${item.tool}`, (item.arguments ?? {}) as Record<string, unknown>, item.id));
       emit(builder.toolResult(item.id, item.error ? JSON.stringify(item.error) : JSON.stringify(item.result ?? ''), !!item.error));
-      return;
+      break;
     case 'contextCompaction':
       emit(builder.systemMessage('Context compacted', 'compacted'));
-      return;
-    default:
-      return;
+      break;
   }
+  return events;
 }
 
 function spawnCodexAppServer(opts: StartSessionOpts | ResumeSessionOpts): Promise<AppServerHandle> {

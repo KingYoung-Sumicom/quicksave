@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import React, { act } from 'react';
+import { IntlProvider } from 'react-intl';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useSessionStore } from '../stores/sessionStore';
@@ -138,5 +139,58 @@ describe('SessionPanel history scroll restoration', () => {
 
   it('does not request a scroll change when collapsed cards add no height', () => {
     expect(scrollTopAfterPrepend(120, 800, 800)).toBeNull();
+  });
+});
+
+describe('SessionPanel empty native-item history pages', () => {
+  it('advances a zero-card page with the opaque cursor and pauses after three empty pages', async () => {
+    useSessionStore.getState().reset();
+    useSessionStore.getState().setActiveSession('empty-history');
+    useSessionStore.getState().setHistoryMeta(undefined, true, 'cursor-0');
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    let onIntersect: IntersectionObserverCallback | undefined;
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: IntersectionObserverCallback) { onIntersect = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    let page = 0;
+    const onGetSessionCards = vi.fn(async (_sessionId: string, offset?: number) => {
+      if (offset === undefined) return;
+      expect(offset).toBe(1);
+      useSessionStore.getState().setHistoryMeta(undefined, true, `cursor-${++page}`);
+    });
+
+    try {
+      await act(async () => {
+        root.render(<IntlProvider locale="en"><SessionPanel
+          sessionId="empty-history"
+          onGetSessionCards={onGetSessionCards}
+          onStartSession={vi.fn().mockResolvedValue(true)}
+          onResumeSession={vi.fn().mockResolvedValue(true)}
+        /></IntlProvider>);
+      });
+
+      for (let index = 0; index < 3; index++) {
+        expect(onIntersect).toBeDefined();
+        await act(async () => { onIntersect!([{ isIntersecting: true }] as IntersectionObserverEntry[], {} as IntersectionObserver); });
+      }
+      expect(page).toBe(3);
+      expect(container.textContent).toContain('Load older messages');
+      expect(onIntersect).toBeDefined();
+      await act(async () => { onIntersect!([{ isIntersecting: true }] as IntersectionObserverEntry[], {} as IntersectionObserver); });
+      expect(page).toBe(3);
+
+      const button = [...container.querySelectorAll('button')].find((node) => node.textContent?.includes('Load older messages'));
+      await act(async () => { button?.click(); });
+      expect(page).toBe(4);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      useSessionStore.getState().reset();
+      vi.unstubAllGlobals();
+    }
   });
 });

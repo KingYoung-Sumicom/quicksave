@@ -2316,6 +2316,35 @@ describe('SessionManager', () => {
       expect(older.cards.map((card) => card.id)).toEqual(['anchored', 'follow-up-old']);
     });
 
+    it('keeps turn-fallback prompts off partial item pages until their native anchor arrives', async () => {
+      const codexProvider = {
+        ...createMockProvider('codex'),
+        historyMode: 'codex-thread' as const,
+        loadCardHistory: vi.fn()
+          .mockResolvedValueOnce({
+            cards: [{ type: 'assistant_text', id: 'tail', timestamp: 1, text: 'Tail', streaming: false, turnId: 'turn-1', nativeItemId: 'item-tail' }],
+            hasMore: true, nextCursor: 'codex-turn-page:partial',
+            nativeTurnTail: true, nativeTurnComplete: false,
+          })
+          .mockResolvedValueOnce({
+            cards: [{ type: 'assistant_text', id: 'head', timestamp: 1, text: 'Head', streaming: false, turnId: 'turn-1', nativeItemId: 'item-head' }],
+            hasMore: false, nativeTurnTail: false, nativeTurnComplete: false,
+          }),
+      };
+      const mgr = new SessionManager([codexProvider], 'codex' as any);
+      const { loadPersistedCards } = await import('./cardBuilder.js');
+      (loadPersistedCards as Mock).mockResolvedValue([
+        { type: 'follow_up_question', id: 'follow-up-head', timestamp: 1, question: 'Original choice?', answer: 'Yes', turnId: 'turn-1', historyAnchorItemId: 'item-head' },
+        { type: 'tool_call', id: 'question-tail', timestamp: 1, toolName: 'AskUserQuestion', toolInput: {}, toolUseId: 'tu-question', answers: { Choice: 'Yes' }, turnId: 'turn-1', historyAnchorItemId: 'missing-item' },
+      ]);
+
+      const tail = await mgr.getCards('codex-history', '/tmp/test');
+      expect(tail.cards.map((card) => card.id)).toEqual(['tail', 'question-tail']);
+
+      const head = await mgr.getCards('codex-history', '/tmp/test', 1, 50, 'codex-turn-page:partial');
+      expect(head.cards.map((card) => card.id)).toEqual(['head', 'follow-up-head']);
+    });
+
     it('falls back to the turn tail for an unresolved item anchor when the turn is present', async () => {
       const codexProvider = {
         ...createMockProvider('codex'),

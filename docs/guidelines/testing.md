@@ -67,6 +67,9 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
      next page uses an agent-issued source cursor, not rendered `cards.length`.
      Include one-source-to-many-card expansion, partially persisted active
      turns, and append/remove activity above an existing cursor.
+   - Native Codex item pagination: test a turn split over several item pages,
+     chronological prepend order, stable item-based card IDs, and supplemental
+     prompt anchors that belong to an older page of the same turn.
    - Connection admission limits: repeatedly exercise every rejected handshake
      path under a deliberately small quota and assert each rejected socket
      releases its slot before the next attempt.

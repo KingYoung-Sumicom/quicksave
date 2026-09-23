@@ -339,6 +339,7 @@ export function SessionPanel({
     return bucket?.cards[bucket.cards.length - 1]?.type;
   });
   const historyHasMore = useSessionStore((s) => s.historyHasMore);
+  const historyCursor = useSessionStore((s) => s.historyCursor);
   const isLoadingHistory = useSessionStore((s) => s.isLoadingHistory);
   const historyError = useSessionStore((s) => s.historyError);
   const promptInput = useSessionStore((s) => s.promptInput);
@@ -742,6 +743,13 @@ export function SessionPanel({
     });
   }, [onRespondToUserInput]);
 
+  const emptyHistoryPageStreakRef = useRef(0);
+  const [emptyHistoryPageStreak, setEmptyHistoryPageStreak] = useState(0);
+  useEffect(() => {
+    emptyHistoryPageStreakRef.current = 0;
+    setEmptyHistoryPageStreak(0);
+  }, [activeSessionId]);
+
   const handleLoadMore = useCallback(async () => {
     // Read isLoadingHistory from live store state (not stale closure) to prevent
     // the IntersectionObserver from firing duplicate requests before React re-renders.
@@ -749,9 +757,18 @@ export function SessionPanel({
     const container = chatContainerRef.current;
     const prevScrollHeight = container?.scrollHeight ?? 0;
     const prevScrollTop = container?.scrollTop ?? 0;
+    const previousCardCount = useSessionStore.getState().cardCount;
     // cards.length is only the compatibility offset. The operation hook sends
     // the agent-issued history cursor when the current server supports it.
-    await onGetSessionCards(activeSessionId, cardCount);
+    await onGetSessionCards(activeSessionId, Math.max(1, cardCount));
+    const current = useSessionStore.getState();
+    if (current.activeSessionId === activeSessionId && !current.historyError) {
+      const nextStreak = current.cardCount === previousCardCount
+        ? emptyHistoryPageStreakRef.current + 1
+        : 0;
+      emptyHistoryPageStreakRef.current = nextStreak;
+      setEmptyHistoryPageStreak(nextStreak);
+    }
     // Preserve the visible content after older cards are inserted above it.
     // A collapsed page can add no height; in that case, do not touch scrollTop.
     if (container) {
@@ -771,14 +788,14 @@ export function SessionPanel({
   const topSentinelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const sentinel = topSentinelRef.current;
-    if (!sentinel || !historyHasMore) return;
+    if (!sentinel || !historyHasMore || isLoadingHistory || historyError || emptyHistoryPageStreak >= 3) return;
     const observer = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) handleLoadMore(); },
+      ([entry]) => { if (entry.isIntersecting && emptyHistoryPageStreakRef.current < 3) handleLoadMore(); },
       { root: chatContainerRef.current, threshold: 0 },
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [historyHasMore, handleLoadMore]);
+  }, [historyHasMore, historyCursor, isLoadingHistory, historyError, emptyHistoryPageStreak, handleLoadMore]);
 
   // ── Slash-command autocomplete ──
   // Source: provider-neutral `session:list-slash-commands`. New-session view
@@ -973,6 +990,19 @@ export function SessionPanel({
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
                   </svg>
+                )}
+                {!isLoadingHistory && emptyHistoryPageStreak >= 3 && (
+                  <button
+                    type="button"
+                    className="text-sm text-blue-400 hover:text-blue-300"
+                    onClick={() => {
+                      emptyHistoryPageStreakRef.current = 0;
+                      setEmptyHistoryPageStreak(0);
+                      void handleLoadMore();
+                    }}
+                  >
+                    Load older messages
+                  </button>
                 )}
               </div>
             )}

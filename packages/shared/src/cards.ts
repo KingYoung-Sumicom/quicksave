@@ -342,6 +342,10 @@ export interface CardHistoryResponse {
    * It is intentionally advisory: native item ids remain the ordering key.
    */
   nativeTimeRange?: { startMs: number; endMs: number };
+  /** Native item paging may cover only part of a turn. Use these hints when
+   * positioning supplemental cards whose exact native item is not on-page. */
+  nativeTurnTail?: boolean;
+  nativeTurnComplete?: boolean;
   /**
    * Exact total when the backing store can provide one. Native cursor APIs do
    * not expose it without scanning every page, so it is intentionally absent

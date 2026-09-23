@@ -155,3 +155,15 @@ card wrapper can still create spacing, and the logically empty card can split
 two adjacent tool calls into separate folded groups.
 
 ---
+
+### Cursor-paged history must advance even when a page renders no cards
+
+Use the source cursor to request the next page; do not derive the next offset
+from the number of rendered cards. A page of native items can produce zero UI
+cards. Re-observe the top sentinel after a cursor change, but cap consecutive
+automatic empty-page requests and leave a manual "Load older" control.
+
+**Why:** Otherwise an empty item page permanently hides older history, while
+unbounded auto-retries can scan an entire long session just to fill the screen.
+
+---

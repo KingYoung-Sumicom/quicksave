@@ -221,7 +221,7 @@ describe('readCodexHistoryPage', () => {
         return { data: [turn], nextCursor: 'next-native-turn', backwardsCursor: null };
       }
       if (method === 'thread/items/list') {
-        expect(params).toMatchObject({ threadId: 'thr-page', turnId: 'turn-newest', sortDirection: 'asc' });
+        expect(params).toMatchObject({ threadId: 'thr-page', turnId: 'turn-newest', limit: 1, sortDirection: 'desc' });
         return {
           data: [{ turnId: 'turn-newest', item: { type: 'agentMessage', id: 'msg-1', text: 'Newest reply' } }],
           nextCursor: null,
@@ -237,7 +237,7 @@ describe('readCodexHistoryPage', () => {
     });
 
     expect(page.cards).toHaveLength(1);
-    expect(page.cards[0]).toMatchObject({ id: 'thr-page:codex:turn-newest:1', text: 'Newest reply' });
+    expect(page.cards[0]).toMatchObject({ id: 'thr-page:codex:turn-newest:msg-1:1', text: 'Newest reply' });
     expect(page.total).toBeUndefined();
     expect(page.hasMore).toBe(true);
     expect(page.nextCursor).toMatch(/^codex-turn-page:/);
@@ -247,7 +247,7 @@ describe('readCodexHistoryPage', () => {
     ]);
   });
 
-  it('uses turns/list with full items for legacy threads, without items/list', async () => {
+  it('falls back to one full legacy turn when native item paging is unsupported', async () => {
     const legacyThread = { ...paginatedThread, historyMode: 'legacy' } as Thread;
     const fullTurn = {
       ...turn,
@@ -257,9 +257,10 @@ describe('readCodexHistoryPage', () => {
     const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
       if (method === 'thread/read') return { thread: legacyThread };
       if (method === 'thread/turns/list') {
-        expect(params).toMatchObject({ itemsView: 'full', sortDirection: 'desc' });
+        expect(params).toMatchObject({ limit: 1, sortDirection: 'desc' });
         return { data: [fullTurn], nextCursor: null, backwardsCursor: null };
       }
+      if (method === 'thread/items/list') throw { code: -32601 };
       throw new Error(`unexpected ${method}`);
     });
     const handle = { cliVersion: '0.153.4', rpc: { request } } as never;
@@ -268,8 +269,92 @@ describe('readCodexHistoryPage', () => {
       sessionId: 'thr-page', cwd: '/repo', offset: 0, limit: 1,
     });
 
-    expect(page.cards[0]).toMatchObject({ id: 'thr-page:codex:turn-newest:1', text: 'Legacy reply' });
-    expect(request.mock.calls.map(([method]) => method)).toEqual(['thread/read', 'thread/turns/list']);
+    expect(page.cards[0]).toMatchObject({ id: 'thr-page:codex:turn-newest:legacy-msg:1', text: 'Legacy reply' });
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      'thread/read', 'thread/turns/list', 'thread/items/list', 'thread/turns/list',
+    ]);
+  });
+
+  it('uses bounded native items for a legacy thread when its store supports item paging', async () => {
+    const legacyThread = { ...paginatedThread, id: 'thr-legacy-paging', historyMode: 'legacy' } as Thread;
+    const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'thread/read') return { thread: legacyThread };
+      if (method === 'thread/turns/list') {
+        expect(params).toMatchObject({ limit: 1, itemsView: 'notLoaded' });
+        return { data: [turn], nextCursor: null, backwardsCursor: null };
+      }
+      if (method === 'thread/items/list') {
+        expect(params).toMatchObject({ limit: 1, sortDirection: 'desc' });
+        return { data: [{ turnId: turn.id, item: { type: 'agentMessage', id: 'legacy-item', text: 'Legacy' } }], nextCursor: 'legacy-older', backwardsCursor: null };
+      }
+      throw new Error(`unexpected ${method}`);
+    });
+    const handle = { cliVersion: '0.153.4', rpc: { request } } as never;
+
+    const page = await readCodexHistoryPage(handle, { sessionId: 'thr-legacy-paging', cwd: '/repo', offset: 0, limit: 1 });
+    expect(page.cards.map((card) => card.id)).toEqual(['thr-legacy-paging:codex:turn-newest:legacy-item:1']);
+    expect(page.hasMore).toBe(true);
+    expect(page.historySync?.readMode).toBe('paginated');
+    expect(request.mock.calls.map(([method]) => method)).toEqual(['thread/read', 'thread/turns/list', 'thread/items/list']);
+  });
+
+  it('pages within one native turn before advancing to older turns, with stable card IDs', async () => {
+    const olderTurn = { ...turn, id: 'turn-older', startedAt: 0, completedAt: 1 };
+    const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'thread/read') return { thread: paginatedThread };
+      if (method === 'thread/turns/list') {
+        expect(params).toMatchObject({ limit: 1, itemsView: 'notLoaded' });
+        return params.cursor === 'older-turn'
+          ? { data: [olderTurn], nextCursor: null, backwardsCursor: null }
+          : { data: [turn], nextCursor: 'older-turn', backwardsCursor: null };
+      }
+      if (method === 'thread/items/list') {
+        expect(params).toMatchObject({ limit: 2, sortDirection: 'desc' });
+        if (params.turnId === 'turn-older') return {
+          data: [{ turnId: 'turn-older', item: { type: 'agentMessage', id: 'old', text: 'old' } }],
+          nextCursor: null, backwardsCursor: null,
+        };
+        if (params.cursor === 'older-items') return {
+          data: [
+            { turnId: 'turn-newest', item: { type: 'agentMessage', id: 'b', text: 'b' } },
+            { turnId: 'turn-newest', item: { type: 'agentMessage', id: 'a', text: 'a' } },
+          ],
+          nextCursor: null, backwardsCursor: null,
+        };
+        return {
+          data: [
+            { turnId: 'turn-newest', item: { type: 'agentMessage', id: 'd', text: 'd' } },
+            { turnId: 'turn-newest', item: { type: 'agentMessage', id: 'c', text: 'c' } },
+          ],
+          nextCursor: 'older-items', backwardsCursor: null,
+        };
+      }
+      throw new Error(`unexpected ${method}`);
+    });
+    const handle = { cliVersion: '0.153.4', rpc: { request } } as never;
+    const opts = { sessionId: 'thr-page', cwd: '/repo', offset: 0, limit: 2 };
+
+    const newest = await readCodexHistoryPage(handle, opts);
+    expect(newest.cards.map((card) => card.id)).toEqual([
+      'thr-page:codex:turn-newest:c:1', 'thr-page:codex:turn-newest:d:1',
+    ]);
+    expect(newest.hasMore).toBe(true);
+    expect(newest).toMatchObject({ nativeTurnTail: true, nativeTurnComplete: false });
+    expect(request.mock.calls.filter(([method]) => method === 'thread/items/list')).toHaveLength(1);
+
+    const middle = await readCodexHistoryPage(handle, { ...opts, cursor: newest.nextCursor });
+    expect(middle.cards.map((card) => card.id)).toEqual([
+      'thr-page:codex:turn-newest:a:1', 'thr-page:codex:turn-newest:b:1',
+    ]);
+    expect(middle.hasMore).toBe(true);
+    expect(middle).toMatchObject({ nativeTurnTail: false, nativeTurnComplete: false });
+    expect(middle.cards[0]?.timestamp).toBe(newest.cards[0]?.timestamp);
+
+    const oldest = await readCodexHistoryPage(handle, { ...opts, cursor: middle.nextCursor });
+    expect(oldest.cards.map((card) => card.id)).toEqual(['thr-page:codex:turn-older:old:1']);
+    expect(oldest.hasMore).toBe(false);
+    expect(oldest).toMatchObject({ nativeTurnTail: true, nativeTurnComplete: true });
+    expect(request.mock.calls.filter(([method]) => method === 'thread/items/list')).toHaveLength(3);
   });
 });
 

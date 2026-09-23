@@ -222,6 +222,7 @@ function buildAskUserAnswers(
 function insertSupplementalQuestionCards(
   cards: Card[],
   supplemental: readonly Card[],
+  coverage: Pick<CardHistoryResponse, 'nativeTurnTail' | 'nativeTurnComplete'> = {},
 ): number {
   const existingIds = new Set(cards.map((card) => card.id));
   const insertedAfter = new Map<string, number>();
@@ -242,9 +243,13 @@ function insertSupplementalQuestionCards(
 
   for (const card of ordered) {
     const itemAnchor = 'historyAnchorItemId' in card ? card.historyAnchorItemId : undefined;
+    const isAskUserQuestion = card.type === 'tool_call' && card.toolName === 'AskUserQuestion';
+    const mayUseTurnFallback = isAskUserQuestion
+      ? coverage.nativeTurnTail !== false
+      : coverage.nativeTurnComplete !== false;
     const anchorKeys = [
       ...(itemAnchor ? [`item:${itemAnchor}`] : []),
-      ...(card.turnId ? [`turn:${card.turnId}`] : []),
+      ...(card.turnId && mayUseTurnFallback ? [`turn:${card.turnId}`] : []),
     ];
     let anchorIndex: number | undefined;
     for (const key of anchorKeys) {
@@ -263,7 +268,7 @@ function insertSupplementalQuestionCards(
     // never resolve. Degrade to the end of its turn instead of hiding the
     // card — the answer belongs to that turn, and hiding it would drop the
     // user's reply from the reloaded history.
-    if (anchorIndex === undefined && card.turnId) {
+    if (anchorIndex === undefined && card.turnId && mayUseTurnFallback) {
       const found = findLastIndex((nativeCard) => nativeCard.turnId === card.turnId);
       if (found >= 0) anchorIndex = found;
     }
@@ -1993,6 +1998,7 @@ export class SessionManager extends EventEmitter {
       const inserted = insertSupplementalQuestionCards(
         result.cards,
         Array.from(supplementalById.values()),
+        result,
       );
       if (inserted > 0 && result.total !== undefined) result.total += inserted;
     }
