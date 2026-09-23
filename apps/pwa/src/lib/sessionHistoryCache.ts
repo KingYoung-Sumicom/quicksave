@@ -73,6 +73,12 @@ export async function readSessionHistoryCache(sessionId: string): Promise<Sessio
       await deleteSessionHistoryCache(sessionId);
       return undefined;
     }
+    // Older versions persisted snapshots while a turn was streaming. Discard
+    // those records instead of restoring partial turns from the browser cache.
+    if (record?.hasLiveCards || record?.cards.some((card) => card.type === 'assistant_text' && card.streaming === true)) {
+      await deleteSessionHistoryCache(sessionId);
+      return undefined;
+    }
     return record;
   } catch {
     return undefined;

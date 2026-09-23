@@ -118,13 +118,9 @@ function appendAcknowledgedUserCard(
 function mergeHistoryCards(
   serverCards: CardHistoryResponse['cards'],
   cachedCards: CardHistoryResponse['cards'],
-  preferCachedCards = false,
 ): CardHistoryResponse['cards'] {
   const byId = new Map(cachedCards.map((card) => [card.id, card]));
   for (const card of serverCards) byId.set(card.id, card);
-  if (preferCachedCards) {
-    for (const card of cachedCards) byId.set(card.id, card);
-  }
   return [...byId.values()].sort((a, b) => a.timestamp - b.timestamp);
 }
 
@@ -196,11 +192,14 @@ export function useSessionOperations(
     applySessionConfig,
   } = useSessionStore();
 
-  const persistHistoryCacheSnapshot = useCallback((sessionId: string) => {
+  const persistHistoryCacheSnapshot = useCallback((sessionId: string, completedTurn = false) => {
     const state = useSessionStore.getState();
     // A delayed unsubscribe for A must never serialize the currently visible
     // B cards under A's cache key.
     if (state.activeSessionId !== sessionId || state.cards.length === 0) return;
+    const sessionIsStreaming = state.isStreaming || state.sessions[sessionId]?.isStreaming === true;
+    const hasStreamingCards = state.cards.some((card) => card.type === 'assistant_text' && card.streaming === true);
+    if ((sessionIsStreaming || hasStreamingCards) && !completedTurn) return;
     const cachedAt = Date.now();
     const last = state.cards[state.cards.length - 1];
     const snapshot = {
@@ -211,7 +210,7 @@ export function useSessionOperations(
       historySync: historyCacheRecordsRef.current.get(sessionId)?.historySync,
       coverage: historyCacheRecordsRef.current.get(sessionId)?.coverage,
       lastReceivedCard: last ? { id: last.id, timestamp: last.timestamp, ...(last.turnId ? { turnId: last.turnId } : {}) } : undefined,
-      hasLiveCards: state.isStreaming,
+      hasLiveCards: false,
       cachedAt,
     };
     const previous = historyCacheRecordsRef.current.get(sessionId);
@@ -368,13 +367,14 @@ export function useSessionOperations(
                   || cachedRecord.historySync.epoch === snap.historySync.epoch;
                 const cachedBoundaryIsMissing = cachedRecord?.lastReceivedCard
                   && !snap.cards.some((card) => card.id === cachedRecord.lastReceivedCard?.id);
-                const preserveCachedLiveCards = cachedRecord?.hasLiveCards === true;
-                if (cachedRecord && cacheEpochMatches && (cachedRecord.cards.length > snap.cards.length || cachedBoundaryIsMissing || preserveCachedLiveCards)) {
-                  const mergedCards = mergeHistoryCards(snap.cards, cachedRecord.cards, preserveCachedLiveCards);
+                if (cachedRecord && cacheEpochMatches && (cachedRecord.cards.length > snap.cards.length || cachedBoundaryIsMissing)) {
+                  const mergedCards = mergeHistoryCards(snap.cards, cachedRecord.cards);
                   useSessionStore.getState().setCards(mergedCards);
                 }
+                let completedTurnReceived = false;
                 for (const update of bufferedUpdates) {
                   applySessionCardsUpdate(sessionId, update);
+                  if (update.kind === 'stream-end') completedTurnReceived = true;
                 }
                 const current = useSessionStore.getState();
                 if (current.activeSessionId === sessionId) {
@@ -397,7 +397,10 @@ export function useSessionOperations(
                     cachedAt: Date.now(),
                   });
                 }
-                scheduleHistoryCacheWrite(sessionId);
+                // A fresh snapshot can arrive while the agent is streaming.
+                // The guarded writer only stores it when the session is idle.
+                if (completedTurnReceived) persistHistoryCacheSnapshot(sessionId, true);
+                else scheduleHistoryCacheWrite(sessionId);
               },
               onUpdate: (update) => {
                 if (!isCurrentLoad()) return;
@@ -407,7 +410,11 @@ export function useSessionOperations(
                   return;
                 }
                 applySessionCardsUpdate(sessionId, update);
-                scheduleHistoryCacheWrite(sessionId);
+                // Card deltas may contain a partial assistant turn. Commit the
+                // cache only at the explicit turn boundary.
+                if (update.kind === 'stream-end') {
+                  persistHistoryCacheSnapshot(sessionId, true);
+                }
               },
               onError: (err) => {
                 if (!isCurrentLoad()) return;
@@ -493,7 +500,7 @@ export function useSessionOperations(
         }
       }
     },
-    [getBus, sendCommand, prependCards, setHistoryMeta, setLoadingHistory, setHistoryError, scheduleHistoryCacheWrite]
+    [getBus, sendCommand, prependCards, setHistoryMeta, setLoadingHistory, setHistoryError, scheduleHistoryCacheWrite, persistHistoryCacheSnapshot]
   );
 
   const startSession = useCallback(
