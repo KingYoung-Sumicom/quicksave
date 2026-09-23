@@ -18,7 +18,7 @@ export class StdioTransport implements RpcTransport {
   private readonly messageListeners = new Set<(m: WireMessage) => void>();
   private readonly closeListeners = new Set<(reason: Error | null) => void>();
   private closed = false;
-  private frame = '';
+  private frameParts: string[] = [];
   private frameDepth = 0;
   private frameInString = false;
   private frameEscaped = false;
@@ -86,10 +86,12 @@ export class StdioTransport implements RpcTransport {
    * rather than by line, then repair only those illegal control characters.
    */
   private handleChunk(chunk: string): void {
-    for (const char of chunk) {
+    let partStart = this.frameDepth > 0 ? 0 : -1;
+    for (let i = 0; i < chunk.length; i += 1) {
+      const char = chunk[i]!;
       if (this.frameDepth === 0) {
         if (char === '{' || char === '[') {
-          this.frame = char;
+          partStart = i;
           this.frameDepth = 1;
           this.frameInString = false;
           this.frameEscaped = false;
@@ -97,7 +99,6 @@ export class StdioTransport implements RpcTransport {
         continue;
       }
 
-      this.frame += char;
       if (this.frameInString) {
         if (this.frameEscaped) this.frameEscaped = false;
         else if (char === '\\') this.frameEscaped = true;
@@ -109,12 +110,15 @@ export class StdioTransport implements RpcTransport {
       else if (char === '}' || char === ']') {
         this.frameDepth -= 1;
         if (this.frameDepth === 0) {
-          const frame = this.frame;
-          this.frame = '';
+          this.frameParts.push(chunk.slice(partStart, i + 1));
+          const frame = this.frameParts.join('');
+          this.frameParts = [];
           this.handleFrame(frame);
+          partStart = -1;
         }
       }
     }
+    if (partStart >= 0) this.frameParts.push(chunk.slice(partStart));
   }
 
   private handleFrame(frame: string): void {
@@ -156,15 +160,31 @@ export class StdioTransport implements RpcTransport {
 }
 
 function sanitizeJsonStringControls(value: string): string {
-  let out = '';
   let inString = false;
   let escaped = false;
+  let hasControl = false;
   for (const char of value) {
+    if (inString && !escaped && char.charCodeAt(0) < 0x20) hasControl = true;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+    } else if (char === '"') inString = true;
+  }
+  if (!hasControl) return value;
+
+  const parts: string[] = [];
+  let start = 0;
+  inString = false;
+  escaped = false;
+  for (let i = 0; i < value.length; i += 1) {
+    const char = value[i]!;
     if (inString && !escaped && char.charCodeAt(0) < 0x20) {
-      out += char === '\n' ? '\\n' : char === '\r' ? '\\r' : char === '\t' ? '\\t' : `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`;
+      parts.push(value.slice(start, i));
+      parts.push(char === '\n' ? '\\n' : char === '\r' ? '\\r' : char === '\t' ? '\\t' : `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
+      start = i + 1;
       continue;
     }
-    out += char;
     if (inString) {
       if (escaped) escaped = false;
       else if (char === '\\') escaped = true;
@@ -173,5 +193,6 @@ function sanitizeJsonStringControls(value: string): string {
       inString = true;
     }
   }
-  return out;
+  parts.push(value.slice(start));
+  return parts.join('');
 }

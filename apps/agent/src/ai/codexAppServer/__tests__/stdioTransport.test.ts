@@ -26,4 +26,21 @@ describe('StdioTransport', () => {
 
     expect(messages).toEqual([{ id: 2, result: { history: 'first\nsecond' } }]);
   });
+
+  it('reassembles large responses from chunk slices without losing frame boundaries', () => {
+    const stdout = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(),
+      stdout,
+      stderr: new PassThrough(),
+    }) as any;
+    const transport = new StdioTransport(child);
+    const messages: unknown[] = [];
+    transport.onMessage((message) => messages.push(message));
+    const history = 'x'.repeat(2 * 1024 * 1024);
+    const frame = JSON.stringify({ id: 3, result: { history } });
+    for (let i = 0; i < frame.length; i += 8192) stdout.write(frame.slice(i, i + 8192));
+
+    expect(messages).toEqual([{ id: 3, result: { history } }]);
+  });
 });
