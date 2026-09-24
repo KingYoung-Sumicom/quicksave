@@ -104,4 +104,59 @@ describe('ProjectList session context menu', () => {
     expect(commandB).not.toHaveBeenCalled();
     expect(document.querySelector('[role="menu"]')).toBeNull();
   });
+
+  it('updates compact session groups as a task starts needing attention', async () => {
+    const groupNames = () => Array.from(container.querySelectorAll('section h3'))
+      .map((heading) => heading.textContent?.replace(/\d+$/, '').trim());
+    expect(groupNames()).toEqual(['In progress', 'Recent']);
+
+    const session = useSessionStore.getState().sessions['session-a'];
+    await act(async () => useSessionStore.setState((state) => ({
+      sessions: { ...state.sessions, 'session-a': { ...session, hasPendingInput: true } },
+    })));
+    expect(groupNames()).toEqual(['Needs attention', 'Recent']);
+    expect(container.textContent).toContain('Running task');
+    expect(container.textContent).toContain('Idle task');
+  });
+
+  it('shows the same grouped navigation and filters on the full-width mobile list', async () => {
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <MemoryRouter><ProjectList /></MemoryRouter>
+        </IntlProvider>,
+      );
+    });
+
+    expect(Array.from(container.querySelectorAll('section h3')).map((heading) => heading.textContent?.replace(/\d+$/, '').trim()))
+      .toEqual(['In progress', 'Recent']);
+    expect(container.querySelector('h2')).toBeNull();
+    expect(container.querySelector('button[aria-pressed="true"]')?.textContent).toContain('Sessions');
+    expect(container.querySelectorAll('section button')).toHaveLength(2);
+
+    const toggle = container.querySelector('button[aria-controls="session-list-filters"]') as HTMLButtonElement;
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('#session-list-filters')).toBeNull();
+    await act(async () => { toggle.click(); });
+    const filterRow = container.querySelector('#session-list-filters .grid') as HTMLElement;
+    expect(filterRow.className).toContain('grid-cols-2');
+    const dropdowns = filterRow.querySelectorAll('button[aria-haspopup="listbox"]');
+    expect(dropdowns).toHaveLength(2);
+
+    await act(async () => { (dropdowns[1] as HTMLButtonElement).click(); });
+    expect(container.querySelector('[role="listbox"]')).not.toBeNull();
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(container.querySelector('[role="listbox"]')).toBeNull();
+    await act(async () => { (dropdowns[1] as HTMLButtonElement).click(); });
+    const projectOption = Array.from(container.querySelectorAll('[role="option"]'))
+      .find((option) => option.textContent?.includes('· B')) as HTMLButtonElement;
+    expect(projectOption).toBeDefined();
+    await act(async () => { projectOption.click(); });
+    expect(container.textContent).not.toContain('Running task');
+    expect(container.textContent).toContain('Idle task');
+    expect(toggle.textContent).toContain('1 active');
+    await act(async () => { toggle.click(); });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toContain('1 active');
+  });
 });

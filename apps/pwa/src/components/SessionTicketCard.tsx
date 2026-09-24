@@ -153,10 +153,11 @@ export function SessionTicketCard({ session, onClick, compact, isActive, isUnrea
     <button
       onClick={() => { setMenuPosition(null); onClick(); }}
       onContextMenu={openMenu}
+      aria-current={isActive ? 'page' : undefined}
       className={clsx(
-        'w-full text-left transition-colors flex items-start gap-3 relative',
+        'group relative flex w-full items-start gap-3 text-left transition-colors',
         className ?? 'px-4 py-2.5 hover:bg-slate-700/50 active:bg-slate-700/60',
-        isActive && 'bg-slate-700/40',
+        isActive && 'bg-blue-500/15 ring-1 ring-blue-400/25 hover:bg-blue-500/20',
       )}
     >
       {isUnread && (
@@ -179,7 +180,7 @@ export function SessionTicketCard({ session, onClick, compact, isActive, isUnrea
         >
           {subject}
         </p>
-        <div className="list-meta flex items-center gap-2 mt-0.5 text-[11px] flex-wrap">
+        <div className={clsx('list-meta mt-1 flex flex-wrap items-center text-[11px]', compact ? 'gap-x-1.5 gap-y-1' : 'gap-2')}>
           {session.blocked ? (
             <span className={clsx('px-1.5 py-px rounded font-medium', BLOCKED_META.chipBg, BLOCKED_META.chipText)}>
               <FormattedMessage id={BLOCKED_META.labelId} />
@@ -200,21 +201,21 @@ export function SessionTicketCard({ session, onClick, compact, isActive, isUnrea
             </span>
           )}
           {projectName && (
-            <span className="inline-flex items-center gap-1 text-slate-400 font-medium">
+            <span className="inline-flex min-w-0 max-w-full items-center gap-1 font-medium text-slate-400">
               <FolderIcon />
-              {projectName}
+              <span className="truncate">{projectName}</span>
             </span>
           )}
           {machineName && (
-            <span className="inline-flex items-center gap-1 text-slate-400 font-medium">
+            <span className="inline-flex min-w-0 max-w-full items-center gap-1 font-medium text-slate-400">
               <MachineIcon className="w-3 h-3 shrink-0" />
-              {machineName}
+              <span className="truncate">{machineName}</span>
             </span>
           )}
           {session.gitBranch && (
-            <span className="inline-flex items-center gap-1">
+            <span className="inline-flex min-w-0 max-w-full items-center gap-1">
               <BranchIcon />
-              {session.gitBranch}
+              <span className="truncate">{session.gitBranch}</span>
             </span>
           )}
           <span className="inline-flex items-center gap-1">
@@ -228,7 +229,7 @@ export function SessionTicketCard({ session, onClick, compact, isActive, isUnrea
           </p>
         )}
       </div>
-      <Chevron />
+      {!compact && <Chevron />}
     </button>
     {menuPosition && createPortal(
       <>
