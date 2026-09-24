@@ -38,6 +38,7 @@ import { VoiceCapturePreparingOverlay } from './VoiceCapturePreparingOverlay';
 import { VoiceRecoveryDrafts } from './VoiceRecoveryDrafts';
 import type { UseVoiceAgent } from '../hooks/useVoiceAgent';
 import { selectPanelMode, type SessionPanelMode, useSessionRightPanelStore } from '../stores/sessionRightPanelStore';
+import { useMediaQuery } from '../hooks/useMediaQuery';
 
 type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; machineAgentId?: string; sandboxed?: boolean; reasoningEffort?: string; fastMode?: boolean; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
 type DeliveryMode = 'queue' | 'steer' | 'interrupt';
@@ -321,6 +322,7 @@ export function SessionPanel({
   onNewSession,
   voiceAgent: voiceAgentProp,
 }: SessionPanelProps) {
+  const isDesktop = useMediaQuery('(min-width: 768px)');
   // Keep this parent subscribed to panel-level state only. Each transcript row
   // selects its own bucket so a hot turn update leaves historical rows intact.
   const sessions = useSessionStore((s) => s.sessions);
@@ -894,7 +896,7 @@ export function SessionPanel({
         setSlashIndex((i) => (i - 1 + filteredSlashCommands.length) % filteredSlashCommands.length);
         return;
       }
-      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing)) {
+      if (e.key === 'Tab' || (isDesktop && e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing)) {
         e.preventDefault();
         const cmd = filteredSlashCommands[slashIndex];
         if (cmd) insertSlashCommand(cmd);
@@ -907,11 +909,11 @@ export function SessionPanel({
         return;
       }
     }
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (isDesktop && e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       void handleSend();
     }
-  }, [handleSend, slashOpen, filteredSlashCommands, slashIndex, insertSlashCommand, setPromptInput]);
+  }, [handleSend, isDesktop, slashOpen, filteredSlashCommands, slashIndex, insertSlashCommand, setPromptInput]);
 
   // Debounced draft save (3s)
   const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1243,6 +1245,7 @@ export function SessionPanel({
                     value={promptInput}
                     onChange={handleInputChange}
                     onKeyDown={handleKeyDown}
+                    enterKeyHint={isDesktop ? 'send' : 'enter'}
                     onPaste={(e) => {
                       // iOS Safari completes paste insertion the moment this handler
                       // returns, so the snapshot + preventDefault MUST be synchronous.

@@ -39,8 +39,16 @@ function deferred<T>() {
 describe('SessionPanel composer acknowledgement', () => {
   let container: HTMLDivElement;
   let root: Root;
+  let desktopViewport = true;
 
   beforeEach(() => {
+    desktopViewport = true;
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(min-width: 768px)' && desktopViewport,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
     localStorage.clear();
     useSessionStore.getState().reset();
     container = document.createElement('div');
@@ -81,6 +89,32 @@ describe('SessionPanel composer acknowledgement', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     expect(onStartSession).toHaveBeenCalledWith('send with enter', expect.any(Object));
+  });
+
+  it('leaves Enter available for a newline on mobile and sends from the button', async () => {
+    desktopViewport = false;
+    const onStartSession = vi.fn().mockResolvedValue(true);
+    localStorage.setItem('qs_draft_new', 'first line');
+    await act(async () => {
+      root.render(<SessionPanel
+        newSession
+        agentId="agent-1"
+        onGetSessionCards={vi.fn().mockResolvedValue(undefined)}
+        onStartSession={onStartSession}
+        onResumeSession={vi.fn().mockResolvedValue(true)}
+      />);
+    });
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+    expect(textarea.getAttribute('enterkeyhint')).toBe('enter');
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    await act(async () => { textarea.dispatchEvent(enter); });
+    expect(enter.defaultPrevented).toBe(false);
+    expect(onStartSession).not.toHaveBeenCalled();
+
+    const send = container.querySelector('button[title="Send"]') as HTMLButtonElement;
+    await act(async () => { send.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })); });
+    expect(onStartSession).toHaveBeenCalledWith('first line', expect.any(Object));
   });
 
   async function renderWithAck(ack: Promise<boolean>) {
@@ -204,6 +238,12 @@ describe('SessionPanel history scroll restoration', () => {
 
 describe('SessionPanel empty native-item history pages', () => {
   it('advances a zero-card page with the opaque cursor and pauses after three empty pages', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(min-width: 768px)',
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
     useSessionStore.getState().reset();
     useSessionStore.getState().setActiveSession('empty-history');
     useSessionStore.getState().setHistoryMeta(undefined, true, 'cursor-0');

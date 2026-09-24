@@ -28,12 +28,14 @@ Before designing or implementing any feature, check the relevant guidelines belo
 ## UI / UX Design
 
 **`docs/guidelines/ui-design-rules.md`** — Rules derived from past fixes. Covers:
+- Shared PWA visual language for navigation, settings, session lists, and filters
 - Root container must use `overflow-hidden` (virtual keyboard layout)
 - `interactive-widget=resizes-content` in viewport meta
 - No vertical scrolling inside chat view elements (nested scroll breaks touch)
 - Chat view components must not use `max-h-*` + `overflow-y-auto`
 - No scrollbars anywhere inside the chat view — let content expand, let the messages list scroll
 - All Enter-to-submit must guard IME composition (`!e.nativeEvent.isComposing`)
+- Mobile prompt Enter inserts a newline; desktop Enter sends
 
 ---
 

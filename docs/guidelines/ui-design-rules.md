@@ -4,6 +4,41 @@ General rules derived from past fixes. Each rule includes the reason so future d
 
 ---
 
+## Quicksave PWA Interface Style
+
+Use `apps/pwa/src/components/settings/SettingsNavigation.tsx` and
+`apps/pwa/src/components/ProjectList.tsx` as current examples when changing
+navigation, settings, session lists, or filters.
+
+- Use a dark slate base (`slate-900`), slightly lighter surfaces (`slate-800`),
+  and quiet borders (`slate-700`). Use blue for the selected item and primary
+  actions; retain distinct semantic colors for status and danger.
+- Use `rounded-xl` for navigation items, cards, and sections; use `rounded-lg`
+  for controls and dropdowns. Prefer a subtle border, hover surface, and
+  selected ring over strong shadows or decoration.
+- Establish hierarchy with a clear item title, muted secondary metadata, and
+  small uppercase group labels. Use counts and status chips where they help
+  scanning. Highlight the current item with a blue tint and visible keyboard
+  focus.
+- Keep primary navigation visible. Put occasional controls such as session
+  filters in a disclosure that starts closed; show an active-filter indicator
+  while it is closed and preserve the selected values. Avoid repeating a
+  section title directly under an already labeled active tab.
+- Preserve the same groups and actions on desktop and mobile. Keep desktop
+  sidebar rows compact and give primary mobile navigation and dropdown
+  triggers at least a 44px touch target. Keep the machine and project filters
+  side by side in the mobile session list; truncate long selected names within
+  their controls.
+- Custom filter dropdowns must expose expanded and selected states, support
+  keyboard movement and Escape, close on outside interaction, and use localized
+  labels. Reuse an existing control pattern when extending another view.
+
+**Why:** A consistent hierarchy makes dense session and settings views easier
+to scan, while disclosure keeps infrequent controls available without taking
+space from the main list. Shared desktop and mobile behavior reduces surprises.
+
+---
+
 ## Mobile Layout
 
 ### Connection feedback must belong to the viewed machine
@@ -112,6 +147,18 @@ if (e.key === 'Enter' && !e.nativeEvent.isComposing) { submit(); }
 **Why:** CJK input methods (Chinese, Japanese, Korean) use Enter to confirm a character during composition. Without the guard, pressing Enter to pick a candidate character fires the submit action prematurely, making the input unusable for CJK users.
 
 **How to apply:** Search for `e.key === 'Enter'` across the PWA and verify every occurrence includes `!e.nativeEvent.isComposing`. The main chat textarea in `apps/pwa/src/components/SessionPanel.tsx` already does this correctly — follow the same pattern everywhere else.
+
+### Mobile prompt Enter must insert a newline
+
+In the multiline session composer, intercept an unmodified Enter to send only
+in the desktop layout (`min-width: 768px`). On mobile, leave Enter to the
+textarea's native newline behavior, including while slash suggestions are
+open; the visible Send button submits the prompt. Keep the IME composition
+guard on desktop. Use the layout media query rather than touch-event presence
+because touch-capable desktop browsers still need their normal keyboard flow.
+
+**Why:** Mobile keyboard users need a reliable way to write multiline prompts.
+Submitting on Enter can send an incomplete prompt before they can add a line.
 
 ---
 

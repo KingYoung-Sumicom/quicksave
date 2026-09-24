@@ -4,6 +4,15 @@
 
 Before designing or implementing features, consult `docs/guidelines.md` for an index of design and engineering guidelines. Each entry points to a detailed document.
 
+## PWA Interface Style
+
+For PWA navigation, settings, session lists, and filters, follow the shared
+visual and interaction rules in `docs/guidelines/ui-design-rules.md` under
+**Quicksave PWA Interface Style**. Use `SettingsNavigation.tsx` and
+`ProjectList.tsx` as current examples. Keep the information hierarchy
+consistent across desktop and mobile, with keyboard-accessible controls and
+mobile touch targets.
+
 ## Standing Project Knowledge
 
 - Communicate with the user in Traditional Chinese. The user also understands Japanese, but does not understand Korean; do not reply in Korean.
