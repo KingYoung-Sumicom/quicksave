@@ -3,8 +3,10 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { IntlProvider } from 'react-intl';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DangerZoneSection } from './DangerZoneSection';
+
+vi.mock('../DevicePairingSection', () => ({ DevicePairingSection: () => <div>Rotate identity action</div> }));
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -53,7 +55,8 @@ describe('DangerZoneSection collapsible', () => {
     expect(container.textContent).toContain('Danger Zone');
     await act(async () => { summary.click(); });
     expect(details.open).toBe(true);
-    expect(container.textContent).toContain('Primary key backup');
+    expect(container.textContent).toContain('Rotate identity action');
+    expect(container.textContent).not.toContain('Primary key backup');
     expect(container.textContent).not.toContain('Session history cache');
     await act(async () => { summary.click(); });
     expect(details.open).toBe(false);

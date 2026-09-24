@@ -11,6 +11,8 @@ import {
   selectGitRepoOverride,
   SESSION_PANEL_MIN,
   SESSION_PANEL_MAX,
+  MOBILE_SESSION_PANEL_WIDTH,
+  DESKTOP_SESSION_PANEL_MAX_WIDTH,
 } from '../stores/sessionRightPanelStore';
 import { useGitStore } from '../stores/gitStore';
 import { useConnectionStore } from '../stores/connectionStore';
@@ -30,6 +32,8 @@ import { useMediaQuery } from '../hooks/useMediaQuery';
 export type SessionOps = Omit<SettingsPanelContentProps, 'onClose' | 'onOpenFiles'>;
 
 interface SessionRightPanelProps {
+  /** Keep overlay vs split layout in sync with the desktop shell. */
+  desktop?: boolean;
   sessionId: string;
   agentId: string;
   cwd: string;
@@ -62,8 +66,9 @@ export function resolveGitRepoScope(
   return best;
 }
 
-export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps, voiceAgent, onRespondToUserInput }: SessionRightPanelProps) {
-  const isDesktop = useMediaQuery('(min-width: 768px)');
+export function SessionRightPanel({ desktop, sessionId, agentId, cwd, sessionOps, voiceAgent, onRespondToUserInput }: SessionRightPanelProps) {
+  const mediaIsDesktop = useMediaQuery('(min-width: 768px)');
+  const isDesktop = desktop ?? mediaIsDesktop;
   const mode = useSessionRightPanelStore(selectPanelMode);
   const panelWidth = useSessionRightPanelStore((s) => s.panelWidth);
   const setPanelWidth = useSessionRightPanelStore((s) => s.setPanelWidth);
@@ -99,7 +104,11 @@ export function SessionRightPanel({ sessionId, agentId, cwd, sessionOps, voiceAg
       <div
         data-testid="session-right-panel"
         className="fixed inset-y-0 right-0 z-30 border-l border-slate-700 bg-slate-900 shadow-2xl flex flex-col"
-        style={{ width: isDesktop ? panelWidth : Math.min(panelWidth, window.innerWidth * 0.88) }}
+        style={{
+          width: isDesktop ? panelWidth : Math.min(panelWidth, MOBILE_SESSION_PANEL_WIDTH, window.innerWidth * 0.88),
+          minWidth: isDesktop ? SESSION_PANEL_MIN : undefined,
+          maxWidth: isDesktop ? DESKTOP_SESSION_PANEL_MAX_WIDTH : undefined,
+        }}
       >
       {/* Drag handle — left edge, same pattern as FilePreviewModal's DesktopSidePanel */}
       <div

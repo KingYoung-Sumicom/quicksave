@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { clsx } from 'clsx';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { FormattedMessage } from 'react-intl';
 import type { AgentId, SessionSummary, SessionStage } from '@sumicom/quicksave-shared';
 import { sessionStatusKey, SESSION_STATUS } from './SessionStatusBadge';
@@ -46,6 +48,9 @@ interface SessionTicketCardProps {
    * as plain text — no official logos — to stay within nominative fair use.
    */
   agent?: AgentId;
+  /** Actions shown by the session list's context menu. */
+  onStop?: () => void;
+  onEndTask?: () => void;
 }
 
 const STAGE_META: Record<SessionStage, { labelId: string; dotColor: string; chipText: string; chipBg: string }> = {
@@ -113,9 +118,28 @@ function pickDot(session: SessionSummary): { color: string; pulse: boolean } {
   return { color: s.dotColor, pulse: s.pulse };
 }
 
-export function SessionTicketCard({ session, onClick, compact, isActive, isUnread, className, projectName, machineName, agent }: SessionTicketCardProps) {
+export function SessionTicketCard({ session, onClick, compact, isActive, isUnread, className, projectName, machineName, agent, onStop, onEndTask }: SessionTicketCardProps) {
+  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const dot = pickDot(session);
   const stageMeta = session.stage ? STAGE_META[session.stage] : null;
+
+  useEffect(() => {
+    if (!menuPosition) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuPosition(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [menuPosition]);
+
+  const openMenu = (event: React.MouseEvent) => {
+    if (!onStop && !onEndTask) return;
+    event.preventDefault();
+    setMenuPosition({
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 184)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 104)),
+    });
+  };
 
   // Subject: prefer explicit title (from UpdateSessionStatus subject) — fall back to
   // first prompt, then last-resort to a short id slice. `summary` already carries
@@ -125,8 +149,10 @@ export function SessionTicketCard({ session, onClick, compact, isActive, isUnrea
   const subject = session.summary || session.firstPrompt || session.sessionId.slice(0, 8);
 
   return (
+    <>
     <button
-      onClick={onClick}
+      onClick={() => { setMenuPosition(null); onClick(); }}
+      onContextMenu={openMenu}
       className={clsx(
         'w-full text-left transition-colors flex items-start gap-3 relative',
         className ?? 'px-4 py-2.5 hover:bg-slate-700/50 active:bg-slate-700/60',
@@ -204,5 +230,40 @@ export function SessionTicketCard({ session, onClick, compact, isActive, isUnrea
       </div>
       <Chevron />
     </button>
+    {menuPosition && createPortal(
+      <>
+        <div className="fixed inset-0 z-40" onMouseDown={() => setMenuPosition(null)} />
+        <div
+          role="menu"
+          aria-label={subject}
+          className="fixed z-50 w-44 rounded-lg border border-slate-600 bg-slate-800 py-1 text-sm shadow-xl"
+          style={{ left: menuPosition.x, top: menuPosition.y }}
+        >
+          {onStop && (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!session.isStreaming}
+              onClick={() => { setMenuPosition(null); onStop(); }}
+              className="w-full px-3 py-2 text-left text-slate-200 hover:bg-slate-700 disabled:cursor-not-allowed disabled:text-slate-500 disabled:hover:bg-transparent"
+            >
+              <FormattedMessage id="sessionList.menu.stop" />
+            </button>
+          )}
+          {onEndTask && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => { setMenuPosition(null); onEndTask(); }}
+              className="w-full px-3 py-2 text-left text-red-400 hover:bg-slate-700"
+            >
+              <FormattedMessage id="sessionList.menu.endTask" />
+            </button>
+          )}
+        </div>
+      </>,
+      document.body,
+    )}
+    </>
   );
 }

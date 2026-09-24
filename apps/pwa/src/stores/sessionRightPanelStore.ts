@@ -62,9 +62,16 @@ interface SessionRightPanelStore {
 }
 
 const PANEL_WIDTH_KEY = 'quicksave.sessionPanel.panelWidth';
-const DEFAULT_PANEL_WIDTH = 400;
+const DEFAULT_PANEL_WIDTH = 520;
 export const SESSION_PANEL_MIN = 280;
 export const SESSION_PANEL_MAX = 1200;
+export const MOBILE_SESSION_PANEL_WIDTH = 400;
+export const DESKTOP_SESSION_PANEL_MAX_WIDTH = 'calc(100vw - 568px)';
+
+/** Leave room for the 288px session sidebar and at least 280px of chat. */
+export function desktopSessionPanelWidth(width: number): string {
+  return `max(${SESSION_PANEL_MIN}px, min(${width}px, ${DESKTOP_SESSION_PANEL_MAX_WIDTH}))`;
+}
 
 function loadPanelWidth(): number {
   if (typeof window === 'undefined') return DEFAULT_PANEL_WIDTH;

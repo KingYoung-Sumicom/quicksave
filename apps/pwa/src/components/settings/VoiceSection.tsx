@@ -44,7 +44,7 @@ function ModelField({
   /** Show a blank option (for optional fields that may be left empty). */
   allowEmpty?: boolean;
 }) {
-  const cls = 'w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent';
+  const cls = 'w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent';
   return (
     <div className="space-y-1">
       <label className="block text-xs text-slate-400">{labelId ? <FormattedMessage id={labelId} /> : label}</label>
@@ -215,9 +215,9 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
             onClick={() => setMode(m)}
             disabled={isSaving}
             className={clsx(
-              'rounded-md border px-3 py-2 text-left transition-colors',
+              'rounded-xl border px-3 py-3 text-left transition-colors',
               mode === m
-                ? 'border-purple-500 bg-purple-500/10'
+                ? 'border-blue-500 bg-blue-500/10'
                 : 'border-slate-600 bg-slate-700 hover:bg-slate-600',
             )}
           >
@@ -239,7 +239,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
         value={baseUrl}
         onChange={(e) => { setBaseUrl(e.target.value); setModels(null); setAllModels(null); }}
         placeholder={DEFAULT_BASE_URL}
-        className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+        className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
         disabled={isSaving}
       />
 
@@ -248,9 +248,9 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
           type="button"
           onClick={handleRefreshModels}
           disabled={isRefreshing || !baseUrl.trim()}
-          className="text-xs text-purple-400 hover:text-purple-300 disabled:text-slate-500 disabled:cursor-not-allowed flex items-center gap-1"
+          className="text-xs text-blue-400 hover:text-blue-300 disabled:text-slate-500 disabled:cursor-not-allowed flex items-center gap-1"
         >
-          {isRefreshing && <Spinner color="border-purple-400" />}
+          {isRefreshing && <Spinner color="border-blue-400" />}
           <FormattedMessage id="settings.voice.models.refresh" />
         </button>
       </div>
@@ -276,15 +276,19 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
       {refreshError && <p className="text-xs text-amber-400">{refreshError}</p>}
 
       {/* Voice intermediary ("AI coworker") — brain + TTS on the same endpoint. */}
-      <div className="pt-3 mt-1 border-t border-slate-700/60 space-y-2">
-        <h4 className="text-xs font-semibold text-slate-300">語音同事（中介 agent）</h4>
-        <p className="text-xs text-slate-500">
-          用同一個 endpoint 詮釋 coding agent 的輸出、並讓你用語音操控。留空即停用；按上方「Refresh models」載入下拉選單。
-        </p>
+      <details className="group rounded-xl border border-slate-600/70 bg-slate-700/30 p-4">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-slate-200">
+          <span><FormattedMessage id="settings.voice.coworker.title" /></span>
+          <svg className="h-4 w-4 shrink-0 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m6 9 6 6 6-6" />
+          </svg>
+        </summary>
+        <div className="mt-4 space-y-3">
+          <p className="text-xs text-slate-400"><FormattedMessage id="settings.voice.coworker.description" /></p>
 
         <ModelField
-          label="Brain 模型（Responses API）"
-          hint="例如 gpt-4o-mini"
+          labelId="settings.voice.coworker.model"
+          hintId="settings.voice.coworker.modelHint"
           value={agentModel}
           onChange={setAgentModel}
           models={allModels}
@@ -293,25 +297,25 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
           allowEmpty
         />
         <div className="space-y-1">
-          <label className="block text-xs text-slate-400">Brain 推理強度</label>
+          <label className="block text-xs text-slate-400"><FormattedMessage id="settings.voice.coworker.reasoning" /></label>
           <select
             value={agentReasoningEffort ?? ''}
             onChange={(e) => setAgentReasoningEffort(
               (e.target.value || undefined) as VoiceConfig['agentReasoningEffort'],
             )}
-            className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+            className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             disabled={isSaving}
           >
-            <option value="">模型預設</option>
+            <option value=""><FormattedMessage id="settings.voice.coworker.modelDefault" /></option>
             {REASONING_EFFORTS.map((effort) => (
               <option key={effort} value={effort}>{effort}</option>
             ))}
           </select>
-          <p className="text-[11px] text-slate-500">可用層級依 provider 與模型而異；不確定時使用模型預設。</p>
+          <p className="text-[11px] text-slate-500"><FormattedMessage id="settings.voice.coworker.reasoningHint" /></p>
         </div>
         <ModelField
-          label="TTS 模型（audio/speech）"
-          hint="例如 gpt-4o-mini-tts 或 tts-1"
+          labelId="settings.voice.coworker.ttsModel"
+          hintId="settings.voice.coworker.ttsModelHint"
           value={ttsModel}
           onChange={setTtsModel}
           models={ttsModelOptions}
@@ -320,8 +324,8 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
           allowEmpty
         />
         <ModelField
-          label="TTS 語音"
-          hint="例如 marin / cedar / alloy"
+          labelId="settings.voice.coworker.ttsVoice"
+          hintId="settings.voice.coworker.ttsVoiceHint"
           value={ttsVoice}
           onChange={setTtsVoice}
           models={TTS_VOICES}
@@ -330,18 +334,19 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
           allowEmpty
         />
         <div className="space-y-1">
-          <label className="block text-xs text-slate-400">TTS 語音指示</label>
+          <label className="block text-xs text-slate-400"><FormattedMessage id="settings.voice.coworker.ttsInstructions" /></label>
           <textarea
             value={ttsInstructions}
             onChange={(e) => setTtsInstructions(e.target.value)}
-            placeholder="例如：自然、溫和、語速稍快，像在口頭回報工作進度。"
+            placeholder={intl.formatMessage({ id: 'settings.voice.coworker.ttsInstructionsPlaceholder' })}
             rows={3}
-            className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-md text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-y"
+            className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y"
             disabled={isSaving}
           />
-          <p className="text-[11px] text-slate-500">支援新版 TTS 模型；不支援的 provider 可能會忽略或回錯。</p>
+          <p className="text-[11px] text-slate-500"><FormattedMessage id="settings.voice.coworker.ttsInstructionsHint" /></p>
         </div>
-      </div>
+        </div>
+      </details>
 
       <div className="flex items-center justify-between">
         <label className="block text-xs text-slate-400">
@@ -369,7 +374,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
       <button
         onClick={handleSave}
         disabled={isSaving || !baseUrl.trim()}
-        className="w-full py-2 px-4 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors flex items-center justify-center gap-2"
+        className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg font-medium text-white transition-colors flex items-center justify-center gap-2"
       >
         {isSaving ? (
           <>
@@ -383,7 +388,7 @@ export function VoiceSection({ isOpen }: VoiceSectionProps) {
 
       <details className="pt-2 mt-1 border-t border-slate-700/60">
         <summary className="text-xs text-slate-400 cursor-pointer select-none hover:text-slate-200">
-          WebRTC 診斷（串流語音連線測試）
+          <FormattedMessage id="settings.voice.webrtcDiagnostics" />
         </summary>
         <div className="mt-2">
           <VoiceRtcDebugPanel />

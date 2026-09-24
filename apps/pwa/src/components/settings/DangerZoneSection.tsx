@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 import { FormattedMessage } from 'react-intl';
 import { DevicePairingSection } from '../DevicePairingSection';
-import { PrimaryKeySection } from './PrimaryKeySection';
 
 /** Collapsed by default: destructive actions should not compete for
  *  attention at the bottom of the settings page. */
@@ -18,8 +17,6 @@ export function DangerZoneSection() {
         </h3>
       </summary>
       <div className="space-y-4 px-4 pt-1 pb-4 border-t border-red-900/30">
-        <PrimaryKeySection />
-        <div className="border-t border-red-900/30" />
         <DevicePairingSection />
       </div>
     </details>

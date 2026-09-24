@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 import { useState } from 'react';
 import { FormattedMessage } from 'react-intl';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useMachineStore, selectSortedMachines, type Machine } from '../../stores/machineStore';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { EditMachineModal } from '../EditMachineModal';
@@ -11,6 +11,7 @@ import { MachineIcon } from '../icons/MachineIcon';
 
 export function MachinesSection() {
   const navigate = useNavigate();
+  const location = useLocation();
   const machines = useMachineStore(selectSortedMachines);
   const removeMachine = useMachineStore((s) => s.removeMachine);
   const agentConnections = useConnectionStore((s) => s.agentConnections);
@@ -109,7 +110,7 @@ export function MachinesSection() {
               <button
                 key={machine.agentId}
                 type="button"
-                onClick={() => navigate(`/settings/m/${machine.agentId}`)}
+                onClick={() => navigate(`/settings/m/${machine.agentId}`, { state: location.state })}
                 className="w-full flex items-center gap-3 p-3 bg-slate-700/50 hover:bg-slate-700 rounded-lg transition-colors text-left"
               >
                 {rowContent}

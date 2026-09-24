@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { FormattedMessage } from 'react-intl';
 import { useProjects } from '../hooks/useProjects';
-import { useSessionStore } from '../stores/sessionStore';
+import { useSessionStore, type StoredSessionSummary } from '../stores/sessionStore';
 import { useMachineStore } from '../stores/machineStore';
 import { useTerminalStore } from '../stores/terminalStore';
 import { DesktopSideMenuAppBar } from './DesktopSideMenuAppBar';
@@ -14,6 +14,7 @@ import { compareSessionsForList } from '../lib/sessionOrdering';
 import { TerminalListSection } from './terminal/TerminalListSection';
 import { FileBrowserSection } from './files/FileBrowserSection';
 import { toProjectId } from '../lib/projectId';
+import { getBusForAgent } from '../lib/busRegistry';
 
 interface ProjectListProps {
   compact?: boolean;
@@ -97,6 +98,27 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
   const clearFilters = () => {
     setMachineFilter('');
     setProjectFilter('');
+  };
+
+  const runSessionAction = async (session: StoredSessionSummary, verb: 'claude:cancel' | 'claude:end-task') => {
+    const bus = session.machineAgentId ? getBusForAgent(session.machineAgentId) : null;
+    if (!bus) {
+      console.error(`Failed to ${verb} session: machine is not connected`);
+      return;
+    }
+    try {
+      const result = await bus.command<{ success: boolean; error?: string }>(
+        verb,
+        { sessionId: session.sessionId },
+        { timeoutMs: 30_000, queueWhileDisconnected: true },
+      );
+      if (!result.success) throw new Error(result.error ?? 'Session action failed');
+      if (useSessionStore.getState().activeSessionId === session.sessionId) {
+        useSessionStore.getState().setStreaming(false);
+      }
+    } catch (error) {
+      console.error(`Failed to ${verb} session:`, error);
+    }
   };
 
   useEffect(() => {
@@ -192,6 +214,8 @@ export function ProjectList({ compact, onOpenSettings, onOpenAddNew, onAddMachin
                       machineName={machine?.nickname}
                       agent={session.agent}
                       onClick={() => navigate(`/p/${projectId}/s/${session.sessionId}`)}
+                      onStop={() => { void runSessionAction(session, 'claude:cancel'); }}
+                      onEndTask={() => { void runSessionAction(session, 'claude:end-task'); }}
                     />
                   );
                 })}

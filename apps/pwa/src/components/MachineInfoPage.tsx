@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 King Young Technology
 // SPDX-License-Identifier: MIT
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { FormattedMessage } from 'react-intl';
 import { BaseStatusBar, BackButton } from './BaseStatusBar';
 import { Spinner } from './ui/Spinner';
@@ -52,6 +52,7 @@ export function MachineInfoPage({
 }: MachineInfoPageProps) {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const machine = useMachineStore((s) => s.machines.find((m) => m.agentId === agentId));
   const removeProjectFromStore = useMachineStore((s) => s.removeProject);
@@ -325,7 +326,7 @@ export function MachineInfoPage({
                     <button
                       key={project.projectId}
                       type="button"
-                      onClick={() => navigate(`/settings/m/${agentId}/p/${project.projectId}/archived`)}
+                      onClick={() => navigate(`/settings/m/${agentId}/p/${project.projectId}/archived`, { state: location.state })}
                       className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-700/50 transition-colors text-left"
                       aria-label={`Restore archived tasks for ${project.cwd}`}
                     >

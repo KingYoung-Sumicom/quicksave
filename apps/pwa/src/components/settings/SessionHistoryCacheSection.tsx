@@ -48,7 +48,7 @@ export function SessionHistoryCacheSection() {
         type="button"
         onClick={clearCache}
         disabled={busy}
-        className="w-full py-2 px-4 rounded-md font-medium bg-slate-700 hover:bg-slate-600 disabled:opacity-50"
+        className="w-full py-2 px-4 rounded-lg font-medium bg-slate-700 hover:bg-slate-600 disabled:opacity-50"
       >
         <FormattedMessage id={busy ? 'settings.cache.clearing' : 'settings.cache.button'} />
       </button>

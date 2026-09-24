@@ -107,7 +107,7 @@ export function ApiKeySection({ isOpen, onSendApiKeyToAgent }: ApiKeySectionProp
       <button
         onClick={handleSaveApiKey}
         disabled={isSavingKey || !apiKey.trim()}
-        className="w-full py-2 px-4 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-md font-medium text-white transition-colors flex items-center justify-center gap-2"
+        className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg font-medium text-white transition-colors flex items-center justify-center gap-2"
       >
         {isSavingKey ? (
           <>
@@ -163,7 +163,7 @@ export function ApiKeySection({ isOpen, onSendApiKeyToAgent }: ApiKeySectionProp
                         href="https://console.anthropic.com/settings/keys"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-purple-400 hover:text-purple-300 underline"
+                        className="text-blue-400 hover:text-blue-300 underline"
                       >
                         console.anthropic.com/settings/keys
                       </a>

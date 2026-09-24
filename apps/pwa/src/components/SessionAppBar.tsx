@@ -10,6 +10,8 @@ import { AgentSettingsDrawer } from './AgentSettingsDrawer';
 import { useSessionRightPanelStore, selectPanelMode } from '../stores/sessionRightPanelStore';
 
 interface SessionAppBarProps {
+  /** Use the desktop shell's layout decision for the right-side split panel. */
+  desktop?: boolean;
   showSettings: boolean;
   onOpenSettings: () => void;
   onCloseSettings: () => void;
@@ -28,6 +30,7 @@ interface SessionAppBarProps {
 }
 
 export function SessionAppBar({
+  desktop,
   showSettings,
   onOpenSettings,
   onCloseSettings,
@@ -45,7 +48,8 @@ export function SessionAppBar({
   onCancelSession,
 }: SessionAppBarProps) {
   const navigate = useNavigate();
-  const isDesktop = useMediaQuery('(min-width: 768px)');
+  const mediaIsDesktop = useMediaQuery('(min-width: 768px)');
+  const isDesktop = desktop ?? mediaIsDesktop;
   const panelMode = useSessionRightPanelStore(selectPanelMode);
   const togglePanel = useSessionRightPanelStore((s) => s.toggle);
   const openPanelForSession = useSessionRightPanelStore((s) => s.openForSession);
@@ -92,17 +96,7 @@ export function SessionAppBar({
             <path strokeLinecap="round" strokeWidth={1.5} d="M6 9v6M9 6h3a3 3 0 013 3v6" />
           </svg>
         </button>
-        <button
-          onClick={openSettingsPanel}
-          className="p-1.5 rounded transition-colors text-slate-400 hover:text-slate-200 hover:bg-slate-700/60"
-          aria-label="Open settings panel"
-          title="Settings"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-          </svg>
-        </button>
+        <DrawerButton onClick={openSettingsPanel} label="Open settings panel" />
       </div>
     ) : null  // panel open → its own tab bar handles navigation; header stays clean
   ) : (

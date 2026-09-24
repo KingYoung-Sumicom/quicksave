@@ -58,6 +58,7 @@ import { NotificationPrompt } from './components/NotificationPrompt';
 import { buildOfferMessage, getCurrentSubscription, notificationPermission } from './lib/pushSubscription';
 import { GitIdentityModal } from './components/GitIdentityModal';
 import { SettingsPage } from './components/SettingsPage';
+import { SettingsNavigation } from './components/settings/SettingsNavigation';
 import { MachineInfoPage } from './components/MachineInfoPage';
 import { OpenCodeConfigPage } from './components/OpenCodeConfigPage';
 import { ArchivedSessionsPage } from './components/ArchivedSessionsPage';
@@ -69,7 +70,7 @@ import { TerminalPage } from './components/terminal/TerminalPage';
 import { FileBrowserPage } from './components/files/FileBrowserPage';
 import { FilePreviewModal } from './components/files/FilePreviewModal';
 import { useFilePreviewStore } from './stores/filePreviewStore';
-import { useSessionRightPanelStore, selectPanelMode } from './stores/sessionRightPanelStore';
+import { useSessionRightPanelStore, selectPanelMode, desktopSessionPanelWidth } from './stores/sessionRightPanelStore';
 import { GitOpsContext } from './contexts/gitOpsContext';
 import { useProjectConnection } from './hooks/useProjectConnection';
 import { resolveHash, getAllKnownPaths } from './lib/pathHash';
@@ -917,6 +918,7 @@ function AppContent() {
 
   const projectSessionElement = (
     <ProjectRouteSession
+      desktop={isDesktop}
       clientRef={clientRef}
       onConnect={handleConnect}
       onSwitchMachine={handleSwitchMachine}
@@ -929,7 +931,7 @@ function AppContent() {
 
   const homeElement = machines.length > 0 ? (
     <ProjectList
-      onOpenSettings={() => navigate('/settings')}
+      onOpenSettings={() => navigate('/settings', { state: { returnTo: location.pathname + location.search } })}
       onOpenAddNew={() => navigate('/add')}
       onAddMachine={() => {/* TODO: wire add machine modal */}}
     />
@@ -947,12 +949,20 @@ function AppContent() {
     }
   }, []);
 
+  const settingsPageElement = (
+    <SettingsPage
+      desktop={isDesktop && machines.length > 0}
+      onSendApiKeyToAgent={hasConnectedAgent ? sendApiKeyToConnectedAgents : undefined}
+      onPushOffer={handlePushOffer}
+    />
+  );
+
   // File preview (z-40) takes priority; session panel (z-30) fills in otherwise.
-  const rightPad = isDesktop
+  const rightPad = isDesktop && !location.pathname.startsWith('/settings')
     ? filePreviewOpen
       ? filePreviewPanelWidth
       : sessionPanelMode
-        ? sessionPanelWidth
+        ? desktopSessionPanelWidth(sessionPanelWidth)
         : 0
     : 0;
 
@@ -970,8 +980,9 @@ function AppContent() {
           <Routes>
             <Route
               path="/settings"
-              element={<SettingsPage onSendApiKeyToAgent={hasConnectedAgent ? sendApiKeyToConnectedAgents : undefined} onPushOffer={handlePushOffer} />}
+              element={settingsPageElement}
             />
+            <Route path="/settings/:section" element={settingsPageElement} />
             <Route path="/pair" element={<JoinGroupPage />} />
             <Route
               path="*"
@@ -982,7 +993,9 @@ function AppContent() {
           // Desktop: two-column layout — sidebar owns the home app bar, main area only renders project routes
           <div className="flex h-full overflow-hidden">
             <div className="w-72 shrink-0 border-r border-slate-700 bg-slate-800/50">
-              <ProjectList compact onOpenSettings={() => navigate('/settings')} onOpenAddNew={() => navigate('/add')} />
+              {location.pathname.startsWith('/settings')
+                ? <SettingsNavigation desktop />
+                : <ProjectList compact onOpenSettings={() => navigate('/settings', { state: { returnTo: location.pathname + location.search } })} onOpenAddNew={() => navigate('/add')} />}
             </div>
             <div className="flex-1 min-w-0 flex flex-col">
               <Routes>
@@ -993,7 +1006,8 @@ function AppContent() {
                 <Route path="/p/:projectId/files" element={<FileBrowserPage />} />
                 <Route path="/p/:projectId/files/*" element={<FileBrowserPage />} />
                 <Route path="/add" element={<AddNewPage clientRef={clientRef} onConnect={handleConnect} />} />
-                <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={hasConnectedAgent ? sendApiKeyToConnectedAgents : undefined} onPushOffer={handlePushOffer} />} />
+                <Route path="/settings" element={settingsPageElement} />
+                <Route path="/settings/:section" element={settingsPageElement} />
                 <Route path="/settings/m/:agentId/opencode" element={<OpenCodeConfigRoute />} />
                 <Route path="/settings/m/:agentId" element={<MachineInfoRoute clientRef={clientRef} />} />
                 <Route path="/settings/m/:agentId/p/:projectId/archived" element={<ArchivedSessionsPage />} />
@@ -1015,7 +1029,8 @@ function AppContent() {
           <Route path="/p/:projectId/files" element={<FileBrowserPage />} />
           <Route path="/p/:projectId/files/*" element={<FileBrowserPage />} />
           <Route path="/add" element={<AddNewPage clientRef={clientRef} onConnect={handleConnect} />} />
-          <Route path="/settings" element={<SettingsPage onSendApiKeyToAgent={hasConnectedAgent ? sendApiKeyToConnectedAgents : undefined} onPushOffer={handlePushOffer} />} />
+          <Route path="/settings" element={settingsPageElement} />
+          <Route path="/settings/:section" element={settingsPageElement} />
           <Route path="/settings/m/:agentId/opencode" element={<OpenCodeConfigRoute />} />
           <Route path="/settings/m/:agentId" element={<MachineInfoRoute clientRef={clientRef} />} />
           <Route path="/settings/m/:agentId/p/:projectId/archived" element={<ArchivedSessionsPage />} />
@@ -1273,6 +1288,7 @@ function MachineInfoRoute({
 }) {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const agentBus = useCallback(
     (): MessageBusClient | null => (agentId ? getBusForAgent(agentId) : null),
     [agentId],
@@ -1319,7 +1335,7 @@ function MachineInfoRoute({
       onGetSystemdStatus={getSystemdStatus}
       onInstallSystemdUnit={installSystemdUnit}
       onUninstallSystemdUnit={uninstallSystemdUnit}
-      onOpenOpenCodeConfig={() => navigate(`/settings/m/${agentId}/opencode`)}
+      onOpenOpenCodeConfig={() => navigate(`/settings/m/${agentId}/opencode`, { state: location.state })}
     />
   );
 }
@@ -1399,6 +1415,7 @@ function GitIdentityModalForAgent({
 
 /** Project session page — shows chat session within a project */
 function ProjectRouteSession({
+  desktop,
   clientRef,
   onConnect,
   onSwitchMachine,
@@ -1407,6 +1424,7 @@ function ProjectRouteSession({
   onCloseSettings,
   onGitIdentityRequired,
 }: {
+  desktop: boolean;
   clientRef: React.RefObject<WebSocketClient | null>;
   onConnect: (agentId: string, publicKey: string) => void;
   onSwitchMachine: (agentId: string) => void;
@@ -1624,6 +1642,7 @@ function ProjectRouteSession({
         <NewSessionAppBar cwd={cwd} onOpenMenu={() => {}} backTo={projectBasePath} />
       ) : (
         <SessionAppBar
+          desktop={desktop}
           showSettings={showSettings}
           onOpenSettings={onOpenSettings}
           onCloseSettings={onCloseSettings}
@@ -1676,6 +1695,7 @@ function ProjectRouteSession({
       {targetAgentId && cwd && (
         <GitOpsContext.Provider value={sessionGitOpsBundle}>
           <SessionRightPanel
+            desktop={desktop}
             sessionId={urlSessionId ?? ''}
             agentId={targetAgentId}
             cwd={cwd}
