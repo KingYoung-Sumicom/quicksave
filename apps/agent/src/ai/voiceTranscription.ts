@@ -67,7 +67,8 @@ export async function transcribeAudio(
 
   const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
   const form = new FormData();
-  form.append('file', new Blob([audio], { type: mimeType || 'audio/webm' }), `recording.${ext}`);
+  // Normalize Buffer or SharedArrayBuffer-backed views to a Blob-compatible ArrayBuffer view.
+  form.append('file', new Blob([new Uint8Array(audio)], { type: mimeType || 'audio/webm' }), `recording.${ext}`);
   form.append('model', config.transcribeModel.trim());
   form.append('response_format', 'json');
   if (config.transcriptionLocale === 'zh-TW') {
