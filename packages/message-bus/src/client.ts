@@ -27,6 +27,7 @@ type PendingCommand = {
   resolve: (data: unknown) => void;
   reject: (err: Error) => void;
   timer?: ReturnType<typeof setTimeout>;
+  queuedSend?: () => void;
 };
 
 type SubscriptionState = {
@@ -107,20 +108,27 @@ export class MessageBusClient {
         resolve: (data) => resolve(data as R),
         reject,
       };
+      const send = () => {
+        // A queued command can time out or be rejected while disconnected.
+        // Never execute its side effect after the caller has seen failure.
+        if (!this.pending.has(id)) return;
+        this.transport.send({ kind: 'cmd', id, verb, payload });
+      };
       if (opts.timeoutMs && opts.timeoutMs > 0) {
         pending.timer = setTimeout(() => {
           if (this.pending.delete(id)) {
+            if (pending.queuedSend) {
+              this.queue = this.queue.filter((queued) => queued !== pending.queuedSend);
+            }
             reject(new Error(`Command "${verb}" timed out after ${opts.timeoutMs}ms`));
           }
         }, opts.timeoutMs);
       }
       this.pending.set(id, pending);
-      const send = () => {
-        this.transport.send({ kind: 'cmd', id, verb, payload });
-      };
       if (this.transport.isConnected()) {
         send();
       } else if (opts.queueWhileDisconnected) {
+        pending.queuedSend = send;
         this.queue.push(send);
       } else {
         this.pending.delete(id);
@@ -298,6 +306,8 @@ export class MessageBusClient {
     if (this.pending.size > 0) {
       const stranded = Array.from(this.pending.values());
       this.pending.clear();
+      const strandedSends = new Set(stranded.map((p) => p.queuedSend).filter((send): send is () => void => !!send));
+      this.queue = this.queue.filter((send) => !strandedSends.has(send));
       for (const p of stranded) {
         if (p.timer) clearTimeout(p.timer);
         p.reject(new Error('Transport disconnected before response'));

@@ -141,7 +141,7 @@ describe('TerminalManager', () => {
       expect(matched.chunk).toContain('hello');
 
       // Snapshot contains hello somewhere in the buffer.
-      const snap = mgr.outputSnapshot(summary.terminalId);
+      const snap = await mgr.outputSnapshot(summary.terminalId);
       expect(snap).not.toBeNull();
       expect(snap!.buffer).toContain('hello');
       expect(snap!.seq).toBeGreaterThanOrEqual(matched.seq);
@@ -179,7 +179,7 @@ describe('TerminalManager', () => {
       expect(out.rows).toBe(40);
 
       // Snapshot agrees.
-      const snap = mgr.outputSnapshot(summary.terminalId);
+      const snap = await mgr.outputSnapshot(summary.terminalId);
       expect(snap?.cols).toBe(120);
       expect(snap?.rows).toBe(40);
 
@@ -259,7 +259,7 @@ describe('TerminalManager', () => {
       expect(list.map((s) => s.terminalId)).not.toContain(summary.terminalId);
 
       // Snapshot is null for unknown id.
-      expect(mgr.outputSnapshot(summary.terminalId)).toBeNull();
+      expect(await mgr.outputSnapshot(summary.terminalId)).toBeNull();
 
       await vi.waitFor(
         () => {
@@ -307,8 +307,8 @@ describe('TerminalManager', () => {
 
       // Summary / snapshot reflect the exit.
       await vi.waitFor(
-        () => {
-          const snap = mgr.outputSnapshot(summary.terminalId);
+        async () => {
+          const snap = await mgr.outputSnapshot(summary.terminalId);
           expect(snap).not.toBeNull();
           expect(snap!.exited).toBe(true);
         },

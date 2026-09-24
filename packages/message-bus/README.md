@@ -22,7 +22,8 @@ Key properties:
   rolling back newer state. On reconnect the client auto-resends `sub` frames
   and gets a fresh snapshot.
 - **Command queueing**: `command(..., { queueWhileDisconnected: true })`
-  holds the request until the transport reconnects, then flushes.
+  holds the request until the transport reconnects, then flushes. A request
+  that times out while queued is removed and will never run after reconnect.
 - **Typed path params**: `PathParams<'/sessions/:id/cards'>` → `{ id: string }`.
 - **Transport-agnostic**: implement `ServerTransport` / `ClientTransport` and
   drop it in. A `FakeTransport` ships under `/fake` for tests.

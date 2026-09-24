@@ -96,8 +96,8 @@ export function TerminalView({ terminalId, getBus, onExit, fillHeight = true }: 
   const fitRef = useRef<FitAddon | null>(null);
   const seqRef = useRef(0);
   // True while we're feeding a reconnect snapshot back through xterm.write().
-  // The snapshot is the historical PTY byte stream and contains queries the
-  // running TUI sent earlier (DSR `CSI 6n`, DA1 `CSI c`, OSC 11 `?`, ...).
+  // The serialized screen can contain terminal queries the running TUI sent
+  // earlier (DSR `CSI 6n`, DA1 `CSI c`, OSC 11 `?`, ...).
   // xterm auto-replies to those queries via onData; without this gate, every
   // resume from background would re-inject those replies as fresh input,
   // and the user sees `^[[24;80R^[[?1;2c…` typed into their shell.
@@ -110,6 +110,7 @@ export function TerminalView({ terminalId, getBus, onExit, fillHeight = true }: 
   // swallowed. applySnapshot demotes us to false if the agent reports the
   // terminal is gone.
   const [connected, setConnected] = useState(true);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Mount xterm once per terminalId.
   useEffect(() => {
@@ -176,8 +177,8 @@ export function TerminalView({ terminalId, getBus, onExit, fillHeight = true }: 
       if (resizeTimer) clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => {
         resizeTimer = null;
-        resizeTerminal(terminalId, term.cols, term.rows).catch(() => {
-          /* best effort — next output will work with whatever size the agent had */
+        resizeTerminal(terminalId, term.cols, term.rows).catch((error: unknown) => {
+          setActionError(`Terminal resize failed: ${error instanceof Error ? error.message : String(error)}`);
         });
       }, 150);
     };
@@ -190,9 +191,10 @@ export function TerminalView({ terminalId, getBus, onExit, fillHeight = true }: 
 
     const onData = term.onData((chunk) => {
       if (replayingSnapshotRef.current) return;
-      sendInput(terminalId, chunk).catch((err) =>
-        console.warn('[terminal] input failed:', err),
-      );
+      sendInput(terminalId, chunk)
+        .catch((error: unknown) => {
+          setActionError(`Terminal input failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
     });
 
     const ro = new ResizeObserver(() => {
@@ -239,6 +241,11 @@ export function TerminalView({ terminalId, getBus, onExit, fillHeight = true }: 
         return;
       }
       setConnected(true);
+      // The serialized VT state must be replayed at the dimensions in which
+      // the agent captured it. Refit to the current viewport after replay.
+      if (t.cols !== snapshot.cols || t.rows !== snapshot.rows) {
+        t.resize(snapshot.cols, snapshot.rows);
+      }
       if (snapshot.buffer.length > 0) {
         t.write(snapshot.buffer, () => {
           replayingSnapshotRef.current = false;
@@ -322,9 +329,10 @@ export function TerminalView({ terminalId, getBus, onExit, fillHeight = true }: 
   }, [focusTerminal, isTouch]);
 
   const sendKey = useCallback((seq: string) => {
-    sendInput(terminalId, seq).catch((err) =>
-      console.warn('[terminal] key send failed:', err),
-    );
+    sendInput(terminalId, seq)
+      .catch((error: unknown) => {
+        setActionError(`Terminal input failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
     focusTerminal();
   }, [focusTerminal, sendInput, terminalId]);
 
@@ -344,6 +352,7 @@ export function TerminalView({ terminalId, getBus, onExit, fillHeight = true }: 
       // Safari / iOS may reject without a user-activation gesture; the error
       // message is the only hint we get.
       setPasteError(err instanceof Error ? err.message : 'Paste failed');
+      setActionError(`Terminal paste failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }, [focusTerminal, sendInput, terminalId]);
 
@@ -353,19 +362,20 @@ export function TerminalView({ terminalId, getBus, onExit, fillHeight = true }: 
     const text = e.clipboardData.getData('text');
     if (!text) return;
     e.preventDefault();
-    sendInput(terminalId, text).catch((err) =>
-      console.warn('[terminal] paste send failed:', err),
-    );
+    sendInput(terminalId, text)
+      .catch((error: unknown) => {
+        setActionError(`Terminal paste failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
     focusTerminal();
   }, [focusTerminal, sendInput, terminalId]);
 
-  const intrinsicHeight = isTouch || !fillHeight;
+  const intrinsicHeight = !fillHeight;
 
   return (
-    // On touch/embedded views the height flows from xterm's 80x24 screen
-    // (+ the key row), so the root must NOT be h-full. Desktop keeps h-full
-    // to fill its full-screen host.
-    <div className={`flex flex-col bg-slate-900${intrinsicHeight ? '' : ' h-full'}`}>
+    // Embedded drawers grow with the 80x24 screen. Full-page hosts fill the
+    // available height on both desktop and touch devices so the terminal can
+    // center vertically when it fits, and scroll when the keyboard shrinks it.
+    <div className={`flex flex-col bg-slate-800${intrinsicHeight ? '' : ' h-full'}`}>
       {/* Full-screen hosts may need this area to scroll within the fixed app
           frame. Embedded drawer views grow naturally so the chat list remains
           the only vertical scroll surface. Width never scrolls. */}
@@ -373,21 +383,28 @@ export function TerminalView({ terminalId, getBus, onExit, fillHeight = true }: 
         ? 'w-full overflow-x-hidden'
         : 'flex-1 min-h-0 w-full overflow-y-auto overflow-x-hidden'}
       >
-        {/* On touch/embedded views the xterm mount is width-driven: `w-full`
-            gives it a definite width, and xterm's own 80x24 screen height
-            grows the drawer. Desktop keeps the full-bleed fill. */}
+        {/* FitAddon measures this full-width host, while CSS centers the
+            actual 80x24 xterm element inside it. The desktop host is at
+            least as tall as the available area, but may grow beyond it so
+            all 24 rows remain reachable by vertical scrolling. */}
         <div
           ref={containerRef}
           className={
             intrinsicHeight
-              ? 'terminal-center w-full overflow-hidden'
-              : 'terminal-center h-full w-full overflow-hidden'
+              ? 'terminal-center w-full'
+              : 'terminal-center min-h-full w-full'
           }
           onPointerDown={handleTerminalPointerDown}
           onClick={focusTerminal}
           onPaste={onContainerPaste}
         />
       </div>
+      {actionError && (
+        <div className="flex items-center gap-2 border-t border-red-500/30 bg-red-950/50 px-3 py-1.5 text-xs text-red-300" role="alert">
+          <span className="min-w-0 flex-1">{actionError}</span>
+          <button type="button" onClick={() => setActionError(null)} aria-label="Dismiss terminal error" className="shrink-0 rounded px-1 hover:bg-red-900/50">×</button>
+        </div>
+      )}
       {isTouch && (
         <VirtualKeys
           onKey={sendKey}

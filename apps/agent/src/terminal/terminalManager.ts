@@ -3,15 +3,14 @@
 /**
  * TerminalManager — owns a pool of PTY-backed shells the PWA can drive remotely.
  *
- * One manager instance per daemon. It spawns `node-pty` children, holds a
- * bounded scrollback buffer for each one, and emits events for the bus
- * layer to publish.
+ * One manager instance per daemon. It spawns `node-pty` children, mirrors
+ * each PTY into a bounded headless xterm screen, and emits events for the
+ * bus layer to publish.
  *
  * State that matters for resume:
- *   - Scrollback buffer (raw output, including ANSI escapes) — so a PWA
- *     reconnecting can render the current screen without the shell having
- *     to redraw.
- *   - `seq`: monotonic byte counter, used so the PWA can reconcile a late
+ *   - Serialized VT screen state, including scrollback and alternate screen,
+ *     so a reconnecting PWA can restore the display without a shell redraw.
+ *   - `seq`: monotonic UTF-16 code-unit count, used to reconcile a late
  *     snapshot against updates it already received.
  */
 
@@ -19,6 +18,10 @@ import { EventEmitter } from 'events';
 import { homedir, platform } from 'os';
 import { basename } from 'path';
 import { randomBytes } from 'crypto';
+import headless from '@xterm/headless';
+import serializeAddon from '@xterm/addon-serialize';
+import type { Terminal as HeadlessTerminal } from '@xterm/headless';
+import type { SerializeAddon as SerializeAddonType } from '@xterm/addon-serialize';
 import type {
   TerminalSummary,
   TerminalOutputSnapshot,
@@ -38,9 +41,11 @@ async function loadPty(): Promise<typeof NodePtyModule> {
   return ptyModulePromise;
 }
 
-/** Upper bound on retained scrollback per terminal. 256KiB is plenty for a
- *  recent session without bloating the snapshot frame. */
-const SCROLLBACK_LIMIT = 256 * 1024;
+const { Terminal: HeadlessTerminalClass } = headless;
+const { SerializeAddon } = serializeAddon;
+
+/** Keep a bounded line history while preserving the current screen state. */
+const SNAPSHOT_SCROLLBACK_ROWS = 1000;
 
 function generateTerminalId(): string {
   return `term_${randomBytes(6).toString('hex')}`;
@@ -70,10 +75,12 @@ interface PtyEntry {
   createdAt: number;
   lastActivityAt: number;
   pty: NodePtyModule.IPty;
-  /** Concatenated raw output, trimmed to SCROLLBACK_LIMIT. */
-  buffer: string;
-  /** Total bytes written so far — monotonic. */
+  screen: HeadlessTerminal;
+  serializer: SerializeAddonType;
+  /** Total UTF-16 code units received so far — monotonic. */
   seq: number;
+  /** Last sequence that the headless parser has finished applying. */
+  renderedSeq: number;
   exited: boolean;
   exitCode: number | null;
   /**
@@ -86,6 +93,8 @@ interface PtyEntry {
    */
   pendingChunks: string;
   flushTimer: ReturnType<typeof setTimeout> | null;
+  flushPending: (extras?: Partial<TerminalOutputChunk>) => void;
+  pendingSnapshots: Set<(snapshot: TerminalOutputSnapshot | null) => void>;
 }
 
 /**
@@ -135,18 +144,34 @@ export class TerminalManager extends EventEmitter {
    * Snapshot for a single terminal's output stream — used by the
    * `/terminals/:terminalId/output` subscription.
    */
-  outputSnapshot(terminalId: string): TerminalOutputSnapshot | null {
+  outputSnapshot(terminalId: string): Promise<TerminalOutputSnapshot | null> {
     const entry = this.terminals.get(terminalId);
-    if (!entry) return null;
-    return {
-      terminalId,
-      buffer: entry.buffer,
-      seq: entry.seq,
-      cols: entry.cols,
-      rows: entry.rows,
-      exited: entry.exited,
-      exitCode: entry.exitCode,
-    };
+    if (!entry) return Promise.resolve(null);
+    // End the current live chunk before taking a checkpoint. Any output that
+    // arrives after this boundary belongs to a new chunk with a higher seq.
+    entry.flushPending();
+    return new Promise((resolve) => {
+      entry.pendingSnapshots.add(resolve);
+      // xterm parses writes asynchronously. The callback runs after every
+      // write queued before this marker, so the serialized screen and seq
+      // describe the same point in the output stream.
+      entry.screen.write('', () => {
+        if (!entry.pendingSnapshots.delete(resolve)) return;
+        if (this.terminals.get(terminalId) !== entry) {
+          resolve(null);
+          return;
+        }
+        resolve({
+          terminalId,
+          buffer: entry.serializer.serialize({ scrollback: SNAPSHOT_SCROLLBACK_ROWS }),
+          seq: entry.renderedSeq,
+          cols: entry.cols,
+          rows: entry.rows,
+          exited: entry.exited,
+          exitCode: entry.exitCode,
+        });
+      });
+    });
   }
 
   async create(opts: CreateOptions): Promise<TerminalSummary> {
@@ -178,6 +203,14 @@ export class TerminalManager extends EventEmitter {
       cwd,
       env: env as { [key: string]: string },
     });
+    const screen = new HeadlessTerminalClass({
+      cols,
+      rows,
+      scrollback: SNAPSHOT_SCROLLBACK_ROWS,
+      allowProposedApi: true,
+    });
+    const serializer = new SerializeAddon();
+    screen.loadAddon(serializer);
 
     const now = Date.now();
     const entry: PtyEntry = {
@@ -190,12 +223,16 @@ export class TerminalManager extends EventEmitter {
       createdAt: now,
       lastActivityAt: now,
       pty: child,
-      buffer: '',
+      screen,
+      serializer,
       seq: 0,
+      renderedSeq: 0,
       exited: false,
       exitCode: null,
       pendingChunks: '',
       flushTimer: null,
+      flushPending: () => {},
+      pendingSnapshots: new Set(),
     };
     this.terminals.set(terminalId, entry);
 
@@ -215,18 +252,17 @@ export class TerminalManager extends EventEmitter {
       };
       this.emit('output', chunk);
     };
+    entry.flushPending = flushPending;
 
     child.onData((data) => {
+      if (this.terminals.get(terminalId) !== entry) return;
       entry.seq += data.length;
+      const writeSeq = entry.seq;
       entry.lastActivityAt = Date.now();
-      entry.buffer += data;
-      if (entry.buffer.length > SCROLLBACK_LIMIT) {
-        entry.buffer = entry.buffer.slice(entry.buffer.length - SCROLLBACK_LIMIT);
-      }
+      entry.screen.write(data, () => { entry.renderedSeq = writeSeq; });
       // Coalesce: accumulate into pendingChunks and arm a flush timer if
-      // not already pending. The seq we emit on flush reflects bytes up to
-      // the flush moment, which lines up with how the snapshot's seq is
-      // computed (entry.seq at snapshot time).
+      // not already pending. The seq we emit on flush covers all output in
+      // the chunk; snapshots use the sequence parsed into the screen.
       entry.pendingChunks += data;
       if (!entry.flushTimer) {
         entry.flushTimer = setTimeout(() => flushPending(), OUTPUT_FLUSH_MS);
@@ -236,17 +272,16 @@ export class TerminalManager extends EventEmitter {
     });
 
     child.onExit(({ exitCode, signal }) => {
+      if (this.terminals.get(terminalId) !== entry) return;
       entry.exited = true;
       entry.exitCode = typeof exitCode === 'number' ? exitCode : null;
       const tail = `\r\n\x1b[2m[process exited${
         typeof exitCode === 'number' ? ` code=${exitCode}` : ''
       }${signal ? ` signal=${signal}` : ''}]\x1b[0m\r\n`;
       entry.seq += tail.length;
+      const writeSeq = entry.seq;
       entry.lastActivityAt = Date.now();
-      entry.buffer += tail;
-      if (entry.buffer.length > SCROLLBACK_LIMIT) {
-        entry.buffer = entry.buffer.slice(entry.buffer.length - SCROLLBACK_LIMIT);
-      }
+      entry.screen.write(tail, () => { entry.renderedSeq = writeSeq; });
       // Append exit tail to any pending chunk and flush immediately so
       // subscribers see the exit promptly (no point waiting another 16ms).
       entry.pendingChunks += tail;
@@ -273,6 +308,7 @@ export class TerminalManager extends EventEmitter {
     const newCols = Math.max(20, Math.floor(cols));
     const newRows = Math.max(5, Math.floor(rows));
     if (!entry.exited) entry.pty.resize(newCols, newRows);
+    entry.screen.resize(newCols, newRows);
     entry.cols = newCols;
     entry.rows = newRows;
     const summary = toSummary(entry);
@@ -295,20 +331,17 @@ export class TerminalManager extends EventEmitter {
   close(terminalId: string, force = false): void {
     const entry = this.terminals.get(terminalId);
     if (!entry) throw new Error(`Unknown terminal: ${terminalId}`);
+    // If kill fails, keep the entry reachable so the caller can retry and
+    // the process does not become an untracked orphan.
+    if (!entry.exited) entry.pty.kill(force ? 'SIGKILL' : 'SIGHUP');
     if (entry.flushTimer) {
       clearTimeout(entry.flushTimer);
       entry.flushTimer = null;
     }
-    try {
-      if (!entry.exited) {
-        // Send SIGHUP first (graceful); fall back to SIGKILL if caller asked.
-        entry.pty.kill(force ? 'SIGKILL' : 'SIGHUP');
-      }
-    } catch (err) {
-      // Swallow — the onExit handler will fire regardless once the process is dead.
-      console.warn(`[terminal] kill ${terminalId} failed:`, err);
-    }
     this.terminals.delete(terminalId);
+    for (const resolve of entry.pendingSnapshots) resolve(null);
+    entry.pendingSnapshots.clear();
+    entry.screen.dispose();
     this.emit('terminals-updated', { kind: 'remove', terminalId } satisfies TerminalsUpdate);
   }
 

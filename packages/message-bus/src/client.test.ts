@@ -110,6 +110,26 @@ describe('MessageBusClient - commands', () => {
     await expect(promise).resolves.toBe(42);
   });
 
+  it('does not send a queued command after it has timed out', async () => {
+    vi.useFakeTimers();
+    try {
+      transport.setConnected(false);
+      transport.clear();
+      const promise = client.command('terminal:create', { cwd: '/work' }, {
+        timeoutMs: 100,
+        queueWhileDisconnected: true,
+      });
+      const settled = promise.catch((error: Error) => error);
+      vi.advanceTimersByTime(100);
+      expect((await settled).message).toMatch(/timed out/);
+
+      transport.setConnected(true);
+      expect(transport.sent.filter((frame) => frame.kind === 'cmd')).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('rejects in-flight commands when transport disconnects', async () => {
     const promise = client.command<number>('slow', null, { timeoutMs: 60_000 });
     expect(transport.sent).toHaveLength(1);

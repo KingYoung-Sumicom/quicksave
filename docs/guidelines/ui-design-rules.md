@@ -32,10 +32,28 @@ navigation, settings, session lists, or filters.
 - Custom filter dropdowns must expose expanded and selected states, support
   keyboard movement and Escape, close on outside interaction, and use localized
   labels. Reuse an existing control pattern when extending another view.
+- When an action needs both a machine and a project, choose the machine first,
+  then show only its projects. Keep a Back action and an empty state for
+  machines with no projects; do not skip the picker for a single project.
 
 **Why:** A consistent hierarchy makes dense session and settings views easier
 to scan, while disclosure keeps infrequent controls available without taking
 space from the main list. Shared desktop and mobile behavior reduces surprises.
+
+---
+
+## Fixed-size Terminal Layout
+
+The xterm grid is locked to 80×24. Keep its host at the available width so
+FitAddon can measure it, then center the actual `.xterm` element within the
+host. Give the host and terminal different background colors: centering only
+`.xterm-screen` leaves the absolute `.xterm-viewport` stretched across the
+host. Let a full-page host grow beyond the viewport height so all 24 rows
+remain reachable by vertical scrolling on short screens.
+
+Terminal create, input, rename, and close failures should appear in the view
+where they happened. Leave the terminal page open when close fails, and keep
+the rename field editable when its request is rejected.
 
 ---
 

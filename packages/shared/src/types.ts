@@ -2417,15 +2417,15 @@ export type TerminalsUpdate =
 
 /**
  * Incremental payload on the `/terminals/:terminalId/output` stream.
- * Snapshot returns `TerminalOutputSnapshot` (the current scrollback buffer +
- * last known cols/rows); each update carries a fresh `chunk` of output that
- * the PWA feeds to xterm.js.
+ * Snapshot returns `TerminalOutputSnapshot` (serialized VT state + last known
+ * cols/rows); each update carries a fresh `chunk` of output that the PWA feeds
+ * to xterm.js.
  */
 export interface TerminalOutputSnapshot {
   terminalId: string;
-  /** Scrollback buffer — concatenated raw output (may contain ANSI escapes). */
+  /** Bounded scrollback and current screen serialized as replayable VT state. */
   buffer: string;
-  /** Monotonic sequence number of the last byte included in `buffer`. */
+  /** Monotonic output sequence through the state represented by `buffer`. */
   seq: number;
   cols: number;
   rows: number;

@@ -44,15 +44,26 @@ html, body {
   padding-right: env(safe-area-inset-right);
 }
 
-/* The PTY is pinned to 80 columns (see TerminalView.fitToStandardCols),
-   so on a wide window the rendered screen is narrower than its container
-   and xterm leaves it flush-left with empty black space on the right.
-   `.xterm-screen` is the element carrying the real 80-col pixel width;
-   centering it with auto inline margins keeps the terminal centered as the
-   font scales or the window resizes. The absolute `.xterm-viewport` (black
-   background + scrollbar) still spans the full width, so nothing else moves. */
-.terminal-center .xterm-screen {
-  margin-inline: auto;
+/* FitAddon measures the full host, then TerminalView locks the grid to 80x24.
+   The xterm root needs to shrink to that grid: its absolute viewport would
+   otherwise cover the whole host and make the surrounding space look like
+   part of the terminal. Auto margins center the grid when it fits and keep
+   it aligned to the top/left when a small viewport must scroll or clip. */
+.terminal-center {
+  display: flex;
+  align-items: flex-start;
+  background: #1e293b; /* slate-800, outside the terminal */
+}
+
+.terminal-center .xterm {
+  flex: none;
+  width: max-content;
+  margin: auto;
+  background: #0f172a; /* slate-900, terminal canvas */
+}
+
+.terminal-center .xterm-viewport {
+  background-color: #0f172a;
 }
 
 /* Shared app bar height — kept in sync across all status bars.

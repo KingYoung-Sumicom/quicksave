@@ -23,10 +23,15 @@ import type { MessageBusClient } from '@sumicom/quicksave-message-bus';
  */
 export function useTerminalOps(getBus: () => MessageBusClient | null) {
   const sendCommand = useCallback(
-    <R, P = unknown>(verb: string, payload: P, timeoutMs = 15000): Promise<R> => {
+    async <R extends { success: boolean; error?: string }, P = unknown>(verb: string, payload: P, timeoutMs = 15000): Promise<R> => {
       const bus = getBus();
-      if (!bus) return Promise.reject(new Error('Not connected'));
-      return bus.command<R, P>(verb, payload, { timeoutMs, queueWhileDisconnected: true });
+      if (!bus) throw new Error('Not connected');
+      // Terminal actions describe the user's current intent. An input or
+      // create issued while offline must not run later after the UI has moved
+      // on, so reject immediately instead of queueing until reconnect.
+      const response = await bus.command<R, P>(verb, payload, { timeoutMs });
+      if (!response.success) throw new Error(response.error ?? `${verb} failed`);
+      return response;
     },
     [getBus],
   );
@@ -89,16 +94,51 @@ export function useTerminalOps(getBus: () => MessageBusClient | null) {
         if (cancelled || unsub) return;
         const bus = getBus();
         if (!bus) return;
+        const path = `/terminals/${terminalId}/output`;
+        let hasSnapshot = false;
+        let lastSeq = -1;
+        let lastSnapshotWasNull = false;
+        const pendingChunks: TerminalOutputChunk[] = [];
+        const applyChunk = (chunk: TerminalOutputChunk) => {
+          if (chunk.seq <= lastSeq) return;
+          lastSeq = chunk.seq;
+          handlers.onChunk(chunk);
+        };
+        const applySnapshot = (snapshot: TerminalOutputSnapshot | null) => {
+          if (cancelled) return;
+          const seq = snapshot?.seq ?? -1;
+          if (hasSnapshot && ((snapshot && seq <= lastSeq) || (!snapshot && lastSnapshotWasNull))) return;
+          hasSnapshot = true;
+          lastSnapshotWasNull = snapshot === null;
+          lastSeq = seq;
+          handlers.onSnapshot(snapshot);
+          for (const chunk of pendingChunks) applyChunk(chunk);
+          pendingChunks.length = 0;
+        };
         unsub = bus.subscribe<TerminalOutputSnapshot | null, TerminalOutputChunk>(
-          `/terminals/${terminalId}/output`,
+          path,
           {
-            onSnapshot: handlers.onSnapshot,
-            onUpdate: handlers.onChunk,
+            onSnapshot: applySnapshot,
+            onUpdate: (chunk) => {
+              if (hasSnapshot) applyChunk(chunk);
+              else pendingChunks.push(chunk);
+            },
             onError: handlers.onError
               ? (err: string) => handlers.onError?.(new Error(err))
               : undefined,
+            // A second view can join an existing shared subscription. Its
+            // cached initial snapshot is stale, so read a fresh one below.
+            replayCachedSnapshot: false,
+            // The agent's headless parser makes snapshots asynchronous;
+            // updates may arrive before the snapshot frame.
+            acceptStaleSnapshots: true,
           },
         );
+        void bus.getSnapshot<TerminalOutputSnapshot | null>(path, { timeoutMs: 15_000 })
+          .then(applySnapshot)
+          .catch((error: unknown) => {
+            if (!cancelled) handlers.onError?.(error instanceof Error ? error : new Error(String(error)));
+          });
       };
 
       const onVisible = () => {

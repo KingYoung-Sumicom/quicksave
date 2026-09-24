@@ -41,6 +41,7 @@ export function TerminalPage() {
   const [showMenu, setShowMenu] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
+  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (terminal) setDraftTitle(terminal.title);
@@ -60,10 +61,11 @@ export function TerminalPage() {
     if (!terminalId) return;
     try {
       await closeTerminal(terminalId, true);
+      setActionError(null);
+      goBack();
     } catch (err) {
-      console.warn('[terminal] close failed:', err);
+      setActionError(`Failed to close terminal: ${err instanceof Error ? err.message : String(err)}`);
     }
-    goBack();
   }, [terminalId, closeTerminal, goBack]);
 
   const handleRename = useCallback(async () => {
@@ -73,10 +75,11 @@ export function TerminalPage() {
     }
     try {
       await renameTerminal(terminalId, draftTitle);
+      setActionError(null);
+      setEditingTitle(false);
     } catch (err) {
-      console.warn('[terminal] rename failed:', err);
+      setActionError(`Failed to rename terminal: ${err instanceof Error ? err.message : String(err)}`);
     }
-    setEditingTitle(false);
   }, [terminalId, draftTitle, renameTerminal]);
 
   if (!terminalId) {
@@ -104,7 +107,7 @@ export function TerminalPage() {
               onChange={(e) => setDraftTitle(e.target.value)}
               onBlur={handleRename}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') handleRename();
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) void handleRename();
                 if (e.key === 'Escape') {
                   setDraftTitle(terminal?.title ?? '');
                   setEditingTitle(false);
@@ -158,6 +161,11 @@ export function TerminalPage() {
           </div>
         }
       />
+      {actionError && (
+        <p className="border-b border-red-500/30 bg-red-950/50 px-4 py-2 text-xs text-red-300" role="alert">
+          {actionError}
+        </p>
+      )}
       <div className="flex-1 min-h-0">
         <TerminalView terminalId={terminalId} getBus={getBus} onExit={goBack} />
       </div>
