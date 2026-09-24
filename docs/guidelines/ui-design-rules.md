@@ -74,6 +74,17 @@ unlock the composer with the original text intact so the user can retry.
 the agent accepts the command. Clearing optimistically loses the only copy of
 the message and makes retry impossible.
 
+### Make active-turn message delivery explicit
+
+The composer defaults to queueing a prompt as the next turn. Expose insertion
+and interruption as per-send choices only while a turn is active; reset the
+choice after a successful send or session switch. Disable insertion when the
+provider has no safe same-turn input capability, and keep the draft when the
+agent rejects an unsupported mode.
+
+**Why:** A provider's native mid-turn behavior can differ from another's;
+an ordinary Send must never unexpectedly steer or cancel running work.
+
 ### Textarea must expand to fit content, no max-height cap
 
 Auto-resizing textareas must expand freely (`el.style.height = el.scrollHeight + 'px'`). Do not cap with `Math.min(..., maxPx)`.

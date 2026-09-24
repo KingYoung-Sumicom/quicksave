@@ -61,6 +61,7 @@ export class SdkProviderSession implements ProviderSession {
   private queryHandle: Query | null;
   private inputQueue: AsyncQueue<SDKUserMessage>;
   private cardBuilder: StreamCardBuilder;
+  private activeTurn = true;
   /** Callbacks for this session — used by sendUserMessage to emit the
    * follow-up prompt as a card-event so other PWA tabs subscribed to this
    * session see it in real time. Populated by start/resumeSession. */
@@ -78,6 +79,7 @@ export class SdkProviderSession implements ProviderSession {
 
   sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
     if (!this.queryHandle) return;
+    this.activeTurn = true;
     // Record the prompt in the cardBuilder so getCards on reconnect/refresh
     // returns it before the SDK has flushed it to the session JSONL.
     const userEvent = this.cardBuilder.userMessage(prompt, attachments);
@@ -91,6 +93,29 @@ export class SdkProviderSession implements ProviderSession {
       parent_tool_use_id: null,
     };
     this.inputQueue.push(userMsg);
+  }
+
+  steerUserMessage(prompt: string, attachments?: readonly Attachment[]): boolean {
+    if (!this.queryHandle || !this.activeTurn) return false;
+    this.sendUserMessage(prompt, attachments);
+    return true;
+  }
+
+  /** @internal Result events close the steer window until the next prompt. */
+  markTurnSettled(): void {
+    this.activeTurn = false;
+  }
+
+  interruptThenSendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
+    const handle = this.queryHandle;
+    if (!handle) return;
+    // Wait for the SDK's interrupt acknowledgement before admitting the next
+    // input; otherwise it may be consumed by the turn we meant to cancel.
+    void handle.interrupt().catch((err) => {
+      console.error('[sdk] interrupt before replacement prompt failed:', err);
+    }).then(() => {
+      if (this.queryHandle === handle) this.sendUserMessage(prompt, attachments);
+    });
   }
 
   interrupt(): void {
@@ -403,6 +428,7 @@ export class ClaudeSdkProvider implements CodingAgentProvider {
         );
         if (emittedResult) {
           resultEmitted = true;
+          sdkSession.markTurnSettled();
           // Reset per-turn state. If a follow-up prompt arrived during this
           // turn, the SDK will pick it up from inputQueue and the next
           // assistant text should land in a fresh card.

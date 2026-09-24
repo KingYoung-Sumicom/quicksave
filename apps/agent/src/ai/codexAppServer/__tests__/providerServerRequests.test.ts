@@ -425,7 +425,7 @@ describe('CodexAppServerSession slash command listing', () => {
 });
 
 describe('CodexAppServerSession active-turn follow-up routing', () => {
-  it('steers a normal follow-up into the current active turn', async () => {
+  it('steers only an explicitly inserted follow-up into the current active turn', async () => {
     const h = harness();
     const persistSupplementalCard = vi
       .spyOn(StreamCardBuilder.prototype, 'persistSupplementalCard')
@@ -439,7 +439,7 @@ describe('CodexAppServerSession active-turn follow-up routing', () => {
     await flushMicrotasks();
 
     const steerReqPromise = receiveClientRequest(h.serverSide);
-    h.session.sendUserMessage('adjust course');
+    const steerResult = h.session.steerUserMessage('adjust course');
 
     const steerReq = await steerReqPromise;
     expect(steerReq.method).toBe('turn/steer');
@@ -449,6 +449,7 @@ describe('CodexAppServerSession active-turn follow-up routing', () => {
       expectedTurnId: 'turn_1',
     });
     await h.serverSide.send({ jsonrpc: '2.0', id: steerReq.id, result: { turnId: 'turn_1' } });
+    await expect(steerResult).resolves.toBe(true);
 
     await h.serverSide.send({
       jsonrpc: '2.0',
@@ -471,7 +472,7 @@ describe('CodexAppServerSession active-turn follow-up routing', () => {
     expect(h.callbacks.onQueueStateChange).not.toHaveBeenCalled();
   });
 
-  it('queues the follow-up for the next turn when active-turn steering fails', async () => {
+  it('queues an ordinary follow-up for the next turn without steering', async () => {
     const h = harness();
     const firstStartReqPromise = receiveClientRequest(h.serverSide);
     const run = h.session.runTurn('initial prompt');
@@ -481,16 +482,7 @@ describe('CodexAppServerSession active-turn follow-up routing', () => {
     await h.serverSide.send({ jsonrpc: '2.0', id: firstStartReq.id, result: { turn: makeTurn('turn_1', 'inProgress') } });
     await flushMicrotasks();
 
-    const steerReqPromise = receiveClientRequest(h.serverSide);
     h.session.sendUserMessage('next turn fallback');
-
-    const steerReq = await steerReqPromise;
-    expect(steerReq.method).toBe('turn/steer');
-    await h.serverSide.send({
-      jsonrpc: '2.0',
-      id: steerReq.id,
-      error: { code: -32602, message: 'no active steerable turn' },
-    });
 
     await flushMicrotasks();
     expect(h.callbacks.onQueueStateChange).toHaveBeenCalled();
@@ -526,7 +518,7 @@ describe('CodexAppServerSession active-turn follow-up routing', () => {
     expect(h.session.getQueueState()).toBeNull();
   });
 
-  it('auto-steers the first queued follow-up when the active turn starts a tool call', async () => {
+  it('keeps a queued follow-up separate when the active turn starts a tool call', async () => {
     const h = harness();
     const startReqPromise = receiveClientRequest(h.serverSide);
     const run = h.session.runTurn('initial prompt');
@@ -536,16 +528,7 @@ describe('CodexAppServerSession active-turn follow-up routing', () => {
     await h.serverSide.send({ jsonrpc: '2.0', id: startReq.id, result: { turn: makeTurn('turn_1', 'inProgress') } });
     await flushMicrotasks();
 
-    const failedSteerReqPromise = receiveClientRequest(h.serverSide);
     h.session.sendUserMessage('queued until a tool call');
-
-    const failedSteerReq = await failedSteerReqPromise;
-    expect(failedSteerReq.method).toBe('turn/steer');
-    await h.serverSide.send({
-      jsonrpc: '2.0',
-      id: failedSteerReq.id,
-      error: { code: -32602, message: 'no active steerable turn' },
-    });
 
     await flushMicrotasks();
     expect(h.session.getQueueState()).toMatchObject({
@@ -553,7 +536,7 @@ describe('CodexAppServerSession active-turn follow-up routing', () => {
       latestPromptPreview: 'queued until a tool call',
     });
 
-    const autoSteerReqPromise = receiveClientRequest(h.serverSide);
+    const recorder = recordClientRequests(h.serverSide);
     await h.serverSide.send({
       jsonrpc: '2.0',
       method: 'item/started',
@@ -575,25 +558,24 @@ describe('CodexAppServerSession active-turn follow-up routing', () => {
       },
     });
 
-    const autoSteerReq = await autoSteerReqPromise;
-    expect(autoSteerReq.method).toBe('turn/steer');
-    expect(autoSteerReq.params).toEqual({
-      threadId: h.threadId,
-      input: [{ type: 'text', text: 'queued until a tool call', text_elements: [] }],
-      expectedTurnId: 'turn_1',
-    });
-    await h.serverSide.send({ jsonrpc: '2.0', id: autoSteerReq.id, result: { turnId: 'turn_1' } });
     await flushMicrotasks();
-    expect(h.session.getQueueState()).toBeNull();
+    expect(h.session.getQueueState()?.pendingUserMessages).toBe(1);
+    expect(recorder.requests.some((req) => req.method === 'turn/steer')).toBe(false);
 
     await h.serverSide.send({
       jsonrpc: '2.0',
       method: 'turn/completed',
       params: { threadId: h.threadId, turn: makeTurn('turn_1', 'completed') },
     });
+    const nextStart = await recorder.waitFor((req) => req.method === 'turn/start');
+    expect(nextStart.params).toMatchObject({ input: [{ type: 'text', text: 'queued until a tool call', text_elements: [] }] });
+    await h.serverSide.send({ jsonrpc: '2.0', id: nextStart.id, result: { turn: makeTurn('turn_2', 'inProgress') } });
+    await flushMicrotasks();
+    await sendTokenUsage(h, 'turn_2');
+    await h.serverSide.send({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: h.threadId, turn: makeTurn('turn_2', 'completed') } });
     await run;
-
-    expect(h.callbacks.emitStreamEnd).toHaveBeenCalledTimes(1);
+    recorder.unsubscribe();
+    expect(h.callbacks.emitStreamEnd).toHaveBeenCalledTimes(2);
   });
 
   it('keeps a queued follow-up for the next turn after manual interrupt', async () => {
@@ -606,16 +588,7 @@ describe('CodexAppServerSession active-turn follow-up routing', () => {
     await h.serverSide.send({ jsonrpc: '2.0', id: startReq.id, result: { turn: makeTurn('turn_1', 'inProgress') } });
     await flushMicrotasks();
 
-    const failedSteerReqPromise = receiveClientRequest(h.serverSide);
     h.session.sendUserMessage('run after interrupt');
-
-    const failedSteerReq = await failedSteerReqPromise;
-    expect(failedSteerReq.method).toBe('turn/steer');
-    await h.serverSide.send({
-      jsonrpc: '2.0',
-      id: failedSteerReq.id,
-      error: { code: -32602, message: 'no active steerable turn' },
-    });
     await flushMicrotasks();
     expect(h.session.getQueueState()).toMatchObject({
       pendingUserMessages: 1,

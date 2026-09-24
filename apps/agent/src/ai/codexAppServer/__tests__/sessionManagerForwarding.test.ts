@@ -24,6 +24,7 @@ class StubCodexAppServerSession implements ProviderSession {
   alive = true;
   enqueued: Record<string, unknown>[] = [];
   sendUserMessages: string[] = [];
+  steerUserMessages: string[] = [];
   interruptThenSendUserMessages: string[] = [];
   interruptCalls = 0;
   steerQueuedCalls: Array<{ interruptCurrentTurn?: boolean }> = [];
@@ -34,6 +35,10 @@ class StubCodexAppServerSession implements ProviderSession {
   }
   sendUserMessage(prompt: string): void {
     this.sendUserMessages.push(prompt);
+  }
+  steerUserMessage(prompt: string): boolean {
+    this.steerUserMessages.push(prompt);
+    return true;
   }
   interruptThenSendUserMessage(prompt: string): void {
     this.interruptThenSendUserMessages.push(prompt);
@@ -214,7 +219,7 @@ describe('SessionManager → CodexAppServer override forwarding', () => {
 });
 
 describe('SessionManager → CodexAppServer hot-resume forwarding', () => {
-  it('active hot-resume forwards the prompt to sendUserMessage', async () => {
+  it('active hot-resume queues the prompt until turn completion', async () => {
     const { sm, sessionId, session } = await setupActiveCodexSession();
     // `streaming=true` is set by setupActiveCodexSession's startSession;
     // resumeSession's active-hot-resume branch fires.
@@ -223,6 +228,13 @@ describe('SessionManager → CodexAppServer hot-resume forwarding', () => {
       prompt: 'follow-up',
       cwd: '/tmp/test',
     });
+    expect(session.sendUserMessages).toEqual([]);
+    expect(sm.buildSessionUpdatePayload(sessionId).queueState).toMatchObject({
+      pendingUserMessages: 1,
+      latestPromptPreview: 'follow-up',
+    });
+    sm.makeCallbacks('codex').emitStreamEnd({ sessionId, success: true });
+    await Promise.resolve();
     expect(session.sendUserMessages).toEqual(['follow-up']);
   });
 
@@ -240,7 +252,52 @@ describe('SessionManager → CodexAppServer hot-resume forwarding', () => {
       prompt: 'follow-up',
       cwd: '/tmp/test',
     });
-    expect(updates.at(-1)?.queueState).toEqual(session.queueState);
+    expect(updates.at(-1)?.queueState).toMatchObject({ pendingUserMessages: 2, latestPromptPreview: 'follow-up' });
+  });
+
+  it('drains FIFO messages one turn at a time', async () => {
+    const { sm, sessionId, session } = await setupActiveCodexSession();
+    await sm.resumeSession({ sessionId, cwd: '/tmp/test', prompt: 'first' });
+    await sm.resumeSession({ sessionId, cwd: '/tmp/test', prompt: 'second' });
+    expect(sm.buildSessionUpdatePayload(sessionId).queueState?.queuedPromptPreviews).toEqual(['first', 'second']);
+    sm.makeCallbacks('codex').emitStreamEnd({ sessionId, success: true });
+    await Promise.resolve();
+    expect(session.sendUserMessages).toEqual(['first']);
+    sm.makeCallbacks('codex').emitStreamEnd({ sessionId, success: true });
+    await Promise.resolve();
+    expect(session.sendUserMessages).toEqual(['first', 'second']);
+  });
+
+  it('inserts only when explicitly requested', async () => {
+    const { sm, sessionId, session } = await setupActiveCodexSession();
+    await sm.resumeSession({ sessionId, cwd: '/tmp/test', prompt: 'change direction', deliveryMode: 'steer' });
+    expect(session.steerUserMessages).toEqual(['change direction']);
+    expect(sm.buildSessionUpdatePayload(sessionId).queueState).toBeNull();
+  });
+
+  it('rejects unsupported insertion without dropping or silently queueing the prompt', async () => {
+    const { sm, sessionId, session } = await setupActiveCodexSession();
+    (session as unknown as ProviderSession).steerUserMessage = undefined;
+    await expect(sm.resumeSession({ sessionId, cwd: '/tmp/test', prompt: 'do not lose me', deliveryMode: 'steer' }))
+      .rejects.toThrow('does not support inserting');
+    expect(session.sendUserMessages).toEqual([]);
+    expect(sm.buildSessionUpdatePayload(sessionId).queueState).toBeNull();
+  });
+
+  it('interrupts with the new prompt before draining older queued work', async () => {
+    const { sm, sessionId, session } = await setupActiveCodexSession();
+    await sm.resumeSession({ sessionId, cwd: '/tmp/test', prompt: 'later' });
+    await sm.resumeSession({ sessionId, cwd: '/tmp/test', prompt: 'urgent', deliveryMode: 'interrupt' });
+    expect(session.interruptThenSendUserMessages).toEqual(['urgent']);
+    expect(sm.buildSessionUpdatePayload(sessionId).queueState?.queuedPromptPreviews).toEqual(['later']);
+    session.queueState = { pendingUserMessages: 1, latestPromptPreview: 'urgent', canInterruptCurrentTurn: true };
+    sm.makeCallbacks('codex').emitStreamEnd({ sessionId, success: false, interrupted: true });
+    await Promise.resolve();
+    expect(session.sendUserMessages).toEqual([]);
+    session.queueState = null;
+    sm.makeCallbacks('codex').emitStreamEnd({ sessionId, success: true });
+    await Promise.resolve();
+    expect(session.sendUserMessages).toEqual(['later']);
   });
 
   it('active hot-resume can request interrupt before sending the prompt', async () => {

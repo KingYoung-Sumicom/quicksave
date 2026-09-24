@@ -96,6 +96,9 @@ export type ProviderArchiveStorage = 'native' | 'registry';
 /** Represents a running provider session. */
 export interface ProviderSession {
   sendUserMessage(prompt: string, attachments?: readonly Attachment[]): void;
+  /** Inject into the active turn at the provider's next safe model boundary.
+   * Return false if the active turn has already ended; never silently queue. */
+  steerUserMessage?(prompt: string, attachments?: readonly Attachment[]): Promise<boolean> | boolean;
   interruptThenSendUserMessage?(prompt: string, attachments?: readonly Attachment[]): void;
   interrupt(): void;
   kill(): void | Promise<void>;

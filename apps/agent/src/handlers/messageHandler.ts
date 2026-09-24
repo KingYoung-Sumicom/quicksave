@@ -2942,7 +2942,7 @@ export class MessageHandler {
     message: Message<ClaudeResumeRequestPayload>,
     peerAddress: string,
   ): Promise<Message<ClaudeResumeResponsePayload>> {
-    const { sessionId: requestedId, prompt, cwd: payloadCwd, agent, attachmentIds, interruptCurrentTurn } = message.payload;
+    const { sessionId: requestedId, prompt, cwd: payloadCwd, agent, attachmentIds, interruptCurrentTurn, deliveryMode } = message.payload;
     const legacyProvider = (message.payload as { provider?: 'claude-cli' | 'claude-sdk' | 'codex-mcp' }).provider;
     const cwd = payloadCwd || this.defaultRepoPath;
     const resolvedAgent = agent ?? (legacyProvider === 'codex-mcp' ? 'codex' : legacyProvider ? 'claude-code' : undefined);
@@ -2952,6 +2952,12 @@ export class MessageHandler {
     let attachments: ReturnType<AttachmentStaging['consume']> | undefined;
     if (attachmentIds && attachmentIds.length > 0) {
       try {
+        // Reject unsupported active-turn delivery before consuming upload
+        // staging; failed sends must leave the chips retryable in the PWA.
+        this.sessionManager.assertResumeDeliverySupported(
+          requestedId,
+          deliveryMode ?? (interruptCurrentTurn ? 'interrupt' : 'queue'),
+        );
         attachments = this.attachmentStaging.consume(peerAddress, attachmentIds);
       } catch (error) {
         const code = (error as { code?: string }).code ?? 'attachment_error';
@@ -2973,6 +2979,7 @@ export class MessageHandler {
         agent: resolvedAgent,
         attachments,
         interruptCurrentTurn,
+        deliveryMode,
       });
 
       console.log(`[agent:resume] session resumed: ${actualSessionId}`);

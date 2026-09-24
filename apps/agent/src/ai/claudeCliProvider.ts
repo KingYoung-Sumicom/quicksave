@@ -356,10 +356,22 @@ export class CliProviderSession implements ProviderSession {
     this.sendUserMessageNow(prompt, attachments);
   }
 
+  steerUserMessage(prompt: string, attachments?: readonly Attachment[]): boolean {
+    return this.activeTurn && this.sendUserMessageNow(prompt, attachments);
+  }
+
   interruptThenSendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
     if (!this.process || this.process.killed) return;
+    if (!this.activeTurn) {
+      this.sendUserMessageNow(prompt, attachments);
+      return;
+    }
+    // Interrupt is an asynchronous CLI control request. Keep the replacement
+    // first in the FIFO until the interrupted result arrives, rather than
+    // writing another user message into the still-active turn's stdin.
+    this.queuedUserPrompts.unshift(makeQueuedUserPrompt(prompt, attachments));
+    this.emitQueueStateChange();
     this.interrupt();
-    this.sendUserMessageNow(prompt, attachments);
   }
 
   getQueueState() {
@@ -368,9 +380,12 @@ export class CliProviderSession implements ProviderSession {
 
   async steerQueuedMessage(opts?: { interruptCurrentTurn?: boolean }): Promise<boolean> {
     if (this.queuedUserPrompts.length === 0) return false;
+    if (opts?.interruptCurrentTurn && this.activeTurn) {
+      this.interrupt();
+      return true;
+    }
     const next = this.queuedUserPrompts.shift()!;
     this.emitQueueStateChange();
-    if (opts?.interruptCurrentTurn) this.interrupt();
     const sent = this.sendUserMessageNow(next.prompt, next.attachments);
     if (!sent) {
       this.queuedUserPrompts.unshift(next);

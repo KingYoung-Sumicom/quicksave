@@ -229,6 +229,26 @@ function mockProc() {
   return { killed: false, stdin: { write: vi.fn() }, kill: vi.fn() } as any;
 }
 
+describe('CliProviderSession active-turn delivery', () => {
+  it('keeps ordinary prompts queued and starts the interrupt replacement first', () => {
+    const proc = mockProc();
+    const session = new CliProviderSession(proc);
+    session.activeTurn = true;
+    session.sendUserMessage('older');
+    session.interruptThenSendUserMessage('urgent');
+
+    expect(session.getQueueState()?.queuedPromptPreviews).toEqual(['urgent', 'older']);
+    expect(proc.stdin.write).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(proc.stdin.write.mock.calls[0][0]).request.subtype).toBe('interrupt');
+
+    session.activeTurn = false; // CLI reported the interrupted result
+    expect(session.sendNextQueuedMessage()).toBe(true);
+    expect(JSON.parse(proc.stdin.write.mock.calls[1][0]).message.content).toBeDefined();
+    expect(JSON.stringify(JSON.parse(proc.stdin.write.mock.calls[1][0]))).toContain('urgent');
+    expect(session.getQueueState()?.queuedPromptPreviews).toEqual(['older']);
+  });
+});
+
 describe('CliProviderSession.sendControlRequest wall-clock cap', () => {
   afterEach(() => {
     vi.useRealTimers();

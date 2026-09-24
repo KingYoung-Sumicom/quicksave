@@ -2216,9 +2216,12 @@ export interface ClaudeResumeRequestPayload {
   prompt: string;
   cwd?: string;
   agent?: AgentId;
+  /** Delivery for a prompt submitted during an active turn. Defaults to FIFO
+   * queueing. Steer joins the active turn; interrupt starts a priority turn. */
+  deliveryMode?: 'queue' | 'steer' | 'interrupt';
   /** Interrupt the active turn before sending this prompt. Providers that can
    * preserve ordering should run the prompt as the next turn instead of
-   * steering it into the interrupted turn. */
+   * steering it into the interrupted turn. Legacy alias for deliveryMode=interrupt. */
   interruptCurrentTurn?: boolean;
   /** Ids of attachments previously staged via `attachment:upload`. */
   attachmentIds?: string[];

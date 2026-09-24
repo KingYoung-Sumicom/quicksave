@@ -40,7 +40,8 @@ import type { UseVoiceAgent } from '../hooks/useVoiceAgent';
 import { selectPanelMode, type SessionPanelMode, useSessionRightPanelStore } from '../stores/sessionRightPanelStore';
 
 type StartSessionOpts = { agent?: AgentId; allowedTools?: string[]; systemPrompt?: string; model?: string; permissionMode?: string; machineAgentId?: string; sandboxed?: boolean; reasoningEffort?: string; fastMode?: boolean; contextWindow?: number; attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[] };
-type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean };
+type DeliveryMode = 'queue' | 'steer' | 'interrupt';
+type ResumeSessionOpts = { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean; deliveryMode?: DeliveryMode };
 
 interface SessionPanelProps {
   onSelectSession?: (sessionId: string) => void;
@@ -325,6 +326,8 @@ export function SessionPanel({
   const sessions = useSessionStore((s) => s.sessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const isStreaming = useSessionStore((s) => s.isStreaming);
+  const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>('queue');
+  useEffect(() => { setDeliveryMode('queue'); }, [activeSessionId]);
   const streamError = useSessionStore((s) => s.streamError);
   const cardBucketOrder = useSessionStore((s) => s.cardBuckets.order);
   const cardCount = useSessionStore((s) => s.cardCount);
@@ -427,6 +430,8 @@ export function SessionPanel({
   }, []);
 
   const activeSession = activeSessionId ? sessions[activeSessionId] : undefined;
+  const canSteerActiveTurn = (activeSession?.agent ?? selectedAgent) === 'codex'
+    || (activeSession?.agent ?? selectedAgent) === 'claude-code';
   const viewedSessionId = urlSessionId ?? activeSessionId;
   const viewedSession = viewedSessionId ? sessions[viewedSessionId] : undefined;
   const isInactiveRaw = !!activeSessionId && !!activeSession && activeSession.isActive === false;
@@ -589,7 +594,7 @@ export function SessionPanel({
     }
   }, [activeSessionId, setActiveSession, clearCards, onNewSession, onUnsubscribeSession]);
 
-  const handleSend = useCallback(async (interruptCurrentTurn = false) => {
+  const handleSend = useCallback(async (mode: DeliveryMode = deliveryMode) => {
     if (sendInFlightRef.current) return;
     const isTerminalNewSession = !activeSessionId && selectedAgent === 'claude-terminal';
     const prompt = isTerminalNewSession ? '' : promptInput.trim();
@@ -668,7 +673,7 @@ export function SessionPanel({
         if (isInactive) setIsResuming(true);
         acknowledged = await onResumeSession(activeSessionId, prompt, {
           ...(attachmentIds.length > 0 ? { attachmentIds, attachmentMetadata } : {}),
-          ...(interruptCurrentTurn ? { interruptCurrentTurn: true } : {}),
+          deliveryMode: mode,
         });
       } else {
         acknowledged = await onStartSession(isTerminalNewSession ? '' : prompt, {
@@ -697,6 +702,7 @@ export function SessionPanel({
         if (inputRef.current) inputRef.current.style.height = 'auto';
         attach.clear();
         if (draftKey) localStorage.removeItem(draftKey);
+        setDeliveryMode('queue');
       } else if (!acknowledged) {
         setIsResuming(false);
       }
@@ -710,7 +716,7 @@ export function SessionPanel({
       setPendingSubmission(null);
       setIsAwaitingSendAck(false);
     }
-  }, [promptInput, attach, activeSessionId, isInactive, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedReasoningEffort, selectedFastMode, selectedContextWindow, selectedAgentType, setPromptInput, setStreamError, onSendControlRequest, onResumeSession, onStartSession, draftKey, showComposerToast]);
+  }, [promptInput, attach, activeSessionId, isInactive, selectedAgent, selectedModel, selectedPermissionMode, sandboxEnabled, selectedReasoningEffort, selectedFastMode, selectedContextWindow, selectedAgentType, setPromptInput, setStreamError, onSendControlRequest, onResumeSession, onStartSession, draftKey, showComposerToast, deliveryMode]);
 
   /**
    * Send a fixed prompt without using the composer input. Used by inline
@@ -875,7 +881,6 @@ export function SessionPanel({
     });
   }, [setPromptInput]);
 
-  const isMobile = 'ontouchstart' in window;
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     // Slash-command popover swallows nav keys before send/newline handling.
     if (slashOpen && filteredSlashCommands.length > 0) {
@@ -902,11 +907,11 @@ export function SessionPanel({
         return;
       }
     }
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isMobile) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      handleSend();
+      void handleSend();
     }
-  }, [handleSend, isMobile, slashOpen, filteredSlashCommands, slashIndex, insertSlashCommand, setPromptInput]);
+  }, [handleSend, slashOpen, filteredSlashCommands, slashIndex, insertSlashCommand, setPromptInput]);
 
   // Debounced draft save (3s)
   const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1215,7 +1220,7 @@ export function SessionPanel({
                   <div className="flex items-center justify-end">
                     <button
                       type="button"
-                      onPointerDown={(e) => { e.preventDefault(); handleSend(false); }}
+                      onPointerDown={(e) => { e.preventDefault(); handleSend('queue'); }}
                       disabled={!canSubmitComposer}
                       className={clsx(
                         'p-2 rounded-lg transition-colors flex-shrink-0',
@@ -1320,9 +1325,22 @@ export function SessionPanel({
                       </button>
                     )}
                     <div className="flex flex-shrink-0 items-center justify-end">
+                      {activeSessionId && (isStreaming || activeSession?.isStreaming) && (
+                        <select
+                          aria-label="Message delivery mode"
+                          title="How to send while the current turn runs"
+                          value={deliveryMode}
+                          onChange={(event) => setDeliveryMode(event.target.value as DeliveryMode)}
+                          className="mr-2 min-w-0 rounded-lg border border-slate-600 bg-slate-800 px-2 py-2 text-xs text-slate-100"
+                        >
+                          <option value="queue">Queue</option>
+                          <option value="steer" disabled={!canSteerActiveTurn}>Insert at next model call</option>
+                          <option value="interrupt">Interrupt now</option>
+                        </select>
+                      )}
                       <button
                         type="button"
-                        onPointerDown={(e) => { e.preventDefault(); handleSend(false); }}
+                        onPointerDown={(e) => { e.preventDefault(); handleSend(); }}
                         disabled={!canSubmitComposer}
                         className={clsx(
                           'p-2 rounded-lg transition-colors flex-shrink-0',

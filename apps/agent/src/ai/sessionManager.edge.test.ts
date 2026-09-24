@@ -210,7 +210,7 @@ describe('SessionManager — adversarial edge cases', () => {
   // ── 2. Resume during streaming (hot resume) ──
 
   describe('resumeSession during active streaming (hot resume)', () => {
-    it('hot resume delegates user prompt persistence to the provider session', async () => {
+    it('hot resume queues the prompt until the active turn ends', async () => {
       const sessionId = 'hot-resume';
       const mockProvSession = createMockProviderSession({ alive: true });
       (provider.startSession as Mock).mockResolvedValue({
@@ -227,9 +227,13 @@ describe('SessionManager — adversarial edge cases', () => {
         sessionId,
         prompt: 'Follow-up',
         cwd: '/tmp/test',
-              });
+      });
 
       expect(result).toBe(sessionId);
+      expect(mockProvSession.sendUserMessage).not.toHaveBeenCalled();
+      expect(((manager as any).sessions.get(sessionId) as ManagedSession).queuedUserPrompts).toHaveLength(1);
+      manager.makeCallbacks('claude-code').emitStreamEnd({ sessionId, success: true });
+      await Promise.resolve();
       expect(mockProvSession.sendUserMessage).toHaveBeenCalledWith('Follow-up', undefined);
       expect(cardBuilder.userMessage).not.toHaveBeenCalled();
       expect(cardBuilder.startNewTurn).not.toHaveBeenCalled();
@@ -263,7 +267,7 @@ describe('SessionManager — adversarial edge cases', () => {
       expect(deadSession.sendUserMessage).not.toHaveBeenCalled();
     });
 
-    it('multiple rapid hot resumes deliver every prompt to the provider', async () => {
+    it('multiple rapid hot resumes queue prompts in FIFO order', async () => {
       const sessionId = 'rapid-hot';
       const mockProvSession = createMockProviderSession({ alive: true });
 
@@ -281,7 +285,47 @@ describe('SessionManager — adversarial edge cases', () => {
         manager.resumeSession({ sessionId, prompt: 'C', cwd: '/tmp/test' }),
       ]);
 
+      expect(mockProvSession.sendUserMessage).not.toHaveBeenCalled();
+      for (const prompt of ['A', 'B', 'C']) {
+        manager.makeCallbacks('claude-code').emitStreamEnd({ sessionId, success: true });
+        await Promise.resolve();
+        expect(mockProvSession.sendUserMessage).toHaveBeenLastCalledWith(prompt, undefined);
+      }
       expect(mockProvSession.sendUserMessage).toHaveBeenCalledTimes(3);
+    });
+
+    it('a prompt arriving in the stream-end microtask gap cannot overtake the queue', async () => {
+      const sessionId = 'end-gap';
+      const mockProvSession = createMockProviderSession({ alive: true });
+      (provider.startSession as Mock).mockResolvedValue({ sessionId, session: mockProvSession });
+      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test' });
+      await manager.resumeSession({ sessionId, prompt: 'First', cwd: '/tmp/test' });
+
+      manager.makeCallbacks('claude-code').emitStreamEnd({ sessionId, success: true });
+      await manager.resumeSession({ sessionId, prompt: 'Second', cwd: '/tmp/test' });
+      expect(mockProvSession.sendUserMessage).toHaveBeenCalledTimes(1);
+      expect(mockProvSession.sendUserMessage).toHaveBeenCalledWith('First', undefined);
+
+      manager.makeCallbacks('claude-code').emitStreamEnd({ sessionId, success: true });
+      await Promise.resolve();
+      expect(mockProvSession.sendUserMessage).toHaveBeenNthCalledWith(2, 'Second', undefined);
+    });
+
+    it('daemon-side voice prompts use the same default FIFO as PWA prompts', async () => {
+      const sessionId = 'voice-queue';
+      const mockProvSession = createMockProviderSession({ alive: true });
+      (provider.startSession as Mock).mockResolvedValue({ sessionId, session: mockProvSession });
+      await manager.startSession({ prompt: 'Start', cwd: '/tmp/test' });
+      await manager.resumeSession({ sessionId, prompt: 'PWA next', cwd: '/tmp/test' });
+      expect(manager.sendUserMessageToSession(sessionId, 'Voice next')).toBe(true);
+      expect(mockProvSession.sendUserMessage).not.toHaveBeenCalled();
+
+      manager.makeCallbacks('claude-code').emitStreamEnd({ sessionId, success: true });
+      await Promise.resolve();
+      manager.makeCallbacks('claude-code').emitStreamEnd({ sessionId, success: true });
+      await Promise.resolve();
+      expect((mockProvSession.sendUserMessage as Mock).mock.calls.map(([prompt]) => prompt))
+        .toEqual(['PWA next', 'Voice next']);
     });
   });
 

@@ -463,6 +463,23 @@ export function buildOpenCodePromptParts(
   return parts;
 }
 
+/** V2 prompt admission uses a different wire format from the legacy parts API.
+ * Keep this explicit: posting to V2 does not migrate a V1 conversation. */
+export function buildOpenCodeV2PromptInput(
+  text: string,
+  attachments: readonly Attachment[] = [],
+): { text: string; files?: Array<{ uri: string; name: string }> } {
+  return {
+    text,
+    ...(attachments.length > 0 ? {
+      files: attachments.map((attachment) => ({
+        uri: `data:${attachment.mimeType};base64,${attachment.data}`,
+        name: attachment.name,
+      })),
+    } : {}),
+  };
+}
+
 /** Event revisions disagree on whether sessionID is top-level or nested. */
 export function getOpenCodeEventSessionId(event: OpenCodeEvent): string | undefined {
   const direct = event.properties?.sessionID;
@@ -844,6 +861,27 @@ class OpenCodeServer {
       method: 'POST',
       body: JSON.stringify(body),
     }, { directory });
+  }
+
+  /** Admit a message to an existing V2-native session. Never use this as a
+   * transparent fallback for a legacy session: V1 messages are absent from
+   * the V2 runner's history, so doing so would silently lose context. */
+  async sendV2Prompt(
+    sessionID: string,
+    opts: { text: string; attachments?: readonly Attachment[]; delivery: 'queue' | 'steer' },
+  ): Promise<{ id: string; admittedSeq: number }> {
+    const response = await this.req<{ data: { id: string; admittedSeq: number } }>(
+      `/api/session/${encodeURIComponent(sessionID)}/prompt`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: buildOpenCodeV2PromptInput(opts.text, opts.attachments),
+          delivery: opts.delivery,
+          resume: true,
+        }),
+      },
+    );
+    return response.data;
   }
 
   /** Fetch a cursor page from OpenCode's v2 projected-message API.

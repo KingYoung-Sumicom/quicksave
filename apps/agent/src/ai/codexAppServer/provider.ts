@@ -567,7 +567,6 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
   private running = false;
   private startingRunTurn = false;
   private prestartedRunTurnId: string | null = null;
-  private autoSteerQueuedAtToolCallInFlight = false;
   private exited = false;
   private readonly turnConsumers = new Map<string, CodexTurnStreamConsumer>();
   private readonly settledTurnIds = new Set<string>();
@@ -655,12 +654,12 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     // Explicit user activity resumes completion-driven continuation; a user
     // prompt still always has priority over the runtime completion inbox.
     this.nativeCompletionPausedByInterrupt = false;
-    const activeTurnId = this.currentTurnId;
-    if (activeTurnId) {
-      void this.steerOrQueue(prompt, attachments, activeTurnId);
-      return;
-    }
-    void this.runTurn(prompt, attachments);
+    this.enqueueOrRunTurn(prompt, attachments);
+  }
+
+  steerUserMessage(prompt: string, attachments?: readonly Attachment[]): Promise<boolean> {
+    const turnId = this.currentTurnId;
+    return turnId ? this.steerCurrentTurn(prompt, attachments, turnId) : Promise.resolve(false);
   }
 
   async compact(): Promise<void> {
@@ -683,7 +682,7 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     // This user-authored follow-up is explicit activity. Registrations from
     // the interrupted turn were already suppressed by interrupt().
     this.nativeCompletionPausedByInterrupt = false;
-    this.enqueueOrRunTurn(prompt, attachments);
+    this.enqueueOrRunTurn(prompt, attachments, true);
   }
 
   getQueueState() {
@@ -883,20 +882,11 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     return true;
   }
 
-  private async steerOrQueue(
-    prompt: string,
-    attachments: readonly Attachment[] | undefined,
-    expectedTurnId: string,
-  ): Promise<void> {
-    const steered = await this.steerCurrentTurn(prompt, attachments, expectedTurnId);
-    if (steered) return;
-    this.enqueueOrRunTurn(prompt, attachments);
-  }
-
-  private enqueueOrRunTurn(prompt: string, attachments?: readonly Attachment[]): void {
+  private enqueueOrRunTurn(prompt: string, attachments?: readonly Attachment[], priority = false): void {
     if (this.exited) return;
     if (this.running || this.startingRunTurn || this.currentTurnId || this.nativeCompletionDeliveryInFlight) {
-      this.pendingTurns.push(makeQueuedUserPrompt(prompt, attachments));
+      if (priority) this.pendingTurns.unshift(makeQueuedUserPrompt(prompt, attachments));
+      else this.pendingTurns.push(makeQueuedUserPrompt(prompt, attachments));
       this.callbacks.onQueueStateChange?.(this.threadId);
       return;
     }
@@ -1249,39 +1239,6 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
     console.warn(`[codex-app] background completion delivery uncertain session=${this.threadId.slice(0, 8)}: ${message}`);
   }
 
-  private maybeAutoSteerQueuedAtToolCall(notification: { method: string; params: unknown }, turnId: string | null): void {
-    if (
-      this.exited ||
-      this.autoSteerQueuedAtToolCallInFlight ||
-      this.pendingTurns.length === 0 ||
-      !turnId ||
-      this.currentTurnId !== turnId ||
-      this.interruptedTurnIds.has(turnId) ||
-      !isToolCallStartNotification(notification)
-    ) {
-      return;
-    }
-
-    this.autoSteerQueuedAtToolCallInFlight = true;
-    void this.steerFirstQueuedPrompt(turnId)
-      .finally(() => {
-        this.autoSteerQueuedAtToolCallInFlight = false;
-      });
-  }
-
-  private async steerFirstQueuedPrompt(turnId: string): Promise<boolean> {
-    const queued = this.pendingTurns.shift();
-    if (!queued) return false;
-    this.callbacks.onQueueStateChange?.(this.threadId);
-
-    const steered = await this.steerCurrentTurn(queued.prompt, queued.attachments, turnId);
-    if (!steered && !this.exited) {
-      this.pendingTurns.unshift(queued);
-      this.callbacks.onQueueStateChange?.(this.threadId);
-    }
-    return steered;
-  }
-
   private closeTurnConsumersAsInterrupted(): void {
     for (const consumer of this.turnConsumers.values()) {
       consumer.closeAsInterrupted();
@@ -1330,7 +1287,6 @@ export class CodexAppServerSession implements CodexAppServerProviderSession {
       const turnId = this.ensureTurnConsumerForNotification(notification);
       this.dispatchTurnNotification(notification, turnId);
       this.observeSubagentThreads(notification);
-      this.maybeAutoSteerQueuedAtToolCall(notification, turnId);
 
       switch (notification.method) {
         case 'thread/goal/updated': {
@@ -1867,22 +1823,6 @@ function notificationTurnId(notification: { method: string; params: unknown }): 
       return typeof candidate === 'string' && candidate.length > 0 ? candidate : null;
     }
   }
-}
-
-function isToolCallStartNotification(notification: { method: string; params: unknown }): boolean {
-  if (notification.method !== 'item/started') return false;
-  if (typeof notification.params !== 'object' || notification.params === null) return false;
-  const item = (notification.params as { item?: unknown }).item;
-  if (typeof item !== 'object' || item === null) return false;
-  const type = (item as { type?: unknown }).type;
-  return (
-    type === 'commandExecution' ||
-    type === 'fileChange' ||
-    type === 'mcpToolCall' ||
-    type === 'dynamicToolCall' ||
-    type === 'webSearch' ||
-    type === 'collabAgentToolCall'
-  );
 }
 
 function shouldCreateTurnConsumerForNotification(method: string): boolean {

@@ -57,6 +57,10 @@ cd apps/agent && npx vitest run src/ai/cardBuilder.test.ts  # Run specific file
    - Provider interrupt/cancel paths where the control request is sent or
      acknowledged but no terminal `completed`/`interrupted` notification arrives;
      assert the session still settles locally and the next prompt can start
+   - Active-turn delivery modes: default queue must stay FIFO even across a
+     Codex tool start; explicit insertion must not silently become a queued
+     next turn; interruption must start the new prompt ahead of older queued
+     work. Include session switches and unsupported-provider rejection.
    - Memory-mode provider cold resume: persisted card ids must not collide
      with new turn card ids, and history snapshots should remain chronological
    - REST history-backed provider cold resume: seed dedupe state before the new

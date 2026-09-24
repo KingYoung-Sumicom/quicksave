@@ -332,6 +332,17 @@ export class OpencodeSession implements ProviderSession {
     this.sendUserMessageNow(prompt, attachments);
   }
 
+  interruptThenSendUserMessage(prompt: string, attachments?: readonly Attachment[]): void {
+    if (!this.aliveFlag) return;
+    if (this.turnActive || this.compactPromise) {
+      this.queuedUserPrompts.unshift(makeQueuedUserPrompt(prompt, attachments));
+      this.emitQueueStateChange();
+      if (this.turnActive) this.interrupt();
+      return;
+    }
+    this.sendUserMessageNow(prompt, attachments);
+  }
+
   private sendUserMessageNow(prompt: string, attachments?: readonly Attachment[]): void {
     if (!this.aliveFlag || !this.cb || !this.callbacks || !this.router) return;
     // Emit the user card only when the queued prompt actually starts.

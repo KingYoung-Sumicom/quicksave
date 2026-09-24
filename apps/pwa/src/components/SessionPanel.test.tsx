@@ -54,6 +54,33 @@ describe('SessionPanel composer acknowledgement', () => {
     localStorage.clear();
     useSessionStore.getState().reset();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('submits with Enter even when the browser exposes touch events', async () => {
+    vi.stubGlobal('ontouchstart', null);
+    const onStartSession = vi.fn().mockResolvedValue(true);
+    localStorage.setItem('qs_draft_new', 'send with enter');
+    await act(async () => {
+      root.render(<SessionPanel
+        newSession
+        agentId="agent-1"
+        onGetSessionCards={vi.fn().mockResolvedValue(undefined)}
+        onStartSession={onStartSession}
+        onResumeSession={vi.fn().mockResolvedValue(true)}
+      />);
+    });
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+    expect(textarea.value).toBe('send with enter');
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }));
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }));
+    });
+    expect(onStartSession).not.toHaveBeenCalled();
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onStartSession).toHaveBeenCalledWith('send with enter', expect.any(Object));
   });
 
   async function renderWithAck(ack: Promise<boolean>) {
@@ -121,6 +148,39 @@ describe('SessionPanel composer acknowledgement', () => {
     expect(textarea.disabled).toBe(false);
     expect(textarea.value).toBe('message awaiting ack');
     expect(localStorage.getItem('qs_draft_new')).toBe('message awaiting ack');
+  });
+
+  it('defaults active-turn sends to queue and allows explicit insertion', async () => {
+    const onResumeSession = vi.fn().mockResolvedValue(true);
+    const state = useSessionStore.getState();
+    state.upsertSession({ sessionId: 'active-codex', summary: 'test', lastModified: Date.now(), agent: 'codex', isActive: true, isStreaming: true });
+    state.setActiveSession('active-codex');
+    state.setStreaming(true);
+    await act(async () => {
+      root.render(<IntlProvider locale="en"><SessionPanel
+        sessionId="active-codex"
+        onGetSessionCards={vi.fn().mockResolvedValue(undefined)}
+        onStartSession={vi.fn().mockResolvedValue(true)}
+        onResumeSession={onResumeSession}
+      /></IntlProvider>);
+    });
+
+    await act(async () => { useSessionStore.getState().setPromptInput('first'); });
+
+    const mode = container.querySelector('select[aria-label="Message delivery mode"]') as HTMLSelectElement;
+    expect(mode.value).toBe('queue');
+    const send = container.querySelector('button[title="Send"]') as HTMLButtonElement;
+    expect(send.disabled).toBe(false);
+    await act(async () => { send.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })); });
+    expect(onResumeSession).toHaveBeenCalledWith('active-codex', 'first', expect.objectContaining({ deliveryMode: 'queue' }));
+
+    await act(async () => { useSessionStore.getState().setPromptInput('second'); });
+    await act(async () => {
+      mode.value = 'steer';
+      mode.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await act(async () => { send.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })); });
+    expect(onResumeSession).toHaveBeenLastCalledWith('active-codex', 'second', expect.objectContaining({ deliveryMode: 'steer' }));
   });
 });
 

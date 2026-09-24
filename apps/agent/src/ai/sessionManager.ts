@@ -52,6 +52,7 @@ import {
   loadPersistedCardPage,
 } from './cardHistoryIndex.js';
 import { persistAttachments } from './attachmentStore.js';
+import { makeQueuedUserPrompt, queueStateFor, type QueuedUserPrompt } from './queuedUserPrompts.js';
 import { UPDATE_SESSION_STATUS_TOOL } from './quicksaveToolsMcp.js';
 import { getSessionRegistry } from './sessionRegistry.js';
 import { getEventStore } from '../storage/eventStore.js';
@@ -314,6 +315,11 @@ export interface ManagedSession {
   providerSession: ProviderSession | null;
   cwd: string;
   streaming: boolean;
+  /** Provider-independent FIFO for messages submitted during an active turn. */
+  queuedUserPrompts?: QueuedUserPrompt[];
+  /** Do not start ordinary queued work on the interrupted turn's end event;
+   * the explicit replacement prompt has already been admitted first. */
+  interruptingPromptPending?: boolean;
   compacting?: boolean;
   permissionLevel: PermissionLevel;
   sandboxed: boolean;
@@ -842,7 +848,10 @@ export class SessionManager extends EventEmitter {
     /** Attachments resolved from staging by the messageHandler. */
     attachments?: readonly Attachment[];
     interruptCurrentTurn?: boolean;
+    deliveryMode?: 'queue' | 'steer' | 'interrupt';
   }): Promise<string> {
+    const deliveryMode = opts.deliveryMode ?? (opts.interruptCurrentTurn ? 'interrupt' : 'queue');
+    this.assertResumeDeliverySupported(opts.sessionId, deliveryMode);
     this.invalidateCodexHistory(opts.sessionId);
     // Compact: delegate to provider's native compact API instead of sending
     // '/compact' as a user prompt (a '/compact' prompt is a TUI-only command —
@@ -914,6 +923,7 @@ export class SessionManager extends EventEmitter {
           }
           if (managed) managed.compacting = false;
           this.emitSessionUpdate(opts.sessionId);
+          this.drainQueuedUserPrompt(opts.sessionId);
         }
         return opts.sessionId;
       }
@@ -948,8 +958,11 @@ export class SessionManager extends EventEmitter {
       existing!.providerSession = null;
     }
 
-    // Hot resume (active turn): provider is mid-turn — just hand it the new prompt.
-    if (existing?.streaming && existing.providerSession?.alive) {
+    // The old boolean remains an alias for older clients. Never infer steer
+    // from a missing field: the safe default is a complete next user turn.
+    // Hot resume (active turn): keep admission semantics independent of the
+    // provider's own handling of mid-turn stdin / RPC messages.
+    if ((existing?.streaming || existing?.compacting) && existing.providerSession?.alive) {
       console.log(`[session-manager] hot resume (active) session=${opts.sessionId.slice(0, 8)}`);
       // Persist attachments BEFORE sendUserMessage emits the userMessage
       // card with real attachment UUIDs. Otherwise chips on other tabs (or
@@ -960,12 +973,20 @@ export class SessionManager extends EventEmitter {
       if (opts.attachments && opts.attachments.length > 0) {
         await persistAttachments(opts.sessionId, opts.attachments);
       }
-      if (opts.interruptCurrentTurn && existing.providerSession.interruptThenSendUserMessage) {
+      if (deliveryMode === 'queue') {
+        (existing.queuedUserPrompts ??= []).push(makeQueuedUserPrompt(opts.prompt, opts.attachments));
+      } else if (deliveryMode === 'steer') {
+        if (!existing.streaming || !existing.providerSession.steerUserMessage) {
+          throw new Error(`${existing.agentId} does not support inserting a message into an active turn`);
+        }
+        const accepted = await existing.providerSession.steerUserMessage(opts.prompt, opts.attachments);
+        if (!accepted) throw new Error('Active turn ended before the message could be inserted; retry as a queued message');
+      } else if (existing.providerSession.interruptThenSendUserMessage) {
+        existing.interruptingPromptPending = true;
         existing.providerSession.interruptThenSendUserMessage(opts.prompt, opts.attachments);
-      } else if (opts.interruptCurrentTurn) {
-        existing.providerSession.interrupt();
-        existing.providerSession.sendUserMessage(opts.prompt, opts.attachments);
       } else {
+        existing.interruptingPromptPending = true;
+        existing.providerSession.interrupt();
         existing.providerSession.sendUserMessage(opts.prompt, opts.attachments);
       }
       this.emitSessionUpdate(opts.sessionId);
@@ -978,6 +999,18 @@ export class SessionManager extends EventEmitter {
     // badge flicker between turns.
     if (existing?.providerSession?.alive && !modelChanged && !contextWindowChanged) {
       console.log(`[session-manager] hot resume (idle) session=${opts.sessionId.slice(0, 8)}`);
+      // The stream-end callback schedules a microtask to start the next queued
+      // turn. A new send in that gap must not overtake older accepted prompts.
+      if (existing.queuedUserPrompts?.length || existing.providerSession.getQueueState?.()?.pendingUserMessages) {
+        const queue = (existing.queuedUserPrompts ??= []);
+        const queued = makeQueuedUserPrompt(opts.prompt, opts.attachments);
+        if (deliveryMode === 'interrupt') queue.unshift(queued);
+        else queue.push(queued);
+        if (opts.attachments?.length) await persistAttachments(opts.sessionId, opts.attachments);
+        this.emitSessionUpdate(opts.sessionId);
+        this.drainQueuedUserPrompt(opts.sessionId);
+        return opts.sessionId;
+      }
       const ps = existing.providerSession as any;
       if (existing.cardBuilder) {
         existing.cardBuilder.cancelDeferredClear?.();
@@ -1205,8 +1238,8 @@ export class SessionManager extends EventEmitter {
    * voice intermediary's `send_to_coding_agent` tool). Mirrors the normal send
    * path without the resume/cold-start machinery, so it requires the session to
    * already be open — returns false otherwise. With `interrupt`, the in-flight
-   * turn is interrupted first so the prompt steers immediately; otherwise it
-   * follows the provider's normal queue-or-send behavior.
+   * turn is cancelled and this prompt becomes the next turn ahead of queued
+   * work; otherwise it joins the common FIFO or starts immediately if idle.
    */
   sendUserMessageToSession(sessionId: string, prompt: string, opts?: { interrupt?: boolean }): boolean {
     const ps = this.sessions.get(sessionId);
@@ -1214,12 +1247,16 @@ export class SessionManager extends EventEmitter {
     const session = ps.providerSession;
     console.log(`[session-manager] voice steer session=${sessionId.slice(0, 8)} interrupt=${opts?.interrupt === true}`);
     if (opts?.interrupt) {
+      ps.interruptingPromptPending = true;
       if (typeof session.interruptThenSendUserMessage === 'function') {
         session.interruptThenSendUserMessage(prompt);
       } else {
         session.interrupt();
         session.sendUserMessage(prompt);
       }
+    } else if (ps.streaming || ps.queuedUserPrompts?.length || session.getQueueState?.()?.pendingUserMessages) {
+      (ps.queuedUserPrompts ??= []).push(makeQueuedUserPrompt(prompt));
+      this.drainQueuedUserPrompt(sessionId);
     } else {
       session.sendUserMessage(prompt);
     }
@@ -1230,6 +1267,33 @@ export class SessionManager extends EventEmitter {
   async steerQueuedMessage(sessionId: string, opts?: { interruptCurrentTurn?: boolean }): Promise<boolean> {
     const ps = this.sessions.get(sessionId);
     if (!ps?.providerSession?.alive) return false;
+    const providerQueue = ps.providerSession.getQueueState?.();
+    if (providerQueue?.pendingUserMessages) {
+      if (!ps.providerSession.steerQueuedMessage) return false;
+      const ok = await ps.providerSession.steerQueuedMessage(opts);
+      this.emitSessionUpdate(sessionId);
+      return ok;
+    }
+    const queued = ps.queuedUserPrompts?.[0];
+    if (queued) {
+      if (opts?.interruptCurrentTurn) {
+        ps.queuedUserPrompts!.shift();
+        ps.interruptingPromptPending = true;
+        if (ps.providerSession.interruptThenSendUserMessage) {
+          ps.providerSession.interruptThenSendUserMessage(queued.prompt, queued.attachments);
+        } else {
+          ps.providerSession.interrupt();
+          ps.providerSession.sendUserMessage(queued.prompt, queued.attachments);
+        }
+        this.emitSessionUpdate(sessionId);
+        return true;
+      }
+      if (!ps.providerSession.steerUserMessage) return false;
+      const accepted = await ps.providerSession.steerUserMessage(queued.prompt, queued.attachments);
+      if (accepted) ps.queuedUserPrompts!.shift();
+      this.emitSessionUpdate(sessionId);
+      return accepted;
+    }
     const steerQueuedMessage = ps.providerSession.steerQueuedMessage;
     if (!steerQueuedMessage) return false;
     console.log(`[session-manager] steer queued message session=${sessionId.slice(0, 8)} interrupt=${opts?.interruptCurrentTurn === true}`);
@@ -1241,6 +1305,13 @@ export class SessionManager extends EventEmitter {
   async deleteQueuedMessage(sessionId: string, queuedId: string): Promise<boolean> {
     const ps = this.sessions.get(sessionId);
     if (!ps?.providerSession?.alive) return false;
+    const ownQueue = ps.queuedUserPrompts;
+    const ownIndex = ownQueue?.findIndex((queued) => queued.id === queuedId) ?? -1;
+    if (ownIndex >= 0) {
+      ownQueue!.splice(ownIndex, 1);
+      this.emitSessionUpdate(sessionId);
+      return true;
+    }
     const deleteQueuedMessage = ps.providerSession.deleteQueuedMessage;
     if (!deleteQueuedMessage) return false;
     console.log(`[session-manager] delete queued message session=${sessionId.slice(0, 8)} queued=${queuedId.slice(0, 8)}`);
@@ -2130,6 +2201,63 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  private drainQueuedUserPrompt(sessionId: string): void {
+    const ps = this.sessions.get(sessionId);
+    if (!ps?.providerSession?.alive || ps.streaming || ps.compacting) return;
+    // A provider-internal queue (for example a prompt accepted during spawn)
+    // was admitted before the manager queue and must run first.
+    if (ps.providerSession.getQueueState?.()?.pendingUserMessages) return;
+    const next = ps.queuedUserPrompts?.shift();
+    if (!next) return;
+    ps.streaming = true;
+    this.emitSessionUpdate(sessionId);
+    try {
+      ps.providerSession.sendUserMessage(next.prompt, next.attachments);
+    } catch (error) {
+      ps.queuedUserPrompts!.unshift(next);
+      ps.streaming = false;
+      this.emitSessionUpdate(sessionId);
+      console.error(`[session-manager] failed to drain queued prompt session=${sessionId.slice(0, 8)}:`, error);
+    }
+  }
+
+  /** Read-only preflight so the message handler can reject unsupported modes
+   * before consuming staged attachment bytes. Rechecked by resumeSession. */
+  assertResumeDeliverySupported(sessionId: string, mode: string): void {
+    if (mode !== 'queue' && mode !== 'steer' && mode !== 'interrupt') {
+      throw new Error(`Unsupported message delivery mode: ${mode}`);
+    }
+    const ps = this.sessions.get(sessionId);
+    if (ps?.compacting && mode !== 'queue') {
+      throw new Error('Session is compacting; only queued messages are supported until compaction completes');
+    }
+    if (mode === 'steer' && (ps?.streaming || ps?.compacting) && ps.providerSession?.alive && !ps.providerSession.steerUserMessage) {
+      throw new Error(`${ps.agentId} does not support inserting a message into an active turn`);
+    }
+  }
+
+  private queueStateForSession(ps: ManagedSession | undefined): ReturnType<NonNullable<ProviderSession['getQueueState']>> {
+    if (!ps) return null;
+    const native = ps.providerSession?.getQueueState?.() ?? null;
+    const queued = ps.queuedUserPrompts?.length
+      ? queueStateFor(ps.queuedUserPrompts, ps.streaming && !!ps.providerSession?.alive)
+      : null;
+    if (!native) return queued;
+    if (!queued) return native;
+    const nativePreviews = native.queuedPromptPreviews
+      ?? (native.latestPromptPreview ? [native.latestPromptPreview] : []);
+    return {
+      pendingUserMessages: native.pendingUserMessages + queued.pendingUserMessages,
+      latestPromptPreview: queued.latestPromptPreview,
+      queuedPromptPreviews: [...nativePreviews, ...(queued.queuedPromptPreviews ?? [])],
+      queuedPromptIds: [
+        ...(native.queuedPromptIds ?? Array(nativePreviews.length).fill('')),
+        ...(queued.queuedPromptIds ?? []),
+      ],
+      canInterruptCurrentTurn: native.canInterruptCurrentTurn || queued.canInterruptCurrentTurn,
+    };
+  }
+
   // ── Private: Callbacks Factory ──
 
   makeCallbacks(agentId: AgentId): ProviderCallbacks {
@@ -2144,6 +2272,9 @@ export class SessionManager extends EventEmitter {
         if (ps) {
           ps.streaming = false;
           this.emitSessionUpdate(result.sessionId);
+          const skipForReplacement = ps.interruptingPromptPending && result.interrupted === true;
+          ps.interruptingPromptPending = false;
+          if (!skipForReplacement) queueMicrotask(() => this.drainQueuedUserPrompt(result.sessionId));
         }
       },
       handlePermissionRequest: async (
@@ -2548,7 +2679,7 @@ export class SessionManager extends EventEmitter {
       isStreaming: ps?.streaming ?? false,
       isCompacting: ps?.compacting ?? false,
       hasPendingInput,
-      queueState: ps?.providerSession?.getQueueState?.() ?? null,
+      queueState: this.queueStateForSession(ps),
       permissionMode: ps?.permissionLevel ?? this.sessionPermissions.get(sessionId),
       sandboxed: ps?.sandboxed ?? this.sessionSandboxed.get(sessionId) ?? false,
       lastPromptAt: stats.lastPromptAt ?? undefined,

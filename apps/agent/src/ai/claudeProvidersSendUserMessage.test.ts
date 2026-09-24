@@ -178,7 +178,7 @@ describe('CliProviderSession.sendUserMessage', () => {
     });
   });
 
-  it('Steer now sends the first queued prompt and interrupts when requested', async () => {
+  it('interrupting a queued prompt starts it after the interrupted result', async () => {
     const { proc, stdinWrites } = makeFakeProcess();
     const cardBuilder = new StreamCardBuilder('sess-1', '/tmp');
     const session = new CliProviderSession(proc);
@@ -192,11 +192,15 @@ describe('CliProviderSession.sendUserMessage', () => {
     ];
     await expect(session.steerQueuedMessage({ interruptCurrentTurn: true })).resolves.toBe(true);
 
-    expect(stdinWrites).toHaveLength(2);
+    expect(stdinWrites).toHaveLength(1);
     expect(JSON.parse(stdinWrites[0].trim())).toMatchObject({
       type: 'control_request',
       request: { subtype: 'interrupt' },
     });
+    expect(session.getQueueState()?.queuedPromptPreviews).toEqual(['first queued', 'second queued']);
+    session.activeTurn = false;
+    expect(session.sendNextQueuedMessage()).toBe(true);
+    expect(stdinWrites).toHaveLength(2);
     expect(JSON.parse(stdinWrites[1].trim())).toEqual({
       type: 'user',
       message: { role: 'user', content: 'first queued' },
@@ -230,7 +234,7 @@ describe('CliProviderSession.sendUserMessage', () => {
     expect(session.getQueueState()).toBeNull();
   });
 
-  it('interrupt-then-send writes interrupt before the user prompt', () => {
+  it('interrupt-then-send waits for the interrupted result before writing the replacement', () => {
     const { proc, stdinWrites } = makeFakeProcess();
     const cardBuilder = new StreamCardBuilder('sess-1', '/tmp');
     const session = new CliProviderSession(proc);
@@ -239,11 +243,15 @@ describe('CliProviderSession.sendUserMessage', () => {
 
     session.interruptThenSendUserMessage('next instruction');
 
-    expect(stdinWrites).toHaveLength(2);
+    expect(stdinWrites).toHaveLength(1);
     expect(JSON.parse(stdinWrites[0].trim())).toMatchObject({
       type: 'control_request',
       request: { subtype: 'interrupt' },
     });
+    expect(session.getQueueState()?.queuedPromptPreviews).toEqual(['next instruction']);
+    session.activeTurn = false;
+    expect(session.sendNextQueuedMessage()).toBe(true);
+    expect(stdinWrites).toHaveLength(2);
     expect(JSON.parse(stdinWrites[1].trim())).toEqual({
       type: 'user',
       message: { role: 'user', content: 'next instruction' },

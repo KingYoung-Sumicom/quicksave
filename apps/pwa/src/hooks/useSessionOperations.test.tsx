@@ -163,6 +163,28 @@ describe('useSessionOperations', () => {
     expect(useSessionStore.getState().sessions['session-A'].isCompacting).toBe(false);
   });
 
+  it('sends an explicit active-turn mode only when the user overrides queueing', async () => {
+    let latestOps: SessionOps | null = null;
+    const command = vi.fn().mockResolvedValue({ success: true, sessionId: 'session-A' });
+    const bus = { command } as unknown as MessageBusClient;
+    useSessionStore.getState().setSessions([
+      { sessionId: 'session-A', summary: 'A', lastModified: 1, isActive: true, isStreaming: true } as any,
+    ]);
+    useSessionStore.getState().setActiveSession('session-A');
+    useSessionStore.getState().setStreaming(true);
+    await act(async () => {
+      root.render(<Harness getBus={() => bus} onRender={(ops) => { latestOps = ops; }} />);
+    });
+    await act(async () => {
+      await latestOps!.resumeSession('session-A', 'change direction', '/repo', { deliveryMode: 'steer' });
+    });
+    expect(command).toHaveBeenCalledWith('claude:resume', expect.objectContaining({
+      sessionId: 'session-A',
+      prompt: 'change direction',
+      deliveryMode: 'steer',
+    }), expect.anything());
+  });
+
   it('shows prompts submitted during compaction in the existing queued-message state', async () => {
     let latestOps: SessionOps | null = null;
     let resolveCommand: (value: unknown) => void = () => {};

@@ -609,7 +609,7 @@ export function useSessionOperations(
   );
 
   const resumeSession = useCallback(
-    async (sessionId: string, prompt: string, cwd?: string, opts?: { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean }) => {
+    async (sessionId: string, prompt: string, cwd?: string, opts?: { attachmentIds?: string[]; attachmentMetadata?: AttachmentMetadata[]; interruptCurrentTurn?: boolean; deliveryMode?: 'queue' | 'steer' | 'interrupt' }) => {
       const state = useSessionStore.getState();
       const session = state.sessions[sessionId];
       const activeSessionIdAtRequest = state.activeSessionId;
@@ -619,7 +619,7 @@ export function useSessionOperations(
       // streaming. Reuse the existing queued-message UX for prompts submitted
       // during it; the daemon starts them only after compact completes.
       const queueInsteadOfAppend = (wasAlreadyStreaming || session?.isCompacting === true)
-        && !opts?.interruptCurrentTurn
+        && (opts?.deliveryMode ?? (opts?.interruptCurrentTurn ? 'interrupt' : 'queue')) === 'queue'
         && !isCompactPrompt;
       if (!isCompactPrompt) setStreaming(true);
       setStreamError(null);
@@ -659,6 +659,7 @@ export function useSessionOperations(
             prompt,
             ...(cwd ? { cwd } : {}),
             ...(opts?.interruptCurrentTurn ? { interruptCurrentTurn: true } : {}),
+            ...(opts?.deliveryMode && opts.deliveryMode !== 'queue' ? { deliveryMode: opts.deliveryMode } : {}),
             ...(opts?.attachmentIds && opts.attachmentIds.length > 0
               ? { attachmentIds: opts.attachmentIds }
               : {}),

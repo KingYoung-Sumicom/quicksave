@@ -496,6 +496,25 @@ describe('OpencodeSession', () => {
     expect(s.getQueueState()).toBeNull();
   });
 
+  it('puts an interrupting prompt ahead of ordinary queued work', async () => {
+    const server = makeMockServer();
+    const s = new OpencodeSession('ses_priority', server, '/workspace', turnConfig);
+    const cb = new StreamCardBuilder('ses_priority', '/workspace');
+    const cbs = makeCallbacks();
+    const router = new SessionEventRouter('ses_priority', cb, cbs, server, {
+      onFinalized: () => s._onTurnFinalized(),
+    });
+    s._setTurnWiring(cb, cbs, router, () => {}, true);
+    s.sendUserMessage('ordinary later');
+    s.interruptThenSendUserMessage('urgent now');
+    expect(server.aborts).toHaveLength(1);
+    expect(s.getQueueState()?.queuedPromptPreviews).toEqual(['urgent now', 'ordinary later']);
+    s._onTurnFinalized();
+    expect(server.prompts[0]?.body.text).toBe('urgent now');
+    s._onTurnFinalized();
+    expect(server.prompts[1]?.body.text).toBe('ordinary later');
+  });
+
   it('continues once after OpenCode automatically compacts a context overflow', async () => {
     const server = makeMockServer();
     const s = new OpencodeSession('ses_overflow', server, '/workspace', turnConfig);

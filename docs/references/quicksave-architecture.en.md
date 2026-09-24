@@ -239,14 +239,18 @@ claude:start → MessageHandler.handleClaudeStart()
 
 claude:resume → SessionManager.resumeSession(opts)
    → 1. Hot resume (active turn): existing.streaming && providerSession.alive
-        → providerSession.sendUserMessage(prompt, opts.attachments)
-        → Codex app-server sends ordinary follow-up prompts via `turn/steer`
-          against the current `turnId`; if steering is rejected because the
-          active turn changed or is not steerable, the prompt falls back to the
-          provider FIFO queue for the next `turn/start`.
-        → Providers without a same-turn steering primitive keep the prompt in
-          their in-memory queue until the current turn ends.
-        → If opts.interruptCurrentTurn is true, SessionManager calls providerSession.interruptThenSendUserMessage(...) when available; otherwise it interrupts then sends.
+        → `deliveryMode` defaults to `queue`: SessionManager retains a FIFO
+          message and submits one prompt per completed turn. A tool boundary
+          does not promote queued work into the active Codex turn.
+        → `steer`: call the provider's explicit `steerUserMessage` capability
+          (Codex `turn/steer`, Claude stream input). Unsupported providers
+          reject the request instead of silently queueing it. OpenCode's
+          current legacy `prompt_async` path and Claude Terminal's TUI input
+          do not expose a reliable same-turn insertion primitive, so the PWA
+          disables this choice for those providers.
+        → `interrupt`: use `interruptThenSendUserMessage` when available;
+          the new prompt takes priority over already queued prompts. The old
+          `interruptCurrentTurn` boolean remains an alias for older clients.
    → 2. Hot resume (idle): !existing.streaming && providerSession.alive && !modelChanged && !contextWindowChanged
         → Reuse the same process: providerSession.sendUserMessage(prompt, opts.attachments). Avoids the latency and "ghost inactive" flicker of kill+spawn.
         → For Claude CLI, a contextWindow change can be applied live via providerSession.updateContextWindow(...) before sending.
@@ -948,7 +952,7 @@ PWA↔Agent session/cards/preferences events now all flow through MessageBus `/p
 | — | Agent→PWA push | `bus.subscribe('/sessions/history')` | Full snapshot of historical sessions + incremental updates (replaces the now-removed `claude:list-sessions` command, avoiding races with `/sessions/active`) |
 | `claude:auth-status` | PWA→Agent | `bus.command('claude:auth-status', {})` | Re-run the selected machine's sanitized Claude CLI authentication check |
 | `claude:start` | PWA→Agent | `bus.command('claude:start', …)` | Start a new session. `attachmentIds?` resolved from staging |
-| `claude:resume` | PWA→Agent | `bus.command('claude:resume', …)` | Resume a session. `attachmentIds?` resolved from staging; `interruptCurrentTurn?` interrupts the active turn before sending |
+| `claude:resume` | PWA→Agent | `bus.command('claude:resume', …)` | Resume a session. `attachmentIds?` resolved from staging; `deliveryMode?` is `queue` (default), `steer`, or `interrupt`. Legacy `interruptCurrentTurn?` aliases `interrupt` |
 | `claude:steer-queued` | PWA→Agent | `bus.command('claude:steer-queued', …)` | Steer or expedite the first queued prompt; `interruptCurrentTurn?` cancels the active turn so the queued prompt runs next |
 | `claude:delete-queued` | PWA→Agent | `bus.command('claude:delete-queued', …)` | Remove one queued user message by `queuedId` (the stable id surfaced in `SessionQueueState.queuedPromptIds`). No-op if it already advanced into the active turn |
 | `attachment:upload` | PWA→Agent | `bus.command('attachment:upload', …)` | One chunk of a staged attachment (meta on chunk 0) |
